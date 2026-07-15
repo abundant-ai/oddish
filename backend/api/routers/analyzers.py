@@ -95,7 +95,10 @@ async def get_analyzer_rollup(
                 status_code=404,
                 detail="No per-model data: this analyzer ran before findings were persisted.",
             )
-        return build_rollup(analyzer.findings, analyzer.models_by_task or {})
+        # NULL roster (ran before analyzers_006) passes through as None so the
+        # 1a lane reports models_total: unknown. An empty dict is a real answer
+        # -- "no trials" -- and must not collapse into the same value.
+        return build_rollup(analyzer.findings, analyzer.models_by_task)
 
 
 @router.delete("/analyzers/{analyzer_id}")

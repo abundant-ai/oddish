@@ -81,7 +81,9 @@ def _by_model(findings: list[dict]) -> dict[str, Any]:
     return {"axis": "model", "groups": groups}
 
 
-def _by_task(findings: list[dict], models_by_task: dict[str, list[str]]) -> dict[str, Any]:
+def _by_task(
+    findings: list[dict], models_by_task: dict[str, list[str]] | None
+) -> dict[str, Any]:
     by_task: dict[str, list[dict]] = defaultdict(list)
     for f in findings:
         by_task[f.get("task_id") or "unknown"].append(f)
@@ -91,13 +93,19 @@ def _by_task(findings: list[dict], models_by_task: dict[str, list[str]]) -> dict
         # Both sides normalized, or models_hit could contain a key absent from the
         # roster and the ratio would exceed 1.
         hit = sorted({_model_key(f.get("model")) for f in items})
-        roster = {_model_key(m) for m in models_by_task.get(task_id, [])}
+        if models_by_task is None:
+            # No roster persisted (analyzer predates analyzers_006), so the
+            # denominator is unknown -- not zero. 0 would read as "no model ran
+            # this task", inverting the one number this lane exists to show.
+            total = None
+        else:
+            total = len({_model_key(m) for m in models_by_task.get(task_id, [])})
         groups.append(
             {
                 "key": items[0].get("task_path") or task_id,
                 "task_id": task_id,
                 "models_hit": hit,
-                "models_total": len(roster),
+                "models_total": total,
                 "gaps": _gaps(items),
             }
         )
@@ -106,8 +114,10 @@ def _by_task(findings: list[dict], models_by_task: dict[str, list[str]]) -> dict
 
 
 def build_rollup(
-    findings: list[dict], models_by_task: dict[str, list[str]]
+    findings: list[dict], models_by_task: dict[str, list[str]] | None
 ) -> dict[str, Any]:
+    """``models_by_task=None`` means no roster was persisted; task_construction
+    then reports ``models_total: None`` (unknown) rather than 0."""
     lanes: dict[str, list[dict]] = {
         "good_failures": [], "task_construction": [], "reward_hacking": []
     }

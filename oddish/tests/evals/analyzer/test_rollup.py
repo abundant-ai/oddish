@@ -170,3 +170,41 @@ def test_task_missing_from_roster_reports_zero_total():
         {},
     )
     assert out["task_construction"]["groups"][0]["models_total"] == 0
+
+
+def test_null_roster_reports_unknown_total_not_zero():
+    """No roster persisted (analyzer predates analyzers_006) means the denominator
+    is unknown. Reporting 0 would read as 'no model ran this task' — inverted on
+    the one number this lane exists to show."""
+    out = build_rollup(
+        [_f(subtype="Ambiguous Requirements", task_id="alpha", task_path="tasks/alpha")],
+        None,
+    )
+    g = out["task_construction"]["groups"][0]
+    assert g["models_total"] is None
+    # The hit side still works: it comes from findings, not the roster.
+    assert g["models_hit"] == ["claude-opus-4-8"]
+
+
+def test_null_roster_is_distinct_from_empty_roster():
+    """None (never populated) and {} (populated, no trials) are different answers.
+    Collapsing them makes a legacy row indistinguishable from a real zero."""
+    finding = _f(subtype="Ambiguous Requirements", task_id="alpha", task_path="tasks/alpha")
+    unknown = build_rollup([finding], None)["task_construction"]["groups"][0]
+    empty = build_rollup([finding], {})["task_construction"]["groups"][0]
+    assert unknown["models_total"] is None
+    assert empty["models_total"] == 0
+
+
+def test_null_roster_leaves_the_other_two_lanes_intact():
+    """The roster is only the 1a denominator. A missing one must not blank the
+    good-failure or reward-hacking lanes, which never consult it."""
+    out = build_rollup(
+        [
+            _f(classification="GOOD_FAILURE", subtype="Logic Error"),
+            _f(classification="BAD_FAILURE", subtype="Hardcoding"),
+        ],
+        None,
+    )
+    assert out["good_failures"]["groups"][0]["key"] == "claude-opus-4-8"
+    assert out["reward_hacking"]["groups"][0]["key"] == "claude-opus-4-8"

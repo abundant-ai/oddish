@@ -133,12 +133,19 @@ async def analyzer_id(org_id, experiment_id):
         return analyzer.id
 
 
-async def _set_findings(analyzer_id, findings, models_by_task=None):
+_UNSET = object()
+
+
+async def _set_findings(analyzer_id, findings, models_by_task=_UNSET):
+    # Defaults to {}, but passing None must reach the column as SQL NULL -- that
+    # legacy row (findings persisted before analyzers_006 added the roster) is
+    # exactly what test_rollup_unknown_total_when_roster_null covers.
+    roster = {} if models_by_task is _UNSET else models_by_task
     async with get_session() as session:
         await session.execute(
             AnalyzerModel.__table__.update()
             .where(AnalyzerModel.id == analyzer_id)
-            .values(findings=findings, models_by_task=models_by_task or {})
+            .values(findings=findings, models_by_task=roster)
         )
         await session.commit()
 
@@ -182,6 +189,35 @@ async def test_rollup_returns_lanes(client, analyzer_id):
     resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
     assert resp.status_code == 200, resp.text
     assert resp.json()["good_failures"]["groups"][0]["gaps"][0]["gap"] == "Logic Error"
+
+
+@pytest.mark.asyncio
+async def test_rollup_unknown_total_when_roster_null(client, analyzer_id):
+    """An analyzer with findings but no persisted roster (ran before
+    analyzers_006) still serves its lanes; the 1a denominator reports unknown.
+    Sending it through as an empty roster would claim models_total: 0 -- "no
+    model ran this task" -- about a task every model may have run."""
+    finding = {
+        "trial_id": "t1",
+        "bucket": "bad",
+        "subcategory": "1a",
+        "evidence_quote": "q",
+        "step_ids": [1],
+        "root_cause": "rc",
+        "headroom_signal": "",
+        "trajectory_link": "/tasks/task/probe/t1",
+        "model": "claude-opus-4-8",
+        "classification": "BAD_FAILURE",
+        "subtype": "Ambiguous Requirements",
+        "task_id": "task",
+        "task_path": "tasks/task",
+    }
+    await _set_findings(analyzer_id, [finding], models_by_task=None)
+    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    assert resp.status_code == 200, resp.text
+    group = resp.json()["task_construction"]["groups"][0]
+    assert group["models_total"] is None
+    assert group["models_hit"] == ["claude-opus-4-8"]
 
 
 @pytest.mark.asyncio
