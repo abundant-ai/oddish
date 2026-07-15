@@ -9,6 +9,8 @@ The instruction is now uploaded as a file and read back via ``"$(cat ...)"``.
 
 from __future__ import annotations
 
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -50,6 +52,36 @@ def test_invalid_api_backend_rejected(tmp_path):
             model_name="xai/v9-stickynote",
             api_backend="bogus-endpoint",
         )
+
+
+def test_build_config_toml_omits_reliability_keys_by_default(tmp_path):
+    config = OddishGrokBuild(
+        logs_dir=tmp_path, model_name="xai/v9-stickynote"
+    ).build_config_toml()
+    assert "max_retries" not in config
+    assert "inference_idle_timeout_secs" not in config
+
+
+def test_build_config_toml_applies_reliability_keys_to_every_model_block(tmp_path):
+    # --agent-kwarg delivers values as strings; ints must work too.
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path,
+        model_name="xai/v9-stickynote",
+        max_retries="15",
+        inference_idle_timeout_secs=300,
+    )
+    parsed = tomllib.loads(agent.build_config_toml())
+    for table in ("v9-stickynote", "grok-build"):
+        assert parsed["model"][table]["max_retries"] == 15
+        assert parsed["model"][table]["inference_idle_timeout_secs"] == 300
+
+
+@pytest.mark.parametrize("bad", ["nope", "0", -3, "12.5"])
+def test_invalid_reliability_kwargs_rejected(tmp_path, bad):
+    with pytest.raises(ValueError, match="max_retries"):
+        OddishGrokBuild(logs_dir=tmp_path, max_retries=bad)
+    with pytest.raises(ValueError, match="inference_idle_timeout_secs"):
+        OddishGrokBuild(logs_dir=tmp_path, inference_idle_timeout_secs=bad)
 
 
 # Comfortably larger than ARG_MAX and than a single realistic instruction; the
@@ -115,4 +147,177 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
 
     # The session store is captured out-of-band so tool calls + token usage
     # (absent from the text-only stdout) survive sandbox teardown.
+    assert any("grok-session" in c for c in agent_commands)
+
+    # An idle-timeout death resumes the session (bounded) instead of failing
+    # the trial: the xAI-side stream watchdog is the only grok failure that is
+    # both fatal to the CLI and transient server-side. One resume arm per
+    # fallback variant, so the resume replays whichever flag set actually ran.
+    assert "grep -qi 'idle timeout'" in command
+    assert command.count("grok -c -p") == 6
+    assert "resumes -lt 3" in command
+    # The resume appends to the streamed event log and re-sends a short inline
+    # continuation, never the staged instruction.
+    assert command.count(">>/logs/agent/grok-build.json") == 6
+    assert "Continue the original task" in command
+
+
+async def _generated_command(tmp_path, monkeypatch) -> str:
+    agent = OddishGrokBuild(logs_dir=tmp_path)
+    agent_commands: list[str] = []
+
+    class _FakeEnv:
+        async def upload_file(self, source_path, target_path):
+            return None
+
+    async def _noop(self, environment, **kwargs):
+        return None
+
+    async def _record(self, environment, *, command, **kwargs):
+        agent_commands.append(command)
+
+    monkeypatch.setattr(OddishGrokBuild, "_write_config", _noop)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", _record)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", _record)
+    await agent.run(instruction="task", environment=_FakeEnv(), context=object())
+    return next(c for c in agent_commands if "grok -p" in c)
+
+
+def _run_in_shell(command: str, tmp_path, stub_body: str):
+    """Execute the generated command under bash against a stubbed ``grok``.
+
+    The stub lands in ``$HOME/.local/bin`` of a throwaway HOME, which the
+    command's own ``export PATH`` puts first; ``/logs/agent`` is rewritten to a
+    writable dir. This pins the shell state machine itself (fallback routing,
+    resume trigger, loop bound), not just the command text.
+    """
+    home = tmp_path / "home"
+    logdir = tmp_path / "logs"
+    bindir = home / ".local" / "bin"
+    bindir.mkdir(parents=True)
+    logdir.mkdir()
+    stub = bindir / "grok"
+    stub.write_text("#!/bin/bash\n" + stub_body, encoding="utf-8")
+    stub.chmod(0o755)
+    (tmp_path / "prompt.txt").write_text("task", encoding="utf-8")
+    rewritten = command.replace("/logs/agent", str(logdir)).replace(
+        _PROMPT_PATH, str(tmp_path / "prompt.txt")
+    )
+    proc = subprocess.run(
+        ["bash", "-c", rewritten],
+        env={"HOME": str(home), "LOGDIR": str(logdir), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    calls = (logdir / "calls.log").read_text(encoding="utf-8").splitlines()
+    stdout = (logdir / "grok-build.json").read_text(encoding="utf-8")
+    return proc.returncode, calls, stdout
+
+
+_IDLE_TIMEOUT_STDERR = (
+    'Error: Internal error: { "message": '
+    '"inference idle timeout after 600s with no chunks" }'
+)
+
+_STALL_TWICE_STUB = f"""
+echo "$*" >> "$LOGDIR/calls.log"
+n=$(wc -l < "$LOGDIR/calls.log")
+if [ "$n" -le 2 ]; then
+  echo '{{"type":"text","data":"partial"}}'
+  echo '{_IDLE_TIMEOUT_STDERR}' >&2
+  exit 1
+fi
+echo '{{"type":"text","data":"resumed"}}'
+exit 0
+"""
+
+_RATE_LIMIT_STUB = """
+echo "$*" >> "$LOGDIR/calls.log"
+echo "Error: You've hit your team's API rate limit." >&2
+exit 1
+"""
+
+_FALLBACK_THEN_STALL_STUB = f"""
+echo "$*" >> "$LOGDIR/calls.log"
+case "$*" in
+  *--reasoning-effort*) echo "unknown option '--reasoning-effort'" >&2; exit 1;;
+esac
+if [ ! -f "$LOGDIR/stalled" ]; then
+  touch "$LOGDIR/stalled"
+  echo '{_IDLE_TIMEOUT_STDERR}' >&2
+  exit 1
+fi
+echo '{{"type":"text","data":"resumed"}}'
+exit 0
+"""
+
+
+@pytest.mark.asyncio
+async def test_shell_resumes_after_idle_timeout(tmp_path, monkeypatch):
+    command = await _generated_command(tmp_path, monkeypatch)
+    rc, calls, stdout = _run_in_shell(command, tmp_path, _STALL_TWICE_STUB)
+    assert rc == 0
+    # Primary run + two resumes, each streaming into the same event log.
+    assert len(calls) == 3
+    assert all("-c" in c.split() for c in calls[1:])
+    assert stdout.count('"partial"') == 2
+    assert '"resumed"' in stdout
+
+
+@pytest.mark.asyncio
+async def test_shell_does_not_resume_other_failures(tmp_path, monkeypatch):
+    command = await _generated_command(tmp_path, monkeypatch)
+    rc, calls, _ = _run_in_shell(command, tmp_path, _RATE_LIMIT_STUB)
+    assert rc != 0
+    # A rate-limit death matches no fallback grep and must not loop.
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_shell_resume_replays_the_variant_that_ran(tmp_path, monkeypatch):
+    command = await _generated_command(tmp_path, monkeypatch)
+    rc, calls, stdout = _run_in_shell(command, tmp_path, _FALLBACK_THEN_STALL_STUB)
+    assert rc == 0
+    # arm0 (rejected flag) -> arm1 fallback (stalls) -> resume of arm1.
+    assert len(calls) == 3
+    assert "--reasoning-effort" not in calls[2]
+    assert "-c" in calls[2].split()
+    assert '"resumed"' in stdout
+
+
+@pytest.mark.asyncio
+async def test_session_captured_even_when_agent_fails(tmp_path, monkeypatch):
+    """A crashed grok run must still upload its session store.
+
+    Without this, idle-timeout deaths leave no unified.jsonl in the trial logs
+    and the only diagnostic evidence is the terse stderr JSON.
+    """
+    agent = OddishGrokBuild(logs_dir=tmp_path)
+    agent_commands: list[str] = []
+
+    class _FakeEnv:
+        async def upload_file(self, source_path, target_path):
+            return None
+
+    async def _fake_write_config(self, environment):
+        return None
+
+    async def _fake_exec_as_root(self, environment, *, command, **kwargs):
+        return None
+
+    async def _fake_exec_as_agent(self, environment, *, command, **kwargs):
+        agent_commands.append(command)
+        if "grok -p" in command:
+            raise RuntimeError("Command failed (exit 1)")
+
+    monkeypatch.setattr(OddishGrokBuild, "_write_config", _fake_write_config)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", _fake_exec_as_root)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", _fake_exec_as_agent)
+
+    with pytest.raises(RuntimeError):
+        await agent.run(
+            instruction="do the thing", environment=_FakeEnv(), context=object()
+        )
+
     assert any("grok-session" in c for c in agent_commands)

@@ -87,14 +87,17 @@ def _sections_from(raw: dict, bucket: str) -> dict[str, str]:
 
 def _findings_from_jsonl(text: str, bucket, links) -> list[Finding]:
     out = []
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         try:
             d = json.loads(line)
         except ValueError:
-            logger.warning("analyzer-sandbox: skipping unparseable finding line")
+            logger.warning(
+                "analyzer-sandbox: skipping unparseable finding line %d: %r",
+                lineno, _elide(line),
+            )
             continue
         f = _finding_from(d, bucket, links)
         if f is not None:
@@ -133,8 +136,18 @@ def parse_cohort_result(
     stream_text: str,
     host_by_trial: dict[str, dict],
 ) -> tuple[list[Finding], dict[str, str]]:
+    logger.info(
+        "analyzer-sandbox: parsing %s cohort: reduce file=%dB, findings file=%dB, "
+        "stream=%dB, %d trials in cohort",
+        bucket, len(reduce_bytes), len(findings_bytes), len(stream_text),
+        len(host_by_trial),
+    )
+
     findings = _findings_from_jsonl(
         findings_bytes.decode("utf-8", "replace"), bucket, host_by_trial
+    )
+    logger.info(
+        "analyzer-sandbox: %s findings file yielded %d finding(s)", bucket, len(findings)
     )
 
     sections: dict[str, str] | None = None
@@ -142,6 +155,10 @@ def parse_cohort_result(
         try:
             sections = _sections_from(
                 parse_json(reduce_bytes.decode("utf-8", "replace")), bucket
+            )
+            logger.info(
+                "analyzer-sandbox: %s reduce file parsed: sections=%s",
+                bucket, _render_sections(sections),
             )
         except (CohortParseError, ValueError) as exc:
             # Unreadable JSON and well-formed-but-empty JSON are the same situation
@@ -152,9 +169,18 @@ def parse_cohort_result(
                 "analyzer-sandbox: %s reduce file unusable (%s); "
                 "falling back to the stream", bucket, exc,
             )
+    else:
+        logger.info(
+            "analyzer-sandbox: %s reduce file is blank; falling back to the stream",
+            bucket,
+        )
 
     if sections is None:
         blocks = _marked(stream_text, _REDUCE_MARKER)
+        logger.info(
+            "analyzer-sandbox: %s stream had %d %r block(s)",
+            bucket, len(blocks), _REDUCE_MARKER,
+        )
         if not blocks:
             raise CohortParseError(
                 f"no usable reduce result for bucket {bucket!r}: "
@@ -165,10 +191,24 @@ def parse_cohort_result(
                 f"stream tail={_elide(stream_text[-_SECTION_LOG_LIMIT:])!r}"
             )
         sections = _sections_from(blocks[-1], bucket)
+        logger.info(
+            "analyzer-sandbox: %s reduce recovered from the stream: sections=%s",
+            bucket, _render_sections(sections),
+        )
 
     if not findings:
+        blocks = _marked(stream_text, _MAP_MARKER)
         findings = [
-            f for d in _marked(stream_text, _MAP_MARKER)
+            f for d in blocks
             if (f := _finding_from(d, bucket, host_by_trial)) is not None
         ]
+        logger.info(
+            "analyzer-sandbox: %s findings recovered from the stream: %d of %d "
+            "%r block(s) kept", bucket, len(findings), len(blocks), _MAP_MARKER,
+        )
+
+    logger.info(
+        "analyzer-sandbox: %s parsed: %d finding(s), %d section(s)",
+        bucket, len(findings), len(sections),
+    )
     return findings, sections
