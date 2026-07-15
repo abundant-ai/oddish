@@ -35,6 +35,12 @@ class Finding:
     headroom_signal: str
     trajectory_link: str
     model: str | None = None
+    # Classifier facts, carried so the rollup can derive lanes host-side instead
+    # of trusting the LLM-assigned bucket/subcategory above.
+    classification: str | None = None
+    subtype: str | None = None
+    task_id: str | None = None
+    task_path: str | None = None
 
 
 @dataclass

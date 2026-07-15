@@ -230,3 +230,33 @@ async def test_finding_model_none_when_subanalysis_has_none():
     out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
 
     assert out.findings[0].model is None
+
+
+@pytest.mark.asyncio
+async def test_finding_carries_host_classification_subtype_and_task():
+    """The rollup derives lanes from these, so they must be the classifier's
+    values — not the map LLM's, which can disagree with `breakdown`."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+
+    f = out.findings[0]
+    assert f.classification == "BAD_FAILURE"
+    assert f.subtype == "Hardcoding"
+    assert f.task_id == "task"
+    assert f.task_path == "tasks/task"
+
+
+@pytest.mark.asyncio
+async def test_host_classification_survives_a_lying_llm():
+    """FakeClient emits bucket=bad/subcategory=1b for this trial; the LLM could
+    just as easily say `good`. classification/subtype must not follow it."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=_LyingClient())
+
+    f = out.findings[0]
+    assert f.classification == "BAD_FAILURE"
+    assert f.subtype == "Hardcoding"

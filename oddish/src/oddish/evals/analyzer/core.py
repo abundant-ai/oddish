@@ -142,6 +142,10 @@ async def _map_one(
         # Host facts, never the model's echo.
         trajectory_link=bundle.trajectory_link,
         model=sa.model,
+        classification=sa.classification,
+        subtype=sa.subtype,
+        task_id=bundle.task_id,
+        task_path=bundle.task_path,
     )
 
 
