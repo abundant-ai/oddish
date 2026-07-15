@@ -1,5 +1,6 @@
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import inspect
 
 from oddish.core.analyzers import (
     create_analyzer_core,
@@ -171,6 +172,45 @@ async def test_create_analyzer_dedupes_experiment_ids(session, monkeypatch):
 
     exp_ids = await experiment_ids_for_analyzer(session, analyzer.id)
     assert exp_ids == [e1.id]
+
+
+@pytest.mark.asyncio
+async def test_list_analyzers_core_does_not_load_findings(session, monkeypatch):
+    """Regression gate for the load_only allowlist: if list_analyzers_core ever
+    reverts to a bare ``select(AnalyzerModel)``, this catches it by asserting the
+    ~500KB findings/models_by_task blobs stay unloaded off the list query, while
+    a column the list view actually renders (name) stays loaded."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    e1 = ExperimentModel(name="exp-1", org_id="org_1")
+    session.add(e1)
+    await session.flush()
+
+    analyzer = await create_analyzer_core(
+        session,
+        data=ReportCreate(name="Q3", experiment_ids=[e1.id]),
+        org_id="org_1", user_id="user_1",
+    )
+    analyzer.findings = [{"trial_id": "t1"}]
+    analyzer.models_by_task = {"task": ["model"]}
+    await session.flush()
+
+    # The object create_analyzer_core returned is fully loaded in the identity
+    # map; expire it so the next query actually has to decide what to fetch.
+    session.expire_all()
+
+    listed = await list_analyzers_core(session, org_id="org_1")
+    row = next(r for r in listed if r.id == analyzer.id)
+
+    unloaded = inspect(row).unloaded
+    assert "findings" in unloaded
+    assert "models_by_task" in unloaded
+    assert "name" not in unloaded
 
 
 @pytest.mark.asyncio

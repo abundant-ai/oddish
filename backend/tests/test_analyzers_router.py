@@ -22,7 +22,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
 from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
-from oddish.db import ExperimentModel, get_session
+from oddish.db import ExperimentModel, JobStatus, get_session
 from oddish.db.models import AnalyzerModel, analyzer_experiments
 
 
@@ -116,6 +116,163 @@ async def test_experiment_options_lists_org_experiments(client, experiment_id):
     resp = await client.get("/reports/experiment-options")
     assert resp.status_code == 200, resp.text
     assert any(opt["id"] == experiment_id for opt in resp.json())
+
+
+@pytest_asyncio.fixture
+async def analyzer_id(org_id, experiment_id):
+    async with get_session() as session:
+        analyzer = AnalyzerModel(name="rollup-target", org_id=org_id)
+        session.add(analyzer)
+        await session.flush()
+        await session.execute(
+            analyzer_experiments.insert().values(
+                analyzer_id=analyzer.id, experiment_id=experiment_id
+            )
+        )
+        await session.commit()
+        return analyzer.id
+
+
+_UNSET = object()
+
+
+async def _set_findings(analyzer_id, findings, models_by_task=_UNSET):
+    # Defaults to {}, but passing None must reach the column as SQL NULL -- that
+    # legacy row (findings persisted before analyzers_006 added the roster) is
+    # exactly what test_rollup_unknown_total_when_roster_null covers.
+    roster = {} if models_by_task is _UNSET else models_by_task
+    async with get_session() as session:
+        await session.execute(
+            AnalyzerModel.__table__.update()
+            .where(AnalyzerModel.id == analyzer_id)
+            # SUCCESS: findings and that status are written together by the
+            # worker, so any other status with findings set is a stale row.
+            .values(findings=findings, models_by_task=roster, status=JobStatus.SUCCESS)
+        )
+        await session.commit()
+
+
+async def _set_status(analyzer_id, status, error=None):
+    async with get_session() as session:
+        await session.execute(
+            AnalyzerModel.__table__.update()
+            .where(AnalyzerModel.id == analyzer_id)
+            .values(status=status, error=error)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_rollup_404_when_findings_null_and_run_succeeded(client, analyzer_id):
+    """NULL on a SUCCESS row = analyzed before findings existed. The worker writes
+    findings and status=SUCCESS together, so this is the only state that means
+    'legacy'. Distinct from 'no failures'."""
+    await _set_status(analyzer_id, JobStatus.SUCCESS)
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
+    assert resp.status_code == 404, resp.text
+    assert "before findings" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_rollup_409_while_the_analyzer_is_still_running(client, analyzer_id):
+    """A pending/running job has NULL findings because it isn't done, not because
+    it predates the column. 404 'ran before findings were persisted' would send a
+    caller polling for a result off to fix nothing."""
+    for status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING):
+        await _set_status(analyzer_id, status)
+        resp = await client.get(f"/reports/{analyzer_id}/rollup")
+        assert resp.status_code == 409, f"{status}: {resp.text}"
+        assert status.value in resp.json()["detail"]
+        assert "before findings" not in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_rollup_409_not_stale_data_while_a_retry_is_in_flight(client, analyzer_id):
+    """A retry resets a SUCCESS row to QUEUED without clearing findings, so the
+    previous run's findings sit on an in-flight row. Keying off findings alone
+    would serve that stale rollup at 200 as if it were current."""
+    await _set_findings(analyzer_id, [], models_by_task={"task": ["claude-opus-4-8"]})
+    assert (await client.get(f"/reports/{analyzer_id}/rollup")).status_code == 200
+
+    await _set_status(analyzer_id, JobStatus.QUEUED)  # what the retry path does
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
+    assert resp.status_code == 409, resp.text
+    assert "queued" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_rollup_404_reports_the_failure_when_the_run_died(client, analyzer_id):
+    """A FAILED row has NULL findings because the run died. Say so, and surface
+    the error -- not 'ran before findings were persisted'."""
+    await _set_status(analyzer_id, JobStatus.FAILED, error="reduce step exploded")
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
+    assert resp.status_code == 404, resp.text
+    detail = resp.json()["detail"]
+    assert "failed" in detail.lower()
+    assert "reduce step exploded" in detail
+    assert "before findings" not in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_rollup_200_empty_lanes_when_no_failures(client, analyzer_id):
+    await _set_findings(analyzer_id, [])
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["good_failures"]["groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_rollup_returns_lanes(client, analyzer_id):
+    finding = {
+        "trial_id": "t1",
+        "bucket": "good",
+        "subcategory": "3b",
+        "evidence_quote": "q",
+        "step_ids": [1],
+        "root_cause": "rc",
+        "headroom_signal": "",
+        "trajectory_link": "/tasks/task/probe/t1",
+        "model": "claude-opus-4-8",
+        "classification": "GOOD_FAILURE",
+        "subtype": "Logic Error",
+        "task_id": "task",
+        "task_path": "tasks/task",
+    }
+    await _set_findings(
+        analyzer_id, [finding], models_by_task={"task": ["claude-opus-4-8"]}
+    )
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["good_failures"]["groups"][0]["gaps"][0]["gap"] == "Logic Error"
+
+
+@pytest.mark.asyncio
+async def test_rollup_unknown_total_when_roster_null(client, analyzer_id):
+    """An analyzer with findings but no persisted roster (ran before
+    analyzers_006) still serves its lanes; the 1a denominator reports unknown.
+    Sending it through as an empty roster would claim models_total: 0 -- "no
+    model ran this task" -- about a task every model may have run."""
+    finding = {
+        "trial_id": "t1",
+        "bucket": "bad",
+        "subcategory": "1a",
+        "evidence_quote": "q",
+        "step_ids": [1],
+        "root_cause": "rc",
+        "headroom_signal": "",
+        "trajectory_link": "/tasks/task/probe/t1",
+        "model": "claude-opus-4-8",
+        "classification": "BAD_FAILURE",
+        "subtype": "Ambiguous Requirements",
+        "task_id": "task",
+        "task_path": "tasks/task",
+    }
+    await _set_findings(analyzer_id, [finding], models_by_task=None)
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
+    assert resp.status_code == 200, resp.text
+    group = resp.json()["task_construction"]["groups"][0]
+    assert group["models_total"] is None
+    assert group["models_hit"] == ["claude-opus-4-8"]
 
 
 @pytest.mark.asyncio
