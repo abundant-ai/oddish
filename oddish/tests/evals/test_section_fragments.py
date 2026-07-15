@@ -18,7 +18,8 @@ _ORIGINAL_BLOCK = (
     "- universal_capabilities_content: organize the good failures by failure\n"
     "  category, then by capability within each category. Use one `## <Category\n"
     "  name>` heading per category that has findings, in the order the rubric listed\n"
-    "  them, and one `### <Capability name>` subheading under it. Cite every claim\n"
+    "  them, and one `### <Capability name>` subheading per capability with findings\n"
+    "  in that category. Cite every claim\n"
     "  with the finding's trajectory_link verbatim. If a capability carries\n"
     "  cross-reference categories, note them inline (\"also: long-horizon\") rather\n"
     "  than repeating the capability under a second heading. Group findings whose\n"
@@ -71,8 +72,14 @@ def test_every_section_key_has_a_fragment():
 
 def test_universal_capabilities_organizes_by_category_then_capability():
     brief = section_brief("universal_capabilities_content")
+    # Must mention category and capability organization explicitly.
     assert "category" in brief.lower()
     assert "capability" in brief.lower()
+    # Must use markdown heading patterns for category and capability sections.
+    assert "## <Category" in brief
+    assert "### <Capability" in brief
+    # Must cite findings with trajectory_link.
+    assert "trajectory_link" in brief
     # 3a/3b/3c is no longer the good-bucket frame.
     assert "3a" not in brief
 
@@ -80,4 +87,6 @@ def test_universal_capabilities_organizes_by_category_then_capability():
 def test_universal_capabilities_mentions_proposed_bucket():
     """Findings citing a not-yet-promoted slug resolve to no live capability;
     they must land somewhere visible rather than vanish."""
-    assert "Proposed capabilities" in section_brief("universal_capabilities_content")
+    brief = section_brief("universal_capabilities_content")
+    # Must appear as a markdown heading, not just a substring.
+    assert "## Proposed capabilities" in brief
