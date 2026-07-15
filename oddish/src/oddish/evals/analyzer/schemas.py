@@ -56,3 +56,6 @@ class AnalyzerEvalOutput:
     # output so the trial-analyses export works for any eval strategy, including
     # ones that never build AnalyzerEvalInputs.
     subanalyses: list[SubAnalysis] = field(default_factory=list)
+    # task_id -> raw trial.model values that RAN the task, including those that
+    # passed it. Findings only record failures, so this cannot be derived from them.
+    models_by_task: dict[str, list[str]] = field(default_factory=dict)

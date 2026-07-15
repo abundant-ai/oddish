@@ -29,3 +29,10 @@ def test_analyzer_model_has_a_findings_column():
 
     col = AnalyzerModel.__table__.columns["findings"]
     assert col.nullable is True
+
+
+def test_analyzer_model_has_a_models_by_task_column():
+    from oddish.db.models import AnalyzerModel
+
+    col = AnalyzerModel.__table__.columns["models_by_task"]
+    assert col.nullable is True

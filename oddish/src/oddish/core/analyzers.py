@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from oddish.db.models import (
     ExperimentModel,
@@ -81,6 +82,35 @@ async def list_analyzers_core(
 ) -> list[AnalyzerModel]:
     stmt = (
         select(AnalyzerModel)
+        # findings/models_by_task are large (~500KB/analyzer) and the list view
+        # never shows them; every other column is loaded so AnalyzerResponse's
+        # model_validate (and future column reads) don't hit a lazy-load.
+        .options(
+            load_only(
+                AnalyzerModel.id,
+                AnalyzerModel.name,
+                AnalyzerModel.org_id,
+                AnalyzerModel.owner_user_id,
+                AnalyzerModel.owner,
+                AnalyzerModel.status,
+                AnalyzerModel.error,
+                AnalyzerModel.bad_failure_content,
+                AnalyzerModel.good_failure_content,
+                AnalyzerModel.universal_capabilities_content,
+                AnalyzerModel.headroom_analysis,
+                AnalyzerModel.reduce_prompt,
+                AnalyzerModel.num_trials,
+                AnalyzerModel.num_bad_failures,
+                AnalyzerModel.num_good_failures,
+                AnalyzerModel.breakdown,
+                AnalyzerModel.save_trial_analyses,
+                AnalyzerModel.started_at,
+                AnalyzerModel.finished_at,
+                AnalyzerModel.created_at,
+                AnalyzerModel.updated_at,
+                AnalyzerModel.deleted_at,
+            )
+        )
         .where(AnalyzerModel.org_id == org_id)
         .order_by(AnalyzerModel.created_at.desc())
     )
