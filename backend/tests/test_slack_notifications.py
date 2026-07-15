@@ -102,6 +102,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
         ":money_with_wings: *Expensive experiment*",
         "Title: *Exp &lt;One&gt;*",
         "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
+        "New spend (last 2h): *$2,001.00*",
         "Trials still running: 2",
         "Owner: *Pat &amp; Sam*",
         "Top agent costs:",
@@ -117,6 +118,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
         "Exp <One>",
         "Spend milestone: $2,000.00",
         "Current spend: $2,001.00",
+        "New spend (last 2h): $2,001.00",
         "Trials still running: 2",
         "Owner: Pat & Sam",
         "",
@@ -146,12 +148,88 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
         trial_average_multiplier=2,
     )
 
-    assert alerts[0].text.splitlines()[5:9] == [
+    assert alerts[0].text.splitlines()[6:10] == [
         "Top agent costs:",
         "• `openrouter/opus`: *$250.00*",
         "• `azure/fable`: *$200.00*",
         "• `anthropic/sonnet`: *$100.00*",
     ]
+
+
+def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 0, owner_email="a@e.com")],
+        [
+            _trial("old", 4000, finished_at=now - timedelta(hours=3)),
+            _trial("recent", 50, finished_at=now),
+        ],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=1000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=10_000,
+        trial_average_multiplier=2,
+    )
+
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    assert [a.key for a in milestone_alerts] == [
+        "experiment:experiment-1:1000",
+        "experiment:experiment-1:2000",
+        "experiment:experiment-1:3000",
+        "experiment:experiment-1:4000",
+    ]
+    assert all(a.silent for a in milestone_alerts)
+    assert all(a.text and a.email_text for a in milestone_alerts)
+    assert all(a.recipient_email == "a@e.com" for a in milestone_alerts)
+
+
+def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 1)],
+        [
+            _trial("old", 1800, finished_at=now - timedelta(hours=3)),
+            _trial("recent", 1300, finished_at=now),
+        ],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=1000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=10_000,
+        trial_average_multiplier=2,
+    )
+
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    silent = [a.key for a in milestone_alerts if a.silent]
+    firing = [a for a in milestone_alerts if not a.silent]
+    assert silent == ["experiment:experiment-1:1000"]
+    assert [a.key for a in firing] == [
+        "experiment:experiment-1:2000",
+        "experiment:experiment-1:3000",
+    ]
+    assert "New spend (last 2h): *$1,300.00*" in firing[0].text
+
+
+def test_build_alerts_new_experiment_fires_every_milestone() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 3)],
+        [_trial("burst", 2500, finished_at=now)],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=1000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=10_000,
+        trial_average_multiplier=2,
+    )
+
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    assert [a.key for a in milestone_alerts] == [
+        "experiment:experiment-1:1000",
+        "experiment:experiment-1:2000",
+    ]
+    assert not any(a.silent for a in milestone_alerts)
 
 
 def test_build_alerts_requires_a_same_task_model_peer() -> None:
@@ -389,7 +467,7 @@ def test_build_alerts_failed_experiment_respects_ratio(
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_claims_once_and_releases_failed_posts(
+async def test_send_alerts_claims_once_and_retries_failed_posts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claimed: set[str] = set()
@@ -402,11 +480,14 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
         claimed.add(key)
         return True
 
-    async def mark_sent(key: str) -> None:
-        sent.add(key)
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
 
-    async def release(key: str) -> None:
-        claimed.remove(key)
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
 
     async def post(_url: str, text: str) -> None:
         posted.append(text)
@@ -415,7 +496,8 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
-    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
     monkeypatch.setattr(notifications, "_post", post)
 
     await send_alerts("https://hooks.slack.test", [SlackAlert("sent", "ok")])
@@ -431,12 +513,175 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
 
     assert posted == ["ok", "fail", "ok"]
     assert sent == {"sent", "after-failure"}
-    assert "failed" not in claimed
+    assert "failed" in claimed
+    assert "retry:slack:failed" in claimed
     assert "after-failure" in claimed
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [SlackAlert("failed", "recovered", silent=True)],
+    )
+
+    assert posted == ["ok", "fail", "ok", "recovered"]
+    assert {"failed", "retry:slack:failed"}.issubset(sent)
 
 
 @pytest.mark.asyncio
-async def test_send_owner_emails_claims_per_recipient_and_releases_failures(
+async def test_silent_milestone_completes_all_channels_without_sending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claimed: set[str] = set()
+    sent: set[str] = set()
+    posted: list[str] = []
+    looked_up: list[str] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
+
+    async def post(*_args) -> None:
+        posted.append("sent")
+
+    async def lookup(_token: str, email: str) -> str | None:
+        looked_up.append(email)
+        return "U123"
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+    monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_post_email", post)
+    monkeypatch.setattr(notifications, "_post_dm", post)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    alert = SlackAlert(
+        "experiment:1:1000",
+        "historical",
+        recipient_email="owner@example.com",
+        email_subject="Historical",
+        email_text="Historical",
+        silent=True,
+    )
+    await send_alerts("https://hooks.slack.test", [alert])
+    await send_owner_emails("secret", "Oddish <alerts@example.com>", [alert])
+    await send_owner_dms("xoxb-token", [alert])
+
+    assert posted == []
+    assert looked_up == []
+    assert (
+        sent
+        == claimed
+        == {
+            "experiment:1:1000",
+            "email:experiment:1:1000:owner@example.com",
+            "dm:experiment:1:1000:owner@example.com",
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_alerts_closes_retry_after_partial_success_without_reposting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alert_key = "experiment:1:1000"
+    retry_key = f"retry:slack:{alert_key}"
+    claimed = {alert_key, retry_key}
+    sent = {alert_key}
+    posted: list[str] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [SlackAlert(alert_key, "already delivered", silent=True)],
+    )
+
+    assert posted == []
+    assert retry_key in sent
+
+
+@pytest.mark.asyncio
+async def test_send_alerts_does_not_repeat_pending_primary_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loud_key = "experiment:1:1000"
+    silent_key = "experiment:1:2000"
+    claimed = {loud_key, silent_key}
+    sent: set[str] = set()
+    posted: list[str] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert(loud_key, "retry loud"),
+            SlackAlert(silent_key, "do not post", silent=True),
+        ],
+    )
+
+    assert posted == []
+    assert sent == set()
+
+
+@pytest.mark.asyncio
+async def test_send_owner_emails_claims_per_recipient_and_retries_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claimed: set[str] = set()
@@ -449,11 +694,14 @@ async def test_send_owner_emails_claims_per_recipient_and_releases_failures(
         claimed.add(key)
         return True
 
-    async def mark_sent(key: str) -> None:
-        sent.add(key)
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
 
-    async def release(key: str) -> None:
-        claimed.remove(key)
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
 
     async def post_email(
         _api_key: str,
@@ -468,7 +716,8 @@ async def test_send_owner_emails_claims_per_recipient_and_releases_failures(
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
-    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
     monkeypatch.setattr(notifications, "_post_email", post_email)
 
     delivered = SlackAlert(
@@ -491,6 +740,14 @@ async def test_send_owner_emails_claims_per_recipient_and_releases_failures(
                 email_subject="fail",
                 email_text="Details",
             ),
+            SlackAlert(
+                "experiment:0:1000",
+                "history",
+                recipient_email="owner@example.com",
+                email_subject="history",
+                email_text="history",
+                silent=True,
+            ),
             SlackAlert("unpriced:model", "admin-only Slack alert"),
         ],
     )
@@ -499,8 +756,30 @@ async def test_send_owner_emails_claims_per_recipient_and_releases_failures(
         ("owner@example.com", "Cost alert", "Details"),
         ("owner@example.com", "fail", "Details"),
     ]
-    assert sent == {"email:experiment:1:1000:owner@example.com"}
-    assert "email:trial:2:70:2:owner@example.com" not in claimed
+    assert sent == {
+        "email:experiment:0:1000:owner@example.com",
+        "email:experiment:1:1000:owner@example.com",
+    }
+    failed_key = "email:trial:2:70:2:owner@example.com"
+    assert failed_key in claimed
+    assert f"retry:{failed_key}" in claimed
+
+    await send_owner_emails(
+        "secret",
+        "Oddish <alerts@example.com>",
+        [
+            SlackAlert(
+                "trial:2:70:2",
+                "recovered",
+                recipient_email="owner@example.com",
+                email_subject="recovered",
+                email_text="Details",
+                silent=True,
+            )
+        ],
+    )
+    assert posted[-1] == ("owner@example.com", "recovered", "Details")
+    assert {failed_key, f"retry:{failed_key}"}.issubset(sent)
 
 
 @pytest.mark.asyncio
@@ -509,17 +788,31 @@ async def test_send_alerts_skips_dm_only_alerts(
 ) -> None:
     posted: list[str] = []
 
+    claimed: set[str] = set()
+    sent: set[str] = set()
+
     async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
         return True
 
-    async def mark_sent(key: str) -> None:
-        pass
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
 
     async def post(_url: str, text: str) -> None:
         posted.append(text)
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
     monkeypatch.setattr(notifications, "_post", post)
 
     await send_alerts(
@@ -534,7 +827,7 @@ async def test_send_alerts_skips_dm_only_alerts(
 
 
 @pytest.mark.asyncio
-async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
+async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claimed: set[str] = set()
@@ -548,11 +841,14 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
         claimed.add(key)
         return True
 
-    async def mark_sent(key: str) -> None:
-        sent.add(key)
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
 
-    async def release(key: str) -> None:
-        claimed.remove(key)
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
 
     async def lookup(_token: str, email: str) -> str | None:
         lookups.append(email)
@@ -567,7 +863,8 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
-    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
     monkeypatch.setattr(notifications, "_post_dm", post_dm)
 
@@ -615,11 +912,16 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
     ]
     assert sent == {
         "dm:experiment-failed:1:owner@example.com",
+        "dm:experiment:2:1000:unknown@example.com",
         "dm:trial:2:70:2:owner@example.com",
     }
-    assert "dm:experiment:1:1000:owner@example.com" not in claimed
-    assert "dm:experiment:2:1000:unknown@example.com" not in claimed
-    assert "dm:experiment:3:1000:error@example.com" not in claimed
+    for failed_key in (
+        "dm:experiment:1:1000:owner@example.com",
+        "dm:experiment:3:1000:error@example.com",
+    ):
+        assert failed_key in claimed
+        assert f"retry:{failed_key}" in claimed
+    assert "retry:dm:experiment:2:1000:unknown@example.com" not in claimed
 
 
 def _mock_slack_http(monkeypatch: pytest.MonkeyPatch, handler) -> None:
@@ -828,6 +1130,7 @@ async def test_load_alerts_uses_settled_trial_costs(
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
+        assert "New spend (last 2h):" in alerts[0].text
         assert alerts[0].recipient_email == "expense-owner@example.com"
         assert "Top agent costs:" in alerts[0].text
         assert "Title: `outlier`" in alerts[1].text
