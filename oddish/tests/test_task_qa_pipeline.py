@@ -110,12 +110,25 @@ class _ForUpdateResult:
 
 
 class _StageSession:
-    """Minimal session for ``maybe_start_qa_stage``."""
+    """Minimal session for ``maybe_start_qa_stage``.
 
-    def __init__(self, *, trial, task, pending_count):
+    The function issues its counting queries in a fixed order:
+
+    1. ``pending_count``  -- non-terminal trials; gates "are all trials done?"
+    2. ``qa_eligible``    -- QA-eligible live trials (only when run_analysis is
+       on); gates "is there anything to classify?" Zero means every live trial
+       is excluded (bulk-migrated import / gate-skipped), so no QA job is
+       enqueued and the task completes instead.
+
+    ``scalar`` therefore answers positionally rather than returning one canned
+    number for every query.
+    """
+
+    def __init__(self, *, trial, task, pending_count, qa_eligible=1):
         self._trial = trial
         self._task = task
-        self._pending_count = pending_count
+        self._counts = [pending_count, qa_eligible]
+        self._scalar_calls = 0
         self.flushed = 0
 
     async def get(self, _model, _key):
@@ -125,7 +138,9 @@ class _StageSession:
         return _ForUpdateResult(self._task)
 
     async def scalar(self, _statement):
-        return self._pending_count
+        index = self._scalar_calls
+        self._scalar_calls += 1
+        return self._counts[index] if index < len(self._counts) else 0
 
     async def flush(self):
         self.flushed += 1
@@ -181,6 +196,42 @@ async def test_stage_completes_when_analysis_disabled(monkeypatch):
 
     assert started is True
     assert task.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_stage_completes_when_no_qa_eligible_trials(monkeypatch):
+    """run_analysis=True but nothing to classify -> complete, do NOT enqueue.
+
+    Every live trial is excluded from QA (bulk-migrated Sauron imports, or
+    baseline-gate skips). Enqueueing here would produce a job that can only
+    no-op: run_task_qa_job leaves a non-terminal verdict, QaJobHandler reads
+    that back as a retryable failure, and the job burns all its attempts before
+    landing FAILED -- for what is not an error.
+    """
+    trial = SimpleNamespace(task_id="task-3")
+    task = SimpleNamespace(
+        id="task-3",
+        org_id="org-1",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=None,
+        finished_at=None,
+    )
+    session = _StageSession(
+        trial=trial, task=task, pending_count=0, qa_eligible=0
+    )
+
+    async def fail_verdict_enqueue(*_args, **_kwargs):
+        raise AssertionError("no QA job when there is nothing to classify")
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fail_verdict_enqueue)
+
+    started = await queue_mod.maybe_start_qa_stage(session, "task-3-0")
+
+    assert started is True
+    assert task.status == TaskStatus.COMPLETED
+    # Must NOT be left VERDICT_PENDING/QUEUED with no job to move it.
+    assert task.verdict_status is None
 
 
 # ---------------------------------------------------------------------------
