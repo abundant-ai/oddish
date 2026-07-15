@@ -40,7 +40,9 @@ FINDINGS_GLOB = f"{OUT_DIR}/findings-*.jsonl"
 
 
 def findings_path(batch_no: int) -> str:
-    return f"{OUT_DIR}/findings-{batch_no}.jsonl"
+    # Zero-padded so the reduce agent's `cat findings-*.jsonl` walks batches in
+    # the same order the host concatenates them; unpadded, 10 sorts before 2.
+    return f"{OUT_DIR}/findings-{batch_no:02d}.jsonl"
 
 
 def build_system_prompt(tail_bytes: int) -> str:
