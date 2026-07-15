@@ -29,15 +29,30 @@ async def _enqueue_analyzer_worker_job(session, *, analyzer_id: str, org_id: str
 
 
 def _slug(name: str) -> str:
-    """Lowercase, collapse non-alphanumerics to underscores, for use in a name."""
-    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "experiment"
+    """Lowercase, collapse non-alphanumerics to underscores, for use in a name.
+
+    Capped well under analyzers.name (255) so the "report_<N>_" prefix always fits;
+    experiments.name is itself String(255) and would otherwise overflow on insert.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    return slug[:200].strip("_") or "experiment"
 
 
 async def _default_report_name(
     session: AsyncSession, *, org_id: str | None, experiment_name: str
 ) -> str:
-    """report_<N>_<experiment>, N = smallest free index for this org+experiment."""
+    """report_<N>_<slug>, N = smallest free index for this org + experiment slug.
+
+    Scoped by slug rather than experiment id: two experiments sharing a display
+    name slugify alike, so a per-id scope would hand both the same report_0_<slug>.
+    """
     slug = _slug(experiment_name)
+    # Read-then-insert races two concurrent creates onto the same index; serialize
+    # per org+slug. Advisory lock releases at commit, so no explicit unlock.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"analyzer_report_name:{org_id}:{slug}"},
+    )
     existing = {
         row[0]
         for row in (

@@ -50,13 +50,17 @@ function CopyCommand({ command }: { command: string }) {
 
 export function ReportsClient() {
   const { data, error, isLoading } = useSWR<Report[]>("/api/reports", fetcher, {
+    // Reports are created from the CLI, so this list has to surface rows the tab
+    // never created. The app disables focus revalidation globally; re-enable it
+    // here (run the command, tab back) and keep a slow poll for an idle tab.
+    revalidateOnFocus: true,
     refreshInterval: (rows) =>
       (rows ?? []).some(
         (r) =>
           r.status === "pending" || r.status === "queued" || r.status === "running",
       )
         ? 5000
-        : 0,
+        : 30000,
   });
   const [query, setQuery] = useState("");
 

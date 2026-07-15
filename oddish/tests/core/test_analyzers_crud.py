@@ -237,3 +237,77 @@ async def test_auto_names_report_when_name_omitted(session, monkeypatch):
         org_id="org_1", user_id="u1",
     )
     assert rb.name == "report_0_airflow"  # different experiment resets to 0
+
+
+@pytest.mark.asyncio
+async def test_auto_name_takes_advisory_lock_before_reading_names(session, monkeypatch):
+    """Auto-naming reads existing names then inserts; without a lock two concurrent
+    creates pick the same index. The lock must be held before the read to help."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    e1 = ExperimentModel(name="Card Demo", org_id="org_1")
+    session.add(e1)
+    await session.flush()
+
+    executed: list[str] = []
+    real_execute = session.execute
+
+    async def spy_execute(statement, params=None, *a, **k):
+        executed.append(str(statement))
+        return await real_execute(statement, params, *a, **k)
+
+    monkeypatch.setattr(session, "execute", spy_execute)
+
+    await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[e1.id]),
+        org_id="org_1", user_id="u1",
+    )
+
+    locks = [i for i, sql in enumerate(executed) if "pg_advisory_xact_lock" in sql]
+    assert locks, "auto-naming did not take an advisory lock"
+    reads = [i for i, sql in enumerate(executed) if "FROM analyzers" in sql]
+    assert reads and locks[0] < reads[0], "lock must precede the name read"
+
+    # An explicit name skips auto-naming entirely, so it must not take the lock.
+    executed.clear()
+    await create_analyzer_core(
+        session, data=ReportCreate(name="Explicit", experiment_ids=[e1.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert not [s for s in executed if "pg_advisory_xact_lock" in s]
+
+
+@pytest.mark.asyncio
+async def test_auto_name_fits_name_column_for_long_experiment(session, monkeypatch):
+    """experiments.name and analyzers.name are both String(255), so an untruncated
+    slug plus the 'report_<N>_' prefix would overflow on insert."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    long_exp = ExperimentModel(name="e" * 255, org_id="org_1")
+    session.add(long_exp)
+    await session.flush()
+
+    r0 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[long_exp.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert len(r0.name) <= 255
+    await session.flush()  # would raise if the value overflowed the column
+
+    # Truncation must not collapse distinct indices into one name.
+    r1 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[long_exp.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert r1.name != r0.name
+    await session.flush()
