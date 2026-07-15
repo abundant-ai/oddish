@@ -37,6 +37,11 @@ def test_parse_task_ref():
     assert _parse_task_ref("user@example.com") == ("user@example.com", None)
     # Task ids with a trailing hash but no @ are untouched.
     assert _parse_task_ref("mytask-9aa07749") == ("mytask-9aa07749", None)
+    # Version ids are built as {task_id}-v{int}, so a leading zero must
+    # normalize or the pin silently matches nothing.
+    assert _parse_task_ref("mytask@016") == ("mytask", "16")
+    assert _parse_task_ref("mytask@v016") == ("mytask", "16")
+    assert _parse_task_ref("mytask@0") == ("mytask", "0")
 
 
 class _VersionResolveClient:
@@ -129,6 +134,39 @@ def test_resolve_task_id_does_not_prefix_match():
         items=[{"id": "test-harness-abc12345", "name": "test-harness"}]
     )
     assert _resolve_task_id(client, "https://api", "test") is None
+
+
+class _PagedBrowseClient:
+    """browse substring-matches and pages; the exact name sits on page 2."""
+
+    def __init__(self, items):
+        self.items = list(items)
+        self.pages = 0
+
+    def get(self, url, params=None):
+        if not url.endswith("/tasks/browse"):
+            return httpx.Response(404, json={})
+        self.pages += 1
+        p = params or {}
+        needle, limit, offset = p.get("query", ""), p.get("limit", 100), p.get("offset", 0)
+        hits = [it for it in self.items if needle in it["name"]]
+        return httpx.Response(200, json={"items": hits[offset : offset + limit]})
+
+
+def test_resolve_task_id_pages_past_the_first_browse_page():
+    # An exact name outside page 1 must still resolve; a bare --task would.
+    filler = [{"id": f"mytask-extra-{i}", "name": f"mytask-extra-{i}"} for i in range(150)]
+    exact = {"id": "mytask-9aa07749", "name": "mytask"}
+    client = _PagedBrowseClient([*filler, exact])
+
+    assert _resolve_task_id(client, "https://api", "mytask") == "mytask-9aa07749"
+    assert client.pages > 1  # proves it actually paged
+
+
+def test_resolve_task_id_stops_on_a_short_page():
+    client = _PagedBrowseClient([{"id": "other-abc12345", "name": "other"}])
+    assert _resolve_task_id(client, "https://api", "nope") is None
+    assert client.pages == 1  # short page -> no needless second request
 
 
 # ---------------------------------------------------------------------------

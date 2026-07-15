@@ -29,6 +29,11 @@ def _guard_sources(*, tasks: list[str], trial_ids: list[str]) -> bool:
 # would for the current version.
 _LINKABLE_STATUSES = frozenset({"success", "failed", "skipped"})
 
+# /tasks/browse caps limit at 100. Scan a bounded number of pages for an exact
+# name match; a needle matching more tasks than this is too vague to pin.
+_BROWSE_PAGE = 100
+_BROWSE_MAX_SCAN = 500
+
 
 def _parse_task_ref(ref: str) -> tuple[str, str | None]:
     """Split ``name@version`` into ``(name, version)``.
@@ -36,7 +41,8 @@ def _parse_task_ref(ref: str) -> tuple[str, str | None]:
     ``spring-petclinic@16`` -> ``("spring-petclinic", "16")``.
     A bare ``name`` (no ``@``) -> ``("name", None)`` and links the current
     version server-side, as before. The version is normalized to its digits so
-    ``@v16`` and ``@16`` are equivalent.
+    ``@v16``, ``@16`` and ``@016`` are equivalent -- version ids are built as
+    ``{task_id}-v{int}``, so a leading zero would otherwise never match.
     """
     base, sep, ver = ref.rpartition("@")
     if not sep:
@@ -46,7 +52,7 @@ def _parse_task_ref(ref: str) -> tuple[str, str | None]:
     if not base or not ver.isdigit():
         # Not a version suffix (e.g. an email-ish id); treat whole thing as name.
         return ref.strip(), None
-    return base, ver
+    return base, str(int(ver))
 
 
 def _resolve_task_id(client, api_url: str, ref: str) -> str | None:
@@ -60,12 +66,24 @@ def _resolve_task_id(client, api_url: str, ref: str) -> str | None:
     resp = client.get(f"{api_url}/tasks/{ref}", params={"include_trials": "false"})
     if resp.status_code == 200:
         return resp.json().get("id") or ref
-    resp = client.get(f"{api_url}/tasks/browse", params={"query": ref, "limit": 10})
-    if resp.status_code != 200:
-        return None
-    for it in resp.json().get("items", []):
-        if it.get("id") == ref or it.get("name") == ref:
-            return it.get("id")
+    # browse matches the needle as a *substring*, so the exact name can sit
+    # outside the first page when many tasks share it. Page through rather than
+    # give up early and fail a pin that a bare --task would have resolved.
+    offset = 0
+    while offset < _BROWSE_MAX_SCAN:
+        resp = client.get(
+            f"{api_url}/tasks/browse",
+            params={"query": ref, "limit": _BROWSE_PAGE, "offset": offset},
+        )
+        if resp.status_code != 200:
+            return None
+        items = resp.json().get("items", [])
+        for it in items:
+            if it.get("id") == ref or it.get("name") == ref:
+                return it.get("id")
+        if len(items) < _BROWSE_PAGE:
+            return None
+        offset += _BROWSE_PAGE
     return None
 
 
