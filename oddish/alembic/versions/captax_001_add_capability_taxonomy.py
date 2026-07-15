@@ -5,6 +5,8 @@ mirroring analyzers_001. The seed uses ON CONFLICT DO NOTHING so a re-run is a
 no-op and hand-edits made after the first upgrade are never clobbered.
 """
 
+from datetime import datetime, timezone
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -12,6 +14,12 @@ revision = "captax_001"
 down_revision = "analyzers_006"
 branch_labels = None
 depends_on = None
+
+# 000_initial_schema creates these tables via Base.metadata.create_all, whose
+# created_at/updated_at use the client-side `default=utcnow` -- that emits no
+# server DEFAULT, so the CREATE TABLE below is a no-op and the seed must supply
+# both columns explicitly. Fixed (not now()) so re-running stays reproducible.
+_TS = datetime(2026, 7, 15, tzinfo=timezone.utc)
 
 
 def _autocommit(sql: str) -> None:
@@ -202,20 +210,33 @@ def upgrade() -> None:
         bind.execute(
             sa.text(
                 "INSERT INTO capability_categories "
-                "(slug, name, description, sort_order) "
-                "VALUES (:slug, :name, :description, :sort_order) "
+                "(slug, name, description, sort_order, created_at, updated_at) "
+                "VALUES (:slug, :name, :description, :sort_order, :ts, :ts) "
                 "ON CONFLICT (slug) DO NOTHING"
             ),
-            {"slug": slug, "name": name, "description": desc, "sort_order": order},
+            {
+                "slug": slug,
+                "name": name,
+                "description": desc,
+                "sort_order": order,
+                "ts": _TS,
+            },
         )
     for slug, name, desc, example, cat in _CAPABILITIES:
         bind.execute(
             sa.text(
-                "INSERT INTO capabilities (slug, name, description, example) "
-                "VALUES (:slug, :name, :description, :example) "
+                "INSERT INTO capabilities "
+                "(slug, name, description, example, created_at, updated_at) "
+                "VALUES (:slug, :name, :description, :example, :ts, :ts) "
                 "ON CONFLICT (slug) DO NOTHING"
             ),
-            {"slug": slug, "name": name, "description": desc, "example": example},
+            {
+                "slug": slug,
+                "name": name,
+                "description": desc,
+                "example": example,
+                "ts": _TS,
+            },
         )
         bind.execute(
             sa.text(
