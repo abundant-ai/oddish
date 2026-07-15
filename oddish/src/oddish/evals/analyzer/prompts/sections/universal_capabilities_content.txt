@@ -1,3 +1,9 @@
-- universal_capabilities_content: organize the good failures under 3a problem
-  identification, 3b implementation, 3c syntax, and any emergent capability categories
-  the findings surfaced.
+- universal_capabilities_content: organize the good failures by failure
+  category, then by capability within each category. Use one `## <Category
+  name>` heading per category that has findings, in the order the rubric listed
+  them, and one `### <Capability name>` subheading under it. Cite every claim
+  with the finding's trajectory_link verbatim. If a capability carries
+  cross-reference categories, note them inline ("also: long-horizon") rather
+  than repeating the capability under a second heading. Group findings whose
+  capability_slug was newly proposed (not in the rubric) under a final
+  `## Proposed capabilities` heading.

@@ -15,9 +15,15 @@ _ORIGINAL_BLOCK = (
     "- bad_failure_content: reward hacking, worked backwards from the oracle. Organize\n"
     "  by 1a (task ambiguity/specification) and 1b (task security/construction).\n"
     "- good_failure_content: genuine model-capability failures — what the model failed at.\n"
-    "- universal_capabilities_content: organize the good failures under 3a problem\n"
-    "  identification, 3b implementation, 3c syntax, and any emergent capability categories\n"
-    "  the findings surfaced.\n"
+    "- universal_capabilities_content: organize the good failures by failure\n"
+    "  category, then by capability within each category. Use one `## <Category\n"
+    "  name>` heading per category that has findings, in the order the rubric listed\n"
+    "  them, and one `### <Capability name>` subheading under it. Cite every claim\n"
+    "  with the finding's trajectory_link verbatim. If a capability carries\n"
+    "  cross-reference categories, note them inline (\"also: long-horizon\") rather\n"
+    "  than repeating the capability under a second heading. Group findings whose\n"
+    "  capability_slug was newly proposed (not in the rubric) under a final\n"
+    "  `## Proposed capabilities` heading.\n"
     "- headroom_analysis: based on the good failures, where is the most capability headroom?"
 )
 
@@ -61,3 +67,17 @@ def test_section_brief_reads_the_fragment():
 def test_every_section_key_has_a_fragment():
     for key in SECTION_KEYS:
         assert section_brief(key).strip()
+
+
+def test_universal_capabilities_organizes_by_category_then_capability():
+    brief = section_brief("universal_capabilities_content")
+    assert "category" in brief.lower()
+    assert "capability" in brief.lower()
+    # 3a/3b/3c is no longer the good-bucket frame.
+    assert "3a" not in brief
+
+
+def test_universal_capabilities_mentions_proposed_bucket():
+    """Findings citing a not-yet-promoted slug resolve to no live capability;
+    they must land somewhere visible rather than vanish."""
+    assert "Proposed capabilities" in section_brief("universal_capabilities_content")
