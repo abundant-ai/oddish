@@ -78,6 +78,10 @@ class SlackAlert:
     email_subject: str | None = None
     email_text: str | None = None
     dm_only: bool = False
+    silent: bool = False
+
+
+_MILESTONE_EPSILON = 1e-6
 
 
 def _env_float(name: str, default: float) -> float:
@@ -137,6 +141,12 @@ def build_alerts(
     for experiment in experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
+        recent_spend = sum(
+            trial.cost_usd
+            for trial in experiment_trials
+            if trial.finished_at >= recent_cutoff
+        )
+        baseline_cost = total_cost - recent_spend
         milestones = _experiment_milestones(
             total_cost,
             experiment_threshold_usd,
@@ -160,6 +170,11 @@ def build_alerts(
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
             for milestone in milestones:
+                key = f"experiment:{experiment.id}:{milestone:g}"
+                # Milestones already covered before the watch window opened are
+                # historical: claim them silently so pre-existing spend never
+                # dumps a backlog of alerts into any delivery channel.
+                silent = milestone <= baseline_cost + _MILESTONE_EPSILON
                 email_subject = (
                     f"Cost alert: {experiment.name} reached ${milestone:,.0f}"
                 )
@@ -168,6 +183,7 @@ def build_alerts(
                     f"{experiment.name}\n"
                     f"Spend milestone: ${milestone:,.2f}\n"
                     f"Current spend: ${total_cost:,.2f}\n"
+                    f"New spend (last 2h): ${recent_spend:,.2f}\n"
                     f"Trials still running: {experiment.active_trials}\n"
                     f"Owner: {experiment.owner or 'Unknown'}\n\n"
                     "Top agent costs:\n"
@@ -178,12 +194,13 @@ def build_alerts(
                 )
                 alerts.append(
                     SlackAlert(
-                        key=f"experiment:{experiment.id}:{milestone:g}",
+                        key=key,
                         text=(
                             ":money_with_wings: *Expensive experiment*\n"
                             f"Title: *{_escape(experiment.name)}*\n"
                             f"Spend milestone: *${milestone:,.2f}* "
                             f"(current spend: *${total_cost:,.2f}*)\n"
+                            f"New spend (last 2h): *${recent_spend:,.2f}*\n"
                             f"Trials still running: {experiment.active_trials}\n"
                             f"Owner: *{_escape(experiment.owner or 'Unknown')}*\n"
                             "Top agent costs:\n"
@@ -193,6 +210,7 @@ def build_alerts(
                         recipient_email=experiment.owner_email,
                         email_subject=email_subject,
                         email_text=email_text,
+                        silent=silent,
                     )
                 )
 
@@ -619,11 +637,13 @@ async def _claim_alert(alert_key: str) -> bool:
         return (await session.scalar(statement)) is not None
 
 
-async def _mark_alert_sent(alert_key: str) -> None:
+async def _mark_alert_sent(*alert_keys: str) -> None:
+    if not alert_keys:
+        return
     async with get_session() as session:
         await session.execute(
             update(SlackExpenseAlertModel)
-            .where(SlackExpenseAlertModel.alert_key == alert_key)
+            .where(SlackExpenseAlertModel.alert_key.in_(alert_keys))
             .values(notified_at=datetime.now(timezone.utc))
         )
 
@@ -638,19 +658,87 @@ async def _release_alert(alert_key: str) -> None:
         )
 
 
+async def _alert_is_pending(alert_key: str) -> bool:
+    async with get_session() as session:
+        return (
+            await session.scalar(
+                select(SlackExpenseAlertModel.alert_key).where(
+                    SlackExpenseAlertModel.alert_key == alert_key,
+                    SlackExpenseAlertModel.notified_at.is_(None),
+                )
+            )
+        ) is not None
+
+
+async def _alert_is_sent(alert_key: str) -> bool:
+    async with get_session() as session:
+        return (
+            await session.scalar(
+                select(SlackExpenseAlertModel.alert_key).where(
+                    SlackExpenseAlertModel.alert_key == alert_key,
+                    SlackExpenseAlertModel.notified_at.is_not(None),
+                )
+            )
+        ) is not None
+
+
+async def _start_delivery(
+    claim_key: str,
+    *,
+    silent: bool,
+    retry_key: str,
+) -> bool:
+    # A retry marker proves this alert was previously loud and its delivery
+    # failed. Keep retrying it even if its spend has since aged out of the
+    # recent window and build_alerts now classifies the milestone as silent.
+    if await _alert_is_pending(retry_key):
+        # Recover a partial completion from an older run: if the delivery was
+        # already recorded on the primary key, close the retry marker instead
+        # of sending the same alert again.
+        if await _alert_is_sent(claim_key):
+            await _mark_alert_sent(retry_key)
+            return False
+        return True
+    if not await _claim_alert(claim_key):
+        # A pending primary claim has an indeterminate outcome: the previous
+        # process may have completed the external request and crashed before
+        # recording it. Never repeat or silently complete a delivery in that
+        # state: Slack webhooks do not provide an idempotency key, and marking
+        # the row sent would falsely discard a previously loud alert. Keep the
+        # indeterminate row pending for audit; explicit request failures remain
+        # retryable through the retry marker handled above.
+        if await _alert_is_pending(claim_key):
+            log.warning(
+                "keeping indeterminate expense alert pending to avoid duplicate "
+                "or false completion alert_key=%s silent=%s",
+                claim_key,
+                silent,
+            )
+        return False
+    if silent:
+        await _mark_alert_sent(claim_key)
+        return False
+    return True
+
+
 async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
     for alert in alerts:
         if alert.dm_only:
             continue
-        if not await _claim_alert(alert.key):
+        retry_key = f"retry:slack:{alert.key}"
+        if not await _start_delivery(
+            alert.key,
+            silent=alert.silent,
+            retry_key=retry_key,
+        ):
             continue
         try:
             await _post(webhook_url, alert.text)
         except Exception:
-            await _release_alert(alert.key)
+            await _claim_alert(retry_key)
             log.exception("slack expense alert post failed alert_key=%s", alert.key)
             continue
-        await _mark_alert_sent(alert.key)
+        await _mark_alert_sent(alert.key, retry_key)
 
 
 async def send_owner_emails(
@@ -665,7 +753,12 @@ async def send_owner_emails(
         if not recipient:
             continue
         claim_key = f"email:{alert.key}:{recipient}"
-        if not await _claim_alert(claim_key):
+        retry_key = f"retry:{claim_key}"
+        if not await _start_delivery(
+            claim_key,
+            silent=alert.silent,
+            retry_key=retry_key,
+        ):
             continue
         try:
             await _post_email(
@@ -676,14 +769,14 @@ async def send_owner_emails(
                 alert.email_text,
             )
         except Exception:
-            await _release_alert(claim_key)
+            await _claim_alert(retry_key)
             log.exception(
                 "expense alert email failed alert_key=%s recipient=%s",
                 alert.key,
                 recipient,
             )
             continue
-        await _mark_alert_sent(claim_key)
+        await _mark_alert_sent(claim_key, retry_key)
 
 
 async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
@@ -693,7 +786,12 @@ async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
         if not recipient:
             continue
         claim_key = f"dm:{alert.key}:{recipient}"
-        if not await _claim_alert(claim_key):
+        retry_key = f"retry:{claim_key}"
+        if not await _start_delivery(
+            claim_key,
+            silent=alert.silent,
+            retry_key=retry_key,
+        ):
             continue
         try:
             if recipient not in slack_user_ids:
@@ -701,18 +799,21 @@ async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
                     bot_token, recipient
                 )
             if not (slack_user_id := slack_user_ids[recipient]):
-                await _release_alert(claim_key)
+                # No Slack account is a terminal channel outcome, not a
+                # transient post failure. Complete both keys so an old loud
+                # retry cannot keep a now-silent milestone alive forever.
+                await _mark_alert_sent(claim_key, retry_key)
                 continue
             await _post_dm(bot_token, slack_user_id, alert.text)
         except Exception:
-            await _release_alert(claim_key)
+            await _claim_alert(retry_key)
             log.exception(
                 "expense alert dm failed alert_key=%s recipient=%s",
                 alert.key,
                 recipient,
             )
             continue
-        await _mark_alert_sent(claim_key)
+        await _mark_alert_sent(claim_key, retry_key)
 
 
 @app.function(
