@@ -21,6 +21,7 @@ from oddish.evals.analyzer.schemas import (
     AnalyzerEvalInputs,
     AnalyzerEvalOutput,
 )
+from oddish.evals.analyzer.taxonomy import Taxonomy
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +101,13 @@ def build_roster(bad: list[SubAnalysis], good: list[SubAnalysis]) -> list[dict]:
 async def _map_one(
     client: LLMClient, config: AnalyzerEvalConfig,
     bundle: TrajectoryBundle, sa: SubAnalysis, roster: list[dict],
-    sem: asyncio.Semaphore,
+    taxonomy: Taxonomy, sem: asyncio.Semaphore,
 ) -> Finding | None:
     p = f"[{config.job_kind}] "
     bucket = BUCKET_OF.get(sa.classification, "other")
     try:
         async with sem:
-            prompt = build_map_prompt(bundle, sa, roster)
+            prompt = build_map_prompt(bundle, sa, roster, taxonomy)
             raw = await client.complete(
                 prompt, model=config.analysis_model,
                 temperature=config.temperature, max_tokens=config.token_budget,
@@ -154,6 +155,7 @@ async def run_analyzer_eval(
     config: AnalyzerEvalConfig,
     *,
     client: LLMClient | None = None,
+    taxonomy: Taxonomy = Taxonomy(),
 ) -> AnalyzerEvalOutput:
     p = f"[{config.job_kind}] "
     logger.info(
@@ -216,7 +218,7 @@ async def run_analyzer_eval(
     logger.info(p + "analyzer-eval map: fanning out over %d trials", len(selected))
     sem = asyncio.Semaphore(config.map_concurrency)
     results = await asyncio.gather(
-        *[_map_one(client, config, by_trial[sa.trial_id], sa, roster, sem)
+        *[_map_one(client, config, by_trial[sa.trial_id], sa, roster, taxonomy, sem)
           for sa in selected],
         return_exceptions=True,
     )

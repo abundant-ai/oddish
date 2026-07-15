@@ -2,11 +2,25 @@ from oddish.evals.primitives import SubAnalysis, TrajectoryBundle
 from oddish.evals.analyzer.bucketing import BUCKET_OF
 from oddish.evals.analyzer.schemas import Finding
 from oddish.evals.analyzer.prompt_builder import build_map_prompt, build_reduce_prompt
+from oddish.evals.analyzer.prompt_builder import map_rubric
+from oddish.evals.analyzer.taxonomy import Capability, Category, Taxonomy
 
 
-# The template as it stands on main, before the fragment split (git show
-# origin/main:oddish/src/oddish/evals/analyzer/prompts/map.txt). Byte-for-byte.
-# Re-pin this whenever map.txt's prose legitimately changes upstream.
+def _tiny_tax() -> Taxonomy:
+    return Taxonomy(
+        categories=(Category("verification", "Verification failures", "d", 0),),
+        capabilities=(
+            Capability("agent-early-stop", "Agent Early Stop",
+                       "Stops early.", "apex-swe.", primary_category="verification"),
+        ),
+    )
+
+
+# The template as it stands in map.txt (git show
+# origin/main:oddish/src/oddish/evals/analyzer/prompts/map.txt). Byte-for-byte,
+# except {rubric_block}/{output_block} are now sourced from the taxonomy rather
+# than retyped inline -- Task 4 moved that content into map_rubric()/
+# map_output_shape(). Re-pin this whenever map.txt's prose legitimately changes.
 _ORIGINAL_MAP_TEMPLATE = """\
 You are one of several analysts on a team, each independently examining ONE
 trajectory from a cohort of agent-eval trials. Analyze YOUR trial's original
@@ -30,28 +44,20 @@ trajectory and produce a single structured finding.
 {roster_block}
 
 ## Subcategory rubric (seed; you MAY introduce an emergent label if none fit)
-Bad bucket:
-  1a = task ambiguity / specification
-  1b = task security / construction
-Good bucket (universal capabilities):
-  3a = problem identification
-  3b = implementation (method largely correct)
-  3c = syntax
-  emergent:<short-label> = a capability gap not covered above
+{rubric_block}
 
 Use the `step_id` values exactly as they appear in the trajectory above for
 `step_ids` — these are ids, not positions in the list.
 
 ## Output — return ONLY JSON:
-{{"trial_id": "...", "bucket": "bad|good", "subcategory": "1a|1b|3a|3b|3c|emergent:<label>",
- "evidence_quote": "verbatim quote from the trajectory", "step_ids": [<ints>],
- "root_cause": "1-2 sentences", "headroom_signal": "for good trials: what capability, if
- improved, would fix this; else empty", "trajectory_link": "{trajectory_link}"}}
+{output_block}
 """
 
 
-def _build_original_map_prompt(bundle, subanalysis, roster):
-    from oddish.evals.analyzer.prompt_builder import _trajectory_block, _roster_block
+def _build_original_map_prompt(bundle, subanalysis, roster, taxonomy):
+    from oddish.evals.analyzer.prompt_builder import (
+        _trajectory_block, _roster_block, map_output_shape,
+    )
 
     return _ORIGINAL_MAP_TEMPLATE.format(
         trial_id=bundle.trial_id,
@@ -64,6 +70,8 @@ def _build_original_map_prompt(bundle, subanalysis, roster):
         oracle_context=bundle.oracle_context or "(none — not a reward-hacking trial)",
         trajectory_block=_trajectory_block(bundle),
         roster_block=_roster_block(roster),
+        rubric_block=map_rubric(taxonomy),
+        output_block=map_output_shape().format(trajectory_link=bundle.trajectory_link),
     )
 
 
@@ -86,8 +94,9 @@ def test_build_map_prompt_is_byte_identical_after_the_fragment_split():
         {"trial_id": "t-2", "bucket": "good", "subtype": "3a",
          "trajectory_link": "/tasks/task/probe/t-2"},
     ]
-    expected = _build_original_map_prompt(bundle, sa, roster)
-    actual = build_map_prompt(bundle, sa, roster)
+    taxonomy = _tiny_tax()
+    expected = _build_original_map_prompt(bundle, sa, roster, taxonomy)
+    actual = build_map_prompt(bundle, sa, roster, taxonomy)
     assert actual == expected
 
 
@@ -109,11 +118,11 @@ def test_map_prompt_includes_cohort_link_and_taxonomy():
         {"trial_id": "t-2", "bucket": "good", "subtype": "Wrong Approach",
          "trajectory_link": "/tasks/task/probe/t-2"},
     ]
-    p = build_map_prompt(bundle, sa, roster)
+    p = build_map_prompt(bundle, sa, roster, _tiny_tax())
     assert "/tasks/task/probe/t-1" in p          # verbatim link to copy
     assert "t-2" in p and "good" in p            # cohort awareness
     assert "oracle did y" in p                    # oracle context for bad trial
-    assert "1a" in p and "3a" in p                # seed taxonomy present
+    assert "1a" in p and "agent-early-stop" in p  # taxonomy present
 
 
 def test_map_prompt_uses_bucket_of_for_good_failure():
@@ -128,9 +137,29 @@ def test_map_prompt_uses_bucket_of_for_good_failure():
         classification="GOOD_FAILURE", subtype="Wrong Approach",
         evidence="tried x", root_cause="rc", recommendation="rec",
     )
-    p = build_map_prompt(bundle, sa, roster=[])
+    p = build_map_prompt(bundle, sa, roster=[], taxonomy=_tiny_tax())
     assert "bucket: good" in p
     assert "(none — not a reward-hacking trial)" in p
+
+
+def test_map_rubric_keeps_the_bad_half_static():
+    """1a/1b stay hardcoded -- they classify task defects, which the classifier
+    Subtype enum already pins. Only the good half is DB-driven."""
+    out = map_rubric(_tiny_tax())
+    assert "1a = task ambiguity / specification" in out
+    assert "1b = task security / construction" in out
+
+
+def test_map_rubric_renders_db_capabilities_not_3a3b3c():
+    out = map_rubric(_tiny_tax())
+    assert "agent-early-stop" in out
+    assert "verification — Verification failures" in out
+    assert "3a = problem identification" not in out
+
+
+def test_map_rubric_tells_the_agent_how_to_propose():
+    out = map_rubric(_tiny_tax())
+    assert "capability_proposal" in out
 
 
 def test_reduce_prompt_lists_findings_and_counts():

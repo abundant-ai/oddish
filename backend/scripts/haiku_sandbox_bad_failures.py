@@ -51,6 +51,7 @@ from oddish.core.analyzer_inputs import subanalysis_from_trial
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db import get_session
 from oddish.db.models import ExperimentModel, TaskModel, TrialModel, TrialStatus
+from oddish.db.taxonomy_query import load_taxonomy
 from oddish.evals.analyzer.bucketing import bucket_subanalyses
 from oddish.evals.analyzer.prompt_builder import (
     SECTION_KEYS,
@@ -58,6 +59,7 @@ from oddish.evals.analyzer.prompt_builder import (
     map_rubric,
     sections_block,
 )
+from oddish.evals.analyzer.taxonomy import Taxonomy
 
 # One of ClaudeCodeRuntime.supported_models. stream_chat has no --model flag, so
 # we force the model with ANTHROPIC_MODEL in the sandbox env (Claude Code honors
@@ -169,7 +171,7 @@ async def _bad_cohort(experiment_id: str, limit: int, classify_missing: bool, te
     return bad, breakdown
 
 
-def _build_prompt(bad) -> str:
+def _build_prompt(bad, taxonomy: Taxonomy) -> str:
     """Instruct the agent to pull each bad trial's trajectory and map -> reduce.
 
     Assembled by concatenation (not one big f-string): the map/reduce templates
@@ -183,7 +185,7 @@ def _build_prompt(bad) -> str:
     map_template = (
         (prompts_dir / "map.txt")
         .read_text()
-        .replace("{rubric_block}", map_rubric())
+        .replace("{rubric_block}", map_rubric(taxonomy))
         .replace("{output_block}", map_output_shape())
         .replace("{{", "{")
         .replace("}}", "}")
@@ -269,7 +271,9 @@ async def run(args) -> str:
     for sa in bad:
         tee(f"  - {sa.trial_id}  {sa.classification}/{sa.subtype}")
 
-    prompt = _build_prompt(bad)
+    async with get_session() as session:
+        taxonomy = await load_taxonomy(session)
+    prompt = _build_prompt(bad, taxonomy)
 
     # --dry-run needs only the DB (bucketing); no sandbox creds required. Print
     # exactly what the agent would receive, then stop before spending a sandbox.

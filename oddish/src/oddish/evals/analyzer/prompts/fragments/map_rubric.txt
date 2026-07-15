@@ -1,8 +1,14 @@
 Bad bucket:
   1a = task ambiguity / specification
   1b = task security / construction
-Good bucket (universal capabilities):
-  3a = problem identification
-  3b = implementation (method largely correct)
-  3c = syntax
-  emergent:<short-label> = a capability gap not covered above
+
+Good bucket (universal capabilities) — pick the ONE capability slug that best
+fits the failure, and put it in `capability_slug`:
+
+{capabilities_block}
+
+If NONE of the capabilities above fit, author a new one: set `capability_slug`
+to a new kebab-case slug of your own and fill in `capability_proposal` with its
+name, a one-sentence description, an example citing this trial, and the
+category slug(s) it belongs under. Only propose when nothing fits — a
+near-match is better than a duplicate.

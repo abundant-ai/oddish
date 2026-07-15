@@ -7,6 +7,7 @@ from typing import Sequence
 from oddish.evals.primitives import SubAnalysis, TrajectoryBundle
 from oddish.evals.analyzer.bucketing import BUCKET_OF
 from oddish.evals.analyzer.schemas import Finding
+from oddish.evals.analyzer.taxonomy import Taxonomy, render_capabilities
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 MAP_PROMPT_TEMPLATE = (_PROMPT_DIR / "map.txt").read_text()
@@ -44,8 +45,15 @@ def sections_block(keys: Sequence[str]) -> str:
     return "\n".join(section_brief(k) for k in keys)
 
 
-def map_rubric() -> str:
-    return (_FRAGMENTS_DIR / "map_rubric.txt").read_text().rstrip("\n")
+def map_rubric(taxonomy: Taxonomy) -> str:
+    """Render the rubric. Pure: the taxonomy is fetched by the caller.
+
+    The bad half stays static in the template -- 1a/1b classify task defects,
+    which the classifier's Subtype enum already pins. Only the good half is
+    DB-driven.
+    """
+    template = (_FRAGMENTS_DIR / "map_rubric.txt").read_text().rstrip("\n")
+    return template.replace("{capabilities_block}", render_capabilities(taxonomy))
 
 
 def map_output_shape() -> str:
@@ -70,7 +78,8 @@ def _roster_block(roster: list[dict]) -> str:
 
 
 def build_map_prompt(
-    bundle: TrajectoryBundle, subanalysis: SubAnalysis, roster: list[dict]
+    bundle: TrajectoryBundle, subanalysis: SubAnalysis, roster: list[dict],
+    taxonomy: Taxonomy,
 ) -> str:
     return MAP_PROMPT_TEMPLATE.format(
         trial_id=bundle.trial_id,
@@ -83,7 +92,7 @@ def build_map_prompt(
         oracle_context=bundle.oracle_context or "(none — not a reward-hacking trial)",
         trajectory_block=_trajectory_block(bundle),
         roster_block=_roster_block(roster),
-        rubric_block=map_rubric(),
+        rubric_block=map_rubric(taxonomy),
         output_block=map_output_shape().format(trajectory_link=bundle.trajectory_link),
     )
 
