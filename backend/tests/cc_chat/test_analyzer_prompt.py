@@ -102,3 +102,41 @@ def test_good_prompt_cannot_leak_oracle_even_if_caller_passes_it():
         {"good-1": "LEAKED ORACLE TEXT"},
     )
     assert "LEAKED ORACLE TEXT" not in p
+
+
+def _bad_sa(trial_id: str) -> SubAnalysis:
+    return SubAnalysis(
+        trial_id=trial_id,
+        trajectory_link=f"/tasks/t1/probe/{trial_id}",
+        classification="BAD_FAILURE",
+        subtype="1a",
+        evidence="hardcoded the expected output",
+        root_cause="test asserts a literal",
+        recommendation="hide the oracle",
+    )
+
+
+def test_prompt_has_no_conflicting_map_template_framing():
+    """map.txt is written for the one-call-per-trial API path. Inlining it told the
+    agent it was one analyst on ONE trajectory and to 'return ONLY JSON' — which
+    would suppress the MAP FINDING: markers the stream fallback depends on."""
+    p = build_cohort_prompt("bad", [_bad_sa("bad-1")], _roster(), COUNTS, {"bad-1": "o"})
+    assert "one of several analysts" not in p
+    assert "return ONLY JSON" not in p
+    assert "{trajectory_block}" not in p
+    assert "{roster_block}" not in p
+
+
+def test_prompt_keeps_the_shared_rubric_and_output_shape():
+    from oddish.evals.analyzer.prompt_builder import map_rubric
+
+    p = build_cohort_prompt("bad", [_bad_sa("bad-1")], _roster(), COUNTS, {"bad-1": "o"})
+    assert map_rubric() in p                 # from the shared fragment, not retyped
+    assert '{"trial_id"' in p                # single-brace shape
+    assert "{trajectory_link}" in p          # agent fills this itself
+
+
+def test_map_instructions_are_self_consistent():
+    p = build_cohort_prompt("bad", [_bad_sa("bad-1")], _roster(), COUNTS, {"bad-1": "o"})
+    assert "MAP FINDING:" in p
+    assert FINDINGS_PATH in p

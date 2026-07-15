@@ -1,17 +1,18 @@
 """Build the per-cohort agent prompt for the sandboxed analyzer.
 
 Pure: no I/O beyond reading the packaged prompt templates, no Daytona. Assembled
-by concatenation rather than one f-string because the map template contains
+by concatenation rather than one f-string because the shared fragments contain
 literal ``{placeholder}`` braces that would break f-string parsing.
 """
 
 from __future__ import annotations
 
 import json
-from importlib.resources import files
 
 from oddish.evals.analyzer.prompt_builder import (
     SECTION_KEYS_BY_BUCKET,
+    map_output_shape,
+    map_rubric,
     sections_block,
 )
 from oddish.evals.primitives import SubAnalysis
@@ -23,10 +24,6 @@ CLI_DEST = f"{WORKSPACE}/oddish-query"
 OUT_DIR = f"{WORKSPACE}/out"
 FINDINGS_PATH = f"{OUT_DIR}/findings.jsonl"
 REDUCE_PATH = f"{OUT_DIR}/reduce.json"
-
-
-def _prompts_dir():
-    return files("oddish.evals.analyzer") / "prompts"
 
 
 def _cohort_block(bucket: str, cohort: list[SubAnalysis], oracle_by_trial: dict[str, str]) -> str:
@@ -62,12 +59,9 @@ def build_cohort_prompt(
     counts: dict,
     oracle_by_trial: dict[str, str],
 ) -> str:
-    # map.txt is a str.format() template; its literal JSON braces are escaped
-    # ({{/}}) for that path. We inline it raw for the agent, so unescape them
-    # here — leaving the single-brace {placeholder}s for the agent to fill.
-    map_template = (
-        (_prompts_dir() / "map.txt").read_text().replace("{{", "{").replace("}}", "}")
-    )
+    # map_output_shape() is escaped ({{/}}) for the API path's str.format(); we
+    # unescape it for the agent, leaving {trajectory_link} for it to fill in.
+    output_shape = map_output_shape().replace("{{", "{").replace("}}", "}")
     section_keys = SECTION_KEYS_BY_BUCKET[bucket]
     example = json.dumps({k: "...markdown..." for k in section_keys})
 
@@ -86,23 +80,22 @@ def build_cohort_prompt(
         f"{_cohort_block(bucket, cohort, oracle_by_trial)}\n"
     )
 
-    # Non-f strings below: they reference the template's literal {placeholders}.
+    # Non-f strings below: output_shape carries a literal {trajectory_link}.
     map_phase = (
         "\n## PHASE 1 — MAP (one finding per trial)\n"
         "For EACH trial in your cohort, in order:\n"
         "  1. Fetch its trajectory with the CLI command above.\n"
-        "  2. Fill in the MAP template below from that trajectory + the trial's\n"
-        "     cohort metadata.\n"
+        "  2. Classify it using the rubric below (an emergent label is fine if\n"
+        "     none of the seed subcategories fit).\n"
         "  3. Emit the finding as a single JSON object on its own line, prefixed\n"
-        f"     with `MAP FINDING:`, AND append that same line to {FINDINGS_PATH}.\n\n"
-        "When filling the MAP template: {bucket} = " + bucket + "; {classification},\n"
-        "{subtype}, {evidence}, {root_cause}, {oracle_context} come from the cohort\n"
-        "metadata above ({oracle_context} is empty when not listed — skip it);\n"
-        "{trajectory_link} must be copied VERBATIM from the metadata;\n"
-        "{trajectory_block} and {roster_block} you derive from the fetched\n"
-        "trajectory and the roster.\n\n"
-        "--- MAP template ---\n"
-        f"{map_template}\n"
+        f"     with `MAP FINDING:`, AND append that same line to {FINDINGS_PATH}.\n"
+        "     Copy trajectory_link VERBATIM from the cohort metadata above — never\n"
+        "     invent it.\n\n"
+        "## Subcategory rubric (seed; you MAY introduce an emergent label if none fit)\n"
+        + map_rubric() + "\n\n"
+        "## Finding shape\n"
+        + output_shape + "\n\n"
+        "Narrate as you go so it streams.\n"
     )
 
     reduce_phase = (

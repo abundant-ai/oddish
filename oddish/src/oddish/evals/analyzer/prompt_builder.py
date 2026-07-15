@@ -13,6 +13,7 @@ MAP_PROMPT_TEMPLATE = (_PROMPT_DIR / "map.txt").read_text()
 REDUCE_PROMPT_TEMPLATE = (_PROMPT_DIR / "reduce.txt").read_text()
 
 _SECTIONS_DIR = _PROMPT_DIR / "sections"
+_FRAGMENTS_DIR = _PROMPT_DIR / "fragments"
 
 # Order matches reduce.txt's original bullet list; sections_block depends on it.
 SECTION_KEYS: tuple[str, ...] = (
@@ -43,6 +44,17 @@ def sections_block(keys: Sequence[str]) -> str:
     return "\n".join(section_brief(k) for k in keys)
 
 
+def map_rubric() -> str:
+    return (_FRAGMENTS_DIR / "map_rubric.txt").read_text().rstrip("\n")
+
+
+def map_output_shape() -> str:
+    """The finding's JSON shape, still str.format-escaped ({{ }}) and still
+    carrying the {trajectory_link} placeholder. Callers choose: .format() it
+    (API path) or unescape it and let the agent fill the link (sandbox path)."""
+    return (_FRAGMENTS_DIR / "map_output.txt").read_text().rstrip("\n")
+
+
 def _trajectory_block(bundle: TrajectoryBundle) -> str:
     summary = json.dumps(bundle.trajectory_summary or {}, indent=2)
     steps = json.dumps(bundle.trajectory, indent=2)
@@ -71,6 +83,8 @@ def build_map_prompt(
         oracle_context=bundle.oracle_context or "(none — not a reward-hacking trial)",
         trajectory_block=_trajectory_block(bundle),
         roster_block=_roster_block(roster),
+        rubric_block=map_rubric(),
+        output_block=map_output_shape().format(trajectory_link=bundle.trajectory_link),
     )
 
 
