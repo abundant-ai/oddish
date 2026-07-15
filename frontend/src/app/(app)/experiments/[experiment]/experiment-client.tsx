@@ -32,6 +32,10 @@ import type {
 import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
+import {
+  fetchFreshExperimentTaskPage,
+  mergeExperimentTaskPages,
+} from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
 
 // Paper-styled header action button, shared by the Probe and Chat buttons so
@@ -61,7 +65,7 @@ function isExperimentTimingEnabled(): boolean {
 
 async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
   const startedAt = performance.now();
-  const res = await fetch(url, { credentials: "include" });
+  const res = await fetchFreshExperimentTaskPage(url);
   const responseAt = performance.now();
   const serverTiming = res.headers.get("server-timing");
   let data: unknown = null;
@@ -152,8 +156,10 @@ function ExperimentContent({
   } = useSWR<Task[]>(allTasksUrl, fetchExperimentTasksPage, {
     refreshInterval: 0,
     revalidateOnFocus: false,
-    revalidateOnMount: initialTasks == null,
-    revalidateIfStale: initialTasks == null,
+    // A client-side revisit can otherwise prefer SWR's old shell over fresh
+    // server fallback data after the task's default version changes.
+    revalidateOnMount: true,
+    revalidateIfStale: true,
     fallbackData: initialTasks ?? undefined,
   });
 
@@ -184,6 +190,7 @@ function ExperimentContent({
     refreshInterval: 0,
     revalidateOnFocus: false,
     revalidateFirstPage: false,
+    revalidateOnMount: true,
     persistSize: true,
   });
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
@@ -230,32 +237,17 @@ function ExperimentContent({
   // required here.
   const tasksForExperiment = useMemo(() => {
     const startedAt = isExperimentTimingEnabled() ? performance.now() : 0;
-    const trialDataById = new Map<string, Task>();
-    for (const page of trialPages ?? []) {
-      for (const task of page ?? []) {
-        trialDataById.set(task.id, task);
-      }
-    }
-
-    const base = lightweightTasks ?? [];
-    const seenIds = new Set<string>();
-    const merged: Task[] = [];
-
-    for (const task of base) {
-      seenIds.add(task.id);
-      merged.push(trialDataById.get(task.id) ?? task);
-    }
-
-    for (const [id, task] of trialDataById) {
-      if (!seenIds.has(id)) {
-        merged.push(task);
-      }
-    }
+    const merged = mergeExperimentTaskPages(lightweightTasks, trialPages);
 
     if (isExperimentTimingEnabled()) {
+      const enrichedIds = new Set(
+        (trialPages ?? []).flatMap((page) =>
+          (page ?? []).map((task) => task.id)
+        )
+      );
       console.info("[oddish timing] experiment task merge", {
-        baseRows: base.length,
-        enrichedRows: trialDataById.size,
+        baseRows: lightweightTasks?.length ?? 0,
+        enrichedRows: enrichedIds.size,
         mergedRows: merged.length,
         mergeMs: Math.round(performance.now() - startedAt),
       });

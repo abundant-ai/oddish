@@ -196,7 +196,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
           acc,
           trial,
           trial.experiment_id == null ||
-            trial.experiment_id === task.experiment_id,
+            trial.experiment_id === task.experiment_id
         );
 
       let scoredRewardSum = 0;
@@ -1368,6 +1368,7 @@ export function ExperimentDetailView({
               taskId={null}
               probeTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
+              taskVersion={drawerState.task.current_version ?? null}
               apiBaseUrl={apiBaseUrl}
               showAnalysis={showAnalysis}
               contentOnly={true}
@@ -1379,6 +1380,7 @@ export function ExperimentDetailView({
               onClose={closeDrawer}
               taskId={drawerState.task.id}
               task={drawerState.task}
+              taskVersion={drawerState.task.current_version ?? null}
               orderedTasks={drawerState.orderedTasks}
               taskIndex={drawerState.taskIndex}
               onRetryComplete={onRerun}

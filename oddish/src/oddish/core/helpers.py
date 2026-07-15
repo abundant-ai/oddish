@@ -600,10 +600,11 @@ def _resolve_task_version_fields(
 ) -> tuple[int | None, str | None]:
     """Extract the version number and id to report for a task.
 
-    Defaults to ``task.current_version_id`` (the global latest).  Pass
+    Defaults to ``task.current_version_id`` (the global default).  Pass
     ``effective_version_id`` to report a context-specific version instead —
-    for example, the latest version that has trials in the experiment the
-    caller is viewing.  Passing ``None`` explicitly clears the version.
+    for example, the default version when represented in the experiment the
+    caller is viewing, or its latest represented version otherwise. Passing
+    ``None`` explicitly clears the version.
     """
     version_id: str | None
     if effective_version_id is _VERSION_ID_UNSET:
@@ -625,13 +626,12 @@ def resolve_effective_version_id(
     """Return the ``task_version_id`` that best represents ``task`` in context.
 
     Outside an experiment (``experiment_context_id`` is ``None``) this is the
-    task's global ``current_version_id``.  Within an experiment we instead
-    use the latest version among trials that belong to that experiment
-    (folding in legacy ``NULL``-experiment trials attached to the task).
-    This lets an experiment page keep showing the trials it actually ran,
-    even if the underlying task has since been re-uploaded and bumped to a
-    newer version elsewhere.  Falls back to ``task.current_version_id`` when
-    no scoped trial has a ``task_version_id``.
+    task's global ``current_version_id``. Within an experiment, that explicit
+    default wins when a visible trial represents it; otherwise the latest
+    represented version wins. This lets users promote an older stored version
+    and see new runs on it without blanking historical experiments whose trials
+    exist only on another version. Falls back to ``task.current_version_id``
+    when no scoped trial has a ``task_version_id``.
 
     ``gathered_trial_ids`` folds in trials owned by a *collection* experiment
     via the ``experiment_trials`` join table -- these carry their home
@@ -643,17 +643,21 @@ def resolve_effective_version_id(
         return task.current_version_id
     candidates: list[str] = []
     for trial in task.trials or []:
+        if getattr(trial, "is_probe", False):
+            continue
+        if getattr(trial, "superseded_by_trial_id", None) is not None:
+            continue
         version_id = getattr(trial, "task_version_id", None)
         if not version_id:
             continue
         trial_exp_id = getattr(trial, "experiment_id", None)
-        if (
-            trial_exp_id == experiment_context_id
-            or trial_exp_id is None
-            or (gathered_trial_ids and trial.id in gathered_trial_ids)
+        if trial_exp_id == experiment_context_id or (
+            gathered_trial_ids and trial.id in gathered_trial_ids
         ):
             candidates.append(version_id)
     if not candidates:
+        return task.current_version_id
+    if task.current_version_id in candidates:
         return task.current_version_id
     return max(candidates, key=_parse_version_number)
 
@@ -667,9 +671,10 @@ async def fetch_experiment_effective_version_ids(
     """SQL-backed version of :func:`resolve_effective_version_id` for many tasks.
 
     Used by paths that don't eagerly load ``task.trials`` (e.g. the lightweight
-    counts-only task list).  Returns a mapping of ``task_id`` → latest
-    ``task_version_id`` among trials belonging to ``experiment_id`` (plus legacy
-    ``NULL``-experiment trials).  Tasks with no scoped trials are omitted.
+    counts-only task list). Returns a mapping of ``task_id`` to the task's
+    explicit default version when a visible trial represents it in this
+    experiment, or the latest represented version otherwise. Tasks with no
+    scoped trials are omitted.
 
     Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
     server returns at most one row per task -- ordered by the *integer*
@@ -682,27 +687,26 @@ async def fetch_experiment_effective_version_ids(
     if not task_ids:
         return {}
 
-    from oddish.core.experiment_membership import gathered_trial_ids_select
+    from oddish.core.experiment_membership import trial_in_experiment
     from oddish.db import TaskVersionModel  # local import: avoid cycle
 
     stmt = (
         select(TrialModel.task_id, TrialModel.task_version_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
         .where(
             TrialModel.task_id.in_(list(task_ids)),
-            or_(
-                TrialModel.experiment_id == experiment_id,
-                TrialModel.experiment_id.is_(None),
-                # Collection experiments own trials additively via the
-                # ``experiment_trials`` join table without rewriting the
-                # scalar ``experiment_id``; fold those gathered trials in so
-                # the effective version reflects the versions they ran on.
-                TrialModel.id.in_(gathered_trial_ids_select(experiment_id)),
-            ),
+            trial_in_experiment(experiment_id),
             TrialModel.task_version_id.is_not(None),
+            TrialModel.is_probe.is_(False),
+            TrialModel.superseded_by_trial_id.is_(None),
         )
         .order_by(
             TrialModel.task_id.asc(),
+            case(
+                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
+                else_=1,
+            ).asc(),
             TaskVersionModel.version.desc(),
         )
         .distinct(TrialModel.task_id)
@@ -922,9 +926,9 @@ def build_task_status_response(
     When called with ``experiment_context_id`` and no explicit
     ``effective_version_id``, the effective version is auto-derived from the
     task's currently-loaded trials (assumed to already be scoped to the
-    experiment by the caller).  This keeps experiment pages showing trials at
-    whatever version actually ran in that experiment, even if the task has
-    since been re-uploaded to a newer version elsewhere.
+    experiment by the caller). This keeps experiment pages on the chosen
+    default when represented there, while retaining historical trials when the
+    default changed elsewhere.
 
     ``gathered_trial_ids`` is forwarded to the internal auto-resolve so
     collection-gathered trials on an older version aren't re-resolved away.
@@ -1254,6 +1258,15 @@ async def build_task_status_responses_from_counts(
         # behind every TaskStatusResponse matches what the UI shows.
         TrialModel.superseded_by_trial_id.is_(None),
     ]
+    if experiment_context_id is not None:
+        from oddish.core.experiment_membership import trial_in_experiment
+
+        stats_filters.extend(
+            [
+                trial_in_experiment(experiment_context_id),
+                TrialModel.is_probe.is_(False),
+            ]
+        )
     if effective_map:
         # Match (task_id, task_version_id) pairs so we only count trials at
         # each task's effective version.  Tasks without an effective version

@@ -19,6 +19,7 @@ def _trial(
     reward: float | None,
     experiment_id: str | None = None,
     superseded_by_trial_id: str | None = None,
+    is_probe: bool = False,
 ):
     return SimpleNamespace(
         id=trial_id,
@@ -27,6 +28,7 @@ def _trial(
         reward=reward,
         experiment_id=experiment_id,
         superseded_by_trial_id=superseded_by_trial_id,
+        is_probe=is_probe,
     )
 
 
@@ -347,6 +349,69 @@ def test_resolve_effective_version_id_uses_latest_trial_in_experiment():
     assert (
         helpers.resolve_effective_version_id(task, experiment_context_id="exp-a")
         == "task-1-v2"
+    )
+
+
+def test_resolve_effective_version_id_prefers_represented_default():
+    task = SimpleNamespace(
+        current_version_id="task-1-v1",
+        trials=[
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v2",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+            ),
+        ],
+    )
+
+    assert (
+        helpers.resolve_effective_version_id(task, experiment_context_id="exp-a")
+        == "task-1-v1"
+    )
+
+
+def test_resolve_effective_version_id_requires_visible_default_trial():
+    task = SimpleNamespace(
+        current_version_id="task-1-v3",
+        trials=[
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v2",
+                status=TrialStatus.FAILED,
+                reward=0,
+                experiment_id="exp-a",
+                superseded_by_trial_id="task-1-3",
+            ),
+            _trial(
+                "task-1-2",
+                task_version_id="task-1-v3",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+                is_probe=True,
+            ),
+        ],
+    )
+
+    assert (
+        helpers.resolve_effective_version_id(task, experiment_context_id="exp-a")
+        == "task-1-v1"
     )
 
 
