@@ -652,7 +652,7 @@ uvx --with pytest --with pytest-json-ctrf \
 Oddish keeps the full report with the trial artifacts and persists only its
 compact `results.summary` counts, `results.tool.name`, and the trial-relative
 report artifact path under the reserved `trial.result._verifier` key. The
-dashboard shows those counts as a passed/total test badge on the trial's QA
-Assessment card, so they appear only for trials that ran QA analysis. Missing,
-malformed, or oversized CTRF reports are ignored and never change the settled
-`reward`; verifiers without a test report simply show no badge.
+dashboard shows those counts as a small passed/total line in the trial
+drawer's summary. Missing, malformed, or oversized CTRF reports are ignored
+and never change the settled `reward`; verifiers without a test report simply
+show no test line.
