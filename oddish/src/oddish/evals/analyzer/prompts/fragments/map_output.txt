@@ -1,0 +1,4 @@
+{{"trial_id": "...", "bucket": "bad|good", "subcategory": "1a|1b|3a|3b|3c|emergent:<label>",
+ "evidence_quote": "verbatim quote from the trajectory", "step_ids": [<ints>],
+ "root_cause": "1-2 sentences", "headroom_signal": "for good trials: what capability, if
+ improved, would fix this; else empty", "trajectory_link": "{trajectory_link}"}}
