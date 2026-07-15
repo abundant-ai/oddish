@@ -19,6 +19,16 @@
 - **Slugs are immutable once promoted.** `name` is the editable display field.
 - **Taxonomy is global** — no `org_id` on any new table.
 - Tests: `pytest` from `oddish/` or `backend/`.
+- **DB tests run against a SHARED Postgres that carries the seed data.** Any test
+  inserting into `capabilities` / `capability_categories` MUST uniquify its
+  fixture slugs (`uuid.uuid4().hex[:6]` suffix — the repo's existing convention;
+  see `tests/test_org_quota_admission.py:32`, `tests/test_quota_admission.py:30`,
+  `tests/test_cost_completeness.py:89`). `slug` is a PRIMARY KEY and the 15 seed
+  slugs are real rows, so a hardcoded `verification` or `agent-early-stop`
+  collides with `IntegrityError` on flush. Equally: `load_taxonomy` reads the
+  WHOLE table, so never assert exact-equality on its full result — filter to your
+  fixture's own slugs first. A test asserting `== []` or `== ["verification"]`
+  passes only on an unseeded DB and breaks everywhere else.
 - Commit messages end with:
   `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
 
@@ -823,8 +833,16 @@ EOF
 
 - [ ] **Step 1: Write the failing test**
 
+Fixture slugs are uniquified and assertions are scoped to them. The shared
+Postgres carries the 15 seed capabilities and `slug` is a PRIMARY KEY, so
+hardcoding `verification` / `agent-early-stop` collides on flush; and
+`load_taxonomy` reads the whole table, so exact-equality on its full result is
+wrong even with unique slugs. See Global Constraints.
+
 ```python
 # oddish/tests/db/test_taxonomy_query.py
+import uuid
+
 import pytest
 
 from oddish.db.models import (
@@ -835,47 +853,58 @@ from oddish.db.models import (
 from oddish.db.taxonomy_query import load_taxonomy
 
 
+def _sfx() -> str:
+    # Shared Postgres: the seed's real slugs are already in these tables.
+    return uuid.uuid4().hex[:6]
+
+
 @pytest.mark.asyncio
 async def test_load_taxonomy_builds_primary_and_extra_tags(session):
+    s = _sfx()
+    verif, tool = f"verif-{s}", f"tool-{s}"
+    early, wrongtool = f"early-{s}", f"wrongtool-{s}"
     session.add_all([
-        CapabilityCategoryModel(slug="verification", name="Verification failures",
+        CapabilityCategoryModel(slug=verif, name="Verification failures",
                                 description="d", sort_order=0),
-        CapabilityCategoryModel(slug="tool", name="Tool failures",
+        CapabilityCategoryModel(slug=tool, name="Tool failures",
                                 description="d", sort_order=1),
-        CapabilityModel(slug="agent-early-stop", name="Agent Early Stop",
+        CapabilityModel(slug=early, name="Agent Early Stop",
                         description="Stops early.", example="apex-swe."),
-        CapabilityModel(slug="tool-selection-error", name="Tool Selection Error",
+        CapabilityModel(slug=wrongtool, name="Tool Selection Error",
                         description="Wrong tool.", example="curl over MCP."),
     ])
     await session.flush()
     session.add_all([
-        CapabilityCategoryTagModel(capability_slug="agent-early-stop",
-                                   category_slug="verification", is_primary=True),
-        CapabilityCategoryTagModel(capability_slug="tool-selection-error",
-                                   category_slug="tool", is_primary=True),
-        CapabilityCategoryTagModel(capability_slug="tool-selection-error",
-                                   category_slug="verification", is_primary=False),
+        CapabilityCategoryTagModel(capability_slug=early,
+                                   category_slug=verif, is_primary=True),
+        CapabilityCategoryTagModel(capability_slug=wrongtool,
+                                   category_slug=tool, is_primary=True),
+        CapabilityCategoryTagModel(capability_slug=wrongtool,
+                                   category_slug=verif, is_primary=False),
     ])
     await session.flush()
 
     tax = await load_taxonomy(session)
 
-    assert [c.slug for c in tax.categories] == ["verification", "tool"]
     by_slug = {c.slug: c for c in tax.capabilities}
-    assert by_slug["agent-early-stop"].primary_category == "verification"
-    assert by_slug["agent-early-stop"].extra_categories == ()
-    assert by_slug["tool-selection-error"].primary_category == "tool"
-    assert by_slug["tool-selection-error"].extra_categories == ("verification",)
+    assert by_slug[early].primary_category == verif
+    assert by_slug[early].extra_categories == ()
+    assert by_slug[wrongtool].primary_category == tool
+    assert by_slug[wrongtool].extra_categories == (verif,)
+    # Relative order of OUR categories only -- the table holds the seed too.
+    ours = [c.slug for c in tax.categories if c.slug in (verif, tool)]
+    assert ours == [verif, tool]
 
 
 @pytest.mark.asyncio
 async def test_load_taxonomy_skips_untagged_capability(session):
     """A capability with no primary tag cannot be grouped, so it must not reach
     the rubric -- it would render under no category and be unpickable."""
-    session.add(CapabilityModel(slug="orphan", name="Orphan", description="d"))
+    orphan = f"orphan-{_sfx()}"
+    session.add(CapabilityModel(slug=orphan, name="Orphan", description="d"))
     await session.flush()
     tax = await load_taxonomy(session)
-    assert [c.slug for c in tax.capabilities] == []
+    assert orphan not in {c.slug for c in tax.capabilities}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1648,8 +1677,13 @@ EOF
 
 - [ ] **Step 1: Write the failing test**
 
+Every id and slug is uniquified: `verification` and `hypothesis-fixation` are
+REAL seed rows, and `slug` / `id` are PRIMARY KEYs. See Global Constraints.
+
 ```python
 # backend/tests/test_promote_capability.py
+import uuid
+
 import pytest
 
 from oddish.db.models import (
@@ -1661,42 +1695,51 @@ from oddish.db.models import (
 from scripts.promote_capability import promote, reject  # backend/ is the import root
 
 
+def _sfx() -> str:
+    # Shared Postgres: 'verification' and 'hypothesis-fixation' are seed rows.
+    return uuid.uuid4().hex[:6]
+
+
 @pytest.mark.asyncio
 async def test_promote_creates_capability_and_primary_tag(session):
-    session.add(CapabilityCategoryModel(slug="verification", name="V", sort_order=0))
+    s = _sfx()
+    cat, slug, pid = f"verif-{s}", f"hypfix-{s}", f"p1-{s}"
+    session.add(CapabilityCategoryModel(slug=cat, name="V", sort_order=0))
     session.add(CapabilityProposalModel(
-        id="p1", slug_suggestion="hypothesis-fixation", name="Hypothesis Fixation",
-        description="d", example="e", category_slugs=["verification"],
-        analyzer_id="an-1", trial_ids=["good-1"], status="PENDING"))
+        id=pid, slug_suggestion=slug, name="Hypothesis Fixation",
+        description="d", example="e", category_slugs=[cat],
+        analyzer_id=f"an-{s}", trial_ids=["good-1"], status="PENDING"))
     await session.flush()
 
-    await promote(session, "p1", primary_category="verification")
+    await promote(session, pid, primary_category=cat)
 
-    cap = await session.get(CapabilityModel, "hypothesis-fixation")
+    cap = await session.get(CapabilityModel, slug)
     assert cap is not None and cap.name == "Hypothesis Fixation"
-    tag = await session.get(
-        CapabilityCategoryTagModel, ("hypothesis-fixation", "verification"))
+    tag = await session.get(CapabilityCategoryTagModel, (slug, cat))
     assert tag.is_primary is True
-    prop = await session.get(CapabilityProposalModel, "p1")
+    prop = await session.get(CapabilityProposalModel, pid)
     assert prop.status == "PROMOTED"
-    assert prop.promoted_capability_slug == "hypothesis-fixation"
+    assert prop.promoted_capability_slug == slug
 
 
 @pytest.mark.asyncio
 async def test_reject_with_merge_target_records_the_survivor(session):
     """Findings citing the rejected slug resolve to the merge target -- that is
     the whole reason capability_slug is not an FK."""
+    s = _sfx()
+    slug, pid, survivor = f"early-{s}", f"p2-{s}", f"agent-early-stop-{s}"
     session.add(CapabilityProposalModel(
-        id="p2", slug_suggestion="early-stop", name="Early Stop", description="d",
-        analyzer_id="an-1", status="PENDING"))
+        id=pid, slug_suggestion=slug, name="Early Stop", description="d",
+        analyzer_id=f"an-{s}", status="PENDING"))
     await session.flush()
 
-    await reject(session, "p2", merge_into="agent-early-stop")
+    await reject(session, pid, merge_into=survivor)
 
-    prop = await session.get(CapabilityProposalModel, "p2")
+    prop = await session.get(CapabilityProposalModel, pid)
     assert prop.status == "REJECTED"
-    assert prop.promoted_capability_slug == "agent-early-stop"
-    assert await session.get(CapabilityModel, "early-stop") is None
+    assert prop.promoted_capability_slug == survivor
+    # Rejection must not mint a capability for the rejected slug.
+    assert await session.get(CapabilityModel, slug) is None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
