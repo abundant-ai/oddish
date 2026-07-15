@@ -11,6 +11,14 @@ name: Daily Changelog
 # REQUIREMENTS:
 # 1. Do NOT add this workflow as a required status check (creates deadlock)
 # 2. Ensure CLAUDE_CODE_OAUTH_TOKEN secret is configured
+# 3. Configure a CHANGELOG_PAT secret: a fine-grained PAT for this repo with
+#    "Contents: read/write" and "Pull requests: read/write". PRs created with
+#    the default GITHUB_TOKEN do NOT trigger pull_request workflows (GitHub
+#    suppresses them to prevent recursion), so required checks that come from
+#    workflows (e.g. PR Preview's "Post preview links") never report and the
+#    repository ruleset blocks the merge forever. With CHANGELOG_PAT the PR
+#    behaves like a human-opened one. Without it, the workflow falls back to
+#    GITHUB_TOKEN and the merge step fails loudly if required checks never run.
 
 on:
   schedule:
@@ -180,7 +188,7 @@ jobs:
       - name: Commit and push changes
         if: steps.check-changes.outputs.has_changes == 'true' && steps.verify-changes.outputs.changelog_updated == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHANGELOG_PAT || secrets.GITHUB_TOKEN }}
         run: |
           git add CHANGELOG.md
           git commit -m "docs: update changelog for ${{ steps.dates.outputs.today }}"
@@ -194,7 +202,7 @@ jobs:
         if: steps.check-changes.outputs.has_changes == 'true' && steps.verify-changes.outputs.changelog_updated == 'true'
         id: create-pr
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHANGELOG_PAT || secrets.GITHUB_TOKEN }}
         run: |
           # Reuse an existing PR for this branch if one is already open
           # (e.g. from an earlier same-day run); otherwise create a new one.
@@ -235,7 +243,7 @@ jobs:
       - name: Merge PR
         if: steps.check-changes.outputs.has_changes == 'true' && steps.verify-changes.outputs.changelog_updated == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.CHANGELOG_PAT || secrets.GITHUB_TOKEN }}
           PR_URL: ${{ steps.create-pr.outputs.pr_url }}
         run: |
           # Prefer GitHub's native auto-merge: if the repo allows it, GitHub
