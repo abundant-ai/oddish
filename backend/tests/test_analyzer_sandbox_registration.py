@@ -56,7 +56,14 @@ def test_later_ensure_builtin_call_cannot_clobber_the_override(monkeypatch):
 def _module_level_call_lineno(tree: ast.Module, func_name: str) -> int | None:
     """Line number of a module-scope call to ``func_name``, whether it's a bare
     expression statement or the test of an ``if`` guard. Returns None if no such
-    call exists at module scope (nested calls, e.g. inside a def, don't count)."""
+    call exists at module scope (nested calls, e.g. inside a def, don't count).
+
+    Matches on source shape, so a behaviour-preserving refactor of functions.py
+    (wrapping the wiring in a helper, aliasing the import) will fail this test
+    even though the wiring still works — update this matcher rather than the
+    module. Parsing beats importing here: functions.py pulls Modal + DB config
+    as import side effects, so a real import needs a wide, fragile stub surface.
+    """
 
     def call_target(node: ast.AST) -> str | None:
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
