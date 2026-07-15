@@ -620,6 +620,76 @@ async def test_store_persists_findings(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_store_persists_models_by_task(monkeypatch):
+    """The roster is the Task Construction denominator. Findings only record
+    failures, so a model that PASSED a task appears nowhere in them."""
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+    from oddish.evals.analyzer.schemas import Finding
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    class _Trial:
+        def __init__(self, id_, model):
+            self.id = id_
+            self.task_id = "task"
+            self.model = model
+            self.analysis_status = JobStatus.SUCCESS  # already analyzed; skip classify
+
+    trial_a = _Trial("t1", "model-a")  # fails -> produces a finding
+    trial_b = _Trial("t2", "model-b")  # passes -> no finding, must still appear
+    trials_by_id = {"t1": trial_a, "t2": trial_b}
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return [(trial_a, "task_path"), (trial_b, "task_path")]
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    # _install_owned_analyzer's session.get() always returns the fake analyzer,
+    # regardless of model class -- fine for the other tests, which pass empty
+    # trial rows and never reach the classify-loop's TrialModel lookup. This
+    # test needs a real trial back for that lookup, so use a session that
+    # branches on the requested model class.
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, model, id_, with_for_update=False):
+            if model is rh.AnalyzerModel:
+                return analyzer
+            return trials_by_id.get(id_)
+
+    monkeypatch.setattr(rh, "get_session", lambda: _Session())
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    class _Output:
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        counts = {"trials": 2, "bad": 1, "good": 1}
+        breakdown = {"1b": 1}
+        reduce_prompt = "rp"
+        findings = [
+            Finding(
+                trial_id="t1", bucket="bad", subcategory="1b",
+                evidence_quote="q", step_ids=[3], root_cause="rc",
+                headroom_signal="", trajectory_link="/tasks/task/probe/t1",
+                model="model-a",
+            )
+        ]
+
+    async def fake_run_eval(inputs, config):
+        return _Output()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.models_by_task == {"task": ["model-a", "model-b"]}
+
+
+@pytest.mark.asyncio
 async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
     """NULL means 'analyzed before findings were persisted'. [] means 'no
     failures found'. Collapsing the two makes a clean run look like a legacy row."""

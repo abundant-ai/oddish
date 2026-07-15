@@ -52,3 +52,6 @@ class AnalyzerEvalOutput:
     # The reduce-stage prompt that produced ``sections``, kept for debugging and
     # reproducibility. None on the zero-work path (no failures → no reduce ran).
     reduce_prompt: str | None = None
+    # task_id -> raw trial.model values that RAN the task, including those that
+    # passed it. Findings only record failures, so this cannot be derived from them.
+    models_by_task: dict[str, list[str]] = field(default_factory=dict)
