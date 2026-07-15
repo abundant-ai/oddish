@@ -13,6 +13,7 @@ from oddish.cli.collect import (
     _build_payload,
     _guard_sources,
     _parse_task_ref,
+    _resolve_task_id,
     _version_trial_ids,
 )
 
@@ -41,7 +42,12 @@ def test_parse_task_ref():
 class _VersionResolveClient:
     """GET /tasks/{id}/trials returns three v16 + one v22 trial (one superseded,
     one probe, one running) so only terminal, non-probe, non-superseded v16
-    trials are linked."""
+    trials are linked.
+
+    The server already filters superseded rows out of this response, so the
+    superseded entry below is belt-and-braces: it proves the client stays
+    correct on its own if that ever changes.
+    """
 
     def get(self, url, params=None):
         trials = [
@@ -65,6 +71,64 @@ class _VersionResolveClient:
 def test_version_trial_ids_filters_terminal_nonprobe_nonsuperseded():
     ids = _version_trial_ids(_VersionResolveClient(), "https://api", "TID", "16")
     assert ids == ["T-16a", "T-16b"]
+
+
+class _StatusClient:
+    """Returns a fixed status for every GET."""
+
+    def __init__(self, status):
+        self.status = status
+        self.urls = []
+
+    def get(self, url, params=None):
+        self.urls.append(url)
+        return httpx.Response(self.status, json={})
+
+
+def test_version_trial_ids_returns_none_on_fetch_error():
+    # None (couldn't tell) must not be confused with [] (genuinely empty), or a
+    # 401/500 silently drops trials instead of failing the collect.
+    assert _version_trial_ids(_StatusClient(500), "https://api", "TID", "16") is None
+    assert _version_trial_ids(_StatusClient(401), "https://api", "TID", "16") is None
+
+
+class _ResolveClient:
+    """GET /tasks/{ref} 200s only for known ids; browse matches on name only,
+    mirroring the real endpoint (which never matches a task id)."""
+
+    def __init__(self, ids=(), items=()):
+        self.ids = set(ids)
+        self.items = list(items)
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/browse"):
+            needle = (params or {}).get("query", "")
+            hits = [it for it in self.items if needle in it["name"]]
+            return httpx.Response(200, json={"items": hits})
+        ref = url.rsplit("/tasks/", 1)[-1]
+        if ref in self.ids:
+            return httpx.Response(200, json={"id": ref, "name": ref.rsplit("-", 1)[0]})
+        return httpx.Response(404, json={})
+
+
+def test_resolve_task_id_accepts_an_exact_task_id():
+    # Regression: browse never matches on id, so a pinned `<task-id>@N` used to
+    # fail resolution even though a bare `--task <task-id>` worked server-side.
+    client = _ResolveClient(ids={"mytask-9aa07749"})
+    assert _resolve_task_id(client, "https://api", "mytask-9aa07749") == "mytask-9aa07749"
+
+
+def test_resolve_task_id_matches_exact_name_via_browse():
+    client = _ResolveClient(items=[{"id": "mytask-9aa07749", "name": "mytask"}])
+    assert _resolve_task_id(client, "https://api", "mytask") == "mytask-9aa07749"
+
+
+def test_resolve_task_id_does_not_prefix_match():
+    # `test` must not silently resolve to `test-harness-...`.
+    client = _ResolveClient(
+        items=[{"id": "test-harness-abc12345", "name": "test-harness"}]
+    )
+    assert _resolve_task_id(client, "https://api", "test") is None
 
 
 # ---------------------------------------------------------------------------
@@ -141,3 +205,38 @@ def test_collect_no_publish_exits_zero_and_skips_publish(monkeypatch):
     result = CliRunner().invoke(app, ["collect", "--task", "mytask", "--no-publish"])
 
     assert result.exit_code == 0, result.output
+
+
+class _EmptyPinClient:
+    """A resolvable task whose pinned version has no linkable trials."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/mytask"):
+            return httpx.Response(200, json={"id": "mytask-abc12345"})
+        if url.endswith("/trials"):
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"unexpected url {url}")
+
+    def post(self, url, json=None):
+        raise AssertionError(f"must not post an empty collection; got {url}")
+
+
+def test_collect_with_only_empty_pins_fails_locally_without_posting(monkeypatch):
+    # The initial guard runs before pins are expanded, so this used to post an
+    # empty payload and surface the server's 400 instead of a clear local error.
+    monkeypatch.setattr(httpx, "Client", _EmptyPinClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--task", "mytask@16"])
+
+    assert result.exit_code == 1, result.output
+    assert "Nothing to collect" in result.output

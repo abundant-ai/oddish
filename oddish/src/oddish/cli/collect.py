@@ -50,28 +50,41 @@ def _parse_task_ref(ref: str) -> tuple[str, str | None]:
 
 
 def _resolve_task_id(client, api_url: str, ref: str) -> str | None:
-    """Resolve a task name (or id) to its concrete task id via browse."""
-    resp = client.get(
-        f"{api_url}/tasks/browse", params={"query": ref, "limit": 10}
-    )
+    """Resolve a task id or name to a concrete task id.
+
+    Mirrors the server's `or_(TaskModel.id == ident, TaskModel.name == ident)` so
+    a pinned `ref@N` resolves the same task a bare `--task ref` would. The id
+    lookup must come first: /tasks/browse matches only name/author/tags, never
+    id, so an exact task id is invisible to it.
+    """
+    resp = client.get(f"{api_url}/tasks/{ref}", params={"include_trials": "false"})
+    if resp.status_code == 200:
+        return resp.json().get("id") or ref
+    resp = client.get(f"{api_url}/tasks/browse", params={"query": ref, "limit": 10})
     if resp.status_code != 200:
         return None
-    items = resp.json().get("items", [])
-    for it in items:
+    for it in resp.json().get("items", []):
         if it.get("id") == ref or it.get("name") == ref:
             return it.get("id")
-    # Fall back to a unique prefix match on the id (name without the hash).
-    prefixed = [it for it in items if str(it.get("id", "")).startswith(f"{ref}-")]
-    if len(prefixed) == 1:
-        return prefixed[0].get("id")
     return None
 
 
-def _version_trial_ids(client, api_url: str, task_id: str, version: str) -> list[str]:
-    """Trial ids of a task's given version: terminal, non-probe, non-superseded."""
-    resp = client.get(f"{api_url}/tasks/{task_id}/trials", params={"limit": 1000})
+def _version_trial_ids(
+    client, api_url: str, task_id: str, version: str
+) -> list[str] | None:
+    """Trial ids of a task's given version: terminal, non-probe, non-superseded.
+
+    None means the trials could not be fetched, which is distinct from `[]` --
+    a version that genuinely has none. Conflating them lets a transient error
+    silently drop trials from an otherwise successful collection.
+    """
+    resp = client.get(f"{api_url}/tasks/{task_id}/trials")
     if resp.status_code != 200:
-        return []
+        console.print(
+            f"[red]Failed to fetch trials for {task_id} "
+            f"(HTTP {resp.status_code}).[/red]"
+        )
+        return None
     data = resp.json()
     trials = data if isinstance(data, list) else data.get("trials", data.get("items", []))
     want = f"{task_id}-v{version}"
@@ -172,6 +185,12 @@ def collect(
                 console.print(f"[red]Could not resolve task '{base}'.[/red]")
                 raise typer.Exit(1)
             ids = _version_trial_ids(client, api_url, task_id, version)
+            if ids is None:
+                console.print(
+                    f"[red]Could not read trials for {base}@{version}; aborting "
+                    f"rather than silently dropping them.[/red]"
+                )
+                raise typer.Exit(1)
             if not ids:
                 console.print(
                     f"[yellow]Warning:[/yellow] {base}@{version} has no linkable "
@@ -179,10 +198,21 @@ def collect(
                 )
             pinned_trial_ids.extend(ids)
 
+        resolved_trial_ids = [*trial_ids, *pinned_trial_ids]
+        # Re-guard: the initial check ran before pins were expanded, so a set of
+        # pins that all resolve to zero trials would otherwise post an empty
+        # payload and hit the server's 400.
+        if not _guard_sources(tasks=plain_tasks, trial_ids=resolved_trial_ids):
+            console.print(
+                "[red]Nothing to collect: every --task pin resolved to zero "
+                "linkable trials.[/red]"
+            )
+            raise typer.Exit(1)
+
         payload = _build_payload(
             name=coll_name,
             tasks=plain_tasks,
-            trial_ids=[*trial_ids, *pinned_trial_ids],
+            trial_ids=resolved_trial_ids,
         )
 
         try:
