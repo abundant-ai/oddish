@@ -1,4 +1,8 @@
-from api.services.cc_chat.analyzer_prompt import REDUCE_PATH, build_cohort_prompt
+from api.services.cc_chat.analyzer_prompt import (
+    FINDINGS_PATH,
+    REDUCE_PATH,
+    build_cohort_prompt,
+)
 from oddish.evals.analyzer.prompt_builder import section_brief
 from oddish.evals.primitives import SubAnalysis
 
@@ -68,6 +72,7 @@ def test_prompt_names_the_output_files_and_cli():
     p = build_cohort_prompt("bad", [_sa("bad-1")], _roster(), COUNTS,
                             {"bad-1": "o"})
     assert REDUCE_PATH in p
+    assert FINDINGS_PATH in p
     assert "node /home/daytona/workspace/oddish-query trials logs" in p
 
 
@@ -76,3 +81,24 @@ def test_prompt_uses_the_shared_section_fragments():
     p = build_cohort_prompt("good", [_sa("good-1", "capability_failure")],
                             _roster(), COUNTS, {})
     assert section_brief("headroom_analysis") in p
+
+
+def test_no_escaped_braces_reach_the_agent():
+    """map.txt escapes its literal JSON braces for str.format(); we inline it
+    raw, so they must be unescaped or the agent sees malformed JSON."""
+    p = build_cohort_prompt("bad", [_sa("bad-1")], _roster(), COUNTS, {"bad-1": "o"})
+    assert "{{" not in p and "}}" not in p
+
+
+def test_map_output_example_uses_single_braces_and_keeps_placeholders():
+    p = build_cohort_prompt("bad", [_sa("bad-1")], _roster(), COUNTS, {"bad-1": "o"})
+    assert '{"trial_id"' in p
+    assert "{trajectory_link}" in p   # agent fills this itself
+
+
+def test_good_prompt_cannot_leak_oracle_even_if_caller_passes_it():
+    p = build_cohort_prompt(
+        "good", [_sa("good-1", "capability_failure")], _roster(), COUNTS,
+        {"good-1": "LEAKED ORACLE TEXT"},
+    )
+    assert "LEAKED ORACLE TEXT" not in p

@@ -29,7 +29,7 @@ def _prompts_dir():
     return files("oddish.evals.analyzer") / "prompts"
 
 
-def _cohort_block(cohort: list[SubAnalysis], oracle_by_trial: dict[str, str]) -> str:
+def _cohort_block(bucket: str, cohort: list[SubAnalysis], oracle_by_trial: dict[str, str]) -> str:
     out = []
     for sa in cohort:
         lines = [
@@ -39,7 +39,9 @@ def _cohort_block(cohort: list[SubAnalysis], oracle_by_trial: dict[str, str]) ->
             f"  prior_root_cause: {sa.root_cause}",
             f"  trajectory_link: {sa.trajectory_link}",
         ]
-        oracle = oracle_by_trial.get(sa.trial_id)
+        # Oracle context is bad-bucket-only; gate structurally so a caller
+        # mistake can't leak it into a good-cohort prompt.
+        oracle = oracle_by_trial.get(sa.trial_id) if bucket == "bad" else None
         if oracle:
             lines.append(f"  oracle_context: {oracle}")
         out.append("\n".join(lines))
@@ -60,7 +62,12 @@ def build_cohort_prompt(
     counts: dict,
     oracle_by_trial: dict[str, str],
 ) -> str:
-    map_template = (_prompts_dir() / "map.txt").read_text()
+    # map.txt is a str.format() template; its literal JSON braces are escaped
+    # ({{/}}) for that path. We inline it raw for the agent, so unescape them
+    # here — leaving the single-brace {placeholder}s for the agent to fill.
+    map_template = (
+        (_prompts_dir() / "map.txt").read_text().replace("{{", "{").replace("}}", "}")
+    )
     section_keys = SECTION_KEYS_BY_BUCKET[bucket]
     example = json.dumps({k: "...markdown..." for k in section_keys})
 
@@ -76,7 +83,7 @@ def build_cohort_prompt(
         "## Full roster (BOTH cohorts — for cross-referencing only)\n"
         f"{_roster_block(roster)}\n\n"
         f"## Your cohort ({len(cohort)} trials) — the ONLY trials to analyze\n"
-        f"{_cohort_block(cohort, oracle_by_trial)}\n"
+        f"{_cohort_block(bucket, cohort, oracle_by_trial)}\n"
     )
 
     # Non-f strings below: they reference the template's literal {placeholders}.
