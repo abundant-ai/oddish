@@ -52,6 +52,35 @@ def test_invalid_api_backend_rejected(tmp_path):
         )
 
 
+def test_build_config_toml_omits_reliability_keys_by_default(tmp_path):
+    config = OddishGrokBuild(
+        logs_dir=tmp_path, model_name="xai/v9-stickynote"
+    ).build_config_toml()
+    assert "max_retries" not in config
+    assert "inference_idle_timeout_secs" not in config
+
+
+def test_build_config_toml_applies_reliability_keys_to_every_model_block(tmp_path):
+    # --agent-kwarg delivers values as strings; ints must work too.
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path,
+        model_name="xai/v9-stickynote",
+        max_retries="15",
+        inference_idle_timeout_secs=300,
+    )
+    config = agent.build_config_toml()
+    assert config.count("max_retries = 15") == 2
+    assert config.count("inference_idle_timeout_secs = 300") == 2
+
+
+@pytest.mark.parametrize("bad", ["nope", "0", -3, "12.5"])
+def test_invalid_reliability_kwargs_rejected(tmp_path, bad):
+    with pytest.raises(ValueError, match="max_retries"):
+        OddishGrokBuild(logs_dir=tmp_path, max_retries=bad)
+    with pytest.raises(ValueError, match="inference_idle_timeout_secs"):
+        OddishGrokBuild(logs_dir=tmp_path, inference_idle_timeout_secs=bad)
+
+
 # Comfortably larger than ARG_MAX and than a single realistic instruction; the
 # old code embedded this three times, so the exec argv would have been ~600KB.
 _LARGE_INSTRUCTION = "SENTINEL_START " + ("payload-line\n" * 20_000) + " SENTINEL_END"
@@ -115,4 +144,52 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
 
     # The session store is captured out-of-band so tool calls + token usage
     # (absent from the text-only stdout) survive sandbox teardown.
+    assert any("grok-session" in c for c in agent_commands)
+
+    # An idle-timeout death resumes the session (bounded) instead of failing
+    # the trial: the xAI-side stream watchdog is the only grok failure that is
+    # both fatal to the CLI and transient server-side.
+    assert "grep -qi 'idle timeout'" in command
+    assert command.count("grok -c -p") == 1
+    assert "resumes -lt 3" in command
+    # The resume appends to the streamed event log and re-sends a short inline
+    # continuation, never the staged instruction.
+    assert ">>/logs/agent/grok-build.json" in command
+    assert "Continue the original task" in command
+
+
+@pytest.mark.asyncio
+async def test_session_captured_even_when_agent_fails(tmp_path, monkeypatch):
+    """A crashed grok run must still upload its session store.
+
+    Without this, idle-timeout deaths leave no unified.jsonl in the trial logs
+    and the only diagnostic evidence is the terse stderr JSON.
+    """
+    agent = OddishGrokBuild(logs_dir=tmp_path)
+    agent_commands: list[str] = []
+
+    class _FakeEnv:
+        async def upload_file(self, source_path, target_path):
+            return None
+
+    async def _fake_write_config(self, environment):
+        return None
+
+    async def _fake_exec_as_root(self, environment, *, command, **kwargs):
+        return None
+
+    async def _fake_exec_as_agent(self, environment, *, command, **kwargs):
+        agent_commands.append(command)
+        if "grok -p" in command:
+            raise RuntimeError("Command failed (exit 1)")
+
+    monkeypatch.setattr(OddishGrokBuild, "_write_config", _fake_write_config)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", _fake_exec_as_root)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", _fake_exec_as_agent)
+
+    with pytest.raises(RuntimeError):
+        await agent.run(
+            instruction="do the thing", environment=_FakeEnv(), context=object()
+        )
+
     assert any("grok-session" in c for c in agent_commands)
