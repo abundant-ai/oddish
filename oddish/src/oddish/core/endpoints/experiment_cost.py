@@ -80,6 +80,12 @@ _uncached_input = _non_negative(_INPUT - _CACHED - _CACHE_WRITE)
 
 _HAS_NATIVE_COST = TrialModel.cost_usd.isnot(None)
 
+# Matches the frontend usage fold: a trial contributes when either reported
+# input or output usage, and the displayed total is input + output tokens.
+_HAS_TOKEN_USAGE = or_(
+    TrialModel.input_tokens.isnot(None), TrialModel.output_tokens.isnot(None)
+)
+
 # Mirrors ``_resolve_trial_cost`` + ``estimate_cost_usd``: the former bails when
 # both token columns are NULL, the latter when no billable token bucket is
 # positive. A trial failing either resolves to no cost at all.
@@ -115,6 +121,8 @@ def experiment_cost_groups_select(
             func.count().label("trial_count"),
             func.count(case((_HAS_NATIVE_COST, 1))).label("native_count"),
             _sum_when(_HAS_NATIVE_COST, TrialModel.cost_usd).label("native_cost_usd"),
+            func.count(case((_HAS_TOKEN_USAGE, 1))).label("token_trial_count"),
+            _sum_when(_HAS_TOKEN_USAGE, _INPUT + _OUTPUT).label("token_count"),
             func.count(case((_ESTIMATED_ROW, 1))).label("estimated_count"),
             _sum_when(_ESTIMATED_ROW, _uncached_input).label("uncached_input_tokens"),
             _sum_when(_ESTIMATED_ROW, _CACHED).label("cached_tokens"),
@@ -155,6 +163,11 @@ def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
 
     for row in rows:
         totals.total_trials += row.trial_count
+        totals.token_count += row.token_count
+        totals.token_trial_count += row.token_trial_count
+        if row.billed:
+            totals.billed_token_count += row.token_count
+            totals.billed_token_trial_count += row.token_trial_count
 
         priced: list[tuple[float, int, bool]] = []
         if row.native_count:

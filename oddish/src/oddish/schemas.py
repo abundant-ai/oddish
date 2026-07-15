@@ -827,10 +827,14 @@ class ExperimentCostTotals(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    token_count: int = 0
+    token_trial_count: int = 0
     billed_cost_usd: float = 0.0
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    billed_token_count: int = 0
+    billed_token_trial_count: int = 0
     total_trials: int = 0
 
 
