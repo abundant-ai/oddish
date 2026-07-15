@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Sequence
 
 from oddish.evals.primitives import SubAnalysis, TrajectoryBundle
 from oddish.evals.analyzer.bucketing import BUCKET_OF
@@ -10,6 +11,36 @@ from oddish.evals.analyzer.schemas import Finding
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 MAP_PROMPT_TEMPLATE = (_PROMPT_DIR / "map.txt").read_text()
 REDUCE_PROMPT_TEMPLATE = (_PROMPT_DIR / "reduce.txt").read_text()
+
+_SECTIONS_DIR = _PROMPT_DIR / "sections"
+
+# Order matches reduce.txt's original bullet list; sections_block depends on it.
+SECTION_KEYS: tuple[str, ...] = (
+    "bad_failure_content",
+    "good_failure_content",
+    "universal_capabilities_content",
+    "headroom_analysis",
+)
+
+# Which cohort owns which sections. reduce.txt derives bad_failure_content from
+# the bad cohort and the other three from "the good failures", so a per-cohort
+# run needs no cross-cohort synthesis.
+SECTION_KEYS_BY_BUCKET: dict[str, tuple[str, ...]] = {
+    "bad": ("bad_failure_content",),
+    "good": (
+        "good_failure_content",
+        "universal_capabilities_content",
+        "headroom_analysis",
+    ),
+}
+
+
+def section_brief(key: str) -> str:
+    return (_SECTIONS_DIR / f"{key}.txt").read_text().rstrip("\n")
+
+
+def sections_block(keys: Sequence[str]) -> str:
+    return "\n".join(section_brief(k) for k in keys)
 
 
 def _trajectory_block(bundle: TrajectoryBundle) -> str:
@@ -52,5 +83,7 @@ def build_reduce_prompt(findings: list[Finding], counts: dict) -> str:
     )
     counts_block = json.dumps(counts, indent=2)
     return REDUCE_PROMPT_TEMPLATE.format(
-        counts_block=counts_block, findings_block=findings_block
+        counts_block=counts_block,
+        findings_block=findings_block,
+        sections_block=sections_block(SECTION_KEYS),
     )
