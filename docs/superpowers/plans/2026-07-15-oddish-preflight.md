@@ -412,251 +412,31 @@ git commit -m "feat(preflight): add check models, registry, and runner"
 
 ---
 
-### Task 2: `dockerfile_leaks` check
+### Task 2: REMOVED — `dockerfile_leaks`
 
-Fails a Dockerfile that references the solution or the tests. Baking either into the agent image hands over the answer or the grader.
+**Do not implement.** This task was implemented, reviewed three times, and then
+reverted (commit `8d14eece`). It is retained here as a numbered placeholder so
+Tasks 3-8 keep their numbers and briefs.
 
-**Files:**
-- Create: `oddish/src/oddish/preflight/checks/dockerfile_leaks.py`
-- Modify: `oddish/src/oddish/preflight/registry.py`
-- Test: `oddish/tests/test_preflight_checks.py`
+**Why:** Harbor builds the task image with the build context set to
+`environment/` (`harbor/environments/docker/docker.py:240`), and `tests/` and
+`solution/` are *siblings* of `environment/`, not children. A task Dockerfile
+therefore cannot `COPY` the real grader or the real solution — those paths lie
+outside the build context and Docker refuses them. The check guarded a door
+Docker welds shut, while its broadened form produced ERROR-severity false
+positives on ordinary idioms (`FROM node:20 AS tests`, `RUN echo "all tests
+pass"`).
 
-**Interfaces:**
-- Consumes: `Finding`, `Severity`, `Check` from `oddish.preflight.models`; `make_task` fixture.
-- Produces: `dockerfile_leaks.CHECK_ID = "dockerfile_leaks"`, `dockerfile_leaks.check(task_dir, config) -> list[Finding]`.
+The real leak in this family — an author *duplicating* the grader inside
+`environment/` — needs a content comparison, not a Dockerfile grep. It is a
+candidate follow-up, not a v1 check.
 
-- [ ] **Step 1: Write the failing test**
+**What survives:** Task 2 created `oddish/tests/test_preflight_checks.py` with
+the shared `_config(task_dir)` helper. The revert kept that scaffold; Task 3
+appends to it as planned.
 
-Create `oddish/tests/test_preflight_checks.py`:
-
-```python
-from __future__ import annotations
-
-from pathlib import Path
-import sys
-
-import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from harbor.models.task.config import TaskConfig
-
-from oddish.preflight.checks import dockerfile_leaks
-from oddish.preflight.models import Severity
-
-
-def _config(task_dir: Path) -> TaskConfig:
-    return TaskConfig.model_validate_toml((task_dir / "task.toml").read_text())
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        # Literal file references — what harbor-lh's original caught.
-        "COPY solution/solve.sh /app/solve.sh",
-        "COPY tests/test.sh /app/test.sh",
-        "COPY tests/test_main.py /app/",
-        "ADD tests/test_helpers.py /opt/",
-        # Directory and glob forms — the idiomatic way to write the same leak,
-        # which the literal-path original silently passed.
-        "COPY tests/ /app/tests",
-        "COPY solution/ /app/solution",
-        "COPY tests/test_*.py /app/",
-        "COPY solution/*.sh /app/",
-        # Bare directory (no trailing slash) and JSON-array forms.
-        "COPY tests /app/tests",
-        "COPY solution /app/solution",
-        'COPY ["tests", "/app/tests"]',
-        'COPY ["solution", "/app/solution"]',
-    ],
-)
-def test_dockerfile_leaks_flags_solution_and_test_references(make_task, line):
-    task_dir = make_task(dockerfile=f"FROM ubuntu:24.04\n{line}\n")
-    findings = dockerfile_leaks.check(task_dir, _config(task_dir))
-    assert len(findings) == 1
-    assert findings[0].check_id == "dockerfile_leaks"
-    assert findings[0].severity is Severity.ERROR
-    assert findings[0].line == 2
-
-
-def test_dockerfile_leaks_passes_a_clean_dockerfile(make_task):
-    task_dir = make_task(
-        dockerfile="FROM ubuntu:24.04\nCOPY environment/app.py /app/\nWORKDIR /app\n"
-    )
-    assert dockerfile_leaks.check(task_dir, _config(task_dir)) == []
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        # Leading boundary: a directory that merely ends in "tests"/"solution"
-        # is not the task's tree.
-        "COPY unittests/test.sh /app/",
-        "COPY my_solution/solve.sh /app/",
-        "COPY resolution/x /app/",
-        # Trailing boundary: a longer name that merely starts with it.
-        "COPY testsuite/foo /app/",
-        "COPY tests-data/x /app/",
-        # Destination paths are not leaks — only sources are.
-        "COPY environment/foo /app/tests/",
-        "COPY x /app/tests",
-        "RUN mkdir -p /app/tests",
-    ],
-)
-def test_dockerfile_leaks_does_not_false_positive_on_similar_names(make_task, line):
-    task_dir = make_task(dockerfile=f"FROM ubuntu:24.04\n{line}\n")
-    assert dockerfile_leaks.check(task_dir, _config(task_dir)) == []
-
-
-def test_dockerfile_leaks_ignores_comments(make_task):
-    task_dir = make_task(
-        dockerfile="FROM ubuntu:24.04\n# COPY solution/solve.sh /app/\n"
-    )
-    assert dockerfile_leaks.check(task_dir, _config(task_dir)) == []
-
-
-def test_dockerfile_leaks_is_silent_without_a_dockerfile(make_task):
-    task_dir = make_task(dockerfile=None)
-    assert dockerfile_leaks.check(task_dir, _config(task_dir)) == []
-
-
-def test_dockerfile_leaks_reports_every_offending_line(make_task):
-    task_dir = make_task(
-        dockerfile=(
-            "FROM ubuntu:24.04\n"
-            "COPY solution/solve.sh /app/\n"
-            "COPY tests/test.sh /app/\n"
-        )
-    )
-    findings = dockerfile_leaks.check(task_dir, _config(task_dir))
-    assert [f.line for f in findings] == [2, 3]
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cd oddish && uv run pytest tests/test_preflight_checks.py -v`
-Expected: FAIL with `ImportError: cannot import name 'dockerfile_leaks'`
-
-- [ ] **Step 3: Write the implementation**
-
-Create `oddish/src/oddish/preflight/checks/dockerfile_leaks.py`:
-
-```python
-from __future__ import annotations
-
-import re
-from pathlib import Path
-
-from harbor.models.task.config import TaskConfig
-
-from oddish.preflight.models import Finding, Severity
-
-CHECK_ID = "dockerfile_leaks"
-
-# Referencing any of these from the agent's Dockerfile bakes the answer
-# (the solution) or the grader (the tests) into the image the agent can read.
-#
-# Ported from harbor-lh's ci_checks/check-dockerfile-references.sh, but
-# deliberately broader. That script greps a fixed list of literal file paths,
-# which its name ("references") is honest about — but it silently passes the
-# idiomatic forms of the very leak it exists to prevent:
-#
-#     COPY tests/ /app/tests        -> ships the whole grader
-#     COPY solution/ /app/solution  -> ships the whole answer
-#     COPY tests/test_*.py /app/    -> literal glob, matches no literal path
-#
-# So the port matches the *directory* as well: any reference to the tests or
-# solution tree, in any form.
-#
-# Match the bare directory name between two boundaries, rather than enumerating
-# the shapes a reference can take — enumerating shapes is how the upstream
-# script (and two drafts of this port) kept missing idiomatic forms like
-# `COPY tests/`, `COPY tests`, and `COPY ["tests", …]`.
-#
-# _ANCHOR — start of line or a separator, with an optional `./`. It excludes `/`
-# from the separator class on purpose: a leading slash would match the
-# *destination* of `COPY x /app/tests/`, which is not a leak. It also stops
-# `unittests/` and `my_solution/` matching, since `t` and `_` are not
-# separators.
-#
-# _BOUNDARY — the name must end here: a `/`, end of line, or (lookahead)
-# whitespace/quote/comma/bracket. This admits `tests`, `tests/`, and `"tests"`
-# while rejecting `testsuite/` and `tests-data/`.
-_ANCHOR = r"(?:^|[\s\"'=])(?:\./)?"
-_BOUNDARY = r"(?:/|$|(?=[\s\"',\]]))"
-
-_FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(_ANCHOR + r"solution" + _BOUNDARY), "the solution/ tree"),
-    (re.compile(_ANCHOR + r"tests" + _BOUNDARY), "the tests/ tree"),
-)
-
-
-def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
-    dockerfile = task_dir / "environment" / "Dockerfile"
-    if not dockerfile.is_file():
-        return []
-
-    findings: list[Finding] = []
-    text = dockerfile.read_text(encoding="utf-8", errors="ignore")
-
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        # Unlike the bash original, a commented-out reference is not a leak.
-        if line.lstrip().startswith("#"):
-            continue
-        for pattern, label in _FORBIDDEN:
-            if pattern.search(line):
-                findings.append(
-                    Finding(
-                        check_id=CHECK_ID,
-                        severity=Severity.ERROR,
-                        task_dir=task_dir,
-                        path=dockerfile,
-                        line=lineno,
-                        message=(
-                            f"Dockerfile references {label}, which puts the "
-                            "solution or the grader inside the agent's image."
-                        ),
-                        fix_hint=(
-                            "Remove the reference. Harbor mounts tests at verify "
-                            "time; the image must not contain them."
-                        ),
-                    )
-                )
-                break
-
-    return findings
-```
-
-- [ ] **Step 4: Register the check**
-
-Edit `oddish/src/oddish/preflight/registry.py`:
-
-```python
-from __future__ import annotations
-
-from oddish.preflight.checks import dockerfile_leaks
-from oddish.preflight.models import Check
-
-CHECKS: list[Check] = [
-    Check(
-        id=dockerfile_leaks.CHECK_ID,
-        description="Solution and tests stay out of the agent image",
-        fn=dockerfile_leaks.check,
-    ),
-]
-```
-
-- [ ] **Step 5: Run tests to verify they pass**
-
-Run: `cd oddish && uv run pytest tests/test_preflight_checks.py -v`
-Expected: 8 passed
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add oddish/src/oddish/preflight oddish/tests/test_preflight_checks.py
-git commit -m "feat(preflight): flag Dockerfiles that reference the solution or tests"
-```
+**The generalizable rule, which Task 6 depends on:** only what is inside
+`environment/` can enter the image.
 
 ---
 
@@ -1294,7 +1074,11 @@ Two rules: repo fetches, and `.git` in the image.
 - Consumes: `Finding`, `Severity`.
 - Produces: `provenance.CHECK_ID = "provenance"`, `provenance.check(task_dir, config) -> list[Finding]`.
 
-**Deliberate simplification of the `.git` rule.** The spec says "a COPY or ADD source directory contains a `.git`". Resolving COPY sources correctly requires knowing Harbor's build context, which is not something a static check can assume. Instead the rule is: **any `.git` anywhere under the task dir is an error unless `.dockerignore` excludes it.** This is strictly broader and cannot miss the leak. It does not false-positive on the enclosing repo's own `.git`, because that lives at the repo root, not under `tasks/<slug>/`.
+**The `.git` rule is scoped to `environment/`.** Harbor builds the task image with the build context set to `environment/` (`harbor/environments/docker/docker.py:240`). Only what is inside the build context can enter the image, so only a `.git` under `environment/` can reach the agent — Docker refuses paths outside the context.
+
+So: **a `.git` anywhere under `environment/` is an error unless `.dockerignore` excludes it.** A `.git` elsewhere in the task dir is ignored; flagging it would be an ERROR-severity false positive on something that provably cannot happen. (That mistake is what got Task 2 removed — see its removal record above.)
+
+This also means the enclosing repo's own `.git` is a non-issue: it lives at the repo root, far outside `environment/`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1377,7 +1161,7 @@ def test_provenance_ignores_comments(make_task):
     assert provenance.check(task_dir, _config(task_dir)) == []
 
 
-def test_provenance_flags_a_git_dir_in_the_task(make_task):
+def test_provenance_flags_a_git_dir_inside_the_build_context(make_task):
     task_dir = make_task(extra_files={"environment/repo/.git/HEAD": "ref: refs/heads/main\n"})
     findings = [f for f in provenance.check(task_dir, _config(task_dir)) if ".git" in f.message]
     assert len(findings) == 1
@@ -1390,6 +1174,20 @@ def test_provenance_accepts_a_git_dir_excluded_by_dockerignore(make_task):
             "environment/repo/.git/HEAD": "ref: refs/heads/main\n",
             ".dockerignore": "**/.git\n",
         }
+    )
+    assert provenance.check(task_dir, _config(task_dir)) == []
+
+
+@pytest.mark.parametrize(
+    "git_file",
+    ["solution/repo/.git/HEAD", "tests/repo/.git/HEAD", ".git/HEAD"],
+)
+def test_provenance_ignores_a_git_dir_outside_the_build_context(make_task, git_file):
+    # Only environment/ is the Docker build context; Docker refuses paths
+    # outside it, so a .git here provably cannot reach the agent's image.
+    # Flagging it would be an ERROR on something that cannot happen.
+    task_dir = make_task(
+        extra_files={git_file: "ref: refs/heads/main\n", ".dockerignore": "**/.git\n"}
     )
     assert provenance.check(task_dir, _config(task_dir)) == []
 
@@ -1516,11 +1314,16 @@ def _dockerignore_excludes_git(task_dir: Path) -> bool:
 
 
 def _git_findings(task_dir: Path) -> list[Finding]:
-    # Broader than "is it COPY'd": resolving COPY sources needs the build
-    # context, which a static check cannot assume. Any .git under the task dir
-    # is a leak risk. The enclosing repo's own .git lives at the repo root, not
-    # here, so this does not false-positive on it.
-    git_paths = sorted(p for p in task_dir.rglob(".git"))
+    # Scoped to the build context. Harbor builds the image with context set to
+    # environment/ (harbor/environments/docker/docker.py:240), and Docker
+    # refuses paths outside it — so only a .git under environment/ can reach the
+    # agent. A .git elsewhere in the task dir provably cannot be baked in;
+    # flagging it would be an ERROR on something that cannot happen.
+    env_dir = task_dir / "environment"
+    if not env_dir.is_dir():
+        return []
+
+    git_paths = sorted(p for p in env_dir.rglob(".git"))
     excluded = _dockerignore_excludes_git(task_dir)
 
     if git_paths:
@@ -1533,8 +1336,9 @@ def _git_findings(task_dir: Path) -> list[Finding]:
                 task_dir=task_dir,
                 path=p,
                 message=(
-                    "Task ships a .git directory. The agent can run `git log` "
-                    "and read the fix commit straight out of the image."
+                    "environment/ ships a .git directory, so it lands in the "
+                    "agent's image. The agent can run `git log` and read the "
+                    "fix commit straight out of it."
                 ),
                 fix_hint=(
                     "Delete the .git directory, or exclude it with a "
@@ -1552,7 +1356,8 @@ def _git_findings(task_dir: Path) -> list[Finding]:
                 task_dir=task_dir,
                 message=(
                     "No .dockerignore excluding .git. Nothing leaks today, but "
-                    "a future COPY of a git checkout would go unnoticed."
+                    "a future COPY of a git checkout into environment/ would go "
+                    "unnoticed."
                 ),
                 fix_hint="Add a .dockerignore containing `**/.git`.",
             )

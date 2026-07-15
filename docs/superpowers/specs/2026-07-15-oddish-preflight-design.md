@@ -75,55 +75,43 @@ harbor-lh's dataset and task-farming pipeline.
 
 ## Scope of this change
 
-Five checks ship: four ported, one net-new. Four of the five answer a single
-question — **can the agent get the answer without doing the work?**
+Four checks ship: three ported, one net-new.
 
 | Check | Origin | What it does | Cost to port |
 | --- | --- | --- | --- |
-| `dockerfile_leaks` | `check-dockerfile-references.sh` | Fails a Dockerfile referencing the `solution/` or `tests/` tree in any form — i.e. baking the answer or the grader into the agent image | ~40 lines |
 | `closed_internet` | `check-closed-internet.sh` | Fails `network_mode = "public"` (including implicitly, since Harbor defaults to public) without a non-placeholder justification | ~40 lines, reads `TaskConfig` |
 | `anti_cheat_soundness` | `_anti_cheat_scan.py` | Flags brittle source-scanning anti-cheat regexes | near-verbatim; already Python |
 | `solution_format` | `check-solution-format.sh` | Fails `.patch`/`.diff` in `solution/` and patch-application in `solve.sh` | ~40 lines |
-| `provenance` | net-new | Repo fetches and `.git`-in-image | the real work |
+| `provenance` | net-new | Build-time repo fetches, and `.git` inside the build context | the real work |
 
-### Naming note
+### Why `dockerfile_leaks` is not here
 
-The port is named `dockerfile_leaks`, not `dockerfile_references`. harbor-lh
-named the original for its *mechanism* (it greps Dockerfile references) rather
-than its *purpose* (keep the solution and tests out of the agent image), which
-is actively misleading: this spec's own first draft mis-triaged it as a "do
-COPY'd files exist" check on the strength of the name alone. The rename is the
-fix.
+An earlier draft of this spec included a port of
+`check-dockerfile-references.sh` — renamed `dockerfile_leaks` — to stop a task
+Dockerfile from baking the solution or the grader into the agent's image. It was
+implemented, reviewed three times, and then **removed**, because the leak it
+guards is already impossible.
 
-The rename also raised the bar, and the port has to clear it. harbor-lh's script
-greps a fixed list of literal file paths, which "references" is honest about —
-but that silently passes the idiomatic forms of the leak:
+Harbor builds the task image with the build context set to `environment/`
+(`harbor/environments/docker/docker.py:240`), and `tests/` and `solution/` are
+*siblings* of `environment/`, not children. A task Dockerfile cannot `COPY` them:
+they lie outside the build context and Docker refuses. `COPY tests/ /app/`
+resolves to `environment/tests/`, which is not the real grader; `COPY ../tests`
+fails the build outright.
 
-```
-COPY tests/ /app/tests        # ships the whole grader
-COPY solution/ /app/solution  # ships the whole answer
-COPY tests/test_*.py /app/    # literal glob matches no literal path
-COPY tests /app/tests         # bare directory name
-COPY ["tests", "/app/tests"]  # JSON-array form
-```
+harbor-lh's original has the same property, which is likely why it was only ever
+a loose literal grep — it was never load-bearing. Broadening it to catch
+directory and glob forms only produced ERROR-severity false positives on ordinary
+Dockerfile idioms (`FROM node:20 AS tests`, `RUN echo "all tests pass"`).
 
-So the port matches the bare `solution` / `tests` directory name **between two
-boundaries**, rather than enumerating the shapes a reference can take:
+The real leak vector in this family is a task author *duplicating* the grader
+inside `environment/`, where it would legitimately be copied in. Catching that
+requires comparing content (e.g. hashing `environment/**` against `tests/**`),
+not grepping the Dockerfile. That is a genuinely useful check and a candidate
+follow-up, but it is a different design and out of scope for v1.
 
-- Leading anchor `(?:^|[\s"'=])(?:\./)?` — start of line or a separator, with an
-  optional `./`. It excludes `/` deliberately, so the *destination* of
-  `COPY x /app/tests/` does not match; a destination is not a leak. It also
-  rejects `unittests/`, `my_solution/`, and `resolution/`.
-- Trailing boundary `(?:/|$|(?=[\s"',\]]))` — the name must end there. Admits
-  `tests`, `tests/`, and `"tests"`; rejects `testsuite/` and `tests-data/`.
-
-Matching a name between boundaries, rather than enumerating forms, is the whole
-point: enumeration is how the upstream script and two drafts of this port each
-missed an idiomatic form that a reviewer then found.
-
-This is a deliberate divergence from upstream behaviour. A check that passes the
-ordinary way of writing the leak is worse than no check, because it manufactures
-confidence.
+The lesson generalizes and is why the `.git` rule below is scoped to
+`environment/`: **only what is inside the build context can enter the image.**
 
 ### Deferred
 
@@ -155,7 +143,6 @@ preflight/
   models.py        # Finding, Severity, Check
   runner.py        # run_checks(paths) -> list[Finding]
   checks/
-    dockerfile_leaks.py
     closed_internet.py
     solution_format.py
     anti_cheat_soundness.py
@@ -199,10 +186,8 @@ class Finding:
 | Finding | Check | Severity |
 | --- | --- | --- |
 | Unsuppressed repo fetch in Dockerfile / solve.sh / test.sh | `provenance` | error |
-| `.git` reachable in the image | `provenance` | error |
-| No `.git` present, but no `.dockerignore` excluding it | `provenance` | warn |
-| Dockerfile references `solution/solve.sh` | `dockerfile_leaks` | error |
-| Dockerfile references `tests/test.sh` or `tests/test_*.py` | `dockerfile_leaks` | error |
+| `.git` inside `environment/` (the build context) | `provenance` | error |
+| No `.git` in `environment/`, but no `.dockerignore` excluding it | `provenance` | warn |
 | `network_mode = "public"` with no justification | `closed_internet` | error |
 | `network_mode = "public"` with a placeholder justification | `closed_internet` | error |
 | `.patch` / `.diff` in `solution/` | `solution_format` | error |
@@ -245,22 +230,24 @@ The `# provenance-ok:` grammar deliberately mirrors harbor-lh's existing
 
 ### `.git` rule
 
-Error if any `.git` exists anywhere under the task directory and no
-`.dockerignore` excludes it.
+Scoped to `environment/` — the Docker build context
+(`harbor/environments/docker/docker.py:240`). Only what lives inside the build
+context can enter the image, so only a `.git` there can reach the agent.
 
-Warn if no `.git` is present and no `.dockerignore` excludes it — the leak is
-latent rather than live.
+- **Error** if a `.git` exists anywhere under `environment/` and no
+  `.dockerignore` excludes it.
+- **Warn** if no `.git` is present under `environment/` and no `.dockerignore`
+  excludes it — the leak is latent rather than live, and a future `COPY` of a
+  git checkout would go unnoticed.
 
-This is deliberately broader than "a `COPY`/`ADD` source contains a `.git`".
-Resolving COPY sources correctly requires knowing Harbor's build context, which
-a static check cannot assume, and guessing wrong in the permissive direction
-means the leak ships. The broad rule cannot miss it. It does not false-positive
-on the enclosing repository's own `.git`, which lives at the repo root rather
-than under `tasks/<slug>/`.
+Any `.git` elsewhere in the task directory is ignored: Docker refuses paths
+outside the build context, so it provably cannot be baked in. Flagging it would
+be an ERROR-severity false positive on something that cannot happen — the same
+mistake that got `dockerfile_leaks` removed.
 
-This is the quietest leak and the highest-value surface: the agent runs `git log`
-in `/app` and reads the fix commit message, or `git diff HEAD~1` and reads the
-answer outright.
+This is the quietest leak of the ones that remain reachable: the agent runs
+`git log` in `/app` and reads the fix commit message, or `git diff HEAD~1` and
+reads the answer outright.
 
 ### Out of scope for provenance
 
