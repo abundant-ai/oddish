@@ -91,22 +91,16 @@ def _findings_from_jsonl(text: str, bucket, links) -> list[Finding]:
     return out
 
 
-def _proposals_from(
-    text: str, bucket: str, host_by_trial: dict[str, dict]
+def _merge_proposals(
+    dicts: list[dict], bucket: str, host_by_trial: dict[str, dict]
 ) -> list[CapabilityProposal]:
-    """Merge by slug. Each MAP batch is a fresh process with no memory of the
-    previous one, so the same capability arrives once per batch that saw it."""
+    """Merge by slug. One cohort is one continuous session, and a single
+    session can still re-propose the same capability across several similar
+    trials, so dedup is on the model's output, not on process boundaries."""
     if bucket != "good":
         return []
     merged: dict[str, CapabilityProposal] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            d = json.loads(line)
-        except ValueError:
-            continue
+    for d in dicts:
         raw = d.get("capability_proposal")
         slug = d.get("capability_slug")
         trial_id = d.get("trial_id", "")
@@ -126,6 +120,21 @@ def _proposals_from(
         elif trial_id not in existing.trial_ids:
             existing.trial_ids.append(trial_id)
     return list(merged.values())
+
+
+def _proposals_from(
+    text: str, bucket: str, host_by_trial: dict[str, dict]
+) -> list[CapabilityProposal]:
+    dicts = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            dicts.append(json.loads(line))
+        except ValueError:
+            continue
+    return _merge_proposals(dicts, bucket, host_by_trial)
 
 
 def _marked(stream_text: str, marker: str) -> list[dict]:
@@ -190,8 +199,10 @@ def parse_cohort_result(
         sections = _sections_from(blocks[-1], bucket)
 
     if not findings:
+        map_dicts = _marked(stream_text, _MAP_MARKER)
         findings = [
-            f for d in _marked(stream_text, _MAP_MARKER)
+            f for d in map_dicts
             if (f := _finding_from(d, bucket, host_by_trial)) is not None
         ]
+        proposals = _merge_proposals(map_dicts, bucket, host_by_trial)
     return findings, sections, proposals

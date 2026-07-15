@@ -285,6 +285,28 @@ def test_duplicate_proposals_across_batches_merge_by_slug():
     assert proposals[0].trial_ids == ["good-1", "good-2"]
 
 
+def test_proposals_survive_stream_fallback_when_findings_file_missing():
+    """_download() swallows any exception and returns b'' on a missing file, so
+    this path is genuinely reachable. Findings already recover via the stream
+    fallback; proposals must stay symmetric with them, or a run that streamed
+    MAP FINDING lines with a capability_proposal but failed to upload
+    findings.jsonl silently loses every proposal."""
+    prop = {"name": "Hypothesis Fixation", "description": "d", "example": "e",
+            "categories": ["verification"]}
+    stream = (
+        "MAP FINDING: " + json.dumps(_good_finding(
+            capability_slug="hypothesis-fixation", capability_proposal=prop)) + "\n"
+        "REDUCE RESULT: " + json.dumps({"good_failure_content": "# From stream"})
+    )
+    findings, sections, proposals = parse_cohort_result(
+        "good", b"", b"", stream, GOOD_LINKS)
+    assert sections["good_failure_content"] == "# From stream"
+    assert len(findings) == 1
+    assert len(proposals) == 1
+    assert proposals[0].slug == "hypothesis-fixation"
+    assert proposals[0].trial_ids == ["good-1"]
+
+
 def test_bad_bucket_proposals_are_dropped():
     """The bad bucket classifies task defects, not agent capabilities. Gate
     structurally so prompt drift cannot leak one in."""

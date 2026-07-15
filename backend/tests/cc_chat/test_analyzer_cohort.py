@@ -69,6 +69,21 @@ HOSTS = {
     }
 }
 
+GOOD_COHORT = [
+    SubAnalysis(
+        trial_id="good-1", trajectory_link="/tasks/t1/probe/good-1",
+        classification="capability_failure", subtype="3a", evidence="e",
+        root_cause="rc", recommendation="r",
+    )
+]
+GOOD_HOSTS = {
+    "good-1": {
+        "trajectory_link": "/tasks/t1/probe/good-1", "model": "m",
+        "classification": "GOOD_FAILURE", "subtype": "3a",
+        "task_id": "task-1", "task_path": "tasks/t1",
+    }
+}
+
 
 def _kwargs(**over):
     base = dict(
@@ -174,6 +189,33 @@ async def test_parse_happens_after_teardown(monkeypatch):
     monkeypatch.setattr(ac, "parse_cohort_result", spy)
     await ac.run_cohort(client, runtime, **_kwargs())
     assert seen["deleted_at_parse_time"] == 1
+
+
+async def test_run_cohort_raises_for_good_bucket_without_taxonomy():
+    """No real Taxonomy is threaded through run_cohort yet (that's Task 6). An
+    empty one blanks map_rubric.txt's capabilities_block, and the prompt
+    unconditionally follows that with "if none of the above fit, author a new
+    one" -- so every good-bucket finding would get a fabricated
+    capability_slug. Must fail loud instead, and before a sandbox is even
+    created."""
+    client = FakeDaytonaClient()
+    runtime = _FakeRuntime([])
+    with pytest.raises(RuntimeError, match="taxonomy"):
+        await ac.run_cohort(
+            client, runtime,
+            **_kwargs(bucket="good", cohort=GOOD_COHORT, host_by_trial=GOOD_HOSTS),
+        )
+    assert client.sandboxes == {}
+
+
+async def test_run_cohort_bad_bucket_unaffected_by_taxonomy_guard():
+    """The bad bucket classifies task defects, not agent capabilities -- the
+    capability rubric (and therefore the taxonomy) is irrelevant to it, so the
+    guard must not fire here."""
+    client = FakeDaytonaClient()
+    runtime = _FakeRuntime([], files=_good_files())
+    await ac.run_cohort(client, runtime, **_kwargs())
+    assert len(client.deleted) == 1
 
 
 async def test_run_cohort_logs_the_stream_with_bucket_prefix(caplog):

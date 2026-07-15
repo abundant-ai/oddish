@@ -56,8 +56,18 @@ async def run_cohort(
     cli_src: bytes,
 ) -> tuple[list[Finding], dict[str, str]]:
     tag = f"[analyzer {analyzer_id}][{bucket}]"
-    # TODO(taxonomy): a DB-loaded Taxonomy isn't threaded through run_cohort yet;
-    # an empty one blanks the good-bucket capabilities rubric in the meantime.
+    # TODO(taxonomy): a DB-loaded Taxonomy isn't threaded through run_cohort yet
+    # (Task 6). Until then, refuse the good bucket rather than silently run it
+    # with a blank capabilities rubric -- map_rubric.txt unconditionally follows
+    # a blank rubric with "if none of the above fit, author a new one", so every
+    # finding would get a fabricated capability_slug. Mirrors the same guard in
+    # oddish/evals/analyzer/core.py's run_analyzer_eval. The bad bucket doesn't
+    # render the rubric at all, so it's unaffected.
+    if bucket == "good" and cohort:
+        raise RuntimeError(
+            f"{tag} no taxonomy wired into run_cohort yet; refusing to run the "
+            "good bucket with an empty capabilities rubric"
+        )
     prompt = build_cohort_prompt(bucket, cohort, roster, counts, oracle_by_trial, Taxonomy())
     # Retained only to serve the parse-fallback; never persisted.
     stream_lines: list[str] = []
