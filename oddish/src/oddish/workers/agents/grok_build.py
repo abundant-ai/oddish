@@ -7,8 +7,7 @@ import shlex
 import tempfile
 from typing import Any
 
-from harbor.agents.installed.base import with_prompt_template
-from harbor.agents.installed.grok_build import GrokBuild
+from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
@@ -23,6 +22,9 @@ from harbor.utils.trajectory_utils import format_trajectory_json
 
 _OUTPUT_FILENAME = "grok-build.json"
 _STDERR_FILENAME = "grok-build.stderr.log"
+_DEFAULT_MODEL = "v9m-rl-learnability-tp8"
+_XAI_BASE_URL = "https://api.x.ai/v1"
+_XAI_API_KEY_ENV = "XAI_API_KEY"
 
 # Where the grok CLI persists its full session store (tool calls + token usage);
 # the headless stdout does not carry these, so we copy this tree into the trial
@@ -53,8 +55,10 @@ _API_BACKEND_RE = re.compile(r'api_backend = "[^"]*"')
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 
-class OddishGrokBuild(GrokBuild):
+class OddishGrokBuild(BaseInstalledAgent):
     """Grok Build wrapper that preserves streaming events for ATIF conversion."""
+
+    SUPPORTS_ATIF: bool = True
 
     def __init__(
         self,
@@ -73,6 +77,60 @@ class OddishGrokBuild(GrokBuild):
             )
         self.api_backend = normalized_backend or None
 
+    @staticmethod
+    def name() -> str:
+        return "grok-build"
+
+    def get_version_command(self) -> str | None:
+        return 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; grok --version'
+
+    @classmethod
+    def required_outbound_domains(
+        cls, model_name: str | None = None, kwargs: dict[str, Any] | None = None
+    ) -> list[str]:
+        return ["api.x.ai"]
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        await self.exec_as_root(
+            environment,
+            command=(
+                "if command -v apt-get >/dev/null 2>&1; then "
+                "DEBIAN_FRONTEND=noninteractive apt-get update && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y curl bash; "
+                "elif command -v apk >/dev/null 2>&1; then "
+                "apk add --no-cache curl bash; "
+                "fi"
+            ),
+        )
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "set -euo pipefail; "
+                "curl -fsSL https://x.ai/cli/install.sh | bash; "
+                'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; '
+                "command -v grok; "
+                "grok --version"
+            ),
+        )
+
+    def _resolve_model(self) -> str:
+        if not self.model_name:
+            return _DEFAULT_MODEL
+        provider, separator, model = self.model_name.partition("/")
+        if separator and provider.lower() == "xai":
+            return model
+        return self.model_name
+
+    @staticmethod
+    def _toml_string(value: str) -> str:
+        return json.dumps(value)
+
+    @staticmethod
+    def _toml_table_key(value: str) -> str:
+        if all(ch.isalnum() or ch in "-_" for ch in value):
+            return value
+        return OddishGrokBuild._toml_string(value)
+
     def build_config_toml(self) -> str:
         """Emit the grok config, honoring an ``api_backend`` override.
 
@@ -83,12 +141,61 @@ class OddishGrokBuild(GrokBuild):
         is only served on that endpoint. When unset, the upstream default is
         preserved verbatim.
         """
-        config: str = super().build_config_toml()
+        model = self._resolve_model()
+        quoted_model = self._toml_string(model)
+        quoted_base_url = self._toml_string(_XAI_BASE_URL)
+        quoted_env_key = self._toml_string(_XAI_API_KEY_ENV)
+        config = "\n".join(
+            [
+                "disable_web_search = true",
+                "[models]",
+                f"default = {quoted_model}",
+                f"web_search = {quoted_model}",
+                f"session_summary = {quoted_model}",
+                f"image_description = {quoted_model}",
+                "[cli]",
+                'installer = "internal"',
+                f"[model.{self._toml_table_key(model)}]",
+                f"name = {quoted_model}",
+                f"model = {quoted_model}",
+                f"base_url = {quoted_base_url}",
+                f"env_key = {quoted_env_key}",
+                'api_backend = "responses"',
+                "context_window = 256000",
+                "[model.grok-build]",
+                'name = "grok-build"',
+                f"model = {quoted_model}",
+                f"base_url = {quoted_base_url}",
+                f"env_key = {quoted_env_key}",
+                'api_backend = "responses"',
+                "context_window = 256000",
+                "",
+            ]
+        )
         if not self.api_backend:
             return config
         return _API_BACKEND_RE.sub(
             f"api_backend = {self._toml_string(self.api_backend)}", config
         )
+
+    async def _write_config(self, environment: BaseEnvironment) -> None:
+        escaped_config = shlex.quote(self.build_config_toml())
+        await self.exec_as_agent(
+            environment,
+            command=(
+                f"mkdir -p ~/.grok && printf '%s\\n' {escaped_config} "
+                "> ~/.grok/config.toml"
+            ),
+            env=self._xai_env(),
+        )
+
+    def _xai_env(self) -> dict[str, str]:
+        api_key = self._get_env(_XAI_API_KEY_ENV)
+        return {_XAI_API_KEY_ENV: api_key} if api_key else {}
+
+    async def setup(self, environment: BaseEnvironment) -> None:
+        await super().setup(environment)
+        await self._write_config(environment)
 
     async def _stage_prompt(
         self, environment: BaseEnvironment, instruction: str
