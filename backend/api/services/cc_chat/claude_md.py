@@ -15,7 +15,8 @@ Start shallow, go deep only when the conversation does:
 - `./oddish-query tasks get <id>` — one task's detail (versions, counts, description).
 - `./oddish-query tasks trials <id>` — that task's trial rows (status, reward, trial_id).
 - `./oddish-query experiments trials <id>` — all trials for a specific experiment.
-- `./oddish-query trials logs <trial_id> [--trajectory]` — a single trial's logs. **Large — one trial at a time.**
+- `./oddish-query trials logs <trial_id> [--trajectory] [--tail-bytes N]` — a single trial's logs. **Large — one trial at a time.**
+  `--trajectory` returns only the TAIL. It says so on its first line when it truncates; raise `--tail-bytes` rather than reasoning from the fragment.
 
 ## Discipline
 
