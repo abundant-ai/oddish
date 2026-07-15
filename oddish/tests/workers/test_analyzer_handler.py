@@ -365,7 +365,7 @@ def _fake_output_with_findings():
         findings = [
             Finding(
                 trial_id="t1", bucket="bad", subcategory="3a", evidence_quote="q",
-                step_indices=[1], root_cause="rc", headroom_signal="hs",
+                step_ids=[1], root_cause="rc", headroom_signal="hs",
                 trajectory_link="link",
             )
         ]
