@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from typing import Any, Awaitable, Callable
 
 from sqlalchemy import or_, select
 
@@ -34,11 +35,24 @@ from oddish.db.models import (
     utcnow,
 )
 from oddish.evals.analyzer.core import run_analyzer_eval
-from oddish.evals.analyzer.schemas import AnalyzerEvalConfig
+from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, AnalyzerEvalOutput
 from oddish.workers.queue.analysis_handler import classify_trial_and_store
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 ANALYZER_HEARTBEAT_INTERVAL_SECONDS = 30
+
+# The eval strategy seam. Takes rows (not AnalyzerEvalInputs) so a hosted
+# implementation can skip build_analyzer_inputs' S3 reads entirely.
+EvalRowsFn = Callable[
+    [list[tuple[Any, str]], AnalyzerEvalConfig, str], Awaitable[AnalyzerEvalOutput]
+]
+
+
+async def default_eval_rows(
+    rows: list[tuple[Any, str]], config: AnalyzerEvalConfig, analyzer_id: str
+) -> AnalyzerEvalOutput:
+    inputs = await build_analyzer_inputs(rows)
+    return await run_analyzer_eval(inputs, config)
 
 
 def _build_analyzer_eval_config() -> AnalyzerEvalConfig:
@@ -151,7 +165,10 @@ async def _gather_trial_rows(session, analyzer_id: str, org_id: str | None):
 
 
 async def run_analyzer_generation_job(
-    analyzer_id: str, *, worker_job_id: str | None = None
+    analyzer_id: str,
+    *,
+    worker_job_id: str | None = None,
+    eval_rows_fn: EvalRowsFn = default_eval_rows,
 ) -> None:
     # 1. Load + set RUNNING.
     async with get_session() as session:
@@ -220,8 +237,7 @@ async def run_analyzer_generation_job(
                     return
         async with get_session() as session:
             rows = await _gather_trial_rows(session, analyzer_id, org_id)
-            inputs = await build_analyzer_inputs(rows)
-        output = await run_analyzer_eval(inputs, _build_analyzer_eval_config())
+        output = await eval_rows_fn(rows, _build_analyzer_eval_config(), analyzer_id)
     except asyncio.CancelledError:
         # Reaper/shutdown cancelled us mid-run. Record it as a failure (the
         # _store liveness guard still skips the write if we no longer own the
