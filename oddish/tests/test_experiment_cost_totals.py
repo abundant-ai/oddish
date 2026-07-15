@@ -488,6 +488,62 @@ async def test_soft_deleted_membership_rows_stop_counting(session):
 
 
 @pytest.mark.asyncio
+async def test_unlinking_a_task_removes_its_gathered_cost(session):
+    """Pulling a shared task out of a collection pulls its gathered cost too.
+
+    ``unlink_task_from_experiment_core`` removes the task row from the grid
+    (the join row drives the task list), so its gathered trials stop
+    rendering; the rollup must stop pricing them in the same breath, or the
+    tile prices work the page no longer shows.
+    """
+    from oddish.core.endpoints.deletion import unlink_task_from_experiment_core
+
+    task, home = await _fixture(session, "unlink-cost")
+
+    collection = ExperimentModel(
+        name=f"expcost-unlink-cost-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(collection)
+    await session.flush()
+
+    borrowed = _trial(task, home, cost_usd=8.0)
+    session.add(borrowed)
+    await session.flush()
+    await session.execute(
+        insert(task_experiments).values(
+            [{"task_id": task.id, "experiment_id": collection.id}]
+        )
+    )
+    await session.execute(
+        insert(experiment_trials).values(
+            [{"experiment_id": collection.id, "trial_id": borrowed.id}]
+        )
+    )
+    await session.flush()
+
+    before = await get_experiment_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+    assert before.cost_usd == pytest.approx(8.0)
+
+    await unlink_task_from_experiment_core(
+        session, task_id=task.id, experiment_id=collection.id, org_id=_ORG
+    )
+
+    after = await get_experiment_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+    assert after.cost_usd == 0.0
+    assert after.total_trials == 0
+
+    # The trial itself is untouched: its home experiment keeps its spend.
+    home_totals = await get_experiment_cost_totals(
+        session, experiment_id=home.id, org_id=_ORG
+    )
+    assert home_totals.cost_usd == pytest.approx(8.0)
+
+
+@pytest.mark.asyncio
 async def test_negative_token_counts_cannot_cancel_across_trials(session):
     """Token clamps are per row, matching ``estimate_cost_usd``.
 

@@ -763,10 +763,13 @@ function ExperimentSummaryBar({
                           ? ". Estimated from token counts × static model pricing."
                           : ". Reported by the agent runtime."
                     }`
-                  : summary.costTrialCount > 0
-                    ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
-                    : summary.ownedTokenTrialCount > 0
-                      ? "No cost data reported yet for this experiment's own trials"
+                  : // Owned usage first: an experiment whose own trials
+                    // reported tokens but no priced cost DID run work — it
+                    // must not read as a pure collection.
+                    summary.ownedTokenTrialCount > 0
+                    ? "No cost data reported yet for this experiment's own trials"
+                    : summary.costTrialCount > 0
+                      ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
                       : "No spend from this experiment yet"
             }
           >
@@ -786,10 +789,11 @@ function ExperimentSummaryBar({
                   </span>
                 )}
               </>
-            ) : summary.costTrialCount > 0 ? (
-              // Priced work exists but none of it is this experiment's own:
-              // an explicit zero ("nothing new was spent") reads honestly
-              // where a dash would read as "unknown".
+            ) : summary.ownedTokenTrialCount === 0 && summary.costTrialCount > 0 ? (
+              // Priced work exists and this experiment's own trials reported
+              // nothing at all: an explicit zero ("nothing new was spent")
+              // reads honestly where a dash would read as "unknown". With
+              // owned usage awaiting pricing, the dash is the honest one.
               <>{formatCostUsd(0)}</>
             ) : (
               <span className="text-[color:var(--paper-ink-3)]">—</span>
