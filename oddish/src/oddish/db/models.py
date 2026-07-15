@@ -562,6 +562,11 @@ class AnalyzerModel(TimestampedMixin, Base):
     # Additive: per-subcategory counts (1a/1b, 3a/3b/3c, emergent) for FE chips.
     breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # The taxonomy this run classified against. Without it, editing a capability
+    # silently rewrites the meaning of every historical breakdown.
+    taxonomy_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    taxonomy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Per-trial findings from the map phase. NULL = analyzed before findings
     # were persisted; [] = analyzed, no failures found. Not the same thing.
     findings: Mapped[list | None] = mapped_column(JSONB, nullable=True)
@@ -582,6 +587,124 @@ class AnalyzerModel(TimestampedMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class CapabilityCategoryModel(Base):
+    """A top-level failure category. Curated by hand -- agents may propose
+    capabilities but never categories, so that the 5-way lens stays fixed."""
+
+    __tablename__ = "capability_categories"
+
+    slug: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class CapabilityModel(Base):
+    """One capability in the live taxonomy.
+
+    ``slug`` is the PK rather than a surrogate id: findings reference
+    capabilities by slug and the map agent emits slugs, so an integer id would
+    force a lookup the agent cannot perform. Slugs are immutable once promoted --
+    renaming one orphans every historical finding that cites it. Edit ``name``.
+    """
+
+    __tablename__ = "capabilities"
+
+    slug: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    example: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class CapabilityCategoryTagModel(Base):
+    """capability <-> category many-to-many.
+
+    ``is_primary`` is what keeps category rollups an exact partition: grouping
+    on every tag would count a multi-tagged capability once per tag, so category
+    totals would exceed num_good_failures. Exactly one primary per capability,
+    enforced by a partial unique index.
+    """
+
+    __tablename__ = "capability_category_tags"
+    __table_args__ = (
+        Index(
+            "uq_capability_primary_category",
+            "capability_slug",
+            unique=True,
+            postgresql_where=text("is_primary"),
+        ),
+    )
+
+    capability_slug: Mapped[str] = mapped_column(
+        String(64), ForeignKey("capabilities.slug", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    category_slug: Mapped[str] = mapped_column(
+        String(64), ForeignKey("capability_categories.slug", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class CapabilityProposalModel(Base):
+    """An agent-authored capability awaiting human review.
+
+    ``category_slugs`` is JSONB rather than a join table because a proposal is a
+    draft that may name categories which do not exist yet -- an FK would reject
+    exactly the rows most worth seeing. It hardens into
+    ``capability_category_tags`` rows at promotion.
+    """
+
+    __tablename__ = "capability_proposals"
+    __table_args__ = (
+        Index(
+            "uq_capability_proposal_per_analyzer",
+            "analyzer_id",
+            "slug_suggestion",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    slug_suggestion: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    example: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_slugs: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    trial_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    trajectory_link: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)
+    promoted_capability_slug: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -2003,4 +2126,6 @@ register_soft_delete_models(
     SavedTagFilterModel,
     SkillModel,
     DocumentModel,
+    CapabilityModel,
+    CapabilityCategoryModel,
 )
