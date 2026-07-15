@@ -353,6 +353,7 @@ async def test_run_analyzer_generation_job_stops_mid_loop_on_reap(monkeypatch):
     assert analyzer.finished_at is None
 
 
+
 def _fake_output_with_findings():
     from oddish.evals.analyzer.schemas import Finding
 
@@ -360,6 +361,7 @@ def _fake_output_with_findings():
         sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {}
+        reduce_prompt = "rp"
         findings = [
             Finding(
                 trial_id="t1", bucket="bad", subcategory="3a", evidence_quote="q",
@@ -492,3 +494,73 @@ async def test_upload_failure_does_not_fail_job(monkeypatch):
     # Best-effort: aggregate result still persisted SUCCESS despite S3 failure.
     assert analyzer.status == JobStatus.SUCCESS
     assert analyzer.error is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_upload_keeps_successful_eval(monkeypatch):
+    """A cancel in the best-effort upload must not discard the finished analysis.
+
+    CancelledError is a BaseException, so it escapes _maybe_save_trial_analyses'
+    ``except Exception`` and surfaces in the job's cancel handler, which must keep
+    the already-computed output rather than reporting the job FAILED.
+    """
+    import asyncio
+
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+    analyzer.save_trial_analyses = True
+
+    _wire_eval_paths(
+        monkeypatch, rh,
+        output=_fake_output_with_findings(),
+        inputs=_fake_inputs_with_subanalyses(),
+    )
+
+    class _CancellingStorage:
+        async def upload_bytes(self, *a, **k):
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(rh, "get_storage_client", lambda: _CancellingStorage())
+
+    await rh.run_analyzer_generation_job("az1", worker_job_id="job-1")
+
+    assert analyzer.status == JobStatus.SUCCESS
+    assert analyzer.error is None
+    assert analyzer.num_trials == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_writes_reduce_prompt_on_success(monkeypatch):
+    """The reduce prompt from the eval output is persisted onto the analyzer row."""
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return []
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    class _Output:
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        counts = {"trials": 1, "bad": 1, "good": 0}
+        breakdown = {"1b": 1}
+        reduce_prompt = "the reduce prompt text"
+
+    async def fake_run_eval(inputs, config):
+        return _Output()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.status == JobStatus.SUCCESS
+    assert analyzer.reduce_prompt == "the reduce prompt text"

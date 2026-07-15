@@ -7,8 +7,8 @@ analyzers_001.
 
 from alembic import op
 
-revision = "analyzers_003"
-down_revision = "analyzers_002"
+revision = "analyzers_004"
+down_revision = "analyzers_003"
 branch_labels = None
 depends_on = None
 
