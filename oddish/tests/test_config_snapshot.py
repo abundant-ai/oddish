@@ -19,3 +19,7 @@ def test_analyzer_snapshot_falls_back_to_cc_chat():
 def test_analyzer_snapshot_empty_when_neither_set():
     s = Settings(agent_daytona_snapshot="", cc_chat_daytona_snapshot="")
     assert s.analyzer_snapshot == ""
+
+
+def test_analyzer_sandbox_enabled_defaults_on():
+    assert Settings().analyzer_sandbox_enabled is True
