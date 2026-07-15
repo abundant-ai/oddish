@@ -98,16 +98,33 @@ def test_none_model_groups_as_unknown():
     assert out["good_failures"]["groups"][0]["key"] == "unknown"
 
 
-def test_gaps_sorted_by_count_desc_ties_by_key():
+def test_gaps_sorted_by_count_desc():
+    """Insertion order is the 1-count gap first, then the 3-count gap — the
+    opposite of count-desc — so a missing sort would return them unsorted."""
     findings = (
-        [_f(trial_id=f"a{i}", classification="GOOD_FAILURE", subtype="Logic Error")
-         for i in range(3)]
-        + [_f(trial_id="b1", classification="GOOD_FAILURE", subtype="Wrong Approach")]
+        [_f(trial_id="b1", classification="GOOD_FAILURE", subtype="Wrong Approach")]
+        + [_f(trial_id=f"a{i}", classification="GOOD_FAILURE", subtype="Logic Error")
+           for i in range(3)]
     )
     out = build_rollup(findings, {"task": ["claude-opus-4-8"]})
     gaps = out["good_failures"]["groups"][0]["gaps"]
     assert [g["gap"] for g in gaps] == ["Logic Error", "Wrong Approach"]
     assert [g["count"] for g in gaps] == [3, 1]
+
+
+def test_gaps_tied_by_count_break_ties_by_key():
+    """Two gaps with equal counts, inserted in reverse-alphabetical order — a
+    stable sort on count alone would leave them in insertion order."""
+    findings = [
+        _f(trial_id="w1", classification="GOOD_FAILURE", subtype="Wrong Approach"),
+        _f(trial_id="w2", classification="GOOD_FAILURE", subtype="Wrong Approach"),
+        _f(trial_id="c1", classification="GOOD_FAILURE", subtype="Context Loss"),
+        _f(trial_id="c2", classification="GOOD_FAILURE", subtype="Context Loss"),
+    ]
+    out = build_rollup(findings, {"task": ["claude-opus-4-8"]})
+    gaps = out["good_failures"]["groups"][0]["gaps"]
+    assert [g["gap"] for g in gaps] == ["Context Loss", "Wrong Approach"]
+    assert [g["count"] for g in gaps] == [2, 2]
 
 
 def test_examples_carry_what_the_ui_needs():
