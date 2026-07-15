@@ -4,6 +4,7 @@ import json
 import pytest
 
 from api.services.cc_chat import analyzer_cohort as ac
+from api.services.cc_chat import analyzer_prompt as ap
 from api.services.cc_chat.analyzer_parse import CohortParseError
 from api.services.cc_chat.analyzer_prompt import FINDINGS_PATH, REDUCE_PATH
 from api.services.cc_chat.daytona_client import FakeDaytonaClient
@@ -36,7 +37,8 @@ class _FakeRuntime:
         self.installed = True
 
     async def stream_chat(self, client, sandbox, *, content,
-                          claude_session_id, daytona_session_id):
+                          claude_session_id, daytona_session_id,
+                          system_prompt=None):
         for path, body in self._files.items():
             await client.upload_file(sandbox, dest_path=path, content=body)
         for evt in self._events:
@@ -53,7 +55,8 @@ class _SlowRuntime(_FakeRuntime):
         self._delay = delay
 
     async def stream_chat(self, client, sandbox, *, content,
-                          claude_session_id, daytona_session_id):
+                          claude_session_id, daytona_session_id,
+                          system_prompt=None):
         for path, body in self._files.items():
             await client.upload_file(sandbox, dest_path=path, content=body)
         await asyncio.sleep(self._delay)
@@ -185,3 +188,135 @@ async def test_run_cohort_logs_the_stream_with_bucket_prefix(caplog):
     with caplog.at_level("INFO"):
         await ac.run_cohort(client, runtime, **_kwargs())
     assert any("[analyzer a1][bad]" in r.message for r in caplog.records)
+
+
+# --- batching -----------------------------------------------------------
+# A cohort used to be handed to ONE claude process, so context grew with trial
+# count and a 97-trial cohort exhausted the window before REDUCE, leaving a 0B
+# reduce.json. Proven against prod data: the same 'good' bucket succeeded at 8
+# trials and failed at 97. These pin the batching that bounds it.
+
+
+def _cohort_of(n):
+    return [
+        SubAnalysis(
+            trial_id=f"t{i}", trajectory_link=f"/tasks/t/probe/t{i}",
+            classification="reward_hacking", subtype="1a", evidence="e",
+            root_cause="rc", recommendation="r",
+        )
+        for i in range(n)
+    ]
+
+
+async def test_batches_keeps_a_small_cohort_as_one_batch():
+    # The shape that already works today must not change.
+    cohort = _cohort_of(ac.MAP_BATCH_SIZE)
+    assert ac.batches(cohort) == [cohort]
+
+
+async def test_batches_splits_a_large_cohort_and_loses_no_trials():
+    cohort = _cohort_of(97)
+    plan = ac.batches(cohort)
+    assert len(plan) == 10
+    assert all(len(b) <= ac.MAP_BATCH_SIZE for b in plan)
+    # Every trial appears exactly once, in order.
+    assert [sa.trial_id for b in plan for sa in b] == [sa.trial_id for sa in cohort]
+
+
+class _CountingRuntime(_FakeRuntime):
+    """Records each turn's prompt so the map/reduce split can be asserted."""
+
+    def __init__(self, events, *, files=None):
+        super().__init__(events, files=files)
+        self.prompts = []
+        self.system_prompts = []
+
+    async def stream_chat(self, client, sandbox, *, content,
+                          claude_session_id, daytona_session_id,
+                          system_prompt=None):
+        self.prompts.append(content)
+        self.system_prompts.append(system_prompt)
+        assert claude_session_id is None, "a resumed session would chain contexts"
+        for path, body in self._files.items():
+            await client.upload_file(sandbox, dest_path=path, content=body)
+        for evt in self._events:
+            yield evt
+
+
+async def test_run_cohort_runs_one_turn_per_batch_plus_a_reduce():
+    client = FakeDaytonaClient()
+    runtime = _CountingRuntime([], files=_good_files())
+    cohort = _cohort_of(25)  # -> 3 map batches
+    hosts = {sa.trial_id: {"trajectory_link": sa.trajectory_link, "model": "m",
+                           "classification": "reward_hacking", "subtype": "1a",
+                           "task_id": "t", "task_path": "tasks/t"}
+             for sa in cohort}
+
+    await ac.run_cohort(client, runtime, **_kwargs(cohort=cohort, host_by_trial=hosts,
+                                                  oracle_by_trial={}))
+
+    assert len(runtime.prompts) == 4  # 3 map + 1 reduce
+    assert runtime.prompts[-1].count("REDUCE RESULT:") == 1
+    # The reduce turn must read findings off disk, not carry trajectories.
+    assert FINDINGS_PATH in runtime.prompts[-1]
+    # A map turn must not also be asked to synthesize.
+    assert "REDUCE RESULT:" not in runtime.prompts[0]
+
+
+async def test_map_batches_only_name_their_own_trials():
+    client = FakeDaytonaClient()
+    runtime = _CountingRuntime([], files=_good_files())
+    cohort = _cohort_of(25)
+    hosts = {sa.trial_id: {"trajectory_link": sa.trajectory_link, "model": "m",
+                           "classification": "reward_hacking", "subtype": "1a",
+                           "task_id": "t", "task_path": "tasks/t"}
+             for sa in cohort}
+
+    await ac.run_cohort(client, runtime, **_kwargs(cohort=cohort, host_by_trial=hosts,
+                                                   oracle_by_trial={}))
+
+    first_map = runtime.prompts[0]
+    # t0..t9 are batch 1's cohort block; t10 belongs to batch 2 and must not be
+    # in batch 1's "trials to analyze now" list (the roster is separate).
+    assert "- trial_id: t0" in first_map
+    assert "- trial_id: t10" not in first_map
+
+
+# --- trajectory tail budget + fetch-more system prompt --------------------
+# The CLI returns only the tail of a trajectory, and a truncated trajectory
+# still reads as coherent -- so an agent will analyze the fragment and never
+# notice what it is missing. The system prompt is the counterweight, and it must
+# ride EVERY turn because each batch is a fresh context with no memory.
+
+
+async def test_every_turn_carries_the_fetch_more_system_prompt():
+    client = FakeDaytonaClient()
+    runtime = _CountingRuntime([], files=_good_files())
+    cohort = _cohort_of(25)
+    hosts = {sa.trial_id: {"trajectory_link": sa.trajectory_link, "model": "m",
+                           "classification": "reward_hacking", "subtype": "1a",
+                           "task_id": "t", "task_path": "tasks/t"}
+             for sa in cohort}
+
+    await ac.run_cohort(client, runtime, **_kwargs(cohort=cohort, host_by_trial=hosts,
+                                                   oracle_by_trial={}))
+
+    # 3 map turns + reduce; a batch that lost the prompt would under-fetch silently.
+    assert len(runtime.system_prompts) == 4
+    assert all(sp and "--tail-bytes" in sp for sp in runtime.system_prompts)
+
+
+async def test_system_prompt_advertises_the_budget_the_cli_will_honour():
+    # The number the agent is told and the number the CLI enforces come from one
+    # constant; a literal in either place could drift and the prompt would
+    # advertise a budget that does not exist.
+    sp = ap.build_system_prompt(ac.TRAJ_TAIL_BYTES)
+    assert str(ac.TRAJ_TAIL_BYTES) in sp
+
+
+async def test_sandbox_gets_the_tail_budget_as_env():
+    client = FakeDaytonaClient()
+    runtime = _CountingRuntime([], files=_good_files())
+    await ac.run_cohort(client, runtime, **_kwargs())
+    (sbx,) = client.sandboxes.values()
+    assert sbx["env"]["ODDISH_QUERY_TRAJ_TAIL_BYTES"] == str(ac.TRAJ_TAIL_BYTES)
