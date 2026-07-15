@@ -30,7 +30,7 @@ class Finding:
     bucket: str  # "bad" | "good"
     subcategory: str  # "1a"|"1b"|"3a"|"3b"|"3c"|"emergent:<label>"
     evidence_quote: str
-    step_indices: list[int]
+    step_ids: list[int]
     root_cause: str
     headroom_signal: str
     trajectory_link: str

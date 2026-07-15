@@ -29,7 +29,7 @@ class FakeClient:
         return json.dumps({
             "trial_id": tid, "bucket": bucket,
             "subcategory": "1b" if bucket == "bad" else "3a",
-            "evidence_quote": "q", "step_indices": [1], "root_cause": "rc",
+            "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
             "headroom_signal": "hs", "trajectory_link": trajectory_link("task", tid),
         })
 
@@ -280,3 +280,16 @@ async def test_finding_classification_subtype_and_task_survive_a_lying_llm():
     assert f.subtype == "Hardcoding"
     assert f.task_id == "task"
     assert f.task_path == "tasks/task"
+
+
+@pytest.mark.asyncio
+async def test_finding_exposes_step_ids():
+    """Renamed from step_indices: the ints are step_id values (1-based), not
+    array positions (0-based). The old name invited an off-by-one."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+
+    assert out.findings[0].step_ids == [1]
+    assert not hasattr(out.findings[0], "step_indices")
