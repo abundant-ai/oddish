@@ -102,6 +102,7 @@ async def _map_one(
     bundle: TrajectoryBundle, sa: SubAnalysis, roster: list[dict],
     sem: asyncio.Semaphore,
 ) -> Finding | None:
+    p = f"[{config.job_kind}] "
     bucket = BUCKET_OF.get(sa.classification, "other")
     try:
         async with sem:
@@ -112,7 +113,7 @@ async def _map_one(
             )
     except Exception as exc:  # noqa: BLE001 — one trial must not sink the eval
         logger.warning(
-            "analyzer-eval map: LLM call failed for trial %s (%s); skipping. %s",
+            p + "analyzer-eval map: LLM call failed for trial %s (%s); skipping. %s",
             sa.trial_id,
             _ctx(bucket=bucket, subtype=sa.subtype, model=config.analysis_model),
             exc,
@@ -122,7 +123,7 @@ async def _map_one(
         d = parse_json(raw)
     except ValueError as exc:
         logger.warning(
-            "analyzer-eval map: unparseable model output for trial %s (%s); "
+            p + "analyzer-eval map: unparseable model output for trial %s (%s); "
             "skipping. reason=%s; output_head=%.200r",
             sa.trial_id,
             _ctx(bucket=bucket, subtype=sa.subtype, output_chars=len(raw)),
@@ -135,11 +136,16 @@ async def _map_one(
         bucket=d.get("bucket", BUCKET_OF.get(sa.classification, "other")),
         subcategory=d.get("subcategory", "emergent"),
         evidence_quote=d.get("evidence_quote", ""),
-        step_indices=list(d.get("step_indices") or []),
+        step_ids=list(d.get("step_ids") or []),
         root_cause=d.get("root_cause", ""),
         headroom_signal=d.get("headroom_signal", ""),
-        # Trust the host-built link on the bundle, never the model's echo.
+        # Host facts, never the model's echo.
         trajectory_link=bundle.trajectory_link,
+        model=sa.model,
+        classification=sa.classification,
+        subtype=sa.subtype,
+        task_id=bundle.task_id,
+        task_path=bundle.task_path,
     )
 
 
@@ -149,8 +155,9 @@ async def run_analyzer_eval(
     *,
     client: LLMClient | None = None,
 ) -> AnalyzerEvalOutput:
+    p = f"[{config.job_kind}] "
     logger.info(
-        "analyzer-eval starting: %s",
+        p + "analyzer-eval starting: %s",
         _ctx(bundles=len(inputs.bundles), subanalyses=len(inputs.subanalyses),
              model=config.analysis_model, map_concurrency=config.map_concurrency),
     )
@@ -160,11 +167,11 @@ async def run_analyzer_eval(
         bad, good, breakdown = bucket_subanalyses(inputs.subanalyses)
     except Exception as exc:
         ctx = _ctx(subanalyses=len(inputs.subanalyses))
-        logger.exception("analyzer-eval bucketing failed (%s)", ctx)
+        logger.exception(p + "analyzer-eval bucketing failed (%s)", ctx)
         raise AnalyzerEvalStepError("bucketing", ctx, exc) from exc
 
     counts = {"trials": len(inputs.bundles), "bad": len(bad), "good": len(good)}
-    logger.info("analyzer-eval bucketed: %s", _ctx(**counts, breakdown=breakdown))
+    logger.info(p + "analyzer-eval bucketed: %s", _ctx(**counts, breakdown=breakdown))
 
     # Zero-work fast path: no failures to analyze. Must return BEFORE building a
     # client so the pipeline stays pure / needs no API key when there's nothing
@@ -180,7 +187,7 @@ async def run_analyzer_eval(
         client = client or _default_client()
     except Exception as exc:
         ctx = _ctx(injected=False, model=config.analysis_model)
-        logger.exception("analyzer-eval client init failed (%s)", ctx)
+        logger.exception(p + "analyzer-eval client init failed (%s)", ctx)
         raise AnalyzerEvalStepError("client-init", ctx, exc) from exc
 
     # Step 3 — build the shared roster + the trial-id -> bundle index, and pair
@@ -193,19 +200,19 @@ async def run_analyzer_eval(
         missing = [sa.trial_id for sa in (bad + good) if sa.trial_id not in by_trial]
     except Exception as exc:
         ctx = _ctx(bad=len(bad), good=len(good), bundles=len(inputs.bundles))
-        logger.exception("analyzer-eval roster/index build failed (%s)", ctx)
+        logger.exception(p + "analyzer-eval roster/index build failed (%s)", ctx)
         raise AnalyzerEvalStepError("roster", ctx, exc) from exc
 
     if missing:
         logger.warning(
-            "analyzer-eval: %d failure subanalyses have no matching trajectory "
+            p + "analyzer-eval: %d failure subanalyses have no matching trajectory "
             "bundle and will be skipped: %s", len(missing), missing,
         )
 
     # Step 4 — fan out one map call per failure trial. Individual failures are
     # non-fatal (logged + skipped inside _map_one); return_exceptions is a
     # backstop for anything that slips past it.
-    logger.info("analyzer-eval map: fanning out over %d trials", len(selected))
+    logger.info(p + "analyzer-eval map: fanning out over %d trials", len(selected))
     sem = asyncio.Semaphore(config.map_concurrency)
     results = await asyncio.gather(
         *[_map_one(client, config, by_trial[sa.trial_id], sa, roster, sem)
@@ -216,13 +223,13 @@ async def run_analyzer_eval(
     for sa, res in zip(selected, results):
         if isinstance(res, BaseException):
             logger.warning(
-                "analyzer-eval map: unexpected error for trial %s (%s); skipping. %s",
+                p + "analyzer-eval map: unexpected error for trial %s (%s); skipping. %s",
                 sa.trial_id, _ctx(subtype=sa.subtype), res,
             )
         elif res is not None:
             findings.append(res)
     logger.info(
-        "analyzer-eval map done: %d findings from %d trials (%d skipped)",
+        p + "analyzer-eval map done: %d findings from %d trials (%d skipped)",
         len(findings), len(selected), len(selected) - len(findings),
     )
 
@@ -238,7 +245,7 @@ async def run_analyzer_eval(
             missing_bundles=len(missing), findings=0,
         )
         logger.error(
-            "analyzer-eval map: no findings from a non-empty cohort; "
+            p + "analyzer-eval map: no findings from a non-empty cohort; "
             "nothing to reduce (%s)", ctx,
         )
         raise AnalyzerEvalStepError(
@@ -255,7 +262,7 @@ async def run_analyzer_eval(
         )
     except Exception as exc:
         ctx = _ctx(findings=len(findings), counts=counts, model=config.analysis_model)
-        logger.exception("analyzer-eval reduce LLM call failed (%s)", ctx)
+        logger.exception(p + "analyzer-eval reduce LLM call failed (%s)", ctx)
         raise AnalyzerEvalStepError("reduce-llm", ctx, exc) from exc
 
     try:
@@ -263,7 +270,7 @@ async def run_analyzer_eval(
     except ValueError as exc:
         ctx = _ctx(findings=len(findings), output_chars=len(raw))
         logger.error(
-            "analyzer-eval reduce: unparseable model output (%s); output_head=%.500r",
+            p + "analyzer-eval reduce: unparseable model output (%s); output_head=%.500r",
             ctx, raw,
         )
         raise AnalyzerEvalStepError("reduce-parse", ctx, exc) from exc
@@ -274,7 +281,8 @@ async def run_analyzer_eval(
         "capabilities": sec.get("universal_capabilities_content", ""),
         "headroom": sec.get("headroom_analysis", ""),
     }
-    logger.info("analyzer-eval complete: %d findings, sections rendered", len(findings))
+    logger.info(p + "analyzer-eval complete: %d findings, sections rendered", len(findings))
     return AnalyzerEvalOutput(
-        sections=sections, findings=findings, counts=counts, breakdown=breakdown
+        sections=sections, findings=findings, counts=counts, breakdown=breakdown,
+        reduce_prompt=reduce_prompt,
     )

@@ -57,6 +57,10 @@ class SubAnalysis:
     root_cause: str
     recommendation: str
     trajectory_summary: dict[str, Any] | None = None
+    # Raw trial.model, stored verbatim. Free-text and nullable in the DB; the
+    # same model appears as a plain id, provider-prefixed, or a Bedrock profile
+    # id, so consumers normalize when grouping rather than at write time.
+    model: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -31,6 +32,16 @@ def assistant_line(msg_id, usage, model="claude-opus-4-8", content=None):
     return json.dumps({"type": "assistant", "message": message}).encode()
 
 
+def with_turn_id(msg_id, events):
+    turn_id = hashlib.sha256(msg_id.encode()).hexdigest()
+    for event in events:
+        event["payload"]["turn_id"] = turn_id
+        if event["kind"] == "message":
+            event["payload"].setdefault("block_index", 0)
+            event["payload"].setdefault("text_mode", "replace")
+    return events
+
+
 def test_fold_keeps_last_usage_per_message_id():
     fold = ClaudeUsageFold()
     fold.feed_line(assistant_line("msg_1", {"input_tokens": 10, "output_tokens": 1}))
@@ -59,8 +70,10 @@ def test_claude_fold_suppresses_exact_duplicate_assistant_content():
     content = [{"type": "text", "text": "hello"}]
 
     assert fold.feed_line(
-        assistant_line("msg_1", {"input_tokens": 1, "output_tokens": 1}, content=content)
-    ) == [{"kind": "message", "payload": {"text": "hello"}}]
+        assistant_line(
+            "msg_1", {"input_tokens": 1, "output_tokens": 1}, content=content
+        )
+    ) == with_turn_id("msg_1", [{"kind": "message", "payload": {"text": "hello"}}])
     assert (
         fold.feed_line(
             assistant_line(
@@ -82,7 +95,7 @@ def test_claude_fold_emits_only_growing_text_suffix():
             {"input_tokens": 1},
             content=[{"type": "text", "text": "hello"}],
         )
-    ) == [{"kind": "message", "payload": {"text": "hello"}}]
+    ) == with_turn_id("msg_1", [{"kind": "message", "payload": {"text": "hello"}}])
 
     assert fold.feed_line(
         assistant_line(
@@ -90,7 +103,15 @@ def test_claude_fold_emits_only_growing_text_suffix():
             {"input_tokens": 1},
             content=[{"type": "text", "text": "hello world"}],
         )
-    ) == [{"kind": "message", "payload": {"text": " world"}}]
+    ) == with_turn_id(
+        "msg_1",
+        [
+            {
+                "kind": "message",
+                "payload": {"text": " world", "text_mode": "append"},
+            }
+        ],
+    )
 
     assert fold.feed_line(
         assistant_line(
@@ -98,7 +119,9 @@ def test_claude_fold_emits_only_growing_text_suffix():
             {"input_tokens": 1},
             content=[{"type": "text", "text": "replacement"}],
         )
-    ) == [{"kind": "message", "payload": {"text": "replacement"}}]
+    ) == with_turn_id(
+        "msg_1", [{"kind": "message", "payload": {"text": "replacement"}}]
+    )
 
 
 def test_claude_fold_emits_appended_tool_block_once():
@@ -108,15 +131,21 @@ def test_claude_fold_emits_appended_tool_block_once():
 
     assert fold.feed_line(
         assistant_line("msg_1", {"input_tokens": 1}, content=base)
-    ) == [{"kind": "message", "payload": {"text": "hello"}}]
+    ) == with_turn_id("msg_1", [{"kind": "message", "payload": {"text": "hello"}}])
     assert fold.feed_line(
         assistant_line("msg_1", {"input_tokens": 1}, content=[*base, tool])
-    ) == [
-        {
-            "kind": "tool_use",
-            "payload": {"input": json.dumps({"command": "ls"}), "name": "Bash"},
-        }
-    ]
+    ) == with_turn_id(
+        "msg_1",
+        [
+            {
+                "kind": "tool_use",
+                "payload": {
+                    "input": json.dumps({"command": "ls"}),
+                    "name": "Bash",
+                },
+            }
+        ],
+    )
     assert (
         fold.feed_line(
             assistant_line("msg_1", {"input_tokens": 1}, content=[*base, tool])
@@ -136,13 +165,19 @@ def test_claude_fold_duplicate_with_unsupported_blocks_stays_silent():
 
     assert fold.feed_line(
         assistant_line("msg_1", {"input_tokens": 1}, content=content)
-    ) == [
-        {"kind": "message", "payload": {"text": "hello"}},
-        {
-            "kind": "tool_use",
-            "payload": {"input": json.dumps({"command": "ls"}), "name": "Bash"},
-        },
-    ]
+    ) == with_turn_id(
+        "msg_1",
+        [
+            {"kind": "message", "payload": {"text": "hello"}},
+            {
+                "kind": "tool_use",
+                "payload": {
+                    "input": json.dumps({"command": "ls"}),
+                    "name": "Bash",
+                },
+            },
+        ],
+    )
     assert (
         fold.feed_line(
             assistant_line(
@@ -162,10 +197,10 @@ def test_claude_fold_tracks_distinct_message_ids_independently():
 
     assert fold.feed_line(
         assistant_line("msg_1", {"input_tokens": 1}, content=content)
-    ) == [{"kind": "message", "payload": {"text": "same"}}]
+    ) == with_turn_id("msg_1", [{"kind": "message", "payload": {"text": "same"}}])
     assert fold.feed_line(
         assistant_line("msg_2", {"input_tokens": 1}, content=content)
-    ) == [{"kind": "message", "payload": {"text": "same"}}]
+    ) == with_turn_id("msg_2", [{"kind": "message", "payload": {"text": "same"}}])
 
 
 def test_split_lines_carries_partial_tail():

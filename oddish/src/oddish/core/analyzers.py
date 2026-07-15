@@ -84,6 +84,7 @@ async def create_analyzer_core(
         org_id=org_id,
         owner_user_id=user_id,
         status=JobStatus.PENDING,
+        save_trial_analyses=data.save_trial_analyses,
     )
     session.add(analyzer)
     await session.flush()  # assigns analyzer.id

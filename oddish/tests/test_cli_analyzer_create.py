@@ -43,7 +43,9 @@ def test_report_create_posts_expected_payload(monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert _FakeClient.last_request["url"] == "https://api.example.test/reports"
-    assert _FakeClient.last_request["json"] == {"experiment_ids": ["e1", "e2"], "name": "Q3"}
+    assert _FakeClient.last_request["json"] == {
+        "experiment_ids": ["e1", "e2"], "save_trial_analyses": False, "name": "Q3",
+    }
     assert "r1" in result.output
 
 
@@ -55,7 +57,9 @@ def test_report_create_omits_name_when_unset(monkeypatch):
     result = CliRunner().invoke(app, ["report", "create", "-e", "e1"])
     assert result.exit_code == 0, result.output
     # No name key -> server auto-generates report_<N>_<exp>.
-    assert _FakeClient.last_request["json"] == {"experiment_ids": ["e1"]}
+    assert _FakeClient.last_request["json"] == {
+        "experiment_ids": ["e1"], "save_trial_analyses": False,
+    }
 
 
 def test_report_create_requires_experiments(monkeypatch):
@@ -67,3 +71,27 @@ def test_report_create_requires_experiments(monkeypatch):
     _set_env(monkeypatch)
     result = CliRunner().invoke(app, ["report", "create", "--name", "Q3"])
     assert result.exit_code == 1
+
+
+def test_report_create_defaults_save_trials_false(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["report", "create", "-e", "e1", "--name", "Q3"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _FakeClient.last_request["json"]["save_trial_analyses"] is False
+
+
+def test_report_create_save_trials_flag_sets_payload(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["report", "create", "-e", "e1", "--name", "Q3", "--save-trials"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _FakeClient.last_request["json"]["save_trial_analyses"] is True

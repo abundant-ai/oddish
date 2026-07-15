@@ -174,6 +174,36 @@ async def test_create_analyzer_dedupes_experiment_ids(session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_analyzer_persists_save_trial_analyses(session, monkeypatch):
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    e1 = ExperimentModel(name="exp-1", org_id="org_1")
+    session.add(e1)
+    await session.flush()
+
+    default_az = await create_analyzer_core(
+        session,
+        data=ReportCreate(name="Default", experiment_ids=[e1.id]),
+        org_id="org_1", user_id="user_1",
+    )
+    assert default_az.save_trial_analyses is False
+
+    saving_az = await create_analyzer_core(
+        session,
+        data=ReportCreate(
+            name="Saving", experiment_ids=[e1.id], save_trial_analyses=True
+        ),
+        org_id="org_1", user_id="user_1",
+    )
+    assert saving_az.save_trial_analyses is True
+
+
+@pytest.mark.asyncio
 async def test_auto_names_report_when_name_omitted(session, monkeypatch):
     """No name -> report_<N>_<slug(exp)>, N incrementing per experiment."""
     import oddish.core.analyzers as mod

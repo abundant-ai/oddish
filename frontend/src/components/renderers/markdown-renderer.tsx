@@ -196,7 +196,7 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               href={href}
               target={href?.startsWith("http") ? "_blank" : undefined}
               rel={href?.startsWith("http") ? "noopener noreferrer" : undefined}
-              className="font-medium text-primary underline-offset-4 hover:underline"
+              className="font-medium text-blue-600 underline-offset-4 hover:underline dark:text-blue-400"
             >
               {children}
             </a>

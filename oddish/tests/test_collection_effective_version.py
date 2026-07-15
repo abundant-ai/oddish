@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.core import helpers
 from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.core.endpoints.tasks_query import (
+    list_experiment_task_shells_core,
     list_experiment_slim_tasks,
     list_tasks_core,
 )
@@ -67,6 +68,8 @@ def _trial(
     task_version_id: str,
     org_id: str = "org1",
     reward: float | None = 1,
+    is_probe: bool = False,
+    superseded_by_trial_id: str | None = None,
 ) -> TrialModel:
     trial_id = generate_id()
     return TrialModel(
@@ -82,6 +85,8 @@ def _trial(
         model="gpt-5.5",
         status=TrialStatus.SUCCESS,
         reward=reward,
+        is_probe=is_probe,
+        superseded_by_trial_id=superseded_by_trial_id,
     )
 
 
@@ -136,8 +141,18 @@ async def test_slim_path_surfaces_gathered_old_version_trial(session):
     task_resp = by_task[task.id]
     trial_ids = [t.id for t in (task_resp.trials or [])]
     assert trial.id in trial_ids, "gathered v1 trial was filtered out (double-filter)"
-    # Effective version reported is the gathered trial's own version (v1), not v2.
-    assert task_resp.current_version_id == v1_id
+    # The collection keeps its historical v1 trial, but reports the task's
+    # selected default (v2) consistently with the task detail page.
+    assert task_resp.current_version_id == v2_id
+    assert task_resp.trial_version_id == v1_id
+
+    shells = await list_experiment_task_shells_core(
+        session, experiment_id=collection.id, org_id="org1"
+    )
+    shell = {response.id: response for response in shells}[task.id]
+    assert shell.current_version_id == v2_id
+    assert shell.trial_version_id == v1_id
+    assert shell.total == 1
 
 
 @pytest.mark.asyncio
@@ -159,7 +174,8 @@ async def test_compact_path_surfaces_gathered_old_version_trial(session):
     task_resp = by_task[task.id]
     trial_ids = [t.id for t in (task_resp.trials or [])]
     assert trial.id in trial_ids, "gathered v1 trial hidden on compact experiment path"
-    assert task_resp.current_version_id == v1_id
+    assert task_resp.current_version_id == v2_id
+    assert task_resp.trial_version_id == v1_id
 
 
 @pytest.mark.asyncio
@@ -235,3 +251,116 @@ async def test_normal_experiment_unchanged_control(session):
     task_resp = by_task[task.id]
     assert [t.id for t in (task_resp.trials or [])] == [trial.id]
     assert task_resp.current_version_id == v1.id
+    assert task_resp.trial_version_id == v1.id
+
+
+@pytest.mark.asyncio
+async def test_default_version_survives_shell_to_slim_loading(session):
+    task = _task("default-version-exp-task")
+    session.add(task)
+    await session.flush()
+
+    v1 = _version(task, 1)
+    v2 = _version(task, 2)
+    session.add_all([v1, v2])
+    await session.flush()
+    task.current_version_id = v1.id
+
+    experiment = _experiment("default-version-exp")
+    other_experiment = _experiment("default-version-other-exp")
+    session.add_all([experiment, other_experiment])
+    await session.flush()
+
+    v1_trial = _trial(task, experiment, task_version_id=v1.id)
+    v2_trial = _trial(task, experiment, task_version_id=v2.id)
+    off_experiment_v1_trial = _trial(task, other_experiment, task_version_id=v1.id)
+    session.add_all([v1_trial, v2_trial, off_experiment_v1_trial])
+    await session.execute(
+        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
+    )
+    await session.flush()
+    # The production endpoints run in a fresh request session. Clear the
+    # fixture identity map so the filtered selectinload cannot reuse the
+    # relationship populated by session.add().
+    session.expunge_all()
+
+    shells = await list_experiment_task_shells_core(
+        session, experiment_id=experiment.id, org_id="org1"
+    )
+    slim = await list_experiment_slim_tasks(
+        session, experiment_id=experiment.id, org_id="org1"
+    )
+
+    shell = {response.id: response for response in shells}[task.id]
+    enriched = {response.id: response for response in slim}[task.id]
+    assert shell.current_version_id == v1.id
+    assert enriched.current_version_id == v1.id
+    assert shell.trial_version_id == v1.id
+    assert enriched.trial_version_id == v1.id
+    assert shell.updated_at == enriched.updated_at
+    assert shell.total == 1
+    assert enriched.total == 1
+    assert [trial.id for trial in (enriched.trials or [])] == [v1_trial.id]
+
+
+@pytest.mark.asyncio
+async def test_experiment_reports_default_while_using_latest_visible_trial_version(
+    session,
+):
+    task = _task("invisible-default-exp-task")
+    session.add(task)
+    await session.flush()
+
+    v1 = _version(task, 1)
+    v2 = _version(task, 2)
+    v4 = _version(task, 4)
+    session.add_all([v1, v2, v4])
+    await session.flush()
+    task.current_version_id = v4.id
+
+    experiment = _experiment("invisible-default-exp")
+    session.add(experiment)
+    await session.flush()
+
+    v1_trial = _trial(task, experiment, task_version_id=v1.id)
+    v2_trial = _trial(task, experiment, task_version_id=v2.id)
+    session.add_all([v1_trial, v2_trial])
+    await session.flush()
+    session.add_all(
+        [
+            _trial(
+                task,
+                experiment,
+                task_version_id=v4.id,
+                is_probe=True,
+            ),
+            _trial(
+                task,
+                experiment,
+                task_version_id=v4.id,
+                superseded_by_trial_id=v2_trial.id,
+            ),
+        ]
+    )
+    await session.execute(
+        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
+    )
+    await session.flush()
+
+    shells = await list_experiment_task_shells_core(
+        session, experiment_id=experiment.id, org_id="org1"
+    )
+    slim = await list_experiment_slim_tasks(
+        session, experiment_id=experiment.id, org_id="org1"
+    )
+
+    shell = {response.id: response for response in shells}[task.id]
+    enriched = {response.id: response for response in slim}[task.id]
+    assert shell.current_version_id == v4.id
+    assert enriched.current_version_id == v4.id
+    assert shell.trial_version_id == v2.id
+    assert enriched.trial_version_id == v2.id
+    assert shell.updated_at == enriched.updated_at
+    assert shell.total == 1
+    assert enriched.total == 1
+    assert [trial.id for trial in (enriched.trials or [])] == [v2_trial.id]

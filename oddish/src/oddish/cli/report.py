@@ -35,6 +35,13 @@ def create(
     json_output: Annotated[
         bool, typer.Option("--json", help="Print the raw JSON response.")
     ] = False,
+    save_trials: Annotated[
+        bool,
+        typer.Option(
+            "--save-trials",
+            help="Also save each trial-level analysis to S3 (one JSON per job).",
+        ),
+    ] = False,
     api_url: Annotated[
         Optional[str],
         typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
@@ -55,7 +62,7 @@ def create(
     require_api_key(api_url)
 
     # Omit name entirely when unset so the server auto-generates it.
-    payload: dict = {"experiment_ids": ids}
+    payload: dict = {"experiment_ids": ids, "save_trial_analyses": save_trials}
     if name.strip():
         payload["name"] = name.strip()
 

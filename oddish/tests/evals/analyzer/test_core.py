@@ -29,7 +29,7 @@ class FakeClient:
         return json.dumps({
             "trial_id": tid, "bucket": bucket,
             "subcategory": "1b" if bucket == "bad" else "3a",
-            "evidence_quote": "q", "step_indices": [1], "root_cause": "rc",
+            "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
             "headroom_signal": "hs", "trajectory_link": trajectory_link("task", tid),
         })
 
@@ -77,6 +77,10 @@ async def test_run_analyzer_eval_maps_per_failure_and_reduces():
     assert set(out.sections) == {"bad", "good", "capabilities", "headroom"}
     assert "/tasks/task/probe/task-0" in out.sections["bad"]
     assert len(out.findings) == 2
+    # the reduce prompt that produced the sections is captured on the output,
+    # and is exactly the string that was sent to the client (the last call).
+    assert out.reduce_prompt == client.calls[-1]
+    assert "lead analyst synthesizing" in out.reduce_prompt
 
 
 @pytest.mark.asyncio
@@ -90,6 +94,8 @@ async def test_run_analyzer_eval_no_failures_skips_reduce_llm():
     assert out.counts == {"trials": 1, "bad": 0, "good": 0}
     assert client.calls == []  # nothing to analyze → no LLM calls
     assert out.sections["bad"] == "" and out.sections["headroom"] == ""
+    # no reduce stage ran, so there is no prompt to persist
+    assert out.reduce_prompt is None
 
 
 def _failure_inputs():
@@ -185,3 +191,105 @@ async def test_run_analyzer_eval_no_work_is_pure_without_client_or_env(monkeypat
     out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=None)
     assert out.counts == {"trials": 1, "bad": 0, "good": 0}
     assert all(v == "" for v in out.sections.values())
+
+
+class _LyingClient(FakeClient):
+    """FakeClient, but its map findings assert bogus host-owned facts."""
+
+    async def complete(self, prompt, *, model, temperature, max_tokens):
+        raw = await super().complete(
+            prompt, model=model, temperature=temperature, max_tokens=max_tokens
+        )
+        d = json.loads(raw)
+        if "trial_id" in d:  # a map response, not the reduce sections
+            d["model"] = "gpt-5-hallucinated"
+            d["trajectory_link"] = "https://evil.example/pwned"
+            d["classification"] = "GOOD_FAILURE"
+            d["subtype"] = "Logic Error"
+            d["task_id"] = "hallucinated-task"
+            d["task_path"] = "tasks/hallucinated"
+        return json.dumps(d)
+
+
+@pytest.mark.asyncio
+async def test_finding_model_and_link_come_from_the_host_not_the_llm():
+    """model is a database fact. The LLM gets no say, same as trajectory_link."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    sa.model = "global.anthropic.claude-opus-4-8-v1:0"
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=_LyingClient())
+
+    f = out.findings[0]
+    assert f.model == "global.anthropic.claude-opus-4-8-v1:0"
+    assert f.trajectory_link == trajectory_link("task", "task-0")
+
+
+@pytest.mark.asyncio
+async def test_finding_model_none_when_subanalysis_has_none():
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    sa.model = None
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+
+    assert out.findings[0].model is None
+
+
+@pytest.mark.asyncio
+async def test_finding_carries_host_classification_subtype_and_task():
+    """The rollup derives lanes from these, so they must be the classifier's
+    values — not the map LLM's, which can disagree with `breakdown`."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+
+    f = out.findings[0]
+    assert f.classification == "BAD_FAILURE"
+    assert f.subtype == "Hardcoding"
+    assert f.task_id == "task"
+    assert f.task_path == "tasks/task"
+
+
+@pytest.mark.asyncio
+async def test_host_classification_survives_a_lying_llm():
+    """FakeClient emits bucket=bad/subcategory=1b for this trial; the LLM could
+    just as easily say `good`. classification/subtype must not follow it."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=_LyingClient())
+
+    f = out.findings[0]
+    assert f.classification == "BAD_FAILURE"
+    assert f.subtype == "Hardcoding"
+
+
+@pytest.mark.asyncio
+async def test_finding_classification_subtype_and_task_survive_a_lying_llm():
+    """_LyingClient's map payload also asserts a conflicting classification,
+    subtype, task_id, and task_path; the host's values must still win."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=_LyingClient())
+
+    f = out.findings[0]
+    assert f.classification == "BAD_FAILURE"
+    assert f.subtype == "Hardcoding"
+    assert f.task_id == "task"
+    assert f.task_path == "tasks/task"
+
+
+@pytest.mark.asyncio
+async def test_finding_exposes_step_ids():
+    """Renamed from step_indices: the ints are step_id values (1-based), not
+    array positions (0-based). The old name invited an off-by-one."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+
+    assert out.findings[0].step_ids == [1]
+    assert not hasattr(out.findings[0], "step_indices")

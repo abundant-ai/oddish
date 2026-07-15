@@ -65,6 +65,9 @@ oddish = { path = "../oddish", editable = true }
 # sources from transitive dependencies).
 harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 
+[tool.uv]
+override-dependencies = ["harbor==0.15.0"]
+
 # Backend is a flat-layout project: real packages live next to top-level
 # entrypoint modules. Spell out what setuptools should ship so it
 # doesn't trip on local-only directories (alembic migrations, the

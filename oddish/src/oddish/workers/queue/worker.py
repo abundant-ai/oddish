@@ -7,6 +7,7 @@ import signal
 
 from oddish.config import settings
 from oddish.db import close_pool
+from oddish.observability import configure_observability
 from oddish.workers.harbor.runner import log_local_storage_snapshot
 from oddish.workers.queue.queue_manager import (
     run_assigned_queue_worker,
@@ -22,6 +23,7 @@ ASSIGNED_QUEUE_KEY_ENV = "ODDISH_WORKER_QUEUE_KEY"
 
 async def run_worker() -> None:
     """Run the queue worker."""
+    configure_observability("oddish-worker")
     console.print("[green]Starting Oddish queue worker...[/green]")
     log_local_storage_snapshot(settings.harbor_jobs_dir)
 

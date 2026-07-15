@@ -116,6 +116,8 @@ export interface Trial {
   name: string;
   task_id: string;
   task_path: string;
+  /** Home experiment — the one whose spend this trial is. */
+  experiment_id?: string | null;
   agent: string;
   provider: string;
   model: string | null;
@@ -217,9 +219,12 @@ export interface Task {
   jobs?: VisibleWorkerJob[];
   current_version?: number | null;
   current_version_id?: string | null;
+  trial_version?: number | null;
+  trial_version_id?: string | null;
   trials?: Trial[] | null;
   user_tags?: UserTagRef[];
   created_at: string;
+  updated_at: string;
   started_at?: string | null;
   finished_at?: string | null;
 }
