@@ -118,6 +118,72 @@ async def test_experiment_options_lists_org_experiments(client, experiment_id):
     assert any(opt["id"] == experiment_id for opt in resp.json())
 
 
+@pytest_asyncio.fixture
+async def analyzer_id(org_id, experiment_id):
+    async with get_session() as session:
+        analyzer = AnalyzerModel(name="rollup-target", org_id=org_id)
+        session.add(analyzer)
+        await session.flush()
+        await session.execute(
+            analyzer_experiments.insert().values(
+                analyzer_id=analyzer.id, experiment_id=experiment_id
+            )
+        )
+        await session.commit()
+        return analyzer.id
+
+
+async def _set_findings(analyzer_id, findings, models_by_task=None):
+    async with get_session() as session:
+        await session.execute(
+            AnalyzerModel.__table__.update()
+            .where(AnalyzerModel.id == analyzer_id)
+            .values(findings=findings, models_by_task=models_by_task or {})
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_rollup_404_when_findings_null(client, analyzer_id):
+    """NULL = analyzed before findings existed. Distinct from 'no failures'."""
+    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    assert resp.status_code == 404, resp.text
+    assert "before findings" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_rollup_200_empty_lanes_when_no_failures(client, analyzer_id):
+    await _set_findings(analyzer_id, [])
+    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["good_failures"]["groups"] == []
+
+
+@pytest.mark.asyncio
+async def test_rollup_returns_lanes(client, analyzer_id):
+    finding = {
+        "trial_id": "t1",
+        "bucket": "good",
+        "subcategory": "3b",
+        "evidence_quote": "q",
+        "step_ids": [1],
+        "root_cause": "rc",
+        "headroom_signal": "",
+        "trajectory_link": "/tasks/task/probe/t1",
+        "model": "claude-opus-4-8",
+        "classification": "GOOD_FAILURE",
+        "subtype": "Logic Error",
+        "task_id": "task",
+        "task_path": "tasks/task",
+    }
+    await _set_findings(
+        analyzer_id, [finding], models_by_task={"task": ["claude-opus-4-8"]}
+    )
+    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["good_failures"]["groups"][0]["gaps"][0]["gap"] == "Logic Error"
+
+
 @pytest.mark.asyncio
 async def test_delete_analyzer_removes_it(client, experiment_id, monkeypatch):
     import oddish.core.analyzers as analyzers_core
