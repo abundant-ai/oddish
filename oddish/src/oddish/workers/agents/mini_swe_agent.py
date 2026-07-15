@@ -9,6 +9,7 @@ import uuid
 from harbor.agents.installed.mini_swe_agent import MiniSweAgent
 
 from oddish.config import META_DEFAULT_BASE_URL, meta_bare_model_id, settings
+from oddish.workers.agents.network import normalize_domain_or_url
 
 
 _META_CONFIG_PATH = "/tmp/oddish-meta-mini-swe-agent.yaml"
@@ -96,8 +97,6 @@ class OddishMetaMiniSweAgent(OddishMiniSweAgent):
         model_name: str | None = None,
         kwargs: dict | None = None,
     ) -> list[str]:
-        from harbor.environments.modal_network import normalize_domain_or_url
-
         candidates = {
             META_DEFAULT_BASE_URL,
             settings.meta_base_url,

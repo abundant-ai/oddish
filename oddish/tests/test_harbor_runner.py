@@ -1196,6 +1196,7 @@ def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
     assert (
         trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
     )
+    assert trajectory["steps"][1]["extra"]["source_call_id"] == "call_1"
     assert trajectory["steps"][2]["message"] == "Done."
     assert trajectory["final_metrics"]["total_steps"] == 3
 

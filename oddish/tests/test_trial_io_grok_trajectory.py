@@ -52,3 +52,35 @@ def test_read_trial_trajectory_converts_grok_build_s3_artifact(monkeypatch):
         "Reasoning",
         "Done.",
     ]
+
+
+def test_read_trial_trajectory_marks_tool_results_as_user_observations(monkeypatch):
+    grok_text = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "tool_result",
+                    "tool_call_id": "call-1",
+                    "content": "command output",
+                }
+            ),
+            json.dumps({"type": "end", "sessionId": "grok-session"}),
+        ]
+    )
+    monkeypatch.setattr(trial_io, "get_storage_client", lambda: _FakeStorage(grok_text))
+    trial = SimpleNamespace(
+        id="trial-tool-result",
+        name="trial-tool-result",
+        model="xai/redacted-model",
+        trial_s3_key="tasks/task-1/trials/trial-tool-result/",
+        harbor_result_path=None,
+        finished_at=datetime.now(timezone.utc),
+    )
+
+    trajectory = asyncio.run(trial_io.read_trial_trajectory(trial))
+
+    assert trajectory is not None
+    assert trajectory["steps"][0]["source"] == "user"
+    assert trajectory["steps"][0]["observation"]["results"][0]["content"] == (
+        "command output"
+    )
