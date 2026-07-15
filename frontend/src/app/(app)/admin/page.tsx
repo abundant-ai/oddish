@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -662,12 +662,20 @@ const ADMIN_TABS = [
 ] as const;
 
 function AdminPageContent() {
-  // Deep-link support (e.g. /admin?tab=usage from the dashboard usage card).
+  // The active tab lives in the URL (?tab=usage) so tabs are deep-linkable
+  // (e.g. from the dashboard usage card) and browser back/forward moves
+  // between them.
+  const router = useRouter();
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get("tab") ?? "";
-  const initialTab = (ADMIN_TABS as readonly string[]).includes(requestedTab)
+  const activeTab = (ADMIN_TABS as readonly string[]).includes(requestedTab)
     ? requestedTab
     : "overview";
+  const handleTabChange = (value: string) => {
+    router.push(value === "overview" ? "/admin" : `/admin?tab=${value}`, {
+      scroll: false,
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -678,7 +686,11 @@ function AdminPageContent() {
         </p>
       </div>
 
-      <Tabs defaultValue={initialTab} className="space-y-4">
+      <Tabs
+        value={activeTab}
+        onValueChange={handleTabChange}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="usage">Usage</TabsTrigger>
