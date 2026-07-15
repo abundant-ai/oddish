@@ -7,7 +7,7 @@ and the sandboxed analyzer, so the two can't drift.
 import json
 
 
-def _tool_result_text(content) -> str:
+def tool_result_text(content) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -24,6 +24,36 @@ def _tool_result_text(content) -> str:
 def _truncate(text: str, limit: int) -> str:
     text = text.rstrip()
     return text if len(text) <= limit else text[:limit] + f" …(+{len(text) - limit} chars)"
+
+
+def event_texts(evt: dict) -> list[str]:
+    """Every text payload in one event, untruncated.
+
+    The raw counterpart to render_event(), which trims payloads to keep the
+    human log readable. Callers that parse the stream must read from here.
+    """
+    out: list[str] = []
+    t = evt.get("type")
+    if t == "assistant":
+        for block in evt.get("message", {}).get("content", []):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                out.append(block.get("text", ""))
+            elif block.get("type") == "tool_use":
+                # String values only: json.dumps() of the whole input would
+                # escape any JSON nested in it (a Write's content) past parsing.
+                inp = block.get("input", {})
+                if isinstance(inp, dict):
+                    out.extend(v for v in inp.values() if isinstance(v, str))
+    elif t == "user":
+        for block in evt.get("message", {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                out.append(tool_result_text(block.get("content")))
+    elif t == "_invalid_json":
+        # A marker can ride out on a line the stream-json decoder choked on.
+        out.append(evt.get("raw", ""))
+    return [x for x in out if isinstance(x, str) and x.strip()]
 
 
 def render_event(evt: dict) -> str | None:
@@ -53,7 +83,7 @@ def render_event(evt: dict) -> str | None:
         parts = []
         for block in evt.get("message", {}).get("content", []):
             if isinstance(block, dict) and block.get("type") == "tool_result":
-                parts.append("  → " + _truncate(_tool_result_text(block.get("content")), 600))
+                parts.append("  → " + _truncate(tool_result_text(block.get("content")), 600))
         return "\n".join(parts) or None
     if t == "result":
         cost = evt.get("total_cost_usd")

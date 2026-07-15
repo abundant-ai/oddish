@@ -1,4 +1,4 @@
-from api.services.cc_chat.stream_render import render_event
+from api.services.cc_chat.stream_render import event_texts, render_event
 
 
 def test_init_frame_names_the_model():
@@ -56,3 +56,31 @@ def test_blank_stderr_is_dropped():
 
 def test_unknown_event_type_is_dropped():
     assert render_event({"type": "wat"}) is None
+
+
+def test_event_texts_returns_tool_results_untruncated():
+    evt = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": "x" * 700},
+    ]}}
+    assert event_texts(evt) == ["x" * 700]
+
+
+def test_event_texts_unpacks_tool_use_string_values_unescaped():
+    """json.dumps() of the input would backslash-escape nested JSON past
+    parsing; callers need the raw value a Write actually carries."""
+    evt = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Write",
+         "input": {"file_path": "/out/f.jsonl", "content": '{"trial_id": "t1"}',
+                   "line": 3}},
+    ]}}
+    assert event_texts(evt) == ["/out/f.jsonl", '{"trial_id": "t1"}']
+
+
+def test_event_texts_keeps_undecodable_raw_lines():
+    assert event_texts({"type": "_invalid_json", "raw": "MAP FINDING: {}"}) == \
+        ["MAP FINDING: {}"]
+
+
+def test_event_texts_drops_frames_with_no_payload():
+    assert event_texts({"type": "result", "subtype": "success"}) == []
+    assert event_texts({"type": "assistant", "message": {"content": []}}) == []

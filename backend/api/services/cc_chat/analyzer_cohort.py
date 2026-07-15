@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from api.services.cc_chat.analyzer_parse import parse_cohort_result
+from api.services.cc_chat.analyzer_parse import marker_payloads, parse_cohort_result
 from api.services.cc_chat.analyzer_prompt import (
     CLI_DEST,
     FINDINGS_PATH,
@@ -55,8 +55,9 @@ async def run_cohort(
 ) -> tuple[list[Finding], dict[str, str]]:
     tag = f"[analyzer {analyzer_id}][{bucket}]"
     prompt = build_cohort_prompt(bucket, cohort, roster, counts, oracle_by_trial)
-    # Retained only to serve the parse-fallback; never persisted.
-    stream_lines: list[str] = []
+    # Serves the parse-fallback only; never persisted. Captured raw rather than
+    # from render_event(), whose truncation would cut long marker JSON short.
+    marker_text: list[str] = []
     sandbox = None
     try:
         async with asyncio.timeout(COHORT_TIMEOUT_SECONDS):
@@ -85,9 +86,9 @@ async def run_cohort(
                 client, sandbox, content=prompt,
                 claude_session_id=None, daytona_session_id="cc",
             ):
+                marker_text.extend(marker_payloads(evt))
                 line = render_event(evt)
                 if line:
-                    stream_lines.append(line)
                     logger.info("%s %s", tag, line)
 
             reduce_b = await _download(client, sandbox, REDUCE_PATH)
@@ -104,7 +105,7 @@ async def run_cohort(
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
     findings, sections = parse_cohort_result(
-        bucket, reduce_b, findings_b, "\n".join(stream_lines),
+        bucket, reduce_b, findings_b, "\n".join(marker_text),
         {sa.trial_id: sa.trajectory_link for sa in cohort},
     )
     logger.info("%s done: %d findings, sections=%s", tag, len(findings), sorted(sections))

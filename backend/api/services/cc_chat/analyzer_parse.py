@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 
+from api.services.cc_chat.stream_render import event_texts
 from oddish.evals.analyzer.core import parse_json
 from oddish.evals.analyzer.prompt_builder import SECTION_KEYS_BY_BUCKET
 from oddish.evals.analyzer.schemas import Finding
@@ -17,6 +18,18 @@ logger = logging.getLogger(__name__)
 
 _MAP_MARKER = "MAP FINDING:"
 _REDUCE_MARKER = "REDUCE RESULT:"
+
+
+def marker_payloads(evt: dict) -> list[str]:
+    """The marker-bearing text payloads of one stream event, untruncated.
+
+    Whole payloads, not just the matching lines, so a reduce object pretty-printed
+    under its marker survives intact.
+    """
+    return [
+        t for t in event_texts(evt)
+        if _MAP_MARKER in t or _REDUCE_MARKER in t
+    ]
 
 
 class CohortParseError(RuntimeError):
@@ -146,14 +159,18 @@ def parse_cohort_result(
         if not blocks:
             raise CohortParseError(
                 f"no usable reduce result for bucket {bucket!r}: "
-                f"file was {len(reduce_bytes)}B and the stream had no "
-                f"{_REDUCE_MARKER!r} marker"
+                f"file was {len(reduce_bytes)}B and the stream capture yielded no "
+                f"parseable {_REDUCE_MARKER!r} object"
             )
         sections = _sections_from(blocks[-1], bucket)
 
     if not findings:
-        findings = [
-            f for d in _marked(stream_text, _MAP_MARKER)
-            if (f := _finding_from(d, bucket, link_by_trial)) is not None
-        ]
+        # An agent that narrates a finding and later cats the file back emits the
+        # same marker twice; one trial gets one finding, and the narrated one wins.
+        seen: set[str] = set()
+        for d in _marked(stream_text, _MAP_MARKER):
+            f = _finding_from(d, bucket, link_by_trial)
+            if f is not None and f.trial_id not in seen:
+                seen.add(f.trial_id)
+                findings.append(f)
     return findings, sections

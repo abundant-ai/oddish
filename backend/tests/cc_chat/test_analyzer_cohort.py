@@ -140,6 +140,72 @@ async def test_run_cohort_falls_back_to_stream_when_files_absent():
     assert sections == {"bad_failure_content": "# Stream"}
 
 
+def _tool_result_evt(text):
+    return {"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": text},
+    ]}}
+
+
+async def test_run_cohort_recovers_a_reduce_marker_from_a_long_tool_result():
+    """render_event truncates tool_result at 600 chars for the human log. The
+    parse fallback must not inherit that limit: an agent that only surfaces its
+    reduce JSON by cat-ing the file would otherwise lose it to the truncation."""
+    client = FakeDaytonaClient()
+    body = "# Stream " + "x" * 900
+    reduce_line = "REDUCE RESULT: " + json.dumps({"bad_failure_content": body})
+    assert len(reduce_line) > 600
+    runtime = _FakeRuntime([_tool_result_evt("$ cat out/reduce.json\n" + reduce_line)])
+    _, sections = await ac.run_cohort(client, runtime, **_kwargs())
+    assert sections == {"bad_failure_content": body}
+
+
+async def test_run_cohort_recovers_map_findings_from_a_long_write_tool_use():
+    """Non-Bash tool_use inputs are truncated at 200 chars in the log. A Write
+    of findings.jsonl is well past that, and it's the file-less case the map
+    fallback exists for."""
+    client = FakeDaytonaClient()
+    finding = {
+        "trial_id": "bad-1", "subcategory": "1a",
+        "evidence_quote": "q" * 400, "step_ids": [1],
+        "root_cause": "rc", "headroom_signal": "h", "trajectory_link": "junk",
+    }
+    runtime = _FakeRuntime([
+        {"type": "assistant", "message": {"content": [{
+            "type": "tool_use", "name": "Write",
+            "input": {"file_path": FINDINGS_PATH,
+                      "content": "MAP FINDING: " + json.dumps(finding)},
+        }]}},
+        {"type": "assistant", "message": {"content": [{
+            "type": "text",
+            "text": "REDUCE RESULT: " + json.dumps({"bad_failure_content": "# S"}),
+        }]}},
+    ])
+    findings, _ = await ac.run_cohort(client, runtime, **_kwargs())
+    assert [f.trial_id for f in findings] == ["bad-1"]
+    assert findings[0].evidence_quote == "q" * 400
+
+
+async def test_run_cohort_does_not_double_count_an_echoed_finding():
+    """The agent narrates a finding AND cats the file back. Both carry the same
+    marker, so an untruncated capture sees it twice — one trial, one finding."""
+    client = FakeDaytonaClient()
+    finding = {
+        "trial_id": "bad-1", "subcategory": "1a", "evidence_quote": "q",
+        "step_ids": [1], "root_cause": "rc", "headroom_signal": "h",
+    }
+    line = "MAP FINDING: " + json.dumps(finding)
+    runtime = _FakeRuntime([
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": line}]}},
+        _tool_result_evt(line),
+        {"type": "assistant", "message": {"content": [{
+            "type": "text",
+            "text": "REDUCE RESULT: " + json.dumps({"bad_failure_content": "# S"}),
+        }]}},
+    ])
+    findings, _ = await ac.run_cohort(client, runtime, **_kwargs())
+    assert [f.trial_id for f in findings] == ["bad-1"]
+
+
 async def test_run_cohort_raises_on_timeout_and_still_deletes_sandbox(monkeypatch):
     """The 30-min safety net: a wedged agent must not hold the job or the
     sandbox open forever."""
