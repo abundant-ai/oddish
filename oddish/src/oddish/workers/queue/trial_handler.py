@@ -36,7 +36,11 @@ from oddish.worker.probe_analysis import (
     run_probe_analyzer,
 )
 from oddish.worker.local_offline_policy import enable_local_internet
-from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
+from oddish.worker.probe_creds import (
+    ProbeCredsError,
+    mint_probe_creds,
+    revoke_probe_creds,
+)
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
@@ -61,24 +65,6 @@ def _extract_trial_index(trial_id: str, task_id: str) -> int:
     if suffix.startswith("-") and suffix[1:].isdigit():
         return int(suffix[1:])
     return 0
-
-
-async def _delete_probe_key(api_key_id: str, trial_id: str) -> None:
-    """Best-effort revoke a minted probe read key; never raises."""
-    try:
-        from oddish.db import get_session
-        from oddish.db.models import APIKeyModel
-
-        async with get_session() as session:
-            key = await session.get(APIKeyModel, api_key_id)
-            if key is not None:
-                await session.delete(key)
-                await session.commit()
-    except Exception as exc:
-        console.print(
-            f"[yellow]Failed to revoke probe key for trial {trial_id} "
-            f"(will auto-expire): {exc}[/yellow]"
-        )
 
 
 async def _issue_job_credentials(
@@ -1423,7 +1409,7 @@ async def run_trial_job(
         # Best-effort revoke the short-lived probe read key now that the run
         # is done; it also auto-expires via its TTL if this fails.
         if probe_key_id:
-            await _delete_probe_key(probe_key_id, trial_id)
+            await revoke_probe_creds(probe_key_id, trial_id)
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)

@@ -23,13 +23,14 @@ from api.services.cc_chat.daytona_client import RealDaytonaClient
 from oddish.config import settings
 from oddish.core.analyzer_inputs import subanalysis_from_trial
 from oddish.evals.analyzer.bucketing import bucket_subanalyses
-from oddish.evals.analyzer.core import _roster
+from oddish.evals.analyzer.core import build_roster
 from oddish.evals.analyzer.schemas import (
     AnalyzerEvalConfig,
     AnalyzerEvalOutput,
     Finding,
 )
 from oddish.evals.primitives import SubAnalysis
+from oddish.worker.probe_creds import revoke_probe_creds
 from oddish.workers.jobs.handlers import AnalyzerJobHandler
 
 logger = logging.getLogger(__name__)
@@ -97,13 +98,6 @@ async def _resolve_api_creds(
     return key_id, creds["ODDISH_API_BASE_URL"], creds["ODDISH_API_KEY"]
 
 
-async def _revoke_api_key(key_id: str, analyzer_id: str) -> None:
-    """Best-effort revoke; mirrors trial_handler's probe-key teardown."""
-    from oddish.workers.queue.trial_handler import _delete_probe_key
-
-    await _delete_probe_key(key_id, analyzer_id)
-
-
 async def sandbox_eval_rows(
     rows: list[tuple[Any, str]], config: AnalyzerEvalConfig, analyzer_id: str
 ) -> AnalyzerEvalOutput:
@@ -118,7 +112,7 @@ async def sandbox_eval_rows(
             breakdown=breakdown,
         )
 
-    roster = _roster(bad, good)
+    roster = build_roster(bad, good)
     client, runtime, cli_src = _daytona_client(), _runtime(), _read_cli_source()
     key_id, api_base, api_key = await _resolve_api_creds(rows, analyzer_id)
 
@@ -143,7 +137,7 @@ async def sandbox_eval_rows(
             *[_cohort(b, c) for b, c in jobs], return_exceptions=True
         )
     finally:
-        await _revoke_api_key(key_id, analyzer_id)
+        await revoke_probe_creds(key_id, analyzer_id)
 
     first_exc = next((r for r in results if isinstance(r, BaseException)), None)
     if first_exc is not None:

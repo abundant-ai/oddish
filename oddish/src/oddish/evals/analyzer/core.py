@@ -86,7 +86,7 @@ def _default_client() -> LLMClient:
     return _Wrap()
 
 
-def _roster(bad: list[SubAnalysis], good: list[SubAnalysis]) -> list[dict]:
+def build_roster(bad: list[SubAnalysis], good: list[SubAnalysis]) -> list[dict]:
     rows = []
     for sa in bad:
         rows.append({"trial_id": sa.trial_id, "bucket": "bad",
@@ -189,7 +189,7 @@ async def run_analyzer_eval(
     # each failure subanalysis with its trajectory bundle. Subanalyses with no
     # matching bundle can't be mapped; log and skip them rather than KeyError.
     try:
-        roster = _roster(bad, good)
+        roster = build_roster(bad, good)
         by_trial = {b.trial_id: b for b in inputs.bundles}
         selected = [sa for sa in (bad + good) if sa.trial_id in by_trial]
         missing = [sa.trial_id for sa in (bad + good) if sa.trial_id not in by_trial]

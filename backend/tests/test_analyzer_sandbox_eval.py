@@ -56,7 +56,7 @@ def patched(monkeypatch):
         revoked.append(key_id)
 
     monkeypatch.setattr(m, "_resolve_api_creds", fake_creds)
-    monkeypatch.setattr(m, "_revoke_api_key", fake_revoke)
+    monkeypatch.setattr(m, "revoke_probe_creds", fake_revoke)
     return m, calls, revoked
 
 
