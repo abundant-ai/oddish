@@ -12,13 +12,28 @@ CHECK_ID = "dockerfile_leaks"
 # Referencing any of these from the agent's Dockerfile bakes the answer
 # (the solution) or the grader (the tests) into the image the agent can read.
 #
-# Ported from harbor-lh's ci_checks/check-dockerfile-references.sh. That script
-# is named for its mechanism rather than its purpose; the rename to
-# `dockerfile_leaks` is deliberate.
+# Ported from harbor-lh's ci_checks/check-dockerfile-references.sh, but
+# deliberately broader. That script greps a fixed list of literal file paths,
+# which its name ("references") is honest about — but it silently passes the
+# idiomatic forms of the very leak it exists to prevent:
+#
+#     COPY tests/ /app/tests        -> ships the whole grader
+#     COPY solution/ /app/solution  -> ships the whole answer
+#     COPY tests/test_*.py /app/    -> literal glob, matches no literal path
+#
+# So the port matches the *directory* as well: any reference to the tests or
+# solution tree, in any form.
+#
+# The anchor is `(?:^|[\s"'=])(?:\./)?` — start of line or a separator, with an
+# optional `./`. It deliberately excludes `/` from the separator class: a
+# leading slash would make the *destination* of `COPY x /app/tests/` match,
+# which is not a leak. It also stops `unittests/` and `my_solution/` from
+# false-positiving, since `t` and `_` are not separators.
+_ANCHOR = r"(?:^|[\s\"'=])(?:\./)?"
+
 _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"solution/solve\.sh"), "solution/solve.sh"),
-    (re.compile(r"tests/test\.sh"), "tests/test.sh"),
-    (re.compile(r"tests/test_[A-Za-z0-9_]*\.py"), "tests/test_*.py"),
+    (re.compile(_ANCHOR + r"solution/"), "the solution/ tree"),
+    (re.compile(_ANCHOR + r"tests/"), "the tests/ tree"),
 )
 
 
