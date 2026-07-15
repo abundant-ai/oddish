@@ -103,14 +103,27 @@ but that silently passes the idiomatic forms of the leak:
 COPY tests/ /app/tests        # ships the whole grader
 COPY solution/ /app/solution  # ships the whole answer
 COPY tests/test_*.py /app/    # literal glob matches no literal path
+COPY tests /app/tests         # bare directory name
+COPY ["tests", "/app/tests"]  # JSON-array form
 ```
 
-So the port matches the `solution/` and `tests/` *directories* in any form,
-anchored on a path boundary (`(?:^|[\s"'=])(?:\./)?`) so that `unittests/`,
-`my_solution/`, and the destination path in `COPY x /app/tests/` do not
-false-positive. This is a deliberate divergence from upstream behaviour: a check
-that passes the ordinary way of writing the leak is worse than no check, because
-it manufactures confidence.
+So the port matches the bare `solution` / `tests` directory name **between two
+boundaries**, rather than enumerating the shapes a reference can take:
+
+- Leading anchor `(?:^|[\s"'=])(?:\./)?` — start of line or a separator, with an
+  optional `./`. It excludes `/` deliberately, so the *destination* of
+  `COPY x /app/tests/` does not match; a destination is not a leak. It also
+  rejects `unittests/`, `my_solution/`, and `resolution/`.
+- Trailing boundary `(?:/|$|(?=[\s"',\]]))` — the name must end there. Admits
+  `tests`, `tests/`, and `"tests"`; rejects `testsuite/` and `tests-data/`.
+
+Matching a name between boundaries, rather than enumerating forms, is the whole
+point: enumeration is how the upstream script and two drafts of this port each
+missed an idiomatic form that a reviewer then found.
+
+This is a deliberate divergence from upstream behaviour. A check that passes the
+ordinary way of writing the leak is worse than no check, because it manufactures
+confidence.
 
 ### Deferred
 

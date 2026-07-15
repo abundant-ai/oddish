@@ -463,6 +463,11 @@ def _config(task_dir: Path) -> TaskConfig:
         "COPY solution/ /app/solution",
         "COPY tests/test_*.py /app/",
         "COPY solution/*.sh /app/",
+        # Bare directory (no trailing slash) and JSON-array forms.
+        "COPY tests /app/tests",
+        "COPY solution /app/solution",
+        'COPY ["tests", "/app/tests"]',
+        'COPY ["solution", "/app/solution"]',
     ],
 )
 def test_dockerfile_leaks_flags_solution_and_test_references(make_task, line):
@@ -484,10 +489,18 @@ def test_dockerfile_leaks_passes_a_clean_dockerfile(make_task):
 @pytest.mark.parametrize(
     "line",
     [
-        # Patterns anchor on a path boundary, so a directory that merely ends
-        # in "tests" or "solution" is not the task's tests/ or solution/ tree.
+        # Leading boundary: a directory that merely ends in "tests"/"solution"
+        # is not the task's tree.
         "COPY unittests/test.sh /app/",
         "COPY my_solution/solve.sh /app/",
+        "COPY resolution/x /app/",
+        # Trailing boundary: a longer name that merely starts with it.
+        "COPY testsuite/foo /app/",
+        "COPY tests-data/x /app/",
+        # Destination paths are not leaks — only sources are.
+        "COPY environment/foo /app/tests/",
+        "COPY x /app/tests",
+        "RUN mkdir -p /app/tests",
     ],
 )
 def test_dockerfile_leaks_does_not_false_positive_on_similar_names(make_task, line):
@@ -555,16 +568,26 @@ CHECK_ID = "dockerfile_leaks"
 # So the port matches the *directory* as well: any reference to the tests or
 # solution tree, in any form.
 #
-# The anchor is `(?:^|[\s"'=])(?:\./)?` — start of line or a separator, with an
-# optional `./`. It deliberately excludes `/` from the separator class: a
-# leading slash would make the *destination* of `COPY x /app/tests/` match,
-# which is not a leak. It also stops `unittests/` and `my_solution/` from
-# false-positiving, since `t` and `_` are not separators.
+# Match the bare directory name between two boundaries, rather than enumerating
+# the shapes a reference can take — enumerating shapes is how the upstream
+# script (and two drafts of this port) kept missing idiomatic forms like
+# `COPY tests/`, `COPY tests`, and `COPY ["tests", …]`.
+#
+# _ANCHOR — start of line or a separator, with an optional `./`. It excludes `/`
+# from the separator class on purpose: a leading slash would match the
+# *destination* of `COPY x /app/tests/`, which is not a leak. It also stops
+# `unittests/` and `my_solution/` matching, since `t` and `_` are not
+# separators.
+#
+# _BOUNDARY — the name must end here: a `/`, end of line, or (lookahead)
+# whitespace/quote/comma/bracket. This admits `tests`, `tests/`, and `"tests"`
+# while rejecting `testsuite/` and `tests-data/`.
 _ANCHOR = r"(?:^|[\s\"'=])(?:\./)?"
+_BOUNDARY = r"(?:/|$|(?=[\s\"',\]]))"
 
 _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(_ANCHOR + r"solution/"), "the solution/ tree"),
-    (re.compile(_ANCHOR + r"tests/"), "the tests/ tree"),
+    (re.compile(_ANCHOR + r"solution" + _BOUNDARY), "the solution/ tree"),
+    (re.compile(_ANCHOR + r"tests" + _BOUNDARY), "the tests/ tree"),
 )
 
 
