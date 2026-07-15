@@ -99,8 +99,13 @@ def taxonomy_from_snapshot(d: dict) -> Taxonomy:
 def taxonomy_fingerprint(taxonomy: Taxonomy) -> str:
     """Short content hash, stored as ``analyzers.taxonomy_version``.
 
-    sort_keys makes it order-independent, so a row reshuffle does not read as a
+    json.dumps(sort_keys=True) only sorts dict keys, not list elements, so the
+    snapshot's lists are sorted by slug here to make the fingerprint
+    order-independent -- a row reshuffle from the DB should not read as a
     taxonomy change.
     """
-    blob = json.dumps(taxonomy_snapshot(taxonomy), sort_keys=True).encode()
+    snap = taxonomy_snapshot(taxonomy)
+    snap["categories"].sort(key=lambda c: c["slug"])
+    snap["capabilities"].sort(key=lambda c: c["slug"])
+    blob = json.dumps(snap, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()[:12]

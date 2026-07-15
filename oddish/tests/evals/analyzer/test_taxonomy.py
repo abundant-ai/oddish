@@ -74,6 +74,17 @@ def test_fingerprint_is_stable_and_content_sensitive():
     assert taxonomy_fingerprint(changed) != a
 
 
+def test_fingerprint_unchanged_by_row_reorder():
+    """DB queries don't guarantee row order; the fingerprint must depend on
+    taxonomy content, not on the order rows came back in."""
+    tax = _tax()
+    reordered = Taxonomy(
+        categories=tuple(reversed(tax.categories)),
+        capabilities=tuple(reversed(tax.capabilities)),
+    )
+    assert taxonomy_fingerprint(tax) == taxonomy_fingerprint(reordered)
+
+
 def test_snapshot_round_trips():
     tax = _tax()
     assert taxonomy_from_snapshot(taxonomy_snapshot(tax)) == tax
