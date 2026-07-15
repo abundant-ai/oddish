@@ -194,7 +194,7 @@ async def test_run_analyzer_eval_no_work_is_pure_without_client_or_env(monkeypat
 
 
 class _LyingClient(FakeClient):
-    """FakeClient, but its map findings assert a bogus model and link."""
+    """FakeClient, but its map findings assert bogus host-owned facts."""
 
     async def complete(self, prompt, *, model, temperature, max_tokens):
         raw = await super().complete(
@@ -204,6 +204,10 @@ class _LyingClient(FakeClient):
         if "trial_id" in d:  # a map response, not the reduce sections
             d["model"] = "gpt-5-hallucinated"
             d["trajectory_link"] = "https://evil.example/pwned"
+            d["classification"] = "GOOD_FAILURE"
+            d["subtype"] = "Logic Error"
+            d["task_id"] = "hallucinated-task"
+            d["task_path"] = "tasks/hallucinated"
         return json.dumps(d)
 
 
@@ -260,3 +264,19 @@ async def test_host_classification_survives_a_lying_llm():
     f = out.findings[0]
     assert f.classification == "BAD_FAILURE"
     assert f.subtype == "Hardcoding"
+
+
+@pytest.mark.asyncio
+async def test_finding_classification_subtype_and_task_survive_a_lying_llm():
+    """_LyingClient's map payload also asserts a conflicting classification,
+    subtype, task_id, and task_path; the host's values must still win."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=_LyingClient())
+
+    f = out.findings[0]
+    assert f.classification == "BAD_FAILURE"
+    assert f.subtype == "Hardcoding"
+    assert f.task_id == "task"
+    assert f.task_path == "tasks/task"
