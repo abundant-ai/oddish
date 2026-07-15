@@ -299,7 +299,13 @@ async def discover(execute: bool, concurrency: int, bucket: str, root_prefix: st
                     if lm and (t["last_modified"] is None or lm > t["last_modified"]):
                         t["last_modified"] = lm
                     k = obj["Key"]
-                    if k.endswith("verifier/reward.txt") or k.endswith("/reward.txt"):
+                    # Track the CANONICAL reward file transfer actually reads
+                    # ({prefix}verifier/reward.txt, incl. the double-verifier
+                    # nesting). The leading slash avoids matching stray dirs like
+                    # ".../myverifier/reward.txt". has_reward is a discovery stat
+                    # only (never gates transfer, which reads reward from S3
+                    # directly), but keep it faithful to that source.
+                    if k.endswith("/verifier/reward.txt"):
                         t["has_reward"] = True
                     if "trajectory-analysis" in k:
                         t["has_trajectory"] = True
