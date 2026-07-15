@@ -219,6 +219,8 @@ export interface Task {
   jobs?: VisibleWorkerJob[];
   current_version?: number | null;
   current_version_id?: string | null;
+  trial_version?: number | null;
+  trial_version_id?: string | null;
   trials?: Trial[] | null;
   user_tags?: UserTagRef[];
   created_at: string;

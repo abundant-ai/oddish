@@ -16,7 +16,9 @@ export function fetchFreshExperimentTaskPage(
 function hasSameVersion(shell: Task, enriched: Task): boolean {
   return (
     shell.current_version_id === enriched.current_version_id &&
-    shell.current_version === enriched.current_version
+    shell.current_version === enriched.current_version &&
+    shell.trial_version_id === enriched.trial_version_id &&
+    shell.trial_version === enriched.trial_version
   );
 }
 
@@ -31,10 +33,10 @@ function preferEnrichedVersion(shell: Task, enriched: Task): boolean {
 /**
  * Combine the fast task shells with progressively loaded trial pages.
  *
- * The two phases can revalidate in either order after a default-version
- * change. When their versions disagree, the task row's database revision says
- * which response observed the newer default. Missing or tied revisions retain
- * the conservative shell-first behavior.
+ * The two phases can revalidate in either order after a default-version or
+ * experiment trial-pivot change. When their versions disagree, the task row's
+ * database revision says which response observed the newer state. Missing or
+ * tied revisions retain the conservative shell-first behavior.
  */
 export function mergeExperimentTaskPages(
   shells: Task[] | undefined,

@@ -231,10 +231,9 @@ function ExperimentContent({
       revalidateOnFocus: false,
     });
 
-  // Merge lightweight task shells with trial-enriched data.  The backend
-  // already scopes each task's trials, counts, and reported ``current_version``
-  // to the experiment-relevant version, so no extra client-side filtering is
-  // required here.
+  // Merge lightweight task shells with trial-enriched data. The backend scopes
+  // trials and counts to the experiment-relevant version while always
+  // reporting the task's selected default as ``current_version``.
   const tasksForExperiment = useMemo(() => {
     const startedAt = isExperimentTimingEnabled() ? performance.now() : 0;
     const merged = mergeExperimentTaskPages(lightweightTasks, trialPages);
