@@ -5,6 +5,21 @@ type FetchTaskPage = (
   init?: RequestInit
 ) => Promise<Response>;
 
+const taskSnapshotSequence = new WeakMap<Task, number>();
+let nextTaskSnapshotSequence = 1;
+
+/** Record when a page became available so version conflicts prefer newer data. */
+export function markExperimentTaskPageFetched(tasks: Task[]): Task[] {
+  let sequence: number | undefined;
+  for (const task of tasks) {
+    if (!taskSnapshotSequence.has(task)) {
+      sequence ??= nextTaskSnapshotSequence++;
+      taskSnapshotSequence.set(task, sequence);
+    }
+  }
+  return tasks;
+}
+
 /** Fetch mutable experiment rows without accepting an old browser-cache entry. */
 export function fetchFreshExperimentTaskPage(
   url: string,
@@ -20,12 +35,25 @@ function hasSameVersion(shell: Task, enriched: Task): boolean {
   );
 }
 
+function preferEnrichedVersion(shell: Task, enriched: Task): boolean {
+  if (hasSameVersion(shell, enriched)) return true;
+
+  const shellSequence = taskSnapshotSequence.get(shell);
+  const enrichedSequence = taskSnapshotSequence.get(enriched);
+  return (
+    shellSequence !== undefined &&
+    enrichedSequence !== undefined &&
+    enrichedSequence > shellSequence
+  );
+}
+
 /**
  * Combine the fast task shells with progressively loaded trial pages.
  *
- * A cached trial page can briefly describe the version selected before a
- * default-version change. Keep the shell until the enriched row agrees on the
- * version so one render never labels one version with another version's trials.
+ * The two phases can revalidate in either order after a default-version
+ * change. When their versions disagree, use the snapshot that arrived later so
+ * neither a stale shell nor a stale trial page can hide the newly selected
+ * version. Unmarked callers retain the conservative shell-first behavior.
  */
 export function mergeExperimentTaskPages(
   shells: Task[] | undefined,
@@ -43,7 +71,9 @@ export function mergeExperimentTaskPages(
   for (const shell of shells ?? []) {
     seenIds.add(shell.id);
     const enriched = enrichedById.get(shell.id);
-    merged.push(enriched && hasSameVersion(shell, enriched) ? enriched : shell);
+    merged.push(
+      enriched && preferEnrichedVersion(shell, enriched) ? enriched : shell
+    );
   }
 
   for (const [id, task] of enrichedById) {

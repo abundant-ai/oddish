@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   fetchFreshExperimentTaskPage,
+  markExperimentTaskPageFetched,
   mergeExperimentTaskPages,
 } from "../src/lib/experiment-task-pages";
 import type { Task, Trial } from "../src/lib/types";
@@ -57,6 +58,52 @@ test("adopts trial data once both loading phases agree on the version", () => {
 
   expect(merged).toBe(enriched);
   expect(merged.trials?.map((trial) => trial.id)).toEqual(["trial-v1"]);
+});
+
+test("uses fresh trial data when the shell cache still has the old version", () => {
+  const staleShell = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+  });
+  markExperimentTaskPageFetched([staleShell]);
+
+  const freshEnriched = task({
+    current_version: 2,
+    current_version_id: "task-1-v2",
+    total: 1,
+    completed: 1,
+    trials: [{ id: "trial-v2" } as Trial],
+  });
+  markExperimentTaskPageFetched([freshEnriched]);
+
+  const [merged] = mergeExperimentTaskPages([staleShell], [[freshEnriched]]);
+
+  expect(merged).toBe(freshEnriched);
+  expect(merged.current_version_id).toBe("task-1-v2");
+  expect(merged.trials?.map((trial) => trial.id)).toEqual(["trial-v2"]);
+});
+
+test("keeps a fresh shell while a stale trial page has another version", () => {
+  const staleEnriched = task({
+    current_version: 2,
+    current_version_id: "task-1-v2",
+    total: 1,
+    completed: 1,
+    trials: [{ id: "trial-v2" } as Trial],
+  });
+  markExperimentTaskPageFetched([staleEnriched]);
+
+  const freshShell = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+  });
+  markExperimentTaskPageFetched([freshShell]);
+
+  const [merged] = mergeExperimentTaskPages([freshShell], [[staleEnriched]]);
+
+  expect(merged).toBe(freshShell);
+  expect(merged.current_version_id).toBe("task-1-v1");
+  expect(merged.trials).toBeNull();
 });
 
 test("revalidation bypasses stale browser-cache entries", async () => {

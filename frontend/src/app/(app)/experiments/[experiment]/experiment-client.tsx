@@ -34,6 +34,7 @@ import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
   fetchFreshExperimentTaskPage,
+  markExperimentTaskPageFetched,
   mergeExperimentTaskPages,
 } from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
@@ -100,7 +101,7 @@ async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
     throw err;
   }
 
-  return data as Task[];
+  return markExperimentTaskPageFetched(data as Task[]);
 }
 
 type ExperimentClientPageProps = {
@@ -127,6 +128,11 @@ function ExperimentContent({
   initialTasksPromise,
 }: ExperimentClientPageProps) {
   const initialTasks = use(initialTasksPromise);
+  const initialTaskFallback = useMemo(
+    () =>
+      initialTasks ? markExperimentTaskPageFetched(initialTasks) : undefined,
+    [initialTasks]
+  );
   const { orgRole } = useAuth();
 
   const [isEditingName, setIsEditingName] = useState(false);
@@ -160,7 +166,7 @@ function ExperimentContent({
     // server fallback data after the task's default version changes.
     revalidateOnMount: true,
     revalidateIfStale: true,
-    fallbackData: initialTasks ?? undefined,
+    fallbackData: initialTaskFallback,
   });
 
   // Phase 2: Progressively fetch compact trial data in batches.
