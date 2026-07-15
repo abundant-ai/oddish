@@ -677,7 +677,7 @@ async def test_send_alerts_does_not_repeat_pending_primary_claims(
     )
 
     assert posted == []
-    assert sent == {silent_key}
+    assert sent == set()
 
 
 @pytest.mark.asyncio

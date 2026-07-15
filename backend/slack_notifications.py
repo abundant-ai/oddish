@@ -702,18 +702,18 @@ async def _start_delivery(
     if not await _claim_alert(claim_key):
         # A pending primary claim has an indeterminate outcome: the previous
         # process may have completed the external request and crashed before
-        # recording it. Never repeat a loud delivery in that state, because
-        # Slack webhooks do not provide an idempotency key. Explicit request
-        # failures remain retryable through the retry marker handled above.
+        # recording it. Never repeat or silently complete a delivery in that
+        # state: Slack webhooks do not provide an idempotency key, and marking
+        # the row sent would falsely discard a previously loud alert. Keep the
+        # indeterminate row pending for audit; explicit request failures remain
+        # retryable through the retry marker handled above.
         if await _alert_is_pending(claim_key):
-            if silent:
-                await _mark_alert_sent(claim_key)
-            else:
-                log.warning(
-                    "skipping indeterminate expense alert to avoid duplicate "
-                    "delivery alert_key=%s",
-                    claim_key,
-                )
+            log.warning(
+                "keeping indeterminate expense alert pending to avoid duplicate "
+                "or false completion alert_key=%s silent=%s",
+                claim_key,
+                silent,
+            )
         return False
     if silent:
         await _mark_alert_sent(claim_key)
