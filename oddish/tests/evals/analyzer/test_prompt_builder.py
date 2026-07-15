@@ -168,7 +168,22 @@ def test_reduce_prompt_lists_findings_and_counts():
         step_ids=[7], root_cause="rc", headroom_signal="",
         trajectory_link="/tasks/task/probe/t-1",
     )
-    p = build_reduce_prompt([f], {"trials": 5, "bad": 1, "good": 0})
+    p = build_reduce_prompt([f], {"trials": 5, "bad": 1, "good": 0}, _tiny_tax())
     assert "/tasks/task/probe/t-1" in p
     assert "headroom" in p.lower()
     assert "bad_failure_content" in p  # instructs the four output keys
+
+
+def test_reduce_prompt_renders_capability_slug_and_taxonomy():
+    """The reduce LLM cannot organize good findings by capability/category, nor
+    tell a proposed slug from a live one, unless both are actually in the
+    prompt -- rendering old-style [bucket/subcategory] lines and never passing
+    the taxonomy silently hands it structure it cannot see."""
+    f = Finding(
+        trial_id="t-1", bucket="good", subcategory="3a", evidence_quote="echo 42",
+        step_ids=[7], root_cause="rc", headroom_signal="h",
+        trajectory_link="/tasks/task/probe/t-1", capability_slug="agent-early-stop",
+    )
+    p = build_reduce_prompt([f], {"trials": 1, "bad": 0, "good": 1}, _tiny_tax())
+    assert "agent-early-stop" in p  # the finding's capability_slug
+    assert "verification — Verification failures" in p  # taxonomy category heading

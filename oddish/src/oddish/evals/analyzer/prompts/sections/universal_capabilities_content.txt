@@ -2,9 +2,8 @@
   category, then by capability within each category. Use one `## <Category
   name>` heading per category that has findings, in the order the rubric listed
   them, and one `### <Capability name>` subheading per capability with findings
-  in that category. Cite every claim
-  with the finding's trajectory_link verbatim. If a capability carries
-  cross-reference categories, note them inline ("also: long-horizon") rather
-  than repeating the capability under a second heading. Group findings whose
-  capability_slug was newly proposed (not in the rubric) under a final
-  `## Proposed capabilities` heading.
+  in that category. Cite every claim with the finding's trajectory_link
+  verbatim. If a capability carries cross-reference categories, note them
+  inline ("also: long-horizon") rather than repeating the capability under a
+  second heading. Group findings whose capability_slug was newly proposed
+  (not in the rubric) under a final `## Proposed capabilities` heading.

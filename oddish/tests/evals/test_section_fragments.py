@@ -8,6 +8,7 @@ from oddish.evals.analyzer.prompt_builder import (
     section_brief,
     sections_block,
 )
+from oddish.evals.analyzer.taxonomy import Taxonomy
 
 # The exact bytes reduce.txt carried before the split. build_reduce_prompt must
 # keep emitting these verbatim -- the live API path depends on this prose.
@@ -19,12 +20,11 @@ _ORIGINAL_BLOCK = (
     "  category, then by capability within each category. Use one `## <Category\n"
     "  name>` heading per category that has findings, in the order the rubric listed\n"
     "  them, and one `### <Capability name>` subheading per capability with findings\n"
-    "  in that category. Cite every claim\n"
-    "  with the finding's trajectory_link verbatim. If a capability carries\n"
-    "  cross-reference categories, note them inline (\"also: long-horizon\") rather\n"
-    "  than repeating the capability under a second heading. Group findings whose\n"
-    "  capability_slug was newly proposed (not in the rubric) under a final\n"
-    "  `## Proposed capabilities` heading.\n"
+    "  in that category. Cite every claim with the finding's trajectory_link\n"
+    "  verbatim. If a capability carries cross-reference categories, note them\n"
+    "  inline (\"also: long-horizon\") rather than repeating the capability under a\n"
+    "  second heading. Group findings whose capability_slug was newly proposed\n"
+    "  (not in the rubric) under a final `## Proposed capabilities` heading.\n"
     "- headroom_analysis: based on the good failures, where is the most capability headroom?"
 )
 
@@ -43,7 +43,7 @@ def test_sections_block_reassembles_the_original_bytes():
 
 
 def test_build_reduce_prompt_still_contains_every_brief():
-    prompt = build_reduce_prompt([], {"trials": 0, "bad": 0, "good": 0})
+    prompt = build_reduce_prompt([], {"trials": 0, "bad": 0, "good": 0}, Taxonomy())
     assert _ORIGINAL_BLOCK in prompt
 
 

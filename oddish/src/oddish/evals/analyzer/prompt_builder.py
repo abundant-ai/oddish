@@ -97,9 +97,10 @@ def build_map_prompt(
     )
 
 
-def build_reduce_prompt(findings: list[Finding], counts: dict) -> str:
+def build_reduce_prompt(findings: list[Finding], counts: dict, taxonomy: Taxonomy) -> str:
     findings_block = "\n".join(
-        f"- [{f.bucket}/{f.subcategory}] trial={f.trial_id} link={f.trajectory_link}\n"
+        f"- [{f.bucket}/{f.subcategory}] trial={f.trial_id} "
+        f"capability_slug={f.capability_slug or '(none)'} link={f.trajectory_link}\n"
         f"  quote: {f.evidence_quote}\n  root_cause: {f.root_cause}\n"
         f"  headroom_signal: {f.headroom_signal}"
         for f in findings
@@ -107,6 +108,7 @@ def build_reduce_prompt(findings: list[Finding], counts: dict) -> str:
     counts_block = json.dumps(counts, indent=2)
     return REDUCE_PROMPT_TEMPLATE.format(
         counts_block=counts_block,
+        taxonomy_block=render_capabilities(taxonomy) or "(no live capabilities)",
         findings_block=findings_block,
         sections_block=sections_block(SECTION_KEYS),
     )

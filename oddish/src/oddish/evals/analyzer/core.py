@@ -281,7 +281,7 @@ async def run_analyzer_eval(
         )
 
     # Step 5 — reduce the per-trial findings into the four narrative sections.
-    reduce_prompt = build_reduce_prompt(findings, counts)
+    reduce_prompt = build_reduce_prompt(findings, counts, taxonomy)
     try:
         raw = await client.complete(
             reduce_prompt, model=config.analysis_model,

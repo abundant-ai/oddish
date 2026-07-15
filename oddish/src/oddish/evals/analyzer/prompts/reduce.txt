@@ -6,6 +6,10 @@ finding's trajectory_link verbatim as a markdown link, e.g.
 ## Counts
 {counts_block}
 
+## Capability rubric (category order; live slugs -- anything else cited by a
+## finding is a proposed capability, not one of these)
+{taxonomy_block}
+
 ## Findings (from the per-trial analysts)
 {findings_block}
 
