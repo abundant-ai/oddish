@@ -1,22 +1,40 @@
 """Whole-experiment cost rollup.
 
-Cost here means **spend**: every trial that actually ran under this experiment,
-because every one of them burned tokens and was billed. That is deliberately a
-wider set than the trials the grid renders, which are filtered to each task's
-effective version and exclude superseded retries and probes -- filters that
-exist so *scores* compare like with like, not because that money wasn't spent.
-Billing already takes the same view: the quota sum (``core.quotas``) applies no
-version, superseded, or probe filter, and the admin spend filter keeps billed
-probes too. So this counts all versions, superseded retries, and probes, and the
-tile's tooltip tells the reader the table below is a filtered view of it.
+Two numbers per experiment, answering two different questions:
 
-"Ran under this experiment" means owned by it: ``trials.experiment_id`` only.
-Trials gathered into a collection (``experiment_trials``) or reached through a
-shared task's link rows (``task_experiments``) render in the grid so scores can
-be compared, but their spend belongs to -- and is already reported by -- their
-home experiment. Counting them here would show the same dollars under two
-experiments at once (and inflate rollup views assembled from other experiments'
-work), so membership rows never contribute cost.
+* ``cost_*`` -- what did the work on this page cost? Every trial the page can
+  render counts: trials homed in the experiment (``trials.experiment_id``) and
+  trials gathered into it (``experiment_trials``) -- the same membership the
+  grid applies (``trial_in_experiment``). A collection assembled entirely from
+  other experiments' work therefore shows the real price of that work, not a
+  blank tile. ``task_experiments`` link rows deliberately do NOT widen this:
+  they exist so shared/collected TASK rows appear, but the grid still scopes
+  those tasks' trials to home-or-gathered, and counting a linked task's whole
+  history would price unselected trials -- and let a frozen collection's cost
+  drift upward whenever anyone reruns the same task elsewhere.
+* ``owned_*`` -- what did this experiment itself spend (the page's "New
+  spend")? Only trials homed in the experiment. This is the number that stays
+  additive across experiments: gathered/linked trials are already reported as
+  owned spend by their home experiment, so summing owned spend across pages
+  never double-counts a dollar, while summing ``cost_*`` across pages does
+  (deliberately -- both tiles say so).
+
+``billed_*`` is the subset of **owned** spend attributed to a registered
+user's quota (``billed_user_id``); owned-but-unbilled spend (imports,
+unattributed submitters, offboarded users) keeps the two apart.
+
+Spend is deliberately wider than the trials the grid renders, which are
+filtered to each task's effective version and exclude superseded retries and
+probes -- filters that exist so *scores* compare like with like, not because
+that money wasn't spent. Billing already takes the same view: the quota sum
+(``core.quotas``) applies no version, superseded, or probe filter, and the
+admin spend filter keeps billed probes too. So this counts all versions,
+superseded retries, and probes, and the tile's tooltip tells the reader the
+table below is a filtered view of it.
+
+Membership rows are the one place soft-deletes DO apply: a soft-deleted
+``experiment_trials`` row means "removed from this collection", so its trial
+stops counting here (it never stops counting on its home experiment).
 
 **Soft-deleted trials count too**, which is why the query opts out of the global
 soft-delete filter with ``include_deleted=True`` (``db.soft_delete``). Deleting a
@@ -33,9 +51,9 @@ runtime reported no native cost, and the API fills that in at read time from
 token counts x the pricing table (``_resolve_trial_cost``). So a bare
 ``SUM(cost_usd)`` would silently drop every estimated trial.
 
-Instead we group by ``(agent, model, billed)`` -- the key
-``settings.normalize_trial_model`` prices on -- and, for the NULL-cost rows,
-sum token counts rather than dollars. ``estimate_cost_usd`` is linear in tokens
+Instead we group by ``(agent, model, billed, owned)`` -- the key
+``settings.normalize_trial_model`` prices on, split by ownership -- and, for
+the NULL-cost rows, sum token counts rather than dollars. ``estimate_cost_usd`` is linear in tokens
 for a fixed model, and its only per-row non-linearities are reproduced in SQL:
 
 * the ``max(0, input - cached - cache_write)`` clamp (``_uncached_input``), and
@@ -53,6 +71,7 @@ from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db.models import TrialModel
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
@@ -103,21 +122,28 @@ def _sum_when(condition, value):
 def experiment_cost_groups_select(
     experiment_id: str, *, org_id: str | None = None
 ) -> Select:
-    """One row per ``(agent, model, billed)`` bucket of the experiment's trials.
+    """One row per ``(agent, model, billed, owned)`` bucket of the member trials.
 
-    Ownership is the only filter: a trial counts iff ``trials.experiment_id``
-    is this experiment. Gathered / shared-task trials are excluded -- their
-    spend is reported by their home experiment (module docstring). No version /
-    superseded / probe / soft-delete filtering: those hide trials from the
-    grid, but the spend is real and already billed.
+    Membership is the only filter: a trial counts iff it is homed in this
+    experiment or gathered into it -- ``trial_in_experiment``, the same
+    predicate the grid scopes trials with, so the tile prices exactly the work
+    the page can render (module docstring explains why ``task_experiments``
+    links don't widen it). The single WHERE counts a trial once even when it
+    is both homed and gathered. ``owned`` splits the groups so the fold can
+    report home spend separately. No version / superseded / probe /
+    trial-soft-delete filtering: those hide trials from the grid, but the
+    spend is real and already billed.
     """
     billed = TrialModel.billed_user_id.isnot(None)
+    owned = TrialModel.experiment_id == experiment_id
+    member = trial_in_experiment(experiment_id)
 
     query = (
         select(
             TrialModel.agent.label("agent"),
             TrialModel.model.label("model"),
             billed.label("billed"),
+            owned.label("owned"),
             func.count().label("trial_count"),
             func.count(case((_HAS_NATIVE_COST, 1))).label("native_count"),
             _sum_when(_HAS_NATIVE_COST, TrialModel.cost_usd).label("native_cost_usd"),
@@ -129,8 +155,8 @@ def experiment_cost_groups_select(
             _sum_when(_ESTIMATED_ROW, _CACHE_WRITE).label("cache_write_tokens"),
             _sum_when(_ESTIMATED_ROW, _OUTPUT).label("output_tokens"),
         )
-        .where(TrialModel.experiment_id == experiment_id)
-        .group_by(TrialModel.agent, TrialModel.model, billed)
+        .where(member)
+        .group_by(TrialModel.agent, TrialModel.model, billed, owned)
         .execution_options(include_deleted=True)
     )
     if org_id is not None:
@@ -165,9 +191,12 @@ def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
         totals.total_trials += row.trial_count
         totals.token_count += row.token_count
         totals.token_trial_count += row.token_trial_count
-        if row.billed:
-            totals.billed_token_count += row.token_count
-            totals.billed_token_trial_count += row.token_trial_count
+        if row.owned:
+            totals.owned_token_count += row.token_count
+            totals.owned_token_trial_count += row.token_trial_count
+            if row.billed:
+                totals.billed_token_count += row.token_count
+                totals.billed_token_trial_count += row.token_trial_count
 
         priced: list[tuple[float, int, bool]] = []
         if row.native_count:
@@ -183,6 +212,14 @@ def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
                 totals.cost_has_estimated = True
             else:
                 totals.cost_has_native = True
+            if not row.owned:
+                continue
+            totals.owned_cost_usd += cost_usd
+            totals.owned_trial_count += trial_count
+            if is_estimated:
+                totals.owned_has_estimated = True
+            else:
+                totals.owned_has_native = True
             if not row.billed:
                 continue
             totals.billed_cost_usd += cost_usd
@@ -198,7 +235,7 @@ def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
 async def get_experiment_cost_totals(
     session: AsyncSession, *, experiment_id: str, org_id: str | None = None
 ) -> ExperimentCostTotals:
-    """Cost rollup over every trial in the experiment, independent of paging."""
+    """Cost rollup over every member trial, independent of paging."""
     result = await session.execute(
         experiment_cost_groups_select(experiment_id, org_id=org_id)
     )
