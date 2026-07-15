@@ -208,6 +208,7 @@ class ClaudeCodeRuntime:
         content: str,
         claude_session_id: str | None,
         daytona_session_id: str = "cc",
+        system_prompt: str | None = None,
     ) -> AsyncIterator[dict]:
         parts = [
             _CLAUDE_BIN,
@@ -216,6 +217,11 @@ class ClaudeCodeRuntime:
             "--verbose",
             *_PERMISSION_FLAGS,
         ]
+        # Appended rather than replacing: Claude Code's own system prompt is what
+        # makes its tools work, so --system-prompt would break Bash and the agent
+        # could not run the CLI at all.
+        if system_prompt:
+            parts += ["--append-system-prompt", shlex.quote(system_prompt)]
         if claude_session_id:
             parts += ["--resume", shlex.quote(claude_session_id)]
         parts += ["--", shlex.quote(content)]
