@@ -75,22 +75,45 @@ harbor-lh's dataset and task-farming pipeline.
 
 ## Scope of this change
 
-Six checks ship: five ported, one net-new.
+Five checks ship: four ported, one net-new. Four of the five answer a single
+question — **can the agent get the answer without doing the work?**
 
-| Check | Origin | Cost to port |
-| --- | --- | --- |
-| `dockerfile_references` | `check-dockerfile-references.sh` | ~30 lines |
-| `task_absolute_path` | `check-task-absolute-path.sh` | ~30 lines |
-| `closed_internet` | `check-closed-internet.sh` | ~30 lines, reads `TaskConfig` |
-| `solution_format` | `check-solution-format.sh` | ~30 lines |
-| `anti_cheat_soundness` | `_anti_cheat_scan.py` | near-free; already Python |
-| `provenance` | net-new | the real work |
+| Check | Origin | What it does | Cost to port |
+| --- | --- | --- | --- |
+| `dockerfile_leaks` | `check-dockerfile-references.sh` | Fails a Dockerfile referencing `solution/solve.sh`, `tests/test.sh`, or `tests/test_*.py` — i.e. baking the answer or the grader into the agent image | ~40 lines |
+| `closed_internet` | `check-closed-internet.sh` | Fails `network_mode = "public"` (including implicitly, since Harbor defaults to public) without a non-placeholder justification | ~40 lines, reads `TaskConfig` |
+| `anti_cheat_soundness` | `_anti_cheat_scan.py` | Flags brittle source-scanning anti-cheat regexes | near-verbatim; already Python |
+| `solution_format` | `check-solution-format.sh` | Fails `.patch`/`.diff` in `solution/` and patch-application in `solve.sh` | ~40 lines |
+| `provenance` | net-new | Repo fetches and `.git`-in-image | the real work |
 
-The remaining six general checks (`test_file_references`, `test_sh_sanity`,
-`reward_format`, `metrics_partial_score`, `artifacts`, `asset_encryption`) land
-later behind the same registry. They are the expensive ones —
-`check-test-file-references.sh` is 9.5KB of bash, `check-asset-encryption.sh`
-8.9KB — and port bugs hide in exactly that kind of code.
+### Naming note
+
+The port is named `dockerfile_leaks`, not `dockerfile_references`. harbor-lh
+named the original for its *mechanism* (it greps Dockerfile references) rather
+than its *purpose* (keep the solution and tests out of the agent image), which
+is actively misleading: this spec's own first draft mis-triaged it as a "do
+COPY'd files exist" check on the strength of the name alone. The rename is the
+fix.
+
+### Deferred
+
+The remaining general checks land later behind the same registry:
+`test_file_references`, `test_sh_sanity`, `reward_format`,
+`metrics_partial_score`, `artifacts`, `asset_encryption`, and
+`task_absolute_path`.
+
+`task_absolute_path` is deferred on cost/value grounds, not by oversight.
+Despite its name it does not detect host-path leakage. It derives `WORKDIR` from
+the Dockerfile (defaulting to `/app`) and fails `instruction.md` for using
+*relative* paths (`data.csv`, `./out.txt`, `scripts/run.sh`) — it *wants*
+absolute paths so the agent's cwd never matters. That is a task-clarity concern
+with no integrity dimension, and it costs ~100 lines of stacked regex over a
+60-extension allowlist: the most expensive check to port and the least aligned
+with v1's theme.
+
+The others are expensive too — `check-test-file-references.sh` is 9.5KB of bash,
+`check-asset-encryption.sh` 8.9KB — and port bugs hide in exactly that kind of
+code.
 
 ## Architecture
 
@@ -102,8 +125,7 @@ preflight/
   models.py        # Finding, Severity, Check
   runner.py        # run_checks(paths) -> list[Finding]
   checks/
-    dockerfile_references.py
-    task_absolute_path.py
+    dockerfile_leaks.py
     closed_internet.py
     solution_format.py
     anti_cheat_soundness.py
@@ -144,14 +166,18 @@ class Finding:
 
 | Finding | Severity |
 | --- | --- |
-| Unsuppressed fetch in Dockerfile / solve.sh / test.sh | error |
-| `.git` reachable in the image | error |
-| `.git` absent but no `.dockerignore` excluding it | warn |
-| `allow_internet = true` with no `open_internet_justification` | error |
-| `COPY`/`ADD` source that does not exist | error |
-| Host-absolute path in task files | error |
-| `.patch` / `.diff` in `solution/` | error |
-| Brittle anti-cheat regex (unsuppressed) | error |
+| Finding | Check | Severity |
+| --- | --- | --- |
+| Unsuppressed repo fetch in Dockerfile / solve.sh / test.sh | `provenance` | error |
+| `.git` reachable in the image | `provenance` | error |
+| No `.git` present, but no `.dockerignore` excluding it | `provenance` | warn |
+| Dockerfile references `solution/solve.sh` | `dockerfile_leaks` | error |
+| Dockerfile references `tests/test.sh` or `tests/test_*.py` | `dockerfile_leaks` | error |
+| `network_mode = "public"` with no justification | `closed_internet` | error |
+| `network_mode = "public"` with a placeholder justification | `closed_internet` | error |
+| `.patch` / `.diff` in `solution/` | `solution_format` | error |
+| `solve.sh` applies a patch (`git apply` / `patch -p`) | `solution_format` | error |
+| Brittle anti-cheat regex (unsuppressed) | `anti_cheat_soundness` | error |
 
 `warn` exists so that "you have no `.dockerignore`" is not shouted with the same
 volume as "your image contains the answer."
