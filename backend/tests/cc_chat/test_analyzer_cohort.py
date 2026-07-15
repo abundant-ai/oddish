@@ -44,14 +44,18 @@ class _FakeRuntime:
 
 
 class _SlowRuntime(_FakeRuntime):
-    """A wedged agent: stream_chat never yields within the timeout window."""
+    """A wedged agent: stream_chat never yields within the timeout window.
+    Plants good output files anyway, so a non-firing timeout would let
+    run_cohort return normally instead of raising for an unrelated reason."""
 
     def __init__(self, delay):
-        super().__init__([])
+        super().__init__([], files=_good_files())
         self._delay = delay
 
     async def stream_chat(self, client, sandbox, *, content,
                           claude_session_id, daytona_session_id):
+        for path, body in self._files.items():
+            await client.upload_file(sandbox, dest_path=path, content=body)
         await asyncio.sleep(self._delay)
         if False:  # pragma: no cover - keeps this an async generator
             yield
@@ -142,8 +146,9 @@ async def test_run_cohort_raises_on_timeout_and_still_deletes_sandbox(monkeypatc
     monkeypatch.setattr(ac, "COHORT_TIMEOUT_SECONDS", 0.05)
     client = FakeDaytonaClient()
     runtime = _SlowRuntime(delay=0.2)
-    with pytest.raises(RuntimeError, match="bad"):
+    with pytest.raises(RuntimeError, match="exceeded") as exc_info:
         await ac.run_cohort(client, runtime, **_kwargs())
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
     assert len(client.deleted) == 1
 
 
