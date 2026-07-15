@@ -32,6 +32,11 @@ async def load_taxonomy(session) -> Taxonomy:
         await session.execute(select(CapabilityCategoryTagModel))
     ).scalars().all()
 
+    # cat_rows is already soft-delete-filtered, but tag_rows (and the
+    # capabilities they point at) are not -- a tag can still name a category
+    # slug that no longer has a live row.
+    live_category_slugs = {c.slug for c in cat_rows}
+
     primary: dict[str, str] = {}
     extra: dict[str, list[str]] = {}
     for t in tag_rows:
@@ -47,12 +52,15 @@ async def load_taxonomy(session) -> Taxonomy:
             description=c.description,
             example=c.example or "",
             primary_category=primary[c.slug],
-            extra_categories=tuple(sorted(extra.get(c.slug, []))),
+            extra_categories=tuple(sorted(
+                s for s in extra.get(c.slug, []) if s in live_category_slugs
+            )),
         )
-        # An untagged capability has no group to render under, so it would be
-        # invisible-but-pickable in the rubric. Drop it rather than half-show it.
+        # An untagged (or primary-soft-deleted) capability has no live group to
+        # render under, so it would be invisible-but-pickable in the rubric.
+        # Drop it rather than half-show it.
         for c in cap_rows
-        if c.slug in primary
+        if c.slug in primary and primary[c.slug] in live_category_slugs
     )
     return Taxonomy(
         categories=tuple(

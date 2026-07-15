@@ -750,3 +750,205 @@ async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
     await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
 
     assert analyzer.findings == []
+
+
+# --- _store's proposal-persistence loop -------------------------------------
+#
+# Every _Output fake above sets proposals = [] and taxonomy_version = None
+# (also the column default), so the `for p in output.proposals` body and the
+# taxonomy_version/snapshot writes are never exercised anywhere in this file.
+# _store is a closure inside run_analyzer_generation_job (not separately
+# importable), and it does a real `session.execute(pg_insert(...)
+# .on_conflict_do_nothing(...))` -- a fake session with no `execute` can't
+# stand in for it, so these tests drive the real DB via `get_session`,
+# uncommitted rows commit for real, and are cleaned up in `finally`.
+
+
+async def _make_real_analyzer(analyzer_id: str) -> None:
+    from oddish.db import get_session
+    from oddish.db.models import AnalyzerModel, JobStatus as _JobStatus
+
+    async with get_session() as session:
+        session.add(AnalyzerModel(id=analyzer_id, name="t", status=_JobStatus.PENDING))
+
+
+async def _cleanup_real_analyzer(analyzer_id: str) -> None:
+    from sqlalchemy import delete
+
+    from oddish.db import get_session
+    from oddish.db.models import AnalyzerModel, CapabilityProposalModel
+
+    async with get_session() as session:
+        await session.execute(
+            delete(CapabilityProposalModel).where(
+                CapabilityProposalModel.analyzer_id == analyzer_id
+            )
+        )
+        analyzer = await session.get(AnalyzerModel, analyzer_id)
+        if analyzer is not None:
+            await session.delete(analyzer)
+
+
+@pytest.mark.asyncio
+async def test_store_persists_a_capability_proposal_row_per_output_proposal():
+    import uuid
+
+    from sqlalchemy import select
+
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db import get_session
+    from oddish.db.models import CapabilityProposalModel
+    from oddish.evals.analyzer.schemas import CapabilityProposal
+
+    analyzer_id = f"an-{uuid.uuid4().hex[:8]}"
+    slug = f"prop-{uuid.uuid4().hex[:6]}"
+    await _make_real_analyzer(analyzer_id)
+
+    prop = CapabilityProposal(
+        slug=slug, name="Prop", description="d", example="e",
+        categories=["verification"], trial_ids=["t1"], trajectory_link="link",
+    )
+
+    class _Output:
+        sections = {"bad": "", "good": "", "capabilities": "", "headroom": ""}
+        counts = {"trials": 0, "bad": 0, "good": 0}
+        breakdown = {}
+        reduce_prompt = None
+        proposals = [prop]
+        taxonomy_version = None
+        taxonomy_snapshot = None
+        findings = []
+
+    async def fake_eval_rows(rows, config, aid):
+        return _Output()
+
+    try:
+        await rh.run_analyzer_generation_job(analyzer_id, eval_rows_fn=fake_eval_rows)
+
+        async with get_session() as session:
+            rows = (
+                await session.execute(
+                    select(CapabilityProposalModel).where(
+                        CapabilityProposalModel.analyzer_id == analyzer_id
+                    )
+                )
+            ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].slug_suggestion == slug
+        assert rows[0].name == "Prop"
+        assert rows[0].category_slugs == ["verification"]
+        assert rows[0].trial_ids == ["t1"]
+        assert rows[0].status == "PENDING"
+    finally:
+        await _cleanup_real_analyzer(analyzer_id)
+
+
+@pytest.mark.asyncio
+async def test_store_is_idempotent_on_a_retried_proposal_insert():
+    """The shield/retry comment on _store's insert claims on_conflict_do_nothing
+    keeps a re-entered _store from duplicating a proposal row. Nothing checked
+    that until now -- simulate the retry the comment describes by resetting the
+    analyzer back to a re-runnable status and invoking the job again."""
+    import uuid
+
+    from sqlalchemy import select
+
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db import get_session
+    from oddish.db.models import AnalyzerModel, CapabilityProposalModel, JobStatus
+    from oddish.evals.analyzer.schemas import CapabilityProposal
+
+    analyzer_id = f"an-{uuid.uuid4().hex[:8]}"
+    slug = f"prop-{uuid.uuid4().hex[:6]}"
+    await _make_real_analyzer(analyzer_id)
+
+    prop = CapabilityProposal(
+        slug=slug, name="Prop", description="d",
+        categories=["verification"], trial_ids=["t1"], trajectory_link="link",
+    )
+
+    class _Output:
+        sections = {"bad": "", "good": "", "capabilities": "", "headroom": ""}
+        counts = {"trials": 0, "bad": 0, "good": 0}
+        breakdown = {}
+        reduce_prompt = None
+        proposals = [prop]
+        taxonomy_version = None
+        taxonomy_snapshot = None
+        findings = []
+
+    async def fake_eval_rows(rows, config, aid):
+        return _Output()
+
+    try:
+        await rh.run_analyzer_generation_job(analyzer_id, eval_rows_fn=fake_eval_rows)
+
+        # Simulate a retry: reset the terminal status as the real dispatcher
+        # does before re-entering run_analyzer_generation_job (see
+        # test_handler_resets_terminal_status_before_retry).
+        async with get_session() as session:
+            analyzer = await session.get(
+                AnalyzerModel, analyzer_id, with_for_update=True
+            )
+            analyzer.status = JobStatus.PENDING
+            analyzer.finished_at = None
+
+        await rh.run_analyzer_generation_job(analyzer_id, eval_rows_fn=fake_eval_rows)
+
+        async with get_session() as session:
+            rows = (
+                await session.execute(
+                    select(CapabilityProposalModel).where(
+                        CapabilityProposalModel.analyzer_id == analyzer_id
+                    )
+                )
+            ).scalars().all()
+        assert len(rows) == 1  # on_conflict_do_nothing held; no duplicate row
+    finally:
+        await _cleanup_real_analyzer(analyzer_id)
+
+
+@pytest.mark.asyncio
+async def test_store_persists_taxonomy_version_and_snapshot_distinct_from_default():
+    """taxonomy_version/snapshot default to None on the column -- every fake
+    _Output elsewhere in this file sets them to None too, so nothing has ever
+    told 'assigned' apart from 'never assigned'."""
+    import uuid
+
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db import get_session
+    from oddish.db.models import AnalyzerModel
+
+    analyzer_id = f"an-{uuid.uuid4().hex[:8]}"
+    await _make_real_analyzer(analyzer_id)
+
+    version = uuid.uuid4().hex[:12]
+    snapshot = {
+        "categories": [{"slug": "verification", "name": "V", "description": "d",
+                        "sort_order": 0}],
+        "capabilities": [],
+    }
+
+    class _Output:
+        sections = {"bad": "", "good": "", "capabilities": "", "headroom": ""}
+        counts = {"trials": 0, "bad": 0, "good": 0}
+        breakdown = {}
+        reduce_prompt = None
+        proposals = []
+        taxonomy_version = version
+        taxonomy_snapshot = snapshot
+        findings = []
+
+    async def fake_eval_rows(rows, config, aid):
+        return _Output()
+
+    try:
+        await rh.run_analyzer_generation_job(analyzer_id, eval_rows_fn=fake_eval_rows)
+
+        async with get_session() as session:
+            analyzer = await session.get(AnalyzerModel, analyzer_id)
+            assert analyzer.taxonomy_version == version
+            assert analyzer.taxonomy_version is not None  # distinct from default
+            assert analyzer.taxonomy_snapshot == snapshot
+    finally:
+        await _cleanup_real_analyzer(analyzer_id)
