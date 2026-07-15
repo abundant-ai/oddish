@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _MAP_MARKER = "MAP FINDING:"
 _REDUCE_MARKER = "REDUCE RESULT:"
 _DECODER = json.JSONDecoder()
+_SECTION_LOG_LIMIT = 200
 
 
 class CohortParseError(RuntimeError):
@@ -60,13 +61,26 @@ def _section_value(raw: dict, key: str) -> str:
     return v
 
 
+def _render_sections(sections: dict[str, str]) -> str:
+    """Compact key -> value dump for error text; values are elided so a runaway
+    reduce output can't turn one exception into a megabyte of log."""
+    return ", ".join(
+        f"{k}={_elide(v)!r}" for k, v in sections.items()
+    ) or "<none>"
+
+
+def _elide(v: str, limit: int = _SECTION_LOG_LIMIT) -> str:
+    return v if len(v) <= limit else f"{v[:limit]}...(+{len(v) - limit}B)"
+
+
 def _sections_from(raw: dict, bucket: str) -> dict[str, str]:
     keys = SECTION_KEYS_BY_BUCKET[bucket]
     sections = {k: _section_value(raw, k) for k in keys}
     if not any(v.strip() for v in sections.values()):
         raise CohortParseError(
             f"reduce output for bucket {bucket!r} has no non-blank content for "
-            f"any of {keys}: {sorted(raw)[:6]}"
+            f"any of {keys}: sections={_render_sections(sections)}; "
+            f"raw keys={sorted(raw)[:6]}"
         )
     return sections
 
@@ -145,7 +159,10 @@ def parse_cohort_result(
             raise CohortParseError(
                 f"no usable reduce result for bucket {bucket!r}: "
                 f"file was {len(reduce_bytes)}B and the stream had no "
-                f"{_REDUCE_MARKER!r} marker"
+                f"{_REDUCE_MARKER!r} marker; expected sections "
+                f"{SECTION_KEYS_BY_BUCKET[bucket]}; "
+                f"file head={_elide(reduce_bytes.decode('utf-8', 'replace'))!r}; "
+                f"stream tail={_elide(stream_text[-_SECTION_LOG_LIMIT:])!r}"
             )
         sections = _sections_from(blocks[-1], bucket)
 
