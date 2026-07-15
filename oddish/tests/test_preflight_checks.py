@@ -31,6 +31,11 @@ def _config(task_dir: Path) -> TaskConfig:
         "COPY solution/ /app/solution",
         "COPY tests/test_*.py /app/",
         "COPY solution/*.sh /app/",
+        # Bare directory (no trailing slash) and JSON-array forms.
+        "COPY tests /app/tests",
+        "COPY solution /app/solution",
+        'COPY ["tests", "/app/tests"]',
+        'COPY ["solution", "/app/solution"]',
     ],
 )
 def test_dockerfile_leaks_flags_solution_and_test_references(make_task, line):
@@ -52,10 +57,18 @@ def test_dockerfile_leaks_passes_a_clean_dockerfile(make_task):
 @pytest.mark.parametrize(
     "line",
     [
-        # Patterns anchor on a path boundary, so a directory that merely ends
-        # in "tests" or "solution" is not the task's tests/ or solution/ tree.
+        # Leading boundary: a directory that merely ends in "tests"/"solution"
+        # is not the task's tree.
         "COPY unittests/test.sh /app/",
         "COPY my_solution/solve.sh /app/",
+        "COPY resolution/x /app/",
+        # Trailing boundary: a longer name that merely starts with it.
+        "COPY testsuite/foo /app/",
+        "COPY tests-data/x /app/",
+        # Destination paths are not leaks — only sources are.
+        "COPY environment/foo /app/tests/",
+        "COPY x /app/tests",
+        "RUN mkdir -p /app/tests",
     ],
 )
 def test_dockerfile_leaks_does_not_false_positive_on_similar_names(make_task, line):
