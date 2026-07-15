@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import asdict
 
 from sqlalchemy import or_, select
 
@@ -318,6 +319,7 @@ async def run_analyzer_generation_job(
                 analyzer.num_good_failures = output.counts["good"]
                 analyzer.breakdown = output.breakdown
                 analyzer.reduce_prompt = output.reduce_prompt
+                analyzer.findings = [asdict(f) for f in output.findings]
                 analyzer.status = JobStatus.SUCCESS
                 analyzer.error = None
             else:

@@ -6,7 +6,7 @@ from oddish.evals.primitives import SubAnalysis
 def _finding(trial_id: str) -> Finding:
     return Finding(
         trial_id=trial_id, bucket="bad", subcategory="3a",
-        evidence_quote="q", step_indices=[1, 2], root_cause="rc",
+        evidence_quote="q", step_ids=[1, 2], root_cause="rc",
         headroom_signal="hs", trajectory_link="link",
     )
 

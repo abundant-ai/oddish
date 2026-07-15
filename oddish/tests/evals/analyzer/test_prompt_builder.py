@@ -48,7 +48,7 @@ def test_map_prompt_uses_bucket_of_for_good_failure():
 def test_reduce_prompt_lists_findings_and_counts():
     f = Finding(
         trial_id="t-1", bucket="bad", subcategory="1b", evidence_quote="echo 42",
-        step_indices=[7], root_cause="rc", headroom_signal="",
+        step_ids=[7], root_cause="rc", headroom_signal="",
         trajectory_link="/tasks/task/probe/t-1",
     )
     p = build_reduce_prompt([f], {"trials": 5, "bad": 1, "good": 0})
