@@ -336,3 +336,20 @@ async def test_finding_exposes_step_ids():
 
     assert out.findings[0].step_ids == [1]
     assert not hasattr(out.findings[0], "step_indices")
+
+
+@pytest.mark.asyncio
+async def test_run_analyzer_eval_echoes_taxonomy_onto_output():
+    """taxonomy_version pins a run to the taxonomy it classified against; both
+    eval strategies must echo it back, not just the sandbox one."""
+    inputs = AnalyzerEvalInputs(
+        bundles=[_bundle("task-0")],
+        subanalyses=[_sa("task-0", "BAD_FAILURE", "Hardcoding")],
+    )
+    out = await run_analyzer_eval(
+        inputs, AnalyzerEvalConfig(), client=FakeClient(), taxonomy=_tiny_tax()
+    )
+    assert out.taxonomy_version is not None and len(out.taxonomy_version) == 12
+    assert out.taxonomy_snapshot is not None
+    slugs = {c["slug"] for c in out.taxonomy_snapshot["capabilities"]}
+    assert "agent-early-stop" in slugs

@@ -21,7 +21,7 @@ from oddish.evals.analyzer.schemas import (
     AnalyzerEvalInputs,
     AnalyzerEvalOutput,
 )
-from oddish.evals.analyzer.taxonomy import Taxonomy
+from oddish.evals.analyzer.taxonomy import Taxonomy, taxonomy_fingerprint, taxonomy_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,11 @@ async def run_analyzer_eval(
             )
         taxonomy = Taxonomy()
 
+    # A run still classified against this taxonomy even if it found nothing, so
+    # compute this before the zero-work early return, not just on the final path.
+    tax_version = taxonomy_fingerprint(taxonomy)
+    tax_snapshot = taxonomy_snapshot(taxonomy)
+
     # Zero-work fast path: no failures to analyze. Must return BEFORE building a
     # client so the pipeline stays pure / needs no API key when there's nothing
     # to do.
@@ -194,6 +199,7 @@ async def run_analyzer_eval(
         return AnalyzerEvalOutput(
             sections=dict(_EMPTY_SECTIONS), findings=[], counts=counts, breakdown=breakdown,
             subanalyses=inputs.subanalyses,
+            taxonomy_version=tax_version, taxonomy_snapshot=tax_snapshot,
         )
 
     # Step 2 — obtain the LLM client (constructs the default Anthropic client,
@@ -300,4 +306,5 @@ async def run_analyzer_eval(
     return AnalyzerEvalOutput(
         sections=sections, findings=findings, counts=counts, breakdown=breakdown,
         reduce_prompt=reduce_prompt, subanalyses=inputs.subanalyses,
+        taxonomy_version=tax_version, taxonomy_snapshot=tax_snapshot,
     )

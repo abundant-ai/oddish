@@ -634,6 +634,7 @@ async def test_store_persists_findings(monkeypatch):
             "model": "claude-opus-4-8",
             "classification": None, "subtype": None,
             "task_id": None, "task_path": None,
+            "capability_slug": None,
         }
     ]
 
