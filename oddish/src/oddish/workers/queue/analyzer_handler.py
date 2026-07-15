@@ -168,6 +168,17 @@ async def _worker_job_is_running(
     return status == WorkerJobStatus.RUNNING
 
 
+def _models_by_task(rows) -> dict[str, list[str]]:
+    """task_id -> the distinct models that ran it. Includes trials that passed,
+    which is exactly what findings cannot tell us."""
+    by_task: dict[str, set[str]] = {}
+    for trial, _task_path in rows:
+        model = getattr(trial, "model", None)
+        if model:
+            by_task.setdefault(trial.task_id, set()).add(model)
+    return {k: sorted(v) for k, v in by_task.items()}
+
+
 async def _gather_trial_rows(session, analyzer_id: str, org_id: str | None):
     exp_ids = await experiment_ids_for_analyzer(session, analyzer_id)
     if not exp_ids:
@@ -270,6 +281,7 @@ async def run_analyzer_generation_job(
             rows = await _gather_trial_rows(session, analyzer_id, org_id)
             inputs = await build_analyzer_inputs(rows)
         output = await run_analyzer_eval(inputs, _build_analyzer_eval_config())
+        output.models_by_task = _models_by_task(rows)
         if save_trial_analyses and output is not None:
             await _maybe_save_trial_analyses(
                 analyzer_id=analyzer_id,
@@ -320,6 +332,7 @@ async def run_analyzer_generation_job(
                 analyzer.breakdown = output.breakdown
                 analyzer.reduce_prompt = output.reduce_prompt
                 analyzer.findings = [asdict(f) for f in output.findings]
+                analyzer.models_by_task = output.models_by_task
                 analyzer.status = JobStatus.SUCCESS
                 analyzer.error = None
             else:

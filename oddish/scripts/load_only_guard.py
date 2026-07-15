@@ -31,11 +31,19 @@ fails on any read column that isn't declared.
   iteration, and records every ``model.column`` and ``getattr`` read. PKs are
   never deferred by ``load_only`` so they're always allowed.
 
+``_SCHEMA_UNITS`` covers the other builder shape: paths whose response is built
+by ``SomeResponse.model_validate(row)`` rather than a hand-written builder.
+Pydantic reads through ``from_attributes``, so there is no ``model.column``
+expression to walk -- the read set is the schema's own fields instead. Same
+MissingGreenlet failure, reached by a path the AST walker cannot see.
+
 Tripwire
 --------
 A stray ``load_only(...)`` outside the covered functions ships uncovered. The
 tripwire scans ``oddish/src/oddish`` and fails on any such site, prompting a new
-``_COVERAGE_UNITS`` entry. (``backend/`` is a separate package, not scanned.)
+``_COVERAGE_UNITS`` / ``_SCHEMA_UNITS`` entry. (``backend/`` is a separate
+package, not scanned -- a schema unit is how a ``backend/`` router's reads get
+checked against a ``load_only`` that lives here.)
 
 Run ``python scripts/load_only_guard.py`` from the ``oddish`` package root.
 Exits non-zero (with a report) on any uncovered column or stray ``load_only``.
@@ -61,6 +69,7 @@ if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
 import oddish.db as _oddish_db  # noqa: E402  (after sys.path setup)
+import oddish.schemas as _oddish_schemas  # noqa: E402  (after sys.path setup)
 
 _PKG_ROOT = _SRC_ROOT / "oddish"
 _HELPERS_PATH = _PKG_ROOT / "core" / "helpers.py"
@@ -77,6 +86,27 @@ _COVERAGE_UNITS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("list_experiment_slim_tasks", ("build_slim_task_status_response",)),
 )
 _COVERED_FUNCTIONS = frozenset(fn for fn, _ in _COVERAGE_UNITS)
+
+
+# Schema units: query functions whose "builder" is a Pydantic response model
+# rather than a hand-written builder. ``model_validate(row)`` reads attributes
+# through ``from_attributes``, so there is no ``model.column`` expression for the
+# AST walker above to find -- the read set comes from the schema's fields
+# instead. ``(query_function, query_path, model_name, response_schema)``.
+# ``non_column_fields`` are schema fields deliberately not backed by a column on
+# the model -- they're populated some other way and read nothing off the row.
+# Every other field must be a column, so a renamed or typo'd field fails loudly
+# instead of silently dropping out of coverage.
+_SCHEMA_UNITS: tuple[tuple[str, Path, str, str, frozenset[str]], ...] = (
+    (
+        "list_analyzers_core",
+        _PKG_ROOT / "core" / "analyzers.py",
+        "AnalyzerModel",
+        "AnalyzerResponse",
+        # Filled by a separate query in the router's _to_response().
+        frozenset({"experiment_ids"}),
+    ),
+)
 
 # Builtins that wrap an iterable but preserve element type (``list(xs)``,
 # ``sorted(xs)``, ...). Used to see through wrappers to the underlying
@@ -550,6 +580,84 @@ def find_violations(
     return all_violations
 
 
+def schema_read_columns(
+    response_schema: str, meta: _ModelMeta, non_column_fields: frozenset[str]
+) -> set[str]:
+    """Columns a Pydantic response model reads off ``meta`` via model_validate.
+
+    ``AnalyzerResponse.model_validate(analyzer)`` runs with ``from_attributes``,
+    so every field it declares is an attribute read on the ORM row. A field whose
+    name is a deferred column lazy-loads outside the request greenlet and 500s the
+    list response -- the same failure the AST walker catches for hand-written
+    builders, arriving through a path the walker cannot see.
+
+    Any field that is not a column must be declared in ``non_column_fields``, and
+    every declared exemption must still be a field. Otherwise a renamed field
+    reads as "not a column" and drops out of coverage silently -- the guard would
+    go green on exactly the change it exists to catch.
+    """
+    schema = getattr(_oddish_schemas, response_schema, None)
+    if schema is None:
+        raise SystemExit(
+            f"load_only_guard: response schema {response_schema!r} is not exported "
+            f"from oddish.schemas. Renamed or moved? Update _SCHEMA_UNITS."
+        )
+    fields = set(schema.model_fields)
+
+    undeclared = fields - meta.columns - non_column_fields
+    if undeclared:
+        raise SystemExit(
+            f"load_only_guard: {response_schema} field(s) {sorted(undeclared)!r} "
+            f"are not columns on {meta.name}. If populated outside the row, add "
+            f"them to that unit's non_column_fields in _SCHEMA_UNITS; if renamed, "
+            f"fix the name."
+        )
+    stale = non_column_fields - fields
+    if stale:
+        raise SystemExit(
+            f"load_only_guard: _SCHEMA_UNITS exempts {sorted(stale)!r} on "
+            f"{response_schema}, which declares no such field(s). Renamed or "
+            f"removed? Drop the stale exemption."
+        )
+    return fields & meta.columns
+
+
+def find_schema_violations() -> dict[str, dict[str, list[str]]]:
+    """Per-schema-unit column violations: ``{query_function: {model: [missing]}}``."""
+    tuple_columns = _collect_module_tuple_columns(_HELPERS_PATH, _TASKS_QUERY_PATH)
+    all_violations: dict[str, dict[str, list[str]]] = {}
+    for (
+        query_function,
+        query_path,
+        model_name,
+        response_schema,
+        non_column_fields,
+    ) in _SCHEMA_UNITS:
+        tree = ast.parse(query_path.read_text(), filename=str(query_path))
+        query_fn = _find_function(tree, query_function)
+        if query_fn is None:
+            raise SystemExit(
+                f"load_only_guard: {query_function}() not found in "
+                f"{query_path.name}. Renamed or moved? Update _SCHEMA_UNITS."
+            )
+        declared = collect_declared_columns(query_fn, tuple_columns)
+        if not declared:
+            raise SystemExit(
+                f"load_only_guard: no load_only(...) columns found in "
+                f"{query_function}(). Its load_only projections may have moved."
+            )
+        metas = introspect_models({model_name} | set(declared))
+        reads = {
+            model_name: schema_read_columns(
+                response_schema, metas[model_name], non_column_fields
+            )
+        }
+        violations = compute_violations(reads, declared, metas)
+        if violations:
+            all_violations[query_function] = violations
+    return all_violations
+
+
 def _covered_models(
     helpers_path: Path = _HELPERS_PATH,
     tasks_query_path: Path = _TASKS_QUERY_PATH,
@@ -557,6 +665,7 @@ def _covered_models(
     models: set[str] = set()
     for _, _, declared, _ in _iter_units(helpers_path, tasks_query_path):
         models.update(declared)
+    models.update(model_name for _, _, model_name, _, _ in _SCHEMA_UNITS)
     return models
 
 
@@ -580,19 +689,28 @@ def _load_only_sites_in_tree(tree: ast.AST) -> list[tuple[str | None, int]]:
     return sites
 
 
+def _allowed_sites() -> dict[Path, frozenset[str]]:
+    """``{resolved file: covered function names}`` across both unit kinds."""
+    allowed: dict[Path, set[str]] = defaultdict(set)
+    allowed[_TASKS_QUERY_PATH.resolve()].update(_COVERED_FUNCTIONS)
+    for query_function, query_path, _, _, _ in _SCHEMA_UNITS:
+        allowed[query_path.resolve()].add(query_function)
+    return {path: frozenset(fns) for path, fns in allowed.items()}
+
+
 def find_stray_load_only_sites(
     src_root: Path = _PKG_ROOT,
-    allowed_file: Path = _TASKS_QUERY_PATH,
-    allowed_functions: frozenset[str] = _COVERED_FUNCTIONS,
+    allowed: dict[Path, frozenset[str]] | None = None,
 ) -> list[tuple[Path, str | None, int]]:
     """Find ``load_only`` calls outside the covered functions (the tripwire).
 
     Scans every ``*.py`` under ``src_root`` and returns ``(path, function,
-    lineno)`` for any ``load_only`` not inside one of ``allowed_functions`` in
-    ``allowed_file``. A non-empty result means a new ``load_only`` site shipped
-    that no coverage unit checks -- add one.
+    lineno)`` for any ``load_only`` not inside a covered function of a covered
+    file. A non-empty result means a new ``load_only`` site shipped that no
+    coverage unit checks -- add one.
     """
-    allowed_file = allowed_file.resolve()
+    if allowed is None:
+        allowed = _allowed_sites()
     strays: list[tuple[Path, str | None, int]] = []
     for path in sorted(src_root.rglob("*.py")):
         try:
@@ -600,15 +718,16 @@ def find_stray_load_only_sites(
         except (SyntaxError, UnicodeDecodeError):
             # Unparseable files can't run, so they can't host a live load_only.
             continue
+        covered = allowed.get(path.resolve(), frozenset())
         for func_name, lineno in _load_only_sites_in_tree(tree):
-            if path.resolve() == allowed_file and func_name in allowed_functions:
+            if func_name in covered:
                 continue
             strays.append((path, func_name, lineno))
     return strays
 
 
 def main() -> int:
-    violations = find_violations()
+    violations = {**find_violations(), **find_schema_violations()}
     strays = find_stray_load_only_sites()
     if not violations and not strays:
         models = ", ".join(sorted(_covered_models()))
