@@ -215,13 +215,18 @@ The `# provenance-ok:` grammar deliberately mirrors harbor-lh's existing
 
 ### `.git` rule
 
-Error if:
+Error if any `.git` exists anywhere under the task directory and no
+`.dockerignore` excludes it.
 
-- A `COPY` or `ADD` source directory contains a `.git`, or
-- The task ships a `.git` and no `.dockerignore` excludes it.
+Warn if no `.git` is present and no `.dockerignore` excludes it — the leak is
+latent rather than live.
 
-Warn if there is no `.dockerignore` at all and no `.git` is currently present —
-the leak is latent rather than live.
+This is deliberately broader than "a `COPY`/`ADD` source contains a `.git`".
+Resolving COPY sources correctly requires knowing Harbor's build context, which
+a static check cannot assume, and guessing wrong in the permissive direction
+means the leak ships. The broad rule cannot miss it. It does not false-positive
+on the enclosing repository's own `.git`, which lives at the repo root rather
+than under `tasks/<slug>/`.
 
 This is the quietest leak and the highest-value surface: the agent runs `git log`
 in `/app` and reads the fix commit message, or `git diff HEAD~1` and reads the
