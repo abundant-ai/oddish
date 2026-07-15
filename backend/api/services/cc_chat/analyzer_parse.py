@@ -34,7 +34,8 @@ def _finding_from(d: dict, bucket: str, link_by_trial: dict[str, str]) -> Findin
         return None
     return Finding(
         trial_id=trial_id,
-        bucket=d.get("bucket", bucket),
+        # Never trust the model's echo, same rule as trajectory_link below.
+        bucket=bucket,
         subcategory=d.get("subcategory", "emergent"),
         evidence_quote=d.get("evidence_quote", ""),
         step_indices=list(d.get("step_indices") or []),
@@ -45,14 +46,27 @@ def _finding_from(d: dict, bucket: str, link_by_trial: dict[str, str]) -> Findin
     )
 
 
+def _section_value(raw: dict, key: str) -> str:
+    v = raw.get(key, "")
+    if not isinstance(v, str):
+        if key in raw:
+            logger.warning(
+                "analyzer-sandbox: section %r had non-string value of type %s; "
+                "treating as absent", key, type(v).__name__,
+            )
+        return ""
+    return v
+
+
 def _sections_from(raw: dict, bucket: str) -> dict[str, str]:
     keys = SECTION_KEYS_BY_BUCKET[bucket]
-    if not any(k in raw for k in keys):
+    sections = {k: _section_value(raw, k) for k in keys}
+    if not any(v.strip() for v in sections.values()):
         raise CohortParseError(
-            f"reduce output for bucket {bucket!r} has none of {keys}: "
-            f"{sorted(raw)[:6]}"
+            f"reduce output for bucket {bucket!r} has no non-blank content for "
+            f"any of {keys}: {sorted(raw)[:6]}"
         )
-    return {k: str(raw.get(k, "")) for k in keys}
+    return sections
 
 
 def _findings_from_jsonl(text: str, bucket, links) -> list[Finding]:
@@ -85,6 +99,21 @@ def _marked(stream_text: str, marker: str) -> list[dict]:
     return out
 
 
+def _marked_reduce(stream_text: str) -> list[dict]:
+    """Per-line scan is primary; whole-text-from-last-marker is the net for
+    agents that pretty-print the reduce object across several lines."""
+    blocks = _marked(stream_text, _REDUCE_MARKER)
+    if blocks:
+        return blocks
+    idx = stream_text.rfind(_REDUCE_MARKER)
+    if idx == -1:
+        return []
+    try:
+        return [parse_json(stream_text[idx + len(_REDUCE_MARKER):])]
+    except ValueError:
+        return []
+
+
 def parse_cohort_result(
     bucket: str,
     reduce_bytes: bytes,
@@ -111,7 +140,7 @@ def parse_cohort_result(
             )
 
     if sections is None:
-        blocks = _marked(stream_text, _REDUCE_MARKER)
+        blocks = _marked_reduce(stream_text)
         if not blocks:
             raise CohortParseError(
                 f"no usable reduce result for bucket {bucket!r}: "

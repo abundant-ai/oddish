@@ -90,3 +90,59 @@ def test_drops_findings_for_trials_outside_the_cohort():
     findings_b = (json.dumps(_finding("hallucinated-trial")) + "\n").encode()
     findings, _ = parse_cohort_result("bad", reduce_b, findings_b, "", LINKS)
     assert findings == []
+
+
+def test_all_blank_sections_is_fatal():
+    """Blank sections still look like a completed analysis downstream."""
+    reduce_b = json.dumps({"good_failure_content": ""}).encode()
+    with pytest.raises(CohortParseError):
+        parse_cohort_result("good", reduce_b, b"", "", {})
+
+
+def test_whitespace_only_sections_is_fatal():
+    reduce_b = json.dumps({"good_failure_content": "   "}).encode()
+    with pytest.raises(CohortParseError):
+        parse_cohort_result("good", reduce_b, b"", "", {})
+
+
+def test_null_section_value_does_not_become_the_string_None():
+    reduce_b = json.dumps({"good_failure_content": None,
+                           "headroom_analysis": "# Real"}).encode()
+    _, sections = parse_cohort_result("good", reduce_b, b"", "", {})
+    assert sections["good_failure_content"] == ""
+    assert sections["headroom_analysis"] == "# Real"
+
+
+def test_non_string_section_value_is_dropped_not_reprd():
+    reduce_b = json.dumps({"good_failure_content": {"x": 1},
+                           "headroom_analysis": "# Real"}).encode()
+    _, sections = parse_cohort_result("good", reduce_b, b"", "", {})
+    assert sections["good_failure_content"] == ""
+
+
+def test_partial_blank_sections_are_allowed():
+    """Only ALL-blank is fatal; one real section is a legitimate result."""
+    reduce_b = json.dumps({"good_failure_content": "# Real",
+                           "headroom_analysis": ""}).encode()
+    _, sections = parse_cohort_result("good", reduce_b, b"", "", {})
+    assert sections["good_failure_content"] == "# Real"
+    assert sections["headroom_analysis"] == ""
+
+
+def test_stream_fallback_handles_pretty_printed_json():
+    """Files are primary; the stream is the last net. It must not lose a
+    result the agent really did emit, just across several lines."""
+    stream = "REDUCE RESULT:\n" + json.dumps({"bad_failure_content": "# Multi"}, indent=2)
+    _, sections = parse_cohort_result("bad", b"", b"", stream, {})
+    assert sections["bad_failure_content"] == "# Multi"
+
+
+def test_finding_bucket_comes_from_the_cohort_not_the_model():
+    reduce_b = json.dumps({"bad_failure_content": "# B"}).encode()
+    bad_echo = {"trial_id": "bad-1", "bucket": "good", "subcategory": "1a",
+                "evidence_quote": "q", "step_indices": [], "root_cause": "rc",
+                "headroom_signal": "h", "trajectory_link": "junk"}
+    findings, _ = parse_cohort_result(
+        "bad", reduce_b, (json.dumps(bad_echo) + "\n").encode(), "",
+        {"bad-1": "/tasks/t1/probe/bad-1"})
+    assert findings[0].bucket == "bad"
