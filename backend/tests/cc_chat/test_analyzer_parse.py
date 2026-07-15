@@ -4,7 +4,21 @@ import pytest
 
 from api.services.cc_chat.analyzer_parse import CohortParseError, parse_cohort_result
 
-LINKS = {"bad-1": "/tasks/t1/probe/bad-1"}
+def _host(trial_id="bad-1", **over) -> dict:
+    """The host-owned Finding fields the parser must stamp on, mirroring what
+    the API map path fills in from the trial bundle and subanalysis."""
+    return {
+        "trajectory_link": f"/tasks/t1/probe/{trial_id}",
+        "model": "anthropic/claude-opus-4-8",
+        "classification": "BAD_FAILURE",
+        "subtype": "1a",
+        "task_id": "task-1",
+        "task_path": "tasks/t1",
+        **over,
+    }
+
+
+LINKS = {"bad-1": _host("bad-1")}
 
 
 def _finding(trial_id="bad-1") -> dict:
@@ -70,11 +84,53 @@ def test_raises_when_reduce_has_no_section_keys_for_the_bucket():
         parse_cohort_result("bad", reduce_b, b"", "", LINKS)
 
 
+def test_findings_carry_the_host_classifier_facts():
+    """The rollup derives lanes from these host-side fields rather than trusting
+    the model's bucket/subcategory echo, so the sandbox path must fill them in
+    exactly like the API map path does -- leaving them None strands the rollup."""
+    reduce_b = json.dumps({"bad_failure_content": "# Bad"}).encode()
+    findings_b = (json.dumps(_finding()) + "\n").encode()
+    findings, _ = parse_cohort_result("bad", reduce_b, findings_b, "", LINKS)
+    f = findings[0]
+    assert f.model == "anthropic/claude-opus-4-8"
+    assert f.classification == "BAD_FAILURE"
+    assert f.subtype == "1a"
+    assert f.task_id == "task-1"
+    assert f.task_path == "tasks/t1"
+
+
+def test_map_stream_fallback_handles_pretty_printed_json():
+    """Symmetry with the REDUCE fallback: a multiline `MAP FINDING:` object is a
+    result the agent really did emit, and dropping it fails the whole cohort with
+    'no findings' despite perfectly good reduce content."""
+    stream = (
+        "MAP FINDING:\n" + json.dumps(_finding(), indent=2) + "\n"
+        "REDUCE RESULT: " + json.dumps({"bad_failure_content": "# X"})
+    )
+    findings, _ = parse_cohort_result("bad", b"", b"", stream, LINKS)
+    assert [f.trial_id for f in findings] == ["bad-1"]
+
+
+def test_map_stream_fallback_recovers_every_multiline_finding():
+    """Each marker must consume exactly its own object: a whole-text scan that
+    grabbed the outermost braces would swallow the narration and the second
+    finding along with the first."""
+    hosts = {"bad-1": _host("bad-1"), "bad-2": _host("bad-2")}
+    stream = "\n".join([
+        "MAP FINDING:\n" + json.dumps(_finding("bad-1"), indent=2),
+        "...narrating between findings, with a stray } brace...",
+        "MAP FINDING:\n" + json.dumps(_finding("bad-2"), indent=2),
+        "REDUCE RESULT: " + json.dumps({"bad_failure_content": "# X"}),
+    ])
+    findings, _ = parse_cohort_result("bad", b"", b"", stream, hosts)
+    assert [f.trial_id for f in findings] == ["bad-1", "bad-2"]
+
+
 def test_missing_section_key_defaults_to_empty_string():
     reduce_b = json.dumps({"good_failure_content": "# Good"}).encode()
     findings_b = (json.dumps({**_finding("good-1"), "bucket": "good"}) + "\n").encode()
     _, sections = parse_cohort_result(
-        "good", reduce_b, findings_b, "", {"good-1": "/tasks/t1/probe/good-1"}
+        "good", reduce_b, findings_b, "", {"good-1": _host("good-1")}
     )
     assert sections["good_failure_content"] == "# Good"
     assert sections["universal_capabilities_content"] == ""
@@ -147,7 +203,7 @@ def test_finding_bucket_comes_from_the_cohort_not_the_model():
                 "headroom_signal": "h", "trajectory_link": "junk"}
     findings, _ = parse_cohort_result(
         "bad", reduce_b, (json.dumps(bad_echo) + "\n").encode(), "",
-        {"bad-1": "/tasks/t1/probe/bad-1"})
+        {"bad-1": _host("bad-1")})
     assert findings[0].bucket == "bad"
 
 

@@ -61,10 +61,19 @@ class _SlowRuntime(_FakeRuntime):
             yield
 
 
+HOSTS = {
+    "bad-1": {
+        "trajectory_link": "/tasks/t1/probe/bad-1", "model": "m",
+        "classification": "BAD_FAILURE", "subtype": "1a",
+        "task_id": "task-1", "task_path": "tasks/t1",
+    }
+}
+
+
 def _kwargs(**over):
     base = dict(
         bucket="bad", cohort=COHORT, roster=ROSTER, counts=COUNTS,
-        oracle_by_trial={"bad-1": "oracle"}, analyzer_id="a1",
+        oracle_by_trial={"bad-1": "oracle"}, host_by_trial=HOSTS, analyzer_id="a1",
         anthropic_key="sk-ant-test", api_base="https://api.example", api_key="k",
         cli_src=b"#!/usr/bin/env node",
     )

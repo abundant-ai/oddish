@@ -47,6 +47,7 @@ async def run_cohort(
     roster: list[dict],
     counts: dict,
     oracle_by_trial: dict[str, str],
+    host_by_trial: dict[str, dict],
     analyzer_id: str,
     anthropic_key: str,
     api_base: str,
@@ -105,7 +106,8 @@ async def run_cohort(
 
     findings, sections = parse_cohort_result(
         bucket, reduce_b, findings_b, "\n".join(stream_lines),
-        {sa.trial_id: sa.trajectory_link for sa in cohort},
+        # Scoped to this cohort, so a finding for someone else's trial is dropped.
+        {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},
     )
     logger.info("%s done: %d findings, sections=%s", tag, len(findings), sorted(sections))
     return findings, sections

@@ -64,24 +64,39 @@ def _runtime() -> Any:
     return ClaudeCodeRuntime()
 
 
-def _gather(rows: list[tuple[Any, str]]) -> tuple[list[SubAnalysis], dict[str, str]]:
+def _gather(
+    rows: list[tuple[Any, str]],
+) -> tuple[list[SubAnalysis], dict[str, str], dict[str, dict]]:
     """DB-only: subanalysis_from_trial reads the trial.analysis JSON column, and
-    oracle context comes off the trial's agent -- neither touches S3."""
+    oracle context comes off the trial's agent -- neither touches S3.
+
+    Also builds the host-owned Finding fields per trial. This is the only place
+    the trial rows are in scope, so task_id/task_path have to be captured here.
+    """
     from oddish.analyze.classifier import _get_trial_agent_context
     from oddish.evals.analyzer.bucketing import BUCKET_OF
 
     subs: list[SubAnalysis] = []
     oracle_by_trial: dict[str, str] = {}
+    host_by_trial: dict[str, dict] = {}
     for trial, task_path in rows:
         sa = subanalysis_from_trial(trial, task_path)
         if sa is None:
             continue
         subs.append(sa)
+        host_by_trial[sa.trial_id] = {
+            "trajectory_link": sa.trajectory_link,
+            "model": sa.model,
+            "classification": sa.classification,
+            "subtype": sa.subtype,
+            "task_id": trial.task_id,
+            "task_path": task_path,
+        }
         if BUCKET_OF.get(sa.classification) == "bad":
             oracle = (_get_trial_agent_context(trial.agent) or "").strip()
             if oracle:
                 oracle_by_trial[sa.trial_id] = oracle
-    return subs, oracle_by_trial
+    return subs, oracle_by_trial, host_by_trial
 
 
 async def _resolve_api_creds(
@@ -101,7 +116,7 @@ async def _resolve_api_creds(
 async def sandbox_eval_rows(
     rows: list[tuple[Any, str]], config: AnalyzerEvalConfig, analyzer_id: str
 ) -> AnalyzerEvalOutput:
-    subs, oracle_by_trial = _gather(rows)
+    subs, oracle_by_trial, host_by_trial = _gather(rows)
     bad, good, breakdown = bucket_subanalyses(subs)
     counts = {"trials": len(rows), "bad": len(bad), "good": len(good)}
     logger.info("analyzer-sandbox: bucketed %s breakdown=%s", counts, breakdown)
@@ -113,6 +128,15 @@ async def sandbox_eval_rows(
         )
 
     roster = build_roster(bad, good)
+    # Checked up front, next to the DAYTONA_API_KEY check in _daytona_client:
+    # without it the agent only fails once it is inside a provisioned sandbox,
+    # after we have already minted a probe key and paid for two sandboxes.
+    anthropic_key = settings.anthropic_api_key
+    if not anthropic_key:
+        raise RuntimeError(
+            "analyzer-sandbox: anthropic_api_key is unset; the cohort agents "
+            "cannot reach inference"
+        )
     client, runtime, cli_src = _daytona_client(), _runtime(), _read_cli_source()
     key_id, api_base, api_key = await _resolve_api_creds(rows, analyzer_id)
 
@@ -120,7 +144,8 @@ async def sandbox_eval_rows(
         return await run_cohort(
             client, runtime, bucket=bucket, cohort=cohort, roster=roster,
             counts=counts, oracle_by_trial=oracle_by_trial,
-            analyzer_id=analyzer_id, anthropic_key=settings.anthropic_api_key,
+            host_by_trial=host_by_trial,
+            analyzer_id=analyzer_id, anthropic_key=anthropic_key,
             api_base=api_base, api_key=api_key, cli_src=cli_src,
         )
 

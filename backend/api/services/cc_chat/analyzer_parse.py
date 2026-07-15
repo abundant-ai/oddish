@@ -17,16 +17,17 @@ logger = logging.getLogger(__name__)
 
 _MAP_MARKER = "MAP FINDING:"
 _REDUCE_MARKER = "REDUCE RESULT:"
+_DECODER = json.JSONDecoder()
 
 
 class CohortParseError(RuntimeError):
     """Neither the output file nor the stream yielded a usable reduce result."""
 
 
-def _finding_from(d: dict, bucket: str, link_by_trial: dict[str, str]) -> Finding | None:
+def _finding_from(d: dict, bucket: str, host_by_trial: dict[str, dict]) -> Finding | None:
     trial_id = d.get("trial_id", "")
-    link = link_by_trial.get(trial_id)
-    if link is None:
+    host = host_by_trial.get(trial_id)
+    if host is None:
         logger.warning(
             "analyzer-sandbox: dropping finding for trial %r not in the %s cohort",
             trial_id, bucket,
@@ -34,15 +35,16 @@ def _finding_from(d: dict, bucket: str, link_by_trial: dict[str, str]) -> Findin
         return None
     return Finding(
         trial_id=trial_id,
-        # Never trust the model's echo, same rule as trajectory_link below.
+        # Never trust the model's echo, same rule as the host facts below.
         bucket=bucket,
         subcategory=d.get("subcategory", "emergent"),
         evidence_quote=d.get("evidence_quote", ""),
         step_ids=list(d.get("step_ids") or []),
         root_cause=d.get("root_cause", ""),
         headroom_signal=d.get("headroom_signal", ""),
-        # Trust the host-built link, never the model's echo.
-        trajectory_link=link,
+        # Host facts (link + classifier columns), never the model's echo -- the
+        # rollup derives lanes from these instead of the bucket/subcategory above.
+        **host,
     )
 
 
@@ -87,31 +89,27 @@ def _findings_from_jsonl(text: str, bucket, links) -> list[Finding]:
 
 
 def _marked(stream_text: str, marker: str) -> list[dict]:
-    out = []
-    for line in stream_text.splitlines():
-        idx = line.find(marker)
-        if idx == -1:
-            continue
+    """Decode one object per marker, spanning lines if the agent pretty-printed
+    it. raw_decode stops at the end of that object, so narration (or a later
+    marker) after it is left alone -- which a scan for the outermost braces
+    would swallow whole.
+    """
+    out: list[dict] = []
+    pos = stream_text.find(marker)
+    while pos != -1:
+        after = pos + len(marker)
+        start = stream_text.find("{", after)
+        if start == -1:
+            break
         try:
-            out.append(parse_json(line[idx + len(marker):]))
+            obj, end = _DECODER.raw_decode(stream_text, start)
         except ValueError:
+            pos = stream_text.find(marker, after)
             continue
+        if isinstance(obj, dict):
+            out.append(obj)
+        pos = stream_text.find(marker, end)
     return out
-
-
-def _marked_reduce(stream_text: str) -> list[dict]:
-    """Per-line scan is primary; whole-text-from-last-marker is the net for
-    agents that pretty-print the reduce object across several lines."""
-    blocks = _marked(stream_text, _REDUCE_MARKER)
-    if blocks:
-        return blocks
-    idx = stream_text.rfind(_REDUCE_MARKER)
-    if idx == -1:
-        return []
-    try:
-        return [parse_json(stream_text[idx + len(_REDUCE_MARKER):])]
-    except ValueError:
-        return []
 
 
 def parse_cohort_result(
@@ -119,10 +117,10 @@ def parse_cohort_result(
     reduce_bytes: bytes,
     findings_bytes: bytes,
     stream_text: str,
-    link_by_trial: dict[str, str],
+    host_by_trial: dict[str, dict],
 ) -> tuple[list[Finding], dict[str, str]]:
     findings = _findings_from_jsonl(
-        findings_bytes.decode("utf-8", "replace"), bucket, link_by_trial
+        findings_bytes.decode("utf-8", "replace"), bucket, host_by_trial
     )
 
     sections: dict[str, str] | None = None
@@ -142,7 +140,7 @@ def parse_cohort_result(
             )
 
     if sections is None:
-        blocks = _marked_reduce(stream_text)
+        blocks = _marked(stream_text, _REDUCE_MARKER)
         if not blocks:
             raise CohortParseError(
                 f"no usable reduce result for bucket {bucket!r}: "
@@ -154,6 +152,6 @@ def parse_cohort_result(
     if not findings:
         findings = [
             f for d in _marked(stream_text, _MAP_MARKER)
-            if (f := _finding_from(d, bucket, link_by_trial)) is not None
+            if (f := _finding_from(d, bucket, host_by_trial)) is not None
         ]
     return findings, sections

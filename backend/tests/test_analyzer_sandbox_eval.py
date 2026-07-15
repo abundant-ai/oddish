@@ -18,6 +18,17 @@ def _sa(trial_id, classification) -> SubAnalysis:
     )
 
 
+def _hosts(*trial_ids) -> dict[str, dict]:
+    return {
+        t: {
+            "trajectory_link": f"/tasks/t1/probe/{t}", "model": "m",
+            "classification": "BAD_FAILURE", "subtype": "1a",
+            "task_id": "task-1", "task_path": "tasks/t1",
+        }
+        for t in trial_ids
+    }
+
+
 def _finding(trial_id, bucket) -> Finding:
     return Finding(
         trial_id=trial_id, bucket=bucket, subcategory="1a", evidence_quote="q",
@@ -65,7 +76,7 @@ async def test_runs_one_sandbox_per_cohort_and_merges_sections(patched, monkeypa
     monkeypatch.setattr(
         m, "_gather", lambda rows: (
             [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
-            {"bad-1": "oracle"},
+            {"bad-1": "oracle"}, _hosts("bad-1", "good-1"),
         ),
     )
     out = await m.sandbox_eval_rows([("r1", "t"), ("r2", "t")], AnalyzerEvalConfig(), "a1")
@@ -82,7 +93,8 @@ async def test_runs_one_sandbox_per_cohort_and_merges_sections(patched, monkeypa
 async def test_empty_cohort_provisions_no_sandbox(patched, monkeypatch):
     m, calls, _ = patched
     monkeypatch.setattr(
-        m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
     )
     out = await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
     assert [c["bucket"] for c in calls] == ["bad"]
@@ -92,7 +104,7 @@ async def test_empty_cohort_provisions_no_sandbox(patched, monkeypatch):
 
 async def test_both_cohorts_empty_provisions_nothing(patched, monkeypatch):
     m, calls, _ = patched
-    monkeypatch.setattr(m, "_gather", lambda rows: ([], {}))
+    monkeypatch.setattr(m, "_gather", lambda rows: ([], {}, {}))
     out = await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
     assert calls == []
     assert out.sections == {"bad": "", "good": "", "capabilities": "", "headroom": ""}
@@ -104,7 +116,8 @@ async def test_cohort_failure_fails_the_job(patched, monkeypatch):
     and the context overflow this exists to avoid."""
     m, _, _ = patched
     monkeypatch.setattr(
-        m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
     )
 
     async def boom(client, runtime, *, bucket, cohort, **kw):
@@ -125,7 +138,7 @@ async def test_failure_waits_for_siblings_to_tear_down(patched, monkeypatch):
     monkeypatch.setattr(
         m, "_gather", lambda rows: (
             [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
-            {"bad-1": "o"},
+            {"bad-1": "o"}, _hosts("bad-1", "good-1"),
         ),
     )
     good_finished = False
@@ -151,7 +164,7 @@ async def test_first_cohort_exception_propagates_not_a_later_one(patched, monkey
     monkeypatch.setattr(
         m, "_gather", lambda rows: (
             [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
-            {"bad-1": "o"},
+            {"bad-1": "o"}, _hosts("bad-1", "good-1"),
         ),
     )
 
@@ -170,7 +183,8 @@ async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch
     """Blank sections that look like a completed analysis are worse than a failure."""
     m, _, _ = patched
     monkeypatch.setattr(
-        m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
     )
 
     async def empty(client, runtime, *, bucket, cohort, **kw):
@@ -184,7 +198,8 @@ async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch
 async def test_api_key_revoked_on_success(patched, monkeypatch):
     m, _, revoked = patched
     monkeypatch.setattr(
-        m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
     )
     await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
     assert revoked == ["key-id-1"]
@@ -193,7 +208,8 @@ async def test_api_key_revoked_on_success(patched, monkeypatch):
 async def test_api_key_revoked_on_cohort_failure(patched, monkeypatch):
     m, _, revoked = patched
     monkeypatch.setattr(
-        m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
     )
 
     async def boom(client, runtime, *, bucket, cohort, **kw):
@@ -203,6 +219,31 @@ async def test_api_key_revoked_on_cohort_failure(patched, monkeypatch):
     with pytest.raises(RuntimeError, match="sandbox exploded"):
         await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
     assert revoked == ["key-id-1"]
+
+
+async def test_missing_anthropic_key_fails_before_provisioning_anything(
+    patched, monkeypatch
+):
+    """A missing key must not cost two sandboxes and a minted probe key first --
+    the agent would only fail once inside, opaquely, at inference time."""
+    m, calls, revoked = patched
+    monkeypatch.setattr(
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
+    )
+    minted = []
+
+    async def track_creds(rows, analyzer_id):
+        minted.append(analyzer_id)
+        return "key-id-1", "https://api.example", "key"
+
+    monkeypatch.setattr(m, "_resolve_api_creds", track_creds)
+    monkeypatch.setattr(m.settings, "anthropic_api_key", "")
+
+    with pytest.raises(RuntimeError, match="anthropic_api_key is unset"):
+        await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
+    assert calls == [], "no cohort sandbox should have been provisioned"
+    assert minted == [], "no probe key should have been minted"
 
 
 async def test_handler_subclass_uses_the_sandbox_strategy():
