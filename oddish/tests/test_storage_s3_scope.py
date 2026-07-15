@@ -57,3 +57,61 @@ def test_upload_without_authorized_prefix_is_unrestricted(tmp_path) -> None:
 
     asyncio.run(client._upload_directory(tmp_path, "anything/", authorized_prefix=None))
     assert uploaded == ["anything/result.json"]
+
+
+def test_trial_upload_sanitizes_disallowed_key_chars(tmp_path) -> None:
+    # Grok's session store nests under a URL-encoded cwd dir; Supabase rejects
+    # '%' in object keys, which used to abort the whole trial upload.
+    session_dir = tmp_path / "agent" / "grok-session" / "sessions" / "%2Fapp" / "s-1"
+    session_dir.mkdir(parents=True)
+    (session_dir / "updates.jsonl").write_text("{}\n", encoding="utf-8")
+    client, uploaded = _client_with_recorder()
+
+    async def _noop():
+        return None
+
+    client._ensure_client = _noop  # type: ignore[assignment]
+    prefix = asyncio.run(client.upload_trial_results("task_a-0", tmp_path))
+
+    assert prefix == "tasks/task_a/trials/task_a-0/"
+    assert uploaded == [
+        f"{prefix}agent/grok-session/sessions/=252Fapp/s-1/updates.jsonl"
+    ]
+
+
+def test_sanitized_trial_keys_stay_within_authorized_prefix(tmp_path) -> None:
+    (tmp_path / "%weird").mkdir()
+    (tmp_path / "%weird" / "log.txt").write_text("x", encoding="utf-8")
+    client, uploaded = _client_with_recorder()
+
+    prefix = "tasks/task_a/trials/task_a-0/"
+    asyncio.run(
+        client._upload_directory(
+            tmp_path, prefix, authorized_prefix=prefix, sanitize_keys=True
+        )
+    )
+    assert uploaded == [f"{prefix}=25weird/log.txt"]
+
+
+def test_key_sanitization_is_injective() -> None:
+    from oddish.db.storage import sanitize_s3_key_chars
+
+    # Names that would collide under naive one-char substitution stay distinct.
+    assert sanitize_s3_key_chars("%2Fapp/u.jsonl") == "=252Fapp/u.jsonl"
+    assert sanitize_s3_key_chars("=2Fapp/u.jsonl") == "==2Fapp/u.jsonl"
+    # Unicode escapes per UTF-8 byte; allowed names pass through untouched.
+    assert sanitize_s3_key_chars("café.log") == "caf=C3=A9.log"
+    assert sanitize_s3_key_chars("agent/trajectory.json") == "agent/trajectory.json"
+
+
+def test_task_upload_keeps_exact_names(tmp_path) -> None:
+    # Task files must never be renamed: a task references its files by name.
+    (tmp_path / "oracle%bin").write_text("x", encoding="utf-8")
+    client, uploaded = _client_with_recorder()
+
+    async def _noop():
+        return None
+
+    client._ensure_client = _noop  # type: ignore[assignment]
+    asyncio.run(client.upload_task_directory("task_a", tmp_path))
+    assert uploaded == ["tasks/task_a/oracle%bin"]
