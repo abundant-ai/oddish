@@ -485,7 +485,6 @@ def test_build_task_status_response_scopes_trials_to_experiment_version(monkeypa
         experiment_context_id="exp-a",
     )
 
-    assert captured["effective_version_id"] == "task-1-v1"
     assert captured["total"] == 2
     assert captured["completed"] == 1
     assert captured["failed"] == 1

@@ -593,24 +593,9 @@ def _parse_version_number(version_id: str) -> int:
     return int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
 
 
-def _resolve_task_version_fields(
-    task: TaskModel,
-    *,
-    effective_version_id: str | None | object = _VERSION_ID_UNSET,
-) -> tuple[int | None, str | None]:
-    """Extract the version number and id to report for a task.
-
-    Defaults to ``task.current_version_id`` (the global default).  Pass
-    ``effective_version_id`` to report a context-specific version instead —
-    for example, the default version when represented in the experiment the
-    caller is viewing, or its latest represented version otherwise. Passing
-    ``None`` explicitly clears the version.
-    """
-    version_id: str | None
-    if effective_version_id is _VERSION_ID_UNSET:
-        version_id = task.current_version_id
-    else:
-        version_id = effective_version_id  # type: ignore[assignment]
+def _resolve_task_version_fields(task: TaskModel) -> tuple[int | None, str | None]:
+    """Extract the task's selected default version number and id."""
+    version_id = task.current_version_id
     if version_id is None:
         return None, None
     parsed = _parse_version_number(version_id)
@@ -835,7 +820,6 @@ def _build_task_status_response(
     trials: list[TrialResponse] | None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
     experiment_context_id: str | None = None,
-    effective_version_id: str | None | object = _VERSION_ID_UNSET,
 ) -> TaskStatusResponse:
     formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
         _format_reward_fields(
@@ -845,9 +829,7 @@ def _build_task_status_response(
             include_empty_rewards=include_empty_rewards,
         )
     )
-    current_version, current_version_id = _resolve_task_version_fields(
-        task, effective_version_id=effective_version_id
-    )
+    current_version, current_version_id = _resolve_task_version_fields(task)
     primary_experiment = _primary_experiment_for_task(
         task, preferred_experiment_id=experiment_context_id
     )
@@ -928,9 +910,9 @@ def build_task_status_response(
     When called with ``experiment_context_id`` and no explicit
     ``effective_version_id``, the effective version is auto-derived from the
     task's currently-loaded trials (assumed to already be scoped to the
-    experiment by the caller). This keeps experiment pages on the chosen
-    default when represented there, while retaining historical trials when the
-    default changed elsewhere.
+    experiment by the caller). That version scopes trials and aggregate counts;
+    the response's ``current_version`` still reports the task's selected
+    default so task and experiment pages cannot disagree about it.
 
     ``gathered_trial_ids`` is forwarded to the internal auto-resolve so
     collection-gathered trials on an older version aren't re-resolved away.
@@ -989,7 +971,6 @@ def build_task_status_response(
         trials=trials,
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
-        effective_version_id=effective_version_id,
     )
 
 
@@ -1064,7 +1045,6 @@ def build_task_status_response_compact(
         trials=trials,
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
-        effective_version_id=effective_version_id,
     )
 
 
@@ -1184,7 +1164,6 @@ def build_slim_task_status_response(
         trials=trials,
         jobs=[],
         experiment_context_id=experiment_context_id,
-        effective_version_id=effective_version_id,
     )
 
 
@@ -1241,10 +1220,9 @@ async def build_task_status_responses_from_counts(
 ) -> list[TaskStatusResponse]:
     """Build TaskStatusResponse objects with aggregated trial counts.
 
-    When ``effective_version_id_by_task_id`` is provided, the stats query
-    and each response's ``current_version`` field are scoped to that version
-    per task — useful for experiment-scoped task lists where the displayed
-    counts should reflect the version that actually ran in this experiment.
+    When ``effective_version_id_by_task_id`` is provided, the stats query is
+    scoped to that version per task. The response's ``current_version`` always
+    remains the task's selected default so every page reports it consistently.
     """
     if not tasks:
         return []
@@ -1319,9 +1297,6 @@ async def build_task_status_responses_from_counts(
         session, task_ids=task_ids
     )
 
-    def _effective(task: TaskModel) -> str | None | object:
-        return effective_map.get(task.id, _VERSION_ID_UNSET)
-
     def _user_tags(task_id: str) -> list[UserTagRef]:
         return [
             UserTagRef(
@@ -1362,7 +1337,6 @@ async def build_task_status_responses_from_counts(
                 else None
             ),
             experiment_context_id=experiment_context_id,
-            effective_version_id=_effective(task),
         )
         for task in tasks
     ]

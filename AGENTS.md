@@ -210,6 +210,12 @@ row instead of creating a different task. Renaming a task is allowed, but any
 rename path must preserve the live `(org_id, name)` uniqueness invariant and
 must not split the task's version history.
 
+`TaskStatusResponse.current_version` / `current_version_id` always report the
+task's selected default (`tasks.current_version_id`), including on experiment
+pages. Experiment endpoints may scope their trials and aggregate counts to an
+experiment-relevant historical version so old or gathered runs remain visible,
+but that trial-selection pivot must not replace the reported task default.
+
 `tasks.current_version_id` is the user-selectable default, not necessarily the
 numerically latest version. In an experiment view, that default is the effective
 version when the experiment has a non-superseded, non-probe trial for it;
