@@ -1787,6 +1787,7 @@ class SkillResponse(BaseModel):
 class AnalyzerCreate(BaseModel):
     name: str = Field(min_length=1)
     experiment_ids: list[str] = Field(min_length=1)
+    save_trial_analyses: bool = False
 
 
 class ExperimentOption(BaseModel):

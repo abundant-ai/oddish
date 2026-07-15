@@ -28,6 +28,13 @@ def create(
     json_output: Annotated[
         bool, typer.Option("--json", help="Print the raw JSON response.")
     ] = False,
+    save_trials: Annotated[
+        bool,
+        typer.Option(
+            "--save-trials",
+            help="Also save each trial-level analysis to S3 (one JSON per job).",
+        ),
+    ] = False,
     api_url: Annotated[
         Optional[str],
         typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
@@ -51,7 +58,12 @@ def create(
 
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         resp = client.post(
-            f"{api_url}/analyzers", json={"name": name, "experiment_ids": ids}
+            f"{api_url}/analyzers",
+            json={
+                "name": name,
+                "experiment_ids": ids,
+                "save_trial_analyses": save_trials,
+            },
         )
     if resp.status_code != 200:
         console.print(f"[red]Failed:[/red] {resp.text}")
