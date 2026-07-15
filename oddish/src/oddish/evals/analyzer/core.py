@@ -24,7 +24,7 @@ from oddish.evals.analyzer.schemas import (
 
 logger = logging.getLogger(__name__)
 
-_EMPTY_SECTIONS = {"bad": "", "good": "", "capabilities": "", "headroom": ""}
+_EMPTY_SECTIONS = {"bad": "", "good": "", "capabilities": "", "headroom": "", "vertical": ""}
 
 
 def _ctx(**kw) -> str:
@@ -280,6 +280,7 @@ async def run_analyzer_eval(
         "good": sec.get("good_failure_content", ""),
         "capabilities": sec.get("universal_capabilities_content", ""),
         "headroom": sec.get("headroom_analysis", ""),
+        "vertical": sec.get("vertical_scaling_content", ""),
     }
     logger.info(p + "analyzer-eval complete: %d findings, sections rendered", len(findings))
     return AnalyzerEvalOutput(

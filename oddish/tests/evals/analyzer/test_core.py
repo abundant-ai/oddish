@@ -22,6 +22,7 @@ class FakeClient:
                 "good_failure_content": "good",
                 "universal_capabilities_content": "caps",
                 "headroom_analysis": "headroom",
+                "vertical_scaling_content": "vertical",
             })
         # map prompt: echo a finding for whichever trial this is
         tid = "task-0" if "task-0" in prompt.split("Your cohort")[0] else "task-1"
@@ -73,8 +74,8 @@ async def test_run_analyzer_eval_maps_per_failure_and_reduces():
     assert out.breakdown["1b"] == 1 and out.breakdown["3a"] == 1
     # exactly one map call per failure trial (2) + one reduce call = 3
     assert len(client.calls) == 3
-    # four sections present; links flow through verbatim
-    assert set(out.sections) == {"bad", "good", "capabilities", "headroom"}
+    # five sections present; links flow through verbatim
+    assert set(out.sections) == {"bad", "good", "capabilities", "headroom", "vertical"}
     assert "/tasks/task/probe/task-0" in out.sections["bad"]
     assert len(out.findings) == 2
     # the reduce prompt that produced the sections is captured on the output,
@@ -293,3 +294,44 @@ async def test_finding_exposes_step_ids():
 
     assert out.findings[0].step_ids == [1]
     assert not hasattr(out.findings[0], "step_indices")
+
+
+@pytest.mark.asyncio
+async def test_reduce_maps_vertical_scaling_content():
+    """The 5th section reaches AnalyzerEvalOutput under the 'vertical' key."""
+    sa = _sa("task-0", "GOOD_FAILURE", "Logic Error")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+
+    assert out.sections["vertical"] == "vertical"
+
+
+@pytest.mark.asyncio
+async def test_missing_vertical_key_yields_empty_string_not_keyerror():
+    """A reduce response without the key (an older prompt, or a model that omits
+    it) must not crash the job."""
+
+    class _NoVertical(FakeClient):
+        async def complete(self, prompt, *, model, temperature, max_tokens):
+            raw = await super().complete(
+                prompt, model=model, temperature=temperature, max_tokens=max_tokens
+            )
+            d = json.loads(raw)
+            d.pop("vertical_scaling_content", None)
+            return json.dumps(d)
+
+    sa = _sa("task-0", "GOOD_FAILURE", "Logic Error")
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=_NoVertical())
+
+    assert out.sections["vertical"] == ""
+
+
+def test_empty_sections_has_every_key():
+    """The zero-work fast path (no bad, no good) must return the same shape as a
+    real run, or consumers see a KeyError only on empty analyzers."""
+    from oddish.evals.analyzer.core import _EMPTY_SECTIONS
+
+    assert set(_EMPTY_SECTIONS) == {"bad", "good", "capabilities", "headroom", "vertical"}

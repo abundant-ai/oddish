@@ -9,7 +9,7 @@ finding's trajectory_link verbatim as a markdown link, e.g.
 ## Findings (from the per-trial analysts)
 {findings_block}
 
-## Write four markdown sections:
+## Write five markdown sections:
 - bad_failure_content: reward hacking, worked backwards from the oracle. Organize
   by 1a (task ambiguity/specification) and 1b (task security/construction).
 - good_failure_content: genuine model-capability failures — what the model failed at.
@@ -17,7 +17,15 @@ finding's trajectory_link verbatim as a markdown link, e.g.
   identification, 3b implementation, 3c syntax, and any emergent capability categories
   the findings surfaced.
 - headroom_analysis: based on the good failures, where is the most capability headroom?
+- vertical_scaling_content: based ONLY on the good failures, identify the recurring
+  domain-specific gotchas — the concrete, nameable traps this kind of work sets
+  (e.g. a byte-encoding convention, a framework's implicit default), not broad
+  capability categories. For each: name it, cite the trials that show it, and write
+  a one-paragraph brief for a NEW task that would exercise it. This is for deciding
+  what to BUILD NEXT, not what to improve in the model — do not restate
+  headroom_analysis.
 
 ## Output — return ONLY JSON with exactly these keys:
 {{"bad_failure_content": "...markdown...", "good_failure_content": "...markdown...",
- "universal_capabilities_content": "...markdown...", "headroom_analysis": "...markdown..."}}
+ "universal_capabilities_content": "...markdown...", "headroom_analysis": "...markdown...",
+ "vertical_scaling_content": "...markdown..."}}
