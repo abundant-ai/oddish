@@ -18,6 +18,7 @@ from api.services.cc_chat.analyzer_prompt import (
     build_cohort_prompt,
 )
 from api.services.cc_chat.stream_render import render_event
+from oddish.config import settings
 from oddish.evals.analyzer.schemas import Finding
 from oddish.evals.primitives import SubAnalysis
 
@@ -66,8 +67,11 @@ async def run_cohort(
                     "ODDISH_API_BASE_URL": api_base,
                     "ODDISH_API_KEY": api_key,
                 },
-                auto_stop_minutes=40,
-                auto_delete_minutes=40,
+                # auto_delete is currently inert: RealDaytonaClient forces
+                # ephemeral=True, which zeroes Daytona's auto_delete_interval, so
+                # auto_stop is the only backstop that actually fires.
+                auto_stop_minutes=settings.daytona_auto_stop_interval_mins,
+                auto_delete_minutes=settings.daytona_auto_delete_interval_mins,
                 labels={"purpose": "analyzer-cohort", "analyzer": analyzer_id,
                         "bucket": bucket},
             )

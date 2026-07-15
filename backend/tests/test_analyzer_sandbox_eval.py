@@ -1,5 +1,7 @@
 """sandbox_eval_rows buckets DB-only, then runs one sandbox per cohort."""
 
+import asyncio
+
 import pytest
 
 from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, Finding
@@ -106,6 +108,36 @@ async def test_cohort_failure_fails_the_job(patched, monkeypatch):
     monkeypatch.setattr(m, "run_cohort", boom)
     with pytest.raises(RuntimeError, match="sandbox exploded"):
         await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
+
+
+async def test_concurrent_cohort_failure_does_not_drop_the_survivor(patched, monkeypatch):
+    """One cohort raising must not cancel or silently swallow the other: gather
+    (no return_exceptions) lets the survivor run to completion and reach its own
+    teardown, while the overall call still surfaces the failure."""
+    m, _ = patched
+    monkeypatch.setattr(
+        m, "_gather", lambda rows: (
+            [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
+            {"bad-1": "o"},
+        ),
+    )
+    good_finished = False
+
+    async def flaky(client, runtime, *, bucket, cohort, **kw):
+        nonlocal good_finished
+        if bucket == "bad":
+            raise RuntimeError("sandbox exploded")
+        await asyncio.sleep(0.05)
+        good_finished = True
+        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}
+
+    monkeypatch.setattr(m, "run_cohort", flaky)
+    with pytest.raises(RuntimeError, match="sandbox exploded"):
+        await m.sandbox_eval_rows([("r1", "t"), ("r2", "t")], AnalyzerEvalConfig(), "a1")
+    # gather() raises as soon as bad fails, without waiting for good's still-running
+    # task; give the background task time to reach completion before asserting.
+    await asyncio.sleep(0.1)
+    assert good_finished
 
 
 async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch):

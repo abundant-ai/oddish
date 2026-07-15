@@ -85,14 +85,13 @@ def _gather(rows: list[tuple[Any, str]]) -> tuple[list[SubAnalysis], dict[str, s
 
 async def _resolve_api_creds(rows: list[tuple[Any, str]]) -> tuple[str, str]:
     """Mint a read-scoped key so the in-sandbox CLI can reach the public API."""
-    from oddish.config import DEFAULT_API_URL
     from oddish.worker.probe_creds import mint_probe_creds
 
     org_id = rows[0][0].org_id
     _key_id, creds = await mint_probe_creds(
         org_id=org_id, trial_id="analyzer-cohort"
     )
-    return creds.get("ODDISH_API_BASE_URL", DEFAULT_API_URL), creds["ODDISH_API_KEY"]
+    return creds["ODDISH_API_BASE_URL"], creds["ODDISH_API_KEY"]
 
 
 async def sandbox_eval_rows(
