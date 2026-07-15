@@ -551,6 +551,10 @@ class AnalyzerModel(TimestampedMixin, Base):
     universal_capabilities_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # The reduce-stage prompt that produced the section bodies above; persisted
+    # for debugging/reproducibility. NULL for zero-failure analyzers (no reduce).
+    reduce_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     num_trials: Mapped[int | None] = mapped_column(Integer, nullable=True)
     num_bad_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
     num_good_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
