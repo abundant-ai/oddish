@@ -1200,10 +1200,12 @@ export function ExperimentDetailView({
       costTrialCount: costTotals.cost_trial_count,
       costHasEstimated: costTotals.cost_has_estimated,
       costHasNative: costTotals.cost_has_native,
-      ownedCostUsd: costTotals.owned_cost_usd ?? 0,
-      ownedTrialCount: costTotals.owned_trial_count ?? 0,
-      ownedHasEstimated: costTotals.owned_has_estimated ?? false,
-      ownedHasNative: costTotals.owned_has_native ?? false,
+      // ?? base.*: deploy-skew guard — a backend that predates owned_* omits
+      // the fields; the client fold's partial owned sum beats a hard $0.00.
+      ownedCostUsd: costTotals.owned_cost_usd ?? base.ownedCostUsd,
+      ownedTrialCount: costTotals.owned_trial_count ?? base.ownedTrialCount,
+      ownedHasEstimated: costTotals.owned_has_estimated ?? base.ownedHasEstimated,
+      ownedHasNative: costTotals.owned_has_native ?? base.ownedHasNative,
       billedCostUsd: costTotals.billed_cost_usd,
       billedTrialCount: costTotals.billed_trial_count,
       billedHasEstimated: costTotals.billed_has_estimated,

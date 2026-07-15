@@ -68,7 +68,11 @@ from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.db.models import TrialModel, experiment_trials, task_experiments
+from oddish.core.experiment_membership import (
+    linked_task_ids_select,
+    trial_in_experiment,
+)
+from oddish.db.models import TrialModel
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
 
@@ -124,17 +128,13 @@ def experiment_cost_groups_select(
     """
     billed = TrialModel.billed_user_id.isnot(None)
     owned = TrialModel.experiment_id == experiment_id
-    gathered = TrialModel.id.in_(
-        select(experiment_trials.c.trial_id).where(
-            experiment_trials.c.experiment_id == experiment_id,
-            experiment_trials.c.deleted_at.is_(None),
-        )
-    )
-    linked = TrialModel.task_id.in_(
-        select(task_experiments.c.task_id).where(
-            task_experiments.c.experiment_id == experiment_id,
-            task_experiments.c.deleted_at.is_(None),
-        )
+    # ``trial_in_experiment`` covers homed + gathered (the canonical
+    # predicate); the grid additionally renders trials of tasks shared in via
+    # ``task_experiments``, which it reaches through the task fan-out, so the
+    # rollup adds that arm itself.
+    member = or_(
+        trial_in_experiment(experiment_id),
+        TrialModel.task_id.in_(linked_task_ids_select(experiment_id)),
     )
 
     query = (
@@ -152,7 +152,7 @@ def experiment_cost_groups_select(
             _sum_when(_ESTIMATED_ROW, _CACHE_WRITE).label("cache_write_tokens"),
             _sum_when(_ESTIMATED_ROW, _OUTPUT).label("output_tokens"),
         )
-        .where(or_(owned, gathered, linked))
+        .where(member)
         .group_by(TrialModel.agent, TrialModel.model, billed, owned)
         .execution_options(include_deleted=True)
     )

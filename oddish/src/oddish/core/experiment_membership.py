@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import or_, select
 
-from oddish.db import experiment_trials
+from oddish.db import experiment_trials, task_experiments
 from oddish.db.models import TrialModel
 
 
@@ -21,6 +21,21 @@ def gathered_trial_ids_select(experiment_id: str) -> Any:
         select(experiment_trials.c.trial_id)
         .where(experiment_trials.c.experiment_id == experiment_id)
         .where(experiment_trials.c.deleted_at.is_(None))
+    )
+
+
+def linked_task_ids_select(experiment_id: str) -> Any:
+    """Tasks shared into ``experiment_id`` via ``task_experiments`` rows.
+
+    The grid reaches these tasks' trials through the task fan-out rather than
+    a trial predicate, which is why ``trial_in_experiment`` doesn't include
+    this arm; trial-scoped readers that must match everything the grid renders
+    (the cost rollup) add it themselves.
+    """
+    return (
+        select(task_experiments.c.task_id)
+        .where(task_experiments.c.experiment_id == experiment_id)
+        .where(task_experiments.c.deleted_at.is_(None))
     )
 
 
