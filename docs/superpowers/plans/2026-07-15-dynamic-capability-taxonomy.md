@@ -347,7 +347,24 @@ def test_tag_primary_key_is_composite():
 def test_analyzer_gains_taxonomy_snapshot_columns():
     cols = set(AnalyzerModel.__table__.columns.keys())
     assert {"taxonomy_version", "taxonomy_snapshot"} <= cols
+
+
+def test_capability_tables_are_registered_for_soft_delete():
+    """A deleted_at column does nothing on its own -- the session filter only
+    applies to classes passed to register_soft_delete_models. Unregistered,
+    retiring a capability would set the tombstone and load_taxonomy would keep
+    rendering it into the rubric anyway."""
+    from oddish.db.soft_delete import _SOFT_DELETE_MODELS  # registry
+
+    assert CapabilityModel in _SOFT_DELETE_MODELS
+    assert CapabilityCategoryModel in _SOFT_DELETE_MODELS
 ```
+
+**Note:** confirm the registry's real attribute name by reading
+`oddish/src/oddish/db/soft_delete.py` before writing this test — assert against
+whatever `register_soft_delete_models` actually populates. If it exposes no
+inspectable registry, assert the behavior instead: soft-delete a `CapabilityModel`
+row, then confirm a plain `select(CapabilityModel)` does not return it.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -486,6 +503,26 @@ Add to `AnalyzerModel` (immediately after the `breakdown` column):
     taxonomy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 ```
 
+**Register the two soft-deletable tables.** `models.py` ends (~line 1994) with an
+explicit `register_soft_delete_models(...)` call. A `deleted_at` column does
+nothing unless the class is in that list — the session filter is what applies
+`WHERE deleted_at IS NULL`. Add both:
+
+```python
+register_soft_delete_models(
+    ExperimentModel,
+    AnalyzerModel,
+    ...
+    DocumentModel,
+    CapabilityModel,
+    CapabilityCategoryModel,
+)
+```
+
+`CapabilityCategoryTagModel` and `CapabilityProposalModel` are **not** registered
+— neither has a `deleted_at`. Tags are hard-deleted (retagging is not history
+worth keeping) and proposals carry `status` instead, which is their audit trail.
+
 - [ ] **Step 3b: Write the migration**
 
 ```python
@@ -497,6 +534,7 @@ mirroring analyzers_001. The seed uses ON CONFLICT DO NOTHING so a re-run is a
 no-op and hand-edits made after the first upgrade are never clobbered.
 """
 
+import sqlalchemy as sa
 from alembic import op
 
 revision = "captax_001"
@@ -600,10 +638,6 @@ _CAPABILITIES = [
 ]
 
 
-def _q(s: str) -> str:
-    return s.replace("'", "''")
-
-
 def upgrade() -> None:
     _autocommit("SET lock_timeout = '8s'")
 
@@ -688,23 +722,38 @@ def upgrade() -> None:
         "ALTER TABLE analyzers ADD COLUMN IF NOT EXISTS taxonomy_snapshot JSONB"
     )
 
+    # Seed is DML, so it runs in the migration's own transaction with bind
+    # parameters -- matching skills_seed_directives_001_seed.py. Only the DDL
+    # above needs the autocommit blocks. ON CONFLICT DO NOTHING makes a re-run a
+    # no-op and never clobbers a hand-edit made after the first upgrade.
+    bind = op.get_bind()
     for slug, name, desc, order in _CATEGORIES:
-        _autocommit(
-            f"INSERT INTO capability_categories (slug, name, description, sort_order) "
-            f"VALUES ('{_q(slug)}', '{_q(name)}', '{_q(desc)}', {order}) "
-            f"ON CONFLICT (slug) DO NOTHING"
+        bind.execute(
+            sa.text(
+                "INSERT INTO capability_categories "
+                "(slug, name, description, sort_order) "
+                "VALUES (:slug, :name, :description, :sort_order) "
+                "ON CONFLICT (slug) DO NOTHING"
+            ),
+            {"slug": slug, "name": name, "description": desc, "sort_order": order},
         )
     for slug, name, desc, example, cat in _CAPABILITIES:
-        _autocommit(
-            f"INSERT INTO capabilities (slug, name, description, example) "
-            f"VALUES ('{_q(slug)}', '{_q(name)}', '{_q(desc)}', '{_q(example)}') "
-            f"ON CONFLICT (slug) DO NOTHING"
+        bind.execute(
+            sa.text(
+                "INSERT INTO capabilities (slug, name, description, example) "
+                "VALUES (:slug, :name, :description, :example) "
+                "ON CONFLICT (slug) DO NOTHING"
+            ),
+            {"slug": slug, "name": name, "description": desc, "example": example},
         )
-        _autocommit(
-            f"INSERT INTO capability_category_tags "
-            f"(capability_slug, category_slug, is_primary) "
-            f"VALUES ('{_q(slug)}', '{_q(cat)}', true) "
-            f"ON CONFLICT (capability_slug, category_slug) DO NOTHING"
+        bind.execute(
+            sa.text(
+                "INSERT INTO capability_category_tags "
+                "(capability_slug, category_slug, is_primary) "
+                "VALUES (:slug, :cat, true) "
+                "ON CONFLICT (capability_slug, category_slug) DO NOTHING"
+            ),
+            {"slug": slug, "cat": cat},
         )
 
 
