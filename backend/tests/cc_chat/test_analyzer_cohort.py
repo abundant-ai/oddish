@@ -6,7 +6,11 @@ import pytest
 from api.services.cc_chat import analyzer_cohort as ac
 from api.services.cc_chat import analyzer_prompt as ap
 from api.services.cc_chat.analyzer_parse import CohortParseError
-from api.services.cc_chat.analyzer_prompt import FINDINGS_PATH, REDUCE_PATH
+from api.services.cc_chat.analyzer_prompt import (
+    FINDINGS_GLOB,
+    REDUCE_PATH,
+    findings_path,
+)
 from api.services.cc_chat.daytona_client import FakeDaytonaClient
 from oddish.evals.primitives import SubAnalysis
 
@@ -87,7 +91,7 @@ def _kwargs(**over):
 def _good_files():
     return {
         REDUCE_PATH: json.dumps({"bad_failure_content": "# Bad"}).encode(),
-        FINDINGS_PATH: (json.dumps({
+        findings_path(1): (json.dumps({
             "trial_id": "bad-1", "bucket": "bad", "subcategory": "1a",
             "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
             "headroom_signal": "h", "trajectory_link": "junk",
@@ -257,8 +261,9 @@ async def test_run_cohort_runs_one_turn_per_batch_plus_a_reduce():
 
     assert len(runtime.prompts) == 4  # 3 map + 1 reduce
     assert runtime.prompts[-1].count("REDUCE RESULT:") == 1
-    # The reduce turn must read findings off disk, not carry trajectories.
-    assert FINDINGS_PATH in runtime.prompts[-1]
+    # The reduce turn must read EVERY batch's findings off disk (the glob), not
+    # carry trajectories and not read just one batch's file.
+    assert FINDINGS_GLOB in runtime.prompts[-1]
     # A map turn must not also be asked to synthesize.
     assert "REDUCE RESULT:" not in runtime.prompts[0]
 
@@ -336,7 +341,9 @@ async def test_map_prompt_demands_raw_json_in_the_findings_file():
     # the two forms must be spelled out as distinct.
     p = ap.build_map_batch_prompt("bad", COHORT, ROSTER, {}, 1, 1, 8000)
     assert "NO `MAP FINDING:` prefix" in p
-    assert FINDINGS_PATH in p
+    # Batch 1 writes to its OWN file: a shared file made correctness depend on
+    # every agent picking `>>` over `>`, and a real run showed they do not.
+    assert findings_path(1) in p
 
 
 async def test_map_prompt_describes_the_real_truncation():
@@ -345,3 +352,78 @@ async def test_map_prompt_describes_the_real_truncation():
     p = ap.build_map_batch_prompt("bad", COHORT, ROSTER, {}, 1, 1, 8000)
     assert "LAST 8000 bytes" in p
     assert "head/tail" not in p
+
+
+# --- per-batch findings files -------------------------------------------
+# Batches shared one findings.jsonl and appended to it, so correctness rested on
+# every agent choosing `>>` over `>`. A real 97-trial run used a truncating `>`
+# 32 times: the file went 10 -> 30 -> 10 lines as later batches wiped earlier
+# ones, 80 findings were emitted and 47 survived -- and nothing failed, because
+# reduce synthesized happily from what was left. Per-batch files make an agent
+# able to clobber only its own work.
+
+
+async def test_each_batch_writes_its_own_findings_file():
+    plan_size = 3
+    paths = {ap.findings_path(i) for i in range(1, plan_size + 1)}
+    assert len(paths) == plan_size, "batches must not share a findings path"
+    for i in range(1, plan_size + 1):
+        p = ap.build_map_batch_prompt("bad", COHORT, ROSTER, {}, i, plan_size, 8000)
+        assert ap.findings_path(i) in p
+        # Batch i must not be told about anyone else's file.
+        for j in range(1, plan_size + 1):
+            if j != i:
+                assert ap.findings_path(j) not in p
+
+
+async def test_host_concatenates_every_batch_file():
+    # The host merges; the sandbox is never trusted to have done it.
+    client = FakeDaytonaClient()
+    cohort = _cohort_of(25)  # -> 3 batches
+    hosts = {sa.trial_id: {"trajectory_link": sa.trajectory_link, "model": "m",
+                           "classification": "reward_hacking", "subtype": "1a",
+                           "task_id": "t", "task_path": "tasks/t"}
+             for sa in cohort}
+
+    def _line(trial_id):
+        return (json.dumps({
+            "trial_id": trial_id, "bucket": "bad", "subcategory": "1a",
+            "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
+            "headroom_signal": "h",
+        }) + "\n").encode()
+
+    # One finding per batch, in three separate files.
+    files = {REDUCE_PATH: json.dumps({"bad_failure_content": "# Bad"}).encode()}
+    for i, tid in enumerate(["t0", "t10", "t20"], start=1):
+        files[ap.findings_path(i)] = _line(tid)
+    runtime = _CountingRuntime([], files=files)
+
+    findings, _ = await ac.run_cohort(client, runtime, **_kwargs(
+        cohort=cohort, host_by_trial=hosts, oracle_by_trial={}))
+
+    # All three survive: a shared file would have kept only the last writer's.
+    assert sorted(f.trial_id for f in findings) == ["t0", "t10", "t20"]
+
+
+async def test_a_batch_that_wrote_nothing_costs_only_its_own_batch():
+    client = FakeDaytonaClient()
+    cohort = _cohort_of(25)
+    hosts = {sa.trial_id: {"trajectory_link": sa.trajectory_link, "model": "m",
+                           "classification": "reward_hacking", "subtype": "1a",
+                           "task_id": "t", "task_path": "tasks/t"}
+             for sa in cohort}
+    files = {REDUCE_PATH: json.dumps({"bad_failure_content": "# Bad"}).encode()}
+    # Batch 2 wrote nothing; 1 and 3 must still land.
+    files[ap.findings_path(1)] = (json.dumps({
+        "trial_id": "t0", "bucket": "bad", "subcategory": "1a",
+        "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
+        "headroom_signal": "h"}) + "\n").encode()
+    files[ap.findings_path(3)] = (json.dumps({
+        "trial_id": "t20", "bucket": "bad", "subcategory": "1a",
+        "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
+        "headroom_signal": "h"}) + "\n").encode()
+    runtime = _CountingRuntime([], files=files)
+
+    findings, _ = await ac.run_cohort(client, runtime, **_kwargs(
+        cohort=cohort, host_by_trial=hosts, oracle_by_trial={}))
+    assert sorted(f.trial_id for f in findings) == ["t0", "t20"]

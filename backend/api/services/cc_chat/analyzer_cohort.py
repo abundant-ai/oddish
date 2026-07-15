@@ -12,12 +12,13 @@ import logging
 from api.services.cc_chat.analyzer_parse import parse_cohort_result
 from api.services.cc_chat.analyzer_prompt import (
     CLI_DEST,
-    FINDINGS_PATH,
+    FINDINGS_GLOB,
     OUT_DIR,
     REDUCE_PATH,
     build_map_batch_prompt,
     build_reduce_only_prompt,
     build_system_prompt,
+    findings_path,
 )
 from api.services.cc_chat.stream_render import render_event
 from oddish.config import settings
@@ -166,11 +167,21 @@ async def run_cohort(
             # findings.jsonl, and telling it to pull trajectories would both
             # contradict its user prompt and let it refetch the entire cohort --
             # recreating the context blowup this batching exists to prevent.
-            logger.info("%s reduce over %s", tag, FINDINGS_PATH)
+            logger.info("%s reduce over %s", tag, FINDINGS_GLOB)
             await _turn(build_reduce_only_prompt(bucket, counts, len(plan)), "reduce")
 
             reduce_b = await _download(client, sandbox, REDUCE_PATH)
-            findings_b = await _download(client, sandbox, FINDINGS_PATH)
+            # Concatenate the per-batch files host-side rather than trusting the
+            # sandbox to have merged them. A missing batch file yields b"" and
+            # costs only its own batch, instead of taking the cohort down.
+            parts = []
+            for i in range(1, len(plan) + 1):
+                b = await _download(client, sandbox, findings_path(i))
+                if not b.strip():
+                    logger.warning("%s batch %d wrote no findings", tag, i)
+                    continue
+                parts.append(b if b.endswith(b"\n") else b + b"\n")
+            findings_b = b"".join(parts)
     except TimeoutError as exc:
         raise RuntimeError(
             f"analyzer cohort {bucket!r} exceeded {COHORT_TIMEOUT_SECONDS}s"

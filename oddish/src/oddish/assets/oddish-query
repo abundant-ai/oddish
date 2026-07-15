@@ -96,8 +96,11 @@ async function cmdLogs(a) {
     // can widen with --tail-bytes rather than reasoning from a silent fragment.
     const budget = a.tailBytes > 0 ? a.tailBytes : TRAJ_TAIL_DEFAULT;
     if (text.length > budget) {
-      text = `…[trajectory truncated: showing last ${budget} of ${text.length} bytes; `
-        + `re-run with --tail-bytes N for more]…\n` + text.slice(-budget);
+      // ASCII only: agents paste this banner into python/node one-liners, and a
+      // U+2026 ellipsis makes those die with `SyntaxError: invalid character`.
+      // Observed in a real run against c02666c5.
+      text = `### trajectory truncated: showing last ${budget} of ${text.length} bytes; `
+        + `re-run with --tail-bytes N for more\n` + text.slice(-budget);
     }
   } else if (text.length > LOG_HEAD + LOG_TAIL) {
     text = text.slice(0, LOG_HEAD) + '\n…[truncated]…\n' + text.slice(-LOG_TAIL);

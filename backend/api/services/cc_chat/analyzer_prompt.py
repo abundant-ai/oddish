@@ -25,6 +25,23 @@ OUT_DIR = f"{WORKSPACE}/out"
 FINDINGS_PATH = f"{OUT_DIR}/findings.jsonl"
 REDUCE_PATH = f"{OUT_DIR}/reduce.json"
 
+# One findings file PER BATCH, not one shared file.
+#
+# Batches used to append to a single findings.jsonl, which made correctness
+# depend on every agent choosing `>>` over `>`. They do not: a real 97-trial run
+# used a truncating `>` 32 times and the file went 10 -> 30 -> 10 lines as later
+# batches wiped earlier ones. 80 findings were emitted and 47 survived -- and
+# nothing failed, because reduce happily synthesized from what was left.
+#
+# Per-batch files make that unrepresentable: an agent can only ever clobber its
+# own file, and the host concatenates. No shared mutable state, so no
+# instruction for an agent to disobey.
+FINDINGS_GLOB = f"{OUT_DIR}/findings-*.jsonl"
+
+
+def findings_path(batch_no: int) -> str:
+    return f"{OUT_DIR}/findings-{batch_no}.jsonl"
+
 
 def build_system_prompt(tail_bytes: int) -> str:
     """Counter the pull toward under-fetching.
@@ -120,14 +137,15 @@ def build_map_batch_prompt(
         "     none of the seed subcategories fit).\n"
         "  3. Report the finding TWICE, in two different forms:\n"
         "     a. To the transcript: `MAP FINDING: {...}` — prefix, then the JSON.\n"
-        f"     b. To {FINDINGS_PATH}: the SAME JSON object as ONE line of RAW JSON\n"
-        "        — NO `MAP FINDING:` prefix, no code fence, no commentary. The\n"
-        "        line must start with `{` and be parseable by json.loads on its\n"
-        "        own; a prefixed line is silently discarded and that trial's\n"
-        "        finding is lost.\n"
-        f"        Create {OUT_DIR} first, and APPEND (`>>`) — never truncate:\n"
-        "        earlier batches' findings are already in that file and must\n"
-        "        survive.\n"
+        f"     b. To {findings_path(batch_no)}: the SAME JSON object as ONE line of\n"
+        "        RAW JSON — NO `MAP FINDING:` prefix, no code fence, no\n"
+        "        commentary. The line must start with `{` and be parseable by\n"
+        "        json.loads on its own; a prefixed line is silently discarded and\n"
+        "        that trial's finding is lost.\n"
+        f"        Create {OUT_DIR} first. This file is YOURS alone (batch\n"
+        f"        {batch_no}); append to it as you go so a finding is never lost,\n"
+        "        and by the end it must hold exactly one line per trial in your\n"
+        "        batch.\n"
         "     Copy trajectory_link VERBATIM from the batch metadata above — never\n"
         "     invent it.\n\n"
         "## Subcategory rubric (seed; you MAY introduce an emergent label if none fit)\n"
@@ -151,12 +169,15 @@ def build_reduce_only_prompt(bucket: str, counts: dict, batch_total: int) -> str
     return (
         f"You are the lead analyst for the '{bucket}' half of an agent-eval\n"
         "failure analysis. The MAP phase is COMPLETE: "
-        f"{batch_total} batch(es) of per-trial findings have already been written to\n"
-        f"{FINDINGS_PATH}, one JSON object per line.\n\n"
+        f"{batch_total} batch(es) of per-trial findings have already been written,\n"
+        f"one file per batch, one JSON object per line.\n\n"
         "## Step 1 — read the findings\n"
-        f"Read {FINDINGS_PATH} (use the Bash tool, e.g. `cat`). Those findings are\n"
-        "your ONLY input. Do NOT re-fetch trajectories — everything you need is in\n"
-        "that file. If the file is missing or empty, say so and stop.\n\n"
+        f"Read them ALL with the Bash tool:\n"
+        f"    cat {FINDINGS_GLOB}\n"
+        f"There are {batch_total} such files and every one matters — read the glob,\n"
+        "never a single file. Those findings are your ONLY input. Do NOT re-fetch\n"
+        "trajectories; everything you need is in those files. If they are missing\n"
+        "or empty, say so and stop.\n\n"
         "## Step 2 — synthesize\n"
         "Every claim MUST cite specific trials by embedding the finding's\n"
         "trajectory_link verbatim as a markdown link, e.g.\n"
