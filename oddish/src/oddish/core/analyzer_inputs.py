@@ -31,6 +31,7 @@ def subanalysis_from_trial(trial: Any, task_path: str) -> SubAnalysis | None:
         root_cause=a.get("root_cause", ""),
         recommendation=a.get("recommendation", ""),
         trajectory_summary=getattr(trial, "trajectory_summary", None),
+        model=getattr(trial, "model", None),
     )
 
 

@@ -12,9 +12,11 @@ compute_deployment_plan.sh turns into the deploy plan:
 2. Last-successful-deploy bases (backend_base / migrations_base) and incremental
    flags (backend_changed / migrations_changed / workflow_changed): on a
    *synchronize* push, find the most recent run on this branch whose component
-   step succeeded and diff only the new push against it (and the previous push,
-   for workflow/scripts). This is what lets a frontend-only follow-up push skip
-   the ~15-min preview DB seed.
+   step succeeded, even if another job later failed, and diff only the new push
+   against it (and the previous push, for workflow/scripts). A later successful
+   teardown invalidates older deploy bases. This is what lets a frontend-only
+   follow-up push skip the ~15-min preview DB seed without mistaking a stopped
+   preview for a live one.
 
 We compute all of this ourselves rather than using dorny/paths-filter because
 that action (a) *ignores* its `base` input on pull_request events -- it always
@@ -53,6 +55,7 @@ STEPS_BY_COMPONENT = {
     "Deploy preview backend": "backend_base",
     "Prepare preview database": "migrations_base",
 }
+TEARDOWN_STEP = "Stop preview"
 
 # The compare API returns at most 300 files; past that we can't trust a
 # "nothing matched" result, so we treat the diff as changed (conservative).
@@ -73,15 +76,14 @@ def gh_api(path):
 
 
 def find_last_deployed_shas(owner_repo, head_ref):
-    # `status=success` only returns runs whose overall conclusion was
-    # success, shrinking the candidate set ~3-5x. We still inspect
-    # individual step conclusions below because a successful run can
-    # have legitimately *skipped* the component step on a previous
-    # surgical push.
+    # Inspect component steps rather than the overall workflow conclusion:
+    # Modal/DB may have deployed successfully before a later Vercel or comment
+    # job failed. Runs are newest-first, so a successful teardown is a hard
+    # boundary: resources deployed by older runs are no longer live.
     branch = urllib.parse.quote(head_ref, safe="")
     runs = gh_api(
         f"/repos/{owner_repo}/actions/workflows/{WORKFLOW_FILE}/runs"
-        f"?branch={branch}&event=pull_request&status=success&per_page=30"
+        f"?branch={branch}&event=pull_request&per_page=100"
     ).get("workflow_runs", [])
 
     found = {}
@@ -91,6 +93,14 @@ def find_last_deployed_shas(owner_repo, head_ref):
         jobs = gh_api(
             f"/repos/{owner_repo}/actions/runs/{run['id']}/jobs?per_page=100"
         ).get("jobs", [])
+        torn_down = any(
+            step.get("name") == TEARDOWN_STEP
+            and step.get("conclusion") == "success"
+            for job in jobs
+            for step in (job.get("steps", []) or [])
+        )
+        if torn_down:
+            break
         for job in jobs:
             for step in job.get("steps", []) or []:
                 if step.get("conclusion") != "success":

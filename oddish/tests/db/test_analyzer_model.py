@@ -34,3 +34,12 @@ def test_analyzer_defaults_and_id_autogen():
 def test_analyzer_experiments_join_columns():
     cols = set(analyzer_experiments.c.keys())
     assert cols == {"analyzer_id", "experiment_id", "created_at", "deleted_at"}
+
+
+def test_analyzer_has_save_trial_analyses_column():
+    cols = AnalyzerModel.__table__.columns
+    assert "save_trial_analyses" in cols.keys()
+    col = cols["save_trial_analyses"]
+    assert col.nullable is False
+    assert col.default is not None
+    assert col.default.arg is False

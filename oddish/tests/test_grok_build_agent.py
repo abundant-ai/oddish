@@ -16,6 +16,10 @@ import pytest
 from oddish.workers.agents.grok_build import _PROMPT_PATH, OddishGrokBuild
 
 
+def test_advertises_atif_support():
+    assert OddishGrokBuild.SUPPORTS_ATIF is True
+
+
 def test_build_config_toml_defaults_to_responses_backend(tmp_path):
     """Without an override the upstream Harbor default is preserved verbatim."""
     agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9-stickynote")
