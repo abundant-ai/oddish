@@ -568,11 +568,16 @@ mirroring analyzers_001. The seed uses ON CONFLICT DO NOTHING so a re-run is a
 no-op and hand-edits made after the first upgrade are never clobbered.
 """
 
+from datetime import datetime, timezone
+
 import sqlalchemy as sa
 from alembic import op
 
 revision = "captax_001"
 down_revision = "analyzers_006"
+
+# Fixed, not now(): migrations must be reproducible.
+_TS = datetime(2026, 7, 15, tzinfo=timezone.utc)
 branch_labels = None
 depends_on = None
 
@@ -760,25 +765,37 @@ def upgrade() -> None:
     # parameters -- matching skills_seed_directives_001_seed.py. Only the DDL
     # above needs the autocommit blocks. ON CONFLICT DO NOTHING makes a re-run a
     # no-op and never clobbers a hand-edit made after the first upgrade.
+    #
+    # created_at/updated_at are passed EXPLICITLY and must stay that way. The
+    # CREATE TABLE above declares DEFAULT now(), but 000_initial_schema runs
+    # Base.metadata.create_all(), so on every real database these tables were
+    # already created from the MODELS -- where default=utcnow is a CLIENT-side
+    # SQLAlchemy default that emits no server DEFAULT. The CREATE TABLE IF NOT
+    # EXISTS is therefore a silent no-op and there is no default to fall back on:
+    # omitting these columns fails with NotNullViolation on a fresh upgrade.
+    # _TS is fixed rather than now() because migrations must be reproducible.
     bind = op.get_bind()
     for slug, name, desc, order in _CATEGORIES:
         bind.execute(
             sa.text(
                 "INSERT INTO capability_categories "
-                "(slug, name, description, sort_order) "
-                "VALUES (:slug, :name, :description, :sort_order) "
+                "(slug, name, description, sort_order, created_at, updated_at) "
+                "VALUES (:slug, :name, :description, :sort_order, :ts, :ts) "
                 "ON CONFLICT (slug) DO NOTHING"
             ),
-            {"slug": slug, "name": name, "description": desc, "sort_order": order},
+            {"slug": slug, "name": name, "description": desc,
+             "sort_order": order, "ts": _TS},
         )
     for slug, name, desc, example, cat in _CAPABILITIES:
         bind.execute(
             sa.text(
-                "INSERT INTO capabilities (slug, name, description, example) "
-                "VALUES (:slug, :name, :description, :example) "
+                "INSERT INTO capabilities "
+                "(slug, name, description, example, created_at, updated_at) "
+                "VALUES (:slug, :name, :description, :example, :ts, :ts) "
                 "ON CONFLICT (slug) DO NOTHING"
             ),
-            {"slug": slug, "name": name, "description": desc, "example": example},
+            {"slug": slug, "name": name, "description": desc,
+             "example": example, "ts": _TS},
         )
         bind.execute(
             sa.text(
@@ -801,11 +818,41 @@ def downgrade() -> None:
     _autocommit("DROP TABLE IF EXISTS capability_categories")
 ```
 
-- [ ] **Step 4: Run tests + verify the chain stays single-headed**
+- [ ] **Step 4: Run tests, verify single head, and EXECUTE the migration**
 
 Run: `cd oddish && uv run pytest tests/db/test_capability_taxonomy_model.py -v && uv run alembic heads`
-Expected: PASS (4 tests), and `alembic heads` prints exactly `captax_001 (head)`.
+Expected: PASS (5 tests), and `alembic heads` prints exactly `captax_001 (head)`.
 If it prints two heads, `down_revision` is wrong — it must be `analyzers_006`.
+
+**These tests assert SQLAlchemy metadata, NOT executed DDL. They cannot catch a
+migration that fails to run.** Neither can a review that compares the DDL text to
+the models. The only thing that catches it is running the chain, so run it — on a
+SCRATCH database, never on the dev DB:
+
+```bash
+createdb -h localhost -U oddish oddish_captax_scratch
+export ODDISH_DATABASE_URL="postgresql+asyncpg://oddish:oddish@localhost:5432/oddish_captax_scratch"
+cd oddish
+# The prefix is ODDISH_; a plain DATABASE_URL is SILENTLY IGNORED and hits the
+# real dev DB. Always confirm before trusting the result:
+uv run python -c "from oddish.config import settings; print(settings.database_url)"
+uv run alembic upgrade head      # must reach captax_001
+uv run alembic current           # must print: captax_001 (head)
+uv run alembic downgrade -1 && uv run alembic upgrade head   # reversible + idempotent
+```
+
+Then confirm the seed landed and did not double:
+```sql
+select (select count(*) from capability_categories) categories,   -- 5
+       (select count(*) from capabilities) capabilities,          -- 15
+       (select count(*) from capability_category_tags where is_primary) primary_tags,  -- 15
+       (select count(*) from capabilities where created_at is null) null_ts;           -- 0
+```
+
+The local `oddish` DB cannot run this: it has no `alembic_version` row and its
+schema came from `create_all`, so the chain dies at `e8f9a0b1c2d3` on
+`task_experiments.created_at`. That migration is fine on a fresh DB — same
+root cause as the `_TS` note above, and not something to "fix" in that migration.
 
 - [ ] **Step 5: Commit**
 
