@@ -615,7 +615,7 @@ caps each uploaded zip at 1 GiB.
 A task can report structured benchmark numbers by having its **verifier**
 write `metrics.json` next to `reward.txt` (i.e. `/logs/verifier/metrics.json`
 inside the sandbox). Oddish persists the parsed object onto the trial and
-returns it as the trial's `result` in the API and dashboard.
+returns it as the trial's `result` in the API.
 
 Contract:
 
@@ -652,7 +652,7 @@ uvx --with pytest --with pytest-json-ctrf \
 Oddish keeps the full report with the trial artifacts and persists only its
 compact `results.summary` counts, `results.tool.name`, and the trial-relative
 report artifact path under the reserved `trial.result._verifier` key. The
-dashboard uses those counts and path for the Verifier Results card. Missing,
+dashboard shows those counts as a passed/total test badge on the trial's QA
+Assessment card, so they appear only for trials that ran QA analysis. Missing,
 malformed, or oversized CTRF reports are ignored and never change the settled
-`reward`; non-test verifiers continue to display their binary or partial reward
-and any `metrics.json` values.
+`reward`; verifiers without a test report simply show no badge.

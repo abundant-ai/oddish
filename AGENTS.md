@@ -720,12 +720,14 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
 
-The trial drawer's Verifier Results card is adaptive: `_verifier` CTRF counts
-take precedence, scalar `trials.result` metrics render as benchmark metrics,
-and `reward` provides the binary/partial/scoreless fallback. Historical trials
-without a persisted `_verifier` summary lazily discover and parse their
-`verifier/ctrf.json` artifact through the already-scoped trial files API; do not
-add an unscoped artifact lookup for this fallback.
+The trial drawer surfaces verifier test counts only as a compact passed/total
+badge in the QA Assessment card header, so counts appear only where that card
+renders (QA analysis ran and `showAnalysis` is true — not public share views);
+trials without test counts show no badge. `_verifier` CTRF counts take
+precedence, and historical trials without a persisted `_verifier` summary
+lazily discover and parse their `verifier/ctrf.json` artifact through the
+already-scoped trial files API; do not add an unscoped artifact lookup for this
+fallback.
 
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that

@@ -71,7 +71,7 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
-import { VerifierResultsCard } from "@/components/verifier-results-card";
+import { useVerifierSummary } from "@/components/use-verifier-summary";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -366,6 +366,14 @@ export function TrialDetailPanel({
   spendOwnerExperimentId = null,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
+
+  const showQaCard =
+    showAnalysis && Boolean(trial && (trial.analysis_status || trial.analysis));
+  const verifierSummary = useVerifierSummary(
+    trial,
+    apiBaseUrl,
+    isOpen && showQaCard,
+  );
 
   const validTabs = useMemo(
     () =>
@@ -1012,17 +1020,8 @@ export function TrialDetailPanel({
                   </CardContent>
                 </Card>
               )}
-              <VerifierResultsCard
-                trial={trial}
-                apiBaseUrl={apiBaseUrl}
-                enabled={isOpen}
-                onViewFile={(path) => {
-                  setFilesTargetPath(path);
-                  setActiveTab("files");
-                }}
-              />
               {/* Analysis Card - only show if analysis is enabled/running/complete */}
-              {showAnalysis && (trial.analysis_status || trial.analysis) && (
+              {showQaCard && (
                 <Card
                   className={
                     trial.analysis_status === "running" ||
@@ -1037,8 +1036,23 @@ export function TrialDetailPanel({
                   }
                 >
                   <CardContent className="px-4 py-3">
-                    <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
-                      QA Assessment
+                    <div className="mb-2 flex items-baseline justify-between gap-3">
+                      <span className="text-muted-foreground text-[11px] font-semibold tracking-wider uppercase">
+                        QA Assessment
+                      </span>
+                      {verifierSummary && verifierSummary.tests > 0 && (
+                        <span
+                          className={cn(
+                            "font-mono text-[11px] tabular-nums",
+                            verifierSummary.failed > 0
+                              ? "text-red-600 dark:text-red-400"
+                              : "text-emerald-600 dark:text-emerald-400",
+                          )}
+                        >
+                          {verifierSummary.passed}/{verifierSummary.tests} tests
+                          passed
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-start gap-3">
                       {trial.analysis_status === "running" ||
