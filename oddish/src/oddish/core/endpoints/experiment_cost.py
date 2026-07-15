@@ -3,11 +3,15 @@
 Two numbers per experiment, answering two different questions:
 
 * ``cost_*`` -- what did the work on this page cost? Every trial the page can
-  render counts: trials homed in the experiment (``trials.experiment_id``),
-  trials gathered into it (``experiment_trials``), and trials reached through a
-  shared task's link rows (``task_experiments``). A collection assembled
-  entirely from other experiments' work therefore shows the real price of that
-  work, not a blank tile.
+  render counts: trials homed in the experiment (``trials.experiment_id``) and
+  trials gathered into it (``experiment_trials``) -- the same membership the
+  grid applies (``trial_in_experiment``). A collection assembled entirely from
+  other experiments' work therefore shows the real price of that work, not a
+  blank tile. ``task_experiments`` link rows deliberately do NOT widen this:
+  they exist so shared/collected TASK rows appear, but the grid still scopes
+  those tasks' trials to home-or-gathered, and counting a linked task's whole
+  history would price unselected trials -- and let a frozen collection's cost
+  drift upward whenever anyone reruns the same task elsewhere.
 * ``owned_*`` -- what did this experiment itself spend (the page's "New
   spend")? Only trials homed in the experiment. This is the number that stays
   additive across experiments: gathered/linked trials are already reported as
@@ -29,9 +33,8 @@ superseded retries, and probes, and the tile's tooltip tells the reader the
 table below is a filtered view of it.
 
 Membership rows are the one place soft-deletes DO apply: a soft-deleted
-``experiment_trials``/``task_experiments`` row means "removed from this
-collection", so its trials stop counting here (they never stop counting on
-their home experiment).
+``experiment_trials`` row means "removed from this collection", so its trial
+stops counting here (it never stops counting on its home experiment).
 
 **Soft-deleted trials count too**, which is why the query opts out of the global
 soft-delete filter with ``include_deleted=True`` (``db.soft_delete``). Deleting a
@@ -68,10 +71,7 @@ from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.core.experiment_membership import (
-    linked_task_ids_select,
-    trial_in_experiment,
-)
+from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db.models import TrialModel
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
@@ -119,23 +119,18 @@ def experiment_cost_groups_select(
     """One row per ``(agent, model, billed, owned)`` bucket of the member trials.
 
     Membership is the only filter: a trial counts iff it is homed in this
-    experiment, gathered into it (``experiment_trials``), or on a task linked
-    to it (``task_experiments``). The single WHERE counts each trial once no
-    matter how many membership paths reach it. ``owned`` splits the groups so
-    the fold can report home spend separately (module docstring). No version /
-    superseded / probe / trial-soft-delete filtering: those hide trials from
-    the grid, but the spend is real and already billed.
+    experiment or gathered into it -- ``trial_in_experiment``, the same
+    predicate the grid scopes trials with, so the tile prices exactly the work
+    the page can render (module docstring explains why ``task_experiments``
+    links don't widen it). The single WHERE counts a trial once even when it
+    is both homed and gathered. ``owned`` splits the groups so the fold can
+    report home spend separately. No version / superseded / probe /
+    trial-soft-delete filtering: those hide trials from the grid, but the
+    spend is real and already billed.
     """
     billed = TrialModel.billed_user_id.isnot(None)
     owned = TrialModel.experiment_id == experiment_id
-    # ``trial_in_experiment`` covers homed + gathered (the canonical
-    # predicate); the grid additionally renders trials of tasks shared in via
-    # ``task_experiments``, which it reaches through the task fan-out, so the
-    # rollup adds that arm itself.
-    member = or_(
-        trial_in_experiment(experiment_id),
-        TrialModel.task_id.in_(linked_task_ids_select(experiment_id)),
-    )
+    member = trial_in_experiment(experiment_id)
 
     query = (
         select(

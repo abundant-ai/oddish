@@ -331,8 +331,8 @@ interface TaskCostTotals {
 
 /** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.
  *
- * `cost_*` prices every member trial — homed here, gathered, or on a linked
- * shared task — i.e. what the work this page renders cost. `owned_*` prices
+ * `cost_*` prices every member trial — homed here or gathered into this
+ * experiment — i.e. what the work this page renders cost. `owned_*` prices
  * only trials homed in the experiment (the "New spend" tile); it is the
  * number that stays additive across experiments. `billed_*` is the subset of
  * owned spend attributed to a user's quota.

@@ -16,11 +16,12 @@ cost breakdown apply none of those filters either. Several tests below exist
 specifically to keep someone from "fixing" the tile back into agreement with
 the visible rows.
 
-*Two scopes, not one.* ``cost_*`` counts every trial the page renders — homed,
-gathered (``experiment_trials``), or on a linked task (``task_experiments``) —
-so collections show what their work cost. ``owned_*`` counts only homed trials
-(the "New spend" tile) and is the number that stays additive across
-experiments; ``billed_*`` is its billed subset.
+*Two scopes, not one.* ``cost_*`` counts every trial the page renders — homed
+or gathered (``trial_in_experiment``, the grid's membership) — so collections
+show what their work cost. ``owned_*`` counts only homed trials (the "New
+spend" tile) and is the number that stays additive across experiments;
+``billed_*`` is its billed subset. ``task_experiments`` links never widen
+cost.
 
 Uses the rollback-per-test ``session`` fixture against the local Postgres, with
 a run-scoped org id so each test sees only its own trials.
@@ -370,12 +371,15 @@ async def test_gathered_trials_count_as_cost_but_not_owned_spend(session):
 
 
 @pytest.mark.asyncio
-async def test_shared_task_link_rows_count_as_cost_but_not_owned_spend(session):
-    """Trials reached through ``task_experiments`` count as cost only.
+async def test_task_link_rows_do_not_widen_cost(session):
+    """``task_experiments`` links contribute nothing on their own.
 
-    Linking a task into an experiment renders the task's trials in that grid;
-    the cost tile must price the work being shown. The trials stay owned by
-    their home experiment.
+    Collections link each gathered trial's TASK so the task row renders, but
+    the grid still scopes that task's trials to home-or-gathered
+    (``trial_in_experiment``). Counting a linked task's whole history would
+    price trials that were never selected — and let a frozen collection's
+    cost drift upward whenever anyone reruns the same task elsewhere. Only
+    the explicitly gathered trial counts.
     """
     task, home = await _fixture(session, "linked")
 
@@ -385,11 +389,18 @@ async def test_shared_task_link_rows_count_as_cost_but_not_owned_spend(session):
     session.add(other)
     await session.flush()
 
-    session.add(_trial(task, home, cost_usd=5.0))
+    selected = _trial(task, home, cost_usd=5.0)
+    unselected = _trial(task, home, cost_usd=100.0)  # same task, never gathered
+    session.add_all([selected, unselected])
     await session.flush()
     await session.execute(
         insert(task_experiments).values(
             [{"task_id": task.id, "experiment_id": other.id}]
+        )
+    )
+    await session.execute(
+        insert(experiment_trials).values(
+            [{"experiment_id": other.id, "trial_id": selected.id}]
         )
     )
     await session.flush()

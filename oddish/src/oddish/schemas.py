@@ -815,9 +815,9 @@ class TaskCostTotals(BaseModel):
 class ExperimentCostTotals(BaseModel):
     """What an experiment's work cost, and what the experiment itself spent.
 
-    ``cost_*`` covers every member trial -- homed in the experiment, gathered
-    into it, or on a linked shared task -- so a collection shows what the work
-    it displays cost. ``owned_*`` covers only trials homed in the experiment
+    ``cost_*`` covers every member trial -- homed in the experiment or
+    gathered into it, the grid's own membership -- so a collection shows what
+    the work it displays cost. ``owned_*`` covers only trials homed in the experiment
     (the page's "New spend"); it is the number that stays additive across
     experiments. ``billed_*`` is the subset of owned spend attributed to a
     registered user's quota. ``total_trials`` counts all member trials.

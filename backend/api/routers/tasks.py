@@ -629,8 +629,8 @@ async def get_experiment_cost_totals_route(
 ) -> ExperimentCostTotals:
     """The experiment's spend rollup: member-wide cost + owned "new spend".
 
-    ``cost_*`` prices every trial the page renders (homed, gathered, linked
-    shared tasks); ``owned_*`` only what the experiment ran itself — the
+    ``cost_*`` prices every trial the page renders (homed or gathered, the
+    grid's membership); ``owned_*`` only what the experiment ran itself — the
     additive number (``core.endpoints.experiment_cost``). Deliberately wider
     than the grid routes above: those page their trials (so the page can't sum
     cost client-side without loading all of them) and scope each task to its
