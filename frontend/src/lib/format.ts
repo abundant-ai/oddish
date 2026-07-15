@@ -25,12 +25,11 @@ export interface TaskTrialCost {
 }
 
 // Priced, non-probe, non-superseded trials only — same scope as the experiment
-// header and /tasks rollup, so retries don't double-count. When
-// ownerExperimentId is given, trials homed elsewhere (gathered/shared-task
-// rows) are skipped: their spend belongs to their own experiment.
+// header and /tasks rollup, so retries don't double-count. Gathered/shared-task
+// trials count too: like the experiment Cost tile, this prices the work being
+// displayed, wherever it ran.
 export function sumTaskTrialCost(
   trials: Trial[] | null | undefined,
-  ownerExperimentId?: string | null,
 ): TaskTrialCost {
   let costUsd = 0;
   let pricedCount = 0;
@@ -39,12 +38,6 @@ export function sumTaskTrialCost(
   for (const trial of trials ?? []) {
     if (trial.is_probe) continue;
     if (trial.superseded_by_trial_id) continue;
-    if (
-      ownerExperimentId != null &&
-      trial.experiment_id != null &&
-      trial.experiment_id !== ownerExperimentId
-    )
-      continue;
     if (trial.cost_usd == null) continue;
     costUsd += trial.cost_usd;
     pricedCount += 1;

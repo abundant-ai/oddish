@@ -162,6 +162,10 @@ type ExperimentSummary = {
   costTrialCount: number;
   costHasEstimated: boolean;
   costHasNative: boolean;
+  ownedCostUsd: number;
+  ownedTrialCount: number;
+  ownedHasEstimated: boolean;
+  ownedHasNative: boolean;
   tokenCount: number;
   tokenTrialCount: number;
   billedCostUsd: number;
@@ -191,7 +195,8 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     const trials = (task.trials ?? []).filter((t) => !t.is_probe);
     if (trials.length > 0) {
       // task.experiment_id is the viewing experiment (set by the backend
-      // builders); trials homed elsewhere render but don't count as spend.
+      // builders); trials homed elsewhere count as cost (they price the work
+      // shown) but not as owned/new spend.
       for (const trial of trials)
         accumulateTrial(
           acc,
@@ -241,6 +246,10 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     costTrialCount: acc.costTrialCount,
     costHasEstimated: acc.costHasEstimated,
     costHasNative: acc.costHasNative,
+    ownedCostUsd: acc.ownedCostUsd,
+    ownedTrialCount: acc.ownedTrialCount,
+    ownedHasEstimated: acc.ownedHasEstimated,
+    ownedHasNative: acc.ownedHasNative,
     tokenCount: acc.tokenCount,
     tokenTrialCount: acc.tokenTrialCount,
     billedCostUsd: acc.billedCostUsd,
@@ -541,7 +550,7 @@ function ExperimentSummaryBar({
   summary,
   isInitialLoading,
   isLoadingTrials,
-  showBilledSpend,
+  showNewSpend,
   // True when cost came from the server rollup, which reports SPEND: every
   // trial that ran, including earlier task versions, superseded retries and
   // probes that the table below filters out. Drives the tooltip's disclosure.
@@ -552,7 +561,7 @@ function ExperimentSummaryBar({
   summary: ExperimentSummary;
   isInitialLoading: boolean;
   isLoadingTrials: boolean;
-  showBilledSpend: boolean;
+  showNewSpend: boolean;
   costIsSpend: boolean;
   costPending: boolean;
 }) {
@@ -598,7 +607,7 @@ function ExperimentSummaryBar({
   return (
     <div
       className={`grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] ${
-        showBilledSpend
+        showNewSpend
           ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
           : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
       }`}
@@ -651,7 +660,7 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile
         label="Cost"
-        labelInfo="Total cost it took to run all tasks in this experiment."
+        labelInfo="Total cost of all trials shown in this experiment, including trials gathered from other experiments."
       >
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
@@ -664,7 +673,15 @@ function ExperimentSummaryBar({
               : summary.costTrialCount > 0
                 ? `Summed across ${summary.costTrialCount} trial${
                     summary.costTrialCount === 1 ? "" : "s"
-                  } run in this experiment${
+                  } shown in this experiment${
+                    // Gathered/shared-task spend is deliberately included: it
+                    // prices the work on this page. Warn that those dollars
+                    // are also reported on their home experiments so nobody
+                    // sums Cost tiles across pages.
+                    summary.costTrialCount > summary.ownedTrialCount
+                      ? ", including trials gathered from other experiments (their spend is also reported there)"
+                      : ""
+                  }${
                     // Spend covers every trial that ran; the table is filtered to
                     // each task's current version. Say so, or the tile reads as
                     // "wrong" whenever a task was re-uploaded or a trial retried.
@@ -707,49 +724,63 @@ function ExperimentSummaryBar({
           </span>
         )}
       </KpiTile>
-      {showBilledSpend && (
+      {showNewSpend && (
         <KpiTile
           label="New spend"
-          labelInfo="Total new spend for this experiment."
+          labelInfo="Spend from trials this experiment ran itself — excludes trials gathered from other experiments."
         >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
             title={
               costPending
-                ? "Calculating billed spend…"
-                : summary.billedTrialCount > 0
-                  ? `Summed across ${summary.billedTrialCount} billed trial${
-                      summary.billedTrialCount === 1 ? "" : "s"
+                ? "Calculating new spend…"
+                : summary.ownedTrialCount > 0
+                  ? `Summed across ${summary.ownedTrialCount} trial${
+                      summary.ownedTrialCount === 1 ? "" : "s"
+                    } this experiment ran itself${
+                      // Billing attribution is a property of who pays, not of
+                      // what the experiment did; surface it here rather than
+                      // in the headline.
+                      summary.billedTrialCount > 0
+                        ? `. ${formatCostUsd(summary.billedCostUsd)} of this was billed to user quotas`
+                        : ". None of it was billed to a user quota"
                     }${
                       costIsSpend
                         ? ". The table shows only current-version trials"
                         : ""
                     }${
-                      summary.billedHasEstimated && summary.billedHasNative
+                      summary.ownedHasEstimated && summary.ownedHasNative
                         ? ". Mixed native + estimated values; ~ marks estimates."
-                        : summary.billedHasEstimated
+                        : summary.ownedHasEstimated
                           ? ". Estimated from token counts × static model pricing."
                           : ". Reported by the agent runtime."
                     }`
-                  : "No billed trials yet"
+                  : summary.costTrialCount > 0
+                    ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
+                    : "No spend from this experiment yet"
             }
           >
             {costPending ? (
               <span className="text-[color:var(--paper-ink-3)]">—</span>
-            ) : summary.billedTrialCount > 0 ? (
+            ) : summary.ownedTrialCount > 0 ? (
               <>
-                {summary.billedHasEstimated && !summary.billedHasNative && (
+                {summary.ownedHasEstimated && !summary.ownedHasNative && (
                   <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
                     ~
                   </span>
                 )}
-                {formatCostUsd(summary.billedCostUsd)}
-                {summary.billedHasEstimated && summary.billedHasNative && (
+                {formatCostUsd(summary.ownedCostUsd)}
+                {summary.ownedHasEstimated && summary.ownedHasNative && (
                   <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
                     *
                   </span>
                 )}
               </>
+            ) : summary.costTrialCount > 0 ? (
+              // Priced work exists but none of it is this experiment's own:
+              // an explicit zero ("nothing new was spent") reads honestly
+              // where a dash would read as "unknown".
+              <>{formatCostUsd(0)}</>
             ) : (
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
@@ -1169,6 +1200,10 @@ export function ExperimentDetailView({
       costTrialCount: costTotals.cost_trial_count,
       costHasEstimated: costTotals.cost_has_estimated,
       costHasNative: costTotals.cost_has_native,
+      ownedCostUsd: costTotals.owned_cost_usd ?? 0,
+      ownedTrialCount: costTotals.owned_trial_count ?? 0,
+      ownedHasEstimated: costTotals.owned_has_estimated ?? false,
+      ownedHasNative: costTotals.owned_has_native ?? false,
       billedCostUsd: costTotals.billed_cost_usd,
       billedTrialCount: costTotals.billed_trial_count,
       billedHasEstimated: costTotals.billed_has_estimated,
@@ -1281,9 +1316,10 @@ export function ExperimentDetailView({
             summary={summary}
             isInitialLoading={isInitialLoading}
             isLoadingTrials={isLoadingTrials}
-            // Billing attribution is internal; keep it off the public share
-            // view (the only readOnly consumer).
-            showBilledSpend={!readOnly}
+            // The owned-vs-gathered spend split (and the billing attribution
+            // in its tooltip) is internal; keep it off the public share view
+            // (the only readOnly consumer).
+            showNewSpend={!readOnly}
             costIsSpend={costTotals != null}
             costPending={costTotalsPending}
           />
@@ -1428,7 +1464,6 @@ export function ExperimentDetailView({
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
                 paneAction={paneAction}
-                spendOwnerExperimentId={drawerState.task?.experiment_id ?? null}
               />
             )
           }

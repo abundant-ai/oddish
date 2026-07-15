@@ -352,6 +352,11 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     costTrialCount: v.cost_trial_count,
     costHasEstimated: v.cost_has_estimated,
     costHasNative: v.cost_has_native,
+    // Task-scoped view: there is no owned-vs-gathered split, so owned == cost.
+    ownedCostUsd: v.cost_usd,
+    ownedTrialCount: v.cost_trial_count,
+    ownedHasEstimated: v.cost_has_estimated,
+    ownedHasNative: v.cost_has_native,
     tokenCount: 0,
     tokenTrialCount: 0,
     billedCostUsd: v.billed_cost_usd,
