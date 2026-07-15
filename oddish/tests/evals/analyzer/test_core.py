@@ -6,6 +6,17 @@ import pytest
 from oddish.evals.primitives import SubAnalysis, TrajectoryBundle, trajectory_link
 from oddish.evals.analyzer.core import AnalyzerEvalStepError, run_analyzer_eval
 from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, AnalyzerEvalInputs
+from oddish.evals.analyzer.taxonomy import Capability, Category, Taxonomy
+
+
+def _tiny_tax() -> Taxonomy:
+    return Taxonomy(
+        categories=(Category("verification", "Verification failures", "d", 0),),
+        capabilities=(
+            Capability("agent-early-stop", "Agent Early Stop",
+                       "Stops early.", "apex-swe.", primary_category="verification"),
+        ),
+    )
 
 
 class FakeClient:
@@ -66,7 +77,7 @@ async def test_run_analyzer_eval_maps_per_failure_and_reduces():
         ],
     )
     client = FakeClient()
-    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=client)
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=client, taxonomy=_tiny_tax())
 
     # counts
     assert out.counts == {"trials": 3, "bad": 1, "good": 1}
@@ -109,6 +120,30 @@ def _failure_inputs():
 
 
 @pytest.mark.asyncio
+async def test_no_taxonomy_with_good_bucket_failures_raises_step_error():
+    """An empty taxonomy renders a blank capabilities_block, so map_rubric.txt's
+    unconditional 'if none fit, author a new one' would silently mislabel every
+    good-bucket failure as novel. Must fail loud instead, before any client or
+    LLM work is even attempted."""
+    with pytest.raises(AnalyzerEvalStepError) as ei:
+        await run_analyzer_eval(_failure_inputs(), AnalyzerEvalConfig(), client=None)
+    assert ei.value.step == "taxonomy"
+
+
+@pytest.mark.asyncio
+async def test_no_taxonomy_with_only_bad_bucket_failures_does_not_raise():
+    """Bad-bucket cohorts don't rely on the capabilities rubric; omitting the
+    taxonomy must not be fatal when there's no good-bucket work to mislabel."""
+    inputs = AnalyzerEvalInputs(
+        bundles=[_bundle("task-0")],
+        subanalyses=[_sa("task-0", "BAD_FAILURE", "Hardcoding")],
+    )
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+    assert out.counts == {"trials": 1, "bad": 1, "good": 0}
+    assert len(out.findings) == 1
+
+
+@pytest.mark.asyncio
 async def test_reduce_parse_failure_raises_step_error_with_context():
     """A non-JSON reduce response is fatal and names the step + input in the error."""
 
@@ -121,7 +156,9 @@ async def test_reduce_parse_failure_raises_step_error_with_context():
             )
 
     with pytest.raises(AnalyzerEvalStepError) as ei:
-        await run_analyzer_eval(_failure_inputs(), AnalyzerEvalConfig(), client=BadReduceClient())
+        await run_analyzer_eval(
+            _failure_inputs(), AnalyzerEvalConfig(), client=BadReduceClient(), taxonomy=_tiny_tax()
+        )
     assert ei.value.step == "reduce-parse"
     assert "findings=" in ei.value.context  # the input size is captured
 
@@ -138,7 +175,9 @@ async def test_all_maps_failing_is_fatal_not_blank_success():
             raise RuntimeError("map down")
 
     with pytest.raises(AnalyzerEvalStepError) as ei:
-        await run_analyzer_eval(_failure_inputs(), AnalyzerEvalConfig(), client=AllMapsFail())
+        await run_analyzer_eval(
+            _failure_inputs(), AnalyzerEvalConfig(), client=AllMapsFail(), taxonomy=_tiny_tax()
+        )
     assert ei.value.step == "map"
     assert "attempted=2" in ei.value.context
 
@@ -160,7 +199,9 @@ async def test_map_failure_is_skipped_not_fatal_and_logged(caplog):
             )
 
     with caplog.at_level(logging.WARNING, logger="oddish.evals.analyzer.core"):
-        out = await run_analyzer_eval(_failure_inputs(), AnalyzerEvalConfig(), client=OneMapRaises())
+        out = await run_analyzer_eval(
+            _failure_inputs(), AnalyzerEvalConfig(), client=OneMapRaises(), taxonomy=_tiny_tax()
+        )
 
     assert len(out.findings) == 1  # task-0 survived, task-1 skipped
     assert out.sections["bad"]  # reduce still ran
@@ -176,7 +217,9 @@ async def test_client_init_failure_raises_step_error(monkeypatch):
 
     monkeypatch.setattr("oddish.evals.analyzer.core._default_client", _boom)
     with pytest.raises(AnalyzerEvalStepError) as ei:
-        await run_analyzer_eval(_failure_inputs(), AnalyzerEvalConfig(), client=None)
+        await run_analyzer_eval(
+            _failure_inputs(), AnalyzerEvalConfig(), client=None, taxonomy=_tiny_tax()
+        )
     assert ei.value.step == "client-init"
 
 

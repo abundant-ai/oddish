@@ -155,7 +155,7 @@ async def run_analyzer_eval(
     config: AnalyzerEvalConfig,
     *,
     client: LLMClient | None = None,
-    taxonomy: Taxonomy = Taxonomy(),
+    taxonomy: Taxonomy | None = None,
 ) -> AnalyzerEvalOutput:
     p = f"[{config.job_kind}] "
     logger.info(
@@ -174,6 +174,18 @@ async def run_analyzer_eval(
 
     counts = {"trials": len(inputs.bundles), "bad": len(bad), "good": len(good)}
     logger.info(p + "analyzer-eval bucketed: %s", _ctx(**counts, breakdown=breakdown))
+
+    # An empty taxonomy renders a blank capabilities_block, and map_rubric.txt
+    # unconditionally follows that with "if none of the above fit, author a new
+    # one" — so a missing taxonomy would silently mislabel every good-bucket
+    # failure as a novel capability instead of failing loud.
+    if taxonomy is None:
+        if good:
+            raise AnalyzerEvalStepError(
+                "taxonomy", _ctx(**counts),
+                RuntimeError("no taxonomy supplied but there are good-bucket failures to map"),
+            )
+        taxonomy = Taxonomy()
 
     # Zero-work fast path: no failures to analyze. Must return BEFORE building a
     # client so the pipeline stays pure / needs no API key when there's nothing
