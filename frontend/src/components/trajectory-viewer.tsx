@@ -881,7 +881,11 @@ export function TrajectoryViewer({
         trialId={trialId}
         apiBaseUrl={apiBaseUrl}
         stepIdToIndex={(stepId) =>
-          trajectory.steps.findIndex((s) => s.step_id === stepId)
+          // step_id is typed number but arrives as a string from some producers;
+          // strict === would return -1 and the scroll would silently no-op.
+          trajectory.steps.findIndex(
+            (s) => Number(s.step_id) === Number(stepId),
+          )
         }
         onStepSelect={handleStepClick}
       />
@@ -890,7 +894,11 @@ export function TrajectoryViewer({
         steps={trajectory.steps}
         apiBaseUrl={apiBaseUrl}
         stepIdToIndex={(stepId) =>
-          trajectory.steps.findIndex((s) => s.step_id === stepId)
+          // step_id is typed number but arrives as a string from some producers;
+          // strict === would return -1 and the scroll would silently no-op.
+          trajectory.steps.findIndex(
+            (s) => Number(s.step_id) === Number(stepId),
+          )
         }
         onStepSelect={handleStepClick}
       />
