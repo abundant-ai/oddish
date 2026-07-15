@@ -452,10 +452,17 @@ def _config(task_dir: Path) -> TaskConfig:
 @pytest.mark.parametrize(
     "line",
     [
+        # Literal file references — what harbor-lh's original caught.
         "COPY solution/solve.sh /app/solve.sh",
         "COPY tests/test.sh /app/test.sh",
         "COPY tests/test_main.py /app/",
         "ADD tests/test_helpers.py /opt/",
+        # Directory and glob forms — the idiomatic way to write the same leak,
+        # which the literal-path original silently passed.
+        "COPY tests/ /app/tests",
+        "COPY solution/ /app/solution",
+        "COPY tests/test_*.py /app/",
+        "COPY solution/*.sh /app/",
     ],
 )
 def test_dockerfile_leaks_flags_solution_and_test_references(make_task, line):
@@ -471,6 +478,20 @@ def test_dockerfile_leaks_passes_a_clean_dockerfile(make_task):
     task_dir = make_task(
         dockerfile="FROM ubuntu:24.04\nCOPY environment/app.py /app/\nWORKDIR /app\n"
     )
+    assert dockerfile_leaks.check(task_dir, _config(task_dir)) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Patterns anchor on a path boundary, so a directory that merely ends
+        # in "tests" or "solution" is not the task's tests/ or solution/ tree.
+        "COPY unittests/test.sh /app/",
+        "COPY my_solution/solve.sh /app/",
+    ],
+)
+def test_dockerfile_leaks_does_not_false_positive_on_similar_names(make_task, line):
+    task_dir = make_task(dockerfile=f"FROM ubuntu:24.04\n{line}\n")
     assert dockerfile_leaks.check(task_dir, _config(task_dir)) == []
 
 
@@ -522,13 +543,28 @@ CHECK_ID = "dockerfile_leaks"
 # Referencing any of these from the agent's Dockerfile bakes the answer
 # (the solution) or the grader (the tests) into the image the agent can read.
 #
-# Ported from harbor-lh's ci_checks/check-dockerfile-references.sh. That script
-# is named for its mechanism rather than its purpose; the rename to
-# `dockerfile_leaks` is deliberate.
+# Ported from harbor-lh's ci_checks/check-dockerfile-references.sh, but
+# deliberately broader. That script greps a fixed list of literal file paths,
+# which its name ("references") is honest about — but it silently passes the
+# idiomatic forms of the very leak it exists to prevent:
+#
+#     COPY tests/ /app/tests        -> ships the whole grader
+#     COPY solution/ /app/solution  -> ships the whole answer
+#     COPY tests/test_*.py /app/    -> literal glob, matches no literal path
+#
+# So the port matches the *directory* as well: any reference to the tests or
+# solution tree, in any form.
+#
+# The anchor is `(?:^|[\s"'=])(?:\./)?` — start of line or a separator, with an
+# optional `./`. It deliberately excludes `/` from the separator class: a
+# leading slash would make the *destination* of `COPY x /app/tests/` match,
+# which is not a leak. It also stops `unittests/` and `my_solution/` from
+# false-positiving, since `t` and `_` are not separators.
+_ANCHOR = r"(?:^|[\s\"'=])(?:\./)?"
+
 _FORBIDDEN: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"solution/solve\.sh"), "solution/solve.sh"),
-    (re.compile(r"tests/test\.sh"), "tests/test.sh"),
-    (re.compile(r"tests/test_[A-Za-z0-9_]*\.py"), "tests/test_*.py"),
+    (re.compile(_ANCHOR + r"solution/"), "the solution/ tree"),
+    (re.compile(_ANCHOR + r"tests/"), "the tests/ tree"),
 )
 
 

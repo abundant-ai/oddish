@@ -80,7 +80,7 @@ question — **can the agent get the answer without doing the work?**
 
 | Check | Origin | What it does | Cost to port |
 | --- | --- | --- | --- |
-| `dockerfile_leaks` | `check-dockerfile-references.sh` | Fails a Dockerfile referencing `solution/solve.sh`, `tests/test.sh`, or `tests/test_*.py` — i.e. baking the answer or the grader into the agent image | ~40 lines |
+| `dockerfile_leaks` | `check-dockerfile-references.sh` | Fails a Dockerfile referencing the `solution/` or `tests/` tree in any form — i.e. baking the answer or the grader into the agent image | ~40 lines |
 | `closed_internet` | `check-closed-internet.sh` | Fails `network_mode = "public"` (including implicitly, since Harbor defaults to public) without a non-placeholder justification | ~40 lines, reads `TaskConfig` |
 | `anti_cheat_soundness` | `_anti_cheat_scan.py` | Flags brittle source-scanning anti-cheat regexes | near-verbatim; already Python |
 | `solution_format` | `check-solution-format.sh` | Fails `.patch`/`.diff` in `solution/` and patch-application in `solve.sh` | ~40 lines |
@@ -94,6 +94,23 @@ than its *purpose* (keep the solution and tests out of the agent image), which
 is actively misleading: this spec's own first draft mis-triaged it as a "do
 COPY'd files exist" check on the strength of the name alone. The rename is the
 fix.
+
+The rename also raised the bar, and the port has to clear it. harbor-lh's script
+greps a fixed list of literal file paths, which "references" is honest about —
+but that silently passes the idiomatic forms of the leak:
+
+```
+COPY tests/ /app/tests        # ships the whole grader
+COPY solution/ /app/solution  # ships the whole answer
+COPY tests/test_*.py /app/    # literal glob matches no literal path
+```
+
+So the port matches the `solution/` and `tests/` *directories* in any form,
+anchored on a path boundary (`(?:^|[\s"'=])(?:\./)?`) so that `unittests/`,
+`my_solution/`, and the destination path in `COPY x /app/tests/` do not
+false-positive. This is a deliberate divergence from upstream behaviour: a check
+that passes the ordinary way of writing the leak is worse than no check, because
+it manufactures confidence.
 
 ### Deferred
 
