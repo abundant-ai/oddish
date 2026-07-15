@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import { useAuth } from "@clerk/nextjs";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -548,6 +550,10 @@ export function UsageSummaryCard({
 }) {
   const { queues, modelUsage, jobUsage, isLoading, isRefreshing } =
     useDashboardUsage(DASHBOARD_DEFAULT_USAGE_MINUTES, initialUsageData);
+  // The full usage view lives in the admin dashboard; only admins can
+  // navigate there, so hide the link from everyone else.
+  const { orgRole } = useAuth();
+  const isOrgAdmin = isOrgAdminRole(orgRole);
 
   const usageRows = useMemo(
     () => buildUsageRows(jobUsage, modelUsage, queues),
@@ -592,17 +598,19 @@ export function UsageSummaryCard({
               pipeline={pipelineByKind}
             />
           </div>
-          <Button
-            asChild
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground ml-auto h-7 shrink-0 px-2 text-[11px]"
-          >
-            <Link href="/usage">
-              View usage
-              <ArrowRight className="ml-1 h-3.5 w-3.5" />
-            </Link>
-          </Button>
+          {isOrgAdmin && (
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground ml-auto h-7 shrink-0 px-2 text-[11px]"
+            >
+              <Link href="/admin?tab=usage">
+                View usage
+                <ArrowRight className="ml-1 h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          )}
         </div>
       </CardHeader>
     </Card>
