@@ -183,8 +183,21 @@ across every trial that cited it and reintroduce the dedup problem downstream.
 
 `capability_slug` is deliberately **not** a foreign key. When the agent proposes
 `hypothesis-fixation` and self-assigns that slug, no such row exists yet — an FK
-would reject the write. Because the slug is free text, **promoting a proposal
-reclassifies every historical finding that cited it, with no backfill.**
+would reject the write. Because the slug is free text, promoting a proposal
+makes every historical finding that cited it **resolve** against the live
+taxonomy, with no backfill.
+
+**Scope of that claim (corrected against the code).** Findings are stored as
+JSONB on `analyzers.findings`, and the reduce output is frozen markdown in
+`universal_capabilities_content`. So promotion:
+
+- **does** make any *new* aggregate query joining `finding.capability_slug` →
+  `capabilities.slug` resolve historical rows under the promoted capability;
+- **does not** re-render already-generated analyzer reports. Past
+  `universal_capabilities_content` still shows the capability under its
+  `Proposed capabilities` heading until that analyzer is re-run.
+
+Re-rendering past reports would mean re-running reduce, which is out of scope.
 
 Rejection is the mirror case: `promoted_capability_slug` doubles as a merge
 target, so rejecting `early-stop` *into* `agent-early-stop` makes orphaned
@@ -309,8 +322,9 @@ Capabilities seed with a primary tag only; cross-tags are a curation action.
 - Proposal dedup: the same slug across three batches yields one row with three
   `trial_ids`.
 - Bad-bucket findings carrying a `capability_proposal` are dropped, not written.
-- Promotion resolves historical findings: a finding citing a proposed slug rolls
-  up under the capability once promoted, with no finding row rewritten.
+- Promotion resolves historical findings: a finding citing a proposed slug joins
+  against the promoted capability, with no finding row rewritten. (Data-level
+  only — already-rendered reduce markdown is not re-generated.)
 - Migration is idempotent (re-runnable).
 
 ## Known costs
