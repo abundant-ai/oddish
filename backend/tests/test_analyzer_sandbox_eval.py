@@ -21,7 +21,7 @@ def _sa(trial_id, classification) -> SubAnalysis:
 def _finding(trial_id, bucket) -> Finding:
     return Finding(
         trial_id=trial_id, bucket=bucket, subcategory="1a", evidence_quote="q",
-        step_indices=[], root_cause="rc", headroom_signal="h",
+        step_ids=[], root_cause="rc", headroom_signal="h",
         trajectory_link=f"/tasks/t1/probe/{trial_id}",
     )
 

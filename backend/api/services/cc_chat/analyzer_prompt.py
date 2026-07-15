@@ -95,6 +95,10 @@ def build_cohort_prompt(
         + map_rubric() + "\n\n"
         "## Finding shape\n"
         + output_shape + "\n\n"
+        # map.txt states this rule against a pre-loaded trajectory ("above"); here
+        # the agent fetches its own, so the wording differs but the rule is the same.
+        "Use the `step_id` values exactly as they appear in the trajectory you\n"
+        "fetched for `step_ids` — these are ids, not positions in the list.\n\n"
         "Narrate as you go so it streams.\n"
     )
 

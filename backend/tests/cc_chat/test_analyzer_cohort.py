@@ -77,7 +77,7 @@ def _good_files():
         REDUCE_PATH: json.dumps({"bad_failure_content": "# Bad"}).encode(),
         FINDINGS_PATH: (json.dumps({
             "trial_id": "bad-1", "bucket": "bad", "subcategory": "1a",
-            "evidence_quote": "q", "step_indices": [1], "root_cause": "rc",
+            "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
             "headroom_signal": "h", "trajectory_link": "junk",
         }) + "\n").encode(),
     }

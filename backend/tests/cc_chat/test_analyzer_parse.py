@@ -10,7 +10,7 @@ LINKS = {"bad-1": "/tasks/t1/probe/bad-1"}
 def _finding(trial_id="bad-1") -> dict:
     return {
         "trial_id": trial_id, "bucket": "bad", "subcategory": "1a",
-        "evidence_quote": "q", "step_indices": [3], "root_cause": "rc",
+        "evidence_quote": "q", "step_ids": [3], "root_cause": "rc",
         "headroom_signal": "hs", "trajectory_link": "MODEL-ECHOED-JUNK",
     }
 
@@ -22,6 +22,9 @@ def test_parses_files_when_present():
     assert sections == {"bad_failure_content": "# Bad"}
     assert len(findings) == 1
     assert findings[0].trial_id == "bad-1"
+    # Not incidental: the agent emits step_ids, and a parser still reading the
+    # old step_indices key would silently produce [] here.
+    assert findings[0].step_ids == [3]
 
 
 def test_trajectory_link_comes_from_host_not_the_model():
@@ -140,7 +143,7 @@ def test_stream_fallback_handles_pretty_printed_json():
 def test_finding_bucket_comes_from_the_cohort_not_the_model():
     reduce_b = json.dumps({"bad_failure_content": "# B"}).encode()
     bad_echo = {"trial_id": "bad-1", "bucket": "good", "subcategory": "1a",
-                "evidence_quote": "q", "step_indices": [], "root_cause": "rc",
+                "evidence_quote": "q", "step_ids": [], "root_cause": "rc",
                 "headroom_signal": "h", "trajectory_link": "junk"}
     findings, _ = parse_cohort_result(
         "bad", reduce_b, (json.dumps(bad_echo) + "\n").encode(), "",

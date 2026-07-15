@@ -109,7 +109,7 @@ async def sandbox_eval_rows(
     if not bad and not good:
         return AnalyzerEvalOutput(
             sections=dict(_EMPTY_SECTIONS), findings=[], counts=counts,
-            breakdown=breakdown,
+            breakdown=breakdown, subanalyses=subs,
         )
 
     roster = build_roster(bad, good)
@@ -159,7 +159,8 @@ async def sandbox_eval_rows(
 
     logger.info("analyzer-sandbox: complete, %d findings", len(findings))
     return AnalyzerEvalOutput(
-        sections=sections, findings=findings, counts=counts, breakdown=breakdown
+        sections=sections, findings=findings, counts=counts, breakdown=breakdown,
+        subanalyses=subs,
     )
 
 

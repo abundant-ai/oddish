@@ -496,7 +496,10 @@ async def test_public_view_surfaces_gathered_old_version_trial():
         tasks = await list_public_experiment_tasks(public_token)
         by_task = {t.id: t for t in tasks}
         assert task.id in by_task
-        trial_ids = {tr.id for tr in by_task[task.id].trials}
+        public_task = by_task[task.id]
+        assert public_task.current_version_id == v2.id
+        assert public_task.trial_version_id == v1.id
+        trial_ids = {tr.id for tr in public_task.trials}
         assert t1.id in trial_ids, (
             "gathered v1 trial was filtered out of the public view "
             "(gathered-unaware effective-version double-filter)"

@@ -7,6 +7,7 @@ from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 
 from .codex_stdout_trajectory import write_trajectory_if_richer
+from .network import normalize_domain_or_url
 
 
 _AZURE_CODEX_PROVIDER = "oddish_azure_openai"
@@ -146,8 +147,6 @@ class AzureCompatibleCodex(OddishCodex):
         Codex hook) and the configured Azure endpoint, plus the public OpenAI
         defaults.
         """
-        from harbor.environments.modal_network import normalize_domain_or_url
-
         domains = {"api.openai.com", "ab.chatgpt.com"}
         candidates: list[str | None] = []
         extra_env = (kwargs or {}).get("extra_env")

@@ -3,11 +3,18 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
+import { ChevronDown } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Table,
   TableBody,
@@ -24,6 +31,7 @@ type ProbeRow = {
   run_count: number;
   last_run_at: string | null;
   last_status: string;
+  probe_names: string[];
 };
 
 const PAGE_SIZE = 25;
@@ -42,8 +50,70 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   return debouncedValue;
 }
 
+function ProbeNameFilter({
+  options,
+  selected,
+  onChange,
+}: {
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const toggle = (value: string) => {
+    onChange(
+      selected.includes(value)
+        ? selected.filter((v) => v !== value)
+        : [...selected, value],
+    );
+  };
+  const label =
+    selected.length === 0
+      ? "All probes"
+      : selected.length === 1
+        ? selected[0]
+        : `${selected.length} probes`;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 w-full justify-between border-[#6f88b4]/20 text-xs font-normal sm:w-[220px]"
+        >
+          <span className="truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="z-30 w-56 p-2">
+        <div className="max-h-56 space-y-0.5 overflow-auto">
+          {options.length === 0 ? (
+            <p className="text-muted-foreground px-1 py-2 text-xs">
+              No probe names
+            </p>
+          ) : (
+            options.map((name) => (
+              <label
+                key={name}
+                className="hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs"
+              >
+                <Checkbox
+                  checked={selected.includes(name)}
+                  onCheckedChange={() => toggle(name)}
+                />
+                <span className="truncate">{name}</span>
+              </label>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function QaRunsClient() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedProbes, setSelectedProbes] = useState<string[]>([]);
   const [page, setPage] = useState(0);
   const debouncedQuery = useDebouncedValue(
     searchQuery.trim().toLowerCase(),
@@ -53,15 +123,28 @@ export function QaRunsClient() {
 
   useEffect(() => {
     setPage(0);
-  }, [debouncedQuery]);
+  }, [debouncedQuery, selectedProbes]);
+
+  const probeOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of data ?? []) {
+      for (const name of row.probe_names ?? []) names.add(name);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [data]);
 
   const filtered = useMemo(() => {
     const rows = data ?? [];
-    if (!debouncedQuery) return rows;
-    return rows.filter((row) =>
-      row.task_name.toLowerCase().includes(debouncedQuery),
-    );
-  }, [data, debouncedQuery]);
+    return rows.filter((row) => {
+      const matchesName =
+        !debouncedQuery ||
+        row.task_name.toLowerCase().includes(debouncedQuery);
+      const matchesProbe =
+        selectedProbes.length === 0 ||
+        (row.probe_names ?? []).some((n) => selectedProbes.includes(n));
+      return matchesName && matchesProbe;
+    });
+  }, [data, debouncedQuery, selectedProbes]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount - 1);
@@ -87,6 +170,11 @@ export function QaRunsClient() {
               placeholder="Search tasks"
               className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
             />
+            <ProbeNameFilter
+              options={probeOptions}
+              selected={selectedProbes}
+              onChange={setSelectedProbes}
+            />
           </div>
         </CardHeader>
         <CardContent>
@@ -107,7 +195,7 @@ export function QaRunsClient() {
             </div>
           ) : filtered.length === 0 ? (
             <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
-              No tasks match the current search.
+              No tasks match the current filters.
             </div>
           ) : (
             <Table>

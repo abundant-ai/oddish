@@ -4,8 +4,9 @@ from oddish.evals.analyzer.schemas import Finding
 from oddish.evals.analyzer.prompt_builder import build_map_prompt, build_reduce_prompt
 
 
-# Original template at 97f326f3, before the fragment split (git show
-# 97f326f3:oddish/src/oddish/evals/analyzer/prompts/map.txt). Byte-for-byte.
+# The template as it stands on main, before the fragment split (git show
+# origin/main:oddish/src/oddish/evals/analyzer/prompts/map.txt). Byte-for-byte.
+# Re-pin this whenever map.txt's prose legitimately changes upstream.
 _ORIGINAL_MAP_TEMPLATE = """\
 You are one of several analysts on a team, each independently examining ONE
 trajectory from a cohort of agent-eval trials. Analyze YOUR trial's original
@@ -38,9 +39,12 @@ Good bucket (universal capabilities):
   3c = syntax
   emergent:<short-label> = a capability gap not covered above
 
+Use the `step_id` values exactly as they appear in the trajectory above for
+`step_ids` — these are ids, not positions in the list.
+
 ## Output — return ONLY JSON:
 {{"trial_id": "...", "bucket": "bad|good", "subcategory": "1a|1b|3a|3b|3c|emergent:<label>",
- "evidence_quote": "verbatim quote from the trajectory", "step_indices": [<ints>],
+ "evidence_quote": "verbatim quote from the trajectory", "step_ids": [<ints>],
  "root_cause": "1-2 sentences", "headroom_signal": "for good trials: what capability, if
  improved, would fix this; else empty", "trajectory_link": "{trajectory_link}"}}
 """
@@ -132,7 +136,7 @@ def test_map_prompt_uses_bucket_of_for_good_failure():
 def test_reduce_prompt_lists_findings_and_counts():
     f = Finding(
         trial_id="t-1", bucket="bad", subcategory="1b", evidence_quote="echo 42",
-        step_indices=[7], root_cause="rc", headroom_signal="",
+        step_ids=[7], root_cause="rc", headroom_signal="",
         trajectory_link="/tasks/task/probe/t-1",
     )
     p = build_reduce_prompt([f], {"trials": 5, "bad": 1, "good": 0})

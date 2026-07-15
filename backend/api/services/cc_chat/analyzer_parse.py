@@ -38,7 +38,7 @@ def _finding_from(d: dict, bucket: str, link_by_trial: dict[str, str]) -> Findin
         bucket=bucket,
         subcategory=d.get("subcategory", "emergent"),
         evidence_quote=d.get("evidence_quote", ""),
-        step_indices=list(d.get("step_indices") or []),
+        step_ids=list(d.get("step_ids") or []),
         root_cause=d.get("root_cause", ""),
         headroom_signal=d.get("headroom_signal", ""),
         # Trust the host-built link, never the model's echo.

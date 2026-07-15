@@ -43,7 +43,9 @@ def test_analyzer_create_posts_expected_payload(monkeypatch):
     )
     assert result.exit_code == 0, result.output
     assert _FakeClient.last_request["url"] == "https://api.example.test/analyzers"
-    assert _FakeClient.last_request["json"] == {"name": "Q3", "experiment_ids": ["e1", "e2"]}
+    assert _FakeClient.last_request["json"] == {
+        "name": "Q3", "experiment_ids": ["e1", "e2"], "save_trial_analyses": False,
+    }
     assert "r1" in result.output
 
 
@@ -56,3 +58,27 @@ def test_analyzer_create_requires_experiments(monkeypatch):
     _set_env(monkeypatch)
     result = CliRunner().invoke(app, ["analyzer", "create", "--name", "Q3"])
     assert result.exit_code == 1
+
+
+def test_analyzer_create_defaults_save_trials_false(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["analyzer", "create", "-e", "e1", "--name", "Q3"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _FakeClient.last_request["json"]["save_trial_analyses"] is False
+
+
+def test_analyzer_create_save_trials_flag_sets_payload(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["analyzer", "create", "-e", "e1", "--name", "Q3", "--save-trials"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _FakeClient.last_request["json"]["save_trial_analyses"] is True

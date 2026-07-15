@@ -42,6 +42,7 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
+import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 
 type DrawerMode = "task" | "trial";
 
@@ -196,7 +197,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
           acc,
           trial,
           trial.experiment_id == null ||
-            trial.experiment_id === task.experiment_id,
+            trial.experiment_id === task.experiment_id
         );
 
       let scoredRewardSum = 0;
@@ -1368,6 +1369,7 @@ export function ExperimentDetailView({
               taskId={null}
               probeTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
+              taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               apiBaseUrl={apiBaseUrl}
               showAnalysis={showAnalysis}
               contentOnly={true}
@@ -1379,6 +1381,7 @@ export function ExperimentDetailView({
               onClose={closeDrawer}
               taskId={drawerState.task.id}
               task={drawerState.task}
+              taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               orderedTasks={drawerState.orderedTasks}
               taskIndex={drawerState.taskIndex}
               onRetryComplete={onRerun}

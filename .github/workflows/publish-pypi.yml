@@ -1,0 +1,68 @@
+name: Publish Oddish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("oddish/pyproject.toml", "rb"))["project"]["version"])')
+          test "$RELEASE_TAG" = "v$VERSION"
+
+      - name: Build distributions
+        run: uv build --project oddish
+
+      - name: Check distributions
+        run: uvx twine check oddish/dist/*
+
+      - name: Smoke-test wheel
+        run: |
+          uv venv --python 3.13 /tmp/oddish-release
+          WHEEL="$(find oddish/dist -maxdepth 1 -name '*.whl' -print -quit)"
+          uv pip install --python /tmp/oddish-release/bin/python "$WHEEL"
+          /tmp/oddish-release/bin/python -c 'import importlib.metadata, oddish; assert oddish.__version__ == importlib.metadata.version("oddish")'
+          for command in run status pull cancel; do
+            /tmp/oddish-release/bin/oddish "$command" --help >/dev/null
+          done
+          uv pip install --python /tmp/oddish-release/bin/python "${WHEEL}[worker]"
+          /tmp/oddish-release/bin/python -c 'from oddish.workers.agents.codex import AzureCompatibleCodex; from oddish.workers.agents.grok_build import OddishGrokBuild; from oddish.workers.agents.mini_swe_agent import OddishMetaMiniSweAgent; assert OddishGrokBuild.SUPPORTS_ATIF'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oddish-distributions
+          path: oddish/dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/oddish
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: oddish-distributions
+          path: dist/
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1

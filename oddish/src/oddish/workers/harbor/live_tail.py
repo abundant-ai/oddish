@@ -2,6 +2,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
@@ -144,6 +145,18 @@ def _event(kind: str, key: str, value: Any, **extra: Any) -> dict[str, Any]:
     return {"kind": kind, "payload": _clipped_payload(key, value, **extra)}
 
 
+def _with_turn_id(
+    events: list[dict[str, Any]], message_id: str
+) -> list[dict[str, Any]]:
+    """Tag Claude assistant deltas with a stable, opaque turn boundary."""
+    turn_id = hashlib.sha256(message_id.encode("utf-8", errors="replace")).hexdigest()
+    for event in events:
+        payload = event.get("payload")
+        if isinstance(payload, dict):
+            payload["turn_id"] = turn_id
+    return events
+
+
 def _tool_result_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -246,10 +259,12 @@ class ClaudeUsageFold:
             prior = (
                 previous[supported_index] if supported_index < len(previous) else None
             )
-            rendered.extend(self._render_block_delta(block, state, prior))
+            rendered.extend(
+                self._render_block_delta(block, state, prior, supported_index)
+            )
             current.append(state)
         self.rendered_blocks_by_id[msg_id] = current
-        return rendered
+        return _with_turn_id(rendered, msg_id)
 
     def _block_state(self, block: dict[str, Any]) -> dict[str, Any] | None:
         block_type = block.get("type")
@@ -272,9 +287,11 @@ class ClaudeUsageFold:
         block: dict[str, Any],
         state: dict[str, Any],
         prior: dict[str, Any] | None,
+        block_index: int,
     ) -> list[dict[str, Any]]:
         if state["type"] == "text":
             text = state["text"]
+            text_mode = "replace"
             prior_text = (
                 prior.get("text")
                 if prior is not None and prior.get("type") == "text"
@@ -284,7 +301,20 @@ class ClaudeUsageFold:
                 return []
             if isinstance(prior_text, str) and text.startswith(prior_text):
                 text = text[len(prior_text) :]
-            return [_event("message", "text", text)] if text else []
+                text_mode = "append"
+            return (
+                [
+                    _event(
+                        "message",
+                        "text",
+                        text,
+                        block_index=block_index,
+                        text_mode=text_mode,
+                    )
+                ]
+                if text
+                else []
+            )
         if (
             prior is not None
             and prior.get("type") == "tool_use"
