@@ -1065,7 +1065,7 @@ class Settings(BaseSettings):
     cc_chat_daytona_snapshot: str = ""
 
     # Snapshot for non-chat agent sandboxes (the analyzer). Falls back to the
-    # cc_chat snapshot below, which is the same image: ClaudeCodeRuntime.install
+    # cc_chat snapshot above, which is the same image: ClaudeCodeRuntime.install
     # checks claude-code and harbor independently, so a leaner analyzer-only
     # image would still pay harbor's pip install on every sandbox.
     agent_daytona_snapshot: str = ""
