@@ -87,24 +87,26 @@ async def get_analyzer_rollup(
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
         analyzer = await get_analyzer_core(session, analyzer_id, org_id=auth.org_id)
+        # A rollup is the product of a *successful* run, so status gates it --
+        # findings alone can't. A retry resets a SUCCESS row to QUEUED without
+        # clearing findings (jobs/handlers.py, deliberately, so the retry doesn't
+        # no-op), which leaves the previous run's findings on an in-flight row;
+        # keying off findings alone would serve that stale rollup as if current.
+        if analyzer.status not in (JobStatus.SUCCESS, JobStatus.FAILED):
+            raise HTTPException(
+                status_code=409,
+                detail=f"No current per-model data: this analyzer is {analyzer.status.value}.",
+            )
+        if analyzer.status is JobStatus.FAILED:
+            # Any findings here are from an earlier successful run that a retry
+            # has since superseded and failed -- not this row's result.
+            raise HTTPException(
+                status_code=404,
+                detail=f"No per-model data: this analyzer failed. {analyzer.error or ''}".strip(),
+            )
         if analyzer.findings is None:
-            # The worker assigns findings only on the success path, in the same
-            # commit as status = SUCCESS -- so NULL is three states, not one, and
-            # only the SUCCESS one is a legacy row. 404 ("stop asking") is right
-            # for the two terminal states and wrong for a job whose findings are
-            # still coming.
-            if analyzer.status not in (JobStatus.SUCCESS, JobStatus.FAILED):
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"No per-model data yet: this analyzer is {analyzer.status.value}."
-                    ),
-                )
-            if analyzer.status is JobStatus.FAILED:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No per-model data: this analyzer failed. {analyzer.error or ''}".strip(),
-                )
+            # SUCCESS with no findings is the one state that means legacy: the
+            # worker writes findings and status = SUCCESS in the same commit.
             raise HTTPException(
                 status_code=404,
                 detail="No per-model data: this analyzer ran before findings were persisted.",

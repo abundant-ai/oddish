@@ -145,7 +145,9 @@ async def _set_findings(analyzer_id, findings, models_by_task=_UNSET):
         await session.execute(
             AnalyzerModel.__table__.update()
             .where(AnalyzerModel.id == analyzer_id)
-            .values(findings=findings, models_by_task=roster)
+            # SUCCESS: findings and that status are written together by the
+            # worker, so any other status with findings set is a stale row.
+            .values(findings=findings, models_by_task=roster, status=JobStatus.SUCCESS)
         )
         await session.commit()
 
@@ -182,6 +184,20 @@ async def test_rollup_409_while_the_analyzer_is_still_running(client, analyzer_i
         assert resp.status_code == 409, f"{status}: {resp.text}"
         assert status.value in resp.json()["detail"]
         assert "before findings" not in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_rollup_409_not_stale_data_while_a_retry_is_in_flight(client, analyzer_id):
+    """A retry resets a SUCCESS row to QUEUED without clearing findings, so the
+    previous run's findings sit on an in-flight row. Keying off findings alone
+    would serve that stale rollup at 200 as if it were current."""
+    await _set_findings(analyzer_id, [], models_by_task={"task": ["claude-opus-4-8"]})
+    assert (await client.get(f"/analyzers/{analyzer_id}/rollup")).status_code == 200
+
+    await _set_status(analyzer_id, JobStatus.QUEUED)  # what the retry path does
+    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    assert resp.status_code == 409, resp.text
+    assert "queued" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
