@@ -285,9 +285,11 @@ async def unlink_task_from_experiment_core(
     """Remove a task's membership in one experiment, keeping the task.
 
     Drops *just* the ``(task_id, experiment_id)`` association: it tombstones
-    the ``task_experiments`` join row and the trials scoped to that
-    experiment, leaving the task row -- and its trials/links in every
-    *other* experiment -- untouched. This is the tool for pulling a
+    the ``task_experiments`` join row, the trials scoped to that experiment,
+    and the ``experiment_trials`` gathered-membership rows for this task's
+    trials (the grid reaches those through the task row; the cost rollup
+    counts active membership rows), leaving the task row -- and its
+    trials/links in every *other* experiment -- untouched. This is the tool for pulling a
     **shared** task out of one experiment, where a whole-task
     :func:`delete_task_core` would wrongly remove it from the others.
 
@@ -316,7 +318,7 @@ async def unlink_task_from_experiment_core(
     ``oddish.core.helpers.terminate_run_harvest(result)`` after commit or the
     containers leak until provider TTL.
     """
-    from oddish.db import task_experiments
+    from oddish.db import experiment_trials, task_experiments
 
     task_query = select(TaskModel.id, TaskModel.org_id).where(TaskModel.id == task_id)
     if org_id is not None:
@@ -382,6 +384,24 @@ async def unlink_task_from_experiment_core(
             task_experiments.c.deleted_at.is_(None),
         )
         .values(deleted_at=utcnow())
+    )
+
+    # Gathered-membership rows for this task's trials go with the link: the
+    # grid reaches gathered trials through the (now removed) task row, and the
+    # cost rollup counts active ``experiment_trials`` rows, so leaving them
+    # would price trials the page no longer shows. ``include_deleted``: a
+    # soft-deleted trial's membership row must be tombstoned too.
+    await session.execute(
+        update(experiment_trials)
+        .where(
+            experiment_trials.c.experiment_id == experiment_id,
+            experiment_trials.c.deleted_at.is_(None),
+            experiment_trials.c.trial_id.in_(
+                select(TrialModel.id).where(TrialModel.task_id == resolved_task_id)
+            ),
+        )
+        .values(deleted_at=utcnow())
+        .execution_options(include_deleted=True)
     )
 
     # If trials were tombstoned the task's live trial set shrank, so any

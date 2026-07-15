@@ -813,14 +813,24 @@ class TaskCostTotals(BaseModel):
 
 
 class ExperimentCostTotals(BaseModel):
-    """What an experiment spent, across every trial that ran under it.
+    """What an experiment's work cost, and what the experiment itself spent.
+
+    ``cost_*`` covers every member trial -- homed in the experiment or
+    gathered into it, the grid's own membership -- so a collection shows what
+    the work it displays cost. ``owned_*`` covers only trials homed in the experiment
+    (the page's "New spend"); it is the number that stays additive across
+    experiments. ``billed_*`` is the subset of owned spend attributed to a
+    registered user's quota. Token totals mirror those scopes: ``token_*`` is
+    member-wide (the Cost tile's usage subline), ``owned_token_*`` home-only
+    (the New spend subline), ``billed_token_*`` the billed subset of owned.
+    ``total_trials`` counts all member trials.
 
     Served separately from the trial grid because it cannot be derived from it:
     the grid is paginated, and it is filtered to each task's current version, so
     it omits earlier versions, superseded retries, probes and deleted trials --
     all of which were still billed. Expect this to exceed the sum of the visible
-    rows. Counts what the quota sum and the admin cost breakdown count, so the
-    page, the admin table and the invoice agree on one number.
+    rows. Owned spend counts what the quota sum and the admin cost breakdown
+    count, so the page, the admin table and the invoice agree on one number.
     """
 
     cost_usd: float = 0.0
@@ -829,6 +839,12 @@ class ExperimentCostTotals(BaseModel):
     cost_has_native: bool = False
     token_count: int = 0
     token_trial_count: int = 0
+    owned_cost_usd: float = 0.0
+    owned_trial_count: int = 0
+    owned_has_estimated: bool = False
+    owned_has_native: bool = False
+    owned_token_count: int = 0
+    owned_token_trial_count: int = 0
     billed_cost_usd: float = 0.0
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
