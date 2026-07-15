@@ -105,6 +105,8 @@ interface TaskFilesPanelProps {
    * This allows reusing the file tree viewer for trial files.
    */
   filesUrl?: string;
+  /** Explicit task version for file URLs; null deliberately means unversioned. */
+  taskVersion?: number | null;
   /**
    * When set, auto-expand the tree to this file path and select it.
    * Useful for deep-linking from external UI (e.g. execution timeline).
@@ -135,7 +137,7 @@ function formatFileSize(bytes: number): string {
 
 function buildNodesFromListing(
   files: TaskFile[] = [],
-  dirs: TaskDirectory[] = [],
+  dirs: TaskDirectory[] = []
 ): TreeNode[] {
   const dirNodes = dirs.map((dir) => ({
     name: getNodeName(dir.path),
@@ -160,7 +162,7 @@ function buildNodesFromListing(
 function updateTree(
   nodes: TreeNode[],
   targetPath: string,
-  updater: (node: TreeNode) => TreeNode,
+  updater: (node: TreeNode) => TreeNode
 ): TreeNode[] {
   return nodes.map((node) => {
     if (node.path === targetPath) {
@@ -279,6 +281,7 @@ export function TaskFilesPanel({
   onRetryComplete,
   contentOnly = false,
   filesUrl,
+  taskVersion,
   initialFilePath,
   probeTaskId,
 }: TaskFilesPanelProps) {
@@ -340,7 +343,11 @@ export function TaskFilesPanel({
     },
     revalidateOnFocus: false,
   });
-  const currentVersion = (verdictTask ?? task)?.current_version ?? null;
+  const currentVersion =
+    taskVersion !== undefined
+      ? taskVersion
+      : ((verdictTask ?? task)?.current_version ?? null);
+  const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
 
   const verdictSource = verdictTask ?? task;
   const buildListingUrl = useCallback(
@@ -361,12 +368,12 @@ export function TaskFilesPanel({
       if (cursor) {
         params.set("cursor", cursor);
       }
-      if (!filesUrl && currentVersion != null) {
+      if (shouldScopeFilesToVersion && currentVersion != null) {
         params.set("version", String(currentVersion));
       }
       return `${resolvedFilesUrl}?${params.toString()}`;
     },
-    [resolvedFilesUrl, filesUrl, currentVersion],
+    [resolvedFilesUrl, shouldScopeFilesToVersion, currentVersion]
   );
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -382,7 +389,7 @@ export function TaskFilesPanel({
   const retryableTrials = useMemo(() => {
     if (!task?.trials) return [];
     return task.trials.filter(
-      (trial) => trial.status === "failed" || trial.status === "success",
+      (trial) => trial.status === "failed" || trial.status === "success"
     );
   }, [task]);
 
@@ -395,10 +402,10 @@ export function TaskFilesPanel({
       (trial) =>
         trial.status === "failed" ||
         trial.status === "success" ||
-        trial.status === "skipped",
+        trial.status === "skipped"
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
-    isActivePipelineStatus(trial.analysis_status),
+    isActivePipelineStatus(trial.analysis_status)
   );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
   const canRunQA =
@@ -411,7 +418,7 @@ export function TaskFilesPanel({
     verdictSource?.verdict_status ||
     verdictSource?.verdict ||
     (task?.trials ?? []).some(
-      (trial) => trial.analysis_status || trial.analysis,
+      (trial) => trial.analysis_status || trial.analysis
     )
       ? "Rerun QA"
       : "Run QA";
@@ -423,7 +430,7 @@ export function TaskFilesPanel({
       if (!nextTask) return;
       onNavigate(nextTask, nextIndex);
     },
-    [onNavigate, orderedList],
+    [onNavigate, orderedList]
   );
 
   const handleRetryTask = async () => {
@@ -440,10 +447,10 @@ export function TaskFilesPanel({
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to retry trial",
+              data.detail || data.error || "Failed to retry trial"
             );
           }
-        }),
+        })
       );
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
@@ -490,7 +497,7 @@ export function TaskFilesPanel({
       onRetryComplete?.(id ? [id] : undefined);
     } catch (err) {
       setCancelError(
-        err instanceof Error ? err.message : "Failed to cancel task",
+        err instanceof Error ? err.message : "Failed to cancel task"
       );
     } finally {
       setIsCancelling(false);
@@ -515,7 +522,7 @@ export function TaskFilesPanel({
       onRetryComplete?.([task.id]);
     } catch (err) {
       setQAActionError(
-        err instanceof Error ? err.message : "Failed to queue task QA",
+        err instanceof Error ? err.message : "Failed to queue task QA"
       );
     } finally {
       setIsRunningQA(false);
@@ -563,7 +570,7 @@ export function TaskFilesPanel({
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`,
+            data.detail || `Failed to fetch files: ${res.statusText}`
           );
         }
         const data: FilesListingResponse = await res.json();
@@ -581,7 +588,7 @@ export function TaskFilesPanel({
       } catch (err) {
         if (!cancelled) {
           setError(
-            err instanceof Error ? err.message : "Failed to fetch files",
+            err instanceof Error ? err.message : "Failed to fetch files"
           );
         }
       } finally {
@@ -616,11 +623,11 @@ export function TaskFilesPanel({
             ...node,
             children,
             isLoaded: true,
-          })),
+          }))
         );
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : "Failed to fetch directory",
+          err instanceof Error ? err.message : "Failed to fetch directory"
         );
       } finally {
         setLoadingDirs((prev) => {
@@ -630,7 +637,7 @@ export function TaskFilesPanel({
         });
       }
     },
-    [taskId, filesUrl, buildListingUrl],
+    [taskId, filesUrl, buildListingUrl]
   );
 
   // Fetch file content when a file is selected
@@ -709,11 +716,11 @@ export function TaskFilesPanel({
         if (content === null) {
           const encodedPath = encodeURIComponent(filePath);
           const params = new URLSearchParams();
-          if (!filesUrl && currentVersion != null) {
+          if (shouldScopeFilesToVersion && currentVersion != null) {
             params.set("version", String(currentVersion));
           }
           const res = await fetch(
-            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+            `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
           );
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
@@ -749,7 +756,14 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [selectedFile, taskId, filesUrl, resolvedFilesUrl, currentVersion]);
+  }, [
+    selectedFile,
+    taskId,
+    filesUrl,
+    resolvedFilesUrl,
+    shouldScopeFilesToVersion,
+    currentVersion,
+  ]);
 
   // Load full file content (when user clicks "Load full file")
   const loadFullFile = useCallback(async () => {
@@ -772,11 +786,11 @@ export function TaskFilesPanel({
 
       const encodedPath = encodeURIComponent(selectedFile.path);
       const params = new URLSearchParams();
-      if (!filesUrl && currentVersion != null) {
+      if (shouldScopeFilesToVersion && currentVersion != null) {
         params.set("version", String(currentVersion));
       }
       const res = await fetch(
-        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`,
+        `${resolvedFilesUrl}/${encodedPath}${params.toString() ? `?${params.toString()}` : ""}`
       );
       if (!res.ok) {
         return;
@@ -794,7 +808,13 @@ export function TaskFilesPanel({
     } finally {
       setLoadingFullFile(false);
     }
-  }, [selectedFile, filesUrl, resolvedFilesUrl, currentVersion]);
+  }, [
+    selectedFile,
+    filesUrl,
+    resolvedFilesUrl,
+    shouldScopeFilesToVersion,
+    currentVersion,
+  ]);
 
   // Scroll to top when selected file changes
   useEffect(() => {
@@ -1007,7 +1027,7 @@ export function TaskFilesPanel({
     if (!fileUrl && (taskId || filesUrl)) {
       const encodedPath = encodeURIComponent(selectedFile.path);
       const params = new URLSearchParams();
-      if (!filesUrl && currentVersion != null) {
+      if (shouldScopeFilesToVersion && currentVersion != null) {
         params.set("version", String(currentVersion));
       }
       fileUrl = `${resolvedFilesUrl}/${encodedPath}${
@@ -1084,7 +1104,7 @@ export function TaskFilesPanel({
         : trials;
     const rewardSum = versionTrials.reduce(
       (sum, trial) => sum + (trial.reward ?? 0),
-      0,
+      0
     );
     const total = versionTrials.filter((t) => t.reward != null).length;
     return {
