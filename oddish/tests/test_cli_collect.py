@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 
 import httpx
+import pytest
+import typer
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -97,23 +99,40 @@ def test_version_trial_ids_returns_none_on_fetch_error():
     assert _version_trial_ids(_StatusClient(401), "https://api", "TID", "16") is None
 
 
+def _fake_browse_hits(query: str, items: list[dict]) -> list[dict]:
+    """Mimic parse_search_query + the name ILIKE: a quoted phrase is one
+    literal term, while a bare leading ``-`` makes the term an *exclusion*.
+    Without that second rule the fake would match a `-name` needle happily and
+    the quoting regression below would pass against unquoted code too."""
+    q = query.strip()
+    if len(q) >= 2 and q.startswith('"') and q.endswith('"'):
+        needle, negated = q[1:-1], False
+    elif q.startswith("-"):
+        needle, negated = q[1:], True
+    else:
+        needle, negated = q, False
+    if negated:
+        return [it for it in items if needle not in it["name"]]
+    return [it for it in items if needle in it["name"]]
+
+
 class _ResolveClient:
     """GET /tasks/{ref} 200s only for known ids; browse matches on name only,
     mirroring the real endpoint (which never matches a task id)."""
 
-    def __init__(self, ids=(), items=()):
+    def __init__(self, ids=(), items=(), id_status=404):
         self.ids = set(ids)
         self.items = list(items)
+        self.id_status = id_status
 
     def get(self, url, params=None):
         if url.endswith("/tasks/browse"):
-            needle = (params or {}).get("query", "")
-            hits = [it for it in self.items if needle in it["name"]]
+            hits = _fake_browse_hits((params or {}).get("query", ""), self.items)
             return httpx.Response(200, json={"items": hits})
         ref = url.rsplit("/tasks/", 1)[-1]
         if ref in self.ids:
             return httpx.Response(200, json={"id": ref, "name": ref.rsplit("-", 1)[0]})
-        return httpx.Response(404, json={})
+        return httpx.Response(self.id_status, json={})
 
 
 def test_resolve_task_id_accepts_an_exact_task_id():
@@ -148,8 +167,8 @@ class _PagedBrowseClient:
             return httpx.Response(404, json={})
         self.pages += 1
         p = params or {}
-        needle, limit, offset = p.get("query", ""), p.get("limit", 100), p.get("offset", 0)
-        hits = [it for it in self.items if needle in it["name"]]
+        limit, offset = p.get("limit", 100), p.get("offset", 0)
+        hits = _fake_browse_hits(p.get("query", ""), self.items)
         return httpx.Response(200, json={"items": hits[offset : offset + limit]})
 
 
@@ -167,6 +186,36 @@ def test_resolve_task_id_stops_on_a_short_page():
     client = _PagedBrowseClient([{"id": "other-abc12345", "name": "other"}])
     assert _resolve_task_id(client, "https://api", "nope") is None
     assert client.pages == 1  # short page -> no needless second request
+
+
+def test_resolve_task_id_aborts_on_id_lookup_http_error():
+    # A 401/500 must not be reported as "task not found" -- same
+    # error-vs-empty misclassification as _version_trial_ids had.
+    for status in (401, 500):
+        client = _ResolveClient(id_status=status)
+        with pytest.raises(typer.Exit):
+            _resolve_task_id(client, "https://api", "mytask")
+
+
+class _BrowseErrorClient:
+    """id lookup 404s (not an id); the name search then fails hard."""
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/browse"):
+            return httpx.Response(503, json={})
+        return httpx.Response(404, json={})
+
+
+def test_resolve_task_id_aborts_on_browse_http_error():
+    with pytest.raises(typer.Exit):
+        _resolve_task_id(_BrowseErrorClient(), "https://api", "mytask")
+
+
+def test_resolve_task_id_quotes_the_needle_for_leading_dash_names():
+    # browse runs the needle through parse_search_query, where a leading `-`
+    # is an exclusion; quoting keeps it a literal.
+    client = _ResolveClient(items=[{"id": "-weird-abc12345", "name": "-weird"}])
+    assert _resolve_task_id(client, "https://api", "-weird") == "-weird-abc12345"
 
 
 # ---------------------------------------------------------------------------

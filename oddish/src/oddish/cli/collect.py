@@ -66,17 +66,35 @@ def _resolve_task_id(client, api_url: str, ref: str) -> str | None:
     resp = client.get(f"{api_url}/tasks/{ref}", params={"include_trials": "false"})
     if resp.status_code == 200:
         return resp.json().get("id") or ref
+    if resp.status_code != 404:
+        # Only a 404 means "not an id, try a name". Anything else is a real
+        # failure and must not be reported as an unknown task.
+        console.print(
+            f"[red]Failed to look up task '{ref}' "
+            f"(HTTP {resp.status_code}).[/red]"
+        )
+        raise typer.Exit(1)
     # browse matches the needle as a *substring*, so the exact name can sit
     # outside the first page when many tasks share it. Page through rather than
     # give up early and fail a pin that a bare --task would have resolved.
+    # Quote the needle: browse runs it through parse_search_query, where a
+    # leading `-` would otherwise become an exclusion instead of a literal.
     offset = 0
     while offset < _BROWSE_MAX_SCAN:
         resp = client.get(
             f"{api_url}/tasks/browse",
-            params={"query": ref, "limit": _BROWSE_PAGE, "offset": offset},
+            params={
+                "query": f'"{ref}"',
+                "limit": _BROWSE_PAGE,
+                "offset": offset,
+            },
         )
         if resp.status_code != 200:
-            return None
+            console.print(
+                f"[red]Task search failed for '{ref}' "
+                f"(HTTP {resp.status_code}).[/red]"
+            )
+            raise typer.Exit(1)
         items = resp.json().get("items", [])
         for it in items:
             if it.get("id") == ref or it.get("name") == ref:
