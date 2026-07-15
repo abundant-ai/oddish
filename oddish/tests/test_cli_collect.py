@@ -4,12 +4,20 @@ import sys
 from pathlib import Path
 
 import httpx
+import pytest
+import typer
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.cli import app
-from oddish.cli.collect import _build_payload, _guard_sources
+from oddish.cli.collect import (
+    _build_payload,
+    _guard_sources,
+    _parse_task_ref,
+    _resolve_task_id,
+    _version_trial_ids,
+)
 
 
 def test_build_payload_tasks_and_trials():
@@ -20,6 +28,194 @@ def test_build_payload_tasks_and_trials():
 def test_guard_requires_a_source():
     assert _guard_sources(tasks=[], trial_ids=[]) is False
     assert _guard_sources(tasks=["a"], trial_ids=[]) is True
+
+
+def test_parse_task_ref():
+    assert _parse_task_ref("mytask") == ("mytask", None)
+    assert _parse_task_ref("mytask@16") == ("mytask", "16")
+    assert _parse_task_ref("mytask@v16") == ("mytask", "16")
+    assert _parse_task_ref("  mytask @ 16 ".replace(" ", "")) == ("mytask", "16")
+    # A non-numeric suffix (e.g. an email-ish id) is not a version.
+    assert _parse_task_ref("user@example.com") == ("user@example.com", None)
+    # Task ids with a trailing hash but no @ are untouched.
+    assert _parse_task_ref("mytask-9aa07749") == ("mytask-9aa07749", None)
+    # Version ids are built as {task_id}-v{int}, so a leading zero must
+    # normalize or the pin silently matches nothing.
+    assert _parse_task_ref("mytask@016") == ("mytask", "16")
+    assert _parse_task_ref("mytask@v016") == ("mytask", "16")
+    assert _parse_task_ref("mytask@0") == ("mytask", "0")
+
+
+class _VersionResolveClient:
+    """GET /tasks/{id}/trials returns three v16 + one v22 trial (one superseded,
+    one probe, one running) so only terminal, non-probe, non-superseded v16
+    trials are linked.
+
+    The server already filters superseded rows out of this response, so the
+    superseded entry below is belt-and-braces: it proves the client stays
+    correct on its own if that ever changes.
+    """
+
+    def get(self, url, params=None):
+        trials = [
+            {"id": "T-16a", "task_version_id": "TID-v16", "status": "success",
+             "is_probe": False, "superseded_by_trial_id": None},
+            {"id": "T-16b", "task_version_id": "TID-v16", "status": "failed",
+             "is_probe": False, "superseded_by_trial_id": None},
+            {"id": "T-16-probe", "task_version_id": "TID-v16", "status": "success",
+             "is_probe": True, "superseded_by_trial_id": None},
+            {"id": "T-16-superseded", "task_version_id": "TID-v16",
+             "status": "success", "is_probe": False,
+             "superseded_by_trial_id": "T-16a"},
+            {"id": "T-16-running", "task_version_id": "TID-v16", "status": "running",
+             "is_probe": False, "superseded_by_trial_id": None},
+            {"id": "T-22a", "task_version_id": "TID-v22", "status": "success",
+             "is_probe": False, "superseded_by_trial_id": None},
+        ]
+        return httpx.Response(200, json=trials)
+
+
+def test_version_trial_ids_filters_terminal_nonprobe_nonsuperseded():
+    ids = _version_trial_ids(_VersionResolveClient(), "https://api", "TID", "16")
+    assert ids == ["T-16a", "T-16b"]
+
+
+class _StatusClient:
+    """Returns a fixed status for every GET."""
+
+    def __init__(self, status):
+        self.status = status
+        self.urls = []
+
+    def get(self, url, params=None):
+        self.urls.append(url)
+        return httpx.Response(self.status, json={})
+
+
+def test_version_trial_ids_returns_none_on_fetch_error():
+    # None (couldn't tell) must not be confused with [] (genuinely empty), or a
+    # 401/500 silently drops trials instead of failing the collect.
+    assert _version_trial_ids(_StatusClient(500), "https://api", "TID", "16") is None
+    assert _version_trial_ids(_StatusClient(401), "https://api", "TID", "16") is None
+
+
+def _fake_browse_hits(query: str, items: list[dict]) -> list[dict]:
+    """Mimic parse_search_query + the name ILIKE: a quoted phrase is one
+    literal term, while a bare leading ``-`` makes the term an *exclusion*.
+    Without that second rule the fake would match a `-name` needle happily and
+    the quoting regression below would pass against unquoted code too."""
+    q = query.strip()
+    if len(q) >= 2 and q.startswith('"') and q.endswith('"'):
+        needle, negated = q[1:-1], False
+    elif q.startswith("-"):
+        needle, negated = q[1:], True
+    else:
+        needle, negated = q, False
+    if negated:
+        return [it for it in items if needle not in it["name"]]
+    return [it for it in items if needle in it["name"]]
+
+
+class _ResolveClient:
+    """GET /tasks/{ref} 200s only for known ids; browse matches on name only,
+    mirroring the real endpoint (which never matches a task id)."""
+
+    def __init__(self, ids=(), items=(), id_status=404):
+        self.ids = set(ids)
+        self.items = list(items)
+        self.id_status = id_status
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/browse"):
+            hits = _fake_browse_hits((params or {}).get("query", ""), self.items)
+            return httpx.Response(200, json={"items": hits})
+        ref = url.rsplit("/tasks/", 1)[-1]
+        if ref in self.ids:
+            return httpx.Response(200, json={"id": ref, "name": ref.rsplit("-", 1)[0]})
+        return httpx.Response(self.id_status, json={})
+
+
+def test_resolve_task_id_accepts_an_exact_task_id():
+    # Regression: browse never matches on id, so a pinned `<task-id>@N` used to
+    # fail resolution even though a bare `--task <task-id>` worked server-side.
+    client = _ResolveClient(ids={"mytask-9aa07749"})
+    assert _resolve_task_id(client, "https://api", "mytask-9aa07749") == "mytask-9aa07749"
+
+
+def test_resolve_task_id_matches_exact_name_via_browse():
+    client = _ResolveClient(items=[{"id": "mytask-9aa07749", "name": "mytask"}])
+    assert _resolve_task_id(client, "https://api", "mytask") == "mytask-9aa07749"
+
+
+def test_resolve_task_id_does_not_prefix_match():
+    # `test` must not silently resolve to `test-harness-...`.
+    client = _ResolveClient(
+        items=[{"id": "test-harness-abc12345", "name": "test-harness"}]
+    )
+    assert _resolve_task_id(client, "https://api", "test") is None
+
+
+class _PagedBrowseClient:
+    """browse substring-matches and pages; the exact name sits on page 2."""
+
+    def __init__(self, items):
+        self.items = list(items)
+        self.pages = 0
+
+    def get(self, url, params=None):
+        if not url.endswith("/tasks/browse"):
+            return httpx.Response(404, json={})
+        self.pages += 1
+        p = params or {}
+        limit, offset = p.get("limit", 100), p.get("offset", 0)
+        hits = _fake_browse_hits(p.get("query", ""), self.items)
+        return httpx.Response(200, json={"items": hits[offset : offset + limit]})
+
+
+def test_resolve_task_id_pages_past_the_first_browse_page():
+    # An exact name outside page 1 must still resolve; a bare --task would.
+    filler = [{"id": f"mytask-extra-{i}", "name": f"mytask-extra-{i}"} for i in range(150)]
+    exact = {"id": "mytask-9aa07749", "name": "mytask"}
+    client = _PagedBrowseClient([*filler, exact])
+
+    assert _resolve_task_id(client, "https://api", "mytask") == "mytask-9aa07749"
+    assert client.pages > 1  # proves it actually paged
+
+
+def test_resolve_task_id_stops_on_a_short_page():
+    client = _PagedBrowseClient([{"id": "other-abc12345", "name": "other"}])
+    assert _resolve_task_id(client, "https://api", "nope") is None
+    assert client.pages == 1  # short page -> no needless second request
+
+
+def test_resolve_task_id_aborts_on_id_lookup_http_error():
+    # A 401/500 must not be reported as "task not found" -- same
+    # error-vs-empty misclassification as _version_trial_ids had.
+    for status in (401, 500):
+        client = _ResolveClient(id_status=status)
+        with pytest.raises(typer.Exit):
+            _resolve_task_id(client, "https://api", "mytask")
+
+
+class _BrowseErrorClient:
+    """id lookup 404s (not an id); the name search then fails hard."""
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/browse"):
+            return httpx.Response(503, json={})
+        return httpx.Response(404, json={})
+
+
+def test_resolve_task_id_aborts_on_browse_http_error():
+    with pytest.raises(typer.Exit):
+        _resolve_task_id(_BrowseErrorClient(), "https://api", "mytask")
+
+
+def test_resolve_task_id_quotes_the_needle_for_leading_dash_names():
+    # browse runs the needle through parse_search_query, where a leading `-`
+    # is an exclusion; quoting keeps it a literal.
+    client = _ResolveClient(items=[{"id": "-weird-abc12345", "name": "-weird"}])
+    assert _resolve_task_id(client, "https://api", "-weird") == "-weird-abc12345"
 
 
 # ---------------------------------------------------------------------------
@@ -96,3 +292,38 @@ def test_collect_no_publish_exits_zero_and_skips_publish(monkeypatch):
     result = CliRunner().invoke(app, ["collect", "--task", "mytask", "--no-publish"])
 
     assert result.exit_code == 0, result.output
+
+
+class _EmptyPinClient:
+    """A resolvable task whose pinned version has no linkable trials."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/mytask"):
+            return httpx.Response(200, json={"id": "mytask-abc12345"})
+        if url.endswith("/trials"):
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"unexpected url {url}")
+
+    def post(self, url, json=None):
+        raise AssertionError(f"must not post an empty collection; got {url}")
+
+
+def test_collect_with_only_empty_pins_fails_locally_without_posting(monkeypatch):
+    # The initial guard runs before pins are expanded, so this used to post an
+    # empty payload and surface the server's 400 instead of a clear local error.
+    monkeypatch.setattr(httpx, "Client", _EmptyPinClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--task", "mytask@16"])
+
+    assert result.exit_code == 1, result.output
+    assert "Nothing to collect" in result.output
