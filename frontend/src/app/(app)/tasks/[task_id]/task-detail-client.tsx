@@ -358,6 +358,8 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     billedTrialCount: v.billed_trial_count,
     billedHasEstimated: v.billed_has_estimated,
     billedHasNative: v.billed_has_native,
+    billedTokenCount: 0,
+    billedTokenTrialCount: 0,
     lastRunAt: v.last_run_at ?? null,
   };
 }

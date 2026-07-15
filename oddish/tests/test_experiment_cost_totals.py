@@ -224,7 +224,14 @@ async def test_billed_split_tracks_billed_user_id(session):
     task, experiment = await _fixture(session, "billed")
 
     trials = [
-        _trial(task, experiment, cost_usd=2.0, billed_user_id="user_a"),
+        _trial(
+            task,
+            experiment,
+            cost_usd=2.0,
+            input_tokens=200,
+            output_tokens=20,
+            billed_user_id="user_a",
+        ),
         _trial(
             task,
             experiment,
@@ -232,7 +239,13 @@ async def test_billed_split_tracks_billed_user_id(session):
             output_tokens=100_000,
             billed_user_id="user_b",
         ),
-        _trial(task, experiment, cost_usd=5.0),  # unbilled
+        _trial(
+            task,
+            experiment,
+            cost_usd=5.0,
+            input_tokens=300,
+            output_tokens=30,
+        ),  # unbilled
     ]
     session.add_all(trials)
     await session.flush()
@@ -248,6 +261,10 @@ async def test_billed_split_tracks_billed_user_id(session):
     assert totals.billed_has_estimated is True
     assert totals.cost_usd == pytest.approx(_client_side_sum(trials))
     assert totals.cost_trial_count == 3
+    assert totals.token_count == 1_100_550
+    assert totals.token_trial_count == 3
+    assert totals.billed_token_count == 1_100_220
+    assert totals.billed_token_trial_count == 2
 
 
 @pytest.mark.asyncio
