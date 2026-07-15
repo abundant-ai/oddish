@@ -71,8 +71,13 @@ def batches(cohort: list[SubAnalysis]) -> list[list[SubAnalysis]]:
     carries results across. Peak context is O(batch) instead of O(cohort).
     """
     if len(cohort) <= MAP_BATCH_SIZE:
-        # Small cohorts stay a single batch -- byte-for-byte the shape that
-        # already works today, so this change cannot regress them.
+        # A small cohort is one MAP batch, but NOT the pre-batching shape: that
+        # ran MAP and REDUCE in a single context, where reduce already held the
+        # findings. Reduce is now always its own process reading them back off
+        # disk, so even an 8-trial cohort that passed before now depends on the
+        # map agent writing parseable lines. parse_cohort_result's stream
+        # fallback recovers the findings if it does not; the reduce sections are
+        # what is genuinely at risk.
         return [cohort]
     return [
         cohort[i : i + MAP_BATCH_SIZE]

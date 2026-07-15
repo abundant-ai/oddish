@@ -175,12 +175,15 @@ def build_reduce_only_prompt(bucket: str, counts: dict, batch_total: int) -> str
         f"one JSON object per line.\n\n"
         "## Step 1 — read the findings\n"
         f"Read them ALL with the Bash tool:\n"
-        f"    cat {FINDINGS_GLOB}\n"
+        # 2>/dev/null: bash has no nullglob here, so an all-batches-failed glob
+        # reaches cat as a literal path and it reports "No such file or
+        # directory". That is the empty case, not an error to retry or escalate.
+        f"    cat {FINDINGS_GLOB} 2>/dev/null\n"
         f"Read the glob, never a single file: up to {batch_total} such files may\n"
         "exist, and a batch that failed is simply absent. Synthesize from whatever\n"
         "findings you do get, and note the reduced coverage in your sections. Those\n"
-        "findings are your ONLY input — do NOT re-fetch trajectories. Stop only if\n"
-        "the glob yields no findings at all.\n\n"
+        "findings are your ONLY input — do NOT re-fetch trajectories. If that\n"
+        "command prints nothing at all, there are no findings: say so and stop.\n\n"
         "## Step 2 — synthesize\n"
         "Every claim MUST cite specific trials by embedding the finding's\n"
         "trajectory_link verbatim as a markdown link, e.g.\n"

@@ -1,4 +1,5 @@
 from api.services.cc_chat.analyzer_prompt import (
+    FINDINGS_GLOB,
     FINDINGS_PATH,
     REDUCE_PATH,
     build_cohort_prompt,
@@ -148,9 +149,19 @@ def test_reduce_tolerates_missing_batches_like_the_host_does():
     # the prompt must not tell the agent to bail when a batch file is absent.
     p = build_reduce_only_prompt("bad", COUNTS, 4)
     assert "up to 4" in p
-    assert "Stop only if" in p
+    assert "Synthesize from whatever" in p
     assert "every one matters" not in p
-    assert "say so and stop" not in p
+    # The one sanctioned stop is nothing-at-all, never a merely-absent batch.
+    assert "prints nothing at all" in p
+    assert "If they are missing" not in p
+
+
+def test_reduce_cat_survives_an_unmatched_glob():
+    # No nullglob in the sandbox's bash: with every batch file absent the glob
+    # reaches cat literally and it errors, so the read must swallow stderr or
+    # the empty case looks like a failure to the agent.
+    p = build_reduce_only_prompt("bad", COUNTS, 4)
+    assert f"cat {FINDINGS_GLOB} 2>/dev/null" in p
 
 
 def test_reduce_still_requires_the_reduce_file_and_forbids_refetching():
