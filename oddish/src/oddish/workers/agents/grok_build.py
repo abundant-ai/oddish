@@ -43,6 +43,22 @@ _SESSION_CAPTURE_PATH = f"/logs/agent/{GROK_SESSION_CAPTURE_DIRNAME}"
 _VALID_API_BACKENDS = frozenset({"chat_completions", "responses", "messages"})
 _API_BACKEND_RE = re.compile(r'api_backend = "[^"]*"')
 
+# The grok CLI's stream watchdog ("inference idle timeout after 600s with no
+# chunks") is fatal even though the CLI retries explicit transport errors up to
+# 15x: one silently dropped stream destroys the whole run, however many turns
+# it has completed. The stall is server-side (in-flight streams killed on the
+# shared xAI deployment) and a fresh request lands on a healthy replica, so on
+# that specific death we resume the session with ``grok -c`` (sessions are
+# keyed by cwd, and the pre-run ``rm -rf`` guarantees the most recent session
+# is this trial's) instead of throwing the run away. The failed call never
+# committed to the session store, so a resume loses at most one turn.
+_IDLE_TIMEOUT_PATTERN = "'idle timeout'"
+_MAX_IDLE_TIMEOUT_RESUMES = 3
+_RESUME_PROMPT = (
+    "The previous request failed with a transient API error. "
+    "Continue the original task from where you left off."
+)
+
 # The rendered instruction is staged inside the sandbox as a file and read back
 # via ``"$(cat ...)"`` instead of being inlined into the ``grok -p`` argv. Modal
 # rejects any ``exec`` whose CMD arguments exceed 65536 bytes (ARG_MAX), and a
@@ -55,6 +71,20 @@ _API_BACKEND_RE = re.compile(r'api_backend = "[^"]*"')
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 
+def _positive_int(name: str, value: int | str | None) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        parsed = 0
+    if parsed <= 0:
+        raise ValueError(
+            f"grok-build {name} must be a positive integer, got {value!r}."
+        )
+    return parsed
+
+
 class OddishGrokBuild(BaseInstalledAgent):
     """Grok Build wrapper that preserves streaming events for ATIF conversion."""
 
@@ -65,6 +95,8 @@ class OddishGrokBuild(BaseInstalledAgent):
         *args: Any,
         reasoning_effort: str | None = "high",
         api_backend: str | None = None,
+        max_retries: int | str | None = None,
+        inference_idle_timeout_secs: int | str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -76,6 +108,15 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"expected one of {sorted(_VALID_API_BACKENDS)}."
             )
         self.api_backend = normalized_backend or None
+        # Grok's documented-but-unexplained ``[model.*]`` reliability knobs
+        # (the settings reference describes both as just "Reliability."). Left
+        # out of the config unless set via ``--agent-kwarg``; whether
+        # ``max_retries`` covers the idle-timeout death is unverified upstream,
+        # so these exist to canary that question, not as the fix.
+        self.max_retries = _positive_int("max_retries", max_retries)
+        self.inference_idle_timeout_secs = _positive_int(
+            "inference_idle_timeout_secs", inference_idle_timeout_secs
+        )
 
     @staticmethod
     def name() -> str:
@@ -139,12 +180,20 @@ class OddishGrokBuild(BaseInstalledAgent):
         agent kwarg, e.g. ``--agent-kwarg api_backend=chat_completions``), swap
         the transport for every model entry so the trial can reach a model that
         is only served on that endpoint. When unset, the upstream default is
-        preserved verbatim.
+        preserved verbatim. ``max_retries`` / ``inference_idle_timeout_secs``
+        are likewise appended to every model entry only when set.
         """
         model = self._resolve_model()
         quoted_model = self._toml_string(model)
         quoted_base_url = self._toml_string(_XAI_BASE_URL)
         quoted_env_key = self._toml_string(_XAI_API_KEY_ENV)
+        reliability = []
+        if self.max_retries is not None:
+            reliability.append(f"max_retries = {self.max_retries}")
+        if self.inference_idle_timeout_secs is not None:
+            reliability.append(
+                f"inference_idle_timeout_secs = {self.inference_idle_timeout_secs}"
+            )
         config = "\n".join(
             [
                 "disable_web_search = true",
@@ -162,6 +211,7 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"env_key = {quoted_env_key}",
                 'api_backend = "responses"',
                 "context_window = 256000",
+                *reliability,
                 "[model.grok-build]",
                 'name = "grok-build"',
                 f"model = {quoted_model}",
@@ -169,6 +219,7 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"env_key = {quoted_env_key}",
                 'api_backend = "responses"',
                 "context_window = 256000",
+                *reliability,
                 "",
             ]
         )
@@ -245,11 +296,14 @@ class OddishGrokBuild(BaseInstalledAgent):
             *,
             no_auto_update: bool,
             include_reasoning_effort: bool = True,
+            resume: bool = False,
         ) -> str:
-            parts = [
-                "grok",
+            parts = ["grok"]
+            if resume:
+                parts.append("-c")
+            parts += [
                 "-p",
-                prompt_arg,
+                shlex.quote(_RESUME_PROMPT) if resume else prompt_arg,
                 "--always-approve",
                 "--output-format",
                 output_format,
@@ -260,6 +314,36 @@ class OddishGrokBuild(BaseInstalledAgent):
             if no_auto_update:
                 parts.append("--no-auto-update")
             return " ".join(parts)
+
+        # Flag-fallback variants in chain order; ``rv`` tracks which one ran so
+        # an idle-timeout resume replays the variant the installed CLI actually
+        # accepted, not the primary flag set.
+        variants: list[dict[str, Any]] = [
+            {"output_format": "streaming-json", "no_auto_update": True},
+            {
+                "output_format": "streaming-json",
+                "no_auto_update": True,
+                "include_reasoning_effort": False,
+            },
+            {"output_format": "json", "no_auto_update": True},
+            {
+                "output_format": "json",
+                "no_auto_update": True,
+                "include_reasoning_effort": False,
+            },
+            {"output_format": "json", "no_auto_update": False},
+            {
+                "output_format": "json",
+                "no_auto_update": False,
+                "include_reasoning_effort": False,
+            },
+        ]
+
+        def arm(index: int) -> str:
+            return grok_command(**variants[index])
+
+        def resume_arm(index: int) -> str:
+            return grok_command(**variants[index], resume=True)
 
         reasoning_unsupported_pattern = "'(reasoning-effort|reasoning_effort)'"
         unsupported_pattern = (
@@ -276,39 +360,62 @@ class OddishGrokBuild(BaseInstalledAgent):
             'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
             'rm -rf "$GROK_HOME/sessions" "$GROK_HOME/logs" 2>/dev/null; '
             "set +e; "
-            f"{grok_command('streaming-json', no_auto_update=True)} "
+            f"{arm(0)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=0; "
             f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('streaming-json', no_auto_update=True, include_reasoning_effort=False)} "
+            f"{arm(1)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=1; "
             "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=True)} "
+            f"{arm(2)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=2; "
             "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=True, include_reasoning_effort=False)} "
+            f"{arm(3)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=3; "
             "fi; "
             "if [ $rc -ne 0 ] && grep -Eqi '(no-auto-update|unknown option|"
             f"unrecognized option|unexpected argument)' {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=False)} "
+            f"{arm(4)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=4; "
             "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=False, include_reasoning_effort=False)} "
+            f"{arm(5)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=5; "
             "fi; "
+            # Resume (rather than fail the trial) when the run died to the
+            # stream watchdog. Appending to stdout keeps the streamed event log
+            # whole; overwriting stderr makes each grep reflect only the latest
+            # attempt, so any different failure (rate limit, flag error) exits
+            # the loop.
+            "resumes=0; "
+            f"while [ $rc -ne 0 ] && [ $resumes -lt {_MAX_IDLE_TIMEOUT_RESUMES} ] "
+            f"&& grep -qi {_IDLE_TIMEOUT_PATTERN} {stderr_path}; do "
+            "resumes=$((resumes+1)); "
+            'case "$rv" in '
+            + " ".join(
+                f"{index}) {resume_arm(index)} >>{stdout_path} 2>{stderr_path};;"
+                for index in range(len(variants))
+            )
+            + " esac; "
+            "rc=$?; "
+            "done; "
             "exit $rc"
         )
-        await self.exec_as_agent(environment, command=command, env=self._xai_env())
-        await self._capture_session(environment)
+        try:
+            await self.exec_as_agent(environment, command=command, env=self._xai_env())
+        finally:
+            # Capture on the failure path too: a crashed run still leaves the
+            # session store (unified.jsonl and the tool-call trajectory) behind,
+            # and without it a dead trial's only evidence is the terse stderr
+            # JSON.
+            await self._capture_session(environment)
 
     async def _capture_session(self, environment: BaseEnvironment) -> None:
         """Copy the grok session store into the trial logs.

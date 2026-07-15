@@ -22,10 +22,14 @@ export type TrialAggregate = {
   ownedHasNative: boolean;
   tokenCount: number;
   tokenTrialCount: number;
+  ownedTokenCount: number;
+  ownedTokenTrialCount: number;
   billedCostUsd: number;
   billedTrialCount: number;
   billedHasEstimated: boolean;
   billedHasNative: boolean;
+  billedTokenCount: number;
+  billedTokenTrialCount: number;
   lastRunAt: string | null;
 };
 
@@ -51,10 +55,14 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   ownedHasNative: false,
   tokenCount: 0,
   tokenTrialCount: 0,
+  ownedTokenCount: 0,
+  ownedTokenTrialCount: 0,
   billedCostUsd: 0,
   billedTrialCount: 0,
   billedHasEstimated: false,
   billedHasNative: false,
+  billedTokenCount: 0,
+  billedTokenTrialCount: 0,
   lastRunAt: null,
 };
 
@@ -69,8 +77,17 @@ export function accumulateTrial(
 ): void {
   acc.trialCount += 1;
   if (trial.input_tokens != null || trial.output_tokens != null) {
-    acc.tokenCount += (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0);
+    const tokenCount = (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0);
+    acc.tokenCount += tokenCount;
     acc.tokenTrialCount += 1;
+    if (owned) {
+      acc.ownedTokenCount += tokenCount;
+      acc.ownedTokenTrialCount += 1;
+      if (trial.is_billed) {
+        acc.billedTokenCount += tokenCount;
+        acc.billedTokenTrialCount += 1;
+      }
+    }
   }
   if (trial.cost_usd != null) {
     acc.costUsd += trial.cost_usd;

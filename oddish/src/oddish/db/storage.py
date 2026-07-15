@@ -58,6 +58,40 @@ def extract_s3_key_from_path(path: str | None) -> str | None:
     return None
 
 
+# Supabase Storage's ``isValidKey`` allowlist (storage src/storage/limits.ts).
+# Notably absent: ``%`` -- grok's URL-encoded session dirs (``sessions/%2Fapp/``)
+# are rejected outright, and one rejected PUT used to abort the whole trial
+# upload, leaving ``trial_s3_key`` NULL and breaking later QA analysis.
+_S3_KEY_ALLOWED_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+    "/!-.*'() &$@=;:+,?"
+)
+
+
+def sanitize_s3_key_chars(relative_path: str) -> str:
+    """Escape characters the storage backend rejects in object keys.
+
+    Quoted-printable style with ``=`` (allowed) as the escape: a literal
+    ``=`` becomes ``==`` and any disallowed character becomes ``=XX`` per
+    UTF-8 byte, so distinct names never collide (``%2Fapp`` -> ``=252Fapp``,
+    ``=2Fapp`` -> ``==2Fapp``). Not URL-decoding: decoding ``%2F`` would
+    introduce a ``/`` and change the key's directory structure.
+    """
+    if "=" not in relative_path and all(
+        ch in _S3_KEY_ALLOWED_CHARS for ch in relative_path
+    ):
+        return relative_path
+    parts: list[str] = []
+    for ch in relative_path:
+        if ch == "=":
+            parts.append("==")
+        elif ch in _S3_KEY_ALLOWED_CHARS:
+            parts.append(ch)
+        else:
+            parts.append("".join(f"={byte:02X}" for byte in ch.encode("utf-8")))
+    return "".join(parts)
+
+
 def _validate_task_archive_members(
     members: list[tarfile.TarInfo], destination: Path
 ) -> None:
@@ -458,8 +492,14 @@ class StorageClient:
         if not harbor_job_dir.exists():
             raise ValueError(f"Harbor job directory does not exist: {harbor_job_dir}")
 
+        # Agents name artifact files freely (e.g. grok's URL-encoded
+        # ``sessions/%2Fapp/`` session dir), so trial keys must be sanitized to
+        # the backend's allowed charset or one bad name aborts the whole upload.
         await self._upload_directory(
-            harbor_job_dir, s3_prefix, authorized_prefix=authorized_prefix
+            harbor_job_dir,
+            s3_prefix,
+            authorized_prefix=authorized_prefix,
+            sanitize_keys=True,
         )
 
         return s3_prefix
@@ -542,6 +582,7 @@ class StorageClient:
         s3_prefix: str,
         *,
         authorized_prefix: str | None = None,
+        sanitize_keys: bool = False,
     ) -> None:
         """Upload a directory tree to S3 with bounded concurrency.
 
@@ -549,6 +590,11 @@ class StorageClient:
         any key that would fall outside it is refused rather than written, so
         this oddish upload path cannot write outside the job's prefix
         (defense in depth against a path-traversal escape; spec §6.6).
+
+        When ``sanitize_keys`` is set, characters the storage backend rejects
+        in object keys are substituted (see ``sanitize_s3_key_chars``). Trial
+        uploads enable this; task uploads keep exact names, since a renamed
+        task file would silently change the task.
         """
         file_paths = [path for path in local_path.rglob("*") if path.is_file()]
         if not file_paths:
@@ -557,7 +603,9 @@ class StorageClient:
         semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_UPLOADS)
 
         async def upload_one(file_path: Path) -> str | None:
-            relative_path = file_path.relative_to(local_path)
+            relative_path = str(file_path.relative_to(local_path))
+            if sanitize_keys:
+                relative_path = sanitize_s3_key_chars(relative_path)
             s3_key = f"{s3_prefix}{relative_path}"
             if authorized_prefix is not None:
                 from oddish.workers.queue.job_tokens import authorize_s3_key
@@ -1623,8 +1671,37 @@ async def resolve_trial_directory(
     Returns: (trial_dir_to_use, temp_dir_to_cleanup, resolved_s3_key)
     """
     resolved_s3_key = resolve_s3_key(trial_s3_key, trial_result_path)
-    if resolved_s3_key:
+    local_trial_path = Path(trial_result_path) if trial_result_path else None
+
+    # Hosted trial artifacts always use the deterministic prefix returned by
+    # ``StorageClient._trial_prefix``.  Older rows (and rows written by workers
+    # racing a deploy) may have a null ``trial_s3_key`` even though the upload
+    # completed successfully.  A later QA worker runs in a different container,
+    # so its copy of ``harbor_result_path`` points at stale worker-local /tmp.
+    # Prefer a genuinely available local path, then recover those rows from the
+    # canonical S3 prefix instead of failing on the stale path.
+    if resolved_s3_key is None and local_trial_path is not None:
+        if local_trial_path.exists():
+            return local_trial_path, None, None
+
+    storage = None
+    if resolved_s3_key is None:
+        fallback_s3_key = resolve_trial_s3_prefix(
+            trial_id,
+            trial_s3_key=trial_s3_key,
+            trial_result_path=trial_result_path,
+        )
         storage = get_storage_client()
+        try:
+            if await storage.prefix_exists(fallback_s3_key):
+                resolved_s3_key = fallback_s3_key
+        except Exception:
+            # Preserve the existing local-path fallback and error messages when
+            # object storage is unavailable or the canonical prefix is absent.
+            pass
+
+    if resolved_s3_key:
+        storage = storage or get_storage_client()
         temp_dir = Path(tempfile.mkdtemp(prefix=f"trial-{trial_id}-"))
         try:
             await storage.download_trial_directory(resolved_s3_key, temp_dir)

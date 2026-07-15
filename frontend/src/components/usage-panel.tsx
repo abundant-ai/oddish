@@ -10,11 +10,11 @@ import {
   type TimeRangeKey,
 } from "@/components/usage-overview";
 
-type UsageClientProps = {
+type UsagePanelProps = {
   initialUsageData?: DashboardResponse | null;
 };
 
-export function UsageClient({ initialUsageData = null }: UsageClientProps) {
+export function UsagePanel({ initialUsageData = null }: UsagePanelProps) {
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
   const usageFallbackData =

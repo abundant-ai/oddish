@@ -820,7 +820,10 @@ class ExperimentCostTotals(BaseModel):
     the work it displays cost. ``owned_*`` covers only trials homed in the experiment
     (the page's "New spend"); it is the number that stays additive across
     experiments. ``billed_*`` is the subset of owned spend attributed to a
-    registered user's quota. ``total_trials`` counts all member trials.
+    registered user's quota. Token totals mirror those scopes: ``token_*`` is
+    member-wide (the Cost tile's usage subline), ``owned_token_*`` home-only
+    (the New spend subline), ``billed_token_*`` the billed subset of owned.
+    ``total_trials`` counts all member trials.
 
     Served separately from the trial grid because it cannot be derived from it:
     the grid is paginated, and it is filtered to each task's current version, so
@@ -834,14 +837,20 @@ class ExperimentCostTotals(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    token_count: int = 0
+    token_trial_count: int = 0
     owned_cost_usd: float = 0.0
     owned_trial_count: int = 0
     owned_has_estimated: bool = False
     owned_has_native: bool = False
+    owned_token_count: int = 0
+    owned_token_trial_count: int = 0
     billed_cost_usd: float = 0.0
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    billed_token_count: int = 0
+    billed_token_trial_count: int = 0
     total_trials: int = 0
 
 

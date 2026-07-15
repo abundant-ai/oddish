@@ -25,6 +25,12 @@ _NPM_PREFIX = "/home/daytona/.npm-global"
 _CLAUDE_BIN = f"{_NPM_PREFIX}/bin/claude"
 _WORKSPACE = "/home/daytona/workspace"
 _TRANSCRIPT_PATH = f"{_WORKSPACE}/agent/transcript.jsonl"
+# The prompt travels as a file on stdin, never as an argv entry: Linux caps a
+# single argument at MAX_ARG_STRLEN (128KiB, not raisable via ulimit), and
+# analyzer cohort prompts run to ~217KB. Over the cap the shell rejects the
+# command outright -- claude never execs, so the failure surfaces as an empty
+# result rather than an agent error.
+_PROMPT_PATH = f"{_WORKSPACE}/.cc-prompt.txt"
 
 # Headless `--print` runs can't surface an interactive approval prompt, so any
 # tool the agent invokes (Bash `./oddish-query`, Read, etc.) would block on a
@@ -208,6 +214,7 @@ class ClaudeCodeRuntime:
         content: str,
         claude_session_id: str | None,
         daytona_session_id: str = "cc",
+        system_prompt: str | None = None,
     ) -> AsyncIterator[dict]:
         parts = [
             _CLAUDE_BIN,
@@ -216,11 +223,22 @@ class ClaudeCodeRuntime:
             "--verbose",
             *_PERMISSION_FLAGS,
         ]
+        # Appended rather than replacing: Claude Code's own system prompt is what
+        # makes its tools work, so --system-prompt would break Bash and the agent
+        # could not run the CLI at all.
+        if system_prompt:
+            parts += ["--append-system-prompt", shlex.quote(system_prompt)]
         if claude_session_id:
             parts += ["--resume", shlex.quote(claude_session_id)]
-        parts += ["--", shlex.quote(content)]
 
-        cmd_str = f"cd {shlex.quote(_WORKSPACE)} && " + " ".join(parts) + " < /dev/null"
+        await client.upload_file(
+            sandbox, dest_path=_PROMPT_PATH, content=content.encode("utf-8")
+        )
+        cmd_str = (
+            f"cd {shlex.quote(_WORKSPACE)} && "
+            + " ".join(parts)
+            + f" < {shlex.quote(_PROMPT_PATH)}"
+        )
 
         cmd_id = await client.exec_async(
             sandbox,

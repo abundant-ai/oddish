@@ -168,10 +168,14 @@ type ExperimentSummary = {
   ownedHasNative: boolean;
   tokenCount: number;
   tokenTrialCount: number;
+  ownedTokenCount: number;
+  ownedTokenTrialCount: number;
   billedCostUsd: number;
   billedTrialCount: number;
   billedHasEstimated: boolean;
   billedHasNative: boolean;
+  billedTokenCount: number;
+  billedTokenTrialCount: number;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -252,10 +256,14 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     ownedHasNative: acc.ownedHasNative,
     tokenCount: acc.tokenCount,
     tokenTrialCount: acc.tokenTrialCount,
+    ownedTokenCount: acc.ownedTokenCount,
+    ownedTokenTrialCount: acc.ownedTokenTrialCount,
     billedCostUsd: acc.billedCostUsd,
     billedTrialCount: acc.billedTrialCount,
     billedHasEstimated: acc.billedHasEstimated,
     billedHasNative: acc.billedHasNative,
+    billedTokenCount: acc.billedTokenCount,
+    billedTokenTrialCount: acc.billedTokenTrialCount,
   };
 }
 
@@ -718,7 +726,7 @@ function ExperimentSummaryBar({
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
         </span>
-        {summary.tokenTrialCount > 0 && (
+        {!costPending && summary.tokenTrialCount > 0 && (
           <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
             {formatTokenCount(summary.tokenCount)}
           </span>
@@ -757,7 +765,9 @@ function ExperimentSummaryBar({
                     }`
                   : summary.costTrialCount > 0
                     ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
-                    : "No spend from this experiment yet"
+                    : summary.ownedTokenTrialCount > 0
+                      ? "No cost data reported yet for this experiment's own trials"
+                      : "No spend from this experiment yet"
             }
           >
             {costPending ? (
@@ -785,6 +795,11 @@ function ExperimentSummaryBar({
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
           </span>
+          {!costPending && summary.ownedTokenTrialCount > 0 && (
+            <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+              {formatTokenCount(summary.ownedTokenCount)}
+            </span>
+          )}
         </KpiTile>
       )}
       <KpiTile
@@ -1200,16 +1215,23 @@ export function ExperimentDetailView({
       costTrialCount: costTotals.cost_trial_count,
       costHasEstimated: costTotals.cost_has_estimated,
       costHasNative: costTotals.cost_has_native,
+      tokenCount: costTotals.token_count,
+      tokenTrialCount: costTotals.token_trial_count,
       // ?? base.*: deploy-skew guard — a backend that predates owned_* omits
       // the fields; the client fold's partial owned sum beats a hard $0.00.
       ownedCostUsd: costTotals.owned_cost_usd ?? base.ownedCostUsd,
       ownedTrialCount: costTotals.owned_trial_count ?? base.ownedTrialCount,
       ownedHasEstimated: costTotals.owned_has_estimated ?? base.ownedHasEstimated,
       ownedHasNative: costTotals.owned_has_native ?? base.ownedHasNative,
+      ownedTokenCount: costTotals.owned_token_count ?? base.ownedTokenCount,
+      ownedTokenTrialCount:
+        costTotals.owned_token_trial_count ?? base.ownedTokenTrialCount,
       billedCostUsd: costTotals.billed_cost_usd,
       billedTrialCount: costTotals.billed_trial_count,
       billedHasEstimated: costTotals.billed_has_estimated,
       billedHasNative: costTotals.billed_has_native,
+      billedTokenCount: costTotals.billed_token_count,
+      billedTokenTrialCount: costTotals.billed_token_trial_count,
     };
   }, [deferredTasksForDerivedData, costTotals]);
 
