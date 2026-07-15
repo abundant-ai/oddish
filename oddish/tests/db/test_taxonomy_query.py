@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 from oddish.db.models import (
@@ -10,42 +12,54 @@ from oddish.db.taxonomy_query import load_taxonomy
 
 @pytest.mark.asyncio
 async def test_load_taxonomy_builds_primary_and_extra_tags(session):
+    # captax_001 seeds real rows with these slugs as PKs on any migrated DB;
+    # uniquify so this test's inserts never collide with the seed data.
+    suffix = uuid.uuid4().hex[:8]
+    verification_slug = f"verification-{suffix}"
+    tool_slug = f"tool-{suffix}"
+    early_stop_slug = f"agent-early-stop-{suffix}"
+    tool_selection_slug = f"tool-selection-error-{suffix}"
+
     session.add_all([
-        CapabilityCategoryModel(slug="verification", name="Verification failures",
+        CapabilityCategoryModel(slug=verification_slug, name="Verification failures",
                                 description="d", sort_order=0),
-        CapabilityCategoryModel(slug="tool", name="Tool failures",
+        CapabilityCategoryModel(slug=tool_slug, name="Tool failures",
                                 description="d", sort_order=1),
-        CapabilityModel(slug="agent-early-stop", name="Agent Early Stop",
+        CapabilityModel(slug=early_stop_slug, name="Agent Early Stop",
                         description="Stops early.", example="apex-swe."),
-        CapabilityModel(slug="tool-selection-error", name="Tool Selection Error",
+        CapabilityModel(slug=tool_selection_slug, name="Tool Selection Error",
                         description="Wrong tool.", example="curl over MCP."),
     ])
     await session.flush()
     session.add_all([
-        CapabilityCategoryTagModel(capability_slug="agent-early-stop",
-                                   category_slug="verification", is_primary=True),
-        CapabilityCategoryTagModel(capability_slug="tool-selection-error",
-                                   category_slug="tool", is_primary=True),
-        CapabilityCategoryTagModel(capability_slug="tool-selection-error",
-                                   category_slug="verification", is_primary=False),
+        CapabilityCategoryTagModel(capability_slug=early_stop_slug,
+                                   category_slug=verification_slug, is_primary=True),
+        CapabilityCategoryTagModel(capability_slug=tool_selection_slug,
+                                   category_slug=tool_slug, is_primary=True),
+        CapabilityCategoryTagModel(capability_slug=tool_selection_slug,
+                                   category_slug=verification_slug, is_primary=False),
     ])
     await session.flush()
 
     tax = await load_taxonomy(session)
 
-    assert [c.slug for c in tax.categories] == ["verification", "tool"]
+    our_category_slugs = {verification_slug, tool_slug}
+    our_categories = [c for c in tax.categories if c.slug in our_category_slugs]
+    assert [c.slug for c in our_categories] == [verification_slug, tool_slug]
+
     by_slug = {c.slug: c for c in tax.capabilities}
-    assert by_slug["agent-early-stop"].primary_category == "verification"
-    assert by_slug["agent-early-stop"].extra_categories == ()
-    assert by_slug["tool-selection-error"].primary_category == "tool"
-    assert by_slug["tool-selection-error"].extra_categories == ("verification",)
+    assert by_slug[early_stop_slug].primary_category == verification_slug
+    assert by_slug[early_stop_slug].extra_categories == ()
+    assert by_slug[tool_selection_slug].primary_category == tool_slug
+    assert by_slug[tool_selection_slug].extra_categories == (verification_slug,)
 
 
 @pytest.mark.asyncio
 async def test_load_taxonomy_skips_untagged_capability(session):
     """A capability with no primary tag cannot be grouped, so it must not reach
     the rubric -- it would render under no category and be unpickable."""
-    session.add(CapabilityModel(slug="orphan", name="Orphan", description="d"))
+    orphan_slug = f"orphan-{uuid.uuid4().hex[:8]}"
+    session.add(CapabilityModel(slug=orphan_slug, name="Orphan", description="d"))
     await session.flush()
     tax = await load_taxonomy(session)
-    assert [c.slug for c in tax.capabilities] == []
+    assert orphan_slug not in {c.slug for c in tax.capabilities}
