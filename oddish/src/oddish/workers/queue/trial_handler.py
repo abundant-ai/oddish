@@ -31,6 +31,7 @@ from oddish.db import (
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
+from oddish.observability import log_unpriced_trial_if_needed
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -705,14 +706,16 @@ async def _store_trial_results(
             trial.cache_write_tokens = outcome.cache_write_tokens
             trial.output_tokens = outcome.output_tokens
             trial.total_steps = outcome.total_steps
+            provider = settings.get_provider_for_trial(
+                getattr(trial, "agent", ""), trial.model
+            )
+            native_cost_trusted = is_native_cost_trusted(
+                agent=getattr(trial, "agent", None),
+                provider=provider,
+            )
             trial.cost_usd = settle_cost_usd(
                 outcome.cost_usd,
-                native_cost_trusted=is_native_cost_trusted(
-                    agent=getattr(trial, "agent", None),
-                    provider=settings.get_provider_for_trial(
-                        getattr(trial, "agent", ""), trial.model
-                    ),
-                ),
+                native_cost_trusted=native_cost_trusted,
                 model=trial.model,
                 input_tokens=outcome.input_tokens,
                 output_tokens=outcome.output_tokens,
@@ -722,9 +725,13 @@ async def _store_trial_results(
 
             trial.phase_timing = outcome.phase_timing
             # Verifier-reported benchmark metrics (the metrics.json contract),
-            # plus a harbor_exception marker when a phase raised quietly.
+            # compact CTRF test counts, plus a harbor_exception marker when a
+            # phase raised quietly.
             trial.result = merged_trial_result(
-                outcome.metrics, outcome.error, outcome.exception_type
+                outcome.metrics,
+                outcome.error,
+                outcome.exception_type,
+                outcome.verifier_summary,
             )
 
             trial.has_trajectory = outcome.has_trajectory
@@ -782,6 +789,24 @@ async def _store_trial_results(
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(f"[red]Trial {trial_id} FAILED (max attempts)[/red]")
+
+            # Retry reconciliation can restore a previously checkpointed cost.
+            # Log only after that monotonic adjustment so we never report an
+            # unpriced row that will actually retain a resolved cost.
+            log_unpriced_trial_if_needed(
+                cost_usd=trial.cost_usd,
+                trial_id=trial.id,
+                model=trial.model,
+                agent=getattr(trial, "agent", None),
+                provider=provider,
+                attempt=trial.attempts,
+                input_tokens=outcome.input_tokens,
+                cache_tokens=outcome.cache_tokens,
+                cache_write_tokens=outcome.cache_write_tokens,
+                output_tokens=outcome.output_tokens,
+                native_cost_usd=outcome.cost_usd,
+                native_cost_trusted=native_cost_trusted,
+            )
         else:
             trial.status = TrialStatus.FAILED
             trial.finished_at = utcnow()

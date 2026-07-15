@@ -142,11 +142,20 @@ High-level flow:
    the trial goes terminal (S3 stays the permanent record); a 24h TTL sweep in
    the cleanup pass reaps rows leaked by hard-killed workers. A RETRYING trial
    clears `finished_at` and keeps its cost monotonic so it still counts as
-   inflight for quotas and `/live`.
+   inflight for quotas and `/live`. Claude assistant deltas and tool blocks carry
+   a hashed `turn_id` in their event payload so clients can distinguish streamed
+   suffixes from a new no-tool assistant turn without exposing provider message
+   identifiers. Claude message payloads also carry a `block_index` and
+   `text_mode` (`append` or `replace`) so clients can assemble corrected text
+   snapshots without concatenating stale content.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
-   reported, phase timing, and trajectory availability. Use the CLI or dashboard
-   to watch progress and pull logs/artifacts back locally.
+   reported, phase timing, trajectory availability, arbitrary verifier
+   `metrics.json`, and a compact `_verifier` summary when the verifier emits a
+   Common Test Report Format `verifier/ctrf.json`. The full CTRF report stays in
+   S3; only counts, the tool name, and the report's trial-relative artifact path
+   are stored in `trials.result`. Use the CLI or dashboard to watch progress and
+   pull logs/artifacts back locally.
 
 ### Worker job kinds
 
@@ -646,6 +655,13 @@ for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
 `GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
 full surface and `backend/README.md` for details.
 
+Slack link unfurls are a lean hosted-only integration configured through
+`ODDISH_SLACK_UNFURL_*`. One manually installed Slack workspace is bound to one
+Oddish org; the Slack app needs `links:read` and `links:write`, subscribes to
+`link_shared`, and sends signed events to `POST /webhooks/slack/events`.
+Optional team and channel allowlists provide defense in depth. This integration
+is separate from the scheduled expense-notification webhook.
+
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
@@ -687,6 +703,8 @@ uv run alembic upgrade head
 | `api/routers/trials.py` | Trial logs, result, trajectory, retries, deletion |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
 | `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` (slots, queue status, orphaned state, worker_jobs) |
+| `api/routers/slack.py` | Signed Slack Events API endpoint for link unfurls |
+| `api/services/slack_unfurls.py` | Task/experiment summary queries and Slack block construction |
 | `auth/__init__.py` | Header parsing, `get_auth_context`, permission dependencies |
 | `auth/verification.py` | API key + Clerk JWT verification |
 | `worker/functions.py` | Modal dispatcher (`poll_queue`), reconciler (`reconcile_queue_state`), and kind-agnostic single-job runner |
@@ -701,6 +719,13 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+
+The trial drawer's Verifier Results card is adaptive: `_verifier` CTRF counts
+take precedence, scalar `trials.result` metrics render as benchmark metrics,
+and `reward` provides the binary/partial/scoreless fallback. Historical trials
+without a persisted `_verifier` summary lazily discover and parse their
+`verifier/ctrf.json` artifact through the already-scoped trial files API; do not
+add an unscoped artifact lookup for this fallback.
 
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that

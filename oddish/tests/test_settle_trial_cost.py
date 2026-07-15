@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from oddish import observability
 from oddish.db import TrialStatus
 from oddish.workers.harbor.runner import HarborOutcome
 from oddish.workers.queue.trial_handler import _store_trial_results
@@ -86,5 +87,45 @@ async def test_positive_native_cost_is_kept_for_non_claude_fireworks_agent(monke
 @pytest.mark.asyncio
 async def test_zero_cost_unpriceable_model_settles_to_none(monkeypatch):
     trial = _trial(agent="claude-code", model="totally-made-up-model")
+    warnings = []
+    monkeypatch.setattr(
+        observability,
+        "log_warning",
+        lambda message, **attributes: warnings.append((message, attributes)),
+    )
     await _store(monkeypatch, trial, _outcome())
     assert trial.cost_usd is None
+    assert warnings == [
+        (
+            "Trial has token usage but no resolved cost",
+            {
+                "tags": ("cost-integrity", "unpriced-model"),
+                "metric": "trial_cost_unpriced",
+                "trial_id": trial.id,
+                "model": "totally-made-up-model",
+                "agent": "claude-code",
+                "provider": "bedrock",
+                "attempt": trial.attempts,
+                "input_tokens": 1_000_000,
+                "cache_tokens": 0,
+                "cache_write_tokens": 0,
+                "output_tokens": 100_000,
+                "native_cost_usd": 0.0,
+                "native_cost_trusted": True,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_priceable_model_does_not_log_unpriced_warning(monkeypatch):
+    trial = _trial(agent="claude-code", model="zai/glm-x-preview[1m]")
+    warnings = []
+    monkeypatch.setattr(
+        observability,
+        "log_warning",
+        lambda message, **attributes: warnings.append((message, attributes)),
+    )
+    await _store(monkeypatch, trial, _outcome())
+    assert trial.cost_usd == pytest.approx(1.32)
+    assert warnings == []
