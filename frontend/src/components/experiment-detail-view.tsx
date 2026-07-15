@@ -705,7 +705,7 @@ function ExperimentSummaryBar({
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
         </span>
-        {summary.tokenTrialCount > 0 && (
+        {!costPending && summary.tokenTrialCount > 0 && (
           <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
             {formatTokenCount(summary.tokenCount)}
           </span>
@@ -735,7 +735,9 @@ function ExperimentSummaryBar({
                           ? ". Estimated from token counts × static model pricing."
                           : ". Reported by the agent runtime."
                     }`
-                  : "No billed trials yet"
+                  : summary.billedTokenTrialCount > 0
+                    ? "No billed cost data reported yet"
+                    : "No billed trials yet"
             }
           >
             {costPending ? (
@@ -758,7 +760,7 @@ function ExperimentSummaryBar({
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
           </span>
-          {summary.billedTokenTrialCount > 0 && (
+          {!costPending && summary.billedTokenTrialCount > 0 && (
             <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
               {formatTokenCount(summary.billedTokenCount)}
             </span>
