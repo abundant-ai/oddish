@@ -52,6 +52,7 @@ from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db import get_session
 from oddish.db.models import ExperimentModel, TaskModel, TrialModel, TrialStatus
 from oddish.evals.analyzer.bucketing import bucket_subanalyses
+from oddish.evals.analyzer.prompt_builder import SECTION_KEYS, sections_block
 
 # One of ClaudeCodeRuntime.supported_models. stream_chat has no --model flag, so
 # we force the model with ANTHROPIC_MODEL in the sandbox env (Claude Code honors
@@ -170,8 +171,18 @@ def _build_prompt(bad) -> str:
     contain literal ``{placeholder}`` braces that would break f-string parsing.
     """
     prompts_dir = files("oddish.evals.analyzer") / "prompts"
-    map_template = (prompts_dir / "map.txt").read_text()
-    reduce_template = (prompts_dir / "reduce.txt").read_text()
+    # map.txt/reduce.txt are str.format() templates: literal JSON braces are
+    # escaped as {{/}}. We inline them raw for the agent (no .format() call),
+    # so unescape those here and leave single-brace {placeholders} for the
+    # agent to fill itself.
+    map_template = (prompts_dir / "map.txt").read_text().replace("{{", "{").replace("}}", "}")
+    reduce_template = (
+        (prompts_dir / "reduce.txt")
+        .read_text()
+        .replace("{sections_block}", sections_block(SECTION_KEYS))
+        .replace("{{", "{")
+        .replace("}}", "}")
+    )
 
     cohort_lines = "\n".join(
         (
