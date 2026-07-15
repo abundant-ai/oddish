@@ -107,5 +107,7 @@ def taxonomy_fingerprint(taxonomy: Taxonomy) -> str:
     snap = taxonomy_snapshot(taxonomy)
     snap["categories"].sort(key=lambda c: c["slug"])
     snap["capabilities"].sort(key=lambda c: c["slug"])
+    for cap in snap["capabilities"]:
+        cap["extra_categories"].sort()
     blob = json.dumps(snap, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()[:12]

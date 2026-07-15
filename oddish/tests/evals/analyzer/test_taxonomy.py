@@ -35,7 +35,7 @@ def _tax() -> Taxonomy:
 
 def test_by_category_groups_on_primary_only():
     """extra_categories must NOT duplicate a capability into a second group --
-    that is exactly the double-count is_primary exists to prevent."""
+    that is exactly the double-count primary_category exists to prevent."""
     groups = _tax().by_category()
     assert [c.slug for c, _ in groups] == ["verification", "tool"]
     assert [x.slug for x in groups[0][1]] == ["agent-early-stop"]
@@ -88,3 +88,29 @@ def test_fingerprint_unchanged_by_row_reorder():
 def test_snapshot_round_trips():
     tax = _tax()
     assert taxonomy_from_snapshot(taxonomy_snapshot(tax)) == tax
+
+
+def test_fingerprint_unchanged_by_extra_categories_order():
+    """Extra_categories order reflects DB join order, not content. Fingerprint
+    must normalize this to avoid false negatives on taxonomy identity."""
+    tax = Taxonomy(
+        categories=(Category("verification", "Verification failures", "stops early", 0),),
+        capabilities=(
+            Capability(
+                "test-cap", "Test Capability", "Test description",
+                primary_category="verification",
+                extra_categories=("z", "a", "m"),
+            ),
+        ),
+    )
+    reordered = Taxonomy(
+        categories=tax.categories,
+        capabilities=(
+            Capability(
+                "test-cap", "Test Capability", "Test description",
+                primary_category="verification",
+                extra_categories=("a", "m", "z"),
+            ),
+        ),
+    )
+    assert taxonomy_fingerprint(tax) == taxonomy_fingerprint(reordered)
