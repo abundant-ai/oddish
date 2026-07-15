@@ -83,15 +83,25 @@ def _gather(rows: list[tuple[Any, str]]) -> tuple[list[SubAnalysis], dict[str, s
     return subs, oracle_by_trial
 
 
-async def _resolve_api_creds(rows: list[tuple[Any, str]]) -> tuple[str, str]:
-    """Mint a read-scoped key so the in-sandbox CLI can reach the public API."""
+async def _resolve_api_creds(
+    rows: list[tuple[Any, str]], analyzer_id: str
+) -> tuple[str, str, str]:
+    """Mint a read-scoped key so the in-sandbox CLI can reach the public API.
+
+    Returns (key_id, api_base_url, api_key); the caller owns revoking key_id.
+    """
     from oddish.worker.probe_creds import mint_probe_creds
 
     org_id = rows[0][0].org_id
-    _key_id, creds = await mint_probe_creds(
-        org_id=org_id, trial_id="analyzer-cohort"
-    )
-    return creds["ODDISH_API_BASE_URL"], creds["ODDISH_API_KEY"]
+    key_id, creds = await mint_probe_creds(org_id=org_id, trial_id=analyzer_id)
+    return key_id, creds["ODDISH_API_BASE_URL"], creds["ODDISH_API_KEY"]
+
+
+async def _revoke_api_key(key_id: str, analyzer_id: str) -> None:
+    """Best-effort revoke; mirrors trial_handler's probe-key teardown."""
+    from oddish.workers.queue.trial_handler import _delete_probe_key
+
+    await _delete_probe_key(key_id, analyzer_id)
 
 
 async def sandbox_eval_rows(
@@ -110,7 +120,7 @@ async def sandbox_eval_rows(
 
     roster = _roster(bad, good)
     client, runtime, cli_src = _daytona_client(), _runtime(), _read_cli_source()
-    api_base, api_key = await _resolve_api_creds(rows)
+    key_id, api_base, api_key = await _resolve_api_creds(rows, analyzer_id)
 
     async def _cohort(bucket: str, cohort: list[SubAnalysis]):
         return await run_cohort(
@@ -121,9 +131,25 @@ async def sandbox_eval_rows(
         )
 
     jobs = [(b, c) for b, c in (("bad", bad), ("good", good)) if c]
-    # No return_exceptions: a cohort failure must fail the job. Falling back to
-    # the API path would silently re-introduce the whole-trajectory S3 load.
-    results = await asyncio.gather(*[_cohort(b, c) for b, c in jobs])
+    try:
+        # return_exceptions=True: wait for every cohort to settle, successful
+        # or not, so each one's own `finally` tears its sandbox down in a live
+        # loop. Raising as soon as the first cohort fails would return control
+        # to the caller (which stops the job right after), destroying the
+        # event loop out from under the survivor's still-running sandbox --
+        # its teardown `await` would then have no loop to run on, abandoning
+        # the sandbox until Daytona's idle auto_stop reaps it.
+        results = await asyncio.gather(
+            *[_cohort(b, c) for b, c in jobs], return_exceptions=True
+        )
+    finally:
+        await _revoke_api_key(key_id, analyzer_id)
+
+    first_exc = next((r for r in results if isinstance(r, BaseException)), None)
+    if first_exc is not None:
+        # Still no fallback to the API path on any cohort failure -- only the
+        # timing of the failure changed, not whether the job fails.
+        raise first_exc
 
     findings: list[Finding] = []
     sections = dict(_EMPTY_SECTIONS)

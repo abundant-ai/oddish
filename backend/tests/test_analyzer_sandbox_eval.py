@@ -32,6 +32,7 @@ def patched(monkeypatch):
     from worker import analyzer_sandbox as m
 
     calls = []
+    revoked = []
 
     async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
         calls.append({"bucket": bucket, "cohort": [sa.trial_id for sa in cohort]})
@@ -48,15 +49,19 @@ def patched(monkeypatch):
     monkeypatch.setattr(m, "_daytona_client", lambda: object())
     monkeypatch.setattr(m, "_runtime", lambda: object())
 
-    async def fake_creds(rows):
-        return "https://api.example", "key"
+    async def fake_creds(rows, analyzer_id):
+        return "key-id-1", "https://api.example", "key"
+
+    async def fake_revoke(key_id, analyzer_id):
+        revoked.append(key_id)
 
     monkeypatch.setattr(m, "_resolve_api_creds", fake_creds)
-    return m, calls
+    monkeypatch.setattr(m, "_revoke_api_key", fake_revoke)
+    return m, calls, revoked
 
 
 async def test_runs_one_sandbox_per_cohort_and_merges_sections(patched, monkeypatch):
-    m, calls = patched
+    m, calls, _ = patched
     monkeypatch.setattr(
         m, "_gather", lambda rows: (
             [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
@@ -75,7 +80,7 @@ async def test_runs_one_sandbox_per_cohort_and_merges_sections(patched, monkeypa
 
 
 async def test_empty_cohort_provisions_no_sandbox(patched, monkeypatch):
-    m, calls = patched
+    m, calls, _ = patched
     monkeypatch.setattr(
         m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
     )
@@ -86,7 +91,7 @@ async def test_empty_cohort_provisions_no_sandbox(patched, monkeypatch):
 
 
 async def test_both_cohorts_empty_provisions_nothing(patched, monkeypatch):
-    m, calls = patched
+    m, calls, _ = patched
     monkeypatch.setattr(m, "_gather", lambda rows: ([], {}))
     out = await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
     assert calls == []
@@ -97,7 +102,7 @@ async def test_both_cohorts_empty_provisions_nothing(patched, monkeypatch):
 async def test_cohort_failure_fails_the_job(patched, monkeypatch):
     """No fallback to the API path: it would silently re-introduce the S3 load
     and the context overflow this exists to avoid."""
-    m, _ = patched
+    m, _, _ = patched
     monkeypatch.setattr(
         m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
     )
@@ -110,11 +115,13 @@ async def test_cohort_failure_fails_the_job(patched, monkeypatch):
         await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
 
 
-async def test_concurrent_cohort_failure_does_not_drop_the_survivor(patched, monkeypatch):
-    """One cohort raising must not cancel or silently swallow the other: gather
-    (no return_exceptions) lets the survivor run to completion and reach its own
-    teardown, while the overall call still surfaces the failure."""
-    m, _ = patched
+async def test_failure_waits_for_siblings_to_tear_down(patched, monkeypatch):
+    """A bad cohort's fast raise must not cut the good cohort's run short: the
+    call must not return until every cohort has settled, so the survivor's own
+    `finally` teardown always runs on a live loop. No `asyncio.sleep` grace
+    period here after the call returns -- production gets none either, so if
+    this test needs one to pass, the fix doesn't actually work."""
+    m, _, _ = patched
     monkeypatch.setattr(
         m, "_gather", lambda rows: (
             [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
@@ -134,15 +141,34 @@ async def test_concurrent_cohort_failure_does_not_drop_the_survivor(patched, mon
     monkeypatch.setattr(m, "run_cohort", flaky)
     with pytest.raises(RuntimeError, match="sandbox exploded"):
         await m.sandbox_eval_rows([("r1", "t"), ("r2", "t")], AnalyzerEvalConfig(), "a1")
-    # gather() raises as soon as bad fails, without waiting for good's still-running
-    # task; give the background task time to reach completion before asserting.
-    await asyncio.sleep(0.1)
     assert good_finished
+
+
+async def test_first_cohort_exception_propagates_not_a_later_one(patched, monkeypatch):
+    """When both cohorts fail, the one that raises first is what the caller
+    sees -- not whichever happens to settle last in the gathered list."""
+    m, _, _ = patched
+    monkeypatch.setattr(
+        m, "_gather", lambda rows: (
+            [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
+            {"bad-1": "o"},
+        ),
+    )
+
+    async def both_fail(client, runtime, *, bucket, cohort, **kw):
+        if bucket == "bad":
+            raise RuntimeError("bad cohort exploded")
+        await asyncio.sleep(0.02)
+        raise RuntimeError("good cohort exploded")
+
+    monkeypatch.setattr(m, "run_cohort", both_fail)
+    with pytest.raises(RuntimeError, match="bad cohort exploded"):
+        await m.sandbox_eval_rows([("r1", "t"), ("r2", "t")], AnalyzerEvalConfig(), "a1")
 
 
 async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch):
     """Blank sections that look like a completed analysis are worse than a failure."""
-    m, _ = patched
+    m, _, _ = patched
     monkeypatch.setattr(
         m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
     )
@@ -153,6 +179,30 @@ async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch
     monkeypatch.setattr(m, "run_cohort", empty)
     with pytest.raises(RuntimeError, match="no findings"):
         await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
+
+
+async def test_api_key_revoked_on_success(patched, monkeypatch):
+    m, _, revoked = patched
+    monkeypatch.setattr(
+        m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
+    )
+    await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
+    assert revoked == ["key-id-1"]
+
+
+async def test_api_key_revoked_on_cohort_failure(patched, monkeypatch):
+    m, _, revoked = patched
+    monkeypatch.setattr(
+        m, "_gather", lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}),
+    )
+
+    async def boom(client, runtime, *, bucket, cohort, **kw):
+        raise RuntimeError("sandbox exploded")
+
+    monkeypatch.setattr(m, "run_cohort", boom)
+    with pytest.raises(RuntimeError, match="sandbox exploded"):
+        await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
+    assert revoked == ["key-id-1"]
 
 
 async def test_handler_subclass_uses_the_sandbox_strategy():
