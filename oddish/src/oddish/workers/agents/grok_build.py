@@ -315,6 +315,36 @@ class OddishGrokBuild(BaseInstalledAgent):
                 parts.append("--no-auto-update")
             return " ".join(parts)
 
+        # Flag-fallback variants in chain order; ``rv`` tracks which one ran so
+        # an idle-timeout resume replays the variant the installed CLI actually
+        # accepted, not the primary flag set.
+        variants: list[dict[str, Any]] = [
+            {"output_format": "streaming-json", "no_auto_update": True},
+            {
+                "output_format": "streaming-json",
+                "no_auto_update": True,
+                "include_reasoning_effort": False,
+            },
+            {"output_format": "json", "no_auto_update": True},
+            {
+                "output_format": "json",
+                "no_auto_update": True,
+                "include_reasoning_effort": False,
+            },
+            {"output_format": "json", "no_auto_update": False},
+            {
+                "output_format": "json",
+                "no_auto_update": False,
+                "include_reasoning_effort": False,
+            },
+        ]
+
+        def arm(index: int) -> str:
+            return grok_command(**variants[index])
+
+        def resume_arm(index: int) -> str:
+            return grok_command(**variants[index], resume=True)
+
         reasoning_unsupported_pattern = "'(reasoning-effort|reasoning_effort)'"
         unsupported_pattern = (
             "'(streaming-json|output-format|no-auto-update|unknown option|"
@@ -330,34 +360,34 @@ class OddishGrokBuild(BaseInstalledAgent):
             'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
             'rm -rf "$GROK_HOME/sessions" "$GROK_HOME/logs" 2>/dev/null; '
             "set +e; "
-            f"{grok_command('streaming-json', no_auto_update=True)} "
+            f"{arm(0)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=0; "
             f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('streaming-json', no_auto_update=True, include_reasoning_effort=False)} "
+            f"{arm(1)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=1; "
             "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=True)} "
+            f"{arm(2)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=2; "
             "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=True, include_reasoning_effort=False)} "
+            f"{arm(3)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=3; "
             "fi; "
             "if [ $rc -ne 0 ] && grep -Eqi '(no-auto-update|unknown option|"
             f"unrecognized option|unexpected argument)' {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=False)} "
+            f"{arm(4)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=4; "
             "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
-            f"{grok_command('json', no_auto_update=False, include_reasoning_effort=False)} "
+            f"{arm(5)} "
             f">{stdout_path} 2>{stderr_path}; "
-            "rc=$?; "
+            "rc=$?; rv=5; "
             "fi; "
             # Resume (rather than fail the trial) when the run died to the
             # stream watchdog. Appending to stdout keeps the streamed event log
@@ -368,8 +398,12 @@ class OddishGrokBuild(BaseInstalledAgent):
             f"while [ $rc -ne 0 ] && [ $resumes -lt {_MAX_IDLE_TIMEOUT_RESUMES} ] "
             f"&& grep -qi {_IDLE_TIMEOUT_PATTERN} {stderr_path}; do "
             "resumes=$((resumes+1)); "
-            f"{grok_command('streaming-json', no_auto_update=True, resume=True)} "
-            f">>{stdout_path} 2>{stderr_path}; "
+            'case "$rv" in '
+            + " ".join(
+                f"{index}) {resume_arm(index)} >>{stdout_path} 2>{stderr_path};;"
+                for index in range(len(variants))
+            )
+            + " esac; "
             "rc=$?; "
             "done; "
             "exit $rc"
