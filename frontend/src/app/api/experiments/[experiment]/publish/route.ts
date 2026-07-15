@@ -6,6 +6,7 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 import { decodeExperimentRouteParam } from "@/lib/utils";
+import { isOrgAdminRole } from "@/lib/org-roles";
 
 export async function POST(
   _request: Request,
@@ -16,7 +17,7 @@ export async function POST(
     if (!authObj || !authObj.userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    if (!["org:admin", "org:owner"].includes(authObj.orgRole ?? "")) {
+    if (!isOrgAdminRole(authObj.orgRole)) {
       return NextResponse.json(
         { error: "Forbidden: admin privileges required" },
         { status: 403 },

@@ -226,6 +226,11 @@ otherwise it falls back to the highest version represented by such trials. The
 so progressive loading cannot change the files/counts pivot or mix one
 version's trials with another's artifacts.
 
+`GET /experiments/{experiment_id}/cost-totals` reports both cost and token
+usage across every trial owned by the experiment, including older versions,
+superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
+token fields are the billed-user subset used by the frontend's New spend tile.
+
 ---
 
 ## `oddish/` — Core Package
