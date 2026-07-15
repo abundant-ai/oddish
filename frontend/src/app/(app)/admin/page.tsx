@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +34,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { QuotaAdminForm } from "@/components/quota-admin-form";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
+import { UsagePanel } from "@/components/usage-panel";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
@@ -649,7 +651,40 @@ function OrphanedStateCard() {
 // Main Admin Page
 // =============================================================================
 
-export default function AdminPage() {
+const ADMIN_TABS = [
+  "overview",
+  "usage",
+  "costs",
+  "worker-jobs",
+  "concurrency",
+  "tags",
+  "quotas",
+] as const;
+
+function AdminPageContent() {
+  // The active tab lives in the URL (?tab=usage) so tabs are deep-linkable
+  // (e.g. from the dashboard usage card) and browser back/forward moves
+  // between them.
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get("tab") ?? "";
+  const activeTab = (ADMIN_TABS as readonly string[]).includes(requestedTab)
+    ? requestedTab
+    : "overview";
+  const handleTabChange = (value: string) => {
+    router.push(value === "overview" ? "/admin" : `/admin?tab=${value}`, {
+      scroll: false,
+    });
+  };
+
+  // An unknown ?tab= (typo, removed tab) falls back to overview on screen;
+  // rewrite the URL to match so bookmarks and back/forward stay consistent.
+  useEffect(() => {
+    if (requestedTab && requestedTab !== activeTab) {
+      router.replace("/admin", { scroll: false });
+    }
+  }, [requestedTab, activeTab, router]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -659,9 +694,14 @@ export default function AdminPage() {
         </p>
       </div>
 
-      <Tabs defaultValue="overview" className="space-y-4">
+      <Tabs
+        value={activeTab}
+        onValueChange={handleTabChange}
+        className="space-y-4"
+      >
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="usage">Usage</TabsTrigger>
           <TabsTrigger value="costs">Costs</TabsTrigger>
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
           <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
@@ -671,6 +711,10 @@ export default function AdminPage() {
 
         <TabsContent value="overview" className="space-y-4">
           <QueueHealthOverviewCard />
+        </TabsContent>
+
+        <TabsContent value="usage" className="space-y-4">
+          <UsagePanel />
         </TabsContent>
 
         <TabsContent value="costs" className="space-y-4">
@@ -710,5 +754,14 @@ export default function AdminPage() {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+
+export default function AdminPage() {
+  // useSearchParams requires a Suspense boundary for static prerendering.
+  return (
+    <Suspense>
+      <AdminPageContent />
+    </Suspense>
   );
 }

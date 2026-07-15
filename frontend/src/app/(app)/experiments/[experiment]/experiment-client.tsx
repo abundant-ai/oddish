@@ -30,6 +30,7 @@ import type {
   ExperimentCostTotals,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
@@ -298,8 +299,7 @@ function ExperimentContent({
   const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
-  const canManageExperimentShare =
-    orgRole === "org:admin" || orgRole === "org:owner";
+  const canManageExperimentShare = isOrgAdminRole(orgRole);
 
   // Deletes below write the grid optimistically, so for one round trip the row
   // is gone while the cost tiles still show the pre-delete rollup. Do NOT
