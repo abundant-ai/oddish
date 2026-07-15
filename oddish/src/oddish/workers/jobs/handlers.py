@@ -320,15 +320,9 @@ class AnalyzerJobHandler:
                 analyzer.status = JobStatus.QUEUED
                 analyzer.error = None
                 analyzer.finished_at = None
-        # Only pass eval_rows_fn when a subclass actually overrides it: tests
-        # (and callers generally) stub run_analyzer_generation_job itself with
-        # its pre-seam signature, which doesn't accept the kwarg.
-        extra = (
-            {"eval_rows_fn": self.eval_rows_fn}
-            if self.eval_rows_fn is not default_eval_rows
-            else {}
+        await run_analyzer_generation_job(
+            analyzer_id, worker_job_id=job.id, eval_rows_fn=self.eval_rows_fn
         )
-        await run_analyzer_generation_job(analyzer_id, worker_job_id=job.id, **extra)
         async with get_session() as session:
             analyzer = await session.get(AnalyzerModel, analyzer_id)
             if analyzer is None:
