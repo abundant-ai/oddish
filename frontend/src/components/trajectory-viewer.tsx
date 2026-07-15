@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import useSWR from "swr";
 import {
   Accordion,
@@ -721,8 +721,10 @@ export function TrajectoryViewer({
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
   const [query, setQuery] = useState("");
+  const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const stepReset = useRef<string | null>(null);
+  const appliedHash = useRef<string | null>(null);
 
   // Reset expanded steps and search when switching to a different trial
   useEffect(() => {
@@ -730,6 +732,9 @@ export function TrajectoryViewer({
       stepReset.current = trialId;
       setExpandedSteps([]);
       setQuery("");
+      // Otherwise an unchanged hash across trials (e.g. both #step-1) would
+      // look "already applied" and the deep link would silently no-op.
+      appliedHash.current = null;
     }
   }, [trialId]);
 
@@ -742,24 +747,53 @@ export function TrajectoryViewer({
     return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
   }, [trajectory, lowerQuery]);
 
-  const handleStepClick = (index: number) => {
-    const stepKey = `step-${index}`;
-    // The duration bar spans every step, so a click may target a step the
-    // active filter is hiding — clear the filter so it can be shown.
-    if (lowerQuery && !visibleSteps.some(({ idx }) => idx === index)) {
-      setQuery("");
-    }
-    setExpandedSteps((prev) =>
-      prev.includes(stepKey) ? prev : [...prev, stepKey],
-    );
-    // Scroll to step after a brief delay for accordion animation
-    setTimeout(() => {
-      stepRefs.current[index]?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    }, 50);
-  };
+  const handleStepClick = useCallback(
+    (index: number) => {
+      const stepKey = `step-${index}`;
+      // The duration bar spans every step, so a click may target a step the
+      // active filter is hiding — clear the filter so it can be shown.
+      if (lowerQuery && !visibleSteps.some(({ idx }) => idx === index)) {
+        setQuery("");
+      }
+      setExpandedSteps((prev) =>
+        prev.includes(stepKey) ? prev : [...prev, stepKey],
+      );
+      // Scroll to step after a brief delay for accordion animation
+      setTimeout(() => {
+        stepRefs.current[index]?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 50);
+    },
+    [lowerQuery, visibleSteps],
+  );
+
+  // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
+  // carries a step_id, not an array index; handleStepClick takes an index.
+  useEffect(() => {
+    const steps = trajectory?.steps;
+    if (!steps?.length) return;
+
+    const apply = () => {
+      const hash = window.location.hash;
+      if (hash === appliedHash.current) return;
+      const m = /^#step-(\d+)$/.exec(hash);
+      if (!m) return;
+      appliedHash.current = hash;
+      const idx = steps.findIndex((s) => Number(s.step_id) === Number(m[1]));
+      if (idx >= 0) {
+        setDeepLinkError(null);
+        handleStepClick(idx);
+      } else {
+        setDeepLinkError(`Step ${m[1]} is not in this trajectory.`);
+      }
+    };
+
+    apply();
+    window.addEventListener("hashchange", apply);
+    return () => window.removeEventListener("hashchange", apply);
+  }, [trajectory, handleStepClick]);
 
   if (isLoading) {
     return (
@@ -805,7 +839,11 @@ export function TrajectoryViewer({
         trialId={trialId}
         apiBaseUrl={apiBaseUrl}
         stepIdToIndex={(stepId) =>
-          trajectory.steps.findIndex((s) => s.step_id === stepId)
+          // step_id is typed number but arrives as a string from some producers;
+          // strict === would return -1 and the scroll would silently no-op.
+          trajectory.steps.findIndex(
+            (s) => Number(s.step_id) === Number(stepId),
+          )
         }
         onStepSelect={handleStepClick}
       />
@@ -814,7 +852,11 @@ export function TrajectoryViewer({
         steps={trajectory.steps}
         apiBaseUrl={apiBaseUrl}
         stepIdToIndex={(stepId) =>
-          trajectory.steps.findIndex((s) => s.step_id === stepId)
+          // step_id is typed number but arrives as a string from some producers;
+          // strict === would return -1 and the scroll would silently no-op.
+          trajectory.steps.findIndex(
+            (s) => Number(s.step_id) === Number(stepId),
+          )
         }
         onStepSelect={handleStepClick}
       />
@@ -848,6 +890,11 @@ export function TrajectoryViewer({
           </CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto pt-1">
+          {deepLinkError && (
+            <div className="mb-2 text-sm text-muted-foreground">
+              {deepLinkError}
+            </div>
+          )}
           {/* Step search */}
           <div className="relative mb-4">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
