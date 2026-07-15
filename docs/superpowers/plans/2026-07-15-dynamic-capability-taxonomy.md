@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- **Branch:** `capability-taxonomy`. Never commit to `main`.
+- **Branch:** `feat/capability-taxonomy`, based on `origin/main`. Never commit to `main`. (Note: there is no local `main` branch in this repo — only `origin/main`. Use `origin/main` as the diff base.)
 - **Spec:** `docs/superpowers/specs/2026-07-15-dynamic-capability-taxonomy-design.md`.
 - **Alembic head is `analyzers_006`** (verified with `uv run alembic heads` — the repo has exactly one head; do not trust a grep, several migrations use typed `down_revision: Union[...] = "..."` declarations that naive regexes miss).
 - **Migrations follow `analyzers_001`'s style:** every DDL step in its own `_autocommit()` block, idempotent (`IF NOT EXISTS`), `SET lock_timeout = '8s'` first.
@@ -1774,5 +1774,5 @@ EOF
 - [ ] `cd backend && uv run pytest tests/ -q` — all pass
 - [ ] `cd oddish && uv run alembic heads` — prints exactly `captax_001 (head)`
 - [ ] `cd oddish && uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head` — migration is reversible and re-runnable
-- [ ] `git diff main --stat -- oddish/src/oddish/evals/analyzer/bucketing.py` — **empty**. Non-negotiable: `bucketing.py` unchanged is what proves the deterministic breakdown did not regress.
+- [ ] `git diff origin/main --stat -- oddish/src/oddish/evals/analyzer/bucketing.py` — **empty**. Non-negotiable: `bucketing.py` unchanged is what proves the deterministic breakdown did not regress.
 - [ ] Open a PR against `main`.
