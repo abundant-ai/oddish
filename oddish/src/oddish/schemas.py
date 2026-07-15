@@ -1319,6 +1319,7 @@ class TaskStatusResponse(BaseModel):
     trials: list[TrialResponse] | None = None
     user_tags: list[UserTagRef] = Field(default_factory=list)
     created_at: datetime
+    updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
 

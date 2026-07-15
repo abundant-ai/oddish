@@ -5,21 +5,6 @@ type FetchTaskPage = (
   init?: RequestInit
 ) => Promise<Response>;
 
-const taskSnapshotSequence = new WeakMap<Task, number>();
-let nextTaskSnapshotSequence = 1;
-
-/** Record when a page became available so version conflicts prefer newer data. */
-export function markExperimentTaskPageFetched(tasks: Task[]): Task[] {
-  let sequence: number | undefined;
-  for (const task of tasks) {
-    if (!taskSnapshotSequence.has(task)) {
-      sequence ??= nextTaskSnapshotSequence++;
-      taskSnapshotSequence.set(task, sequence);
-    }
-  }
-  return tasks;
-}
-
 /** Fetch mutable experiment rows without accepting an old browser-cache entry. */
 export function fetchFreshExperimentTaskPage(
   url: string,
@@ -38,22 +23,18 @@ function hasSameVersion(shell: Task, enriched: Task): boolean {
 function preferEnrichedVersion(shell: Task, enriched: Task): boolean {
   if (hasSameVersion(shell, enriched)) return true;
 
-  const shellSequence = taskSnapshotSequence.get(shell);
-  const enrichedSequence = taskSnapshotSequence.get(enriched);
-  return (
-    shellSequence !== undefined &&
-    enrichedSequence !== undefined &&
-    enrichedSequence > shellSequence
-  );
+  const shellRevision = Date.parse(shell.updated_at);
+  const enrichedRevision = Date.parse(enriched.updated_at);
+  return Number.isFinite(shellRevision) && enrichedRevision > shellRevision;
 }
 
 /**
  * Combine the fast task shells with progressively loaded trial pages.
  *
  * The two phases can revalidate in either order after a default-version
- * change. When their versions disagree, use the snapshot that arrived later so
- * neither a stale shell nor a stale trial page can hide the newly selected
- * version. Unmarked callers retain the conservative shell-first behavior.
+ * change. When their versions disagree, the task row's database revision says
+ * which response observed the newer default. Missing or tied revisions retain
+ * the conservative shell-first behavior.
  */
 export function mergeExperimentTaskPages(
   shells: Task[] | undefined,

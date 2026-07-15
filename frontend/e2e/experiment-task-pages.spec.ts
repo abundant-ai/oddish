@@ -2,7 +2,6 @@ import { expect, test } from "@playwright/test";
 
 import {
   fetchFreshExperimentTaskPage,
-  markExperimentTaskPageFetched,
   mergeExperimentTaskPages,
 } from "../src/lib/experiment-task-pages";
 import type { Task, Trial } from "../src/lib/types";
@@ -22,16 +21,22 @@ function task(overrides: Partial<Task>): Task {
     completed: 0,
     failed: 0,
     created_at: "2026-07-14T00:00:00Z",
+    updated_at: "2026-07-14T00:00:00Z",
     trials: null,
     ...overrides,
   };
 }
 
 test("keeps the fresh shell while a cached trial page describes another version", () => {
-  const shell = task({ current_version: 1, current_version_id: "task-1-v1" });
+  const shell = task({
+    current_version: 1,
+    current_version_id: "task-1-v1",
+    updated_at: "2026-07-14T00:02:00Z",
+  });
   const staleEnriched = task({
     current_version: 2,
     current_version_id: "task-1-v2",
+    updated_at: "2026-07-14T00:01:00Z",
     total: 1,
     completed: 1,
     trials: [{ id: "trial-v2" } as Trial],
@@ -64,17 +69,17 @@ test("uses fresh trial data when the shell cache still has the old version", () 
   const staleShell = task({
     current_version: 1,
     current_version_id: "task-1-v1",
+    updated_at: "2026-07-14T00:01:00Z",
   });
-  markExperimentTaskPageFetched([staleShell]);
 
   const freshEnriched = task({
     current_version: 2,
     current_version_id: "task-1-v2",
+    updated_at: "2026-07-14T00:02:00Z",
     total: 1,
     completed: 1,
     trials: [{ id: "trial-v2" } as Trial],
   });
-  markExperimentTaskPageFetched([freshEnriched]);
 
   const [merged] = mergeExperimentTaskPages([staleShell], [[freshEnriched]]);
 
@@ -87,17 +92,17 @@ test("keeps a fresh shell while a stale trial page has another version", () => {
   const staleEnriched = task({
     current_version: 2,
     current_version_id: "task-1-v2",
+    updated_at: "2026-07-14T00:01:00Z",
     total: 1,
     completed: 1,
     trials: [{ id: "trial-v2" } as Trial],
   });
-  markExperimentTaskPageFetched([staleEnriched]);
 
   const freshShell = task({
     current_version: 1,
     current_version_id: "task-1-v1",
+    updated_at: "2026-07-14T00:02:00Z",
   });
-  markExperimentTaskPageFetched([freshShell]);
 
   const [merged] = mergeExperimentTaskPages([freshShell], [[staleEnriched]]);
 

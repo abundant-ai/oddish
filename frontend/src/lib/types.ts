@@ -222,6 +222,7 @@ export interface Task {
   trials?: Trial[] | null;
   user_tags?: UserTagRef[];
   created_at: string;
+  updated_at: string;
   started_at?: string | null;
   finished_at?: string | null;
 }

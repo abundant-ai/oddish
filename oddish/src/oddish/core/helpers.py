@@ -815,6 +815,7 @@ TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.verdict,
     TaskModel.verdict_error,
     TaskModel.created_at,
+    TaskModel.updated_at,
     TaskModel.started_at,
     TaskModel.finished_at,
 )
@@ -905,6 +906,7 @@ def _build_task_status_response(
         verdict_error=task.verdict_error,
         jobs=list(jobs or []),
         created_at=task.created_at,
+        updated_at=task.updated_at,
         started_at=task.started_at,
         finished_at=task.finished_at,
     )

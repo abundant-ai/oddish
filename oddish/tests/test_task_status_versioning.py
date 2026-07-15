@@ -59,6 +59,7 @@ def test_task_status_response_includes_experiment_created_at():
         verdict_error=None,
         experiments=[experiment],
         created_at=task_created_at,
+        updated_at=task_created_at,
         started_at=None,
         finished_at=None,
         link=None,
@@ -78,6 +79,7 @@ def test_task_status_response_includes_experiment_created_at():
 
     assert response.created_at == task_created_at
     assert response.experiment_created_at == experiment_created_at
+    assert response.updated_at == task_created_at
 
 
 def test_get_task_status_trials_filters_to_current_version():

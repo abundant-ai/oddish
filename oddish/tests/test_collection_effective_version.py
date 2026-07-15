@@ -290,6 +290,7 @@ async def test_default_version_survives_shell_to_slim_loading(session):
     enriched = {response.id: response for response in slim}[task.id]
     assert shell.current_version_id == v1.id
     assert enriched.current_version_id == v1.id
+    assert shell.updated_at == enriched.updated_at
     assert shell.total == 1
     assert enriched.total == 1
     assert [trial.id for trial in (enriched.trials or [])] == [v1_trial.id]
@@ -348,4 +349,5 @@ async def test_invisible_default_trials_do_not_select_experiment_version(session
     enriched = {response.id: response for response in slim}[task.id]
     assert shell.current_version_id == v2.id
     assert enriched.current_version_id == v2.id
+    assert shell.updated_at == enriched.updated_at
     assert [trial.id for trial in (enriched.trials or [])] == [v2_trial.id]

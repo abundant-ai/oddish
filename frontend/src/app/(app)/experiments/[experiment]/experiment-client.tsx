@@ -34,7 +34,6 @@ import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
   fetchFreshExperimentTaskPage,
-  markExperimentTaskPageFetched,
   mergeExperimentTaskPages,
 } from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
@@ -101,7 +100,7 @@ async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
     throw err;
   }
 
-  return markExperimentTaskPageFetched(data as Task[]);
+  return data as Task[];
 }
 
 type ExperimentClientPageProps = {
@@ -128,11 +127,6 @@ function ExperimentContent({
   initialTasksPromise,
 }: ExperimentClientPageProps) {
   const initialTasks = use(initialTasksPromise);
-  const initialTaskFallback = useMemo(
-    () =>
-      initialTasks ? markExperimentTaskPageFetched(initialTasks) : undefined,
-    [initialTasks]
-  );
   const { orgRole } = useAuth();
 
   const [isEditingName, setIsEditingName] = useState(false);
@@ -149,7 +143,7 @@ function ExperimentContent({
   // Phase 1: Fetch ALL tasks without trial data (lightweight).
   // Populates the full task list immediately. Uses the dedicated
   // ``task-shells`` endpoint, which drops the per-task ``experiments``
-  // fan-out. (Phase 2 below still uses the regular ``tasks`` endpoint.)
+  // fan-out. Phase 2 below uses the compact ``slim-tasks`` endpoint.
   const allTasksUrl = experimentId
     ? `/api/experiments/${encodedId}/task-shells?limit=2000&offset=0`
     : null;
@@ -166,7 +160,7 @@ function ExperimentContent({
     // server fallback data after the task's default version changes.
     revalidateOnMount: true,
     revalidateIfStale: true,
-    fallbackData: initialTaskFallback,
+    fallbackData: initialTasks ?? undefined,
   });
 
   // Phase 2: Progressively fetch compact trial data in batches.
