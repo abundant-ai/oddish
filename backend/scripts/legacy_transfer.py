@@ -439,10 +439,21 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                             "UPDATE trials SET orig_s3_src=:k, "
                             "imported_at=COALESCE(imported_at, :t) WHERE id=:id"),
                             {"k": r["s3_prefix"], "t": now(), "id": trial_id})
-                    await sess.execute(text(
-                        "UPDATE leg_trial_ledger SET status='transferred', "
-                        "oddish_trial_id=:id, transferred_at=:t WHERE s3_prefix=:p"),
-                        {"id": trial_id, "t": now(), "p": r["s3_prefix"]})
+                        await sess.execute(text(
+                            "UPDATE leg_trial_ledger SET status='transferred', "
+                            "oddish_trial_id=:id, transferred_at=:t WHERE s3_prefix=:p"),
+                            {"id": trial_id, "t": now(), "p": r["s3_prefix"]})
+                    else:
+                        # Conflict was reported but the existing trial couldn't be
+                        # located -> nothing actually landed. Marking 'transferred'
+                        # with a null oddish_trial_id would falsely signal
+                        # completion and block retry. Mark 'failed' so
+                        # --retry-failed re-attempts it.
+                        await sess.execute(text(
+                            "UPDATE leg_trial_ledger SET status='failed', "
+                            "error='idempotency conflict but no existing trial found' "
+                            "WHERE s3_prefix=:p"),
+                            {"p": r["s3_prefix"]})
                     await sess.commit()
                 if fresh:
                     created["trials"] += 1
