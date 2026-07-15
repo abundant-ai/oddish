@@ -6,6 +6,7 @@ import type { Task } from "@/lib/types";
  * trial rows to anchor its file and reward views.
  */
 export function resolveExperimentTaskVersion(task: Task): number | null {
+  if (task.trial_version !== undefined) return task.trial_version;
   const representedVersion = task.trials?.find(
     (trial) => trial.task_version != null,
   )?.task_version;

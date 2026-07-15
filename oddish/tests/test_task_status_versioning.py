@@ -80,6 +80,8 @@ def test_task_status_response_includes_experiment_created_at():
     assert response.created_at == task_created_at
     assert response.experiment_created_at == experiment_created_at
     assert response.updated_at == task_created_at
+    assert response.trial_version is None
+    assert response.trial_version_id is None
 
 
 def test_get_task_status_trials_filters_to_current_version():
@@ -485,6 +487,7 @@ def test_build_task_status_response_scopes_trials_to_experiment_version(monkeypa
         experiment_context_id="exp-a",
     )
 
+    assert captured["trial_version_id"] == "task-1-v1"
     assert captured["total"] == 2
     assert captured["completed"] == 1
     assert captured["failed"] == 1

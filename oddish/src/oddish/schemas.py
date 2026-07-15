@@ -1292,6 +1292,8 @@ class TaskStatusResponse(BaseModel):
     )
     current_version: int | None = None
     current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
     total: int
     completed: int
     failed: int

@@ -593,9 +593,8 @@ def _parse_version_number(version_id: str) -> int:
     return int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
 
 
-def _resolve_task_version_fields(task: TaskModel) -> tuple[int | None, str | None]:
-    """Extract the task's selected default version number and id."""
-    version_id = task.current_version_id
+def _resolve_version_fields(version_id: str | None) -> tuple[int | None, str | None]:
+    """Extract a task version number and id from a stored version id."""
     if version_id is None:
         return None, None
     parsed = _parse_version_number(version_id)
@@ -820,6 +819,7 @@ def _build_task_status_response(
     trials: list[TrialResponse] | None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
     experiment_context_id: str | None = None,
+    trial_version_id: str | None | object = _VERSION_ID_UNSET,
 ) -> TaskStatusResponse:
     formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
         _format_reward_fields(
@@ -829,7 +829,18 @@ def _build_task_status_response(
             include_empty_rewards=include_empty_rewards,
         )
     )
-    current_version, current_version_id = _resolve_task_version_fields(task)
+    current_version, current_version_id = _resolve_version_fields(
+        task.current_version_id
+    )
+    if trial_version_id is _VERSION_ID_UNSET:
+        resolved_trial_version_id = task.current_version_id
+    elif isinstance(trial_version_id, str):
+        resolved_trial_version_id = trial_version_id
+    else:
+        resolved_trial_version_id = None
+    trial_version, resolved_trial_version_id = _resolve_version_fields(
+        resolved_trial_version_id
+    )
     primary_experiment = _primary_experiment_for_task(
         task, preferred_experiment_id=experiment_context_id
     )
@@ -869,6 +880,8 @@ def _build_task_status_response(
         ],
         current_version=current_version,
         current_version_id=current_version_id,
+        trial_version=trial_version,
+        trial_version_id=resolved_trial_version_id,
         total=total,
         completed=completed,
         failed=failed,
@@ -971,6 +984,7 @@ def build_task_status_response(
         trials=trials,
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
+        trial_version_id=effective_version_id,
     )
 
 
@@ -1045,6 +1059,7 @@ def build_task_status_response_compact(
         trials=trials,
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
+        trial_version_id=effective_version_id,
     )
 
 
@@ -1164,6 +1179,7 @@ def build_slim_task_status_response(
         trials=trials,
         jobs=[],
         experiment_context_id=experiment_context_id,
+        trial_version_id=effective_version_id,
     )
 
 
@@ -1297,6 +1313,9 @@ async def build_task_status_responses_from_counts(
         session, task_ids=task_ids
     )
 
+    def _effective(task: TaskModel) -> str | None | object:
+        return effective_map.get(task.id, _VERSION_ID_UNSET)
+
     def _user_tags(task_id: str) -> list[UserTagRef]:
         return [
             UserTagRef(
@@ -1337,6 +1356,7 @@ async def build_task_status_responses_from_counts(
                 else None
             ),
             experiment_context_id=experiment_context_id,
+            trial_version_id=_effective(task),
         )
         for task in tasks
     ]

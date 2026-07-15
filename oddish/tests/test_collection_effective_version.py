@@ -144,12 +144,14 @@ async def test_slim_path_surfaces_gathered_old_version_trial(session):
     # The collection keeps its historical v1 trial, but reports the task's
     # selected default (v2) consistently with the task detail page.
     assert task_resp.current_version_id == v2_id
+    assert task_resp.trial_version_id == v1_id
 
     shells = await list_experiment_task_shells_core(
         session, experiment_id=collection.id, org_id="org1"
     )
     shell = {response.id: response for response in shells}[task.id]
     assert shell.current_version_id == v2_id
+    assert shell.trial_version_id == v1_id
     assert shell.total == 1
 
 
@@ -173,6 +175,7 @@ async def test_compact_path_surfaces_gathered_old_version_trial(session):
     trial_ids = [t.id for t in (task_resp.trials or [])]
     assert trial.id in trial_ids, "gathered v1 trial hidden on compact experiment path"
     assert task_resp.current_version_id == v2_id
+    assert task_resp.trial_version_id == v1_id
 
 
 @pytest.mark.asyncio
@@ -248,6 +251,7 @@ async def test_normal_experiment_unchanged_control(session):
     task_resp = by_task[task.id]
     assert [t.id for t in (task_resp.trials or [])] == [trial.id]
     assert task_resp.current_version_id == v1.id
+    assert task_resp.trial_version_id == v1.id
 
 
 @pytest.mark.asyncio
@@ -291,6 +295,8 @@ async def test_default_version_survives_shell_to_slim_loading(session):
     enriched = {response.id: response for response in slim}[task.id]
     assert shell.current_version_id == v1.id
     assert enriched.current_version_id == v1.id
+    assert shell.trial_version_id == v1.id
+    assert enriched.trial_version_id == v1.id
     assert shell.updated_at == enriched.updated_at
     assert shell.total == 1
     assert enriched.total == 1
@@ -352,6 +358,8 @@ async def test_experiment_reports_default_while_using_latest_visible_trial_versi
     enriched = {response.id: response for response in slim}[task.id]
     assert shell.current_version_id == v4.id
     assert enriched.current_version_id == v4.id
+    assert shell.trial_version_id == v2.id
+    assert enriched.trial_version_id == v2.id
     assert shell.updated_at == enriched.updated_at
     assert shell.total == 1
     assert enriched.total == 1

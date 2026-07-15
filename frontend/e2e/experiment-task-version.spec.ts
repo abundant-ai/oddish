@@ -28,6 +28,8 @@ test("uses the experiment trial version instead of the displayed default", () =>
   const historicalTask = task({
     current_version: 4,
     current_version_id: "task-1-v4",
+    trial_version: 2,
+    trial_version_id: "task-1-v2",
     trials: [
       { id: "legacy", task_version: null } as Trial,
       { id: "trial-v2", task_version: 2 } as Trial,
@@ -35,6 +37,18 @@ test("uses the experiment trial version instead of the displayed default", () =>
   });
 
   expect(resolveExperimentTaskVersion(historicalTask)).toBe(2);
+});
+
+test("uses the server trial version before trial rows finish loading", () => {
+  const shell = task({
+    current_version: 4,
+    current_version_id: "task-1-v4",
+    trial_version: 2,
+    trial_version_id: "task-1-v2",
+    trials: null,
+  });
+
+  expect(resolveExperimentTaskVersion(shell)).toBe(2);
 });
 
 test("falls back to the selected default when no trial version is available", () => {
