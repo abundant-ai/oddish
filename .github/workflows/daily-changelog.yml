@@ -2,10 +2,15 @@ name: Daily Changelog
 
 # This workflow generates daily changelog entries using Claude and auto-merges them.
 #
-# REQUIREMENTS FOR AUTO-MERGE:
-# 1. Enable "Allow auto-merge" in repository Settings > General > Pull Requests
-# 2. Do NOT add this workflow as a required status check (creates deadlock)
-# 3. Ensure CLAUDE_CODE_OAUTH_TOKEN secret is configured
+# MERGE BEHAVIOR:
+# The workflow first tries GitHub's native auto-merge ("Allow auto-merge" in
+# repository Settings > General > Pull Requests). If that is disabled, it falls
+# back to polling the PR itself: it waits for required checks/reviews, updates
+# the branch when it falls behind main, and squash-merges once mergeable.
+#
+# REQUIREMENTS:
+# 1. Do NOT add this workflow as a required status check (creates deadlock)
+# 2. Ensure CLAUDE_CODE_OAUTH_TOKEN secret is configured
 
 on:
   schedule:
@@ -215,7 +220,7 @@ jobs:
 
           ---
 
-          *This PR will be auto-merged if auto-merge is enabled and all checks pass.*
+          *This PR will be auto-merged once all checks pass.*
           EOF
           )")
             echo "Created PR: $PR_URL"
@@ -227,20 +232,64 @@ jobs:
           gh pr edit "$PR_URL" --add-label "documentation" 2>/dev/null || echo "Label 'documentation' not found, skipping"
           gh pr edit "$PR_URL" --add-label "automated" 2>/dev/null || echo "Label 'automated' not found, skipping"
 
-      - name: Enable auto-merge
+      - name: Merge PR
         if: steps.check-changes.outputs.has_changes == 'true' && steps.verify-changes.outputs.changelog_updated == 'true'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.create-pr.outputs.pr_url }}
         run: |
-          # Try to enable auto-merge, but don't fail if it's not available
-          # Auto-merge may not be enabled in repo settings or may require additional permissions
-          if gh pr merge --auto --squash "${{ steps.create-pr.outputs.pr_url }}"; then
-            echo "Auto-merge enabled for PR"
-          else
-            echo "::warning::Auto-merge could not be enabled. This may be because:"
-            echo "  - Auto-merge is not enabled in repository settings"
-            echo "  - Branch protection rules prevent auto-merge"
-            echo "  - The PR requires manual approval"
-            echo "The PR has been created and can be merged manually."
+          # Prefer GitHub's native auto-merge: if the repo allows it, GitHub
+          # merges the PR once checks pass and we're done. If the PR is already
+          # mergeable, gh merges it directly.
+          if gh pr merge --auto --squash "$PR_URL"; then
+            echo "Auto-merge enabled (or PR merged directly)."
+            exit 0
           fi
+
+          # Native auto-merge is not allowed for this repo, so babysit the PR
+          # ourselves: wait for required checks/reviews, update the branch if
+          # it falls behind main, and squash-merge once mergeable.
+          echo "Native auto-merge unavailable; falling back to polling merge."
+
+          PR_NUMBER="${PR_URL##*/}"
+
+          for attempt in $(seq 1 60); do
+            STATE=$(gh pr view "$PR_URL" --json state --jq '.state')
+            if [ "$STATE" = "MERGED" ]; then
+              echo "PR merged."
+              exit 0
+            fi
+            if [ "$STATE" = "CLOSED" ]; then
+              echo "::error::PR was closed without merging."
+              exit 1
+            fi
+
+            MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+            echo "Attempt $attempt/60: merge state is $MERGE_STATE"
+
+            case "$MERGE_STATE" in
+              CLEAN|UNSTABLE|HAS_HOOKS)
+                if gh pr merge --squash "$PR_URL"; then
+                  echo "PR merged."
+                  exit 0
+                fi
+                echo "Merge attempt failed; retrying."
+                ;;
+              BEHIND)
+                echo "Branch is behind main; updating."
+                gh api -X PUT "repos/${{ github.repository }}/pulls/${PR_NUMBER}/update-branch" || true
+                ;;
+              DIRTY)
+                echo "::error::PR has merge conflicts and cannot be auto-merged."
+                exit 1
+                ;;
+              *)
+                # BLOCKED / UNKNOWN: required checks or reviews still pending.
+                ;;
+            esac
+
+            sleep 30
+          done
+
+          echo "::error::PR was not mergeable within 30 minutes. Merge it manually: $PR_URL"
+          exit 1
