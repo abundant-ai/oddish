@@ -2,6 +2,7 @@ from api.services.cc_chat.analyzer_prompt import (
     FINDINGS_PATH,
     REDUCE_PATH,
     build_cohort_prompt,
+    build_reduce_only_prompt,
 )
 from oddish.evals.analyzer.prompt_builder import section_brief
 from oddish.evals.primitives import SubAnalysis
@@ -140,3 +141,19 @@ def test_map_instructions_are_self_consistent():
     p = build_cohort_prompt("bad", [_bad_sa("bad-1")], _roster(), COUNTS, {"bad-1": "o"})
     assert "MAP FINDING:" in p
     assert FINDINGS_PATH in p
+
+
+def test_reduce_tolerates_missing_batches_like_the_host_does():
+    # analyzer_cohort skips an empty batch file with a warning and keeps going, so
+    # the prompt must not tell the agent to bail when a batch file is absent.
+    p = build_reduce_only_prompt("bad", COUNTS, 4)
+    assert "up to 4" in p
+    assert "Stop only if" in p
+    assert "every one matters" not in p
+    assert "say so and stop" not in p
+
+
+def test_reduce_still_requires_the_reduce_file_and_forbids_refetching():
+    p = build_reduce_only_prompt("bad", COUNTS, 4)
+    assert REDUCE_PATH in p
+    assert "do NOT re-fetch" in p
