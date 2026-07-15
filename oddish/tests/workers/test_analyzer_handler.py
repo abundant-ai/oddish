@@ -158,7 +158,8 @@ async def test_run_analyzer_generation_job_skips_persist_when_reaped(monkeypatch
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
     class _Output:
-        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h",
+                    "vertical": "v"}
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
 
@@ -358,7 +359,8 @@ def _fake_output_with_findings():
     from oddish.evals.analyzer.schemas import Finding
 
     class _Output:
-        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h",
+                    "vertical": "v"}
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {}
         reduce_prompt = "rp"
@@ -550,7 +552,8 @@ async def test_persist_writes_reduce_prompt_on_success(monkeypatch):
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
     class _Output:
-        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h",
+                    "vertical": "v"}
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {"1b": 1}
         reduce_prompt = "the reduce prompt text"
@@ -587,7 +590,8 @@ async def test_store_persists_findings(monkeypatch):
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
     class _Output:
-        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h",
+                    "vertical": "v"}
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {"1b": 1}
         reduce_prompt = "rp"
@@ -666,7 +670,8 @@ async def test_store_persists_models_by_task(monkeypatch):
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
     class _Output:
-        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h",
+                    "vertical": "v"}
         counts = {"trials": 2, "bad": 1, "good": 1}
         breakdown = {"1b": 1}
         reduce_prompt = "rp"
@@ -709,7 +714,8 @@ async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
     class _Output:
-        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h",
+                    "vertical": "v"}
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
         reduce_prompt = None
@@ -723,3 +729,39 @@ async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
     await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
 
     assert analyzer.findings == []
+
+
+@pytest.mark.asyncio
+async def test_store_persists_vertical_scaling_content(monkeypatch):
+    """The 5th section must reach the analyzer row, not just the output object."""
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return []
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    class _Output:
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h",
+                    "vertical": "v"}
+        counts = {"trials": 1, "bad": 1, "good": 0}
+        breakdown = {"1b": 1}
+        reduce_prompt = "rp"
+        findings = []
+
+    async def fake_run_eval(inputs, config):
+        return _Output()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.vertical_scaling_content == "v"

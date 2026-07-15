@@ -198,6 +198,7 @@ async def test_list_analyzers_core_does_not_load_findings(session, monkeypatch):
     )
     analyzer.findings = [{"trial_id": "t1"}]
     analyzer.models_by_task = {"task": ["model"]}
+    analyzer.vertical_scaling_content = "v-content"
     await session.flush()
 
     # The object create_analyzer_core returned is fully loaded in the identity
@@ -211,6 +212,7 @@ async def test_list_analyzers_core_does_not_load_findings(session, monkeypatch):
     assert "findings" in unloaded
     assert "models_by_task" in unloaded
     assert "name" not in unloaded
+    assert "vertical_scaling_content" not in unloaded
 
 
 @pytest.mark.asyncio
@@ -241,3 +243,10 @@ async def test_create_analyzer_persists_save_trial_analyses(session, monkeypatch
         org_id="org_1", user_id="user_1",
     )
     assert saving_az.save_trial_analyses is True
+
+
+def test_analyzer_model_has_vertical_scaling_content_column():
+    from oddish.db.models import AnalyzerModel
+
+    col = AnalyzerModel.__table__.columns["vertical_scaling_content"]
+    assert col.nullable is True

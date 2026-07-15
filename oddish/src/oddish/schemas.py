@@ -1806,6 +1806,7 @@ class AnalyzerResponse(BaseModel):
     good_failure_content: str | None = None
     universal_capabilities_content: str | None = None
     headroom_analysis: str | None = None
+    vertical_scaling_content: str | None = None
     num_trials: int | None = None
     num_bad_failures: int | None = None
     num_good_failures: int | None = None

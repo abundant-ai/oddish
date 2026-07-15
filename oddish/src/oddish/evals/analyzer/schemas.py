@@ -45,7 +45,7 @@ class Finding:
 
 @dataclass
 class AnalyzerEvalOutput:
-    sections: dict[str, str]  # keys: bad, good, capabilities, headroom
+    sections: dict[str, str]  # keys: bad, good, capabilities, headroom, vertical
     findings: list[Finding] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)  # trials, bad, good
     breakdown: dict[str, int] = field(default_factory=dict)

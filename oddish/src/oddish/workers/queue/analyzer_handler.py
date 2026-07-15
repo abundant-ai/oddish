@@ -326,6 +326,7 @@ async def run_analyzer_generation_job(
                 analyzer.good_failure_content = output.sections["good"]
                 analyzer.universal_capabilities_content = output.sections["capabilities"]
                 analyzer.headroom_analysis = output.sections["headroom"]
+                analyzer.vertical_scaling_content = output.sections["vertical"]
                 analyzer.num_trials = output.counts["trials"]
                 analyzer.num_bad_failures = output.counts["bad"]
                 analyzer.num_good_failures = output.counts["good"]
