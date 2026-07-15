@@ -109,6 +109,14 @@ from .byok_resolver import install_byok_resolver
 
 install_byok_resolver()
 
+# Swap the core ANALYZER handler for the sandbox-per-cohort one (bad + good
+# each get their own Daytona agent). Gated by settings.analyzer_sandbox_enabled;
+# off -> the core API path, unchanged.
+from .analyzer_sandbox import install_sandbox_analyzer_handler
+
+if install_sandbox_analyzer_handler():
+    console.print("[dim]analyzer: sandbox-per-cohort handler registered[/dim]")
+
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
 # The QA hook refreshes the whole PR comment (per-trial classifications +

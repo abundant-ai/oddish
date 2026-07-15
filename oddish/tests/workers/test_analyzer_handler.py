@@ -55,7 +55,7 @@ async def test_handler_resets_terminal_status_before_retry(monkeypatch):
 
     seen = {}
 
-    async def fake_run(analyzer_id, *, worker_job_id=None):
+    async def fake_run(analyzer_id, *, worker_job_id=None, eval_rows_fn=None):
         # By the time generation runs, the terminal state must be cleared.
         seen["status_at_run"] = analyzer.status
         analyzer.status = JobStatus.SUCCESS  # this attempt succeeds
@@ -82,7 +82,7 @@ async def test_handler_run_maps_status_to_outcome(monkeypatch):
     import oddish.workers.jobs.handlers as h
 
     # run_analyzer_generation_job is stubbed; status is read back from the analyzer row.
-    async def fake_run(analyzer_id, *, worker_job_id=None):
+    async def fake_run(analyzer_id, *, worker_job_id=None, eval_rows_fn=None):
         fake_run.called = analyzer_id
     monkeypatch.setattr(h, "run_analyzer_generation_job", fake_run)
 
@@ -408,6 +408,10 @@ def _wire_eval_paths(monkeypatch, rh, *, output, inputs):
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
     async def fake_run_eval(inp, config):
+        # Mirrors core: the real run_analyzer_eval carries the inputs'
+        # subanalyses through onto the output, which is where the trial-analyses
+        # export reads them from.
+        output.subanalyses = inp.subanalyses
         return output
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
