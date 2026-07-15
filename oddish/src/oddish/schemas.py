@@ -1292,6 +1292,8 @@ class TaskStatusResponse(BaseModel):
     )
     current_version: int | None = None
     current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
     total: int
     completed: int
     failed: int
@@ -1319,6 +1321,7 @@ class TaskStatusResponse(BaseModel):
     trials: list[TrialResponse] | None = None
     user_tags: list[UserTagRef] = Field(default_factory=list)
     created_at: datetime
+    updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
 
@@ -1356,6 +1359,13 @@ class ImportedTrialSpec(BaseModel):
     )
     reward: float | None = Field(
         None, description="Verifier score in [0, 1]; None if no verifier result"
+    )
+    result: dict | None = Field(
+        None,
+        description=(
+            "Structured verifier metrics and normalized report summary extracted "
+            "from the imported artifacts"
+        ),
     )
     error_message: str | None = Field(
         None, description="Execution error message, if any"
@@ -1780,6 +1790,7 @@ class SkillResponse(BaseModel):
 class AnalyzerCreate(BaseModel):
     name: str = Field(min_length=1)
     experiment_ids: list[str] = Field(min_length=1)
+    save_trial_analyses: bool = False
 
 
 class ExperimentOption(BaseModel):

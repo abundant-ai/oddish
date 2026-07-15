@@ -60,3 +60,18 @@ async def test_build_inputs_reads_trajectory_only_for_failures():
     assert bad.oracle_context and "oracle" in bad.oracle_context.lower()
     good = next(b for b in inputs.bundles if b.trial_id == "task-2")
     assert good.trajectory == []  # stub, no read
+
+
+def test_subanalysis_carries_the_trial_model():
+    t = FakeTrial("task-0", "task", "BAD_FAILURE", "Hardcoding")
+    t.model = "global.anthropic.claude-opus-4-8-v1:0"
+    sa = subanalysis_from_trial(t, "tasks/task")
+    # Stored verbatim: normalization is the aggregation layer's job, and the raw
+    # value is what tells a Bedrock-routed trial from a direct-API one.
+    assert sa.model == "global.anthropic.claude-opus-4-8-v1:0"
+
+
+def test_subanalysis_model_none_when_trial_has_no_model():
+    t = FakeTrial("task-0", "task", "BAD_FAILURE", "Hardcoding")
+    t.model = None
+    assert subanalysis_from_trial(t, "tasks/task").model is None

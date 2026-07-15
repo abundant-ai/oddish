@@ -15,6 +15,7 @@ from oddish.core.helpers import (
 from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
+    recompute_task_browse_projection,
 )
 from oddish.db import ExperimentModel, TaskModel, TaskVersionModel, TrialStatus
 from oddish.schemas import (
@@ -69,6 +70,44 @@ async def get_task_version_core(
             status_code=404,
             detail=f"Version {version} not found for task {task_id}",
         )
+    return TaskVersionResponse.model_validate(version_row)
+
+
+async def set_task_default_version_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    version: int,
+    org_id: str | None = None,
+) -> TaskVersionResponse:
+    """Make one of a task's stored versions its default/current version.
+
+    ``TaskModel`` keeps the selected version's storage fields mirrored for
+    legacy callers that do not resolve ``current_version_id`` themselves.
+    """
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    result = await session.execute(
+        select(TaskVersionModel).where(
+            TaskVersionModel.task_id == task.id,
+            TaskVersionModel.version == version,
+        )
+    )
+    version_row = result.scalar_one_or_none()
+    if not version_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} not found for task {task_id}",
+        )
+
+    task.current_version_id = version_row.id
+    task.task_path = version_row.task_path
+    task.task_s3_key = version_row.task_s3_key
+    # The task-level tag projection distinguishes tags on the current version
+    # from tags that exist only on older versions. Flush the new pointer before
+    # recomputing because the projection reads ``current_version_id`` through
+    # raw SQL in the same transaction.
+    await session.flush()
+    await recompute_task_browse_projection(session, task_id=task.id)
     return TaskVersionResponse.model_validate(version_row)
 
 

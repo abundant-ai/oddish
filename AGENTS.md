@@ -142,11 +142,20 @@ High-level flow:
    the trial goes terminal (S3 stays the permanent record); a 24h TTL sweep in
    the cleanup pass reaps rows leaked by hard-killed workers. A RETRYING trial
    clears `finished_at` and keeps its cost monotonic so it still counts as
-   inflight for quotas and `/live`.
+   inflight for quotas and `/live`. Claude assistant deltas and tool blocks carry
+   a hashed `turn_id` in their event payload so clients can distinguish streamed
+   suffixes from a new no-tool assistant turn without exposing provider message
+   identifiers. Claude message payloads also carry a `block_index` and
+   `text_mode` (`append` or `replace`) so clients can assemble corrected text
+   snapshots without concatenating stale content.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
-   reported, phase timing, and trajectory availability. Use the CLI or dashboard
-   to watch progress and pull logs/artifacts back locally.
+   reported, phase timing, trajectory availability, arbitrary verifier
+   `metrics.json`, and a compact `_verifier` summary when the verifier emits a
+   Common Test Report Format `verifier/ctrf.json`. The full CTRF report stays in
+   S3; only counts, the tool name, and the report's trial-relative artifact path
+   are stored in `trials.result`. Use the CLI or dashboard to watch progress and
+   pull logs/artifacts back locally.
 
 ### Worker job kinds
 
@@ -200,6 +209,22 @@ same task name resolves to the existing task and creates a new `task_versions`
 row instead of creating a different task. Renaming a task is allowed, but any
 rename path must preserve the live `(org_id, name)` uniqueness invariant and
 must not split the task's version history.
+
+`TaskStatusResponse.current_version` / `current_version_id` always report the
+task's selected default (`tasks.current_version_id`), including on experiment
+pages. Experiment endpoints may scope their trials and aggregate counts to an
+experiment-relevant historical version so old or gathered runs remain visible,
+but that trial-selection pivot must not replace the reported task default. They
+report the pivot separately as `trial_version` / `trial_version_id`, including
+on lightweight task shells that omit trial rows.
+
+`tasks.current_version_id` is the user-selectable default, not necessarily the
+numerically latest version. In an experiment view, `trial_version_id` uses that
+default when the experiment has a non-superseded, non-probe trial for it;
+otherwise it falls back to the highest version represented by such trials. The
+`task-shells` and `slim-tasks` endpoints must apply the same trial-version rule
+so progressive loading cannot change the files/counts pivot or mix one
+version's trials with another's artifacts.
 
 ---
 
@@ -335,7 +360,7 @@ extensions) — see `backend/README.md`.
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
-| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `POST /tasks/cancel` |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
@@ -540,19 +565,37 @@ sweep):
    `FAILED` / `CANCELLED`), runs the post-success hook when applicable,
    releases the slot in its `finally`, and exits.
 4. `send_slack_expense_notifications()` runs every five minutes in production
-   when `SLACK_EXPENSE_WEBHOOK_URL` is configured. It deterministically alerts
-   for experiments at $1,000 and each additional $1,000 of spend, and for recent
-   trials over $70 that exceed twice the average of other trials in the
-   experiment for the same task and model. Trials without a same-task/model
-   peer do not produce anomaly alerts.
+   when a Slack or email delivery channel is configured. It deterministically
+   alerts for experiments at $1,000 and each additional $1,000 of spend, and
+   for recent trials over $70 that exceed twice the average of other trials in
+   the experiment for the same task and model. Trials without a same-task/model
+   peer do not produce anomaly alerts. Milestones are driven by *new* spend:
+   spend that finished within the 2h watch window. Milestones already covered by
+   the pre-window baseline (`total - recent`) are claimed and completed silently
+   across every delivery channel so first observing pre-existing spend never
+   dumps historical alerts. Failed loud deliveries retain per-channel retry
+   markers; primary and retry completion is atomic. Indeterminate loud claims
+   are not repeated because the external channels do not offer an idempotency
+   key, while interrupted silent claims are completed without sending.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis
    and contains no agent/LLM path. It is on by default for the production app
    and off by default on preview apps; a preview opts in by setting
-   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
-   `SLACK_EXPENSE_WEBHOOK_URL`, optionally through a preview-only named secret
-   selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
+   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing either
+   `SLACK_EXPENSE_WEBHOOK_URL`, both `RESEND_API_KEY` and
+   `ODDISH_EXPENSE_EMAIL_FROM`, or `SLACK_ALERT_BOT_TOKEN`, optionally through
+   a preview-only named secret selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
+   Email alerts go only to active attributed experiment owners, resolved through
+   `experiments.owner_user_id -> users.email`; unpriceable-model alerts remain
+   webhook-only. With `SLACK_ALERT_BOT_TOKEN` set, owner-directed alerts are
+   also DMed to the owner's Slack account, resolved from the owner email via
+   `users.lookupByEmail`, and a DM-only alert fires when a finished experiment
+   (no active trials, a trial finished recently) has at least
+   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO` (default 0.5) of its trials FAILED;
+   soft-deleted, superseded (retried), and user-cancelled trials are excluded
+   from the failed/total counts. Webhook, email, and DM use independent
+   idempotency claims so one delivery channel cannot suppress or retry another.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
@@ -635,6 +678,13 @@ for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
 `GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
 full surface and `backend/README.md` for details.
 
+Slack link unfurls are a lean hosted-only integration configured through
+`ODDISH_SLACK_UNFURL_*`. One manually installed Slack workspace is bound to one
+Oddish org; the Slack app needs `links:read` and `links:write`, subscribes to
+`link_shared`, and sends signed events to `POST /webhooks/slack/events`.
+Optional team and channel allowlists provide defense in depth. This integration
+is separate from the scheduled expense-notification webhook.
+
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
@@ -676,6 +726,8 @@ uv run alembic upgrade head
 | `api/routers/trials.py` | Trial logs, result, trajectory, retries, deletion |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
 | `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` (slots, queue status, orphaned state, worker_jobs) |
+| `api/routers/slack.py` | Signed Slack Events API endpoint for link unfurls |
+| `api/services/slack_unfurls.py` | Task/experiment summary queries and Slack block construction |
 | `auth/__init__.py` | Header parsing, `get_auth_context`, permission dependencies |
 | `auth/verification.py` | API key + Clerk JWT verification |
 | `worker/functions.py` | Modal dispatcher (`poll_queue`), reconciler (`reconcile_queue_state`), and kind-agnostic single-job runner |
@@ -690,6 +742,13 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+
+The trial drawer surfaces verifier test counts only as a small passed/total
+row in the Summary tab (shown on public share views too); trials without test
+counts show no row. `_verifier` CTRF counts take precedence, and historical
+trials without a persisted `_verifier` summary lazily discover and parse their
+`verifier/ctrf.json` artifact through the already-scoped trial files API; do
+not add an unscoped artifact lookup for this fallback.
 
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that

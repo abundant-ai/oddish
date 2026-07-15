@@ -71,6 +71,7 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
+import { useVerifierSummary } from "@/components/use-verifier-summary";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -150,6 +151,12 @@ interface TrialDetailPanelProps {
   contentOnly?: boolean;
   /** Slot rendered alongside the navigation row — e.g. a "hide task" toggle. */
   paneAction?: React.ReactNode;
+  /**
+   * Experiment whose spend the "of $X task" rollup describes. When set,
+   * trials homed in other experiments (gathered/shared-task rows) are left
+   * out of that sum; the task page omits it and stays task-wide.
+   */
+  spendOwnerExperimentId?: string | null;
 }
 
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
@@ -356,8 +363,11 @@ export function TrialDetailPanel({
   allowDelete = false,
   contentOnly = false,
   paneAction,
+  spendOwnerExperimentId = null,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
+
+  const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
     () =>
@@ -587,7 +597,7 @@ export function TrialDetailPanel({
   const TrialStatusIcon = trialStatusConfig.icon;
   // Sum the navigable trials for this view (version-scoped in both callers),
   // not task.trials, which on the task page spans every version.
-  const taskCost = sumTaskTrialCost(orderedTrials);
+  const taskCost = sumTaskTrialCost(orderedTrials, spendOwnerExperimentId);
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
   const sandboxBackend = getSandboxBackend(trial);
@@ -1004,6 +1014,19 @@ export function TrialDetailPanel({
                   </CardContent>
                 </Card>
               )}
+              {verifierSummary && verifierSummary.tests > 0 && (
+                <div className="text-muted-foreground flex items-center gap-1.5 px-4 py-1 text-[11px]">
+                  {verifierSummary.failed > 0 ? (
+                    <XCircle className="h-3.5 w-3.5 text-red-500" />
+                  ) : (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  )}
+                  <span className="text-foreground/80 font-mono tabular-nums">
+                    {verifierSummary.passed}/{verifierSummary.tests}
+                  </span>
+                  tests passed
+                </div>
+              )}
               {/* Analysis Card - only show if analysis is enabled/running/complete */}
               {showAnalysis && (trial.analysis_status || trial.analysis) && (
                 <Card
@@ -1020,6 +1043,9 @@ export function TrialDetailPanel({
                   }
                 >
                   <CardContent className="px-4 py-3">
+                    <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
+                      QA Assessment
+                    </div>
                     <div className="flex items-start gap-3">
                       {trial.analysis_status === "running" ||
                       trial.analysis_status === "pending" ||

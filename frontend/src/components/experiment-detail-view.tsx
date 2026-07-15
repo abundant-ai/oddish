@@ -42,6 +42,7 @@ import {
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
+import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
 
 type DrawerMode = "task" | "trial";
 
@@ -189,7 +190,15 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   for (const task of tasksForExperiment) {
     const trials = (task.trials ?? []).filter((t) => !t.is_probe);
     if (trials.length > 0) {
-      for (const trial of trials) accumulateTrial(acc, trial);
+      // task.experiment_id is the viewing experiment (set by the backend
+      // builders); trials homed elsewhere render but don't count as spend.
+      for (const trial of trials)
+        accumulateTrial(
+          acc,
+          trial,
+          trial.experiment_id == null ||
+            trial.experiment_id === task.experiment_id
+        );
 
       let scoredRewardSum = 0;
       let scoredCount = 0;
@@ -1360,6 +1369,7 @@ export function ExperimentDetailView({
               taskId={null}
               probeTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
+              taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               apiBaseUrl={apiBaseUrl}
               showAnalysis={showAnalysis}
               contentOnly={true}
@@ -1371,6 +1381,7 @@ export function ExperimentDetailView({
               onClose={closeDrawer}
               taskId={drawerState.task.id}
               task={drawerState.task}
+              taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               orderedTasks={drawerState.orderedTasks}
               taskIndex={drawerState.taskIndex}
               onRetryComplete={onRerun}
@@ -1417,6 +1428,7 @@ export function ExperimentDetailView({
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
                 paneAction={paneAction}
+                spendOwnerExperimentId={drawerState.task?.experiment_id ?? null}
               />
             )
           }

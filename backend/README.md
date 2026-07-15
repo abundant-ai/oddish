@@ -133,11 +133,13 @@ The API layer enforces this scope in all list/read/write queries.
 | `api/routers/admin.py` | Queue-slot, queue-status, orphaned-state, and **worker_jobs** inspection endpoints |
 | `api/routers/clerk_webhooks.py` | Clerk org/user synchronization |
 | `api/routers/github_webhooks.py` | GitHub status/refresh integrations |
+| `api/routers/slack.py` | Signed Slack Events API endpoint for link unfurls |
+| `api/services/slack_unfurls.py` | Oddish task/experiment link parsing, summaries, and Slack blocks |
 | `auth/verification.py` | API key + Clerk JWT verification and auth caches |
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
 | `auth/types.py` | `AuthContext` dataclass and `AuthMethod` enum |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
-| `slack_notifications.py` | Scheduled expensive experiment/trial Slack notifications |
+| `slack_notifications.py` | Scheduled expensive experiment/trial Slack and owner-email notifications |
 | `worker/functions.py` | Modal dispatcher (`poll_queue`) and kind-agnostic `process_single_job` runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | Thin wrappers delegating GitHub notifications to `oddish.integrations.github` |
@@ -182,7 +184,8 @@ Common optional settings:
 - provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
-- `SLACK_EXPENSE_WEBHOOK_URL` for deterministic expensive experiment/trial notifications (on by default for the production app; defaults to experiment alerts at each $1,000 milestone and anomaly alerts for trials over $70 that exceed twice the average of other trials in the experiment for the same task and model; thresholds and the experiment repeat interval use the `ODDISH_SLACK_*` settings in `.env.example`; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only webhook secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`)
+- `SLACK_EXPENSE_WEBHOOK_URL` for deterministic expensive experiment/trial Slack notifications, plus `RESEND_API_KEY` and `ODDISH_EXPENSE_EMAIL_FROM` to send the same alerts directly to each attributed experiment owner's account email, and `SLACK_ALERT_BOT_TOKEN` (scopes `chat:write`, `im:write`, `users:read.email`) to DM owners on Slack, matched by that email; the DM channel also pings owners when a finished experiment has at least `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO` (default 0.5) of its trials FAILED. Unattributed experiments remain webhook-only. Notifications are on by default for the production app; defaults are experiment alerts at each $1,000 milestone and anomaly alerts for trials over $70 that exceed twice the average of other trials in the experiment for the same task and model. Thresholds and the experiment repeat interval use the `ODDISH_SLACK_*` settings in `.env.example`; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only notification secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`.
+- `ODDISH_SLACK_UNFURL_*` for a lean, single-workspace Slack app that unfurls Oddish task, experiment, and public-share links. It requires `links:read` and `links:write`, a `link_shared` event subscription pointed at `/webhooks/slack/events`, a signing secret, bot token, and bound Oddish org. Optional team/channel allowlists add defense in depth. This is separate from the expense notifications above.
 
 ### Observability (Pydantic Logfire)
 
@@ -250,6 +253,7 @@ All routes require auth unless marked public.
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |
 | GET | `/tasks/{task_id}/versions` | List stored task versions |
 | GET | `/tasks/{task_id}/versions/{version}` | Get one stored task version |
+| PUT | `/tasks/{task_id}/versions/{version}/default` | Make a stored version the task default for display and new runs |
 | DELETE | `/trials/{trial_id}` | Soft-delete a trial, cancel jobs, and invalidate the cached verdict (admin only) |
 | POST | `/trials/{trial_id}/retry` | Re-queue trial |
 | GET | `/trials/{trial_id}/logs` | Trial logs |
@@ -315,6 +319,7 @@ All routes require auth unless marked public.
 | GET | `/admin/worker-jobs` | Unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, and duration percentiles |
 | POST | `/admin/tasks/expand-backfill` | Backfill sweep expansion for older tasks missing worker_jobs rows (admin only) |
 | POST | `/webhooks/clerk` | Clerk webhook ingestion |
+| POST | `/webhooks/slack/events` | Signed Slack URL verification and `link_shared` event ingestion |
 | POST | `/github/tasks/{task_id}/refresh` | Refresh task PR comment |
 | POST | `/github/experiments/{experiment_id}/refresh` | Refresh experiment PR comments |
 | GET | `/github/status` | GitHub integration status |

@@ -54,8 +54,11 @@ from oddish.cli._concurrency import (
 from oddish.cli.config import get_auth_headers, error_console
 from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.core.harbor_artifacts import (
+    build_trial_result,
     detect_trajectory,
+    extract_ctrf_summary,
     extract_trial_result_fields,
+    extract_verifier_metrics,
 )
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
@@ -1529,6 +1532,15 @@ def trial_result_to_import_spec(
     if has_trajectory is None:
         has_trajectory = detect_trajectory(artifact_dir) if artifact_dir else False
 
+    result_payload = None
+    if artifact_dir is not None:
+        result_payload = build_trial_result(
+            extract_verifier_metrics(artifact_dir),
+            extract_ctrf_summary(artifact_dir),
+            fields.error,
+            fields.exception_type,
+        )
+
     # SUCCESS iff the verifier produced a reward (partial counts as
     # SUCCESS in oddish -- matches the live semantics). Otherwise the
     # execution hit an error and the row is FAILED.
@@ -1544,6 +1556,7 @@ def trial_result_to_import_spec(
         "model": model_id,
         "status": status,
         "reward": fields.reward,
+        "result": result_payload,
         "error_message": fields.error,
         "harbor_stage": "completed",
         "input_tokens": fields.input_tokens,

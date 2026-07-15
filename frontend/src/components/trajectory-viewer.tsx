@@ -13,15 +13,12 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Route, Download, ImageOff, Search, X } from "lucide-react";
 import {
-  Route,
-  ChevronRight,
-  Download,
-  ImageOff,
-  Search,
-  X,
-} from "lucide-react";
-import { CodeBlock } from "@/components/code-block";
+  StepHeader,
+  ToolCallBlock,
+  ObservationBlock,
+} from "@/components/trajectory-blocks";
 import { TrajectorySummary } from "@/components/trajectory-summary";
 import { TrajectoryActivity } from "@/components/trajectory-activity";
 import {
@@ -547,60 +544,39 @@ function StepTrigger({
   prevTimestamp: string | null;
   startTimestamp: string | null;
 }) {
-  const sourceColors: Record<string, string> = {
-    system: "text-gray-500",
-    user: "text-blue-500",
-    agent: "text-purple-500",
-  };
-  const sourceLabel = step.source === "agent" ? "Agent" : step.source;
-
   const stepDuration = formatStepDuration(prevTimestamp, step.timestamp);
   const sinceStart = formatStepDuration(startTimestamp, step.timestamp);
-
-  // Get first line of message for preview
   const firstLine = getFirstLine(step.message)?.slice(0, 60) || null;
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden pr-2">
-      <div className="flex shrink-0 items-center gap-2">
-        <span className="font-mono text-xs text-muted-foreground">
-          #{step.step_id}
-        </span>
-        <span
-          className={`text-xs font-medium capitalize ${sourceColors[step.source] || "text-gray-500"}`}
-        >
-          {sourceLabel}
-        </span>
-        {step.model_name && (
-          <span className="text-xs text-muted-foreground">
-            {step.model_name}
-          </span>
-        )}
-      </div>
-
-      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-        {firstLine || <span className="italic">No message</span>}
-      </span>
-
-      <div className="flex shrink-0 items-center gap-1.5">
-        {stepDuration && (
-          <Badge
-            variant="secondary"
-            className="px-1.5 py-0 text-[10px] font-normal"
-          >
-            +{stepDuration}
-          </Badge>
-        )}
-        {sinceStart && (
-          <Badge
-            variant="outline"
-            className="px-1.5 py-0 text-[10px] font-normal"
-          >
-            @{sinceStart}
-          </Badge>
-        )}
-      </div>
-    </div>
+    <StepHeader
+      index={step.step_id}
+      source={step.source}
+      model={step.model_name}
+      preview={firstLine}
+      badges={
+        stepDuration || sinceStart ? (
+          <>
+            {stepDuration && (
+              <Badge
+                variant="secondary"
+                className="px-1.5 py-0 text-[10px] font-normal"
+              >
+                +{stepDuration}
+              </Badge>
+            )}
+            {sinceStart && (
+              <Badge
+                variant="outline"
+                className="px-1.5 py-0 text-[10px] font-normal"
+              >
+                @{sinceStart}
+              </Badge>
+            )}
+          </>
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -617,22 +593,6 @@ function StepContent({
   trialId: string;
   apiBaseUrl: string;
 }) {
-  const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(
-    new Set(),
-  );
-
-  const toggleToolCall = (id: string) => {
-    setExpandedToolCalls((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  };
-
   return (
     <div className="space-y-3 text-sm">
       {/* Message */}
@@ -663,45 +623,13 @@ function StepContent({
             Tool Calls
           </h5>
           <div className="space-y-2">
-            {step.tool_calls.map((tc) => {
-              const isExpanded = expandedToolCalls.has(tc.tool_call_id);
-              const argsStr = JSON.stringify(tc.arguments, null, 2);
-              const isLongArgs = argsStr.length > 100;
-
-              return (
-                <div
-                  key={tc.tool_call_id}
-                  className="overflow-hidden rounded border border-purple-500/20"
-                >
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => toggleToolCall(tc.tool_call_id)}
-                    className="w-full justify-start gap-2 bg-purple-500/10 px-2 py-1.5 text-left hover:bg-purple-500/15"
-                  >
-                    <ChevronRight
-                      className={`h-3 w-3 text-purple-500 transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                    />
-                    <span className="font-mono text-xs text-purple-500">
-                      {tc.function_name}
-                    </span>
-                    {!isExpanded && isLongArgs && (
-                      <span className="text-[10px] text-muted-foreground">
-                        (click to expand)
-                      </span>
-                    )}
-                  </Button>
-                  {(isExpanded || !isLongArgs) && (
-                    <CodeBlock
-                      code={argsStr}
-                      language="json"
-                      className="rounded-none"
-                    />
-                  )}
-                </div>
-              );
-            })}
+            {step.tool_calls.map((tc) => (
+              <ToolCallBlock
+                key={tc.tool_call_id}
+                name={tc.function_name}
+                args={JSON.stringify(tc.arguments, null, 2)}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -722,11 +650,7 @@ function StepContent({
 
               if (!hasMultimodalContent) {
                 return (
-                  <CodeBlock
-                    key={idx}
-                    code={text || "(empty)"}
-                    language="bash"
-                  />
+                  <ObservationBlock key={idx} content={text || "(empty)"} />
                 );
               }
 

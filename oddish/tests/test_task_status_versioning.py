@@ -19,6 +19,7 @@ def _trial(
     reward: float | None,
     experiment_id: str | None = None,
     superseded_by_trial_id: str | None = None,
+    is_probe: bool = False,
 ):
     return SimpleNamespace(
         id=trial_id,
@@ -27,6 +28,7 @@ def _trial(
         reward=reward,
         experiment_id=experiment_id,
         superseded_by_trial_id=superseded_by_trial_id,
+        is_probe=is_probe,
     )
 
 
@@ -57,6 +59,7 @@ def test_task_status_response_includes_experiment_created_at():
         verdict_error=None,
         experiments=[experiment],
         created_at=task_created_at,
+        updated_at=task_created_at,
         started_at=None,
         finished_at=None,
         link=None,
@@ -76,6 +79,9 @@ def test_task_status_response_includes_experiment_created_at():
 
     assert response.created_at == task_created_at
     assert response.experiment_created_at == experiment_created_at
+    assert response.updated_at == task_created_at
+    assert response.trial_version is None
+    assert response.trial_version_id is None
 
 
 def test_get_task_status_trials_filters_to_current_version():
@@ -350,6 +356,69 @@ def test_resolve_effective_version_id_uses_latest_trial_in_experiment():
     )
 
 
+def test_resolve_effective_version_id_prefers_represented_default():
+    task = SimpleNamespace(
+        current_version_id="task-1-v1",
+        trials=[
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v2",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+            ),
+        ],
+    )
+
+    assert (
+        helpers.resolve_effective_version_id(task, experiment_context_id="exp-a")
+        == "task-1-v1"
+    )
+
+
+def test_resolve_effective_version_id_requires_visible_default_trial():
+    task = SimpleNamespace(
+        current_version_id="task-1-v3",
+        trials=[
+            _trial(
+                "task-1-0",
+                task_version_id="task-1-v1",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+            ),
+            _trial(
+                "task-1-1",
+                task_version_id="task-1-v2",
+                status=TrialStatus.FAILED,
+                reward=0,
+                experiment_id="exp-a",
+                superseded_by_trial_id="task-1-3",
+            ),
+            _trial(
+                "task-1-2",
+                task_version_id="task-1-v3",
+                status=TrialStatus.SUCCESS,
+                reward=1,
+                experiment_id="exp-a",
+                is_probe=True,
+            ),
+        ],
+    )
+
+    assert (
+        helpers.resolve_effective_version_id(task, experiment_context_id="exp-a")
+        == "task-1-v1"
+    )
+
+
 def test_resolve_effective_version_id_falls_back_when_experiment_has_no_trials():
     task = SimpleNamespace(
         current_version_id="task-1-v2",
@@ -418,7 +487,7 @@ def test_build_task_status_response_scopes_trials_to_experiment_version(monkeypa
         experiment_context_id="exp-a",
     )
 
-    assert captured["effective_version_id"] == "task-1-v1"
+    assert captured["trial_version_id"] == "task-1-v1"
     assert captured["total"] == 2
     assert captured["completed"] == 1
     assert captured["failed"] == 1

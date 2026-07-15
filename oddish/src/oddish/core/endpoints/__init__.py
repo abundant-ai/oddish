@@ -47,6 +47,7 @@ from oddish.core.endpoints.task_detail import (
     get_task_detail_core,
     get_task_version_core,
     list_task_versions_core,
+    set_task_default_version_core,
 )
 from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
 from oddish.core.endpoints.tasks_query import (
@@ -107,5 +108,6 @@ __all__ = [
     "rerun_task_qa_core",
     "replay_has_retryable_failed_trials",
     "retry_trial_core",
+    "set_task_default_version_core",
     "unlink_task_from_experiment_core",
 ]

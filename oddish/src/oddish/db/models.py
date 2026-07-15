@@ -551,12 +551,26 @@ class AnalyzerModel(TimestampedMixin, Base):
     universal_capabilities_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # The reduce-stage prompt that produced the section bodies above; persisted
+    # for debugging/reproducibility. NULL for zero-failure analyzers (no reduce).
+    reduce_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     num_trials: Mapped[int | None] = mapped_column(Integer, nullable=True)
     num_bad_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
     num_good_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Additive: per-subcategory counts (1a/1b, 3a/3b/3c, emergent) for FE chips.
     breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Per-trial findings from the map phase. NULL = analyzed before findings
+    # were persisted; [] = analyzed, no failures found. Not the same thing.
+    findings: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # Opt-in (set at create time): when true, the worker uploads the per-trial
+    # findings+subanalyses to S3 (analyzers/{id}/trial_analyses.json).
+    save_trial_analyses: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
