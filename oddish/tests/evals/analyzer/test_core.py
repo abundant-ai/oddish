@@ -191,3 +191,42 @@ async def test_run_analyzer_eval_no_work_is_pure_without_client_or_env(monkeypat
     out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=None)
     assert out.counts == {"trials": 1, "bad": 0, "good": 0}
     assert all(v == "" for v in out.sections.values())
+
+
+class _LyingClient(FakeClient):
+    """FakeClient, but its map findings assert a bogus model and link."""
+
+    async def complete(self, prompt, *, model, temperature, max_tokens):
+        raw = await super().complete(
+            prompt, model=model, temperature=temperature, max_tokens=max_tokens
+        )
+        d = json.loads(raw)
+        if "trial_id" in d:  # a map response, not the reduce sections
+            d["model"] = "gpt-5-hallucinated"
+            d["trajectory_link"] = "https://evil.example/pwned"
+        return json.dumps(d)
+
+
+@pytest.mark.asyncio
+async def test_finding_model_and_link_come_from_the_host_not_the_llm():
+    """model is a database fact. The LLM gets no say, same as trajectory_link."""
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    sa.model = "global.anthropic.claude-opus-4-8-v1:0"
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=_LyingClient())
+
+    f = out.findings[0]
+    assert f.model == "global.anthropic.claude-opus-4-8-v1:0"
+    assert f.trajectory_link == trajectory_link("task", "task-0")
+
+
+@pytest.mark.asyncio
+async def test_finding_model_none_when_subanalysis_has_none():
+    sa = _sa("task-0", "BAD_FAILURE", "Hardcoding")
+    sa.model = None
+    inputs = AnalyzerEvalInputs(bundles=[_bundle("task-0")], subanalyses=[sa])
+
+    out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=FakeClient())
+
+    assert out.findings[0].model is None

@@ -34,6 +34,7 @@ class Finding:
     root_cause: str
     headroom_signal: str
     trajectory_link: str
+    model: str | None = None
 
 
 @dataclass

@@ -139,8 +139,9 @@ async def _map_one(
         step_indices=list(d.get("step_indices") or []),
         root_cause=d.get("root_cause", ""),
         headroom_signal=d.get("headroom_signal", ""),
-        # Trust the host-built link on the bundle, never the model's echo.
+        # Host facts, never the model's echo.
         trajectory_link=bundle.trajectory_link,
+        model=sa.model,
     )
 
 
