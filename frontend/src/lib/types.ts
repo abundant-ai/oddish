@@ -1009,6 +1009,7 @@ export interface Analyzer {
   good_failure_content?: string | null;
   universal_capabilities_content?: string | null;
   headroom_analysis?: string | null;
+  vertical_scaling_content?: string | null;
   num_trials?: number | null;
   num_bad_failures?: number | null;
   num_good_failures?: number | null;

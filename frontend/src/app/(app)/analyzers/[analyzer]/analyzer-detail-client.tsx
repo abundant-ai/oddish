@@ -96,6 +96,10 @@ export function AnalyzerDetailClient({ analyzerId }: { analyzerId: string }) {
         content={analyzer.universal_capabilities_content}
       />
       <Section title="Headroom analysis" content={analyzer.headroom_analysis} />
+      <Section
+        title="Scaling this vertical — gotchas & task briefs"
+        content={analyzer.vertical_scaling_content}
+      />
     </div>
   );
 }
