@@ -1292,6 +1292,8 @@ class TaskStatusResponse(BaseModel):
     )
     current_version: int | None = None
     current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
     total: int
     completed: int
     failed: int
@@ -1720,6 +1722,7 @@ class OrgProbeRow(BaseModel):
     run_count: int
     last_run_at: datetime | None
     last_status: str
+    probe_names: list[str] = Field(default_factory=list)
 
 
 # Skills — custom agent skill bundles.

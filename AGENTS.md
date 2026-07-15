@@ -210,14 +210,21 @@ row instead of creating a different task. Renaming a task is allowed, but any
 rename path must preserve the live `(org_id, name)` uniqueness invariant and
 must not split the task's version history.
 
+`TaskStatusResponse.current_version` / `current_version_id` always report the
+task's selected default (`tasks.current_version_id`), including on experiment
+pages. Experiment endpoints may scope their trials and aggregate counts to an
+experiment-relevant historical version so old or gathered runs remain visible,
+but that trial-selection pivot must not replace the reported task default. They
+report the pivot separately as `trial_version` / `trial_version_id`, including
+on lightweight task shells that omit trial rows.
+
 `tasks.current_version_id` is the user-selectable default, not necessarily the
-numerically latest version. In an experiment view, that default is the effective
-version when the experiment has a non-superseded, non-probe trial for it;
-otherwise the view falls back to the highest version represented by such
-trials. The
-`task-shells` and `slim-tasks` endpoints must apply the same rule so progressive
-loading cannot change a row's version or mix one version's label with another's
-trials.
+numerically latest version. In an experiment view, `trial_version_id` uses that
+default when the experiment has a non-superseded, non-probe trial for it;
+otherwise it falls back to the highest version represented by such trials. The
+`task-shells` and `slim-tasks` endpoints must apply the same trial-version rule
+so progressive loading cannot change the files/counts pivot or mix one
+version's trials with another's artifacts.
 
 ---
 
