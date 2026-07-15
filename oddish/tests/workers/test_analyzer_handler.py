@@ -348,3 +348,38 @@ async def test_run_analyzer_generation_job_stops_mid_loop_on_reap(monkeypatch):
     # The job stopped before reaching persist; status is unchanged from RUNNING.
     assert analyzer.status == JobStatus.RUNNING
     assert analyzer.finished_at is None
+
+
+@pytest.mark.asyncio
+async def test_persist_writes_reduce_prompt_on_success(monkeypatch):
+    """The reduce prompt from the eval output is persisted onto the analyzer row."""
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return []
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    class _Output:
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        counts = {"trials": 1, "bad": 1, "good": 0}
+        breakdown = {"1b": 1}
+        reduce_prompt = "the reduce prompt text"
+
+    async def fake_run_eval(inputs, config):
+        return _Output()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.status == JobStatus.SUCCESS
+    assert analyzer.reduce_prompt == "the reduce prompt text"

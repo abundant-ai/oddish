@@ -77,6 +77,10 @@ async def test_run_analyzer_eval_maps_per_failure_and_reduces():
     assert set(out.sections) == {"bad", "good", "capabilities", "headroom"}
     assert "/tasks/task/probe/task-0" in out.sections["bad"]
     assert len(out.findings) == 2
+    # the reduce prompt that produced the sections is captured on the output,
+    # and is exactly the string that was sent to the client (the last call).
+    assert out.reduce_prompt == client.calls[-1]
+    assert "lead analyst synthesizing" in out.reduce_prompt
 
 
 @pytest.mark.asyncio
@@ -90,6 +94,8 @@ async def test_run_analyzer_eval_no_failures_skips_reduce_llm():
     assert out.counts == {"trials": 1, "bad": 0, "good": 0}
     assert client.calls == []  # nothing to analyze → no LLM calls
     assert out.sections["bad"] == "" and out.sections["headroom"] == ""
+    # no reduce stage ran, so there is no prompt to persist
+    assert out.reduce_prompt is None
 
 
 def _failure_inputs():
