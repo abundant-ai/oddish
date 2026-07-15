@@ -108,12 +108,27 @@ class OddishMiniSweAgent(MiniSweAgent):
         await super().exec_as_agent(environment, command=command, env=env)
 
     def _oddish_patch_command(self, command: str) -> str:
-        config_flags = f"-c {shlex.quote(self._oddish_config_path)} "
-        if " -c " not in command:
-            config_flags = "-c mini " + config_flags
-        return command.replace(
-            "--exit-immediately", config_flags + "--exit-immediately", 1
+        # Decide against argv with the quoted prompt removed. The prompt is
+        # task-controlled text that routinely contains flag-looking substrings --
+        # " -c " (from `python -c`, `gcc -c`) and even "--exit-immediately" -- and
+        # both rewrites below would otherwise match inside it. Dropping "-c mini"
+        # is fatal, not cosmetic: mini-swe-agent's -c is a spec list, not a
+        # merge-over-defaults, so config/mini.yaml would be suppressed and
+        # AgentConfig's required system_template/instance_template would fail
+        # validation before the first model call.
+        _, task_span = _extract_task_span(command)
+        argv = (
+            command
+            if task_span is None
+            else command[: task_span[0]] + command[task_span[1] :]
         )
+        config_flags = f"-c {shlex.quote(self._oddish_config_path)} "
+        if " -c " not in argv:
+            config_flags = "-c mini " + config_flags
+        # Harbor always appends the real --exit-immediately after --task=, so the
+        # last occurrence is the real flag even when the prompt embeds the string.
+        head, sep, tail = command.rpartition("--exit-immediately")
+        return head + config_flags + sep + tail if sep else command
 
     async def exec_as_agent(
         self,
