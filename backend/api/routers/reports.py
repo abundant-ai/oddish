@@ -1,9 +1,11 @@
-"""REST endpoints for agent-eval analyzers.
+"""REST endpoints for agent-eval reports.
 
 Thin wrapper over ``oddish.core.analyzers``: authenticate, open a session,
-delegate to the core function, commit, serialize. ``experiment_ids`` isn't
-an ORM attribute on ``AnalyzerModel`` (it lives in the ``analyzer_experiments``
-join table), so every response goes through ``_to_response`` to populate it.
+delegate to the core function, commit, serialize. The persistence layer is
+still named "analyzer" (table ``analyzers`` / ``AnalyzerModel``); this HTTP
+surface is the "report" seam. ``experiment_ids`` isn't an ORM attribute on
+``AnalyzerModel`` (it lives in the ``analyzer_experiments`` join table), so
+every response goes through ``_to_response`` to populate it.
 """
 
 from __future__ import annotations
@@ -23,18 +25,18 @@ from oddish.core.analyzers import (
 )
 from oddish.db import JobStatus, get_session
 from oddish.evals.analyzer.rollup import build_rollup
-from oddish.schemas import ExperimentOption, AnalyzerCreate, AnalyzerResponse
+from oddish.schemas import ExperimentOption, ReportCreate, ReportResponse
 
-router = APIRouter(tags=["Analyzers"])
+router = APIRouter(tags=["Reports"])
 
 
-async def _to_response(session, analyzer) -> AnalyzerResponse:
-    resp = AnalyzerResponse.model_validate(analyzer)
-    resp.experiment_ids = await experiment_ids_for_analyzer(session, analyzer.id)
+async def _to_response(session, report) -> ReportResponse:
+    resp = ReportResponse.model_validate(report)
+    resp.experiment_ids = await experiment_ids_for_analyzer(session, report.id)
     return resp
 
 
-@router.get("/analyzers/experiment-options", response_model=list[ExperimentOption])
+@router.get("/reports/experiment-options", response_model=list[ExperimentOption])
 async def experiment_options(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[ExperimentOption]:
@@ -43,50 +45,50 @@ async def experiment_options(
         return await list_experiment_options_core(session, org_id=auth.org_id)
 
 
-@router.post("/analyzers", response_model=AnalyzerResponse)
-async def create_analyzer(
-    data: AnalyzerCreate,
+@router.post("/reports", response_model=ReportResponse)
+async def create_report(
+    data: ReportCreate,
     auth: Annotated[AuthContext, Depends(require_auth)],
-) -> AnalyzerResponse:
+) -> ReportResponse:
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
-        analyzer = await create_analyzer_core(
+        report = await create_analyzer_core(
             session, data=data, org_id=auth.org_id, user_id=auth.user_id
         )
         await session.commit()
-        await session.refresh(analyzer)
-        return await _to_response(session, analyzer)
+        await session.refresh(report)
+        return await _to_response(session, report)
 
 
-@router.get("/analyzers", response_model=list[AnalyzerResponse])
-async def list_analyzers(
+@router.get("/reports", response_model=list[ReportResponse])
+async def list_reports(
     auth: Annotated[AuthContext, Depends(require_auth)],
-) -> list[AnalyzerResponse]:
+) -> list[ReportResponse]:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        analyzers = await list_analyzers_core(session, org_id=auth.org_id)
-        return [await _to_response(session, r) for r in analyzers]
+        reports = await list_analyzers_core(session, org_id=auth.org_id)
+        return [await _to_response(session, r) for r in reports]
 
 
-@router.get("/analyzers/{analyzer_id}", response_model=AnalyzerResponse)
-async def get_analyzer(
-    analyzer_id: str,
+@router.get("/reports/{report_id}", response_model=ReportResponse)
+async def get_report(
+    report_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-) -> AnalyzerResponse:
+) -> ReportResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        analyzer = await get_analyzer_core(session, analyzer_id, org_id=auth.org_id)
-        return await _to_response(session, analyzer)
+        report = await get_analyzer_core(session, report_id, org_id=auth.org_id)
+        return await _to_response(session, report)
 
 
-@router.get("/analyzers/{analyzer_id}/rollup")
-async def get_analyzer_rollup(
-    analyzer_id: str,
+@router.get("/reports/{report_id}/rollup")
+async def get_report_rollup(
+    report_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        analyzer = await get_analyzer_core(session, analyzer_id, org_id=auth.org_id)
+        analyzer = await get_analyzer_core(session, report_id, org_id=auth.org_id)
         # A rollup is the product of a *successful* run, so status gates it --
         # findings alone can't. A retry resets a SUCCESS row to QUEUED without
         # clearing findings (jobs/handlers.py, deliberately, so the retry doesn't
@@ -117,13 +119,13 @@ async def get_analyzer_rollup(
         return build_rollup(analyzer.findings, analyzer.models_by_task)
 
 
-@router.delete("/analyzers/{analyzer_id}")
-async def delete_analyzer(
-    analyzer_id: str,
+@router.delete("/reports/{report_id}")
+async def delete_report(
+    report_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
-        await delete_analyzer_core(session, analyzer_id, org_id=auth.org_id)
+        await delete_analyzer_core(session, report_id, org_id=auth.org_id)
         await session.commit()
     return {"ok": True}

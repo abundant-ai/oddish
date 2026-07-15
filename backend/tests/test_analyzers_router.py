@@ -93,7 +93,7 @@ async def test_create_lists_and_gets_analyzer(client, experiment_id, monkeypatch
     monkeypatch.setattr(analyzers_core, "_enqueue_analyzer_worker_job", _noop)
 
     resp = await client.post(
-        "/analyzers",
+        "/reports",
         json={"name": "Q3", "experiment_ids": [experiment_id]},
     )
     assert resp.status_code == 200, resp.text
@@ -101,11 +101,11 @@ async def test_create_lists_and_gets_analyzer(client, experiment_id, monkeypatch
     assert resp.json()["status"] == "pending"
     assert resp.json()["experiment_ids"] == [experiment_id]
 
-    listed = await client.get("/analyzers")
+    listed = await client.get("/reports")
     assert listed.status_code == 200, listed.text
     assert any(r["id"] == analyzer_id for r in listed.json())
 
-    got = await client.get(f"/analyzers/{analyzer_id}")
+    got = await client.get(f"/reports/{analyzer_id}")
     assert got.status_code == 200, got.text
     assert got.json()["name"] == "Q3"
     assert got.json()["experiment_ids"] == [experiment_id]
@@ -113,7 +113,7 @@ async def test_create_lists_and_gets_analyzer(client, experiment_id, monkeypatch
 
 @pytest.mark.asyncio
 async def test_experiment_options_lists_org_experiments(client, experiment_id):
-    resp = await client.get("/analyzers/experiment-options")
+    resp = await client.get("/reports/experiment-options")
     assert resp.status_code == 200, resp.text
     assert any(opt["id"] == experiment_id for opt in resp.json())
 
@@ -168,7 +168,7 @@ async def test_rollup_404_when_findings_null_and_run_succeeded(client, analyzer_
     findings and status=SUCCESS together, so this is the only state that means
     'legacy'. Distinct from 'no failures'."""
     await _set_status(analyzer_id, JobStatus.SUCCESS)
-    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
     assert resp.status_code == 404, resp.text
     assert "before findings" in resp.json()["detail"].lower()
 
@@ -180,7 +180,7 @@ async def test_rollup_409_while_the_analyzer_is_still_running(client, analyzer_i
     caller polling for a result off to fix nothing."""
     for status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING):
         await _set_status(analyzer_id, status)
-        resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+        resp = await client.get(f"/reports/{analyzer_id}/rollup")
         assert resp.status_code == 409, f"{status}: {resp.text}"
         assert status.value in resp.json()["detail"]
         assert "before findings" not in resp.json()["detail"].lower()
@@ -192,10 +192,10 @@ async def test_rollup_409_not_stale_data_while_a_retry_is_in_flight(client, anal
     previous run's findings sit on an in-flight row. Keying off findings alone
     would serve that stale rollup at 200 as if it were current."""
     await _set_findings(analyzer_id, [], models_by_task={"task": ["claude-opus-4-8"]})
-    assert (await client.get(f"/analyzers/{analyzer_id}/rollup")).status_code == 200
+    assert (await client.get(f"/reports/{analyzer_id}/rollup")).status_code == 200
 
     await _set_status(analyzer_id, JobStatus.QUEUED)  # what the retry path does
-    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
     assert resp.status_code == 409, resp.text
     assert "queued" in resp.json()["detail"]
 
@@ -205,7 +205,7 @@ async def test_rollup_404_reports_the_failure_when_the_run_died(client, analyzer
     """A FAILED row has NULL findings because the run died. Say so, and surface
     the error -- not 'ran before findings were persisted'."""
     await _set_status(analyzer_id, JobStatus.FAILED, error="reduce step exploded")
-    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
     assert resp.status_code == 404, resp.text
     detail = resp.json()["detail"]
     assert "failed" in detail.lower()
@@ -216,7 +216,7 @@ async def test_rollup_404_reports_the_failure_when_the_run_died(client, analyzer
 @pytest.mark.asyncio
 async def test_rollup_200_empty_lanes_when_no_failures(client, analyzer_id):
     await _set_findings(analyzer_id, [])
-    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
     assert resp.status_code == 200, resp.text
     assert resp.json()["good_failures"]["groups"] == []
 
@@ -241,7 +241,7 @@ async def test_rollup_returns_lanes(client, analyzer_id):
     await _set_findings(
         analyzer_id, [finding], models_by_task={"task": ["claude-opus-4-8"]}
     )
-    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
     assert resp.status_code == 200, resp.text
     assert resp.json()["good_failures"]["groups"][0]["gaps"][0]["gap"] == "Logic Error"
 
@@ -268,7 +268,7 @@ async def test_rollup_unknown_total_when_roster_null(client, analyzer_id):
         "task_path": "tasks/task",
     }
     await _set_findings(analyzer_id, [finding], models_by_task=None)
-    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    resp = await client.get(f"/reports/{analyzer_id}/rollup")
     assert resp.status_code == 200, resp.text
     group = resp.json()["task_construction"]["groups"][0]
     assert group["models_total"] is None
@@ -285,13 +285,13 @@ async def test_delete_analyzer_removes_it(client, experiment_id, monkeypatch):
     monkeypatch.setattr(analyzers_core, "_enqueue_analyzer_worker_job", _noop)
 
     resp = await client.post(
-        "/analyzers",
+        "/reports",
         json={"name": "to-delete", "experiment_ids": [experiment_id]},
     )
     analyzer_id = resp.json()["id"]
 
-    deleted = await client.delete(f"/analyzers/{analyzer_id}")
+    deleted = await client.delete(f"/reports/{analyzer_id}")
     assert deleted.status_code == 200, deleted.text
 
-    got = await client.get(f"/analyzers/{analyzer_id}")
+    got = await client.get(f"/reports/{analyzer_id}")
     assert got.status_code == 404

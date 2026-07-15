@@ -102,7 +102,7 @@ _SCHEMA_UNITS: tuple[tuple[str, Path, str, str, frozenset[str]], ...] = (
         "list_analyzers_core",
         _PKG_ROOT / "core" / "analyzers.py",
         "AnalyzerModel",
-        "AnalyzerResponse",
+        "ReportResponse",
         # Filled by a separate query in the router's _to_response().
         frozenset({"experiment_ids"}),
     ),

@@ -9,21 +9,28 @@ from rich.console import Console
 from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
 
 console = Console()
-analyzer_app = typer.Typer(help="Manage cross-experiment analyzers.", no_args_is_help=True)
+report_app = typer.Typer(
+    help="Manage cross-experiment reports.", no_args_is_help=True
+)
 
 
 def _normalize_ids(raw: list[str]) -> list[str]:
     return list(dict.fromkeys(s.strip() for s in raw if s and s.strip()))
 
 
-@analyzer_app.command("create")
+@report_app.command("create")
 def create(
     experiment_ids: Annotated[
         list[str],
         typer.Option("--experiment", "-e", help="Experiment ID to include (repeatable)."),
     ] = [],
     name: Annotated[
-        str, typer.Option("--name", "-n", help="Name for the analyzer.")
+        str,
+        typer.Option(
+            "--name",
+            "-n",
+            help="Optional name. Defaults to report_<N>_<experiment>.",
+        ),
     ] = "",
     json_output: Annotated[
         bool, typer.Option("--json", help="Print the raw JSON response.")
@@ -40,31 +47,27 @@ def create(
         typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
     ] = None,
 ):
-    """Create a analyzer analyzing trajectories across experiments.
+    """Create a report analyzing trajectories across experiments.
 
-        oddish analyzer create -e exp_a -e exp_b --name "Q3 sweep"
+        oddish report create -e exp_a -e exp_b
+        oddish report create -e exp_a --name "Q3 sweep"
     """
     ids = _normalize_ids(experiment_ids)
     if not ids:
         console.print("[red]Provide at least one experiment id with -e/--experiment.[/red]")
-        raise typer.Exit(1)
-    if not name.strip():
-        console.print("[red]Provide a analyzer name with -n/--name.[/red]")
         raise typer.Exit(1)
 
     if not api_url:
         api_url = get_api_url()
     require_api_key(api_url)
 
+    # Omit name entirely when unset so the server auto-generates it.
+    payload: dict = {"experiment_ids": ids, "save_trial_analyses": save_trials}
+    if name.strip():
+        payload["name"] = name.strip()
+
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
-        resp = client.post(
-            f"{api_url}/analyzers",
-            json={
-                "name": name,
-                "experiment_ids": ids,
-                "save_trial_analyses": save_trials,
-            },
-        )
+        resp = client.post(f"{api_url}/reports", json=payload)
     if resp.status_code != 200:
         console.print(f"[red]Failed:[/red] {resp.text}")
         raise typer.Exit(1)
@@ -76,6 +79,6 @@ def create(
         console.print_json(_json.dumps(data))
         return
     console.print(
-        f"[green]Created analyzer {data.get('id')}[/green] ({data.get('name')}) "
+        f"[green]Created report {data.get('id')}[/green] ({data.get('name')}) "
         f"— status: {data.get('status')}"
     )
