@@ -9,6 +9,7 @@ inside the test process to keep the contract explicit.
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import ForeignKeyConstraint
 
 # The OSS schema deliberately omits model-level FKs on ``api_keys``
@@ -53,3 +54,19 @@ pytest_plugins = ("pytest_asyncio",)
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest_asyncio.fixture
+async def session():
+    """Async DB session for tests that talk to Postgres directly.
+
+    Rolls back on teardown so shared-DB tests never need to clean up their own
+    rows -- only the uniquified slugs they insert are visible mid-test.
+    """
+    from oddish.db.connection import async_session_maker
+
+    async with async_session_maker() as s:
+        try:
+            yield s
+        finally:
+            await s.rollback()
