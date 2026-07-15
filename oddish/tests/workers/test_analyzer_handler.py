@@ -2,8 +2,13 @@ import pytest
 
 from oddish.config import settings, to_anthropic_api_model_id
 from oddish.db.models import WorkerJobKind
+from oddish.evals.analyzer.taxonomy import Taxonomy
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.jobs.registry import get_handler
+
+
+async def _fake_load_taxonomy(session):
+    return Taxonomy()
 
 
 def test_build_analyzer_eval_config_uses_settings_model_and_default_concurrency(
@@ -162,7 +167,7 @@ async def test_run_analyzer_generation_job_skips_persist_when_reaped(monkeypatch
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
 
-    async def fake_run_eval(inputs, config):
+    async def fake_run_eval(inputs, config, *, taxonomy=None):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -208,6 +213,7 @@ def _install_owned_analyzer(monkeypatch, rh, JobStatus):
             return analyzer
 
     monkeypatch.setattr(rh, "get_session", lambda: _FakeSession())
+    monkeypatch.setattr(rh, "load_taxonomy", _fake_load_taxonomy)
 
     async def always_running(session, worker_job_id, *, with_for_update=False):
         return True  # job keeps ownership through persist
@@ -263,7 +269,7 @@ async def test_cancelled_error_marks_failed_not_stuck_running(monkeypatch):
 
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
-    async def cancel_eval(inputs, config):
+    async def cancel_eval(inputs, config, *, taxonomy=None):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", cancel_eval)
@@ -362,6 +368,9 @@ def _fake_output_with_findings():
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {}
         reduce_prompt = "rp"
+        proposals = []
+        taxonomy_version = None
+        taxonomy_snapshot = None
         findings = [
             Finding(
                 trial_id="t1", bucket="bad", subcategory="3a", evidence_quote="q",
@@ -407,7 +416,7 @@ def _wire_eval_paths(monkeypatch, rh, *, output, inputs):
 
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
-    async def fake_run_eval(inp, config):
+    async def fake_run_eval(inp, config, *, taxonomy=None):
         # Mirrors core: the real run_analyzer_eval carries the inputs'
         # subanalyses through onto the output, which is where the trial-analyses
         # export reads them from.
@@ -558,9 +567,12 @@ async def test_persist_writes_reduce_prompt_on_success(monkeypatch):
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {"1b": 1}
         reduce_prompt = "the reduce prompt text"
+        proposals = []
+        taxonomy_version = None
+        taxonomy_snapshot = None
         findings = []
 
-    async def fake_run_eval(inputs, config):
+    async def fake_run_eval(inputs, config, *, taxonomy=None):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -595,6 +607,9 @@ async def test_store_persists_findings(monkeypatch):
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {"1b": 1}
         reduce_prompt = "rp"
+        proposals = []
+        taxonomy_version = None
+        taxonomy_snapshot = None
         findings = [
             Finding(
                 trial_id="t1", bucket="bad", subcategory="1b",
@@ -604,7 +619,7 @@ async def test_store_persists_findings(monkeypatch):
             )
         ]
 
-    async def fake_run_eval(inputs, config):
+    async def fake_run_eval(inputs, config, *, taxonomy=None):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -663,6 +678,7 @@ async def test_store_persists_models_by_task(monkeypatch):
             return trials_by_id.get(id_)
 
     monkeypatch.setattr(rh, "get_session", lambda: _Session())
+    monkeypatch.setattr(rh, "load_taxonomy", _fake_load_taxonomy)
 
     async def fake_build_inputs(rows):
         return object()
@@ -674,6 +690,9 @@ async def test_store_persists_models_by_task(monkeypatch):
         counts = {"trials": 2, "bad": 1, "good": 1}
         breakdown = {"1b": 1}
         reduce_prompt = "rp"
+        proposals = []
+        taxonomy_version = None
+        taxonomy_snapshot = None
         findings = [
             Finding(
                 trial_id="t1", bucket="bad", subcategory="1b",
@@ -683,7 +702,7 @@ async def test_store_persists_models_by_task(monkeypatch):
             )
         ]
 
-    async def fake_run_eval(inputs, config):
+    async def fake_run_eval(inputs, config, *, taxonomy=None):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -717,9 +736,12 @@ async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
         reduce_prompt = None
+        proposals = []
+        taxonomy_version = None
+        taxonomy_snapshot = None
         findings = []
 
-    async def fake_run_eval(inputs, config):
+    async def fake_run_eval(inputs, config, *, taxonomy=None):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)

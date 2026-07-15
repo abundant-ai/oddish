@@ -19,7 +19,7 @@ from api.services.cc_chat.analyzer_prompt import (
 )
 from api.services.cc_chat.stream_render import render_event
 from oddish.config import settings
-from oddish.evals.analyzer.schemas import Finding
+from oddish.evals.analyzer.schemas import CapabilityProposal, Finding
 from oddish.evals.analyzer.taxonomy import Taxonomy
 from oddish.evals.primitives import SubAnalysis
 
@@ -54,21 +54,22 @@ async def run_cohort(
     api_base: str,
     api_key: str,
     cli_src: bytes,
-) -> tuple[list[Finding], dict[str, str]]:
+    taxonomy: Taxonomy,
+) -> tuple[list[Finding], dict[str, str], list[CapabilityProposal]]:
     tag = f"[analyzer {analyzer_id}][{bucket}]"
-    # TODO(taxonomy): a DB-loaded Taxonomy isn't threaded through run_cohort yet
-    # (Task 6). Until then, refuse the good bucket rather than silently run it
-    # with a blank capabilities rubric -- map_rubric.txt unconditionally follows
-    # a blank rubric with "if none of the above fit, author a new one", so every
-    # finding would get a fabricated capability_slug. Mirrors the same guard in
+    # map_rubric.txt unconditionally follows a blank capabilities rubric with
+    # "if none of the above fit, author a new one", so an empty taxonomy would
+    # get every good-bucket finding a fabricated capability_slug while the job
+    # still reports SUCCESS. Mirrors the same guard in
     # oddish/evals/analyzer/core.py's run_analyzer_eval. The bad bucket doesn't
     # render the rubric at all, so it's unaffected.
-    if bucket == "good" and cohort:
+    if bucket == "good" and cohort and not taxonomy.capabilities:
         raise RuntimeError(
-            f"{tag} no taxonomy wired into run_cohort yet; refusing to run the "
-            "good bucket with an empty capabilities rubric"
+            f"{tag} refusing to run the good bucket against an empty taxonomy "
+            "(no capabilities loaded); would fabricate a novel capability for "
+            "every finding"
         )
-    prompt = build_cohort_prompt(bucket, cohort, roster, counts, oracle_by_trial, Taxonomy())
+    prompt = build_cohort_prompt(bucket, cohort, roster, counts, oracle_by_trial, taxonomy)
     # Retained only to serve the parse-fallback; never persisted.
     stream_lines: list[str] = []
     sandbox = None
@@ -117,12 +118,13 @@ async def run_cohort(
             except Exception as exc:  # noqa: BLE001 — auto_delete is the backstop
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
-    # Proposals aren't wired to the DB yet (that's the next step); discard them
-    # here rather than change run_cohort's return shape ahead of that wiring.
-    findings, sections, _proposals = parse_cohort_result(
+    findings, sections, proposals = parse_cohort_result(
         bucket, reduce_b, findings_b, "\n".join(stream_lines),
         # Scoped to this cohort, so a finding for someone else's trial is dropped.
         {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},
     )
-    logger.info("%s done: %d findings, sections=%s", tag, len(findings), sorted(sections))
-    return findings, sections
+    logger.info(
+        "%s done: %d findings, %d proposals, sections=%s",
+        tag, len(findings), len(proposals), sorted(sections),
+    )
+    return findings, sections, proposals

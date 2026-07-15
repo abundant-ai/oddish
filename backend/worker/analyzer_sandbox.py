@@ -22,13 +22,17 @@ from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
 from api.services.cc_chat.daytona_client import RealDaytonaClient
 from oddish.config import settings
 from oddish.core.analyzer_inputs import subanalysis_from_trial
+from oddish.db.connection import get_session
+from oddish.db.taxonomy_query import load_taxonomy
 from oddish.evals.analyzer.bucketing import bucket_subanalyses
 from oddish.evals.analyzer.core import build_roster
 from oddish.evals.analyzer.schemas import (
     AnalyzerEvalConfig,
     AnalyzerEvalOutput,
+    CapabilityProposal,
     Finding,
 )
+from oddish.evals.analyzer.taxonomy import taxonomy_fingerprint, taxonomy_snapshot
 from oddish.evals.primitives import SubAnalysis
 from oddish.worker.probe_creds import revoke_probe_creds
 from oddish.workers.jobs.handlers import AnalyzerJobHandler
@@ -121,10 +125,15 @@ async def sandbox_eval_rows(
     counts = {"trials": len(rows), "bad": len(bad), "good": len(good)}
     logger.info("analyzer-sandbox: bucketed %s breakdown=%s", counts, breakdown)
 
+    async with get_session() as session:
+        taxonomy = await load_taxonomy(session)
+    tax_version, tax_snapshot = taxonomy_fingerprint(taxonomy), taxonomy_snapshot(taxonomy)
+
     if not bad and not good:
         return AnalyzerEvalOutput(
             sections=dict(_EMPTY_SECTIONS), findings=[], counts=counts,
             breakdown=breakdown, subanalyses=subs,
+            taxonomy_version=tax_version, taxonomy_snapshot=tax_snapshot,
         )
 
     roster = build_roster(bad, good)
@@ -147,6 +156,7 @@ async def sandbox_eval_rows(
             host_by_trial=host_by_trial,
             analyzer_id=analyzer_id, anthropic_key=anthropic_key,
             api_base=api_base, api_key=api_key, cli_src=cli_src,
+            taxonomy=taxonomy,
         )
 
     jobs = [(b, c) for b, c in (("bad", bad), ("good", good)) if c]
@@ -171,21 +181,29 @@ async def sandbox_eval_rows(
         raise first_exc
 
     findings: list[Finding] = []
+    proposals: list[CapabilityProposal] = []
     sections = dict(_EMPTY_SECTIONS)
-    for (bucket, cohort), (cohort_findings, cohort_sections) in zip(jobs, results):
+    for (bucket, cohort), (cohort_findings, cohort_sections, cohort_proposals) in zip(
+        jobs, results
+    ):
         if not cohort_findings:
             raise RuntimeError(
                 f"analyzer-sandbox: no findings from a non-empty {bucket!r} cohort "
                 f"({len(cohort)} trials); refusing to persist blank sections"
             )
         findings.extend(cohort_findings)
+        proposals.extend(cohort_proposals)
         for key, text in cohort_sections.items():
             sections[_SECTION_COLUMN[key]] = text
 
-    logger.info("analyzer-sandbox: complete, %d findings", len(findings))
+    logger.info(
+        "analyzer-sandbox: complete, %d findings, %d proposals",
+        len(findings), len(proposals),
+    )
     return AnalyzerEvalOutput(
         sections=sections, findings=findings, counts=counts, breakdown=breakdown,
-        subanalyses=subs,
+        subanalyses=subs, proposals=proposals,
+        taxonomy_version=tax_version, taxonomy_snapshot=tax_snapshot,
     )
 
 

@@ -19,6 +19,7 @@ from dataclasses import asdict
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from oddish.config import settings, to_anthropic_api_model_id
 from oddish.core.analyzer_inputs import build_analyzer_inputs
@@ -27,16 +28,19 @@ from oddish.core.analyzers import experiment_ids_for_analyzer
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db import get_session
 from oddish.db.storage import get_storage_client
+from oddish.db.taxonomy_query import load_taxonomy
 from oddish.db.models import (
     AnalysisStatus,
     JobStatus,
     AnalyzerModel,
+    CapabilityProposalModel,
     TaskModel,
     TrialModel,
     TrialStatus,
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
+    generate_id,
     utcnow,
 )
 from oddish.evals.analyzer.core import run_analyzer_eval
@@ -59,7 +63,9 @@ async def default_eval_rows(
     rows: list[tuple[Any, str]], config: AnalyzerEvalConfig, analyzer_id: str
 ) -> AnalyzerEvalOutput:
     inputs = await build_analyzer_inputs(rows)
-    return await run_analyzer_eval(inputs, config)
+    async with get_session() as session:
+        taxonomy = await load_taxonomy(session)
+    return await run_analyzer_eval(inputs, config, taxonomy=taxonomy)
 
 
 def _trial_analyses_s3_key(analyzer_id: str) -> str:
@@ -352,6 +358,24 @@ async def run_analyzer_generation_job(
                 analyzer.reduce_prompt = output.reduce_prompt
                 analyzer.findings = [asdict(f) for f in output.findings]
                 analyzer.models_by_task = output.models_by_task
+                analyzer.taxonomy_version = output.taxonomy_version
+                analyzer.taxonomy_snapshot = output.taxonomy_snapshot
+                for p in output.proposals:
+                    # Idempotent on (analyzer_id, slug_suggestion): _store runs
+                    # under asyncio.shield and a retried job re-enters here.
+                    await session.execute(
+                        pg_insert(CapabilityProposalModel)
+                        .values(
+                            id=generate_id(), slug_suggestion=p.slug, name=p.name,
+                            description=p.description, example=p.example,
+                            category_slugs=p.categories, analyzer_id=analyzer_id,
+                            trial_ids=p.trial_ids,
+                            trajectory_link=p.trajectory_link, status="PENDING",
+                        )
+                        .on_conflict_do_nothing(
+                            index_elements=["analyzer_id", "slug_suggestion"]
+                        )
+                    )
                 analyzer.status = JobStatus.SUCCESS
                 analyzer.error = None
             else:

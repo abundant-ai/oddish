@@ -1,10 +1,12 @@
 """sandbox_eval_rows buckets DB-only, then runs one sandbox per cohort."""
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
 
-from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, Finding
+from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, CapabilityProposal, Finding
+from oddish.evals.analyzer.taxonomy import Capability, Category, Taxonomy
 from oddish.evals.primitives import SubAnalysis
 
 pytestmark = pytest.mark.asyncio
@@ -37,6 +39,14 @@ def _finding(trial_id, bucket) -> Finding:
     )
 
 
+_TAX = Taxonomy(
+    categories=(Category("verification", "Verification failures", "d", 0),),
+    capabilities=(Capability("agent-early-stop", "Agent Early Stop",
+                             "Stops early.", "apex-swe.",
+                             primary_category="verification"),),
+)
+
+
 @pytest.fixture
 def patched(monkeypatch):
     """Stub everything outside the unit: bucketing inputs, creds, CLI, sandboxes."""
@@ -48,12 +58,12 @@ def patched(monkeypatch):
     async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
         calls.append({"bucket": bucket, "cohort": [sa.trial_id for sa in cohort]})
         if bucket == "bad":
-            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}
+            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}, []
         return [_finding("good-1", "good")], {
             "good_failure_content": "# Good",
             "universal_capabilities_content": "# Caps",
             "headroom_analysis": "# Head",
-        }
+        }, []
 
     monkeypatch.setattr(m, "run_cohort", fake_run_cohort)
     monkeypatch.setattr(m, "_read_cli_source", lambda: b"cli")
@@ -68,6 +78,17 @@ def patched(monkeypatch):
 
     monkeypatch.setattr(m, "_resolve_api_creds", fake_creds)
     monkeypatch.setattr(m, "revoke_probe_creds", fake_revoke)
+
+    async def fake_load_taxonomy(session):
+        return _TAX
+
+    monkeypatch.setattr(m, "load_taxonomy", fake_load_taxonomy)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield None
+
+    monkeypatch.setattr(m, "get_session", fake_get_session)
     return m, calls, revoked
 
 
@@ -149,7 +170,7 @@ async def test_failure_waits_for_siblings_to_tear_down(patched, monkeypatch):
             raise RuntimeError("sandbox exploded")
         await asyncio.sleep(0.05)
         good_finished = True
-        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}
+        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}, []
 
     monkeypatch.setattr(m, "run_cohort", flaky)
     with pytest.raises(RuntimeError, match="sandbox exploded"):
@@ -188,7 +209,7 @@ async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch
     )
 
     async def empty(client, runtime, *, bucket, cohort, **kw):
-        return [], {"bad_failure_content": ""}
+        return [], {"bad_failure_content": ""}, []
 
     monkeypatch.setattr(m, "run_cohort", empty)
     with pytest.raises(RuntimeError, match="no findings"):
@@ -244,6 +265,67 @@ async def test_missing_anthropic_key_fails_before_provisioning_anything(
         await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
     assert calls == [], "no cohort sandbox should have been provisioned"
     assert minted == [], "no probe key should have been minted"
+
+
+async def test_sandbox_eval_carries_proposals_out_on_the_output(patched, monkeypatch):
+    """Proposals must ride out on the output: sandbox_eval_rows holds no
+    session, and _store() is the only thing that writes."""
+    m, _, _ = patched
+    monkeypatch.setattr(
+        m, "_gather",
+        lambda rows: (
+            [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
+            {"bad-1": "o"}, _hosts("bad-1", "good-1"),
+        ),
+    )
+    prop = CapabilityProposal(
+        slug="hypothesis-fixation", name="Hypothesis Fixation", description="d",
+        categories=["verification"], trial_ids=["good-1"],
+    )
+
+    async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
+        if bucket == "bad":
+            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}, []
+        return (
+            [_finding("good-1", "good")],
+            {"good_failure_content": "# Good",
+             "universal_capabilities_content": "# Caps",
+             "headroom_analysis": "# Head"},
+            [prop],
+        )
+
+    monkeypatch.setattr(m, "run_cohort", fake_run_cohort)
+    out = await m.sandbox_eval_rows(
+        [("r1", "t"), ("r2", "t")], AnalyzerEvalConfig(), "an-1"
+    )
+
+    assert out.proposals == [prop]
+
+
+async def test_sandbox_eval_snapshots_the_taxonomy_it_ran_against(patched, monkeypatch):
+    """Without the snapshot, editing a capability silently rewrites the meaning
+    of this run's breakdown after the fact."""
+    m, _, _ = patched
+    monkeypatch.setattr(
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
+    )
+    out = await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "an-1")
+
+    assert len(out.taxonomy_version) == 12
+    assert [c["slug"] for c in out.taxonomy_snapshot["capabilities"]] == [
+        "agent-early-stop"
+    ]
+
+
+async def test_zero_work_still_snapshots_the_taxonomy(patched, monkeypatch):
+    """A run that found no failures still ran against a taxonomy."""
+    m, _, _ = patched
+    monkeypatch.setattr(m, "_gather", lambda rows: ([], {}, {}))
+    out = await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "an-1")
+
+    assert len(out.taxonomy_version) == 12
+    assert out.proposals == []
 
 
 async def test_handler_subclass_uses_the_sandbox_strategy():

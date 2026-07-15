@@ -83,3 +83,10 @@ class AnalyzerEvalOutput:
     # task_id -> raw trial.model values that RAN the task, including those that
     # passed it. Findings only record failures, so this cannot be derived from them.
     models_by_task: dict[str, list[str]] = field(default_factory=dict)
+    # Agent-authored capabilities awaiting review. Ride the same path as
+    # findings: the eval strategies hold no session, _store() persists.
+    proposals: list[CapabilityProposal] = field(default_factory=list)
+    # The taxonomy this run classified against. Without it, editing a capability
+    # silently rewrites the meaning of every historical breakdown.
+    taxonomy_version: str | None = None
+    taxonomy_snapshot: dict | None = None

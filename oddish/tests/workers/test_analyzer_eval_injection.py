@@ -1,9 +1,12 @@
 """The eval strategy is injectable so the hosted backend can swap in a sandbox
 implementation without forking run_analyzer_generation_job's reap-safety code."""
 
+from contextlib import asynccontextmanager
+
 import pytest
 
 from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, AnalyzerEvalOutput
+from oddish.evals.analyzer.taxonomy import Taxonomy
 from oddish.workers.jobs.handlers import AnalyzerJobHandler
 from oddish.workers.queue import analyzer_handler as ah
 
@@ -21,13 +24,27 @@ async def test_default_eval_rows_builds_inputs_then_runs_core(monkeypatch):
         seen["rows"] = rows
         return "INPUTS"
 
-    async def fake_run(inputs, config):
+    async def fake_run(inputs, config, *, taxonomy=None):
         seen["inputs"] = inputs
         seen["config"] = config
+        seen["taxonomy"] = taxonomy
         return AnalyzerEvalOutput(sections={})
 
     monkeypatch.setattr(ah, "build_analyzer_inputs", fake_build)
     monkeypatch.setattr(ah, "run_analyzer_eval", fake_run)
+
+    tax = Taxonomy()
+
+    async def fake_load_taxonomy(session):
+        return tax
+
+    monkeypatch.setattr(ah, "load_taxonomy", fake_load_taxonomy)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield None
+
+    monkeypatch.setattr(ah, "get_session", fake_get_session)
 
     config = AnalyzerEvalConfig()
     out = await ah.default_eval_rows([("trial", "task/path")], config, "a1")
@@ -35,6 +52,7 @@ async def test_default_eval_rows_builds_inputs_then_runs_core(monkeypatch):
     assert seen["rows"] == [("trial", "task/path")]
     assert seen["inputs"] == "INPUTS"
     assert seen["config"] is config
+    assert seen["taxonomy"] is tax
     assert isinstance(out, AnalyzerEvalOutput)
 
 

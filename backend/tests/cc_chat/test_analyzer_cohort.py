@@ -7,6 +7,7 @@ from api.services.cc_chat import analyzer_cohort as ac
 from api.services.cc_chat.analyzer_parse import CohortParseError
 from api.services.cc_chat.analyzer_prompt import FINDINGS_PATH, REDUCE_PATH
 from api.services.cc_chat.daytona_client import FakeDaytonaClient
+from oddish.evals.analyzer.taxonomy import Capability, Category, Taxonomy
 from oddish.evals.primitives import SubAnalysis
 
 pytestmark = pytest.mark.asyncio
@@ -21,6 +22,13 @@ COHORT = [
 ROSTER = [{"trial_id": "bad-1", "bucket": "bad", "subtype": "1a",
            "trajectory_link": "/tasks/t1/probe/bad-1"}]
 COUNTS = {"trials": 1, "bad": 1, "good": 0}
+
+TAXONOMY = Taxonomy(
+    categories=(Category("verification", "Verification failures", "d", 0),),
+    capabilities=(Capability("agent-early-stop", "Agent Early Stop",
+                             "Stops early.", "apex-swe.",
+                             primary_category="verification"),),
+)
 
 
 class _FakeRuntime:
@@ -90,7 +98,7 @@ def _kwargs(**over):
         bucket="bad", cohort=COHORT, roster=ROSTER, counts=COUNTS,
         oracle_by_trial={"bad-1": "oracle"}, host_by_trial=HOSTS, analyzer_id="a1",
         anthropic_key="sk-ant-test", api_base="https://api.example", api_key="k",
-        cli_src=b"#!/usr/bin/env node",
+        cli_src=b"#!/usr/bin/env node", taxonomy=TAXONOMY,
     )
     base.update(over)
     return base
@@ -111,7 +119,7 @@ async def test_run_cohort_returns_findings_and_sections():
     client = FakeDaytonaClient()
     runtime = _FakeRuntime([{"type": "result", "subtype": "success"}],
                            files=_good_files())
-    findings, sections = await ac.run_cohort(client, runtime, **_kwargs())
+    findings, sections, _proposals = await ac.run_cohort(client, runtime, **_kwargs())
     assert sections == {"bad_failure_content": "# Bad"}
     assert [f.trial_id for f in findings] == ["bad-1"]
     assert findings[0].trajectory_link == "/tasks/t1/probe/bad-1"
@@ -160,7 +168,7 @@ async def test_run_cohort_falls_back_to_stream_when_files_absent():
         {"type": "assistant", "message": {"content": [{"type": "text",
                                                        "text": reduce_line}]}},
     ])
-    _, sections = await ac.run_cohort(client, runtime, **_kwargs())
+    _, sections, _proposals = await ac.run_cohort(client, runtime, **_kwargs())
     assert sections == {"bad_failure_content": "# Stream"}
 
 
@@ -192,10 +200,9 @@ async def test_parse_happens_after_teardown(monkeypatch):
 
 
 async def test_run_cohort_raises_for_good_bucket_without_taxonomy():
-    """No real Taxonomy is threaded through run_cohort yet (that's Task 6). An
-    empty one blanks map_rubric.txt's capabilities_block, and the prompt
-    unconditionally follows that with "if none of the above fit, author a new
-    one" -- so every good-bucket finding would get a fabricated
+    """An empty taxonomy blanks map_rubric.txt's capabilities_block, and the
+    prompt unconditionally follows that with "if none of the above fit, author
+    a new one" -- so every good-bucket finding would get a fabricated
     capability_slug. Must fail loud instead, and before a sandbox is even
     created."""
     client = FakeDaytonaClient()
@@ -203,7 +210,8 @@ async def test_run_cohort_raises_for_good_bucket_without_taxonomy():
     with pytest.raises(RuntimeError, match="taxonomy"):
         await ac.run_cohort(
             client, runtime,
-            **_kwargs(bucket="good", cohort=GOOD_COHORT, host_by_trial=GOOD_HOSTS),
+            **_kwargs(bucket="good", cohort=GOOD_COHORT, host_by_trial=GOOD_HOSTS,
+                      taxonomy=Taxonomy()),
         )
     assert client.sandboxes == {}
 
@@ -211,11 +219,27 @@ async def test_run_cohort_raises_for_good_bucket_without_taxonomy():
 async def test_run_cohort_bad_bucket_unaffected_by_taxonomy_guard():
     """The bad bucket classifies task defects, not agent capabilities -- the
     capability rubric (and therefore the taxonomy) is irrelevant to it, so the
-    guard must not fire here."""
+    guard must not fire here even against an empty taxonomy."""
     client = FakeDaytonaClient()
     runtime = _FakeRuntime([], files=_good_files())
-    await ac.run_cohort(client, runtime, **_kwargs())
+    await ac.run_cohort(client, runtime, **_kwargs(taxonomy=Taxonomy()))
     assert len(client.deleted) == 1
+
+
+async def test_run_cohort_forwards_the_taxonomy_to_the_prompt(monkeypatch):
+    """The point of threading taxonomy through run_cohort: the rendered rubric
+    must reflect the real capability list, not a hardcoded empty one."""
+    client = FakeDaytonaClient()
+    runtime = _FakeRuntime([], files=_good_files())
+    seen = {}
+
+    def spy(bucket, cohort, roster, counts, oracle_by_trial, taxonomy):
+        seen["taxonomy"] = taxonomy
+        return "prompt"
+
+    monkeypatch.setattr(ac, "build_cohort_prompt", spy)
+    await ac.run_cohort(client, runtime, **_kwargs())
+    assert seen["taxonomy"] is TAXONOMY
 
 
 async def test_run_cohort_logs_the_stream_with_bucket_prefix(caplog):
