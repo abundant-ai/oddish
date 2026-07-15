@@ -341,10 +341,14 @@ export interface ExperimentCostTotals {
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  token_count: number;
+  token_trial_count: number;
   billed_cost_usd: number;
   billed_trial_count: number;
   billed_has_estimated: boolean;
   billed_has_native: boolean;
+  billed_token_count: number;
+  billed_token_trial_count: number;
   total_trials: number;
 }
 

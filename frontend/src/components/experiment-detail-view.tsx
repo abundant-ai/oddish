@@ -168,6 +168,8 @@ type ExperimentSummary = {
   billedTrialCount: number;
   billedHasEstimated: boolean;
   billedHasNative: boolean;
+  billedTokenCount: number;
+  billedTokenTrialCount: number;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -247,6 +249,8 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedTrialCount: acc.billedTrialCount,
     billedHasEstimated: acc.billedHasEstimated,
     billedHasNative: acc.billedHasNative,
+    billedTokenCount: acc.billedTokenCount,
+    billedTokenTrialCount: acc.billedTokenTrialCount,
   };
 }
 
@@ -754,6 +758,11 @@ function ExperimentSummaryBar({
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
           </span>
+          {summary.billedTokenTrialCount > 0 && (
+            <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+              {formatTokenCount(summary.billedTokenCount)}
+            </span>
+          )}
         </KpiTile>
       )}
       <KpiTile
@@ -1169,10 +1178,14 @@ export function ExperimentDetailView({
       costTrialCount: costTotals.cost_trial_count,
       costHasEstimated: costTotals.cost_has_estimated,
       costHasNative: costTotals.cost_has_native,
+      tokenCount: costTotals.token_count,
+      tokenTrialCount: costTotals.token_trial_count,
       billedCostUsd: costTotals.billed_cost_usd,
       billedTrialCount: costTotals.billed_trial_count,
       billedHasEstimated: costTotals.billed_has_estimated,
       billedHasNative: costTotals.billed_has_native,
+      billedTokenCount: costTotals.billed_token_count,
+      billedTokenTrialCount: costTotals.billed_token_trial_count,
     };
   }, [deferredTasksForDerivedData, costTotals]);
 
