@@ -90,9 +90,13 @@ def _by_task(
 
     groups = []
     for task_id, items in by_task.items():
-        # Both sides normalized, or models_hit could contain a key absent from the
-        # roster and the ratio would exceed 1.
-        hit = sorted({_model_key(f.get("model")) for f in items})
+        # Both sides normalized, and both drop unattributable trials, or
+        # models_hit could contain a key absent from the roster and the ratio
+        # would exceed 1. The roster (_models_by_task) skips trials with no
+        # model, so an "unknown" hit has no denominator to be counted against --
+        # it names no model and cannot be one of N. Its failures still surface
+        # in `gaps`, which is per-finding and needs no roster.
+        hit = sorted({_model_key(f.get("model")) for f in items} - {_UNKNOWN_MODEL})
         if models_by_task is None:
             # No roster persisted (analyzer predates analyzers_006), so the
             # denominator is unknown -- not zero. 0 would read as "no model ran

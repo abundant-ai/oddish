@@ -21,7 +21,7 @@ from oddish.core.analyzers import (
     list_experiment_options_core,
     list_analyzers_core,
 )
-from oddish.db import get_session
+from oddish.db import JobStatus, get_session
 from oddish.evals.analyzer.rollup import build_rollup
 from oddish.schemas import ExperimentOption, AnalyzerCreate, AnalyzerResponse
 
@@ -88,9 +88,23 @@ async def get_analyzer_rollup(
     async with get_session() as session:
         analyzer = await get_analyzer_core(session, analyzer_id, org_id=auth.org_id)
         if analyzer.findings is None:
-            # NULL means this analyzer ran before findings were persisted, not
-            # that it found nothing -- collapsing the two hides legacy rows as
-            # clean runs.
+            # The worker assigns findings only on the success path, in the same
+            # commit as status = SUCCESS -- so NULL is three states, not one, and
+            # only the SUCCESS one is a legacy row. 404 ("stop asking") is right
+            # for the two terminal states and wrong for a job whose findings are
+            # still coming.
+            if analyzer.status not in (JobStatus.SUCCESS, JobStatus.FAILED):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"No per-model data yet: this analyzer is {analyzer.status.value}."
+                    ),
+                )
+            if analyzer.status is JobStatus.FAILED:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No per-model data: this analyzer failed. {analyzer.error or ''}".strip(),
+                )
             raise HTTPException(
                 status_code=404,
                 detail="No per-model data: this analyzer ran before findings were persisted.",

@@ -172,6 +172,38 @@ def test_task_missing_from_roster_reports_zero_total():
     assert out["task_construction"]["groups"][0]["models_total"] == 0
 
 
+def test_null_model_trial_cannot_push_the_ratio_over_one():
+    """The roster skips trials with no model, so an unattributable finding must
+    not land in models_hit — one identified model + one null-model trial would
+    otherwise report 2/1 against a roster of 1."""
+    out = build_rollup(
+        [
+            _f(trial_id="t1", subtype="Ambiguous Requirements", model="claude-opus-4-8",
+               task_id="alpha", task_path="tasks/alpha"),
+            _f(trial_id="t2", subtype="Ambiguous Requirements", model=None,
+               task_id="alpha", task_path="tasks/alpha"),
+        ],
+        {"alpha": ["claude-opus-4-8"]},
+    )
+    g = out["task_construction"]["groups"][0]
+    assert g["models_hit"] == ["claude-opus-4-8"]
+    assert g["models_total"] == 1
+    assert len(g["models_hit"]) <= g["models_total"]
+
+
+def test_null_model_failures_still_counted_in_gaps():
+    """Dropping 'unknown' from the ratio must not hide the failure itself: gaps
+    are per-finding and need no roster."""
+    out = build_rollup(
+        [_f(trial_id="t1", subtype="Ambiguous Requirements", model=None,
+            task_id="alpha", task_path="tasks/alpha")],
+        {"alpha": ["claude-opus-4-8"]},
+    )
+    g = out["task_construction"]["groups"][0]
+    assert g["models_hit"] == []
+    assert sum(x["count"] for x in g["gaps"]) == 1
+
+
 def test_null_roster_reports_unknown_total_not_zero():
     """No roster persisted (analyzer predates analyzers_006) means the denominator
     is unknown. Reporting 0 would read as 'no model ran this task' — inverted on

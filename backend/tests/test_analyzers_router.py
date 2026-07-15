@@ -22,7 +22,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
 from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
-from oddish.db import ExperimentModel, get_session
+from oddish.db import ExperimentModel, JobStatus, get_session
 from oddish.db.models import AnalyzerModel, analyzer_experiments
 
 
@@ -150,12 +150,51 @@ async def _set_findings(analyzer_id, findings, models_by_task=_UNSET):
         await session.commit()
 
 
+async def _set_status(analyzer_id, status, error=None):
+    async with get_session() as session:
+        await session.execute(
+            AnalyzerModel.__table__.update()
+            .where(AnalyzerModel.id == analyzer_id)
+            .values(status=status, error=error)
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
-async def test_rollup_404_when_findings_null(client, analyzer_id):
-    """NULL = analyzed before findings existed. Distinct from 'no failures'."""
+async def test_rollup_404_when_findings_null_and_run_succeeded(client, analyzer_id):
+    """NULL on a SUCCESS row = analyzed before findings existed. The worker writes
+    findings and status=SUCCESS together, so this is the only state that means
+    'legacy'. Distinct from 'no failures'."""
+    await _set_status(analyzer_id, JobStatus.SUCCESS)
     resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
     assert resp.status_code == 404, resp.text
     assert "before findings" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_rollup_409_while_the_analyzer_is_still_running(client, analyzer_id):
+    """A pending/running job has NULL findings because it isn't done, not because
+    it predates the column. 404 'ran before findings were persisted' would send a
+    caller polling for a result off to fix nothing."""
+    for status in (JobStatus.PENDING, JobStatus.QUEUED, JobStatus.RUNNING):
+        await _set_status(analyzer_id, status)
+        resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+        assert resp.status_code == 409, f"{status}: {resp.text}"
+        assert status.value in resp.json()["detail"]
+        assert "before findings" not in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_rollup_404_reports_the_failure_when_the_run_died(client, analyzer_id):
+    """A FAILED row has NULL findings because the run died. Say so, and surface
+    the error -- not 'ran before findings were persisted'."""
+    await _set_status(analyzer_id, JobStatus.FAILED, error="reduce step exploded")
+    resp = await client.get(f"/analyzers/{analyzer_id}/rollup")
+    assert resp.status_code == 404, resp.text
+    detail = resp.json()["detail"]
+    assert "failed" in detail.lower()
+    assert "reduce step exploded" in detail
+    assert "before findings" not in detail.lower()
 
 
 @pytest.mark.asyncio
