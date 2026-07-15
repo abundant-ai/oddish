@@ -30,8 +30,13 @@ import type {
   ExperimentCostTotals,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
+import {
+  fetchFreshExperimentTaskPage,
+  mergeExperimentTaskPages,
+} from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
 
 // Paper-styled header action button, shared by the Probe and Chat buttons so
@@ -61,7 +66,7 @@ function isExperimentTimingEnabled(): boolean {
 
 async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
   const startedAt = performance.now();
-  const res = await fetch(url, { credentials: "include" });
+  const res = await fetchFreshExperimentTaskPage(url);
   const responseAt = performance.now();
   const serverTiming = res.headers.get("server-timing");
   let data: unknown = null;
@@ -139,7 +144,7 @@ function ExperimentContent({
   // Phase 1: Fetch ALL tasks without trial data (lightweight).
   // Populates the full task list immediately. Uses the dedicated
   // ``task-shells`` endpoint, which drops the per-task ``experiments``
-  // fan-out. (Phase 2 below still uses the regular ``tasks`` endpoint.)
+  // fan-out. Phase 2 below uses the compact ``slim-tasks`` endpoint.
   const allTasksUrl = experimentId
     ? `/api/experiments/${encodedId}/task-shells?limit=2000&offset=0`
     : null;
@@ -152,8 +157,10 @@ function ExperimentContent({
   } = useSWR<Task[]>(allTasksUrl, fetchExperimentTasksPage, {
     refreshInterval: 0,
     revalidateOnFocus: false,
-    revalidateOnMount: initialTasks == null,
-    revalidateIfStale: initialTasks == null,
+    // A client-side revisit can otherwise prefer SWR's old shell over fresh
+    // server fallback data after the task's default version changes.
+    revalidateOnMount: true,
+    revalidateIfStale: true,
     fallbackData: initialTasks ?? undefined,
   });
 
@@ -184,6 +191,7 @@ function ExperimentContent({
     refreshInterval: 0,
     revalidateOnFocus: false,
     revalidateFirstPage: false,
+    revalidateOnMount: true,
     persistSize: true,
   });
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
@@ -224,38 +232,22 @@ function ExperimentContent({
       revalidateOnFocus: false,
     });
 
-  // Merge lightweight task shells with trial-enriched data.  The backend
-  // already scopes each task's trials, counts, and reported ``current_version``
-  // to the experiment-relevant version, so no extra client-side filtering is
-  // required here.
+  // Merge lightweight task shells with trial-enriched data. The backend scopes
+  // trials and counts to the experiment-relevant version while always
+  // reporting the task's selected default as ``current_version``.
   const tasksForExperiment = useMemo(() => {
     const startedAt = isExperimentTimingEnabled() ? performance.now() : 0;
-    const trialDataById = new Map<string, Task>();
-    for (const page of trialPages ?? []) {
-      for (const task of page ?? []) {
-        trialDataById.set(task.id, task);
-      }
-    }
-
-    const base = lightweightTasks ?? [];
-    const seenIds = new Set<string>();
-    const merged: Task[] = [];
-
-    for (const task of base) {
-      seenIds.add(task.id);
-      merged.push(trialDataById.get(task.id) ?? task);
-    }
-
-    for (const [id, task] of trialDataById) {
-      if (!seenIds.has(id)) {
-        merged.push(task);
-      }
-    }
+    const merged = mergeExperimentTaskPages(lightweightTasks, trialPages);
 
     if (isExperimentTimingEnabled()) {
+      const enrichedIds = new Set(
+        (trialPages ?? []).flatMap((page) =>
+          (page ?? []).map((task) => task.id)
+        )
+      );
       console.info("[oddish timing] experiment task merge", {
-        baseRows: base.length,
-        enrichedRows: trialDataById.size,
+        baseRows: lightweightTasks?.length ?? 0,
+        enrichedRows: enrichedIds.size,
         mergedRows: merged.length,
         mergeMs: Math.round(performance.now() - startedAt),
       });
@@ -307,8 +299,7 @@ function ExperimentContent({
   const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
-  const canManageExperimentShare =
-    orgRole === "org:admin" || orgRole === "org:owner";
+  const canManageExperimentShare = isOrgAdminRole(orgRole);
 
   // Deletes below write the grid optimistically, so for one round trip the row
   // is gone while the cost tiles still show the pre-delete rollup. Do NOT

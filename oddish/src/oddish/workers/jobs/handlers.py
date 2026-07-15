@@ -30,7 +30,10 @@ from oddish.registry_auth import (
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
 from oddish.workers.queue.qa_handler import run_task_qa_job
-from oddish.workers.queue.analyzer_handler import run_analyzer_generation_job
+from oddish.workers.queue.analyzer_handler import (
+    default_eval_rows,
+    run_analyzer_generation_job,
+)
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
 from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.trial_failures import (
@@ -289,6 +292,9 @@ class TagProjectJobHandler:
 
 class AnalyzerJobHandler:
     kind = WorkerJobKind.ANALYZER
+    # Swapped by the hosted backend's sandbox subclass; staticmethod so the
+    # attribute stays a plain function rather than binding as a method.
+    eval_rows_fn = staticmethod(default_eval_rows)
 
     def default_queue_key(self, job) -> str:
         return job.queue_key or "qa"
@@ -314,7 +320,9 @@ class AnalyzerJobHandler:
                 analyzer.status = JobStatus.QUEUED
                 analyzer.error = None
                 analyzer.finished_at = None
-        await run_analyzer_generation_job(analyzer_id, worker_job_id=job.id)
+        await run_analyzer_generation_job(
+            analyzer_id, worker_job_id=job.id, eval_rows_fn=self.eval_rows_fn
+        )
         async with get_session() as session:
             analyzer = await session.get(AnalyzerModel, analyzer_id)
             if analyzer is None:

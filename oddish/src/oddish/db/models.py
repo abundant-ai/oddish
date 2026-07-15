@@ -562,6 +562,20 @@ class AnalyzerModel(TimestampedMixin, Base):
     # Additive: per-subcategory counts (1a/1b, 3a/3b/3c, emergent) for FE chips.
     breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Per-trial findings from the map phase. NULL = analyzed before findings
+    # were persisted; [] = analyzed, no failures found. Not the same thing.
+    findings: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+    # Per-task roster of models that ran it, including those that passed --
+    # the Task Construction denominator can't come from findings (failures only).
+    models_by_task: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Opt-in (set at create time): when true, the worker uploads the per-trial
+    # findings+subanalyses to S3 (analyzers/{id}/trial_analyses.json).
+    save_trial_analyses: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -71,7 +71,7 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
-import { VerifierResultsCard } from "@/components/verifier-results-card";
+import { useVerifierSummary } from "@/components/use-verifier-summary";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -366,6 +366,8 @@ export function TrialDetailPanel({
   spendOwnerExperimentId = null,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
+
+  const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
     () =>
@@ -1012,15 +1014,19 @@ export function TrialDetailPanel({
                   </CardContent>
                 </Card>
               )}
-              <VerifierResultsCard
-                trial={trial}
-                apiBaseUrl={apiBaseUrl}
-                enabled={isOpen}
-                onViewFile={(path) => {
-                  setFilesTargetPath(path);
-                  setActiveTab("files");
-                }}
-              />
+              {verifierSummary && verifierSummary.tests > 0 && (
+                <div className="text-muted-foreground flex items-center gap-1.5 px-4 py-1 text-[11px]">
+                  {verifierSummary.failed > 0 ? (
+                    <XCircle className="h-3.5 w-3.5 text-red-500" />
+                  ) : (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  )}
+                  <span className="text-foreground/80 font-mono tabular-nums">
+                    {verifierSummary.passed}/{verifierSummary.tests}
+                  </span>
+                  tests passed
+                </div>
+              )}
               {/* Analysis Card - only show if analysis is enabled/running/complete */}
               {showAnalysis && (trial.analysis_status || trial.analysis) && (
                 <Card

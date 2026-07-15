@@ -210,6 +210,22 @@ row instead of creating a different task. Renaming a task is allowed, but any
 rename path must preserve the live `(org_id, name)` uniqueness invariant and
 must not split the task's version history.
 
+`TaskStatusResponse.current_version` / `current_version_id` always report the
+task's selected default (`tasks.current_version_id`), including on experiment
+pages. Experiment endpoints may scope their trials and aggregate counts to an
+experiment-relevant historical version so old or gathered runs remain visible,
+but that trial-selection pivot must not replace the reported task default. They
+report the pivot separately as `trial_version` / `trial_version_id`, including
+on lightweight task shells that omit trial rows.
+
+`tasks.current_version_id` is the user-selectable default, not necessarily the
+numerically latest version. In an experiment view, `trial_version_id` uses that
+default when the experiment has a non-superseded, non-probe trial for it;
+otherwise it falls back to the highest version represented by such trials. The
+`task-shells` and `slim-tasks` endpoints must apply the same trial-version rule
+so progressive loading cannot change the files/counts pivot or mix one
+version's trials with another's artifacts.
+
 ---
 
 ## `oddish/` — Core Package
@@ -553,7 +569,14 @@ sweep):
    alerts for experiments at $1,000 and each additional $1,000 of spend, and
    for recent trials over $70 that exceed twice the average of other trials in
    the experiment for the same task and model. Trials without a same-task/model
-   peer do not produce anomaly alerts.
+   peer do not produce anomaly alerts. Milestones are driven by *new* spend:
+   spend that finished within the 2h watch window. Milestones already covered by
+   the pre-window baseline (`total - recent`) are claimed and completed silently
+   across every delivery channel so first observing pre-existing spend never
+   dumps historical alerts. Failed loud deliveries retain per-channel retry
+   markers; primary and retry completion is atomic. Indeterminate loud claims
+   are not repeated because the external channels do not offer an idempotency
+   key, while interrupted silent claims are completed without sending.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis
@@ -720,12 +743,12 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
 
-The trial drawer's Verifier Results card is adaptive: `_verifier` CTRF counts
-take precedence, scalar `trials.result` metrics render as benchmark metrics,
-and `reward` provides the binary/partial/scoreless fallback. Historical trials
-without a persisted `_verifier` summary lazily discover and parse their
-`verifier/ctrf.json` artifact through the already-scoped trial files API; do not
-add an unscoped artifact lookup for this fallback.
+The trial drawer surfaces verifier test counts only as a small passed/total
+row in the Summary tab (shown on public share views too); trials without test
+counts show no row. `_verifier` CTRF counts take precedence, and historical
+trials without a persisted `_verifier` summary lazily discover and parse their
+`verifier/ctrf.json` artifact through the already-scoped trial files API; do
+not add an unscoped artifact lookup for this fallback.
 
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that

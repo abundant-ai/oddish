@@ -128,6 +128,36 @@ export function TasksFilterSidebar() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  // Freshest known URL params: updated by every write below, so a commit
+  // issued while an earlier navigation is still in flight builds on that write
+  // instead of on params the hook hasn't delivered yet (rapid filter clicks,
+  // debounced search). Re-seeded from the hook only for external URL changes —
+  // one of our own navigations landing must not rewind the ref past writes
+  // issued after it (`pendingWrites` tracks commits the hook hasn't delivered).
+  const paramsRef = useRef(searchParams.toString());
+  const pendingWrites = useRef<string[]>([]);
+  const lastHookParams = useRef(searchParams);
+  if (lastHookParams.current !== searchParams) {
+    lastHookParams.current = searchParams;
+    const hookParams = searchParams.toString();
+    const landed = pendingWrites.current.indexOf(hookParams);
+    if (landed !== -1) {
+      pendingWrites.current.splice(0, landed + 1);
+    } else {
+      pendingWrites.current = [];
+      paramsRef.current = hookParams;
+    }
+  }
+
+  // Every URL write goes through here so paramsRef/pendingWrites stay in sync.
+  const commitParams = (params: string) => {
+    pendingWrites.current.push(params);
+    paramsRef.current = params;
+    router.replace(params ? `${pathname}?${params}` : pathname, {
+      scroll: false,
+    });
+  };
+
   // Filter state lives in the URL so the server-rendered results refetch (and a
   // Suspense skeleton shows) whenever a filter changes — and links are shareable.
   const values = useMemo(
@@ -136,32 +166,44 @@ export function TasksFilterSidebar() {
   );
 
   const onChange = (next: FilterValues) => {
-    const params = new URLSearchParams(searchParams.toString());
+    const params = new URLSearchParams(paramsRef.current);
     for (const key of FILTER_PARAM_KEYS) params.delete(key);
     for (const [key, value] of filterParams(next)) params.set(key, value);
     params.delete("offset");
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    commitParams(params.toString());
   };
 
+  // Merge onto the freshest params, not the memoized `values` — a second change
+  // made before the previous navigation commits must not drop the first.
   const set = (patch: Partial<FilterValues>) =>
-    onChange({ ...values, ...patch });
+    onChange({
+      ...searchParamsToFilters(new URLSearchParams(paramsRef.current)),
+      ...patch,
+    });
 
   // Free-text search lives in the URL `q` param (debounced). `query` is the
   // legacy param some deep links still use — read it as a fallback.
   const urlSearch = searchParams.get("q") ?? searchParams.get("query") ?? "";
   const [searchQuery, setSearchQuery] = useState(urlSearch);
 
-  // Keep the freshest searchParams in a ref so the debounced write reads the
-  // current URL — a filter change inside the 300ms window isn't clobbered.
-  const searchParamsRef = useRef(searchParams);
-  searchParamsRef.current = searchParams;
+  // Search values committed below whose navigations haven't landed yet. Lets
+  // the re-sync effect tell "our own commit landing" (skip — the input may
+  // already be ahead of it) from an external URL change.
+  const pendingSearchCommits = useRef<string[]>([]);
 
   const isFirstSearchRender = useRef(true);
 
   // Re-sync the input when the URL search text changes externally (back/forward,
-  // applying a saved filter, Clear all). No-op while the user is typing (the URL
-  // already matches the trimmed input).
+  // applying a saved filter, Clear all) — but never for our own commits landing,
+  // which would clobber whatever the user has typed since.
   useEffect(() => {
+    const pending = pendingSearchCommits.current;
+    const landed = pending.indexOf(urlSearch);
+    if (landed !== -1) {
+      pending.splice(0, landed + 1);
+      return;
+    }
+    pendingSearchCommits.current = [];
     setSearchQuery((prev) => (prev.trim() === urlSearch ? prev : urlSearch));
   }, [urlSearch]);
 
@@ -171,13 +213,16 @@ export function TasksFilterSidebar() {
       return;
     }
     const handle = window.setTimeout(() => {
-      const params = new URLSearchParams(searchParamsRef.current.toString());
+      const params = new URLSearchParams(paramsRef.current);
       const trimmed = searchQuery.trim();
+      // Already committed (e.g. a whitespace-only edit) — skip the refetch.
+      if (trimmed === (params.get("q") ?? params.get("query") ?? "")) return;
       if (trimmed) params.set("q", trimmed);
       else params.delete("q");
       params.delete("query"); // collapse the legacy param into `q`
       params.delete("offset");
-      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+      pendingSearchCommits.current.push(trimmed);
+      commitParams(params.toString());
     }, 300);
     return () => window.clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -303,7 +348,7 @@ export function TasksFilterSidebar() {
                 className="text-muted-foreground hover:text-foreground text-[11px]"
                 onClick={() => {
                   // Wipe every browse param (filters, tags, search, offset).
-                  router.replace(pathname, { scroll: false });
+                  commitParams("");
                   setSearchQuery("");
                   setAddedKeys([]);
                 }}

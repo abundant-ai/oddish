@@ -25,3 +25,23 @@ def test_subanalysis_roundtrip_and_classification():
     )
     assert s.classification == "BAD_FAILURE"
     assert SubAnalysis.from_dict(s.to_dict()) == s
+
+
+def test_subanalysis_from_dict_without_model_key():
+    """Dicts persisted before `model` existed must still deserialize."""
+    legacy = {
+        "trial_id": "t1", "trajectory_link": "/tasks/x/probe/t1",
+        "classification": "GOOD_FAILURE", "subtype": "Logic Error",
+        "evidence": "e", "root_cause": "rc", "recommendation": "rec",
+    }
+    assert SubAnalysis.from_dict(legacy).model is None
+
+
+def test_subanalysis_round_trips_model():
+    sa = SubAnalysis(
+        trial_id="t1", trajectory_link="/tasks/x/probe/t1",
+        classification="GOOD_FAILURE", subtype="Logic Error",
+        evidence="e", root_cause="rc", recommendation="rec",
+        model="claude-opus-4-8",
+    )
+    assert SubAnalysis.from_dict(sa.to_dict()).model == "claude-opus-4-8"

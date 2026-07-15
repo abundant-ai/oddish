@@ -33,26 +33,65 @@ def _set_env(monkeypatch):
     monkeypatch.setenv("ODDISH_API_URL", "https://api.example.test")
 
 
-def test_analyzer_create_posts_expected_payload(monkeypatch):
+def test_report_create_posts_expected_payload(monkeypatch):
     _FakeClient.last_request = {}
     monkeypatch.setattr(httpx, "Client", _FakeClient)
     _set_env(monkeypatch)
 
     result = CliRunner().invoke(
-        app, ["analyzer", "create", "-e", "e1", "-e", "e2", "--name", "Q3"]
+        app, ["report", "create", "-e", "e1", "-e", "e2", "--name", "Q3"]
     )
     assert result.exit_code == 0, result.output
-    assert _FakeClient.last_request["url"] == "https://api.example.test/analyzers"
-    assert _FakeClient.last_request["json"] == {"name": "Q3", "experiment_ids": ["e1", "e2"]}
+    assert _FakeClient.last_request["url"] == "https://api.example.test/reports"
+    assert _FakeClient.last_request["json"] == {
+        "experiment_ids": ["e1", "e2"], "save_trial_analyses": False, "name": "Q3",
+    }
     assert "r1" in result.output
 
 
-def test_analyzer_create_requires_experiments(monkeypatch):
+def test_report_create_omits_name_when_unset(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["report", "create", "-e", "e1"])
+    assert result.exit_code == 0, result.output
+    # No name key -> server auto-generates report_<N>_<exp>.
+    assert _FakeClient.last_request["json"] == {
+        "experiment_ids": ["e1"], "save_trial_analyses": False,
+    }
+
+
+def test_report_create_requires_experiments(monkeypatch):
     class _Exploding(_FakeClient):
         def post(self, url, json=None):
             raise AssertionError("HTTP should not be called with no experiments")
 
     monkeypatch.setattr(httpx, "Client", _Exploding)
     _set_env(monkeypatch)
-    result = CliRunner().invoke(app, ["analyzer", "create", "--name", "Q3"])
+    result = CliRunner().invoke(app, ["report", "create", "--name", "Q3"])
     assert result.exit_code == 1
+
+
+def test_report_create_defaults_save_trials_false(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["report", "create", "-e", "e1", "--name", "Q3"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _FakeClient.last_request["json"]["save_trial_analyses"] is False
+
+
+def test_report_create_save_trials_flag_sets_payload(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["report", "create", "-e", "e1", "--name", "Q3", "--save-trials"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _FakeClient.last_request["json"]["save_trial_analyses"] is True

@@ -7,6 +7,9 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" }]
+
 [[package]]
 name = "aioboto3"
 version = "15.5.0"
@@ -1627,7 +1630,7 @@ wheels = [
 
 [[package]]
 name = "oddish"
-version = "0.1.12"
+version = "0.1.13"
 source = { editable = "../oddish" }
 dependencies = [
     { name = "cryptography" },

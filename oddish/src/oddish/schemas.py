@@ -1292,6 +1292,8 @@ class TaskStatusResponse(BaseModel):
     )
     current_version: int | None = None
     current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
     total: int
     completed: int
     failed: int
@@ -1319,6 +1321,7 @@ class TaskStatusResponse(BaseModel):
     trials: list[TrialResponse] | None = None
     user_tags: list[UserTagRef] = Field(default_factory=list)
     created_at: datetime
+    updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
 
@@ -1719,6 +1722,7 @@ class OrgProbeRow(BaseModel):
     run_count: int
     last_run_at: datetime | None
     last_status: str
+    probe_names: list[str] = Field(default_factory=list)
 
 
 # Skills — custom agent skill bundles.
@@ -1781,11 +1785,13 @@ class SkillResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Analyzers — agent-eval analyzers across experiments.
+# Reports — agent-eval reports across experiments.
 # ---------------------------------------------------------------------------
-class AnalyzerCreate(BaseModel):
-    name: str = Field(min_length=1)
+class ReportCreate(BaseModel):
+    # Optional: when omitted the server auto-names it report_<N>_<experiment>.
+    name: str | None = Field(default=None)
     experiment_ids: list[str] = Field(min_length=1)
+    save_trial_analyses: bool = False
 
 
 class ExperimentOption(BaseModel):
@@ -1793,7 +1799,7 @@ class ExperimentOption(BaseModel):
     name: str
 
 
-class AnalyzerResponse(BaseModel):
+class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
