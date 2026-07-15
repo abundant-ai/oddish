@@ -45,7 +45,7 @@
 | `oddish/src/oddish/db/models.py` | **Modify.** 4 new tables + 2 `analyzers` columns. |
 | `oddish/src/oddish/db/taxonomy_query.py` | **Create.** `load_taxonomy(session)` — the only DB→`Taxonomy` reader. |
 | `oddish/alembic/versions/captax_001_add_capability_taxonomy.py` | **Create.** DDL + seed. |
-| `oddish/src/oddish/workers/queue/analyzer_handler.py` | **Modify.** `_store()` persists proposals + snapshot. |
+| `oddish/src/oddish/workers/queue/analyzer_handler.py` | **Modify.** `_store()` persists proposals + snapshot; `default_eval_rows` loads the taxonomy for the core path. |
 | `backend/api/services/cc_chat/analyzer_prompt.py` | **Modify.** Take `taxonomy`, render rubric, add proposal instructions. |
 | `backend/api/services/cc_chat/analyzer_parse.py` | **Modify.** Return `(findings, sections, proposals)`. |
 | `backend/api/services/cc_chat/analyzer_cohort.py` | **Modify.** Thread `taxonomy` in, `proposals` out. |
@@ -1595,7 +1595,32 @@ and widen the return:
 
 The zero-work early return also sets `taxonomy_version`/`taxonomy_snapshot` — a run that found no failures still ran against a taxonomy.
 
-- [ ] **Step 3d: `_store()` persists them**
+- [ ] **Step 3d (NEW): wire the taxonomy into the CORE path too**
+
+`sandbox_eval_rows` is not the only live strategy. `AnalyzerJobHandler.eval_rows_fn`
+defaults to `default_eval_rows` (`oddish/src/oddish/workers/queue/analyzer_handler.py`),
+and `SandboxAnalyzerJobHandler` only overrides it when `settings.analyzer_sandbox_enabled`
+is true — **a documented kill switch whose stated purpose is reverting to the core
+API path**. Flip it during an incident and the core path runs with no taxonomy.
+
+Task 4 added a guard so that fails loudly rather than silently proposing a novel
+capability for every good failure. This step makes it actually work:
+
+```python
+# in default_eval_rows, before run_analyzer_eval:
+from oddish.db.connection import get_session
+from oddish.db.taxonomy_query import load_taxonomy
+
+    async with get_session() as session:
+        taxonomy = await load_taxonomy(session)
+    ...
+    return await run_analyzer_eval(inputs, config, taxonomy=taxonomy)
+```
+
+Both strategies must load the same taxonomy the same way. Leaving only the
+sandbox path wired is the gap that made Task 4's empty default look harmless.
+
+- [ ] **Step 3e: `_store()` persists them**
 
 In `oddish/src/oddish/workers/queue/analyzer_handler.py`, after `analyzer.models_by_task = output.models_by_task`:
 
