@@ -131,6 +131,19 @@ async def test_no_taxonomy_with_good_bucket_failures_raises_step_error():
 
 
 @pytest.mark.asyncio
+async def test_explicit_empty_taxonomy_with_good_bucket_failures_raises_step_error():
+    """load_taxonomy returns Taxonomy(capabilities=()) -- not None -- when the
+    capabilities table is empty (fresh migration, or every capability
+    soft-deleted). The guard must treat that the same as no taxonomy at all,
+    not let it slip through and blank out the rubric."""
+    with pytest.raises(AnalyzerEvalStepError) as ei:
+        await run_analyzer_eval(
+            _failure_inputs(), AnalyzerEvalConfig(), client=None, taxonomy=Taxonomy()
+        )
+    assert ei.value.step == "taxonomy"
+
+
+@pytest.mark.asyncio
 async def test_no_taxonomy_with_only_bad_bucket_failures_does_not_raise():
     """Bad-bucket cohorts don't rely on the capabilities rubric; omitting the
     taxonomy must not be fatal when there's no good-bucket work to mislabel."""
@@ -234,6 +247,25 @@ async def test_run_analyzer_eval_no_work_is_pure_without_client_or_env(monkeypat
     out = await run_analyzer_eval(inputs, AnalyzerEvalConfig(), client=None)
     assert out.counts == {"trials": 1, "bad": 0, "good": 0}
     assert all(v == "" for v in out.sections.values())
+
+
+@pytest.mark.asyncio
+async def test_run_analyzer_eval_no_work_still_snapshots_the_taxonomy():
+    """A run that found no failures still ran against a taxonomy; the
+    zero-work early return must carry taxonomy_version/snapshot too, not just
+    the final return path (mirrors the sandbox side's
+    test_zero_work_still_snapshots_the_taxonomy)."""
+    inputs = AnalyzerEvalInputs(
+        bundles=[_bundle("task-9")],
+        subanalyses=[_sa("task-9", "GOOD_SUCCESS", "Correct Solution")],
+    )
+    out = await run_analyzer_eval(
+        inputs, AnalyzerEvalConfig(), client=None, taxonomy=_tiny_tax()
+    )
+    assert out.counts == {"trials": 1, "bad": 0, "good": 0}
+    assert out.taxonomy_version is not None and len(out.taxonomy_version) == 12
+    slugs = {c["slug"] for c in out.taxonomy_snapshot["capabilities"]}
+    assert "agent-early-stop" in slugs
 
 
 class _LyingClient(FakeClient):

@@ -177,15 +177,21 @@ async def run_analyzer_eval(
 
     # An empty taxonomy renders a blank capabilities_block, and map_rubric.txt
     # unconditionally follows that with "if none of the above fit, author a new
-    # one" — so a missing taxonomy would silently mislabel every good-bucket
-    # failure as a novel capability instead of failing loud.
-    if taxonomy is None:
+    # one" — so a missing OR empty taxonomy would silently mislabel every
+    # good-bucket failure as a novel capability instead of failing loud.
+    # load_taxonomy() returns Taxonomy(capabilities=()) — not None — when the
+    # capabilities table is empty, so both cases must be caught here.
+    if taxonomy is None or not taxonomy.capabilities:
         if good:
             raise AnalyzerEvalStepError(
                 "taxonomy", _ctx(**counts),
-                RuntimeError("no taxonomy supplied but there are good-bucket failures to map"),
+                RuntimeError(
+                    "no taxonomy (or an empty one) supplied but there are "
+                    "good-bucket failures to map"
+                ),
             )
-        taxonomy = Taxonomy()
+        if taxonomy is None:
+            taxonomy = Taxonomy()
 
     # A run still classified against this taxonomy even if it found nothing, so
     # compute this before the zero-work early return, not just on the final path.
