@@ -10,6 +10,10 @@ from oddish.workers.queue import analyzer_handler as ah
 pytestmark = pytest.mark.asyncio
 
 
+async def _other_strategy(rows, config, analyzer_id):
+    return AnalyzerEvalOutput(sections={})
+
+
 async def test_default_eval_rows_builds_inputs_then_runs_core(monkeypatch):
     seen = {}
 
@@ -47,3 +51,14 @@ async def test_subclass_can_swap_eval_strategy():
 
     assert _Sub.eval_rows_fn is other
     assert AnalyzerJobHandler.eval_rows_fn is ah.default_eval_rows  # not clobbered
+
+
+async def test_instance_access_does_not_bind_the_strategy_as_a_method():
+    """staticmethod matters only on instance access, which is how run() calls it.
+    Without the wrapper this returns a bound method and self is silently prepended."""
+    assert AnalyzerJobHandler().eval_rows_fn is ah.default_eval_rows
+
+    class _Sub(AnalyzerJobHandler):
+        eval_rows_fn = staticmethod(_other_strategy)
+
+    assert _Sub().eval_rows_fn is _other_strategy
