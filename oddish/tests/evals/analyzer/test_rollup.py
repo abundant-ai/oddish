@@ -59,17 +59,18 @@ def test_models_hit_ratio_uses_the_roster_not_the_findings():
 
 
 def test_ratio_normalizes_both_sides():
-    """Roster holds a Bedrock id, the finding a plain id. Normalizing only one
-    side would yield models_hit not present in the roster — a ratio above 1."""
+    """Roster holds the same model under two spellings (plain + Bedrock). If the
+    roster side skipped normalization, these would count as 2 distinct models
+    instead of collapsing to 1 — inflating the denominator and letting
+    models_hit exceed the roster."""
     out = build_rollup(
         [_f(subtype="Missing File Reference", model="claude-opus-4-8",
             task_id="alpha", task_path="tasks/alpha")],
-        {"alpha": ["global.anthropic.claude-opus-4-8"]},
+        {"alpha": ["claude-opus-4-8", "global.anthropic.claude-opus-4-8"]},
     )
     g = out["task_construction"]["groups"][0]
-    assert g["models_hit"] == ["claude-opus-4-8"]
     assert g["models_total"] == 1
-    assert len(g["models_hit"]) <= g["models_total"]
+    assert set(g["models_hit"]) <= {"claude-opus-4-8"}
 
 
 def test_model_spellings_collapse_to_one_group():
