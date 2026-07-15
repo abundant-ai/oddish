@@ -36,6 +36,8 @@ async def test_meta_mini_swe_agent_adds_session_header_and_openai_model(tmp_path
     run_command, run_env = commands[-1]
 
     assert 'x-session-id: "swe-marathon--' in config_command
+    # Meta writes its own config, so it must carry the skip flag too.
+    assert "_skip_mcp_handler: true" in config_command
     assert "--model=openai/llama-eval-model" in run_command
     assert "-c mini -c /tmp/oddish-meta-mini-swe-agent.yaml" in run_command
     assert "reasoning_effort" not in run_command
@@ -161,49 +163,34 @@ async def test_meta_mini_swe_agent_task_extraction_robust_to_flags_in_prompt(tmp
 
 
 @pytest.mark.asyncio
-async def test_meta_mini_swe_agent_install_adds_litellm_proxy_extras(tmp_path):
-    commands: list[str] = []
+async def test_mini_swe_agent_skips_litellm_mcp_handler(tmp_path):
+    """mini-swe-agent always sends tools=[BASH_TOOL], which makes litellm>=1.92
+    import its MCP handler chain (fastapi/orjson/...). Those deps are absent from
+    the tool venv and unfetchable (egress is locked to the model API), so the
+    first model call dies at 2 steps / 0 tokens. Pass litellm's _skip_mcp_handler
+    escape hatch via model_kwargs so the dead import never runs."""
+    commands: list[tuple[str, dict | None]] = []
 
     class _FakeEnvironment:
         async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
-            commands.append(command)
-            return SimpleNamespace(return_code=0, stdout="mini-swe-agent, 2.4.5", stderr="")
-
-    agent = OddishMetaMiniSweAgent(
-        logs_dir=tmp_path,
-        model_name="meta/llama-eval-model",
-        extra_env={"MSWEA_API_KEY": "meta-test-key"},
-    )
-
-    await agent.install(_FakeEnvironment())
-
-    # litellm's proxy extras must be pulled into the tool venv so the
-    # tool-calling completion path can import fastapi/orjson/...
-    assert any("uv tool install mini-swe-agent" in c for c in commands)
-    assert any("litellm[proxy]" in c for c in commands)
-
-
-@pytest.mark.asyncio
-async def test_mini_swe_agent_install_adds_litellm_proxy_extras(tmp_path):
-    """The non-Meta base agent must also pull litellm's proxy extras so the
-    tool-calling completion path can import fastapi/orjson/... (else the trial
-    crashes at 2 steps / 0 tokens with ModuleNotFoundError)."""
-    commands: list[str] = []
-
-    class _FakeEnvironment:
-        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
-            commands.append(command)
-            return SimpleNamespace(return_code=0, stdout="mini-swe-agent, 2.4.5", stderr="")
+            commands.append((command, env))
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
 
     agent = OddishMiniSweAgent(
         logs_dir=tmp_path,
         model_name="anthropic/claude-opus-4-8",
+        extra_env={"MSWEA_API_KEY": "test-key"},
     )
 
-    await agent.install(_FakeEnvironment())
+    await agent.run("fix the task", _FakeEnvironment(), SimpleNamespace())
 
-    assert any("uv tool install mini-swe-agent" in c for c in commands)
-    assert any("litellm[proxy]" in c for c in commands)
+    config_command = commands[-2][0]
+    run_command = commands[-1][0]
+
+    assert "_skip_mcp_handler: true" in config_command
+    assert "model_kwargs" in config_command
+    # The config only takes effect if mini-swe-agent is told to load it.
+    assert "-c mini -c /tmp/oddish-mini-swe-agent.yaml" in run_command
 
 
 def test_meta_mini_swe_agent_allowlists_custom_base_url(monkeypatch):
