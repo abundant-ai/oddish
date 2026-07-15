@@ -91,6 +91,7 @@ def build_map_batch_prompt(
     oracle_by_trial: dict[str, str],
     batch_no: int,
     batch_total: int,
+    tail_bytes: int,
 ) -> str:
     """MAP over one batch only. Each batch runs in a FRESH claude process, so
     this prompt must stand alone -- the agent has no memory of prior batches.
@@ -102,10 +103,12 @@ def build_map_batch_prompt(
         f"MAP phase, batch {batch_no} of {batch_total}. You do NOT have the\n"
         "trajectories yet — pull each one yourself with the oddish-query CLI.\n\n"
         "## Tool: oddish-query CLI (run it with the Bash tool)\n"
-        "Fetch a trial's full trajectory with:\n"
+        "Fetch a trial's trajectory with:\n"
         f"    node {CLI_DEST} trials logs <trial_id> --trajectory\n"
-        "Output is JSONL (head/tail truncated at ~4KB each end — expected). Every\n"
-        "line is prefixed with a PROBE-ONLY banner; ignore it.\n\n"
+        f"Output is JSONL showing the LAST {tail_bytes} bytes of the trajectory —\n"
+        "these runs are far longer than that, so you are seeing the end of the run,\n"
+        "not all of it. Add `--tail-bytes N` to see more. Every line is prefixed\n"
+        "with a PROBE-ONLY banner; ignore it.\n\n"
         "## Full roster (BOTH cohorts — for cross-referencing only)\n"
         f"{_roster_block(roster)}\n\n"
         f"## Your batch ({len(batch)} trials) — the ONLY trials to analyze now\n"
@@ -115,10 +118,16 @@ def build_map_batch_prompt(
         "  1. Fetch its trajectory with the CLI command above.\n"
         "  2. Classify it using the rubric below (an emergent label is fine if\n"
         "     none of the seed subcategories fit).\n"
-        "  3. Emit the finding as a single JSON object on its own line, prefixed\n"
-        f"     with `MAP FINDING:`, AND append that same line to {FINDINGS_PATH}\n"
-        f"     (create {OUT_DIR} first; APPEND — never truncate, earlier batches'\n"
-        "     findings are already in that file and must survive).\n"
+        "  3. Report the finding TWICE, in two different forms:\n"
+        "     a. To the transcript: `MAP FINDING: {...}` — prefix, then the JSON.\n"
+        f"     b. To {FINDINGS_PATH}: the SAME JSON object as ONE line of RAW JSON\n"
+        "        — NO `MAP FINDING:` prefix, no code fence, no commentary. The\n"
+        "        line must start with `{` and be parseable by json.loads on its\n"
+        "        own; a prefixed line is silently discarded and that trial's\n"
+        "        finding is lost.\n"
+        f"        Create {OUT_DIR} first, and APPEND (`>>`) — never truncate:\n"
+        "        earlier batches' findings are already in that file and must\n"
+        "        survive.\n"
         "     Copy trajectory_link VERBATIM from the batch metadata above — never\n"
         "     invent it.\n\n"
         "## Subcategory rubric (seed; you MAY introduce an emergent label if none fit)\n"

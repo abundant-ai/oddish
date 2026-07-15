@@ -289,7 +289,7 @@ async def test_map_batches_only_name_their_own_trials():
 # ride EVERY turn because each batch is a fresh context with no memory.
 
 
-async def test_every_turn_carries_the_fetch_more_system_prompt():
+async def test_every_map_turn_carries_the_fetch_more_system_prompt():
     client = FakeDaytonaClient()
     runtime = _CountingRuntime([], files=_good_files())
     cohort = _cohort_of(25)
@@ -301,9 +301,14 @@ async def test_every_turn_carries_the_fetch_more_system_prompt():
     await ac.run_cohort(client, runtime, **_kwargs(cohort=cohort, host_by_trial=hosts,
                                                    oracle_by_trial={}))
 
-    # 3 map turns + reduce; a batch that lost the prompt would under-fetch silently.
+    # 3 map turns + reduce. Every MAP turn needs it: context resets per batch, so
+    # a batch that lost the prompt would under-fetch silently.
     assert len(runtime.system_prompts) == 4
-    assert all(sp and "--tail-bytes" in sp for sp in runtime.system_prompts)
+    maps, reduce_sp = runtime.system_prompts[:3], runtime.system_prompts[3]
+    assert all(sp and "--tail-bytes" in sp for sp in maps)
+    # REDUCE must NOT be told to fetch: it would contradict its own prompt and
+    # could refetch the whole cohort, recreating the context blowup.
+    assert reduce_sp is None
 
 
 async def test_system_prompt_advertises_the_budget_the_cli_will_honour():
@@ -320,3 +325,23 @@ async def test_sandbox_gets_the_tail_budget_as_env():
     await ac.run_cohort(client, runtime, **_kwargs())
     (sbx,) = client.sandboxes.values()
     assert sbx["env"]["ODDISH_QUERY_TRAJ_TAIL_BYTES"] == str(ac.TRAJ_TAIL_BYTES)
+
+
+async def test_map_prompt_demands_raw_json_in_the_findings_file():
+    # _findings_from_jsonl does json.loads(line), so a "MAP FINDING:"-prefixed
+    # line is silently dropped. The n=8 prod run emitted exactly 8 "skipping
+    # unparseable finding line" warnings for an 8-trial cohort -- the agent had
+    # written the prefix into the file and every finding survived only via the
+    # stream fallback. Batching makes that file load-bearing across turns, so
+    # the two forms must be spelled out as distinct.
+    p = ap.build_map_batch_prompt("bad", COHORT, ROSTER, {}, 1, 1, 8000)
+    assert "NO `MAP FINDING:` prefix" in p
+    assert FINDINGS_PATH in p
+
+
+async def test_map_prompt_describes_the_real_truncation():
+    # The CLI is tail-only now; claiming "head/tail at ~4KB" would tell the agent
+    # it has seen the start of a run it never saw.
+    p = ap.build_map_batch_prompt("bad", COHORT, ROSTER, {}, 1, 1, 8000)
+    assert "LAST 8000 bytes" in p
+    assert "head/tail" not in p

@@ -132,18 +132,14 @@ async def run_cohort(
             await client.exec_sync(sandbox, command=f"mkdir -p {OUT_DIR}")
             await client.upload_file(sandbox, dest_path=CLI_DEST, content=cli_src)
 
-            async def _turn(prompt: str, label: str) -> None:
+            async def _turn(prompt: str, label: str, system_prompt=None) -> None:
                 # claude_session_id=None every time: a fresh process with a
                 # fresh context is the whole point. Passing --resume here would
                 # chain contexts and reintroduce the linear growth.
-                #
-                # The system prompt rides every turn precisely BECAUSE context
-                # resets: a batch has no memory that an earlier one was told it
-                # could widen the trajectory budget.
                 async for evt in runtime.stream_chat(
                     client, sandbox, content=prompt,
                     claude_session_id=None, daytona_session_id="cc",
-                    system_prompt=build_system_prompt(TRAJ_TAIL_BYTES),
+                    system_prompt=system_prompt,
                 ):
                     line = render_event(evt)
                     if line:
@@ -154,13 +150,22 @@ async def run_cohort(
                 logger.info(
                     "%s map batch %d/%d (%d trials)", tag, i, len(plan), len(batch)
                 )
+                # The fetch-more system prompt goes on MAP turns only, and on
+                # every one of them: context resets per batch, so batch 3 has no
+                # memory that batch 1 was told it could widen the tail budget.
                 await _turn(
                     build_map_batch_prompt(
-                        bucket, batch, roster, oracle_by_trial, i, len(plan)
+                        bucket, batch, roster, oracle_by_trial, i, len(plan),
+                        TRAJ_TAIL_BYTES,
                     ),
                     f"map {i}/{len(plan)}",
+                    system_prompt=build_system_prompt(TRAJ_TAIL_BYTES),
                 )
 
+            # REDUCE gets NO fetch-more prompt: its whole job is to read
+            # findings.jsonl, and telling it to pull trajectories would both
+            # contradict its user prompt and let it refetch the entire cohort --
+            # recreating the context blowup this batching exists to prevent.
             logger.info("%s reduce over %s", tag, FINDINGS_PATH)
             await _turn(build_reduce_only_prompt(bucket, counts, len(plan)), "reduce")
 
