@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -40,6 +41,20 @@ class _FakeRuntime:
             await client.upload_file(sandbox, dest_path=path, content=body)
         for evt in self._events:
             yield evt
+
+
+class _SlowRuntime(_FakeRuntime):
+    """A wedged agent: stream_chat never yields within the timeout window."""
+
+    def __init__(self, delay):
+        super().__init__([])
+        self._delay = delay
+
+    async def stream_chat(self, client, sandbox, *, content,
+                          claude_session_id, daytona_session_id):
+        await asyncio.sleep(self._delay)
+        if False:  # pragma: no cover - keeps this an async generator
+            yield
 
 
 def _kwargs(**over):
@@ -119,6 +134,32 @@ async def test_run_cohort_falls_back_to_stream_when_files_absent():
     ])
     _, sections = await ac.run_cohort(client, runtime, **_kwargs())
     assert sections == {"bad_failure_content": "# Stream"}
+
+
+async def test_run_cohort_raises_on_timeout_and_still_deletes_sandbox(monkeypatch):
+    """The 30-min safety net: a wedged agent must not hold the job or the
+    sandbox open forever."""
+    monkeypatch.setattr(ac, "COHORT_TIMEOUT_SECONDS", 0.05)
+    client = FakeDaytonaClient()
+    runtime = _SlowRuntime(delay=0.2)
+    with pytest.raises(RuntimeError, match="bad"):
+        await ac.run_cohort(client, runtime, **_kwargs())
+    assert len(client.deleted) == 1
+
+
+async def test_parse_happens_after_teardown(monkeypatch):
+    """A parse failure must not hold a sandbox open."""
+    client = FakeDaytonaClient()
+    runtime = _FakeRuntime([], files=_good_files())
+    seen = {}
+
+    def spy(*a, **kw):
+        seen["deleted_at_parse_time"] = len(client.deleted)
+        return ([], {"bad_failure_content": "# B"})
+
+    monkeypatch.setattr(ac, "parse_cohort_result", spy)
+    await ac.run_cohort(client, runtime, **_kwargs())
+    assert seen["deleted_at_parse_time"] == 1
 
 
 async def test_run_cohort_logs_the_stream_with_bucket_prefix(caplog):
