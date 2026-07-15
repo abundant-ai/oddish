@@ -339,5 +339,6 @@ class FakeDaytonaClient:
         return self.sandboxes[sandbox.id]["files"].get(src_path, b"")
 
     async def delete_sandbox(self, sandbox) -> None:
+        # Keep the record around (tests introspect env/files post-teardown);
+        # `deleted` membership alone is what connect_sandbox treats as gone.
         self.deleted.add(sandbox.id)
-        self.sandboxes.pop(sandbox.id, None)
