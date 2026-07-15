@@ -257,6 +257,7 @@ async def run_analyzer_generation_job(
                 analyzer.num_bad_failures = output.counts["bad"]
                 analyzer.num_good_failures = output.counts["good"]
                 analyzer.breakdown = output.breakdown
+                analyzer.reduce_prompt = output.reduce_prompt
                 analyzer.status = JobStatus.SUCCESS
                 analyzer.error = None
             else:
