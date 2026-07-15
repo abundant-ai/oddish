@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import useSWR from "swr";
 import {
   Accordion,
@@ -823,24 +823,27 @@ export function TrajectoryViewer({
     return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
   }, [trajectory, lowerQuery]);
 
-  const handleStepClick = (index: number) => {
-    const stepKey = `step-${index}`;
-    // The duration bar spans every step, so a click may target a step the
-    // active filter is hiding — clear the filter so it can be shown.
-    if (lowerQuery && !visibleSteps.some(({ idx }) => idx === index)) {
-      setQuery("");
-    }
-    setExpandedSteps((prev) =>
-      prev.includes(stepKey) ? prev : [...prev, stepKey],
-    );
-    // Scroll to step after a brief delay for accordion animation
-    setTimeout(() => {
-      stepRefs.current[index]?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    }, 50);
-  };
+  const handleStepClick = useCallback(
+    (index: number) => {
+      const stepKey = `step-${index}`;
+      // The duration bar spans every step, so a click may target a step the
+      // active filter is hiding — clear the filter so it can be shown.
+      if (lowerQuery && !visibleSteps.some(({ idx }) => idx === index)) {
+        setQuery("");
+      }
+      setExpandedSteps((prev) =>
+        prev.includes(stepKey) ? prev : [...prev, stepKey],
+      );
+      // Scroll to step after a brief delay for accordion animation
+      setTimeout(() => {
+        stepRefs.current[index]?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 50);
+    },
+    [lowerQuery, visibleSteps],
+  );
 
   // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
   // carries a step_id, not an array index; handleStepClick takes an index.
@@ -866,7 +869,7 @@ export function TrajectoryViewer({
     apply();
     window.addEventListener("hashchange", apply);
     return () => window.removeEventListener("hashchange", apply);
-  }, [trajectory]);
+  }, [trajectory, handleStepClick]);
 
   if (isLoading) {
     return (
