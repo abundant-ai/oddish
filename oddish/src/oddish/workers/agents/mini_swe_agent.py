@@ -11,9 +11,22 @@ from harbor.agents.installed.mini_swe_agent import MiniSweAgent
 from oddish.config import META_DEFAULT_BASE_URL, meta_bare_model_id, settings
 
 
+_CONFIG_PATH = "/tmp/oddish-mini-swe-agent.yaml"
 _META_CONFIG_PATH = "/tmp/oddish-meta-mini-swe-agent.yaml"
 _META_API_DOMAIN = "api.ai.meta.com"
 _TASK_FLAG = "--task="
+# litellm >= 1.92 imports its proxy/MCP handler chain (fastapi, orjson, ...) from
+# completion() whenever ``tools`` is set, and mini-swe-agent always sends
+# ``tools=[BASH_TOOL]`` (minisweagent.models.litellm_model). Those deps are not in
+# the ``uv tool`` venv, so the first model call dies with ModuleNotFoundError and
+# the trial fails at 2 steps / 0 tokens. Installing them is not an option: trials
+# run with egress locked to the model API, so there is no PyPI to fetch from.
+# litellm only uses that import to ask whether the tools are MCP-gateway tools --
+# BASH_TOOL never is, so the branch falls through to the normal path regardless.
+# Pass litellm's own ``_skip_mcp_handler`` escape hatch (main.py: ``skip_mcp_handler
+# = kwargs.pop("_skip_mcp_handler", False)``) through mini-swe-agent's model_kwargs
+# to skip the dead import. Behavior is unchanged; it just never needs orjson.
+_SKIP_MCP_HANDLER_YAML = "    _skip_mcp_handler: true\n"
 
 
 def _shell_token_end(s: str, start: int) -> int:
@@ -74,21 +87,59 @@ def _slugify_session_part(value: str) -> str:
 
 
 class OddishMiniSweAgent(MiniSweAgent):
-    async def install(self, environment) -> None:
-        await super().install(environment)
-        version_spec = f"=={self._version}" if self._version else ""
-        await self.exec_as_agent(
+    _oddish_config_path = _CONFIG_PATH
+
+    def _oddish_config_yaml(self, task: str | None) -> str:
+        return "model:\n  model_kwargs:\n" + _SKIP_MCP_HANDLER_YAML
+
+    def _oddish_take_task(self, command: str) -> tuple[str, str | None]:
+        return command, None
+
+    async def _oddish_write_config(
+        self, environment, env: dict | None, task: str | None
+    ) -> None:
+        quoted_path = shlex.quote(self._oddish_config_path)
+        heredoc_marker = f"ODDISH_MSWEA_CONFIG_{uuid.uuid4().hex[:8]}"
+        command = (
+            f"cat > {quoted_path} <<'{heredoc_marker}'\n"
+            f"{self._oddish_config_yaml(task)}{heredoc_marker}\n"
+        )
+        await super().exec_as_agent(environment, command=command, env=env)
+
+    def _oddish_patch_command(self, command: str) -> str:
+        config_flags = f"-c {shlex.quote(self._oddish_config_path)} "
+        if " -c " not in command:
+            config_flags = "-c mini " + config_flags
+        return command.replace(
+            "--exit-immediately", config_flags + "--exit-immediately", 1
+        )
+
+    async def exec_as_agent(
+        self,
+        environment,
+        command,
+        env=None,
+        cwd=None,
+        timeout_sec=None,
+    ):
+        if "mini-swe-agent --yolo " in command:
+            command, task = self._oddish_take_task(command)
+            await self._oddish_write_config(environment, env, task)
+            command = self._oddish_patch_command(command)
+
+        return await super().exec_as_agent(
             environment,
-            command=(
-                'if [ -f "$HOME/.local/bin/env" ]; then source "$HOME/.local/bin/env"; fi; '
-                'export PATH="$HOME/.local/bin:$PATH"; '
-                f"uv tool install mini-swe-agent{version_spec} --with 'litellm[proxy]'"
-            ),
+            command=command,
+            env=env,
+            cwd=cwd,
+            timeout_sec=timeout_sec,
         )
 
 
 class OddishMetaMiniSweAgent(OddishMiniSweAgent):
     """mini-swe-agent wrapper for Meta's OpenAI-compatible eval endpoint."""
+
+    _oddish_config_path = _META_CONFIG_PATH
 
     @classmethod
     def required_outbound_domains(
@@ -143,16 +194,13 @@ class OddishMetaMiniSweAgent(OddishMiniSweAgent):
             return None
         return f"openai/{meta_bare_model_id(model_name)}"
 
-    async def _write_meta_config(
-        self, environment, env: dict | None, task: str | None = None
-    ) -> None:
+    def _oddish_config_yaml(self, task: str | None) -> str:
         session_id = self._meta_session_id()
-        quoted_path = shlex.quote(_META_CONFIG_PATH)
-        heredoc_marker = f"ODDISH_META_MSWEA_CONFIG_{uuid.uuid4().hex[:8]}"
         config_yaml = (
             "model:\n"
             "  model_kwargs:\n"
-            "    extra_headers:\n"
+            + _SKIP_MCP_HANDLER_YAML
+            + "    extra_headers:\n"
             f"      x-session-id: {json.dumps(session_id)}\n"
         )
         # Deliver the task via the config file (mini-swe-agent reads run.task,
@@ -164,12 +212,18 @@ class OddishMetaMiniSweAgent(OddishMiniSweAgent):
         # multi-line prompts safely.
         if task is not None:
             config_yaml += f"run:\n  task: {json.dumps(task)}\n"
-        command = (
-            f"cat > {quoted_path} <<'{heredoc_marker}'\n{config_yaml}{heredoc_marker}\n"
-        )
-        await super().exec_as_agent(environment, command=command, env=env)
+        return config_yaml
 
-    def _patch_meta_command(self, command: str) -> str:
+    def _oddish_take_task(self, command: str) -> tuple[str, str | None]:
+        # Excise --task=<prompt> from argv while its span is still valid;
+        # _oddish_patch_command rewrites --model afterwards, which would shift offsets.
+        task, task_span = _extract_task_span(command)
+        if task_span is not None:
+            start, end = task_span
+            command = command[:start] + command[end:]
+        return command, task
+
+    def _oddish_patch_command(self, command: str) -> str:
         model_name = self._litellm_model_name()
         if model_name:
             command = re.sub(
@@ -178,38 +232,4 @@ class OddishMetaMiniSweAgent(OddishMiniSweAgent):
                 command,
                 count=1,
             )
-
-        config_flags = f"-c {shlex.quote(_META_CONFIG_PATH)} "
-        if " -c " not in command:
-            config_flags = "-c mini " + config_flags
-        return command.replace(
-            "--exit-immediately", config_flags + "--exit-immediately", 1
-        )
-
-    async def exec_as_agent(
-        self,
-        environment,
-        command,
-        env=None,
-        cwd=None,
-        timeout_sec=None,
-    ):
-        if "mini-swe-agent --yolo " in command:
-            # Excise --task=<prompt> from argv first, while its span is still
-            # valid, then let _patch_meta_command rewrite --model (which would
-            # otherwise shift these offsets). The prompt rides in the config file
-            # (run.task) so the agent's own pkill -f can't match its cmdline.
-            task, task_span = _extract_task_span(command)
-            if task_span is not None:
-                start, end = task_span
-                command = command[:start] + command[end:]
-            await self._write_meta_config(environment, env, task=task)
-            command = self._patch_meta_command(command)
-
-        return await super().exec_as_agent(
-            environment,
-            command=command,
-            env=env,
-            cwd=cwd,
-            timeout_sec=timeout_sec,
-        )
+        return super()._oddish_patch_command(command)
