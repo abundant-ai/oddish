@@ -1357,6 +1357,13 @@ class ImportedTrialSpec(BaseModel):
     reward: float | None = Field(
         None, description="Verifier score in [0, 1]; None if no verifier result"
     )
+    result: dict | None = Field(
+        None,
+        description=(
+            "Structured verifier metrics and normalized report summary extracted "
+            "from the imported artifacts"
+        ),
+    )
     error_message: str | None = Field(
         None, description="Execution error message, if any"
     )
