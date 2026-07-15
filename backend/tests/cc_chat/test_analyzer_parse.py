@@ -269,8 +269,10 @@ def test_proposal_is_lifted_off_the_finding():
 
 
 def test_duplicate_proposals_across_batches_merge_by_slug():
-    """Every MAP batch is a fresh claude process, so batch 2 has no memory that
-    batch 1 already proposed this. Blind insert would make one row per batch."""
+    """One cohort is one continuous session, but a single session can still
+    re-propose the same capability across several similar trials -- dedup is
+    on the model's output, not on process boundaries. Blind insert would make
+    one row per re-proposal."""
     prop = {"name": "Hypothesis Fixation", "description": "d", "example": "e",
             "categories": ["verification"]}
     lines = "".join(

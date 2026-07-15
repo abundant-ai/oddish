@@ -61,8 +61,12 @@ async def run_cohort(
     # "if none of the above fit, author a new one", so an empty taxonomy would
     # get every good-bucket finding a fabricated capability_slug while the job
     # still reports SUCCESS. Mirrors the same guard in
-    # oddish/evals/analyzer/core.py's run_analyzer_eval. The bad bucket doesn't
-    # render the rubric at all, so it's unaffected.
+    # oddish/evals/analyzer/core.py's run_analyzer_eval. The bad bucket DOES
+    # render the rubric (build_cohort_prompt calls map_rubric(taxonomy)
+    # unconditionally) but is unaffected by an empty one: it classifies task
+    # defects (1a/1b), and _finding_from/_merge_proposals gate capability_slug
+    # to the good bucket structurally, so a blank rubric can't make it fabricate
+    # one.
     if bucket == "good" and cohort and not taxonomy.capabilities:
         raise RuntimeError(
             f"{tag} refusing to run the good bucket against an empty taxonomy "

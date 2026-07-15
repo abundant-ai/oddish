@@ -55,8 +55,11 @@ def patched(monkeypatch):
     calls = []
     revoked = []
 
-    async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
-        calls.append({"bucket": bucket, "cohort": [sa.trial_id for sa in cohort]})
+    async def fake_run_cohort(client, runtime, *, bucket, cohort, taxonomy=None, **kw):
+        calls.append({
+            "bucket": bucket, "cohort": [sa.trial_id for sa in cohort],
+            "taxonomy": taxonomy,
+        })
         if bucket == "bad":
             return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}, []
         return [_finding("good-1", "good")], {
@@ -109,6 +112,23 @@ async def test_runs_one_sandbox_per_cohort_and_merges_sections(patched, monkeypa
     }
     assert out.counts == {"trials": 2, "bad": 1, "good": 1}
     assert len(out.findings) == 2
+
+
+async def test_forwards_the_loaded_taxonomy_to_run_cohort(patched, monkeypatch):
+    """Mirrors the cohort-side assertion in test_analyzer_cohort.py: without
+    this, sandbox_eval_rows could load the taxonomy, fingerprint it onto the
+    output, and never actually pass it to run_cohort -- every other test here
+    would still pass while production rendered an empty rubric."""
+    m, calls, _ = patched
+    monkeypatch.setattr(
+        m, "_gather", lambda rows: (
+            [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
+            {"bad-1": "oracle"}, _hosts("bad-1", "good-1"),
+        ),
+    )
+    await m.sandbox_eval_rows([("r1", "t"), ("r2", "t")], AnalyzerEvalConfig(), "a1")
+
+    assert calls and all(c["taxonomy"] is _TAX for c in calls)
 
 
 async def test_empty_cohort_provisions_no_sandbox(patched, monkeypatch):
@@ -319,12 +339,17 @@ async def test_sandbox_eval_snapshots_the_taxonomy_it_ran_against(patched, monke
 
 
 async def test_zero_work_still_snapshots_the_taxonomy(patched, monkeypatch):
-    """A run that found no failures still ran against a taxonomy."""
+    """A run that found no failures still ran against a taxonomy. len(version)
+    == 12 alone would pass for ANY taxonomy's fingerprint, including an empty
+    one -- assert the actual slug, like the non-zero-work sibling test does."""
     m, _, _ = patched
     monkeypatch.setattr(m, "_gather", lambda rows: ([], {}, {}))
     out = await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "an-1")
 
     assert len(out.taxonomy_version) == 12
+    assert [c["slug"] for c in out.taxonomy_snapshot["capabilities"]] == [
+        "agent-early-stop"
+    ]
     assert out.proposals == []
 
 
