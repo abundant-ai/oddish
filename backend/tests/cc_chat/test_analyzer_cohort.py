@@ -169,7 +169,7 @@ async def test_parse_happens_after_teardown(monkeypatch):
 
     def spy(*a, **kw):
         seen["deleted_at_parse_time"] = len(client.deleted)
-        return ([], {"bad_failure_content": "# B"})
+        return ([], {"bad_failure_content": "# B"}, [])
 
     monkeypatch.setattr(ac, "parse_cohort_result", spy)
     await ac.run_cohort(client, runtime, **_kwargs())

@@ -1,4 +1,4 @@
-"""Parse one cohort agent's output into (findings, sections).
+"""Parse one cohort agent's output into (findings, sections, proposals).
 
 Files are the source of truth; the stream markers are the fallback for when the
 agent never wrote them. Pure: callers hand in bytes and text.
@@ -11,7 +11,7 @@ import logging
 
 from oddish.evals.analyzer.core import parse_json
 from oddish.evals.analyzer.prompt_builder import SECTION_KEYS_BY_BUCKET
-from oddish.evals.analyzer.schemas import Finding
+from oddish.evals.analyzer.schemas import CapabilityProposal, Finding
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,9 @@ def _finding_from(d: dict, bucket: str, host_by_trial: dict[str, dict]) -> Findi
         step_ids=list(d.get("step_ids") or []),
         root_cause=d.get("root_cause", ""),
         headroom_signal=d.get("headroom_signal", ""),
+        # Good bucket only: the bad bucket classifies task defects, not agent
+        # capabilities. Gating here (not in the prompt) means drift can't leak.
+        capability_slug=(d.get("capability_slug") or None) if bucket == "good" else None,
         # Host facts (link + classifier columns), never the model's echo -- the
         # rollup derives lanes from these instead of the bucket/subcategory above.
         **host,
@@ -88,6 +91,43 @@ def _findings_from_jsonl(text: str, bucket, links) -> list[Finding]:
     return out
 
 
+def _proposals_from(
+    text: str, bucket: str, host_by_trial: dict[str, dict]
+) -> list[CapabilityProposal]:
+    """Merge by slug. Each MAP batch is a fresh process with no memory of the
+    previous one, so the same capability arrives once per batch that saw it."""
+    if bucket != "good":
+        return []
+    merged: dict[str, CapabilityProposal] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        raw = d.get("capability_proposal")
+        slug = d.get("capability_slug")
+        trial_id = d.get("trial_id", "")
+        if not isinstance(raw, dict) or not slug or trial_id not in host_by_trial:
+            continue
+        existing = merged.get(slug)
+        if existing is None:
+            merged[slug] = CapabilityProposal(
+                slug=slug,
+                name=raw.get("name", slug),
+                description=raw.get("description", ""),
+                example=raw.get("example", ""),
+                categories=list(raw.get("categories") or []),
+                trial_ids=[trial_id],
+                trajectory_link=host_by_trial[trial_id]["trajectory_link"],
+            )
+        elif trial_id not in existing.trial_ids:
+            existing.trial_ids.append(trial_id)
+    return list(merged.values())
+
+
 def _marked(stream_text: str, marker: str) -> list[dict]:
     """Decode one object per marker, spanning lines if the agent pretty-printed
     it. raw_decode stops at the end of that object, so narration (or a later
@@ -118,10 +158,10 @@ def parse_cohort_result(
     findings_bytes: bytes,
     stream_text: str,
     host_by_trial: dict[str, dict],
-) -> tuple[list[Finding], dict[str, str]]:
-    findings = _findings_from_jsonl(
-        findings_bytes.decode("utf-8", "replace"), bucket, host_by_trial
-    )
+) -> tuple[list[Finding], dict[str, str], list[CapabilityProposal]]:
+    findings_text = findings_bytes.decode("utf-8", "replace")
+    findings = _findings_from_jsonl(findings_text, bucket, host_by_trial)
+    proposals = _proposals_from(findings_text, bucket, host_by_trial)
 
     sections: dict[str, str] | None = None
     if reduce_bytes.strip():
@@ -154,4 +194,4 @@ def parse_cohort_result(
             f for d in _marked(stream_text, _MAP_MARKER)
             if (f := _finding_from(d, bucket, host_by_trial)) is not None
         ]
-    return findings, sections
+    return findings, sections, proposals

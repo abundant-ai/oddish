@@ -20,6 +20,7 @@ from api.services.cc_chat.analyzer_prompt import (
 from api.services.cc_chat.stream_render import render_event
 from oddish.config import settings
 from oddish.evals.analyzer.schemas import Finding
+from oddish.evals.analyzer.taxonomy import Taxonomy
 from oddish.evals.primitives import SubAnalysis
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,9 @@ async def run_cohort(
     cli_src: bytes,
 ) -> tuple[list[Finding], dict[str, str]]:
     tag = f"[analyzer {analyzer_id}][{bucket}]"
-    prompt = build_cohort_prompt(bucket, cohort, roster, counts, oracle_by_trial)
+    # TODO(taxonomy): a DB-loaded Taxonomy isn't threaded through run_cohort yet;
+    # an empty one blanks the good-bucket capabilities rubric in the meantime.
+    prompt = build_cohort_prompt(bucket, cohort, roster, counts, oracle_by_trial, Taxonomy())
     # Retained only to serve the parse-fallback; never persisted.
     stream_lines: list[str] = []
     sandbox = None
@@ -104,7 +107,9 @@ async def run_cohort(
             except Exception as exc:  # noqa: BLE001 — auto_delete is the backstop
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
-    findings, sections = parse_cohort_result(
+    # Proposals aren't wired to the DB yet (that's the next step); discard them
+    # here rather than change run_cohort's return shape ahead of that wiring.
+    findings, sections, _proposals = parse_cohort_result(
         bucket, reduce_b, findings_b, "\n".join(stream_lines),
         # Scoped to this cohort, so a finding for someone else's trial is dropped.
         {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},

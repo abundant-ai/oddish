@@ -41,6 +41,30 @@ class Finding:
     subtype: str | None = None
     task_id: str | None = None
     task_path: str | None = None
+    # LLM-assigned, good bucket only. Deliberately NOT derived host-side:
+    # capabilities are finer-grained than the classifier's Subtype enum, so
+    # nothing but the map agent reading the trajectory can distinguish e.g.
+    # hypothesis-fixation from narrow-evidence-gathering (both are 3a today).
+    # Plain text, not an FK -- a proposed slug has no row yet, and leaving it
+    # unconstrained is what makes promotion reclassify history with no backfill.
+    capability_slug: str | None = None
+
+
+@dataclass
+class CapabilityProposal:
+    """An agent-authored capability, pending human review.
+
+    Not carried on Finding: a proposal is not a per-trial fact, and storing it
+    there would duplicate one proposal across every trial that cited it.
+    """
+
+    slug: str
+    name: str
+    description: str
+    example: str = ""
+    categories: list[str] = field(default_factory=list)
+    trial_ids: list[str] = field(default_factory=list)
+    trajectory_link: str = ""
 
 
 @dataclass

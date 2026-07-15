@@ -15,6 +15,7 @@ from oddish.evals.analyzer.prompt_builder import (
     map_rubric,
     sections_block,
 )
+from oddish.evals.analyzer.taxonomy import Taxonomy
 from oddish.evals.primitives import SubAnalysis
 
 # Matches ClaudeCodeRuntime's cwd, so the agent can use absolute paths from
@@ -58,6 +59,7 @@ def build_cohort_prompt(
     roster: list[dict],
     counts: dict,
     oracle_by_trial: dict[str, str],
+    taxonomy: Taxonomy,
 ) -> str:
     # map_output_shape() is escaped ({{/}}) for the API path's str.format(); we
     # unescape it for the agent, leaving {trajectory_link} for it to fill in.
@@ -92,7 +94,7 @@ def build_cohort_prompt(
         "     Copy trajectory_link VERBATIM from the cohort metadata above — never\n"
         "     invent it.\n\n"
         "## Subcategory rubric (seed; you MAY introduce an emergent label if none fit)\n"
-        + map_rubric() + "\n\n"
+        + map_rubric(taxonomy) + "\n\n"
         "## Finding shape\n"
         + output_shape + "\n\n"
         # map.txt states this rule against a pre-loaded trajectory ("above"); here
