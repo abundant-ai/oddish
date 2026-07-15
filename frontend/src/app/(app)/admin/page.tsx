@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -676,6 +676,14 @@ function AdminPageContent() {
       scroll: false,
     });
   };
+
+  // An unknown ?tab= (typo, removed tab) falls back to overview on screen;
+  // rewrite the URL to match so bookmarks and back/forward stay consistent.
+  useEffect(() => {
+    if (requestedTab && requestedTab !== activeTab) {
+      router.replace("/admin", { scroll: false });
+    }
+  }, [requestedTab, activeTab, router]);
 
   return (
     <div className="space-y-6">
