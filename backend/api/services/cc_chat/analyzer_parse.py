@@ -131,11 +131,13 @@ def parse_cohort_result(
             sections = _sections_from(
                 parse_json(reduce_bytes.decode("utf-8", "replace")), bucket
             )
-        except CohortParseError:
-            raise
-        except ValueError as exc:
+        except (CohortParseError, ValueError) as exc:
+            # Unreadable JSON and well-formed-but-empty JSON are the same situation
+            # to the caller: the file yielded nothing. Both fall back to the stream,
+            # which may still hold a good result. If it doesn't, the check below
+            # raises with both channels accounted for.
             logger.warning(
-                "analyzer-sandbox: %s reduce file unparseable (%s); "
+                "analyzer-sandbox: %s reduce file unusable (%s); "
                 "falling back to the stream", bucket, exc,
             )
 

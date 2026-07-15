@@ -149,3 +149,26 @@ def test_finding_bucket_comes_from_the_cohort_not_the_model():
         "bad", reduce_b, (json.dumps(bad_echo) + "\n").encode(), "",
         {"bad-1": "/tasks/t1/probe/bad-1"})
     assert findings[0].bucket == "bad"
+
+
+def test_falls_back_to_stream_when_reduce_file_parses_but_is_unusable():
+    """A well-formed reduce file with no usable content is the same situation as a
+    malformed one — the file gave us nothing — so it must reach the stream too.
+    Only the malformed path used to fall back, so a perfectly good streamed result
+    was discarded whenever the agent wrote valid JSON of the wrong shape."""
+    reduce_b = json.dumps({"headroom_analysis": "wrong bucket"}).encode()
+    stream = "REDUCE RESULT: " + json.dumps({"bad_failure_content": "# From stream"})
+
+    findings, sections = parse_cohort_result("bad", reduce_b, b"", stream, LINKS)
+
+    assert sections == {"bad_failure_content": "# From stream"}
+
+
+def test_falls_back_to_stream_when_reduce_file_sections_are_blank():
+    """Same for a file whose keys are right but whose values are all blank."""
+    reduce_b = json.dumps({"bad_failure_content": "   "}).encode()
+    stream = "REDUCE RESULT: " + json.dumps({"bad_failure_content": "# From stream"})
+
+    _findings, sections = parse_cohort_result("bad", reduce_b, b"", stream, LINKS)
+
+    assert sections == {"bad_failure_content": "# From stream"}
