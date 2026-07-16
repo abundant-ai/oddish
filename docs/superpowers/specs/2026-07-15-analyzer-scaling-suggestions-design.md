@@ -58,10 +58,24 @@ Without this the new section is as vague as the one it sits below, so it ships i
 same change.
 
 - `_findings_block` gains `task_path` and `model` per finding.
-- New `_roster_block(models_by_task)`: a compact `task_path -> [models that ran it]`
+- New `task_roster_block(models_by_task)`: a compact `task_id -> [models that ran it]`
   dump. This is the only source for **passes**; findings record failures only, so
   "saturated" and "too hard" are underivable without it.
-- `build_reduce_prompt(findings, counts, models_by_task)` — new third argument.
+- `build_reduce_prompt(findings, counts, models_by_task=None)` — new optional third
+  argument, so existing two-arg callers keep working.
+
+**Where the roster comes from.** Not from the handler. `analyzer_handler.py:303` computes
+`_models_by_task(rows)` *after* the eval returns, host-side, deliberately — that copy must
+hold for eval strategies that never build `AnalyzerEvalInputs` (the sandbox path). It is
+therefore unavailable at prompt-build time, and threading it in would mean changing the
+`eval_rows_fn` strategy signature across every implementation.
+
+Instead `core.py` derives its own roster from `inputs.bundles`. This works because
+`build_analyzer_inputs` gives **every** trial a `TrajectoryBundle` — failures in full, the
+rest via `_stub_bundle` — and every bundle carries `task_id` and `model`
+(`core/analyzer_inputs.py:38`). So passing trials are already in hand, and the pure core
+stays pure: no new argument, no handler change. The two derivations coexist on purpose and
+must keep the same semantics (distinct models per `task_id`, skipping falsy models).
 
 The roster is what makes prioritization evidence-based rather than vibes:
 
