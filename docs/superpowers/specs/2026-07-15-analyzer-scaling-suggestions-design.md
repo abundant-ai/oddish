@@ -126,8 +126,9 @@ cohort; do not pre-optimize.
 - `tests/db/test_analyzer_model.py` — column round-trips; `None` for legacy rows.
 - Migration: upgrade/downgrade against a seeded row.
 
-## Open questions
+## Decisions
 
-- Should the brief cap suggestion count (e.g. top 3 per subsection)? Uncapped risks a wall
-  of text; capping risks dropping the tail. Leaning uncapped for the first run, then
-  tightening once we see real output.
+- **Suggestion count is uncapped.** A cap chosen before seeing real output would be
+  guesswork, and the risk it guards against (a wall of text) is cheaper to fix than the
+  risk it creates (silently dropping the long tail, which is where a novel task idea is
+  most likely to live). Revisit once we've read output from a real cohort.
