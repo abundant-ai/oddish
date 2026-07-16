@@ -6,6 +6,9 @@ finding's trajectory_link verbatim as a markdown link, e.g.
 ## Counts
 {counts_block}
 
+## Task roster — which models RAN each task, including the ones that PASSED
+{roster_block}
+
 ## Findings (from the per-trial analysts)
 {findings_block}
 

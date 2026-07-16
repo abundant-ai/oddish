@@ -97,6 +97,22 @@ def build_roster(bad: list[SubAnalysis], good: list[SubAnalysis]) -> list[dict]:
     return rows
 
 
+def _models_by_task_from_bundles(bundles: list[TrajectoryBundle]) -> dict[str, list[str]]:
+    """task_id -> distinct models that ran it, including trials that PASSED.
+
+    Every trial gets a bundle (failures in full, the rest as stubs) and bundles
+    carry model, so this needs nothing the pure core doesn't already have.
+    analyzer_handler._models_by_task derives the same thing from rows for
+    persistence, and must keep doing so for eval strategies that never build
+    AnalyzerEvalInputs. Same semantics, different input; keep them in step.
+    """
+    by_task: dict[str, set[str]] = {}
+    for b in bundles:
+        if b.model:
+            by_task.setdefault(b.task_id, set()).add(b.model)
+    return {k: sorted(v) for k, v in by_task.items()}
+
+
 async def _map_one(
     client: LLMClient, config: AnalyzerEvalConfig,
     bundle: TrajectoryBundle, sa: SubAnalysis, roster: list[dict],
@@ -255,7 +271,9 @@ async def run_analyzer_eval(
         )
 
     # Step 5 — reduce the per-trial findings into the four narrative sections.
-    reduce_prompt = build_reduce_prompt(findings, counts)
+    reduce_prompt = build_reduce_prompt(
+        findings, counts, _models_by_task_from_bundles(inputs.bundles)
+    )
     try:
         raw = await client.complete(
             reduce_prompt, model=config.analysis_model,
