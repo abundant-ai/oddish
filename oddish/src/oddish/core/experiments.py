@@ -106,7 +106,7 @@ async def list_org_probes_core(
     # blobs over the wire) for *every* probe trial and folded them in Python;
     # work scaled with total trial count. Here a single windowed pass over the
     # org's probe trials computes the per-task count and ranks each task's
-    # trials newest-first, selecting only the five scalar columns the row
+    # trials newest-first, selecting only the six scalar columns the row
     # needs. The org filter sits on ``TrialModel.org_id`` (mirrors the task's
     # org at trial creation) so Postgres restricts the scan before windowing.
     ranked_select = select(
@@ -114,6 +114,10 @@ async def list_org_probes_core(
         TrialModel.status.label("last_status"),
         TrialModel.created_at.label("last_run_at"),
         func.count().over(partition_by=TrialModel.task_id).label("run_count"),
+        func.array_agg(TrialModel.harbor_config["probe_name"].astext)
+        .filter(TrialModel.harbor_config["probe_name"].astext.isnot(None))
+        .over(partition_by=TrialModel.task_id)
+        .label("probe_names"),
         func.row_number()
         .over(
             partition_by=TrialModel.task_id,
@@ -132,6 +136,7 @@ async def list_org_probes_core(
             ranked.c.run_count,
             ranked.c.last_run_at,
             ranked.c.last_status,
+            ranked.c.probe_names,
         )
         .join(ranked, ranked.c.task_id == TaskModel.id)
         .where(ranked.c.rn == 1)
@@ -146,6 +151,7 @@ async def list_org_probes_core(
             run_count=row.run_count,
             last_run_at=row.last_run_at,
             last_status=getattr(row.last_status, "value", row.last_status),
+            probe_names=sorted(set(row.probe_names or [])),
         )
         for row in result.all()
     ]

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from oddish.config import api_base_url_for_modal_app
 from oddish.core.api_keys import mint_internal_read_key
 from oddish.db import get_session
+
+logger = logging.getLogger(__name__)
 
 PROBE_KEY_TTL_MINUTES = (
     240  # cover queue wait + run; trial timeouts are well under this
@@ -49,3 +52,19 @@ async def mint_probe_creds(
     except Exception as e:
         raise ProbeCredsError(f"minting probe read key failed: {e}") from e
     return key_id, {"ODDISH_API_KEY": raw_key, "ODDISH_API_BASE_URL": base_url}
+
+
+async def revoke_probe_creds(api_key_id: str, label: str) -> None:
+    """Best-effort revoke a minted probe read key; never raises."""
+    try:
+        from oddish.db.models import APIKeyModel
+
+        async with get_session() as session:
+            key = await session.get(APIKeyModel, api_key_id)
+            if key is not None:
+                await session.delete(key)
+                await session.commit()
+    except Exception as exc:
+        logger.warning(
+            "Failed to revoke probe key for %s (will auto-expire): %s", label, exc
+        )

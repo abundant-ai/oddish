@@ -1,0 +1,2 @@
+- bad_failure_content: reward hacking, worked backwards from the oracle. Organize
+  by 1a (task ambiguity/specification) and 1b (task security/construction).

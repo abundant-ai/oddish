@@ -6,9 +6,12 @@ off by enqueueing a ANALYZER worker job (see workers/queue/analyzer_handler.py).
 
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from oddish.db.models import (
     ExperimentModel,
@@ -16,7 +19,7 @@ from oddish.db.models import (
     AnalyzerModel,
     analyzer_experiments,
 )
-from oddish.schemas import ExperimentOption, AnalyzerCreate
+from oddish.schemas import ExperimentOption, ReportCreate
 
 
 async def _enqueue_analyzer_worker_job(session, *, analyzer_id: str, org_id: str | None) -> None:
@@ -26,25 +29,74 @@ async def _enqueue_analyzer_worker_job(session, *, analyzer_id: str, org_id: str
     await enqueue_analyzer_worker_job(session, analyzer_id=analyzer_id, org_id=org_id)
 
 
-async def create_analyzer_core(
-    session: AsyncSession, *, data: AnalyzerCreate, org_id: str | None, user_id: str | None
-) -> AnalyzerModel:
-    seen: set[str] = set(data.experiment_ids)
-    requested = list(seen)
+def _slug(name: str) -> str:
+    """Lowercase, collapse non-alphanumerics to underscores, for use in a name.
 
-    valid_stmt = select(ExperimentModel.id).where(
+    Capped well under analyzers.name (255) so the "report_<N>_" prefix always fits;
+    experiments.name is itself String(255) and would otherwise overflow on insert.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    return slug[:200].strip("_") or "experiment"
+
+
+async def _default_report_name(
+    session: AsyncSession, *, org_id: str | None, experiment_name: str
+) -> str:
+    """report_<N>_<slug>, N = smallest free index for this org + experiment slug.
+
+    Scoped by slug rather than experiment id: two experiments sharing a display
+    name slugify alike, so a per-id scope would hand both the same report_0_<slug>.
+    """
+    slug = _slug(experiment_name)
+    # Read-then-insert races two concurrent creates onto the same index; serialize
+    # per org+slug. Advisory lock releases at commit, so no explicit unlock.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"analyzer_report_name:{org_id}:{slug}"},
+    )
+    existing = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(AnalyzerModel.name).where(
+                    AnalyzerModel.org_id == org_id,
+                    AnalyzerModel.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    }
+    n = 0
+    while f"report_{n}_{slug}" in existing:
+        n += 1
+    return f"report_{n}_{slug}"
+
+
+async def create_analyzer_core(
+    session: AsyncSession, *, data: ReportCreate, org_id: str | None, user_id: str | None
+) -> AnalyzerModel:
+    # Order-preserving dedup so the first experiment (used for auto-naming) is
+    # stable and deterministic.
+    requested = list(dict.fromkeys(data.experiment_ids))
+
+    valid_stmt = select(ExperimentModel.id, ExperimentModel.name).where(
         ExperimentModel.id.in_(requested), ExperimentModel.org_id == org_id
     )
-    valid_ids = {row[0] for row in (await session.execute(valid_stmt)).all()}
-    missing = seen - valid_ids
+    valid = {row[0]: row[1] for row in (await session.execute(valid_stmt)).all()}
+    missing = set(requested) - set(valid)
     if missing:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown or inaccessible experiment ids: {sorted(missing)}",
         )
 
+    name = (data.name or "").strip()
+    if not name:
+        name = await _default_report_name(
+            session, org_id=org_id, experiment_name=valid[requested[0]]
+        )
+
     analyzer = AnalyzerModel(
-        name=data.name,
+        name=name,
         org_id=org_id,
         owner_user_id=user_id,
         status=JobStatus.PENDING,
@@ -81,6 +133,35 @@ async def list_analyzers_core(
 ) -> list[AnalyzerModel]:
     stmt = (
         select(AnalyzerModel)
+        # findings/models_by_task are large (~500KB/analyzer) and the list view
+        # never shows them; every other column is loaded so AnalyzerResponse's
+        # model_validate (and future column reads) don't hit a lazy-load.
+        .options(
+            load_only(
+                AnalyzerModel.id,
+                AnalyzerModel.name,
+                AnalyzerModel.org_id,
+                AnalyzerModel.owner_user_id,
+                AnalyzerModel.owner,
+                AnalyzerModel.status,
+                AnalyzerModel.error,
+                AnalyzerModel.bad_failure_content,
+                AnalyzerModel.good_failure_content,
+                AnalyzerModel.universal_capabilities_content,
+                AnalyzerModel.headroom_analysis,
+                AnalyzerModel.reduce_prompt,
+                AnalyzerModel.num_trials,
+                AnalyzerModel.num_bad_failures,
+                AnalyzerModel.num_good_failures,
+                AnalyzerModel.breakdown,
+                AnalyzerModel.save_trial_analyses,
+                AnalyzerModel.started_at,
+                AnalyzerModel.finished_at,
+                AnalyzerModel.created_at,
+                AnalyzerModel.updated_at,
+                AnalyzerModel.deleted_at,
+            )
+        )
         .where(AnalyzerModel.org_id == org_id)
         .order_by(AnalyzerModel.created_at.desc())
     )

@@ -304,16 +304,21 @@ class FakeDaytonaClient:
             raise DaytonaNotFoundError(f"sandbox not found: {sandbox_id}")
         return CreatedSandbox(id=sandbox_id, _sdk_handle=sandbox_id)
 
+    def _live(self, sandbox) -> dict:
+        if sandbox.id in self.deleted:
+            raise DaytonaNotFoundError(f"sandbox deleted: {sandbox.id}")
+        return self.sandboxes[sandbox.id]
+
     async def upload_file(self, sandbox, *, dest_path, content) -> None:
-        self.sandboxes[sandbox.id]["files"][dest_path] = content
+        self._live(sandbox)["files"][dest_path] = content
 
     async def create_session(self, sandbox, *, session_id) -> None:
-        self.sandboxes[sandbox.id]["sessions"].add(session_id)
+        self._live(sandbox)["sessions"].add(session_id)
 
     async def exec_async(self, sandbox, *, daytona_session_id, command) -> str:
         self.next_cmd_id_seq += 1
         cmd_id = f"cmd_{self.next_cmd_id_seq}"
-        self.sandboxes[sandbox.id]["exec_log"].append(
+        self._live(sandbox)["exec_log"].append(
             (daytona_session_id, command, cmd_id)
         )
         return cmd_id
@@ -330,14 +335,16 @@ class FakeDaytonaClient:
             await on_stderr(canned["stderr"])
 
     async def exec_sync(self, sandbox, *, command) -> tuple[int, str]:
+        self._live(sandbox)
         for needle, result in self.exec_sync_results.items():
             if needle in command:
                 return result
         return 0, ""
 
     async def download_file(self, sandbox, *, src_path) -> bytes:
-        return self.sandboxes[sandbox.id]["files"].get(src_path, b"")
+        return self._live(sandbox)["files"].get(src_path, b"")
 
     async def delete_sandbox(self, sandbox) -> None:
+        # Keep the record around (tests introspect env/files post-teardown);
+        # `deleted` membership alone is what connect_sandbox treats as gone.
         self.deleted.add(sandbox.id)
-        self.sandboxes.pop(sandbox.id, None)

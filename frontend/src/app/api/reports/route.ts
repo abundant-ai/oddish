@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
     const a = await authedToken();
     if ("error" in a) return NextResponse.json({ error: a.error }, { status: a.status });
     const body = await request.json();
-    const res = await fetch(getBackendUrl("analyzers"), {
+    const res = await fetch(getBackendUrl("reports"), {
       method: "POST",
       cache: "no-store",
       headers: { ...getAuthHeaders(a.token), "Content-Type": "application/json" },
@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
     const a = await authedToken();
     if ("error" in a) return NextResponse.json({ error: a.error }, { status: a.status });
     const qs = request.nextUrl.searchParams.toString();
-    const base = getBackendUrl("analyzers");
+    const base = getBackendUrl("reports");
     const res = await fetch(qs ? `${base}?${qs}` : base, {
       cache: "no-store",
       headers: getAuthHeaders(a.token),

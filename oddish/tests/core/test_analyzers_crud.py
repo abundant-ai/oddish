@@ -1,5 +1,6 @@
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import inspect
 
 from oddish.core.analyzers import (
     create_analyzer_core,
@@ -9,7 +10,7 @@ from oddish.core.analyzers import (
     list_experiment_options_core,
     list_analyzers_core,
 )
-from oddish.schemas import AnalyzerCreate
+from oddish.schemas import ReportCreate
 from oddish.db.models import ExperimentModel, JobStatus
 
 
@@ -33,7 +34,7 @@ async def test_create_and_get_analyzer(session, monkeypatch):
 
     analyzer = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(name="Q3", experiment_ids=[e1.id, e2.id]),
+        data=ReportCreate(name="Q3", experiment_ids=[e1.id, e2.id]),
         org_id="org_1", user_id="user_1",
     )
 
@@ -76,7 +77,7 @@ async def test_delete_cancels_inflight_worker_job(session, monkeypatch):
 
     analyzer = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(name="ToDelete", experiment_ids=[e1.id]),
+        data=ReportCreate(name="ToDelete", experiment_ids=[e1.id]),
         org_id="org_1", user_id="user_1",
     )
 
@@ -136,7 +137,7 @@ async def test_create_analyzer_rejects_unknown_or_foreign_org_experiment_id(
     with pytest.raises(HTTPException) as exc:
         await create_analyzer_core(
             session,
-            data=AnalyzerCreate(
+            data=ReportCreate(
                 name="Cross-org", experiment_ids=[e1.id, foreign.id, "does-not-exist"]
             ),
             org_id="org_1",
@@ -165,12 +166,51 @@ async def test_create_analyzer_dedupes_experiment_ids(session, monkeypatch):
 
     analyzer = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(name="Dup", experiment_ids=[e1.id, e1.id]),
+        data=ReportCreate(name="Dup", experiment_ids=[e1.id, e1.id]),
         org_id="org_1", user_id="user_1",
     )
 
     exp_ids = await experiment_ids_for_analyzer(session, analyzer.id)
     assert exp_ids == [e1.id]
+
+
+@pytest.mark.asyncio
+async def test_list_analyzers_core_does_not_load_findings(session, monkeypatch):
+    """Regression gate for the load_only allowlist: if list_analyzers_core ever
+    reverts to a bare ``select(AnalyzerModel)``, this catches it by asserting the
+    ~500KB findings/models_by_task blobs stay unloaded off the list query, while
+    a column the list view actually renders (name) stays loaded."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    e1 = ExperimentModel(name="exp-1", org_id="org_1")
+    session.add(e1)
+    await session.flush()
+
+    analyzer = await create_analyzer_core(
+        session,
+        data=ReportCreate(name="Q3", experiment_ids=[e1.id]),
+        org_id="org_1", user_id="user_1",
+    )
+    analyzer.findings = [{"trial_id": "t1"}]
+    analyzer.models_by_task = {"task": ["model"]}
+    await session.flush()
+
+    # The object create_analyzer_core returned is fully loaded in the identity
+    # map; expire it so the next query actually has to decide what to fetch.
+    session.expire_all()
+
+    listed = await list_analyzers_core(session, org_id="org_1")
+    row = next(r for r in listed if r.id == analyzer.id)
+
+    unloaded = inspect(row).unloaded
+    assert "findings" in unloaded
+    assert "models_by_task" in unloaded
+    assert "name" not in unloaded
 
 
 @pytest.mark.asyncio
@@ -188,16 +228,126 @@ async def test_create_analyzer_persists_save_trial_analyses(session, monkeypatch
 
     default_az = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(name="Default", experiment_ids=[e1.id]),
+        data=ReportCreate(name="Default", experiment_ids=[e1.id]),
         org_id="org_1", user_id="user_1",
     )
     assert default_az.save_trial_analyses is False
 
     saving_az = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(
+        data=ReportCreate(
             name="Saving", experiment_ids=[e1.id], save_trial_analyses=True
         ),
         org_id="org_1", user_id="user_1",
     )
     assert saving_az.save_trial_analyses is True
+
+
+@pytest.mark.asyncio
+async def test_auto_names_report_when_name_omitted(session, monkeypatch):
+    """No name -> report_<N>_<slug(exp)>, N incrementing per experiment."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    foo = ExperimentModel(name="Card Demo", org_id="org_1")
+    bar = ExperimentModel(name="airflow", org_id="org_1")
+    session.add_all([foo, bar])
+    await session.flush()
+
+    r0 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[foo.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert r0.name == "report_0_card_demo"  # slugified, index 0
+    await session.flush()
+
+    r1 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[foo.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert r1.name == "report_1_card_demo"  # same experiment -> next index
+    await session.flush()
+
+    rb = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[bar.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert rb.name == "report_0_airflow"  # different experiment resets to 0
+
+
+@pytest.mark.asyncio
+async def test_auto_name_takes_advisory_lock_before_reading_names(session, monkeypatch):
+    """Auto-naming reads existing names then inserts; without a lock two concurrent
+    creates pick the same index. The lock must be held before the read to help."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    e1 = ExperimentModel(name="Card Demo", org_id="org_1")
+    session.add(e1)
+    await session.flush()
+
+    executed: list[str] = []
+    real_execute = session.execute
+
+    async def spy_execute(statement, params=None, *a, **k):
+        executed.append(str(statement))
+        return await real_execute(statement, params, *a, **k)
+
+    monkeypatch.setattr(session, "execute", spy_execute)
+
+    await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[e1.id]),
+        org_id="org_1", user_id="u1",
+    )
+
+    locks = [i for i, sql in enumerate(executed) if "pg_advisory_xact_lock" in sql]
+    assert locks, "auto-naming did not take an advisory lock"
+    reads = [i for i, sql in enumerate(executed) if "FROM analyzers" in sql]
+    assert reads and locks[0] < reads[0], "lock must precede the name read"
+
+    # An explicit name skips auto-naming entirely, so it must not take the lock.
+    executed.clear()
+    await create_analyzer_core(
+        session, data=ReportCreate(name="Explicit", experiment_ids=[e1.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert not [s for s in executed if "pg_advisory_xact_lock" in s]
+
+
+@pytest.mark.asyncio
+async def test_auto_name_fits_name_column_for_long_experiment(session, monkeypatch):
+    """experiments.name and analyzers.name are both String(255), so an untruncated
+    slug plus the 'report_<N>_' prefix would overflow on insert."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    long_exp = ExperimentModel(name="e" * 255, org_id="org_1")
+    session.add(long_exp)
+    await session.flush()
+
+    r0 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[long_exp.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert len(r0.name) <= 255
+    await session.flush()  # would raise if the value overflowed the column
+
+    # Truncation must not collapse distinct indices into one name.
+    r1 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[long_exp.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert r1.name != r0.name
+    await session.flush()

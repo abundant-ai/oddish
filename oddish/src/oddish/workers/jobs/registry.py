@@ -88,20 +88,21 @@ class JobHandler(Protocol):
 HANDLERS: dict[WorkerJobKind, JobHandler] = {}
 
 
-def register(handler: JobHandler) -> JobHandler:
+def register(handler: JobHandler, *, override: bool = False) -> JobHandler:
     """Install ``handler`` in the global registry.
 
     Double-registering the same instance is a no-op so decorator-style
     usage at module-load plus an explicit ``ensure_builtin_...`` call
     doesn't raise. Registering a *different* handler for a kind that's
     already taken is an error -- two handlers silently racing would be
-    worse than the crash.
+    worse than the crash -- unless ``override`` is set, which the hosted
+    backend uses to swap in a cloud-only handler at container load.
     """
     kind = handler.kind
     existing = HANDLERS.get(kind)
     if existing is handler:
         return handler
-    if existing is not None:
+    if existing is not None and not override:
         raise HandlerAlreadyRegisteredError(
             f"Handler for kind={kind.value!r} already registered: {existing!r}"
         )

@@ -813,24 +813,44 @@ class TaskCostTotals(BaseModel):
 
 
 class ExperimentCostTotals(BaseModel):
-    """What an experiment spent, across every trial that ran under it.
+    """What an experiment's work cost, and what the experiment itself spent.
+
+    ``cost_*`` covers every member trial -- homed in the experiment or
+    gathered into it, the grid's own membership -- so a collection shows what
+    the work it displays cost. ``owned_*`` covers only trials homed in the experiment
+    (the page's "New spend"); it is the number that stays additive across
+    experiments. ``billed_*`` is the subset of owned spend attributed to a
+    registered user's quota. Token totals mirror those scopes: ``token_*`` is
+    member-wide (the Cost tile's usage subline), ``owned_token_*`` home-only
+    (the New spend subline), ``billed_token_*`` the billed subset of owned.
+    ``total_trials`` counts all member trials.
 
     Served separately from the trial grid because it cannot be derived from it:
     the grid is paginated, and it is filtered to each task's current version, so
     it omits earlier versions, superseded retries, probes and deleted trials --
     all of which were still billed. Expect this to exceed the sum of the visible
-    rows. Counts what the quota sum and the admin cost breakdown count, so the
-    page, the admin table and the invoice agree on one number.
+    rows. Owned spend counts what the quota sum and the admin cost breakdown
+    count, so the page, the admin table and the invoice agree on one number.
     """
 
     cost_usd: float = 0.0
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    token_count: int = 0
+    token_trial_count: int = 0
+    owned_cost_usd: float = 0.0
+    owned_trial_count: int = 0
+    owned_has_estimated: bool = False
+    owned_has_native: bool = False
+    owned_token_count: int = 0
+    owned_token_trial_count: int = 0
     billed_cost_usd: float = 0.0
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    billed_token_count: int = 0
+    billed_token_trial_count: int = 0
     total_trials: int = 0
 
 
@@ -1292,6 +1312,8 @@ class TaskStatusResponse(BaseModel):
     )
     current_version: int | None = None
     current_version_id: str | None = None
+    trial_version: int | None = None
+    trial_version_id: str | None = None
     total: int
     completed: int
     failed: int
@@ -1720,6 +1742,7 @@ class OrgProbeRow(BaseModel):
     run_count: int
     last_run_at: datetime | None
     last_status: str
+    probe_names: list[str] = Field(default_factory=list)
 
 
 # Skills — custom agent skill bundles.
@@ -1782,10 +1805,11 @@ class SkillResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Analyzers — agent-eval analyzers across experiments.
+# Reports — agent-eval reports across experiments.
 # ---------------------------------------------------------------------------
-class AnalyzerCreate(BaseModel):
-    name: str = Field(min_length=1)
+class ReportCreate(BaseModel):
+    # Optional: when omitted the server auto-names it report_<N>_<experiment>.
+    name: str | None = Field(default=None)
     experiment_ids: list[str] = Field(min_length=1)
     save_trial_analyses: bool = False
 
@@ -1795,7 +1819,7 @@ class ExperimentOption(BaseModel):
     name: str
 
 
-class AnalyzerResponse(BaseModel):
+class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str

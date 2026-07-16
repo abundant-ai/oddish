@@ -8,6 +8,7 @@ import { ExperimentDescription } from "@/components/experiment-description";
 import { ShareNav } from "@/components/share-nav";
 import type { Task, PublicExperimentInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { preparePublicExperimentTasks } from "@/lib/public-experiment-tasks";
 import { PUBLIC_API_URL } from "@/lib/utils";
 
 export default function PublicExperimentPage() {
@@ -26,45 +27,10 @@ export default function PublicExperimentPage() {
     { refreshInterval: 30000 },
   );
 
-  const tasksForExperiment = useMemo(() => {
-    const taskList = Array.isArray(data) ? [...data] : [];
-    return taskList
-      .sort(
-        (a, b) =>
-          new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-      )
-      .map((task) => {
-        const trials = task.trials;
-        if (!trials || trials.length === 0 || task.current_version == null) {
-          return task;
-        }
-        const filtered = trials.filter(
-          (t) =>
-            t.task_version == null || t.task_version === task.current_version,
-        );
-        if (filtered.length === trials.length) return task;
-        const completed = filtered.filter((t) => t.status === "success").length;
-        const failed = filtered.filter((t) => t.status === "failed").length;
-        const skipped = filtered.filter((t) => t.status === "skipped").length;
-        const rewardSuccess = filtered.filter((t) => t.reward === 1).length;
-        const rewardSum = filtered.reduce(
-          (sum, trial) => sum + (trial.reward ?? 0),
-          0,
-        );
-        const rewardTotal = filtered.filter((t) => t.reward != null).length;
-        return {
-          ...task,
-          trials: filtered,
-          total: filtered.length,
-          completed,
-          failed,
-          skipped,
-          reward_success: rewardTotal > 0 ? rewardSuccess : null,
-          reward_sum: rewardTotal > 0 ? rewardSum : null,
-          reward_total: rewardTotal > 0 ? rewardTotal : null,
-        };
-      });
-  }, [data]);
+  const tasksForExperiment = useMemo(
+    () => preparePublicExperimentTasks(data),
+    [data],
+  );
 
   const experimentName = experimentInfo?.name || "Public Experiment";
   const hasErrors = Boolean(experimentError || error);
