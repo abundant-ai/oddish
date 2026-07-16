@@ -88,16 +88,42 @@ def build_map_prompt(
     )
 
 
-def build_reduce_prompt(findings: list[Finding], counts: dict) -> str:
-    findings_block = "\n".join(
+def _reduce_findings_block(findings: list[Finding]) -> str:
+    return "\n".join(
         f"- [{f.bucket}/{f.subcategory}] trial={f.trial_id} link={f.trajectory_link}\n"
+        f"  task: {f.task_path or f.task_id or 'unknown'}\n"
+        f"  model: {f.model or 'unknown'}\n"
         f"  quote: {f.evidence_quote}\n  root_cause: {f.root_cause}\n"
         f"  headroom_signal: {f.headroom_signal}"
         for f in findings
     )
-    counts_block = json.dumps(counts, indent=2)
+
+
+def task_roster_block(models_by_task: dict[str, list[str]] | None) -> str:
+    """Which models RAN each task, including the ones that PASSED. Findings
+    record only failures, so this is the sole source for "every model passed" --
+    without it, saturated and too-hard are indistinguishable to the synthesizer.
+
+    None means no roster was persisted (pre-analyzers_006); it must not collapse
+    into the empty case, which is the real answer "no trials"."""
+    if models_by_task is None:
+        return "(no roster persisted for this run — pass/fail coverage unknown)"
+    if not models_by_task:
+        return "(no trials)"
+    return "\n".join(
+        f"- {task}: {', '.join(sorted(models)) or '(none)'}"
+        for task, models in sorted(models_by_task.items())
+    )
+
+
+def build_reduce_prompt(
+    findings: list[Finding],
+    counts: dict,
+    models_by_task: dict[str, list[str]] | None = None,
+) -> str:
     return REDUCE_PROMPT_TEMPLATE.format(
-        counts_block=counts_block,
-        findings_block=findings_block,
+        counts_block=json.dumps(counts, indent=2),
+        roster_block=task_roster_block(models_by_task),
+        findings_block=_reduce_findings_block(findings),
         sections_block=sections_block(SECTION_KEYS),
     )
