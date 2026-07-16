@@ -28,4 +28,9 @@ configure_logfire(
 with _otel_span("app.container_init"):
     from api.app import create_app  # noqa: E402
 
+    from oddish.core.llm import set_usage_recorder  # noqa: E402
+    from oddish.db.llm_usage import record_llm_usage  # noqa: E402
+
+    set_usage_recorder(record_llm_usage)
+
 __all__ = ["create_app"]

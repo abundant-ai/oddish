@@ -169,6 +169,11 @@ async def lifespan(app: FastAPI):
 
     await init_db()
 
+    from oddish.core.llm import set_usage_recorder
+    from oddish.db.llm_usage import record_llm_usage
+
+    set_usage_recorder(record_llm_usage)
+
     # Install server-side idle_in_transaction_session_timeout on the
     # connecting role so Postgres auto-kills orphaned transactions left
     # behind by SIGKILLed workers, even when server_settings can't be

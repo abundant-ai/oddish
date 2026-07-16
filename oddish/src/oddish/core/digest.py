@@ -1,16 +1,14 @@
-"""Claude/Bedrock digest generation for ingested documents.
+"""Claude digest generation for ingested documents.
 
 Split so the deterministic parts (prompt build, response parse) are unit-
-tested without a network call, and only ``generate_digest`` touches the API.
-Reuses the Bedrock routing from ``probe_analysis``.
+tested without a network call, and only ``generate_digest`` touches the API
+(through the ``oddish.core.llm`` funnel).
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-
-DEFAULT_DIGEST_MODEL = "claude-sonnet-4-6"
 
 _DIGEST_INSTRUCTIONS = """\
 You are preparing a reference document for retrieval by an AI coding agent.
@@ -60,31 +58,16 @@ def parse_digest_response(raw: str) -> DigestResult:
 
 
 async def generate_digest(
-    *, title: str, text: str, model: str = DEFAULT_DIGEST_MODEL
+    *, title: str, text: str, model: str | None = None
 ) -> DigestResult:
-    """Run the Claude digest call on the direct Anthropic API. Impure (network).
+    """Run the Claude digest call through the LLM funnel. Impure (network)."""
+    from oddish.config import settings
+    from oddish.core.llm import complete
 
-    Mirrors ``worker.probe_analysis._make_client``: oddish has no SigV4-capable
-    Bedrock credential in the API/worker (only an S3-scoped key plus a bearer
-    token the pinned SDK can't consume), so internal Claude calls go through the
-    direct Anthropic API (``ANTHROPIC_API_KEY``). Routing the digest through
-    ``AsyncAnthropicBedrock`` instead 500s every document upload. Normalize any
-    Bedrock inference-profile id back to its plain API id so the model reaching
-    the client is one the direct API accepts.
-    """
-    from anthropic import AsyncAnthropic
-
-    from oddish.config import to_anthropic_api_model_id
-
-    resolved = to_anthropic_api_model_id(model) or model
-    client = AsyncAnthropic()
-
-    msg = await client.messages.create(
-        model=resolved,
+    result = await complete(
+        handler="document_digest",
+        prompt=build_digest_prompt(title=title, text=text),
+        model=model or settings.digest_model,
         max_tokens=2048,
-        messages=[
-            {"role": "user", "content": build_digest_prompt(title=title, text=text)}
-        ],
     )
-    raw = "".join(getattr(b, "text", "") for b in msg.content)
-    return parse_digest_response(raw)
+    return parse_digest_response(result.text)

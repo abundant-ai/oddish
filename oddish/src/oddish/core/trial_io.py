@@ -680,6 +680,7 @@ def _trial_graph_ctx(trial: TrialModel) -> dict:
         "error_message": trial.error_message,
         "task_name": trial.name or trial.task_id,
         "agent_name": trial.agent,
+        "trial_id": trial.id,
     }
 
 

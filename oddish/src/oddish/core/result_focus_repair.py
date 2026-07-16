@@ -18,10 +18,6 @@ from oddish.core.result_focus_schema import parse_result_focus
 
 logger = logging.getLogger(__name__)
 
-# A tiny JSON-repair task -> cheapest/fastest tier. Plain API id: repair always
-# runs on the direct Anthropic API (ANTHROPIC_API_KEY), like the probe summary.
-REPAIR_MODEL = "claude-haiku-4-5"
-
 # ``result_focus`` is reused as JSON in two distinct ways and a malformed value
 # needs a different repair target for each:
 #   - "output_spec": the probe overlay renders it as the exact JSON the probe must
@@ -78,32 +74,31 @@ def _extract_object(text: str) -> dict | None:
     return None
 
 
-async def _extract_object_llm(text: str, *, client) -> dict | None:
+async def _extract_object_llm(text: str) -> dict | None:
     """LLM fallback for :func:`_extract_object`: ask the model to extract the JSON.
 
     Used only when deterministic extraction fails on the repaired output. Never
     raises — any error (network, still-unparseable) yields ``None`` so the caller
     falls back to its existing best-effort path.
     """
-    llm_output = ""
+    from oddish.config import settings
+    from oddish.core.llm import complete
+
     try:
-        msg = await client.messages.create(
-            model=REPAIR_MODEL,
+        result = await complete(
+            handler="result_focus_repair",
+            prompt=_EXTRACT_PROMPT.format(raw=text),
+            model=settings.repair_model,
             max_tokens=2048,
-            messages=[{"role": "user", "content": _EXTRACT_PROMPT.format(raw=text)}],
         )
-        for block in msg.content:
-            if hasattr(block, "text"):
-                llm_output += block.text
-        llm_output = llm_output.strip()
     except Exception:
         logger.exception("result_focus LLM extraction fallback failed for %r", text)
         return None
-    return _extract_object(llm_output)
+    return _extract_object(result.text.strip())
 
 
 async def repair_result_focus_json(
-    raw: str, *, client=None, kind: RepairKind = "output_spec"
+    raw: str, *, kind: RepairKind = "output_spec"
 ) -> tuple[dict | None, str]:
     """Ask a cheap model to coerce malformed ``raw`` into a JSON object.
 
@@ -116,23 +111,18 @@ async def repair_result_focus_json(
     ``(None, llm_text_or_empty)`` so callers fall back to their existing
     best-effort path.
     """
+    from oddish.config import settings
+    from oddish.core.llm import complete
+
     llm_output = ""
     try:
-        if client is None:
-            from anthropic import AsyncAnthropic
-
-            client = AsyncAnthropic()
-        msg = await client.messages.create(
-            model=REPAIR_MODEL,
+        result = await complete(
+            handler="result_focus_repair",
+            prompt=_REPAIR_PROMPTS[kind].format(raw=raw),
+            model=settings.repair_model,
             max_tokens=2048,
-            messages=[
-                {"role": "user", "content": _REPAIR_PROMPTS[kind].format(raw=raw)}
-            ],
         )
-        for block in msg.content:
-            if hasattr(block, "text"):
-                llm_output += block.text
-        llm_output = llm_output.strip()
+        llm_output = result.text.strip()
     except Exception:
         logger.exception("result_focus LLM repair call failed for %r", raw)
         return None, llm_output
@@ -141,12 +131,12 @@ async def repair_result_focus_json(
     obj = _extract_object(llm_output)
     if obj is None and llm_output:
         # Deterministic extraction failed too -> one more LLM pass to salvage it.
-        obj = await _extract_object_llm(llm_output, client=client)
+        obj = await _extract_object_llm(llm_output)
     return obj, llm_output
 
 
 async def repair_result_focus_if_needed(
-    result_focus: str | None, *, client=None, kind: RepairKind = "output_spec"
+    result_focus: str | None, *, kind: RepairKind = "output_spec"
 ) -> str | None:
     """Return an effective ``result_focus``, repairing if needed.
 
@@ -170,5 +160,5 @@ async def repair_result_focus_if_needed(
     # passes through before the deterministic leaf parser, so repairing once here
     # covers the whole downstream chain (overlay render, schema analysis).
     logger.warning("result_focus did not parse as JSON; queuing LLM repair: %r", body)
-    repaired, _ = await repair_result_focus_json(body, client=client, kind=kind)
+    repaired, _ = await repair_result_focus_json(body, kind=kind)
     return json.dumps(repaired) if repaired is not None else result_focus

@@ -1,11 +1,9 @@
 """Unit tests for the deterministic parts of digest generation."""
 
-import sys
 import types
 
 import pytest
 
-from oddish.core import digest as digest_mod
 from oddish.core.digest import (
     DigestResult,
     build_digest_prompt,
@@ -47,49 +45,36 @@ def test_parse_digest_response_caps_tags_at_eight():
     assert len(r.tags) == 8
 
 
-class _FakeMessages:
-    def __init__(self, recorder):
-        self._recorder = recorder
-
-    async def create(self, *, model, max_tokens, messages):
-        self._recorder["model"] = model
-        return types.SimpleNamespace(
-            content=[
-                types.SimpleNamespace(
-                    text='{"summary":"s","digest_text":"d","tags":["t"]}'
-                )
-            ]
-        )
-
-
-class _FakeAnthropic:
-    def __init__(self, *args, **kwargs):
-        self.messages = _FakeMessages(_FakeAnthropic.recorder)
-
-    recorder: dict = {}
-
-
 @pytest.mark.asyncio
 async def test_generate_digest_uses_direct_api_with_plain_model_id(monkeypatch):
-    """Internal digest call must hit the direct Anthropic API with a plain model
-    id — NOT AsyncAnthropicBedrock, which has no usable credential in prod and
-    500s every upload. Regression for the doc-store ingest failure."""
-    _FakeAnthropic.recorder = {}
-    fake_anthropic_mod = types.ModuleType("anthropic")
-    fake_anthropic_mod.AsyncAnthropic = _FakeAnthropic
+    """Internal digest call must hit the direct Anthropic API (the funnel's
+    ``anthropic/`` litellm route) with a plain model id — never a Bedrock
+    inference-profile id. Regression for the doc-store ingest failure."""
+    import litellm
 
-    def _no_bedrock(*args, **kwargs):  # pragma: no cover - must never be called
-        raise AssertionError("digest must not construct AsyncAnthropicBedrock")
+    calls: list[dict] = []
 
-    fake_anthropic_mod.AsyncAnthropicBedrock = _no_bedrock
-    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic_mod)
+    async def fake(**kwargs):
+        calls.append(kwargs)
+        return types.SimpleNamespace(
+            choices=[
+                types.SimpleNamespace(
+                    message=types.SimpleNamespace(
+                        content='{"summary":"s","digest_text":"d","tags":["t"]}'
+                    )
+                )
+            ],
+            usage=None,
+        )
+
+    monkeypatch.setattr(litellm, "acompletion", fake)
 
     # Default model is the Bedrock-mappable "claude-sonnet-4-6"; the digest must
     # send the plain API id, never a "global.anthropic.*" inference-profile id.
     result = await generate_digest(title="T", text="hello world")
 
     assert result == DigestResult(summary="s", digest_text="d", tags=["t"])
-    sent = _FakeAnthropic.recorder["model"]
-    assert sent == digest_mod.DEFAULT_DIGEST_MODEL == "claude-sonnet-4-6"
+    sent = calls[0]["model"]
+    assert sent == "anthropic/claude-sonnet-4-6"
     assert not sent.startswith("global.")
     assert ".anthropic." not in sent

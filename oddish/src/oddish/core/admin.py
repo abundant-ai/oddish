@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
@@ -28,6 +28,7 @@ from oddish.core.quotas import (
 )
 from oddish.db import (
     ExperimentModel,
+    LLMUsageModel,
     TaskModel,
     TrialModel,
     task_experiments,
@@ -1598,6 +1599,60 @@ async def _billed_cost_since(
     rows = (await session.execute(query)).all()
     total = sum(settled_cost_from_row(row) for row in rows)
     return round(total, 4)
+
+
+class InternalLLMSpendRow(BaseModel):
+    handler: str
+    calls: int
+    failed_calls: int
+    unpriced_calls: int
+    oauth_calls: int
+    cost_usd: float
+    input_tokens: int
+    output_tokens: int
+
+
+async def get_internal_llm_spend_core(
+    session: AsyncSession,
+    *,
+    window_days: int | None = 7,
+) -> list[InternalLLMSpendRow]:
+    """Internal (non-harbor-trial) LLM spend from ``llm_usage``, by handler."""
+    cost_sum = func.coalesce(func.sum(LLMUsageModel.cost_usd), 0.0)
+    stmt = select(
+        LLMUsageModel.handler,
+        func.count().label("calls"),
+        func.sum(case((LLMUsageModel.success.is_(False), 1), else_=0)).label(
+            "failed_calls"
+        ),
+        func.sum(case((LLMUsageModel.cost_basis == "unpriced", 1), else_=0)).label(
+            "unpriced_calls"
+        ),
+        func.sum(case((LLMUsageModel.cost_basis == "oauth_flat", 1), else_=0)).label(
+            "oauth_calls"
+        ),
+        cost_sum.label("cost_usd"),
+        func.coalesce(func.sum(LLMUsageModel.input_tokens), 0).label("input_tokens"),
+        func.coalesce(func.sum(LLMUsageModel.output_tokens), 0).label("output_tokens"),
+    )
+    if window_days is not None:
+        since = datetime.now(timezone.utc) - timedelta(days=window_days)
+        stmt = stmt.where(LLMUsageModel.created_at >= since)
+    stmt = stmt.group_by(LLMUsageModel.handler).order_by(cost_sum.desc())
+    rows = (await session.execute(stmt)).all()
+    return [
+        InternalLLMSpendRow(
+            handler=row.handler,
+            calls=int(row.calls or 0),
+            failed_calls=int(row.failed_calls or 0),
+            unpriced_calls=int(row.unpriced_calls or 0),
+            oauth_calls=int(row.oauth_calls or 0),
+            cost_usd=round(float(row.cost_usd or 0.0), 4),
+            input_tokens=int(row.input_tokens or 0),
+            output_tokens=int(row.output_tokens or 0),
+        )
+        for row in rows
+    ]
 
 
 async def get_cost_breakdown_core(

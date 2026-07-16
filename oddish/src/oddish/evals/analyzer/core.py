@@ -67,21 +67,18 @@ def parse_json(text: str) -> dict:
 
 
 def _default_client() -> LLMClient:
-    from anthropic import AsyncAnthropic
-
-    inner = AsyncAnthropic()
+    from oddish.core.llm import complete as llm_complete
 
     class _Wrap:
         async def complete(self, prompt, *, model, temperature, max_tokens):
-            resp = await inner.messages.create(
+            result = await llm_complete(
+                handler="analyzer_eval",
+                prompt=prompt,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
             )
-            return "".join(
-                b.text for b in resp.content if getattr(b, "type", None) == "text"
-            )
+            return result.text
 
     return _Wrap()
 

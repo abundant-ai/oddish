@@ -177,6 +177,7 @@ async def classify_trial_and_store(
                 reward=trial_reward,
                 result_focus=trial_harbor_config.get("result_focus") or "",
                 model=settings.analysis_model,
+                trial_id=trial_id,
             )
             console.print(
                 f"[green]Probe analysis complete:[/green] {classification_result.get('headline', '')}"
@@ -194,6 +195,7 @@ async def classify_trial_and_store(
                 trial_dir=trial_dir_to_use,
                 task_dir=task_dir_to_use,
                 trial_agent=trial_agent,
+                trial_id=trial_id,
             )
 
             # Convert to dict for storage

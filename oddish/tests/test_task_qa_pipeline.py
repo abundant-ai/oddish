@@ -276,7 +276,7 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
 
     captured = {"classifications": None}
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(*, classifications, **_kwargs):
         captured["classifications"] = classifications
         return SimpleNamespace(
             is_good=False,
@@ -360,7 +360,7 @@ async def test_run_task_qa_job_ignores_cancelled_worker_job(monkeypatch):
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(*, classifications, **_kwargs):
         return SimpleNamespace(
             is_good=True,
             confidence="high",
@@ -418,7 +418,7 @@ async def test_run_task_qa_job_ignores_final_cancelled_worker_job(monkeypatch):
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(*, classifications, **_kwargs):
         assert classifications
         return SimpleNamespace(
             is_good=True,

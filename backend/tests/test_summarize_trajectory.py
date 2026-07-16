@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -189,16 +190,29 @@ def _minimal_ctx():
     )
 
 
-def _fake_client_returning(text: str) -> MagicMock:
-    fake_response = MagicMock()
-    fake_response.content = [MagicMock(text=text)]
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(return_value=fake_response)
-    return fake_client
+def _patch_acompletion(monkeypatch, text: str) -> list[dict]:
+    import litellm
+
+    calls: list[dict] = []
+
+    async def fake(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+            usage=SimpleNamespace(
+                prompt_tokens=10,
+                completion_tokens=5,
+                prompt_tokens_details=None,
+                cache_creation_input_tokens=0,
+            ),
+        )
+
+    monkeypatch.setattr(litellm, "acompletion", fake)
+    return calls
 
 
 @pytest.mark.asyncio
-async def test_generate_returns_persistable_summary():
+async def test_generate_returns_persistable_summary(monkeypatch):
     from api.services.summarize_trajectory import (
         SCHEMA_VERSION,
         generate,
@@ -214,9 +228,8 @@ async def test_generate_returns_persistable_summary():
             ],
         }
     )
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
+    calls = _patch_acompletion(monkeypatch, payload)
+    result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
 
     # The summary rides the shared analysis-model knob, normalized to the
     # direct-API id both for the call and in the persisted provenance field.
@@ -225,14 +238,14 @@ async def test_generate_returns_persistable_summary():
     )
     assert result["schema_version"] == SCHEMA_VERSION
     assert result["model"] == expected_model
-    assert fake.messages.create.call_args.kwargs["model"] == expected_model
+    assert calls[0]["model"] == f"anthropic/{expected_model}"
     assert "generated_at" in result
     assert result["summary"].startswith("Agent reproduced")
     assert [h["step_id"] for h in result["highlights"]] == [1, 3]
 
 
 @pytest.mark.asyncio
-async def test_generate_drops_highlights_with_unknown_step_ids():
+async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
     from api.services.summarize_trajectory import generate
 
     payload = json.dumps(
@@ -244,75 +257,69 @@ async def test_generate_drops_highlights_with_unknown_step_ids():
             ],
         }
     )
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
+    _patch_acompletion(monkeypatch, payload)
+    result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
 
     assert [h["step_id"] for h in result["highlights"]] == [1]
 
 
 @pytest.mark.asyncio
-async def test_generate_strips_code_fences_around_json():
+async def test_generate_strips_code_fences_around_json(monkeypatch):
     from api.services.summarize_trajectory import generate
 
     body = json.dumps({"summary": "ok", "highlights": []})
-    fenced = f"```json\n{body}\n```"
-    fake = _fake_client_returning(fenced)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1]), _minimal_ctx())
+    _patch_acompletion(monkeypatch, f"```json\n{body}\n```")
+    result = await generate(_trajectory_with_steps([1]), _minimal_ctx())
     assert result["summary"] == "ok"
     assert result["highlights"] == []
 
 
 @pytest.mark.asyncio
-async def test_generate_raises_on_malformed_json():
+async def test_generate_raises_on_malformed_json(monkeypatch):
     from api.services.summarize_trajectory import (
         SummaryGenerationError,
         generate,
     )
 
-    fake = _fake_client_returning("not json at all")
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]), _minimal_ctx())
+    _patch_acompletion(monkeypatch, "not json at all")
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
-async def test_generate_raises_when_model_returns_non_object_json():
+async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
     from api.services.summarize_trajectory import (
         SummaryGenerationError,
         generate,
     )
 
-    fake = _fake_client_returning("[1, 2, 3]")
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]), _minimal_ctx())
+    _patch_acompletion(monkeypatch, "[1, 2, 3]")
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
-async def test_generate_wraps_anthropic_errors_in_summary_generation_error():
+async def test_generate_wraps_llm_errors_in_summary_generation_error(monkeypatch):
     """A non-JSON failure (e.g. AuthenticationError, network error) should
     surface as SummaryGenerationError so the endpoint can return 502."""
+    import litellm
+
     from api.services.summarize_trajectory import (
         SummaryGenerationError,
         generate,
     )
 
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(
-        side_effect=RuntimeError("anthropic auth failed")
-    )
-    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
-        with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]), _minimal_ctx())
+    async def fail(**kwargs):
+        raise RuntimeError("anthropic auth failed")
+
+    monkeypatch.setattr(litellm, "acompletion", fail)
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 # ---------------------------------------------------------------------------
 # get_or_generate_summary tests
 # ---------------------------------------------------------------------------
-
-from types import SimpleNamespace
 
 
 def _fake_trial(*, has_trajectory: bool, trajectory_summary: dict | None):
@@ -747,7 +754,7 @@ def test_normalize_phases_empty_when_nothing_usable():
 
 
 @pytest.mark.asyncio
-async def test_generate_returns_normalized_phases():
+async def test_generate_returns_normalized_phases(monkeypatch):
     from api.services.summarize_trajectory import generate
 
     payload = json.dumps(
@@ -760,9 +767,8 @@ async def test_generate_returns_normalized_phases():
             ],
         }
     )
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
+    _patch_acompletion(monkeypatch, payload)
+    result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
 
     assert [(p["label"], p["step_ids"]) for p in result["phases"]] == [
         ("Explore", [1, 2]),
@@ -771,13 +777,12 @@ async def test_generate_returns_normalized_phases():
 
 
 @pytest.mark.asyncio
-async def test_generate_phases_absent_yields_empty_list():
+async def test_generate_phases_absent_yields_empty_list(monkeypatch):
     from api.services.summarize_trajectory import generate
 
     payload = json.dumps({"summary": "s", "highlights": []})
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2]), _minimal_ctx())
+    _patch_acompletion(monkeypatch, payload)
+    result = await generate(_trajectory_with_steps([1, 2]), _minimal_ctx())
 
     assert result["phases"] == []
     assert result["summary"] == "s"

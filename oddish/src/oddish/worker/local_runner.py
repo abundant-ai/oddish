@@ -716,6 +716,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             verifier_stdout=verifier_stdout or "",
             reward=reward_value,
             result_focus=result_focus,
+            trial_id=trial_id,
         )
         analyzer_status = AnalysisStatus.SUCCESS
     except Exception as exc:

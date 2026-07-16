@@ -35,20 +35,6 @@ from oddish.core.result_focus_schema import (
 
 logger = logging.getLogger(__name__)
 
-# Models whose direct-API id supports output_config.format (structured outputs).
-_STRUCTURED_OUTPUT_PREFIXES = (
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5",
-    "claude-opus-4-8",
-    "claude-opus-4-5",
-    "claude-opus-4-1",
-    "claude-fable-5",
-)
-
-
-def _supports_structured_outputs(model: str) -> bool:
-    return any(model.startswith(p) for p in _STRUCTURED_OUTPUT_PREFIXES)
-
 
 # Fixed probe_summary envelope, expressed as a structured-outputs JSON Schema.
 # result_focus_findings is patched in per call (operator schema, or string|null).
@@ -176,24 +162,6 @@ def _summarize_tool_usage(agent_messages: list[dict]) -> dict:
             for (server, tool), c in mcp_tools.items()
         ],
     }
-
-
-def _make_client():
-    """Build the Anthropic client for the probe summary.
-
-    The summary is a small internal Claude call, so it runs on the direct
-    Anthropic API (``ANTHROPIC_API_KEY``) in every environment -- local dev and
-    the Modal worker alike. We deliberately do NOT route it through Bedrock:
-    the installed SDK's ``AsyncAnthropicBedrock`` only speaks SigV4, but the
-    only Bedrock-capable credential in the worker is the bearer token
-    (``AWS_BEARER_TOKEN_BEDROCK``) the SDK can't consume, while the ambient AWS
-    creds are S3-scoped and SigV4-sign to a 403. Callers normalize Bedrock model
-    ids back to their plain API id via ``config.to_anthropic_api_model_id`` so
-    the model reaching this client is one the direct API accepts.
-    """
-    from anthropic import AsyncAnthropic
-
-    return AsyncAnthropic()
 
 
 def _find_first(root: Path, filename: str) -> Path | None:
@@ -512,6 +480,7 @@ async def run_probe_analyzer(
     reward: float | None,
     result_focus: str = "",
     model: str = DEFAULT_ANALYZER_MODEL,
+    trial_id: str | None = None,
 ) -> dict:
     """Single Claude call that summarizes what the agent did relative to the operator's prompt.
 
@@ -688,44 +657,29 @@ async def run_probe_analyzer(
             "general. Return `tool_insights: []` if none meaningfully helped."
         )
 
-    # The probe summary runs on the direct Anthropic API (see _make_client). The
-    # cloud callers pass settings.analysis_model, a Bedrock inference-profile id
-    # (e.g. "global.anthropic.claude-haiku-4-5-...-v1:0"); normalize it back to
-    # the plain API id ("claude-haiku-4-5") the direct API accepts. Plain ids
-    # (local dev's "claude-sonnet-4-6") pass through unchanged.
     from oddish.config import to_anthropic_api_model_id
+    from oddish.core.llm import complete
 
     model = to_anthropic_api_model_id(model) or model
-    client = _make_client()
 
     findings_schema = parse_result_focus(result_focus)
-    create_kwargs: dict = {
-        "model": model,
+    result = await complete(
+        handler="probe_analysis",
+        prompt=prompt,
+        model=model,
         # Audit probes emit a large JSON object (summary + attempts[] + per-step
         # indices + recommendations). At 2048 the response was truncated mid-
         # string, raising a JSONDecodeError surfaced as "Summary failed".
-        "max_tokens": 8192,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    if findings_schema is not None and _supports_structured_outputs(model):
-        # anthropic==0.76.0 doesn't expose output_config as a typed kwarg (passing
-        # it raises "unexpected keyword argument 'output_config'"), so forward the
-        # structured-outputs body field via extra_body instead.
-        create_kwargs["extra_body"] = {
-            "output_config": {
-                "format": {
-                    "type": "json_schema",
-                    "schema": _build_envelope_schema(findings_schema),
-                }
-            }
-        }
-    msg = await client.messages.create(**create_kwargs)
+        max_tokens=8192,
+        schema=(
+            _build_envelope_schema(findings_schema)
+            if findings_schema is not None
+            else None
+        ),
+        trial_id=trial_id,
+    )
 
-    raw_text = ""
-    for block in msg.content:
-        if hasattr(block, "text"):
-            raw_text += block.text
-    raw_text = raw_text.strip()
+    raw_text = result.text.strip()
     if raw_text.startswith("```"):
         raw_text = raw_text.split("```", 2)[1]
         if raw_text.lstrip().startswith("json"):

@@ -249,16 +249,17 @@ def _normalize_phases(
     return segments
 
 
-async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
+async def generate(
+    trajectory: dict, task_context: "TaskContext", *, trial_id: str | None = None
+) -> dict:
     """Call Claude to produce a persistable summary dict for ``trajectory``.
 
     Raises ``SummaryGenerationError`` if the model returns malformed JSON
     or cannot be parsed. Highlights referencing step_ids that are not in
     the source trajectory are dropped silently.
     """
-    from anthropic import AsyncAnthropic
-
-    from oddish.config import settings, to_anthropic_api_model_id
+    from oddish.config import settings
+    from oddish.core.llm import complete
 
     valid_step_ids = {
         step.get("step_id")
@@ -268,30 +269,19 @@ async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
 
     prompt = _render_prompt(trajectory, task_context)
 
-    # The summary runs on the shared analysis model (the same
-    # ODDISH_ANALYSIS_MODEL knob as the trajectory graph). Normalize Bedrock
-    # inference-profile ids back to the plain API id the direct Anthropic API
-    # accepts; plain ids pass through unchanged.
-    model = (
-        to_anthropic_api_model_id(settings.analysis_model)
-        or settings.analysis_model
-    )
-
     try:
-        client = AsyncAnthropic()
-        msg = await client.messages.create(
-            model=model,
+        result = await complete(
+            handler="trajectory_summary",
+            prompt=prompt,
+            model=settings.analysis_model,
             max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
+            trial_id=trial_id,
         )
     except Exception as e:
-        raise SummaryGenerationError(f"Anthropic API call failed: {e}") from e
+        raise SummaryGenerationError(f"LLM call failed: {e}") from e
 
-    raw_text = ""
-    for block in msg.content:
-        if hasattr(block, "text"):
-            raw_text += block.text
-    raw_text = _strip_code_fences(raw_text)
+    model = result.model
+    raw_text = _strip_code_fences(result.text)
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError as e:
@@ -438,7 +428,7 @@ async def get_or_generate_summary(
         if trajectory is None:
             return None
 
-        summary = await generate(trajectory, task_context)
+        summary = await generate(trajectory, task_context, trial_id=trial.id)
 
         await session.execute(
             update(TrialModel)

@@ -569,6 +569,7 @@ async def _generate_probe_summary_inline(
             reward=reward,
             result_focus=harbor_config.get("result_focus") or "",
             model=settings.analysis_model,
+            trial_id=trial_id,
         )
         status = AnalysisStatus.SUCCESS
         console.print(

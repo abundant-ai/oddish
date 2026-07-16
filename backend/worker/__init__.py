@@ -28,6 +28,11 @@ with _otel_span("worker.container_init"):
         reconcile_queue_state,
     )
 
+    from oddish.core.llm import set_usage_recorder  # noqa: E402
+    from oddish.db.llm_usage import record_llm_usage  # noqa: E402
+
+    set_usage_recorder(record_llm_usage)
+
 __all__ = [
     "poll_queue",
     "precompute_dashboard_stats",

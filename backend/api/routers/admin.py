@@ -12,6 +12,7 @@ from auth import AuthContext, require_admin
 from models import OrganizationModel, UserModel
 from oddish.core.admin import (
     CostBreakdownResponse,
+    InternalLLMSpendRow,
     QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
@@ -19,6 +20,7 @@ from oddish.core.admin import (
     UserCostBreakdownResponse,
     WorkerJobsResponse,
     get_cost_breakdown_core,
+    get_internal_llm_spend_core,
     get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
@@ -181,6 +183,21 @@ async def get_costs(
         )
         await _enrich_cost_breakdown(session, result)
     return result
+
+
+@router.get("/costs/internal", response_model=list[InternalLLMSpendRow])
+async def get_internal_llm_costs(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    window_days: int = Query(
+        7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+) -> list[InternalLLMSpendRow]:
+    """Internal (non-harbor-trial) LLM spend by handler, from llm_usage."""
+    effective_window = None if window_days == 0 else window_days
+    async with get_session() as session:
+        return await get_internal_llm_spend_core(
+            session, window_days=effective_window
+        )
 
 
 @router.get("/costs/users/{user_id}", response_model=UserCostBreakdownResponse)

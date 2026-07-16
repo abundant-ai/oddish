@@ -7,9 +7,9 @@ handful of GENERAL phases (explore -> reproduce -> patch -> verify ...), each
 tagged ok/warn/error, plus a single terminal node = the last thing the agent did
 and why the run ended (passed, failed the grader, hit its timeout, crashed).
 
-It reuses the log-analysis LLM path: a small direct-Anthropic call on
-``settings.analysis_model`` (``worker/probe_analysis._make_client`` semantics),
-with the model normalized back to a direct-API id. The run's *outcome* is never
+It reuses the log-analysis LLM path: a small call on ``settings.analysis_model``
+through the ``oddish.core.llm`` funnel (direct Anthropic API, model normalized
+back to a direct-API id). The run's *outcome* is never
 taken from the LLM -- it is computed deterministically from the trial's own
 ``status`` / ``reward`` / ``error_message`` so the terminal node can't disagree
 with the grader. The LLM only narrates the phases and the last action.
@@ -484,38 +484,26 @@ def _finalize(graph: dict[str, Any], ctx: dict[str, Any], outcome: str) -> dict[
     return graph
 
 
-async def _run_llm(prompt: str, model: str) -> dict[str, Any] | None:
-    from oddish.config import to_anthropic_api_model_id
+async def _run_llm(
+    prompt: str, model: str, trial_id: str | None = None
+) -> dict[str, Any] | None:
+    from oddish.core.llm import complete
 
     try:
-        from anthropic import AsyncAnthropic
-    except Exception:  # pragma: no cover - SDK always present in the worker image
-        return None
-
-    api_model = to_anthropic_api_model_id(model) or model
-    try:
-        client = AsyncAnthropic()
-        msg = await client.messages.create(
-            model=api_model,
+        result = await complete(
+            handler="trajectory_graph",
+            prompt=prompt
+            + "\n\nReturn ONLY minified JSON matching this schema:\n"
+            + json.dumps(_GRAPH_SCHEMA),
+            model=model,
             max_tokens=2048,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                    + "\n\nReturn ONLY minified JSON matching this schema:\n"
-                    + json.dumps(_GRAPH_SCHEMA),
-                }
-            ],
+            trial_id=trial_id,
         )
     except Exception as exc:
         logger.warning("trajectory-graph LLM call failed: %s", exc)
         return None
 
-    text = ""
-    for block in msg.content:
-        if hasattr(block, "text"):
-            text += block.text
-    text = text.strip()
+    text = result.text.strip()
     if text.startswith("```"):
         text = text.strip("`")
         if text.lstrip().lower().startswith("json"):
@@ -704,7 +692,7 @@ async def build_trajectory_graph(
         return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
 
     prompt = _build_prompt(ctx, outcome, _transcript(digest))
-    raw = await _run_llm(prompt, model)
+    raw = await _run_llm(prompt, model, trial_id=ctx.get("trial_id"))
     if raw is None:
         graph = _heuristic_graph(digest, ctx, outcome)
         graph["source"] = "heuristic"

@@ -1989,6 +1989,44 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
+class LLMUsageModel(Base):
+    """One row per internal (non-harbor-trial) LLM call, written best-effort by
+    the ``oddish.core.llm`` funnel. Append-only; no FKs so a row can outlive
+    (or precede) the trial/task it references."""
+
+    __tablename__ = "llm_usage"
+    __table_args__ = (
+        Index("ix_llm_usage_created_at", "created_at"),
+        Index("ix_llm_usage_handler_created_at", "handler", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+        server_default=text("now()"),
+    )
+    handler: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_basis: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="api", server_default=text("'api'")
+    )
+    trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    success: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(

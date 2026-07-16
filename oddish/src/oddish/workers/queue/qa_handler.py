@@ -244,7 +244,7 @@ async def run_task_qa_job(
             raise ValueError("No successful classifications to synthesize verdict from")
 
         console.print("[dim]Starting verdict synthesis...[/dim]")
-        verdict = compute_task_verdict(
+        verdict = await compute_task_verdict(
             classifications=classifications,
             baseline=None,
             quality_check_passed=True,
@@ -252,6 +252,7 @@ async def run_task_qa_job(
             console=console,
             verbose=True,
             timeout=180,
+            task_id=task_id,
         )
 
         verdict_result = {

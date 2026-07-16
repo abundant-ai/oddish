@@ -2,19 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
-import warnings
+import time
 from pathlib import Path
 from typing import Any
 
 from harbor.models.trial.result import TrialResult
-from openai import OpenAI
 from rich.console import Console
 
 from oddish.config import (
     ANALYSIS_MODEL,
     BEDROCK_ENV_VARS,
-    OPENAI_PROVIDER_OPENAI,
     VERDICT_MODEL,
     looks_like_bedrock_model_id,
     settings,
@@ -32,8 +31,83 @@ from .models import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 VERDICT_TIMEOUT = 120.0
 VERDICT_MAX_TOKENS = 4096
+
+
+async def _record_cli_usage(
+    payload: dict,
+    model_id: str,
+    env: dict[str, str],
+    *,
+    trial_id: str | None,
+    duration_ms: int,
+) -> None:
+    """Record the usage/cost the Claude CLI already reports in its JSON stdout.
+
+    The CLI's ``usage.input_tokens`` excludes cache tokens (Anthropic
+    convention); the stored/priced convention is the inclusive total.
+    OAuth-authenticated runs are flat-rate: tokens are real, marginal dollars
+    are not, so cost stays NULL with basis ``oauth_flat``.
+    """
+    from oddish.core.llm import (
+        COST_BASIS_API,
+        COST_BASIS_OAUTH_FLAT,
+        COST_BASIS_UNPRICED,
+        LLMUsageRow,
+        record_usage,
+    )
+    from oddish.model_pricing import settle_cost_usd
+
+    usage = payload.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+
+    def _tok(key: str) -> int:
+        value = usage.get(key)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    output_tokens = _tok("output_tokens")
+    cache_read = _tok("cache_read_input_tokens")
+    cache_write = _tok("cache_creation_input_tokens")
+    input_tokens = _tok("input_tokens") + cache_read + cache_write
+
+    native = payload.get("total_cost_usd")
+    native = float(native) if isinstance(native, (int, float)) else None
+    pricing_model = to_anthropic_api_model_id(model_id) or model_id
+    has_tokens = bool(input_tokens or output_tokens)
+
+    if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        cost_usd, cost_basis = None, COST_BASIS_OAUTH_FLAT
+    else:
+        cost_usd = settle_cost_usd(
+            native,
+            native_cost_trusted=True,
+            model=pricing_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+        cost_basis = (
+            COST_BASIS_UNPRICED if cost_usd is None and has_tokens else COST_BASIS_API
+        )
+
+    await record_usage(
+        LLMUsageRow(
+            handler="trial_classifier",
+            model=pricing_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            cost_usd=cost_usd,
+            cost_basis=cost_basis,
+            trial_id=trial_id,
+            duration_ms=duration_ms,
+        )
+    )
 
 _CLASSIFY_PROMPT_PATH = Path(__file__).parent / "classify_prompt.txt"
 _CLASSIFY_PROMPT = _CLASSIFY_PROMPT_PATH.read_text()
@@ -158,6 +232,7 @@ class TrialClassifier:
         task_dir: Path,
         *,
         trial_agent: str | None = None,
+        trial_id: str | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
         result_path = trial_dir / "result.json"
@@ -249,7 +324,7 @@ class TrialClassifier:
 
             try:
                 structured_output = await self._run_claude_cli(
-                    prompt, trial_dir, task_dir
+                    prompt, trial_dir, task_dir, trial_id=trial_id
                 )
             except TimeoutError:
                 if self._verbose:
@@ -297,11 +372,13 @@ class TrialClassifier:
         prompt: str,
         trial_dir: Path,
         task_dir: Path,
+        trial_id: str | None = None,
     ) -> Any:
         """Run Claude Code in print mode and return structured output."""
         schema = json.dumps(TrialClassificationModel.model_json_schema())
         claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
         model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))
+        started = time.monotonic()
         command = [
             claude_bin,
             "-p",
@@ -368,6 +445,17 @@ class TrialClassifier:
             if self._verbose:
                 print_process_stream("Claude stdout", stdout_text, Colors.BLUE)
             raise RuntimeError(f"Claude CLI returned invalid JSON: {exc}") from exc
+
+        try:
+            await _record_cli_usage(
+                payload,
+                model_id,
+                env,
+                trial_id=trial_id,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+        except Exception:
+            logger.warning("classifier CLI usage record failed", exc_info=True)
 
         structured_output = payload.get("structured_output")
         if structured_output is not None:
@@ -446,7 +534,7 @@ class TrialClassifier:
         )
 
 
-def _compute_task_verdict_openai(
+async def _compute_task_verdict_openai(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
@@ -455,6 +543,7 @@ def _compute_task_verdict_openai(
     verbose: bool = False,
     api_key: str | None = None,
     timeout: float | None = None,
+    task_id: str | None = None,
 ) -> TaskVerdict:
     """Compute task verdict using OpenAI to synthesize trial analyses."""
     if not classifications:
@@ -501,32 +590,29 @@ def _compute_task_verdict_openai(
         trial_classifications=trial_classifications,
     )
 
-    client, runtime_model, provider_label = _build_verdict_openai_client(
-        model=model,
-        api_key=api_key,
-        timeout=timeout or VERDICT_TIMEOUT,
-    )
+    from oddish.core.llm import complete
 
     if console:
-        console.print(f"  [dim]Synthesizing verdict with {provider_label}...[/dim]")
+        console.print("  [dim]Synthesizing verdict...[/dim]")
 
     if verbose:
         print(
-            f"\n{Colors.YELLOW}[Verdict] Synthesizing task verdict with {provider_label} ({runtime_model})...{Colors.RESET}",
+            f"\n{Colors.YELLOW}[Verdict] Synthesizing task verdict ({model})...{Colors.RESET}",
             flush=True,
         )
 
     try:
-        completion = client.beta.chat.completions.parse(
-            model=runtime_model,
-            messages=[{"role": "user", "content": prompt}],
+        result = await complete(
+            handler="task_verdict",
+            prompt=prompt,
+            model=model,
+            max_tokens=VERDICT_MAX_TOKENS,
             response_format=TaskVerdictModel,
-            max_completion_tokens=VERDICT_MAX_TOKENS,
+            timeout=timeout or VERDICT_TIMEOUT,
+            api_key=api_key,
+            task_id=task_id,
         )
-
-        verdict_model = completion.choices[0].message.parsed
-        if verdict_model is None:
-            raise RuntimeError("OpenAI returned no parsed result for verdict synthesis")
+        verdict_model = TaskVerdictModel.model_validate_json(result.text)
 
         if verbose:
             print(
@@ -571,36 +657,7 @@ def _compute_task_verdict_openai(
     )
 
 
-def _build_verdict_openai_client(
-    *,
-    model: str,
-    api_key: str | None,
-    timeout: float,
-) -> tuple[Any, str, str]:
-    provider = settings.get_openai_provider()
-    if provider == OPENAI_PROVIDER_OPENAI:
-        warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
-        public = settings.require_public_openai_config(api_key=api_key)
-        return (
-            OpenAI(api_key=public["api_key"], timeout=timeout),
-            model,
-            "public OpenAI",
-        )
-
-    azure = settings.require_azure_openai_config()
-    deployment = settings.resolve_azure_openai_deployment(model)
-    return (
-        OpenAI(
-            api_key=azure["api_key"],
-            base_url=settings.get_azure_openai_base_url(),
-            timeout=timeout,
-        ),
-        deployment,
-        "Azure OpenAI",
-    )
-
-
-def compute_task_verdict(
+async def compute_task_verdict(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
@@ -609,9 +666,10 @@ def compute_task_verdict(
     verbose: bool = False,
     api_key: str | None = None,
     timeout: float | None = None,
+    task_id: str | None = None,
 ) -> TaskVerdict:
     """Compute overall task verdict from trial classifications."""
-    return _compute_task_verdict_openai(
+    return await _compute_task_verdict_openai(
         classifications,
         baseline,
         quality_check_passed,
@@ -620,4 +678,5 @@ def compute_task_verdict(
         verbose,
         api_key,
         timeout,
+        task_id,
     )
