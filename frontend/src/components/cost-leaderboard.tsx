@@ -38,13 +38,13 @@ export function CostLeaderboardStrip() {
                   <Skeleton className="h-4 w-full" />
                 </div>
               ))
-            : data?.leaders.map((leader, index) => (
+            : data?.leaders.map((leader) => (
                 <div
-                  key={`${leader.name}-${index}`}
+                  key={`${leader.rank}-${leader.name}`}
                   className="flex min-w-28 flex-1 items-baseline justify-between gap-2 px-3 text-xs"
                 >
                   <span className="text-muted-foreground truncate">
-                    {index + 1}. {leader.name}
+                    {leader.rank}. {leader.name}
                   </span>
                   <span className="shrink-0 font-mono font-medium tabular-nums">
                     {formatCostUsd(leader.cost_usd)}

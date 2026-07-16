@@ -65,13 +65,13 @@ export function CostLeaderboardPage() {
             </div>
           ) : data?.leaders.length ? (
             <ol className="divide-border/70 divide-y">
-              {data.leaders.map((leader, index) => (
+              {data.leaders.map((leader) => (
                 <li
-                  key={`${leader.name}-${index}`}
+                  key={`${leader.rank}-${leader.name}`}
                   className="grid grid-cols-[2.5rem_1fr_auto] items-center gap-3 px-4 py-3"
                 >
                   <span className="text-muted-foreground font-mono text-sm tabular-nums">
-                    {index + 1}
+                    {leader.rank}
                   </span>
                   <span className="truncate text-sm font-medium">
                     {leader.name}

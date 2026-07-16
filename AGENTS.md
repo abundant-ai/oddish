@@ -204,10 +204,12 @@ requests to the backend.
 The authenticated org-scoped cost leaderboard is served by `GET /leaderboard` in
 `backend/api/routers/dashboard.py`. It shares the admin cost dashboard's
 settled first-party spend basis, but its response deliberately exposes only a
-person's display name and cost. Every query is restricted to the active auth
-organization. The frontend `/leaderboard` page and dashboard top-five strip
-must not add org, email, model, experiment, trial, or internal-id fields to that
-contract.
+person's spend rank, display name, and cost. Every query is restricted to the
+active auth organization. The frontend `/leaderboard` page and dashboard
+top-five strip must not add org, email, model, experiment, trial, or internal-id
+fields to that contract. Each row also carries its spend rank so filtering out
+a person with no safe display label cannot renumber the visible leaderboard
+incorrectly.
 
 ### Task Identity
 

@@ -45,7 +45,7 @@ async def test_leaderboard_requires_auth() -> None:
 
 
 @pytest.mark.asyncio
-async def test_leaderboard_returns_only_name_and_cost(monkeypatch) -> None:
+async def test_leaderboard_returns_only_rank_name_and_cost(monkeypatch) -> None:
     users = [
         SimpleNamespace(id="user-1", name="Ada", github_username="ada"),
         SimpleNamespace(id="user-2", name=None, github_username="grace"),
@@ -67,9 +67,9 @@ async def test_leaderboard_returns_only_name_and_cost(monkeypatch) -> None:
         seen["org_id"] = org_id
         seen["window_days"] = window_days
         return [
+            CostLeaderboardUser(user_id="user-3", cost_usd=20.0),
             CostLeaderboardUser(user_id="user-1", cost_usd=12.34),
             CostLeaderboardUser(user_id="user-2", cost_usd=8.5),
-            CostLeaderboardUser(user_id="user-3", cost_usd=7.0),
         ]
 
     monkeypatch.setattr(dashboard_router, "get_session", fake_get_session)
@@ -87,8 +87,8 @@ async def test_leaderboard_returns_only_name_and_cost(monkeypatch) -> None:
     assert seen == {"org_id": "org-1", "window_days": None}
     assert response.json() == {
         "leaders": [
-            {"name": "Ada", "cost_usd": 12.34},
-            {"name": "@grace", "cost_usd": 8.5},
+            {"rank": 2, "name": "Ada", "cost_usd": 12.34},
+            {"rank": 3, "name": "@grace", "cost_usd": 8.5},
         ]
     }
-    assert set(response.json()["leaders"][0]) == {"name", "cost_usd"}
+    assert set(response.json()["leaders"][0]) == {"rank", "name", "cost_usd"}

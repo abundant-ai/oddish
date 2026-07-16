@@ -952,6 +952,7 @@ export interface CostBreakdownResponse {
 }
 
 export interface CostLeaderboardEntry {
+  rank: number;
   name: string;
   cost_usd: number;
 }

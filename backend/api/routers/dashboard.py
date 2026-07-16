@@ -19,6 +19,7 @@ router = APIRouter(tags=["Dashboard"])
 
 
 class CostLeaderboardEntry(BaseModel):
+    rank: int
     name: str
     cost_usd: float
 
@@ -35,7 +36,7 @@ def _leaderboard_entries(
 ) -> list[CostLeaderboardEntry]:
     """Project internal ids down to the leaderboard's intentionally tiny API."""
     leaders: list[CostLeaderboardEntry] = []
-    for ranked in ranked_users:
+    for rank, ranked in enumerate(ranked_users, start=1):
         user = users.get(ranked.user_id)
         if user is None:
             continue
@@ -44,7 +45,9 @@ def _leaderboard_entries(
             name = f"@{user.github_username.strip().lstrip('@')}"
         if not name:
             continue
-        leaders.append(CostLeaderboardEntry(name=name, cost_usd=ranked.cost_usd))
+        leaders.append(
+            CostLeaderboardEntry(rank=rank, name=name, cost_usd=ranked.cost_usd)
+        )
         if len(leaders) >= limit:
             break
     return leaders
