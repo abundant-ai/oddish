@@ -20,6 +20,11 @@ from api.services.cc_chat.analyzer_prompt import (
     build_system_prompt,
     findings_path,
 )
+from api.services.cc_chat.analyzer_trajectory import (
+    REDUCE_SLUG,
+    map_slug,
+    persist_turn,
+)
 from api.services.cc_chat.stream_render import render_event
 from oddish.config import settings
 from oddish.evals.analyzer.schemas import Finding
@@ -139,19 +144,28 @@ async def run_cohort(
             await client.exec_sync(sandbox, command=f"mkdir -p {OUT_DIR}")
             await client.upload_file(sandbox, dest_path=CLI_DEST, content=cli_src)
 
-            async def _turn(prompt: str, label: str, system_prompt=None) -> None:
+            async def _turn(prompt: str, label: str, slug: str,
+                            system_prompt=None) -> None:
                 # claude_session_id=None every time: a fresh process with a
                 # fresh context is the whole point. Passing --resume here would
                 # chain contexts and reintroduce the linear growth.
+                events: list[dict] = []
                 async for evt in runtime.stream_chat(
                     client, sandbox, content=prompt,
                     claude_session_id=None, daytona_session_id="cc",
                     system_prompt=system_prompt,
                 ):
+                    events.append(evt)
                     line = render_event(evt)
                     if line:
                         stream_lines.append(line)
                         logger.info("%s[%s] %s", tag, label, line)
+                # Per turn, not per cohort: a cohort that later times out still
+                # keeps every completed turn's record.
+                await persist_turn(
+                    analyzer_id=analyzer_id, bucket=bucket, slug=slug,
+                    events=events,
+                )
 
             for i, batch in enumerate(plan, start=1):
                 logger.info(
@@ -166,6 +180,7 @@ async def run_cohort(
                         TRAJ_TAIL_BYTES,
                     ),
                     f"map {i}/{len(plan)}",
+                    map_slug(i),
                     system_prompt=build_system_prompt(TRAJ_TAIL_BYTES),
                 )
 
@@ -177,6 +192,7 @@ async def run_cohort(
             await _turn(
                 build_reduce_only_prompt(bucket, counts, len(plan), models_by_task),
                 "reduce",
+                REDUCE_SLUG,
             )
 
             reduce_b = await _download(client, sandbox, REDUCE_PATH)

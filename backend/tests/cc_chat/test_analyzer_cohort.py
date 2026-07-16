@@ -5,6 +5,7 @@ import pytest
 
 from api.services.cc_chat import analyzer_cohort as ac
 from api.services.cc_chat import analyzer_prompt as ap
+from api.services.cc_chat import analyzer_trajectory as at
 from api.services.cc_chat.analyzer_parse import CohortParseError
 from api.services.cc_chat.analyzer_prompt import (
     FINDINGS_GLOB,
@@ -427,3 +428,65 @@ async def test_a_batch_that_wrote_nothing_costs_only_its_own_batch():
     findings, _ = await ac.run_cohort(client, runtime, **_kwargs(
         cohort=cohort, host_by_trial=hosts, oracle_by_trial={}))
     assert sorted(f.trial_id for f in findings) == ["t0", "t20"]
+
+
+# --- trajectory persistence ----------------------------------------------
+
+
+class _RecordingStorage:
+    def __init__(self, exc=None):
+        self.calls = []
+        self._exc = exc
+
+    async def upload_bytes(self, data, s3_key, *, content_type=None):
+        self.calls.append({"data": data, "s3_key": s3_key})
+        if self._exc:
+            raise self._exc
+
+
+async def test_each_turn_uploads_its_trajectory(monkeypatch):
+    storage = _RecordingStorage()
+    monkeypatch.setattr(at, "get_storage_client", lambda: storage)
+    events = [{"type": "system", "subtype": "init", "model": "m"},
+              {"type": "result", "total_cost_usd": 0.01}]
+    runtime = _FakeRuntime(events, files=_good_files())
+
+    await ac.run_cohort(FakeDaytonaClient(), runtime, **_kwargs())
+
+    # One map batch (1-trial cohort) + one reduce.
+    assert [c["s3_key"] for c in storage.calls] == [
+        "analyzers/a1/bad/map-01.jsonl",
+        "analyzers/a1/bad/reduce.jsonl",
+    ]
+    assert [json.loads(x) for x in
+            storage.calls[0]["data"].decode().split("\n")] == events
+
+
+async def test_trajectory_is_bucket_scoped(monkeypatch):
+    storage = _RecordingStorage()
+    monkeypatch.setattr(at, "get_storage_client", lambda: storage)
+    runtime = _FakeRuntime([{"type": "result"}], files={
+        REDUCE_PATH: json.dumps({"good_failure_content": "# Good"}).encode(),
+        findings_path(1): (json.dumps({
+            "trial_id": "bad-1", "bucket": "good", "subcategory": "3a",
+            "evidence_quote": "q", "step_ids": [1], "root_cause": "rc",
+            "headroom_signal": "h", "trajectory_link": "junk",
+        }) + "\n").encode(),
+    })
+
+    await ac.run_cohort(FakeDaytonaClient(), runtime, **_kwargs(bucket="good"))
+
+    assert all("/good/" in c["s3_key"] for c in storage.calls)
+
+
+async def test_upload_failure_does_not_fail_cohort(monkeypatch):
+    storage = _RecordingStorage(exc=RuntimeError("s3 down"))
+    monkeypatch.setattr(at, "get_storage_client", lambda: storage)
+    runtime = _FakeRuntime([{"type": "result"}], files=_good_files())
+
+    findings, sections = await ac.run_cohort(
+        FakeDaytonaClient(), runtime, **_kwargs()
+    )
+
+    assert findings  # the primary product survives a dead S3
+    assert sections["bad_failure_content"] == "# Bad"
