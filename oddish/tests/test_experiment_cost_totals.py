@@ -8,14 +8,20 @@ dollars. It must equal what per-trial pricing would produce, so those tests
 assert against ``_resolve_trial_cost`` — the same function the trial API
 serializes through — instead of hand-computed numbers.
 
-*Scope is spend, not the grid.* Cost counts every trial that ran under the
-experiment: all task versions, superseded retries, probes, and soft-deleted
-trials. The grid hides those (see ``get_task_status_trials``) so that scores
-compare like with like, but the money was spent and billed regardless —
-``core.quotas`` and the admin cost breakdown apply none of those filters either,
-so all three now report the same number. Several tests below exist specifically
-to keep someone from "fixing" the tile back into agreement with the visible
-rows.
+*Scope is spend, not the grid.* Cost counts every member trial: all task
+versions, superseded retries, probes, and soft-deleted trials. The grid hides
+those (see ``get_task_status_trials``) so that scores compare like with like,
+but the money was spent and billed regardless — ``core.quotas`` and the admin
+cost breakdown apply none of those filters either. Several tests below exist
+specifically to keep someone from "fixing" the tile back into agreement with
+the visible rows.
+
+*Two scopes, not one.* ``cost_*`` counts every trial the page renders — homed
+or gathered (``trial_in_experiment``, the grid's membership) — so collections
+show what their work cost. ``owned_*`` counts only homed trials (the "New
+spend" tile) and is the number that stays additive across experiments;
+``billed_*`` is its billed subset. ``task_experiments`` links never widen
+cost.
 
 Uses the rollback-per-test ``session`` fixture against the local Postgres, with
 a run-scoped org id so each test sees only its own trials.
@@ -43,6 +49,7 @@ from oddish.config import settings  # noqa: E402
 from oddish.db.models import (  # noqa: E402
     ExperimentModel,
     experiment_trials,
+    task_experiments,
     TaskModel,
     TaskVersionModel,
     TrialModel,
@@ -170,6 +177,12 @@ async def test_totals_match_per_trial_sum_across_native_and_estimated(session):
     assert totals.cost_has_native is True
     assert totals.cost_has_estimated is True
 
+    # Everything is homed here, so owned spend IS the cost.
+    assert totals.owned_cost_usd == pytest.approx(expected)
+    assert totals.owned_trial_count == 4
+    assert totals.owned_has_native is True
+    assert totals.owned_has_estimated is True
+
     # The bug this endpoint exists to fix: dollars-only summing drops the
     # estimated trials, so it must come out strictly lower.
     native_only = sum(t.cost_usd for t in trials if t.cost_usd is not None)
@@ -219,12 +232,24 @@ async def test_pooled_token_estimate_equals_per_trial_estimate(session):
 
 
 @pytest.mark.asyncio
-async def test_billed_split_tracks_billed_user_id(session):
-    """``billed_*`` covers only trials carrying a ``billed_user_id``."""
+async def test_billed_split_tracks_billed_user_id_within_owned(session):
+    """``billed_*`` covers only OWNED trials carrying a ``billed_user_id``.
+
+    A gathered trial that was billed under its home experiment must not leak
+    into this experiment's billed subset — billed is a slice of owned spend,
+    the additive number, or billed totals double-count across pages too.
+    """
     task, experiment = await _fixture(session, "billed")
 
     trials = [
-        _trial(task, experiment, cost_usd=2.0, billed_user_id="user_a"),
+        _trial(
+            task,
+            experiment,
+            cost_usd=2.0,
+            input_tokens=200,
+            output_tokens=20,
+            billed_user_id="user_a",
+        ),
         _trial(
             task,
             experiment,
@@ -232,9 +257,30 @@ async def test_billed_split_tracks_billed_user_id(session):
             output_tokens=100_000,
             billed_user_id="user_b",
         ),
-        _trial(task, experiment, cost_usd=5.0),  # unbilled
+        _trial(
+            task,
+            experiment,
+            cost_usd=5.0,
+            input_tokens=300,
+            output_tokens=30,
+        ),  # unbilled
     ]
     session.add_all(trials)
+    await session.flush()
+
+    other = ExperimentModel(
+        name=f"expcost-billed-other-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(other)
+    await session.flush()
+    borrowed_billed = _trial(task, other, cost_usd=11.0, billed_user_id="user_c")
+    session.add(borrowed_billed)
+    await session.flush()
+    await session.execute(
+        insert(experiment_trials).values(
+            [{"experiment_id": experiment.id, "trial_id": borrowed_billed.id}]
+        )
+    )
     await session.flush()
 
     totals = await get_experiment_cost_totals(
@@ -246,8 +292,20 @@ async def test_billed_split_tracks_billed_user_id(session):
     assert totals.billed_trial_count == 2
     assert totals.billed_has_native is True
     assert totals.billed_has_estimated is True
-    assert totals.cost_usd == pytest.approx(_client_side_sum(trials))
-    assert totals.cost_trial_count == 3
+    # Owned spend includes the unbilled trial; cost additionally includes the
+    # gathered one.
+    assert totals.owned_cost_usd == pytest.approx(_client_side_sum(trials))
+    assert totals.owned_trial_count == 3
+    assert totals.cost_usd == pytest.approx(_client_side_sum(trials) + 11.0)
+    assert totals.cost_trial_count == 4
+    # Token scopes mirror the cost scopes; the gathered trial reported no
+    # usage, so member-wide and owned token totals coincide here.
+    assert totals.token_count == 1_100_550
+    assert totals.token_trial_count == 3
+    assert totals.owned_token_count == 1_100_550
+    assert totals.owned_token_trial_count == 3
+    assert totals.billed_token_count == 1_100_220
+    assert totals.billed_token_trial_count == 2
 
 
 @pytest.mark.asyncio
@@ -282,14 +340,14 @@ async def test_probe_and_superseded_trials_still_count_as_spend(session):
 
 
 @pytest.mark.asyncio
-async def test_trials_gathered_into_a_collection_do_not_count(session):
-    """Gathered membership renders in the grid but never contributes cost.
+async def test_gathered_trials_count_as_cost_but_not_owned_spend(session):
+    """A collection's cost is what the gathered work cost; owned spend is not.
 
-    A collection gathers trials through ``experiment_trials`` without rewriting
-    their scalar ``experiment_id``; their spend stays with the home experiment.
-    Summing them under the collection too would report the same dollars under
-    two experiments at once. Only trials the collection actually owns count —
-    and a gathered row pointing at an owned trial must not double-count it.
+    ``cost_*`` answers "what did the work on this page cost", so trials
+    gathered through ``experiment_trials`` count — a collection assembled
+    entirely from other experiments' work must not show a blank tile.
+    ``owned_*`` stays home-only (the additive number), and a gathered row
+    pointing at an owned trial must not double-count it in either scope.
     """
     task, home = await _fixture(session, "gathered")
 
@@ -317,14 +375,172 @@ async def test_trials_gathered_into_a_collection_do_not_count(session):
     totals = await get_experiment_cost_totals(
         session, experiment_id=collection.id, org_id=_ORG
     )
-    assert totals.cost_usd == pytest.approx(6.0)
-    assert totals.total_trials == 1
+    assert totals.cost_usd == pytest.approx(10.0)
+    assert totals.cost_trial_count == 2
+    assert totals.total_trials == 2
+    assert totals.owned_cost_usd == pytest.approx(6.0)
+    assert totals.owned_trial_count == 1
 
+    # The home experiment still reports its own trial: the same dollars appear
+    # under both pages' cost_* (deliberate), but owned_* never overlaps.
     home_totals = await get_experiment_cost_totals(
         session, experiment_id=home.id, org_id=_ORG
     )
     assert home_totals.cost_usd == pytest.approx(4.0)
+    assert home_totals.owned_cost_usd == pytest.approx(4.0)
     assert home_totals.total_trials == 1
+
+
+@pytest.mark.asyncio
+async def test_task_link_rows_do_not_widen_cost(session):
+    """``task_experiments`` links contribute nothing on their own.
+
+    Collections link each gathered trial's TASK so the task row renders, but
+    the grid still scopes that task's trials to home-or-gathered
+    (``trial_in_experiment``). Counting a linked task's whole history would
+    price trials that were never selected — and let a frozen collection's
+    cost drift upward whenever anyone reruns the same task elsewhere. Only
+    the explicitly gathered trial counts.
+    """
+    task, home = await _fixture(session, "linked")
+
+    other = ExperimentModel(
+        name=f"expcost-linked-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(other)
+    await session.flush()
+
+    selected = _trial(task, home, cost_usd=5.0)
+    unselected = _trial(task, home, cost_usd=100.0)  # same task, never gathered
+    session.add_all([selected, unselected])
+    await session.flush()
+    await session.execute(
+        insert(task_experiments).values(
+            [{"task_id": task.id, "experiment_id": other.id}]
+        )
+    )
+    await session.execute(
+        insert(experiment_trials).values(
+            [{"experiment_id": other.id, "trial_id": selected.id}]
+        )
+    )
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=other.id, org_id=_ORG
+    )
+    assert totals.cost_usd == pytest.approx(5.0)
+    assert totals.cost_trial_count == 1
+    assert totals.total_trials == 1
+    assert totals.owned_cost_usd == 0.0
+    assert totals.owned_trial_count == 0
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_membership_rows_stop_counting(session):
+    """Removing a trial/task from a collection removes its cost here.
+
+    Membership rows are the one place soft-deletes apply: a deleted
+    ``experiment_trials``/``task_experiments`` row means "no longer shown
+    here", unlike a soft-deleted TRIAL, whose spend keeps counting on its home
+    experiment.
+    """
+    task, home = await _fixture(session, "unlinked")
+
+    collection = ExperimentModel(
+        name=f"expcost-unlinked-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(collection)
+    await session.flush()
+
+    borrowed = _trial(task, home, cost_usd=4.0)
+    session.add(borrowed)
+    await session.flush()
+    await session.execute(
+        insert(experiment_trials).values(
+            [
+                {
+                    "experiment_id": collection.id,
+                    "trial_id": borrowed.id,
+                    "deleted_at": utcnow(),
+                }
+            ]
+        )
+    )
+    await session.execute(
+        insert(task_experiments).values(
+            [
+                {
+                    "task_id": task.id,
+                    "experiment_id": collection.id,
+                    "deleted_at": utcnow(),
+                }
+            ]
+        )
+    )
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+    assert totals.cost_usd == 0.0
+    assert totals.total_trials == 0
+
+
+@pytest.mark.asyncio
+async def test_unlinking_a_task_removes_its_gathered_cost(session):
+    """Pulling a shared task out of a collection pulls its gathered cost too.
+
+    ``unlink_task_from_experiment_core`` removes the task row from the grid
+    (the join row drives the task list), so its gathered trials stop
+    rendering; the rollup must stop pricing them in the same breath, or the
+    tile prices work the page no longer shows.
+    """
+    from oddish.core.endpoints.deletion import unlink_task_from_experiment_core
+
+    task, home = await _fixture(session, "unlink-cost")
+
+    collection = ExperimentModel(
+        name=f"expcost-unlink-cost-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(collection)
+    await session.flush()
+
+    borrowed = _trial(task, home, cost_usd=8.0)
+    session.add(borrowed)
+    await session.flush()
+    await session.execute(
+        insert(task_experiments).values(
+            [{"task_id": task.id, "experiment_id": collection.id}]
+        )
+    )
+    await session.execute(
+        insert(experiment_trials).values(
+            [{"experiment_id": collection.id, "trial_id": borrowed.id}]
+        )
+    )
+    await session.flush()
+
+    before = await get_experiment_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+    assert before.cost_usd == pytest.approx(8.0)
+
+    await unlink_task_from_experiment_core(
+        session, task_id=task.id, experiment_id=collection.id, org_id=_ORG
+    )
+
+    after = await get_experiment_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+    assert after.cost_usd == 0.0
+    assert after.total_trials == 0
+
+    # The trial itself is untouched: its home experiment keeps its spend.
+    home_totals = await get_experiment_cost_totals(
+        session, experiment_id=home.id, org_id=_ORG
+    )
+    assert home_totals.cost_usd == pytest.approx(8.0)
 
 
 @pytest.mark.asyncio
@@ -378,8 +594,13 @@ async def test_soft_deleted_trials_still_count_as_spend(session):
 
 
 @pytest.mark.asyncio
-async def test_trials_from_other_experiments_are_never_counted(session):
-    """Membership is the one filter that DOES apply: this experiment's trials only."""
+async def test_unlinked_trials_from_other_experiments_are_never_counted(session):
+    """Membership is the one filter that DOES apply.
+
+    Sharing a TASK object between experiments (each running its own trials on
+    it) creates no membership rows, so the other experiment's trials don't
+    show in this grid and must not show in this cost either.
+    """
     task, experiment = await _fixture(session, "isolation")
 
     other = ExperimentModel(
@@ -401,6 +622,7 @@ async def test_trials_from_other_experiments_are_never_counted(session):
     )
 
     assert totals.cost_usd == pytest.approx(4.0)
+    assert totals.owned_cost_usd == pytest.approx(4.0)
     assert totals.total_trials == 1
 
 
@@ -499,3 +721,5 @@ async def test_empty_experiment_yields_zeroed_totals(session):
     assert totals.total_trials == 0
     assert totals.cost_has_native is False
     assert totals.cost_has_estimated is False
+    assert totals.owned_cost_usd == 0.0
+    assert totals.owned_trial_count == 0

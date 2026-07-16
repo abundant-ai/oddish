@@ -151,12 +151,6 @@ interface TrialDetailPanelProps {
   contentOnly?: boolean;
   /** Slot rendered alongside the navigation row — e.g. a "hide task" toggle. */
   paneAction?: React.ReactNode;
-  /**
-   * Experiment whose spend the "of $X task" rollup describes. When set,
-   * trials homed in other experiments (gathered/shared-task rows) are left
-   * out of that sum; the task page omits it and stays task-wide.
-   */
-  spendOwnerExperimentId?: string | null;
 }
 
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
@@ -363,7 +357,6 @@ export function TrialDetailPanel({
   allowDelete = false,
   contentOnly = false,
   paneAction,
-  spendOwnerExperimentId = null,
 }: TrialDetailPanelProps) {
   const searchParams = useSearchParams();
 
@@ -597,7 +590,7 @@ export function TrialDetailPanel({
   const TrialStatusIcon = trialStatusConfig.icon;
   // Sum the navigable trials for this view (version-scoped in both callers),
   // not task.trials, which on the task page spans every version.
-  const taskCost = sumTaskTrialCost(orderedTrials, spendOwnerExperimentId);
+  const taskCost = sumTaskTrialCost(orderedTrials);
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
   const sandboxBackend = getSandboxBackend(trial);

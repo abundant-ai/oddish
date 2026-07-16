@@ -171,15 +171,18 @@ def _download_task_file(
     task_id: str,
     remote_path: str,
     download_url: str | None = None,
-) -> tuple[str | None, str | None]:
+) -> tuple[bytes | None, str | None]:
+    """Fetch one task file as raw bytes.
+
+    Tasks routinely carry binary members (oracle ELF binaries, GPG-encrypted
+    private bundles, fixture blobs). Decoding them as UTF-8 here raised
+    UnicodeDecodeError, which the caller then recorded as a per-file error and
+    skipped -- so the pulled tree looked complete but silently lacked exactly
+    the members an edit-and-reupload round-trip cannot reconstruct. Stay in
+    bytes, mirroring ``_download_trial_file``.
+    """
     if download_url:
-        content, err = _download_presigned_bytes(download_url)
-        if content is None:
-            return None, err
-        try:
-            return content.decode("utf-8"), None
-        except UnicodeDecodeError as exc:
-            return None, str(exc)
+        return _download_presigned_bytes(download_url)
     encoded_path = quote(remote_path, safe="/")
     params = {"presign": False}
     response = client.get(
@@ -189,7 +192,9 @@ def _download_task_file(
     if response.status_code != 200:
         return None, f"{response.status_code}: {response.text}"
     data = response.json()
-    return str(data.get("content", "")), None
+    # This JSON route can only carry text; presigned URLs (requested by
+    # _list_task_files) are the binary-safe path and the default.
+    return str(data.get("content", "")).encode("utf-8"), None
 
 
 def _download_and_save_trial_file(
@@ -226,7 +231,7 @@ def _download_and_save_task_file(
         if err:
             _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
         return "error"
-    _write_text(local_file, content)
+    _write_bytes(local_file, content)
     return "saved"
 
 
