@@ -30,19 +30,21 @@ class CostLeaderboardResponse(BaseModel):
 
 def _leaderboard_entries(
     ranked_users: list[CostLeaderboardUser],
-    users: dict[str, UserModel],
+    users: dict[str, tuple[str | None, str | None]],
     *,
     limit: int,
+    rank_offset: int = 0,
 ) -> list[CostLeaderboardEntry]:
     """Project internal ids down to the leaderboard's intentionally tiny API."""
     leaders: list[CostLeaderboardEntry] = []
-    for rank, ranked in enumerate(ranked_users, start=1):
-        user = users.get(ranked.user_id)
-        if user is None:
+    for rank, ranked in enumerate(ranked_users, start=rank_offset + 1):
+        user_label = users.get(ranked.user_id)
+        if user_label is None:
             continue
-        name = (user.name or "").strip()
-        if not name and user.github_username:
-            name = f"@{user.github_username.strip().lstrip('@')}"
+        user_name, github_username = user_label
+        name = (user_name or "").strip()
+        if not name and github_username:
+            name = f"@{github_username.strip().lstrip('@')}"
         if not name:
             continue
         leaders.append(
@@ -67,18 +69,32 @@ async def get_cost_leaderboard(
         ranked_users = await get_cost_leaderboard_core(
             session, org_id=auth.org_id, window_days=effective_window
         )
-        user_ids = [entry.user_id for entry in ranked_users]
-        users: dict[str, UserModel] = {}
-        if user_ids:
+        leaders: list[CostLeaderboardEntry] = []
+        for offset in range(0, len(ranked_users), limit):
+            batch = ranked_users[offset : offset + limit]
             rows = await session.execute(
-                select(UserModel)
-                .where(UserModel.id.in_(user_ids), UserModel.org_id == auth.org_id)
+                select(UserModel.id, UserModel.name, UserModel.github_username)
+                .where(
+                    UserModel.id.in_([entry.user_id for entry in batch]),
+                    UserModel.org_id == auth.org_id,
+                )
                 .execution_options(include_deleted=True)
             )
-            users = {user.id: user for user in rows.scalars()}
-    return CostLeaderboardResponse(
-        leaders=_leaderboard_entries(ranked_users, users, limit=limit)
-    )
+            users = {
+                user_id: (name, github_username)
+                for user_id, name, github_username in rows.all()
+            }
+            leaders.extend(
+                _leaderboard_entries(
+                    batch,
+                    users,
+                    limit=limit - len(leaders),
+                    rank_offset=offset,
+                )
+            )
+            if len(leaders) >= limit:
+                break
+    return CostLeaderboardResponse(leaders=leaders)
 
 
 def _member_label(user: UserModel) -> dict[str, str] | None:

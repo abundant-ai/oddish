@@ -17,15 +17,19 @@ class _ScalarResult:
     def __init__(self, users):
         self._users = users
 
-    def scalars(self):
-        return self._users
+    def all(self):
+        return [
+            (user.id, user.name, user.github_username) for user in self._users
+        ]
 
 
 class _Session:
     def __init__(self, users):
         self._users = users
+        self.execute_calls = 0
 
     async def execute(self, _query):
+        self.execute_calls += 1
         return _ScalarResult(self._users)
 
 
@@ -57,9 +61,11 @@ async def test_leaderboard_returns_only_rank_name_and_cost(monkeypatch) -> None:
         ),
     ]
 
+    session = _Session(users)
+
     @asynccontextmanager
     async def fake_get_session():
-        yield _Session(users)
+        yield session
 
     seen: dict[str, str | int | None] = {}
 
@@ -81,7 +87,7 @@ async def test_leaderboard_returns_only_rank_name_and_cost(monkeypatch) -> None:
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
-        response = await client.get("/leaderboard?window_days=0&limit=5")
+        response = await client.get("/leaderboard?window_days=0&limit=2")
 
     assert response.status_code == 200
     assert seen == {"org_id": "org-1", "window_days": None}
@@ -92,3 +98,4 @@ async def test_leaderboard_returns_only_rank_name_and_cost(monkeypatch) -> None:
         ]
     }
     assert set(response.json()["leaders"][0]) == {"rank", "name", "cost_usd"}
+    assert session.execute_calls == 2
