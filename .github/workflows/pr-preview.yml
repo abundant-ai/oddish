@@ -239,42 +239,6 @@ jobs:
         id: vercel
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
 
-  post-preview-links:
-    name: Post preview links
-    needs:
-      - detect-changes
-      - prepare-preview-database
-      - deploy-preview-backend
-      - update-vercel-preview
-    if: |
-      always() &&
-      needs.detect-changes.result == 'success' &&
-      needs.detect-changes.outputs.any_change == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      PR_NUMBER: ${{ github.event.pull_request.number }}
-      PREVIEW_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
-      RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
-      DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
-      VERCEL_PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
-      VERCEL_DEPLOYMENT_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
-      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url || needs.update-vercel-preview.outputs.backend_api_url }}
-      PREVIEW_BACKEND_LABEL: ${{ needs.update-vercel-preview.outputs.backend_label }}
-      PREVIEW_DATABASE_LABEL: ${{ needs.update-vercel-preview.outputs.database_label }}
-      SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Post preview links
-        run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
-
   stop-preview:
     name: Stop preview
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository

@@ -35,12 +35,12 @@ def _needs(job):
 def test_stop_job_removed_core_jobs_present():
     jobs = _wf()["jobs"]
     assert "stop-previous-preview-backend" not in jobs
+    assert "post-preview-links" not in jobs
     for j in (
         "detect-changes",
         "prepare-preview-database",
         "deploy-preview-backend",
         "update-vercel-preview",
-        "post-preview-links",
         "stop-preview",
     ):
         assert j in jobs
@@ -67,16 +67,6 @@ def test_backend_and_vercel_are_siblings():
     jobs = _wf()["jobs"]
     assert "update-vercel-preview" not in _needs(jobs["deploy-preview-backend"])
     assert "prepare-preview-database" in _needs(jobs["deploy-preview-backend"])
-
-
-def test_post_links_waits_for_backend_and_vercel():
-    job = _wf()["jobs"]["post-preview-links"]
-    needs = _needs(job)
-    assert "deploy-preview-backend" in needs
-    assert "update-vercel-preview" in needs
-    modal_url = job["env"]["MODAL_API_URL"]
-    assert "needs.deploy-preview-backend.outputs.modal_api_url" in modal_url
-    assert "needs.update-vercel-preview.outputs.backend_api_url" in modal_url
 
 
 def test_deterministic_url_single_sourced_and_consumed():
