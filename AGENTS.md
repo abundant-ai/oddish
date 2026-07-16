@@ -570,37 +570,65 @@ sweep):
    `FAILED` / `CANCELLED`), runs the post-success hook when applicable,
    releases the slot in its `finally`, and exits.
 4. `send_slack_expense_notifications()` runs every five minutes in production
-   when a Slack or email delivery channel is configured. It deterministically
-   alerts for experiments at $1,000 and each additional $1,000 of spend, and
-   for recent trials over $70 that exceed twice the average of other trials in
-   the experiment for the same task and model. Trials without a same-task/model
-   peer do not produce anomaly alerts. Milestones are driven by *new* spend:
-   spend that finished within the 2h watch window. Milestones already covered by
-   the pre-window baseline (`total - recent`) are claimed and completed silently
-   across every delivery channel so first observing pre-existing spend never
-   dumps historical alerts. Failed loud deliveries retain per-channel retry
+   when the webhook or the bot token is configured. It deterministically
+   alerts for experiments at $500 and each additional $500 of spend, and for
+   any recent trial over $100 -- the old "must exceed 2x the same-task/model
+   peer average, with at least one peer" filter (`trial_average_multiplier`)
+   is gone, so the $100 floor is unconditional. A trial over $1,000 produces
+   one alert, not two: its mention list widens to the owner plus a hardcoded
+   always-ping list (`ALWAYS_PING_EMAILS` in `slack_notifications.py`), and
+   its heading becomes ":rotating_light: *Very expensive trial*" in place of
+   the usual ":warning: *Expensive trial*". Milestones are driven by *new*
+   spend: spend that finished within the 2h watch window. Milestones already
+   covered by the pre-window baseline (`total - recent`) are claimed and
+   completed silently so first observing pre-existing spend never dumps
+   historical alerts. Failed loud deliveries retain per-channel retry
    markers; primary and retry completion is atomic. Indeterminate loud claims
    are not repeated because the external channels do not offer an idempotency
    key, while interrupted silent claims are completed without sending.
-   The first experiment threshold and repeat interval are configurable with
-   `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
-   `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis
-   and contains no agent/LLM path. It is on by default for the production app
-   and off by default on preview apps; a preview opts in by setting
-   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing either
-   `SLACK_EXPENSE_WEBHOOK_URL`, both `RESEND_API_KEY` and
-   `ODDISH_EXPENSE_EMAIL_FROM`, or `SLACK_ALERT_BOT_TOKEN`, optionally through
-   a preview-only named secret selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
-   Email alerts go only to active attributed experiment owners, resolved through
-   `experiments.owner_user_id -> users.email`; unpriceable-model alerts remain
-   webhook-only. With `SLACK_ALERT_BOT_TOKEN` set, owner-directed alerts are
-   also DMed to the owner's Slack account, resolved from the owner email via
-   `users.lookupByEmail`, and a DM-only alert fires when a finished experiment
-   (no active trials, a trial finished recently) has at least
-   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO` (default 0.5) of its trials FAILED;
-   soft-deleted, superseded (retried), and user-cancelled trials are excluded
-   from the failed/total counts. Webhook, email, and DM use independent
-   idempotency claims so one delivery channel cannot suppress or retry another.
+   All thresholds -- the $500 milestone/repeat, the $100 trial floor, the
+   $1,000 escalation, and the 0.5 experiment-failed ratio -- are hardcoded
+   module constants, not environment-configurable; the five `ODDISH_SLACK_*`
+   threshold env vars (`ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD`,
+   `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`, `ODDISH_SLACK_EXPENSIVE_TRIAL_USD`,
+   `ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER`,
+   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO`) are gone. It uses the shared
+   settled-cost basis and contains no agent/LLM path. It is on by default for
+   the production app and off by default on preview apps; a preview opts in
+   by setting `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
+   either `SLACK_EXPENSE_WEBHOOK_URL` or `SLACK_ALERT_BOT_TOKEN`, optionally
+   through a preview-only named secret selected by
+   `ODDISH_SLACK_EXPENSE_SECRET_NAME`. The email delivery channel
+   (`RESEND_API_KEY`, `ODDISH_EXPENSE_EMAIL_FROM`, `send_owner_emails`,
+   `_post_email`) has been deleted entirely.
+   Cost alerts -- experiment milestones and expensive trials -- post to the
+   webhook only, with an `<@...>` mention-line prefix resolved from the
+   relevant emails; they no longer DM or email anyone.
+   `send_alerts(webhook_url, alerts, *, bot_token=None)` claims each alert
+   before resolving its mentions, so already-delivered alerts cost zero Slack
+   lookups; a mention-lookup failure never sinks the underlying alert, it
+   just posts without the prefix. Three alert kinds are DM-only
+   (`dm_only=True`, delivered solely by `send_owner_dms`, never posted to the
+   webhook): experiment-failed (pre-existing), and two new ones --
+   trial-failed and qa-failed. Trial-failed fires for any trial with
+   `status == FAILED`, or `status == SUCCESS` with `result->>'harbor_exception'`
+   set (a crashed agent still gets its verifier run, so the row lands as
+   SUCCESS with an exception marker rather than FAILED); SKIPPED trials never
+   match either arm, and soft-deleted, superseded (retried), and
+   user-cancelled (`harbor_stage == 'cancelled'`) trials are additionally
+   excluded via the existing `current_trial` predicate, gated on
+   `finished_at >= recent_cutoff` (the same 2h window). Qa-failed fires for
+   `verdict_status == SUCCESS` with `verdict->>'is_good' == 'false'`, or
+   `verdict_status == FAILED` with a `verdict_error` other than the
+   user-cancellation message `"Cancelled by user"` (cancellation also stamps
+   FAILED and is not a QA failure), gated on
+   `verdict_finished_at >= recent_cutoff`; its recipient is resolved through
+   `TaskModel.created_by_user_id -> UserModel.email`. Both dedup on
+   `alert.key` = `"trial-failed:{bucket}"` / `"qa-failed:{bucket}"` where
+   `bucket` is the task version id (falling back to the task id on
+   unversioned trials); `build_alerts` also collapses duplicate keys produced
+   within a single run. The DM claim key is `"dm:{alert.key}:{recipient}"`,
+   so each person is DMed at most once per task version, ever.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
