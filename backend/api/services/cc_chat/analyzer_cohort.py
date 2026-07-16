@@ -108,6 +108,7 @@ async def run_cohort(
     api_base: str,
     api_key: str,
     cli_src: bytes,
+    models_by_task: dict[str, list[str]] | None = None,
 ) -> tuple[list[Finding], dict[str, str]]:
     tag = f"[analyzer {analyzer_id}][{bucket}]"
     plan = batches(cohort)
@@ -173,7 +174,10 @@ async def run_cohort(
             # contradict its user prompt and let it refetch the entire cohort --
             # recreating the context blowup this batching exists to prevent.
             logger.info("%s reduce over %s", tag, FINDINGS_GLOB)
-            await _turn(build_reduce_only_prompt(bucket, counts, len(plan)), "reduce")
+            await _turn(
+                build_reduce_only_prompt(bucket, counts, len(plan), models_by_task),
+                "reduce",
+            )
 
             reduce_b = await _download(client, sandbox, REDUCE_PATH)
             # Concatenate the per-batch files host-side rather than trusting the

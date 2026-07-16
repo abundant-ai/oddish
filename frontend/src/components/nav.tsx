@@ -31,6 +31,7 @@ import {
   LogOut,
   SearchCheck,
   Shield,
+  Trophy,
   User,
 } from "lucide-react";
 
@@ -158,6 +159,21 @@ export function Nav() {
               >
                 <FileBarChart className="h-4 w-4" />
                 <span>Analyzers</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname === "/leaderboard" ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/leaderboard"
+                className="flex items-center gap-2"
+                data-active={pathname === "/leaderboard"}
+              >
+                <Trophy className="h-4 w-4" />
+                <span>Leaderboard</span>
               </Link>
             </Button>
           </div>

@@ -14,6 +14,7 @@ from oddish.evals.analyzer.prompt_builder import (
     map_output_shape,
     map_rubric,
     sections_block,
+    task_roster_block,
 )
 from oddish.evals.primitives import SubAnalysis
 
@@ -161,13 +162,27 @@ def build_map_batch_prompt(
     )
 
 
-def build_reduce_only_prompt(bucket: str, counts: dict, batch_total: int) -> str:
+def build_reduce_only_prompt(
+    bucket: str,
+    counts: dict,
+    batch_total: int,
+    models_by_task: dict[str, list[str]] | None = None,
+) -> str:
     """REDUCE over findings.jsonl. Runs in its own fresh claude process, so it
     reads the findings back off disk rather than holding them in context -- this
     is what keeps reduce independent of cohort size.
     """
     section_keys = SECTION_KEYS_BY_BUCKET[bucket]
     example = json.dumps({k: "...markdown..." for k in section_keys})
+    # Only the good bucket owns headroom_analysis, and it is the only brief that
+    # asks for the roster. Rendering it for the bad cohort would hand that agent
+    # a block no section it writes can use.
+    roster_section = (
+        "## Task roster — which models RAN each task, including the ones that PASSED\n"
+        f"{task_roster_block(models_by_task)}\n\n"
+        if "headroom_analysis" in section_keys
+        else ""
+    )
     return (
         f"You are the lead analyst for the '{bucket}' half of an agent-eval\n"
         "failure analysis. The MAP phase is OVER: it ran "
@@ -190,6 +205,7 @@ def build_reduce_only_prompt(bucket: str, counts: dict, batch_total: int) -> str
         '"...hardcoded the output ([trajectory](/tasks/t1/probe/x))...".\n\n'
         "## Counts\n"
         f"{json.dumps(counts, indent=2)}\n\n"
+        f"{roster_section}"
         f"## Write these markdown sections:\n{sections_block(section_keys)}\n\n"
         "## Output\n"
         f"Emit the result as a single JSON object prefixed with `REDUCE RESULT:`,\n"
