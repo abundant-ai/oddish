@@ -201,6 +201,13 @@ policy, GitHub notification hooks, and public sharing / product endpoints.
 Clerk-based auth and org management, and Next.js route handlers that proxy
 requests to the backend.
 
+The authenticated global cost leaderboard is served by `GET /leaderboard` in
+`backend/api/routers/dashboard.py`. It shares the admin cost dashboard's
+settled first-party spend basis, but its response deliberately exposes only a
+person's display name and cost. The frontend `/leaderboard` page and dashboard
+top-five strip must not add org, email, model, experiment, trial, or internal-id
+fields to that contract.
+
 ### Task Identity
 
 `tasks.name` is the human-readable lookup key within an org. Live task names

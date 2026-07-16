@@ -951,6 +951,15 @@ export interface CostBreakdownResponse {
   timestamp: string;
 }
 
+export interface CostLeaderboardEntry {
+  name: string;
+  cost_usd: number;
+}
+
+export interface CostLeaderboardResponse {
+  leaders: CostLeaderboardEntry[];
+}
+
 // ---------------------------------------------------------------------------
 // Admin per-user cost drilldown (GET /api/admin/users/{userId}/costs)
 // ---------------------------------------------------------------------------

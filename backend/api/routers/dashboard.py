@@ -3,17 +3,79 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
 from dashboard_attribution import resolve_experiments_author, resolve_search_authors
 from models import UserModel
+from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
+
+
+class CostLeaderboardEntry(BaseModel):
+    name: str
+    cost_usd: float
+
+
+class CostLeaderboardResponse(BaseModel):
+    leaders: list[CostLeaderboardEntry]
+
+
+def _leaderboard_entries(
+    ranked_users: list[CostLeaderboardUser],
+    users: dict[str, UserModel],
+    *,
+    limit: int,
+) -> list[CostLeaderboardEntry]:
+    """Project internal ids down to the leaderboard's intentionally tiny API."""
+    leaders: list[CostLeaderboardEntry] = []
+    for ranked in ranked_users:
+        user = users.get(ranked.user_id)
+        if user is None:
+            continue
+        name = (user.name or "").strip()
+        if not name and user.github_username:
+            name = f"@{user.github_username.strip().lstrip('@')}"
+        if not name:
+            continue
+        leaders.append(CostLeaderboardEntry(name=name, cost_usd=ranked.cost_usd))
+        if len(leaders) >= limit:
+            break
+    return leaders
+
+
+@router.get("/leaderboard", response_model=CostLeaderboardResponse)
+async def get_cost_leaderboard(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    window_days: int = Query(
+        7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+    limit: int = Query(100, ge=1, le=500),
+) -> CostLeaderboardResponse:
+    """Return only ranked display names and spend, with no admin cost metadata."""
+    effective_window = None if window_days == 0 else window_days
+    async with get_session() as session:
+        ranked_users = await get_cost_leaderboard_core(
+            session, window_days=effective_window
+        )
+        user_ids = [entry.user_id for entry in ranked_users]
+        users: dict[str, UserModel] = {}
+        if user_ids:
+            rows = await session.execute(
+                select(UserModel)
+                .where(UserModel.id.in_(user_ids))
+                .execution_options(include_deleted=True)
+            )
+            users = {user.id: user for user in rows.scalars()}
+    return CostLeaderboardResponse(
+        leaders=_leaderboard_entries(ranked_users, users, limit=limit)
+    )
 
 
 def _member_label(user: UserModel) -> dict[str, str] | None:

@@ -11,7 +11,7 @@ import pytest_asyncio
 
 from models import OrganizationModel, OrgQuotaModel, QuotaModel, UserModel
 from oddish.config import settings
-from oddish.core.admin import get_cost_breakdown_core
+from oddish.core.admin import get_cost_breakdown_core, get_cost_leaderboard_core
 from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -185,6 +185,17 @@ async def test_window_costs_by_user(global_costs_fixture):
     row = _user_row(result, f.target.id)
     assert row.cost_usd == pytest.approx(1.50)
     assert row.trial_count == 3
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_leaderboard_uses_same_settled_spend(global_costs_fixture):
+    f = global_costs_fixture
+    async with get_session() as session:
+        leaders = await get_cost_leaderboard_core(session, window_days=7)
+    by_user = {leader.user_id: leader.cost_usd for leader in leaders}
+    assert by_user[f.target.id] == pytest.approx(1.50)
+    assert by_user[f.other.id] == pytest.approx(2.00)
 
 
 @requires_db
