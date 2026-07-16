@@ -238,7 +238,7 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/dashboard` | Cached aggregate response for queues, pipeline stats, usage, tasks, and experiments |
-| GET | `/leaderboard` | Authenticated people-only cost leaderboard; returns display name and settled spend only |
+| GET | `/leaderboard` | Org-scoped people-only cost leaderboard; returns display name and settled spend only |
 | POST | `/tasks/upload/init` | Start a direct-to-S3 task upload and return a presigned PUT URL |
 | POST | `/tasks/upload/complete` | Finalize a direct-to-S3 task upload after the client PUT succeeds |
 | POST | `/trials/import/init` | Register an off-oddish trial and return a presigned artifact URL |

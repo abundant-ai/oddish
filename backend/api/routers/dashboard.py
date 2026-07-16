@@ -62,14 +62,14 @@ async def get_cost_leaderboard(
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
         ranked_users = await get_cost_leaderboard_core(
-            session, window_days=effective_window
+            session, org_id=auth.org_id, window_days=effective_window
         )
         user_ids = [entry.user_id for entry in ranked_users]
         users: dict[str, UserModel] = {}
         if user_ids:
             rows = await session.execute(
                 select(UserModel)
-                .where(UserModel.id.in_(user_ids))
+                .where(UserModel.id.in_(user_ids), UserModel.org_id == auth.org_id)
                 .execution_options(include_deleted=True)
             )
             users = {user.id: user for user in rows.scalars()}

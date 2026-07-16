@@ -1987,9 +1987,10 @@ async def get_cost_breakdown_core(
 async def get_cost_leaderboard_core(
     session: AsyncSession,
     *,
+    org_id: str,
     window_days: int | None = 7,
 ) -> list[CostLeaderboardUser]:
-    """Rank registered people by settled spend on the admin dashboard basis.
+    """Rank one org's registered people on the admin dashboard spend basis.
 
     The grouping mirrors ``get_cost_breakdown_core``'s payer precedence, but
     discards GitHub-only and unattributed fallback buckets so callers cannot
@@ -2013,7 +2014,11 @@ async def get_cost_leaderboard_core(
             *settled_cost_columns(),
         )
         .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
-        .where(_real_spend_filter(), TrialModel.finished_at.isnot(None))
+        .where(
+            _real_spend_filter(),
+            TrialModel.finished_at.isnot(None),
+            TrialModel.org_id == org_id,
+        )
         .group_by(
             TrialModel.billed_user_id,
             gh_id_col,

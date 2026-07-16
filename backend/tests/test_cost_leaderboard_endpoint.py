@@ -61,9 +61,10 @@ async def test_leaderboard_returns_only_name_and_cost(monkeypatch) -> None:
     async def fake_get_session():
         yield _Session(users)
 
-    seen: dict[str, int | None] = {}
+    seen: dict[str, str | int | None] = {}
 
-    async def fake_leaderboard(_session, *, window_days):
+    async def fake_leaderboard(_session, *, org_id, window_days):
+        seen["org_id"] = org_id
         seen["window_days"] = window_days
         return [
             CostLeaderboardUser(user_id="user-1", cost_usd=12.34),
@@ -83,7 +84,7 @@ async def test_leaderboard_returns_only_name_and_cost(monkeypatch) -> None:
         response = await client.get("/leaderboard?window_days=0&limit=5")
 
     assert response.status_code == 200
-    assert seen == {"window_days": None}
+    assert seen == {"org_id": "org-1", "window_days": None}
     assert response.json() == {
         "leaders": [
             {"name": "Ada", "cost_usd": 12.34},
