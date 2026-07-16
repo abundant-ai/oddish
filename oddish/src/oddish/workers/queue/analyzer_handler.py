@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import or_, select
 
 from oddish.config import settings, to_anthropic_api_model_id
-from oddish.core.analyzer_inputs import build_analyzer_inputs
+from oddish.core.analyzer_inputs import build_analyzer_inputs, models_by_task_from_rows
 from oddish.core.analyzer_trial_export import build_trial_analyses_payload
 from oddish.core.analyzers import experiment_ids_for_analyzer
 from oddish.core.experiment_membership import trial_in_experiment
@@ -184,13 +184,12 @@ async def _worker_job_is_running(
 
 def _models_by_task(rows) -> dict[str, list[str]]:
     """task_id -> the distinct models that ran it. Includes trials that passed,
-    which is exactly what findings cannot tell us."""
-    by_task: dict[str, set[str]] = {}
-    for trial, _task_path in rows:
-        model = getattr(trial, "model", None)
-        if model:
-            by_task.setdefault(trial.task_id, set()).add(model)
-    return {k: sorted(v) for k, v in by_task.items()}
+    which is exactly what findings cannot tell us.
+
+    Shared with the sandbox path, which renders the same roster into its reduce
+    prompt; the two must not drift.
+    """
+    return models_by_task_from_rows(rows)
 
 
 async def _gather_trial_rows(session, analyzer_id: str, org_id: str | None):

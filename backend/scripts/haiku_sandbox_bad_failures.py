@@ -57,6 +57,7 @@ from oddish.evals.analyzer.prompt_builder import (
     map_output_shape,
     map_rubric,
     sections_block,
+    task_roster_block,
 )
 
 # One of ClaudeCodeRuntime.supported_models. stream_chat has no --model flag, so
@@ -192,6 +193,7 @@ def _build_prompt(bad) -> str:
         (prompts_dir / "reduce.txt")
         .read_text()
         .replace("{sections_block}", sections_block(SECTION_KEYS))
+        .replace("{roster_block}", task_roster_block(None))
         .replace("{{", "{")
         .replace("}}", "}")
     )

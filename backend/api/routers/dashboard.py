@@ -3,17 +3,98 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
 from dashboard_attribution import resolve_experiments_author, resolve_search_authors
 from models import UserModel
+from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
+
+
+class CostLeaderboardEntry(BaseModel):
+    rank: int
+    name: str
+    cost_usd: float
+
+
+class CostLeaderboardResponse(BaseModel):
+    leaders: list[CostLeaderboardEntry]
+
+
+def _leaderboard_entries(
+    ranked_users: list[CostLeaderboardUser],
+    users: dict[str, tuple[str | None, str | None]],
+    *,
+    limit: int,
+    rank_offset: int = 0,
+) -> list[CostLeaderboardEntry]:
+    """Project internal ids down to the leaderboard's intentionally tiny API."""
+    leaders: list[CostLeaderboardEntry] = []
+    for rank, ranked in enumerate(ranked_users, start=rank_offset + 1):
+        user_label = users.get(ranked.user_id)
+        if user_label is None:
+            continue
+        user_name, github_username = user_label
+        name = (user_name or "").strip()
+        if not name and github_username:
+            name = f"@{github_username.strip().lstrip('@')}"
+        if not name:
+            continue
+        leaders.append(
+            CostLeaderboardEntry(rank=rank, name=name, cost_usd=ranked.cost_usd)
+        )
+        if len(leaders) >= limit:
+            break
+    return leaders
+
+
+@router.get("/leaderboard", response_model=CostLeaderboardResponse)
+async def get_cost_leaderboard(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    window_days: int = Query(
+        7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+    limit: int = Query(100, ge=1, le=500),
+) -> CostLeaderboardResponse:
+    """Return only ranked display names and spend, with no admin cost metadata."""
+    effective_window = None if window_days == 0 else window_days
+    async with get_session() as session:
+        ranked_users = await get_cost_leaderboard_core(
+            session, org_id=auth.org_id, window_days=effective_window
+        )
+        leaders: list[CostLeaderboardEntry] = []
+        for offset in range(0, len(ranked_users), limit):
+            batch = ranked_users[offset : offset + limit]
+            rows = await session.execute(
+                select(UserModel.id, UserModel.name, UserModel.github_username)
+                .where(
+                    UserModel.id.in_([entry.user_id for entry in batch]),
+                    UserModel.org_id == auth.org_id,
+                )
+                .execution_options(include_deleted=True)
+            )
+            users = {
+                user_id: (name, github_username)
+                for user_id, name, github_username in rows.all()
+            }
+            leaders.extend(
+                _leaderboard_entries(
+                    batch,
+                    users,
+                    limit=limit - len(leaders),
+                    rank_offset=offset,
+                )
+            )
+            if len(leaders) >= limit:
+                break
+    return CostLeaderboardResponse(leaders=leaders)
 
 
 def _member_label(user: UserModel) -> dict[str, str] | None:

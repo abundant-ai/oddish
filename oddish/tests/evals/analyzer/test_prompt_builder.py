@@ -2,6 +2,7 @@ from oddish.evals.primitives import SubAnalysis, TrajectoryBundle
 from oddish.evals.analyzer.bucketing import BUCKET_OF
 from oddish.evals.analyzer.schemas import Finding
 from oddish.evals.analyzer.prompt_builder import build_map_prompt, build_reduce_prompt
+from oddish.evals.analyzer.prompt_builder import task_roster_block
 
 
 # The template as it stands on main, before the fragment split (git show
@@ -143,3 +144,57 @@ def test_reduce_prompt_lists_findings_and_counts():
     assert "/tasks/task/probe/t-1" in p
     assert "headroom" in p.lower()
     assert "bad_failure_content" in p  # instructs the four output keys
+
+
+def _good_finding(**over):
+    kw = dict(
+        trial_id="t1", bucket="good", subcategory="3a", evidence_quote="q",
+        step_ids=[1], root_cause="rc", headroom_signal="hs",
+        trajectory_link="/tasks/t1/probe/x", model="claude-opus-4-8",
+        task_path="tasks/redis/expiry", task_id="redis-expiry",
+    )
+    kw.update(over)
+    return Finding(**kw)
+
+
+def test_reduce_findings_block_carries_task_and_model():
+    prompt = build_reduce_prompt(
+        [_good_finding()], {"trials": 1, "bad": 0, "good": 1}
+    )
+    assert "task: tasks/redis/expiry" in prompt
+    assert "model: claude-opus-4-8" in prompt
+
+
+def test_reduce_findings_block_falls_back_when_task_path_missing():
+    prompt = build_reduce_prompt(
+        [_good_finding(task_path=None)], {"trials": 1, "bad": 0, "good": 1}
+    )
+    assert "task: redis-expiry" in prompt
+    assert "task: None" not in prompt
+
+
+def test_roster_block_lists_every_model_that_ran_including_passers():
+    block = task_roster_block(
+        {"redis-expiry": ["claude-haiku-4-5", "claude-opus-4-8"]}
+    )
+    assert "- redis-expiry: claude-haiku-4-5, claude-opus-4-8" in block
+
+
+def test_roster_block_none_means_unknown_not_empty():
+    # None = no roster persisted (pre-analyzers_006). It must not read as
+    # "no models ran", which would invert the signal the section depends on.
+    block = task_roster_block(None)
+    assert "unknown" in block.lower()
+    assert block.strip() != ""
+
+
+def test_roster_block_empty_dict_means_no_trials():
+    assert "no trials" in task_roster_block({}).lower()
+
+
+def test_build_reduce_prompt_embeds_the_roster():
+    prompt = build_reduce_prompt(
+        [_good_finding()], {"trials": 1, "bad": 0, "good": 1},
+        {"redis-expiry": ["claude-opus-4-8"]},
+    )
+    assert "- redis-expiry: claude-opus-4-8" in prompt
