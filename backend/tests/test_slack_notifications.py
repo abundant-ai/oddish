@@ -19,6 +19,7 @@ from oddish.db import (
 )
 from slack_notifications import (
     ALWAYS_PING_EMAILS,
+    AlertCandidates,
     ExperimentCandidate,
     FailedExperiment,
     FailedTrial,
@@ -109,43 +110,72 @@ def test_experiment_milestones(
     )
 
 
+@pytest.mark.parametrize(
+    ("verdict_status", "error", "expected"),
+    [
+        (VerdictStatus.SUCCESS, None, "verdict judged this task not good"),
+        (VerdictStatus.SUCCESS, "ignored", "verdict judged this task not good"),
+        (None, None, "verdict judged this task not good"),
+        (
+            VerdictStatus.FAILED,
+            "grader exploded",
+            "verdict job failed — grader exploded",
+        ),
+        # A missing error must not render as "verdict job failed — None".
+        (VerdictStatus.FAILED, None, "verdict job failed"),
+        (VerdictStatus.FAILED, "", "verdict job failed"),
+    ],
+)
+def test_verdict_reason(
+    verdict_status: VerdictStatus | None,
+    error: str | None,
+    expected: str,
+) -> None:
+    assert notifications._verdict_reason(verdict_status, error) == expected
+
+
 def test_build_alerts_reports_each_expense_milestone() -> None:
     now = datetime.now(timezone.utc)
+    # Trials sit exactly on the (exclusive) $100 trial floor, so the only alerts
+    # are the milestones.
+    trials = [
+        _trial(f"trial-{index}", 100, experiment_id="experiment/1", finished_at=now)
+        for index in range(10)
+    ]
+    trials.append(
+        _trial("trial-tail", 1, experiment_id="experiment/1", finished_at=now)
+    )
     alerts = build_alerts(
-        [
-            ExperimentCandidate(
-                id="experiment/1",
-                name="Exp <One>",
-                owner="Pat & Sam",
-                active_trials=2,
-                owner_email="owner@example.com",
-            )
-        ],
-        [
-            _trial("trial-1", 1100, experiment_id="experiment/1", finished_at=now),
-            _trial("trial-2", 901, experiment_id="experiment/1", finished_at=now),
-        ],
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    id="experiment/1",
+                    name="Exp <One>",
+                    owner="Pat & Sam",
+                    active_trials=2,
+                    owner_email="owner@example.com",
+                )
+            ],
+            trials=trials,
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=1000,
-        experiment_repeat_usd=1000,
-        trial_threshold_usd=10_000,
     )
 
     assert [alert.key for alert in alerts] == [
+        "experiment:experiment/1:500",
         "experiment:experiment/1:1000",
-        "experiment:experiment/1:2000",
     ]
     experiment_alert = alerts[1]
     assert experiment_alert.text.splitlines() == [
         ":money_with_wings: *Expensive experiment*",
         "Title: *Exp &lt;One&gt;*",
-        "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
-        "New spend (last 2h): *$2,001.00*",
+        "Spend milestone: *$1,000.00* (current spend: *$1,001.00*)",
+        "New spend (last 2h): *$1,001.00*",
         "Trials still running: 2",
         "Owner: *Pat &amp; Sam*",
         "Top agent costs:",
-        "• `model-1`: *$2,001.00*",
+        "• `model-1`: *$1,001.00*",
         "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
     ]
     assert experiment_alert.mention_emails == ("owner@example.com",)
@@ -156,19 +186,18 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
 def test_build_alerts_lists_the_top_three_agent_costs() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Experiment", "Ada", 0)],
-        [
-            _trial("a-1", 150, model="openrouter/opus", finished_at=now),
-            _trial("a-2", 100, model="openrouter/opus", finished_at=now),
-            _trial("b", 200, model="azure/fable", finished_at=now),
-            _trial("c", 100, model="anthropic/sonnet", finished_at=now),
-            _trial("d", 50, model="openai/gpt", finished_at=now),
-        ],
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Experiment", "Ada", 0)],
+            trials=[
+                _trial("a-1", 150, model="openrouter/opus", finished_at=now),
+                _trial("a-2", 100, model="openrouter/opus", finished_at=now),
+                _trial("b", 200, model="azure/fable", finished_at=now),
+                _trial("c", 100, model="anthropic/sonnet", finished_at=now),
+                _trial("d", 50, model="openai/gpt", finished_at=now),
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=100,
-        experiment_repeat_usd=1000,
-        trial_threshold_usd=10_000,
     )
 
     assert alerts[0].text.splitlines()[6:10] == [
@@ -182,24 +211,27 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
 def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Exp", "Ada", 0, owner_email="a@e.com")],
-        [
-            _trial("old", 4000, finished_at=now - timedelta(hours=3)),
-            _trial("recent", 50, finished_at=now),
-        ],
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    "experiment-1", "Exp", "Ada", 0, owner_email="a@e.com"
+                )
+            ],
+            trials=[
+                _trial("old", 2000, finished_at=now - timedelta(hours=3)),
+                _trial("recent", 50, finished_at=now),
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=1000,
-        experiment_repeat_usd=1000,
-        trial_threshold_usd=10_000,
     )
 
     milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
     assert [a.key for a in milestone_alerts] == [
+        "experiment:experiment-1:500",
         "experiment:experiment-1:1000",
+        "experiment:experiment-1:1500",
         "experiment:experiment-1:2000",
-        "experiment:experiment-1:3000",
-        "experiment:experiment-1:4000",
     ]
     assert all(a.silent for a in milestone_alerts)
     assert all(a.text for a in milestone_alerts)
@@ -209,45 +241,43 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
 def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Exp", "Ada", 1)],
-        [
-            _trial("old", 1800, finished_at=now - timedelta(hours=3)),
-            _trial("recent", 1300, finished_at=now),
-        ],
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 1)],
+            trials=[
+                _trial("old", 900, finished_at=now - timedelta(hours=3)),
+                _trial("recent", 700, finished_at=now),
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=1000,
-        experiment_repeat_usd=1000,
-        trial_threshold_usd=10_000,
     )
 
     milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
     silent = [a.key for a in milestone_alerts if a.silent]
     firing = [a for a in milestone_alerts if not a.silent]
-    assert silent == ["experiment:experiment-1:1000"]
+    assert silent == ["experiment:experiment-1:500"]
     assert [a.key for a in firing] == [
-        "experiment:experiment-1:2000",
-        "experiment:experiment-1:3000",
+        "experiment:experiment-1:1000",
+        "experiment:experiment-1:1500",
     ]
-    assert "New spend (last 2h): *$1,300.00*" in firing[0].text
+    assert "New spend (last 2h): *$700.00*" in firing[0].text
 
 
 def test_build_alerts_new_experiment_fires_every_milestone() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Exp", "Ada", 3)],
-        [_trial("burst", 2500, finished_at=now)],
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 3)],
+            trials=[_trial("burst", 1200, finished_at=now)],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=1000,
-        experiment_repeat_usd=1000,
-        trial_threshold_usd=10_000,
     )
 
     milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
     assert [a.key for a in milestone_alerts] == [
+        "experiment:experiment-1:500",
         "experiment:experiment-1:1000",
-        "experiment:experiment-1:2000",
     ]
     assert not any(a.silent for a in milestone_alerts)
 
@@ -255,20 +285,20 @@ def test_build_alerts_new_experiment_fires_every_milestone() -> None:
 def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [
-            ExperimentCandidate(
-                "experiment-1",
-                "Experiment",
-                None,
-                0,
-                owner_email="owner@example.com",
-            )
-        ],
-        [_trial("lonely", 101, finished_at=now)],
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    "experiment-1",
+                    "Experiment",
+                    None,
+                    0,
+                    owner_email="owner@example.com",
+                )
+            ],
+            trials=[_trial("lonely", 101, finished_at=now)],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=100_000,
-        experiment_repeat_usd=1000,
     )
 
     assert [alert.key for alert in alerts] == ["trial:lonely:100"]
@@ -293,12 +323,12 @@ def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
 def test_build_alerts_trial_floor_is_exclusive(cost_usd: float, expected: bool) -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
-        [_trial("candidate", cost_usd, finished_at=now)],
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+            trials=[_trial("candidate", cost_usd, finished_at=now)],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=100_000,
-        experiment_repeat_usd=1000,
     )
 
     assert any(alert.key.startswith("trial:") for alert in alerts) is expected
@@ -307,24 +337,25 @@ def test_build_alerts_trial_floor_is_exclusive(cost_usd: float, expected: bool) 
 def test_build_alerts_escalates_a_very_expensive_trial_in_one_alert() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [
-            ExperimentCandidate(
-                "experiment-1",
-                "Experiment",
-                "Ada",
-                0,
-                owner_email="Owner@Example.com",
-            )
-        ],
-        [_trial("whale", 1500, finished_at=now)],
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    "experiment-1",
+                    "Experiment",
+                    "Ada",
+                    0,
+                    owner_email="Owner@Example.com",
+                )
+            ],
+            trials=[_trial("whale", 1500, finished_at=now)],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=100_000,
-        experiment_repeat_usd=1000,
     )
 
-    assert [alert.key for alert in alerts] == ["trial:whale:100"]
-    alert = alerts[0]
+    trial_alerts = [alert for alert in alerts if alert.key.startswith("trial:")]
+    assert [alert.key for alert in trial_alerts] == ["trial:whale:100"]
+    alert = trial_alerts[0]
     assert alert.text.splitlines()[0] == ":rotating_light: *Very expensive trial*"
     assert alert.mention_emails == ("owner@example.com", *ALWAYS_PING_EMAILS)
     assert not alert.dm_only
@@ -333,15 +364,14 @@ def test_build_alerts_escalates_a_very_expensive_trial_in_one_alert() -> None:
 def test_build_alerts_reports_unpriceable_models_once_each() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
-        [],
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+            unpriced_models=[
+                UnpricedModel(model="mystery/model-x", trial_count=3, task_id="task/9"),
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=2000,
-        experiment_repeat_usd=1000,
-        unpriced_models=[
-            UnpricedModel(model="mystery/model-x", trial_count=3, task_id="task/9"),
-        ],
     )
 
     assert [alert.key for alert in alerts] == ["unpriced-model:mystery/model-x"]
@@ -355,15 +385,14 @@ def test_build_alerts_reports_unpriceable_models_once_each() -> None:
 def test_build_alerts_unpriceable_model_uses_singular_for_one_trial() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
-        [],
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+            unpriced_models=[
+                UnpricedModel(model="mystery/model-x", trial_count=1, task_id="task/9"),
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=2000,
-        experiment_repeat_usd=1000,
-        unpriced_models=[
-            UnpricedModel(model="mystery/model-x", trial_count=1, task_id="task/9"),
-        ],
     )
 
     assert "1 recent trial recorded" in alerts[0].text
@@ -371,13 +400,14 @@ def test_build_alerts_unpriceable_model_uses_singular_for_one_trial() -> None:
 
 def test_build_alerts_ignores_old_trials() -> None:
     now = datetime.now(timezone.utc)
+    # Over the $100 trial floor but stale, and under the $500 milestone.
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
-        [_trial("old", 500, finished_at=now - timedelta(hours=3))],
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+            trials=[_trial("old", 150, finished_at=now - timedelta(hours=3))],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=2000,
-        experiment_repeat_usd=1000,
     )
 
     assert alerts == []
@@ -386,22 +416,20 @@ def test_build_alerts_ignores_old_trials() -> None:
 def test_build_alerts_reports_failed_experiments_as_dm_only() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [],
-        [],
+        AlertCandidates(
+            failed_experiments=[
+                FailedExperiment(
+                    id="experiment/1",
+                    name="Exp <One>",
+                    owner="Pat & Sam",
+                    failed_trials=3,
+                    total_trials=4,
+                    owner_email="owner@example.com",
+                )
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=2000,
-        experiment_repeat_usd=1000,
-        failed_experiments=[
-            FailedExperiment(
-                id="experiment/1",
-                name="Exp <One>",
-                owner="Pat & Sam",
-                failed_trials=3,
-                total_trials=4,
-                owner_email="owner@example.com",
-            )
-        ],
     )
 
     assert [alert.key for alert in alerts] == ["experiment-failed:experiment/1"]
@@ -418,13 +446,19 @@ def test_build_alerts_reports_failed_experiments_as_dm_only() -> None:
     ]
 
 
+# The 0.5 ratio is a module constant, so the boundary is probed by varying the
+# data around it.
 @pytest.mark.parametrize(
     ("failed_trials", "total_trials", "expected"),
     [
         (0, 4, False),
         (1, 4, False),
         (2, 4, True),
+        (3, 4, True),
         (4, 4, True),
+        (1, 3, False),
+        (2, 3, True),
+        (1, 2, True),
         (0, 0, False),
     ],
 )
@@ -435,22 +469,19 @@ def test_build_alerts_failed_experiment_respects_ratio(
 ) -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [],
-        [],
+        AlertCandidates(
+            failed_experiments=[
+                FailedExperiment(
+                    id="experiment-1",
+                    name="Experiment",
+                    owner=None,
+                    failed_trials=failed_trials,
+                    total_trials=total_trials,
+                )
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=2000,
-        experiment_repeat_usd=1000,
-        failed_experiments=[
-            FailedExperiment(
-                id="experiment-1",
-                name="Experiment",
-                owner=None,
-                failed_trials=failed_trials,
-                total_trials=total_trials,
-            )
-        ],
-        experiment_failed_ratio=0.5,
     )
 
     assert bool(alerts) is expected
@@ -459,21 +490,20 @@ def test_build_alerts_failed_experiment_respects_ratio(
 def test_build_alerts_reports_failed_trials_as_dm_only() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [],
-        [],
+        AlertCandidates(
+            failed_trials=[
+                FailedTrial(
+                    name="Trial <One>",
+                    task_id="task/1",
+                    task_version_id="task/1@v2",
+                    experiment_name="Exp & Co",
+                    owner="Ada",
+                    owner_email="owner@example.com",
+                )
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        failed_trials=[
-            FailedTrial(
-                id="trial-1",
-                name="Trial <One>",
-                task_id="task/1",
-                task_version_id="task/1@v2",
-                experiment_name="Exp & Co",
-                owner="Ada",
-                owner_email="owner@example.com",
-            )
-        ],
     )
 
     assert [alert.key for alert in alerts] == ["trial-failed:task/1@v2"]
@@ -492,10 +522,9 @@ def test_build_alerts_reports_failed_trials_as_dm_only() -> None:
 def test_build_alerts_collapses_failed_trials_per_task_version() -> None:
     now = datetime.now(timezone.utc)
 
-    def failed(trial_id: str, task_version_id: str | None) -> FailedTrial:
+    def failed(name: str, task_version_id: str | None) -> FailedTrial:
         return FailedTrial(
-            id=trial_id,
-            name=trial_id,
+            name=name,
             task_id="task/1",
             task_version_id=task_version_id,
             experiment_name="Exp",
@@ -504,16 +533,16 @@ def test_build_alerts_collapses_failed_trials_per_task_version() -> None:
         )
 
     alerts = build_alerts(
-        [],
-        [],
+        AlertCandidates(
+            failed_trials=[
+                failed("trial-1", "task/1@v2"),
+                failed("trial-2", "task/1@v2"),
+                failed("trial-3", "task/1@v3"),
+                failed("legacy", None),
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        failed_trials=[
-            failed("trial-1", "task/1@v2"),
-            failed("trial-2", "task/1@v2"),
-            failed("trial-3", "task/1@v3"),
-            failed("legacy", None),
-        ],
     )
 
     assert [alert.key for alert in alerts] == [
@@ -523,29 +552,76 @@ def test_build_alerts_collapses_failed_trials_per_task_version() -> None:
     ]
 
 
+def test_build_alerts_keeps_one_failed_trial_dm_per_owner_of_a_task_version() -> None:
+    now = datetime.now(timezone.utc)
+
+    def failed(name: str, owner_email: str) -> FailedTrial:
+        return FailedTrial(
+            name=name,
+            task_id="task/1",
+            task_version_id="task/1@v2",
+            experiment_name="Exp",
+            owner="Ada",
+            owner_email=owner_email,
+        )
+
+    # One task version, two owners running it: dedup is on (key, recipient), so
+    # collapsing on the key alone would silently drop the second owner's DM.
+    alerts = build_alerts(
+        AlertCandidates(
+            failed_trials=[
+                failed("trial-1", "ada@example.com"),
+                failed("trial-2", "grace@example.com"),
+            ],
+        ),
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [(a.key, a.recipient_email) for a in alerts] == [
+        ("trial-failed:task/1@v2", "ada@example.com"),
+        ("trial-failed:task/1@v2", "grace@example.com"),
+    ]
+
+    same_owner = build_alerts(
+        AlertCandidates(
+            failed_trials=[
+                failed("trial-1", "ada@example.com"),
+                failed("trial-2", "ada@example.com"),
+            ],
+        ),
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [(a.key, a.recipient_email) for a in same_owner] == [
+        ("trial-failed:task/1@v2", "ada@example.com")
+    ]
+
+
 def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [],
-        [],
+        AlertCandidates(
+            qa_failures=[
+                QaFailure(
+                    task_id="task/1",
+                    task_name="Task <One>",
+                    task_version_id="task/1@v2",
+                    reason="verdict judged this task not good",
+                    owner_email="author@example.com",
+                ),
+                QaFailure(
+                    task_id="task/1",
+                    task_name="Task <One>",
+                    task_version_id="task/1@v2",
+                    reason="verdict job failed — boom",
+                    owner_email="author@example.com",
+                ),
+            ],
+        ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
-        qa_failures=[
-            QaFailure(
-                task_id="task/1",
-                task_name="Task <One>",
-                task_version_id="task/1@v2",
-                reason="verdict judged this task not good",
-                owner_email="author@example.com",
-            ),
-            QaFailure(
-                task_id="task/1",
-                task_name="Task <One>",
-                task_version_id="task/1@v2",
-                reason="verdict job failed — boom",
-                owner_email="author@example.com",
-            ),
-        ],
     )
 
     assert [alert.key for alert in alerts] == ["qa-failed:task/1@v2"]
@@ -638,6 +714,103 @@ async def test_send_alerts_prefixes_mentions_and_looks_up_after_claiming(
     await send_alerts("https://hooks.slack.test", alerts, bot_token="xoxb-token")
     assert posted == ["<@U123> <@U456>\nbody"]
     assert lookups == []
+
+
+@pytest.mark.asyncio
+async def test_send_alerts_looks_an_email_up_once_per_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[str] = []
+    lookups: list[str] = []
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    async def lookup(_token: str, email: str) -> str | None:
+        lookups.append(email)
+        return "U123"
+
+    _claim_stubs(monkeypatch, set(), set())
+    monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert("trial:1:100", "one", mention_emails=("owner@example.com",)),
+            SlackAlert("trial:2:100", "two", mention_emails=("owner@example.com",)),
+        ],
+        bot_token="xoxb-token",
+    )
+
+    assert posted == ["<@U123>\none", "<@U123>\ntwo"]
+    assert lookups == ["owner@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_send_alerts_caches_a_terminal_lookup_miss_for_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[str] = []
+    lookups: list[str] = []
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    async def lookup(_token: str, email: str) -> str | None:
+        lookups.append(email)
+        return None
+
+    _claim_stubs(monkeypatch, set(), set())
+    monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert("trial:1:100", "one", mention_emails=("nobody@example.com",)),
+            SlackAlert("trial:2:100", "two", mention_emails=("nobody@example.com",)),
+        ],
+        bot_token="xoxb-token",
+    )
+
+    # "No Slack account" is settled: ask once, then post both unprefixed.
+    assert posted == ["one", "two"]
+    assert lookups == ["nobody@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_send_alerts_does_not_cache_a_transient_lookup_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[str] = []
+    lookups: list[str] = []
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    async def lookup(_token: str, email: str) -> str | None:
+        lookups.append(email)
+        if len(lookups) == 1:
+            raise RuntimeError("slack user lookup failed: ratelimited")
+        return "U123"
+
+    _claim_stubs(monkeypatch, set(), set())
+    monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert("trial:1:100", "one", mention_emails=("owner@example.com",)),
+            SlackAlert("trial:2:100", "two", mention_emails=("owner@example.com",)),
+        ],
+        bot_token="xoxb-token",
+    )
+
+    # A throttled lookup is not an answer, so it must not poison the cache.
+    assert posted == ["one", "<@U123>\ntwo"]
+    assert lookups == ["owner@example.com", "owner@example.com"]
 
 
 @pytest.mark.asyncio
@@ -984,10 +1157,9 @@ async def test_send_owner_dms_dedups_a_task_version_per_recipient(
 
     now = datetime.now(timezone.utc)
 
-    def failed(trial_id: str, owner_email: str) -> FailedTrial:
+    def failed(name: str, owner_email: str) -> FailedTrial:
         return FailedTrial(
-            id=trial_id,
-            name=trial_id,
+            name=name,
             task_id="task/1",
             task_version_id="task/1@v2",
             experiment_name="Exp",
@@ -1000,14 +1172,14 @@ async def test_send_owner_dms_dedups_a_task_version_per_recipient(
         await send_owner_dms(
             "xoxb-token",
             build_alerts(
-                [],
-                [],
+                AlertCandidates(
+                    failed_trials=[
+                        failed("trial-1", "ada@example.com"),
+                        failed("trial-2", "ada@example.com"),
+                    ],
+                ),
                 recent_cutoff=now - timedelta(hours=2),
                 dashboard_url="https://www.oddish.app",
-                failed_trials=[
-                    failed("trial-1", "ada@example.com"),
-                    failed("trial-2", "ada@example.com"),
-                ],
             ),
         )
 
@@ -1652,6 +1824,185 @@ async def test_load_alerts_reports_crashed_trials_and_qa_failures() -> None:
 
 
 @pytest.mark.asyncio
+async def test_load_alerts_matches_harbor_exception_only_when_present() -> None:
+    # ``result["harbor_exception"].astext.isnot(None)`` renders as ``->>``, which
+    # yields SQL NULL for a missing key, a JSON null, and a NULL column alike --
+    # only a real exception payload marks the trial broken.
+    suffix = uuid4().hex[:12]
+    experiment_id = f"slack-exp-{suffix}"
+    org_id = f"slack-org-{suffix}"
+    broken_id = f"slack-broken-task-{suffix}"
+    now = datetime.now(timezone.utc)
+    results: dict[str, dict | None] = {
+        f"slack-null-task-{suffix}": None,
+        f"slack-empty-task-{suffix}": {},
+        f"slack-jsonnull-task-{suffix}": {"harbor_exception": None},
+        broken_id: {"harbor_exception": {"type": "RuntimeError", "message": "boom"}},
+    }
+    task_ids = list(results)
+
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="JSONB org", slug=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name="JSONB experiment", org_id=org_id)
+        )
+        for task_id, result in results.items():
+            session.add(
+                TaskModel(
+                    id=task_id,
+                    name=task_id,
+                    org_id=org_id,
+                    user="test",
+                    task_path="/tmp/test",
+                )
+            )
+            session.add(
+                TrialModel(
+                    id=f"{task_id}-trial",
+                    name=task_id,
+                    task_id=task_id,
+                    experiment_id=experiment_id,
+                    agent="mini-swe-agent",
+                    provider="openai",
+                    model="gpt-5.3",
+                    queue_key="test",
+                    status=TrialStatus.SUCCESS,
+                    origin=TrialOrigin.ODDISH,
+                    is_probe=False,
+                    cost_usd=1,
+                    finished_at=now,
+                    result=result,
+                )
+            )
+
+    try:
+        keys = {alert.key for alert in await load_alerts(now)}
+        assert f"trial-failed:{broken_id}" in keys
+        for task_id in task_ids:
+            if task_id != broken_id:
+                assert f"trial-failed:{task_id}" not in keys
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id.in_(task_ids))
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id.in_(task_ids))
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id == experiment_id
+                )
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_load_alerts_qa_cutoff_and_null_matrix() -> None:
+    suffix = uuid4().hex[:12]
+    org_id = f"slack-org-{suffix}"
+    user_id = f"slack-user-{suffix}"
+    stale_id = f"slack-qa-stale-{suffix}"
+    good_id = f"slack-qa-good-{suffix}"
+    null_verdict_id = f"slack-qa-nullverdict-{suffix}"
+    missing_is_good_id = f"slack-qa-missing-{suffix}"
+    clean_failure_id = f"slack-qa-cleanfail-{suffix}"
+    now = datetime.now(timezone.utc)
+    task_ids = [
+        stale_id,
+        good_id,
+        null_verdict_id,
+        missing_is_good_id,
+        clean_failure_id,
+    ]
+
+    def task(task_id: str, **kwargs) -> TaskModel:
+        return TaskModel(
+            id=task_id,
+            name=task_id,
+            org_id=org_id,
+            user="test",
+            task_path="/tmp/test",
+            created_by_user_id=user_id,
+            **kwargs,
+        )
+
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="QA matrix org", slug=org_id))
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                email="qa-matrix@example.com",
+                name="QA Matrix",
+            )
+        )
+        session.add_all(
+            [
+                # A bad verdict that landed before the watch window opened.
+                task(
+                    stale_id,
+                    verdict={"is_good": False},
+                    verdict_status=VerdictStatus.SUCCESS,
+                    verdict_finished_at=now - timedelta(hours=3),
+                ),
+                task(
+                    good_id,
+                    verdict={"is_good": True},
+                    verdict_status=VerdictStatus.SUCCESS,
+                    verdict_finished_at=now,
+                ),
+                # Verdict column NULL: no is_good to read, so no judgement.
+                task(
+                    null_verdict_id,
+                    verdict_status=VerdictStatus.SUCCESS,
+                    verdict_finished_at=now,
+                ),
+                task(
+                    missing_is_good_id,
+                    verdict={"reasoning": "inconclusive"},
+                    verdict_status=VerdictStatus.SUCCESS,
+                    verdict_finished_at=now,
+                ),
+                # A crashed verdict job with no recorded error.
+                task(
+                    clean_failure_id,
+                    verdict_status=VerdictStatus.FAILED,
+                    verdict_finished_at=now,
+                ),
+            ]
+        )
+
+    try:
+        by_key = {alert.key: alert for alert in await load_alerts(now)}
+        for task_id in (stale_id, good_id, null_verdict_id, missing_is_good_id):
+            assert f"qa-failed:{task_id}" not in by_key
+
+        alert = by_key[f"qa-failed:{clean_failure_id}"]
+        assert alert.dm_only
+        assert alert.recipient_email == "qa-matrix@example.com"
+        assert "Reason: verdict job failed" in alert.text
+        assert "verdict job failed —" not in alert.text
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id.in_(task_ids))
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == user_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@pytest.mark.asyncio
 async def test_load_alerts_reports_failed_verdict_jobs() -> None:
     suffix = uuid4().hex[:12]
     task_id = f"slack-verdict-task-{suffix}"
@@ -1707,19 +2058,35 @@ async def test_load_alerts_reports_failed_verdict_jobs() -> None:
 @pytest.mark.asyncio
 async def test_database_alert_claim_is_durable() -> None:
     alert_key = f"test-alert-{uuid4().hex}"
+    silent_key = f"test-alert-silent-{uuid4().hex}"
+    retry_key = f"retry:{alert_key}"
 
     try:
         assert await notifications._claim_alert(alert_key)
         assert not await notifications._claim_alert(alert_key)
-        await notifications._release_alert(alert_key)
-        assert await notifications._claim_alert(alert_key)
+        assert await notifications._alert_is_pending(alert_key)
+        assert not await notifications._alert_is_sent(alert_key)
+
         await notifications._mark_alert_sent(alert_key)
-        await notifications._release_alert(alert_key)
-        assert not await notifications._claim_alert(alert_key)
+        assert await notifications._alert_is_sent(alert_key)
+        assert not await notifications._alert_is_pending(alert_key)
+
+        # An already-sent key is never re-delivered.
+        assert not await notifications._start_delivery(
+            alert_key, silent=False, retry_key=retry_key
+        )
+
+        # A silent alert claims and completes without asking for a delivery.
+        assert not await notifications._start_delivery(
+            silent_key, silent=True, retry_key=f"retry:{silent_key}"
+        )
+        assert await notifications._alert_is_sent(silent_key)
     finally:
         async with get_session() as session:
             await session.execute(
                 notifications.SlackExpenseAlertModel.__table__.delete().where(
-                    notifications.SlackExpenseAlertModel.alert_key == alert_key
+                    notifications.SlackExpenseAlertModel.alert_key.in_(
+                        [alert_key, silent_key, retry_key, f"retry:{silent_key}"]
+                    )
                 )
             )

@@ -3,14 +3,14 @@ from __future__ import annotations
 import html
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import quote
 
 import httpx
 import modal
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from modal_app import app, image, slack_notification_secrets
@@ -55,6 +55,8 @@ EXPERIMENT_FAILED_RATIO = 0.5
 # Only these are safe to treat as a settled answer and cache.
 _TERMINAL_LOOKUP_ERRORS = frozenset({"users_not_found", "invalid_email"})
 
+_LOOKUP_TIMEOUT_SECONDS = 10
+
 
 @dataclass(frozen=True)
 class ExperimentCandidate:
@@ -95,7 +97,6 @@ class FailedExperiment:
 
 @dataclass(frozen=True)
 class FailedTrial:
-    id: str
     name: str
     task_id: str
     task_version_id: str | None
@@ -111,6 +112,16 @@ class QaFailure:
     task_version_id: str | None
     reason: str
     owner_email: str | None = None
+
+
+@dataclass(frozen=True)
+class AlertCandidates:
+    experiments: list[ExperimentCandidate] = field(default_factory=list)
+    trials: list[TrialSpend] = field(default_factory=list)
+    unpriced_models: list[UnpricedModel] = field(default_factory=list)
+    failed_experiments: list[FailedExperiment] = field(default_factory=list)
+    failed_trials: list[FailedTrial] = field(default_factory=list)
+    qa_failures: list[QaFailure] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -153,6 +164,12 @@ def _mention_targets(*emails: str | None) -> tuple[str, ...]:
     return tuple(targets)
 
 
+def _verdict_reason(verdict_status: VerdictStatus | None, error: str | None) -> str:
+    if verdict_status != VerdictStatus.FAILED:
+        return "verdict judged this task not good"
+    return f"verdict job failed — {error}" if error else "verdict job failed"
+
+
 def _experiment_milestones(
     total_cost: float,
     first_threshold: float,
@@ -171,28 +188,32 @@ def _experiment_milestones(
 
 
 def build_alerts(
-    experiments: list[ExperimentCandidate],
-    trials: list[TrialSpend],
+    candidates: AlertCandidates,
     *,
     recent_cutoff: datetime,
     dashboard_url: str,
-    experiment_threshold_usd: float = EXPERIMENT_MILESTONE_USD,
-    experiment_repeat_usd: float = EXPERIMENT_REPEAT_USD,
-    trial_threshold_usd: float = TRIAL_PING_USD,
-    trial_escalation_usd: float = TRIAL_ESCALATION_USD,
-    unpriced_models: list[UnpricedModel] | None = None,
-    failed_experiments: list[FailedExperiment] | None = None,
-    failed_trials: list[FailedTrial] | None = None,
-    qa_failures: list[QaFailure] | None = None,
-    experiment_failed_ratio: float = EXPERIMENT_FAILED_RATIO,
-    always_ping_emails: tuple[str, ...] = ALWAYS_PING_EMAILS,
 ) -> list[SlackAlert]:
     trials_by_experiment: dict[str, list[TrialSpend]] = {}
-    for trial in trials:
+    for trial in candidates.trials:
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
 
     alerts: list[SlackAlert] = []
-    for experiment in experiments:
+    seen_failure_dms: set[tuple[str, str]] = set()
+
+    def add_failure_dm(key: str, recipient: str | None, text: str) -> None:
+        # Dedup on (key, recipient), not key alone: many broken trials on one
+        # task version collapse to a single DM per person, but two owners
+        # running that same version each still hear about it. The durable DM
+        # claim key carries the recipient too, so both agree.
+        dedup = (key, (recipient or "").strip().lower())
+        if dedup in seen_failure_dms:
+            return
+        seen_failure_dms.add(dedup)
+        alerts.append(
+            SlackAlert(key=key, text=text, recipient_email=recipient, dm_only=True)
+        )
+
+    for experiment in candidates.experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
         recent_spend = sum(
@@ -203,8 +224,8 @@ def build_alerts(
         baseline_cost = total_cost - recent_spend
         milestones = _experiment_milestones(
             total_cost,
-            experiment_threshold_usd,
-            experiment_repeat_usd,
+            EXPERIMENT_MILESTONE_USD,
+            EXPERIMENT_REPEAT_USD,
         )
         if milestones:
             agent_costs: dict[str, float] = {}
@@ -250,15 +271,10 @@ def build_alerts(
                 )
 
         for trial in experiment_trials:
-            if (
-                trial.finished_at < recent_cutoff
-                or trial.cost_usd <= trial_threshold_usd
-            ):
+            if trial.finished_at < recent_cutoff or trial.cost_usd <= TRIAL_PING_USD:
                 continue
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
-            # One message per trial: clearing the escalation floor widens the
-            # mention list rather than emitting a second alert.
-            escalated = trial.cost_usd > trial_escalation_usd
+            escalated = trial.cost_usd > TRIAL_ESCALATION_USD
             heading = (
                 ":rotating_light: *Very expensive trial*"
                 if escalated
@@ -266,7 +282,7 @@ def build_alerts(
             )
             alerts.append(
                 SlackAlert(
-                    key=f"trial:{trial.id}:{trial_threshold_usd:g}",
+                    key=f"trial:{trial.id}:{TRIAL_PING_USD:g}",
                     text=(
                         f"{heading}\n"
                         f"Title: `{_escape(trial.name)}`\n"
@@ -278,89 +294,59 @@ def build_alerts(
                     ),
                     mention_emails=_mention_targets(
                         experiment.owner_email,
-                        *(always_ping_emails if escalated else ()),
+                        *(ALWAYS_PING_EMAILS if escalated else ()),
                     ),
                 )
             )
 
-    for failed in failed_experiments or []:
+    for failed in candidates.failed_experiments:
         if (
             not failed.failed_trials
             or not failed.total_trials
-            or failed.failed_trials < failed.total_trials * experiment_failed_ratio
+            or failed.failed_trials < failed.total_trials * EXPERIMENT_FAILED_RATIO
         ):
             continue
-        alerts.append(
-            SlackAlert(
-                key=f"experiment-failed:{failed.id}",
-                text=(
-                    ":x: *Experiment failed*\n"
-                    f"Title: *{_escape(failed.name)}*\n"
-                    f"Failed trials: *{failed.failed_trials}/{failed.total_trials}*\n"
-                    f"Owner: *{_escape(failed.owner or 'Unknown')}*\n"
-                    f"<{dashboard_url}/experiments/"
-                    f"{quote(quote(failed.id, safe=''), safe='')}|open experiment>"
-                ),
-                recipient_email=failed.owner_email,
-                dm_only=True,
-            )
+        add_failure_dm(
+            f"experiment-failed:{failed.id}",
+            failed.owner_email,
+            ":x: *Experiment failed*\n"
+            f"Title: *{_escape(failed.name)}*\n"
+            f"Failed trials: *{failed.failed_trials}/{failed.total_trials}*\n"
+            f"Owner: *{_escape(failed.owner or 'Unknown')}*\n"
+            f"<{dashboard_url}/experiments/"
+            f"{quote(quote(failed.id, safe=''), safe='')}|open experiment>",
         )
 
-    # One alert per (task version, recipient): many broken trials on a version
-    # collapse to a single DM per person, but two owners running the same
-    # version each still hear about it. The DM claim key carries the recipient
-    # too, so this dedup and the durable one agree.
-    seen_failures: set[tuple[str, str]] = set()
-    for failed_trial in failed_trials or []:
+    for failed_trial in candidates.failed_trials:
         bucket = _version_bucket(failed_trial.task_id, failed_trial.task_version_id)
-        key = f"trial-failed:{bucket}"
-        dedup = (key, (failed_trial.owner_email or "").strip().lower())
-        if dedup in seen_failures:
-            continue
-        seen_failures.add(dedup)
         task_url = _task_url(
             dashboard_url, failed_trial.task_id, failed_trial.task_version_id
         )
-        alerts.append(
-            SlackAlert(
-                key=key,
-                text=(
-                    ":boom: *Trial failed*\n"
-                    f"Title: `{_escape(failed_trial.name)}`\n"
-                    f"Experiment: *{_escape(failed_trial.experiment_name)}*\n"
-                    f"Owner: *{_escape(failed_trial.owner or 'Unknown')}*\n"
-                    f"<{task_url}|open task>"
-                ),
-                recipient_email=failed_trial.owner_email,
-                dm_only=True,
-            )
+        add_failure_dm(
+            f"trial-failed:{bucket}",
+            failed_trial.owner_email,
+            ":boom: *Trial failed*\n"
+            f"Title: `{_escape(failed_trial.name)}`\n"
+            f"Experiment: *{_escape(failed_trial.experiment_name)}*\n"
+            f"Owner: *{_escape(failed_trial.owner or 'Unknown')}*\n"
+            f"<{task_url}|open task>",
         )
 
-    for qa_failure in qa_failures or []:
+    for qa_failure in candidates.qa_failures:
         bucket = _version_bucket(qa_failure.task_id, qa_failure.task_version_id)
-        key = f"qa-failed:{bucket}"
-        dedup = (key, (qa_failure.owner_email or "").strip().lower())
-        if dedup in seen_failures:
-            continue
-        seen_failures.add(dedup)
         task_url = _task_url(
             dashboard_url, qa_failure.task_id, qa_failure.task_version_id
         )
-        alerts.append(
-            SlackAlert(
-                key=key,
-                text=(
-                    ":mag: *QA failed*\n"
-                    f"Task: *{_escape(qa_failure.task_name)}*\n"
-                    f"Reason: {_escape(qa_failure.reason)}\n"
-                    f"<{task_url}|open task>"
-                ),
-                recipient_email=qa_failure.owner_email,
-                dm_only=True,
-            )
+        add_failure_dm(
+            f"qa-failed:{bucket}",
+            qa_failure.owner_email,
+            ":mag: *QA failed*\n"
+            f"Task: *{_escape(qa_failure.task_name)}*\n"
+            f"Reason: {_escape(qa_failure.reason)}\n"
+            f"<{task_url}|open task>",
         )
 
-    for unpriced in unpriced_models or []:
+    for unpriced in candidates.unpriced_models:
         plural = "s" if unpriced.trial_count != 1 else ""
         task_url = f"{dashboard_url}/tasks/{quote(unpriced.task_id, safe='')}"
         alerts.append(
@@ -693,7 +679,6 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     ]
     failed_trial_records = [
         FailedTrial(
-            id=str(row.id),
             name=str(row.name),
             task_id=str(row.task_id),
             task_version_id=row.task_version_id,
@@ -708,11 +693,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             task_id=str(row.id),
             task_name=str(row.name),
             task_version_id=row.current_version_id,
-            reason=(
-                f"verdict job failed — {row.verdict_error}"
-                if row.verdict_status == VerdictStatus.FAILED
-                else "verdict judged this task not good"
-            ),
+            reason=_verdict_reason(row.verdict_status, row.verdict_error),
             owner_email=row.owner_email,
         )
         for row in qa_rows
@@ -721,14 +702,16 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         "ODDISH_DASHBOARD_URL", "https://www.oddish.app"
     ).rstrip("/")
     return build_alerts(
-        experiments,
-        trials,
+        AlertCandidates(
+            experiments=experiments,
+            trials=trials,
+            unpriced_models=unpriced_models,
+            failed_experiments=failed_experiments,
+            failed_trials=failed_trial_records,
+            qa_failures=qa_failures,
+        ),
         recent_cutoff=recent_cutoff,
         dashboard_url=dashboard_url,
-        unpriced_models=unpriced_models,
-        failed_experiments=failed_experiments,
-        failed_trials=failed_trial_records,
-        qa_failures=qa_failures,
     )
 
 
@@ -739,7 +722,10 @@ async def _post(webhook_url: str, text: str) -> None:
 
 
 async def _lookup_slack_user(bot_token: str, email: str) -> str | None:
-    async with httpx.AsyncClient(timeout=30) as client:
+    # An escalated trial resolves five mentions before its webhook post, so a
+    # 30s-per-lookup budget could outlive the function timeout and strand the
+    # alert claimed-but-unsent.
+    async with httpx.AsyncClient(timeout=_LOOKUP_TIMEOUT_SECONDS) as client:
         response = await client.get(
             "https://slack.com/api/users.lookupByEmail",
             params={"email": email},
@@ -806,16 +792,6 @@ async def _mark_alert_sent(*alert_keys: str) -> None:
             update(SlackExpenseAlertModel)
             .where(SlackExpenseAlertModel.alert_key.in_(alert_keys))
             .values(notified_at=datetime.now(timezone.utc))
-        )
-
-
-async def _release_alert(alert_key: str) -> None:
-    async with get_session() as session:
-        await session.execute(
-            delete(SlackExpenseAlertModel).where(
-                SlackExpenseAlertModel.alert_key == alert_key,
-                SlackExpenseAlertModel.notified_at.is_(None),
-            )
         )
 
 
@@ -938,7 +914,6 @@ async def send_alerts(
 async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
     slack_user_ids: dict[str, str | None] = {}
     for alert in alerts:
-        # Cost alerts ping in-channel now; only failure alerts still DM.
         if not alert.dm_only:
             continue
         recipient = (alert.recipient_email or "").strip().lower()
