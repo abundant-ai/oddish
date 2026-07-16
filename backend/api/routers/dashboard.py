@@ -28,9 +28,35 @@ class CostLeaderboardResponse(BaseModel):
     leaders: list[CostLeaderboardEntry]
 
 
+def _leaderboard_name(
+    ranked: CostLeaderboardUser,
+    users: dict[str, tuple[str | None, str | None, str | None]],
+) -> str | None:
+    """Safe display label: name, else @handle, else the email local part.
+
+    A GitHub-identity fallback bucket has no registered user and carries its
+    own precomputed ``@handle`` label. For registered users the email local
+    part keeps unlinked accounts on the board; the full address must never
+    be returned.
+    """
+    if ranked.user_id is None:
+        return (ranked.label or "").strip() or None
+    user_row = users.get(ranked.user_id)
+    if user_row is None:
+        return None
+    user_name, github_username, email = user_row
+    name = (user_name or "").strip()
+    if name:
+        return name
+    handle = (github_username or "").strip().lstrip("@")
+    if handle:
+        return f"@{handle}"
+    return (email or "").split("@", 1)[0].strip() or None
+
+
 def _leaderboard_entries(
     ranked_users: list[CostLeaderboardUser],
-    users: dict[str, tuple[str | None, str | None]],
+    users: dict[str, tuple[str | None, str | None, str | None]],
     *,
     limit: int,
     rank_offset: int = 0,
@@ -38,13 +64,7 @@ def _leaderboard_entries(
     """Project internal ids down to the leaderboard's intentionally tiny API."""
     leaders: list[CostLeaderboardEntry] = []
     for rank, ranked in enumerate(ranked_users, start=rank_offset + 1):
-        user_label = users.get(ranked.user_id)
-        if user_label is None:
-            continue
-        user_name, github_username = user_label
-        name = (user_name or "").strip()
-        if not name and github_username:
-            name = f"@{github_username.strip().lstrip('@')}"
+        name = _leaderboard_name(ranked, users)
         if not name:
             continue
         leaders.append(
@@ -72,18 +92,26 @@ async def get_cost_leaderboard(
         leaders: list[CostLeaderboardEntry] = []
         for offset in range(0, len(ranked_users), limit):
             batch = ranked_users[offset : offset + limit]
-            rows = await session.execute(
-                select(UserModel.id, UserModel.name, UserModel.github_username)
-                .where(
-                    UserModel.id.in_([entry.user_id for entry in batch]),
-                    UserModel.org_id == auth.org_id,
+            batch_user_ids = [entry.user_id for entry in batch if entry.user_id]
+            users: dict[str, tuple[str | None, str | None, str | None]] = {}
+            if batch_user_ids:
+                rows = await session.execute(
+                    select(
+                        UserModel.id,
+                        UserModel.name,
+                        UserModel.github_username,
+                        UserModel.email,
+                    )
+                    .where(
+                        UserModel.id.in_(batch_user_ids),
+                        UserModel.org_id == auth.org_id,
+                    )
+                    .execution_options(include_deleted=True)
                 )
-                .execution_options(include_deleted=True)
-            )
-            users = {
-                user_id: (name, github_username)
-                for user_id, name, github_username in rows.all()
-            }
+                users = {
+                    user_id: (name, github_username, email)
+                    for user_id, name, github_username, email in rows.all()
+                }
             leaders.extend(
                 _leaderboard_entries(
                     batch,
