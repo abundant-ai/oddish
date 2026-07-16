@@ -17,6 +17,15 @@ from oddish.evals.primitives import SubAnalysis
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _stub_storage(monkeypatch):
+    class _NoopStorage:
+        async def upload_bytes(self, data, s3_key, *, content_type=None):
+            return None
+    monkeypatch.setattr(at, "get_storage_client", lambda: _NoopStorage())
+
+
 COHORT = [
     SubAnalysis(
         trial_id="bad-1", trajectory_link="/tasks/t1/probe/bad-1",
