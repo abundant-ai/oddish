@@ -24,6 +24,12 @@ ASSIGNED_QUEUE_KEY_ENV = "ODDISH_WORKER_QUEUE_KEY"
 async def run_worker() -> None:
     """Run the queue worker."""
     configure_observability("oddish-worker")
+
+    from oddish.core.llm import set_usage_recorder
+    from oddish.db.llm_usage import record_llm_usage
+
+    set_usage_recorder(record_llm_usage)
+
     console.print("[green]Starting Oddish queue worker...[/green]")
     log_local_storage_snapshot(settings.harbor_jobs_dir)
 

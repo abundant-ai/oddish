@@ -189,6 +189,7 @@ def classify_trial(
     task_dir: str | Path,
     *,
     trial_agent: str | None = None,
+    trial_id: str | None = None,
     model: str = ANALYSIS_MODEL,
     verbose: bool = False,
     timeout: int = 300,
@@ -196,7 +197,7 @@ def classify_trial(
     """Classify a single trial outcome."""
     classifier = TrialClassifier(model=model, verbose=verbose, timeout=timeout)
     return classifier.classify_trial_sync(
-        Path(trial_dir), Path(task_dir), trial_agent=trial_agent
+        Path(trial_dir), Path(task_dir), trial_agent=trial_agent, trial_id=trial_id
     )
 
 
@@ -528,9 +529,12 @@ class TrialClassifier:
         task_dir: Path,
         *,
         trial_agent: str | None = None,
+        trial_id: str | None = None,
     ) -> TrialClassification:
         return asyncio.run(
-            self.classify_trial(trial_dir, task_dir, trial_agent=trial_agent)
+            self.classify_trial(
+                trial_dir, task_dir, trial_agent=trial_agent, trial_id=trial_id
+            )
         )
 
 

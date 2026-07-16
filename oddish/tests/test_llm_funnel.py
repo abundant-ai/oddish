@@ -262,6 +262,21 @@ async def test_complete_does_not_retry_non_retryable(recorder, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_complete_coerces_list_content_to_text(recorder, monkeypatch):
+    async def fake(**kwargs):
+        response = _fake_response()
+        response.choices[0].message.content = [
+            {"type": "text", "text": '{"is_good":'},
+            {"type": "text", "text": " true}"},
+        ]
+        return response
+
+    monkeypatch.setattr(litellm, "acompletion", fake)
+    result = await complete(handler="task_verdict", prompt="p", model="claude-haiku-4-5")
+    assert result.text == '{"is_good": true}'
+
+
+@pytest.mark.asyncio
 async def test_record_usage_swallows_recorder_errors():
     async def broken(row):
         raise RuntimeError("db down")

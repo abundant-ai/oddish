@@ -197,7 +197,13 @@ def _response_text(response: Any) -> str:
     choices = getattr(response, "choices", None) or []
     if not choices:
         return ""
-    return getattr(getattr(choices[0], "message", None), "content", None) or ""
+    content = getattr(getattr(choices[0], "message", None), "content", None)
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return content or ""
 
 
 async def complete(
