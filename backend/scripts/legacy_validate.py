@@ -53,6 +53,7 @@ RENDER_CRITICAL = ["experiment_id", "task_id", "status", "provider", "queue_key"
 @app.function(image=image, secrets=[secret, aws_secret], timeout=3600)
 async def validate(scope_base: str | None, scope_run: str | None,
                    scope_pr: int | None, sample: int) -> bool:
+    import json
     import random
 
     import aioboto3
@@ -179,17 +180,38 @@ async def validate(scope_base: str | None, scope_run: str | None,
     async with session.client("s3", region_name=settings.s3_region or "us-east-1") as s3:
         for r in rows:
             prefix = r["prefix"]
-            # reward.txt (well-known format: a single number) must equal trial.reward
-            for key in (f"{prefix}verifier/reward.txt", f"{prefix}verifier/verifier/reward.txt"):
+            # Compare trial.reward against the SAME sources build_spec reads, in
+            # the same order: plain-number files first, then a reward.json
+            # fallback. Checking only reward.txt would let a trial whose score
+            # lives in reward-float.txt/reward.json pass unverified. A trial with
+            # no reward source at all correctly has reward=None (not a mismatch).
+            src = None
+            for key in (f"{prefix}verifier/reward.txt",
+                        f"{prefix}verifier/verifier/reward.txt",
+                        f"{prefix}verifier/reward-float.txt"):
                 try:
                     body = await (await s3.get_object(Bucket=DEFAULT_BUCKET, Key=key))["Body"].read()
-                    src = float(body.decode().strip())
-                    if r["reward"] is None or abs(float(r["reward"]) - src) > 1e-9:
-                        reward_mismatch += 1
-                        print(f"    reward mismatch {r['id']}: db={r['reward']} s3={src}")
-                    break
+                    src = float(body.decode().strip()); break
                 except Exception:
                     continue
+            if src is None:
+                try:
+                    body = await (await s3.get_object(
+                        Bucket=DEFAULT_BUCKET, Key=f"{prefix}verifier/reward.json"))["Body"].read()
+                    j = json.loads(body)
+                    if isinstance(j, (int, float)):
+                        src = float(j)
+                    elif isinstance(j, dict):
+                        for kk in ("reward", "score", "value"):
+                            v = j.get(kk)
+                            if isinstance(v, (int, float)):
+                                src = float(v); break
+                except Exception:
+                    pass
+            if src is not None:
+                if r["reward"] is None or abs(float(r["reward"]) - src) > 1e-9:
+                    reward_mismatch += 1
+                    print(f"    reward mismatch {r['id']}: db={r['reward']} s3={src}")
             # Prove orig_s3_src points at a real trial dir. trial.log is the
             # universal signature (present for every discovered trial); a miss
             # means the stored prefix is wrong (a transfer bug). result.json is

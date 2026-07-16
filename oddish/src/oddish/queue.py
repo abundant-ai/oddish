@@ -1327,6 +1327,13 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
+        # No QA job runs for this task (analysis off, or nothing QA-eligible),
+        # so clear any verdict bookkeeping left over from an earlier
+        # VERDICT_PENDING pass -- otherwise the task can end COMPLETED while
+        # verdict_status still reads QUEUED (e.g. a task bounced back to RUNNING
+        # by a late-arriving trial, then completed here with no eligible trials).
+        task.verdict_status = None
+        task.verdict_error = None
 
     await session.flush()
     return True

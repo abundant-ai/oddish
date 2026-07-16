@@ -234,6 +234,43 @@ async def test_stage_completes_when_no_qa_eligible_trials(monkeypatch):
     assert task.verdict_status is None
 
 
+@pytest.mark.asyncio
+async def test_stage_clears_stale_verdict_status_on_completion(monkeypatch):
+    """Completing with nothing QA-eligible must CLEAR a stale verdict_status.
+
+    A task can already carry verdict_status=QUEUED from an earlier
+    VERDICT_PENDING pass (e.g. a late-arriving trial bounced it back to
+    RUNNING). If it now completes here with no eligible trials, leaving that
+    QUEUED behind would end the task COMPLETED while verdict_status still reads
+    QUEUED -- an inconsistent terminal state.
+    """
+    trial = SimpleNamespace(task_id="task-4")
+    task = SimpleNamespace(
+        id="task-4",
+        org_id="org-1",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=VerdictStatus.QUEUED,  # stale from a prior pass
+        verdict_error="left over",
+        finished_at=None,
+    )
+    session = _StageSession(
+        trial=trial, task=task, pending_count=0, qa_eligible=0
+    )
+
+    async def fail_verdict_enqueue(*_args, **_kwargs):
+        raise AssertionError("no QA job when there is nothing to classify")
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fail_verdict_enqueue)
+
+    started = await queue_mod.maybe_start_qa_stage(session, "task-4-0")
+
+    assert started is True
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict_status is None
+    assert task.verdict_error is None
+
+
 # ---------------------------------------------------------------------------
 # run_task_qa_job: one job classifies all trials, then synthesizes the verdict
 # ---------------------------------------------------------------------------
