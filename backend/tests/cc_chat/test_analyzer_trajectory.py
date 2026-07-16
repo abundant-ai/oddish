@@ -5,8 +5,6 @@ import pytest
 
 from api.services.cc_chat import analyzer_trajectory as at
 
-pytestmark = pytest.mark.asyncio
-
 
 class _FakeStorage:
     """Records uploads. Mirrors StorageClient.upload_bytes' signature only."""
@@ -43,6 +41,7 @@ def test_reduce_slug():
     assert at.REDUCE_SLUG == "reduce"
 
 
+@pytest.mark.asyncio
 async def test_persist_turn_uploads_jsonl(monkeypatch):
     storage = _FakeStorage()
     _install(monkeypatch, storage)
@@ -59,6 +58,7 @@ async def test_persist_turn_uploads_jsonl(monkeypatch):
     assert [json.loads(x) for x in lines] == events
 
 
+@pytest.mark.asyncio
 async def test_persist_turn_preserves_events_verbatim(monkeypatch):
     """The record must be raw, not rendered: render_event truncates tool
     inputs to 200 chars, which would hide whether --tail-bytes was widened."""
@@ -76,6 +76,7 @@ async def test_persist_turn_preserves_events_verbatim(monkeypatch):
     assert line["message"]["content"][0]["input"]["command"] == command
 
 
+@pytest.mark.asyncio
 async def test_persist_turn_skips_empty_events(monkeypatch):
     storage = _FakeStorage()
     _install(monkeypatch, storage)
@@ -86,6 +87,7 @@ async def test_persist_turn_skips_empty_events(monkeypatch):
     assert storage.calls == []
 
 
+@pytest.mark.asyncio
 async def test_persist_turn_swallows_upload_failure(monkeypatch):
     storage = _FakeStorage(exc=RuntimeError("s3 down"))
     _install(monkeypatch, storage)
@@ -95,6 +97,7 @@ async def test_persist_turn_swallows_upload_failure(monkeypatch):
                           events=[{"type": "result"}])
 
 
+@pytest.mark.asyncio
 async def test_persist_turn_lets_cancellation_propagate(monkeypatch):
     """CancelledError is a BaseException; swallowing it would break
     run_cohort's asyncio.timeout."""
