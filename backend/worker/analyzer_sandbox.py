@@ -21,7 +21,7 @@ from api.services.cc_chat.analyzer_cohort import run_cohort
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
 from api.services.cc_chat.daytona_client import RealDaytonaClient
 from oddish.config import settings
-from oddish.core.analyzer_inputs import subanalysis_from_trial
+from oddish.core.analyzer_inputs import models_by_task_from_rows, subanalysis_from_trial
 from oddish.evals.analyzer.bucketing import bucket_subanalyses
 from oddish.evals.analyzer.core import build_roster
 from oddish.evals.analyzer.schemas import (
@@ -147,6 +147,7 @@ async def sandbox_eval_rows(
             host_by_trial=host_by_trial,
             analyzer_id=analyzer_id, anthropic_key=anthropic_key,
             api_base=api_base, api_key=api_key, cli_src=cli_src,
+            models_by_task=models_by_task_from_rows(rows),
         )
 
     jobs = [(b, c) for b, c in (("bad", bad), ("good", good)) if c]
