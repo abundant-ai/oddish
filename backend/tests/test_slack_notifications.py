@@ -1035,6 +1035,8 @@ async def test_lookup_slack_user_parses_slack_responses(
         assert request.headers["Authorization"] == "Bearer xoxb-token"
         if request.url.params["email"] == "owner@example.com":
             return httpx.Response(200, json={"ok": True, "user": {"id": "U123"}})
+        if request.url.params["email"] == "throttled@example.com":
+            return httpx.Response(200, json={"ok": False, "error": "ratelimited"})
         return httpx.Response(200, json={"ok": False, "error": "users_not_found"})
 
     _mock_slack_http(monkeypatch, handler)
@@ -1047,6 +1049,42 @@ async def test_lookup_slack_user_parses_slack_responses(
         await notifications._lookup_slack_user("xoxb-token", "missing@example.com")
         is None
     )
+    # A transient error must raise rather than read as "no Slack account":
+    # callers settle a None by marking the alert delivered forever.
+    with pytest.raises(RuntimeError, match="ratelimited"):
+        await notifications._lookup_slack_user("xoxb-token", "throttled@example.com")
+
+
+@pytest.mark.asyncio
+async def test_send_owner_dms_retries_a_throttled_lookup_instead_of_settling_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claimed: set[str] = set()
+    sent: set[str] = set()
+    posted: list[str] = []
+
+    async def lookup(_token: str, _email: str) -> str | None:
+        raise RuntimeError("slack user lookup failed: ratelimited")
+
+    async def post_dm(_token: str, _user: str, text: str) -> None:
+        posted.append(text)
+
+    _claim_stubs(monkeypatch, claimed, sent)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+    monkeypatch.setattr(notifications, "_post_dm", post_dm)
+
+    alert = SlackAlert(
+        "trial-failed:t-v1",
+        "broken",
+        recipient_email="owner@example.com",
+        dm_only=True,
+    )
+    await send_owner_dms("xoxb-token", [alert])
+
+    assert posted == []
+    # Never marked delivered, and a retry marker keeps it eligible next run.
+    assert sent == set()
+    assert "retry:dm:trial-failed:t-v1:owner@example.com" in claimed
 
 
 @pytest.mark.asyncio

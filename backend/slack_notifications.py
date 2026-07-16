@@ -51,6 +51,10 @@ TRIAL_PING_USD = 100.0
 TRIAL_ESCALATION_USD = 1000.0
 EXPERIMENT_FAILED_RATIO = 0.5
 
+# Slack lookup errors that genuinely mean "this person has no Slack account".
+# Only these are safe to treat as a settled answer and cache.
+_TERMINAL_LOOKUP_ERRORS = frozenset({"users_not_found", "invalid_email"})
+
 
 @dataclass(frozen=True)
 class ExperimentCandidate:
@@ -745,9 +749,14 @@ async def _lookup_slack_user(bot_token: str, email: str) -> str | None:
         payload = response.json()
     if payload.get("ok"):
         return str(payload["user"]["id"])
-    log.warning(
-        "slack user lookup failed email=%s error=%s", email, payload.get("error")
-    )
+    error = payload.get("error")
+    if error not in _TERMINAL_LOOKUP_ERRORS:
+        # Everything else -- ratelimited, service_unavailable, a revoked token --
+        # is transient or operator-fixable. Raising keeps it on the retry path;
+        # returning None here would let callers record it as a settled "no Slack
+        # account" and drop the message for good.
+        raise RuntimeError(f"slack user lookup failed: {error}")
+    log.warning("slack user lookup failed email=%s error=%s", email, error)
     return None
 
 
@@ -949,9 +958,10 @@ async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
                     bot_token, recipient
                 )
             if not (slack_user_id := slack_user_ids[recipient]):
-                # No Slack account is a terminal channel outcome, not a
-                # transient post failure. Complete both keys so an old loud
-                # retry cannot keep a now-silent milestone alive forever.
+                # Reaching None means the lookup settled on "no Slack account"
+                # -- transient errors raise instead. Complete both keys so an
+                # old loud retry cannot keep a now-silent milestone alive
+                # forever.
                 await _mark_alert_sent(claim_key, retry_key)
                 continue
             await _post_dm(bot_token, slack_user_id, alert.text)
