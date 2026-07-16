@@ -6,7 +6,8 @@ checks, and shielded persist are reused untouched.
 
 Unlike the core path this never reads S3: the agent pulls each trajectory
 itself via the oddish-query CLI, which is the whole point (a trajectory no
-longer has to fit a context window).
+longer has to fit a context window). It does write each turn's own trajectory
+back to S3 (run_cohort -> persist_turn), for later debugging.
 """
 
 from __future__ import annotations
