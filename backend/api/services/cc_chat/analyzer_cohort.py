@@ -1,7 +1,8 @@
 """Run one cohort's MAP -> REDUCE inside a Daytona sandbox.
 
 One runner, parameterized by bucket. The agent pulls trajectories itself via the
-oddish-query CLI, so nothing here reads S3.
+oddish-query CLI, so nothing here reads S3; it only writes each turn's own
+trajectory back to S3 for later debugging.
 """
 
 from __future__ import annotations
@@ -117,7 +118,8 @@ async def run_cohort(
 ) -> tuple[list[Finding], dict[str, str]]:
     tag = f"[analyzer {analyzer_id}][{bucket}]"
     plan = batches(cohort)
-    # Retained only to serve the parse-fallback; never persisted.
+    # Rendered lines: the parse-fallback's input, never persisted. The raw
+    # events behind them go to S3 per turn (persist_turn).
     stream_lines: list[str] = []
     sandbox = None
     try:
