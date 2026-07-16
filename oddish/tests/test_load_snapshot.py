@@ -64,6 +64,8 @@ async def test_build_load_snapshot_maps_health(monkeypatch):
                 queued_scheduled=0,
                 running=10,
                 limit=48,
+                deploy_limit=48,
+                override_limit=None,
                 fill=10 / 48,
                 oldest_queued_age_seconds=12.0,
                 wait_p50_seconds=3.0,

@@ -338,8 +338,10 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
         updated: dict[str, int] = {}
         log: list[dict] = []
         for cap in health.capacity:
+            if not getattr(cap, "active", True):
+                continue
             queue_key = cap.queue_key
-            base = settings.get_model_concurrency(queue_key)
+            base = getattr(cap, "limit", settings.get_model_concurrency(queue_key))
             # A statically-disabled queue (limit 0) stays disabled: never advise
             # it above zero, so the operator's off switch is honored. Also clear
             # any prior advisory row so a later re-enable starts from the static
@@ -350,7 +352,11 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
                 await _clear_advisory(session, queue_key)
                 continue
             normalized = settings.normalize_queue_key(queue_key)
-            override = settings.model_concurrency_overrides.get(normalized)
+            override = (
+                cap.override_limit
+                if getattr(cap, "override_limit", None) is not None
+                else settings.model_concurrency_overrides.get(normalized)
+            )
             cal = ceiling_cal.get(queue_key)
             # Distrust the TPM bound where token telemetry is sparse (the
             # zero-filled r_tokens average understates per-trial tokens and would

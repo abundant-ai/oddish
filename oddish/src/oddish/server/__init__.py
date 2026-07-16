@@ -57,6 +57,8 @@ from oddish.core.trial_io import (
 from oddish.core.trial_live import read_trial_live_for_id
 from oddish.schemas import TrialRetryRequest
 from oddish.core.admin import (
+    ModelConcurrencySetting,
+    ModelConcurrencyUpdateRequest,
     QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
@@ -65,6 +67,7 @@ from oddish.core.admin import (
     get_queue_slots_core,
     get_queue_status_core,
     get_orphaned_state_core,
+    update_model_concurrency_core,
 )
 from oddish.core.dashboard import get_dashboard_core
 from oddish.core.sharing.public import router as public_router
@@ -918,6 +921,14 @@ async def admin_queue_health() -> QueueHealthResponse:
     """Throughput, per-queue-key capacity fill, and component heartbeats."""
     async with get_session() as session:
         return await get_queue_health_core(session)
+
+
+@api.put("/admin/concurrency", response_model=ModelConcurrencySetting)
+async def admin_update_model_concurrency(
+    request: ModelConcurrencyUpdateRequest,
+) -> ModelConcurrencySetting:
+    async with get_session() as session:
+        return await update_model_concurrency_core(session, request)
 
 
 def run_server(

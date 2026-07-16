@@ -811,10 +811,13 @@ interface QueueThroughputStat {
 
 export interface QueueCapacityStat {
   queue_key: string;
+  active: boolean;
   queued: number;
   queued_scheduled: number;
   running: number;
   limit: number;
+  deploy_limit: number;
+  override_limit: number | null;
   fill: number | null;
   oldest_queued_age_seconds: number | null;
   wait_p50_seconds: number | null;

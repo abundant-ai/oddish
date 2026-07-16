@@ -61,6 +61,7 @@ from modal_app import (
 from backfill_github_id import backfill_github_id
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
+from oddish.core.model_concurrency import get_effective_model_concurrency_limits
 from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
@@ -132,27 +133,20 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 
 
 async def _effective_model_concurrency(queue_key: str) -> int:
-    """The concurrency limit to enforce for one ``queue_key``: the static limit,
-    overlaid with the fresh advisory when dynamic concurrency is on.
-
-    This is the SAME number ``poll_queue`` uses to size the spawn plan, so the
-    worker's ``queue_slots`` lease can't cap the advisory below what the dispatcher
-    planned (nor let the dispatcher over-spawn above the slot pool). Best-effort:
-    a stale/missing/errored advisory decays to the static value, and with the flag
-    off it IS the static value -- so default behavior is unchanged.
-    """
-    static = settings.get_model_concurrency(queue_key)
-    if static <= 0 or not settings.dynamic_model_concurrency:
-        return static
+    fallback = settings.get_model_concurrency(queue_key)
     try:
         async with get_session() as session:
-            advisory_limits = await get_advisory_limits(session)
-        return merge_advisory_over_static({queue_key: static}, advisory_limits).get(
-            queue_key, static
+            limits = await get_effective_model_concurrency_limits(session, (queue_key,))
+            if settings.dynamic_model_concurrency:
+                limits = merge_advisory_over_static(
+                    limits, await get_advisory_limits(session)
+                )
+        return limits.get(settings.normalize_queue_key(queue_key), fallback)
+    except Exception as e:
+        console.print(
+            f"[yellow]Concurrency limit unavailable ({queue_key}): {e}[/yellow]"
         )
-    except Exception as e:  # noqa: BLE001 - advisory read is best-effort
-        console.print(f"[yellow]Advisory limit unavailable ({queue_key}): {e}[/yellow]")
-        return static
+        return fallback
 
 
 async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
@@ -649,22 +643,22 @@ async def poll_queue():
         async def _modal_concurrency_limits(
             queue_keys: tuple[str, ...],
         ) -> dict[str, int]:
-            limits = {
-                queue_key: settings.get_model_concurrency(queue_key)
-                for queue_key in queue_keys
-            }
-            # Single injection point for the self-tuning controller: when enabled,
-            # overlay the fresh per-queue advisory limit on the static one (a stale,
-            # missing, or errored advisory decays to the static value). Best-effort:
-            # a read failure must never block dispatch.
-            if settings.dynamic_model_concurrency:
-                try:
-                    async with get_session() as session:
-                        advisory_limits = await get_advisory_limits(session)
-                    limits = merge_advisory_over_static(limits, advisory_limits)
-                except Exception as e:  # noqa: BLE001 - advisory read is best-effort
-                    console.print(f"[yellow]Advisory limits unavailable: {e}[/yellow]")
-            return limits
+            try:
+                async with get_session() as session:
+                    limits = await get_effective_model_concurrency_limits(
+                        session, queue_keys
+                    )
+                    if settings.dynamic_model_concurrency:
+                        limits = merge_advisory_over_static(
+                            limits, await get_advisory_limits(session)
+                        )
+                return limits
+            except Exception as e:
+                console.print(f"[yellow]Concurrency limits unavailable: {e}[/yellow]")
+                return {
+                    queue_key: settings.get_model_concurrency(queue_key)
+                    for queue_key in queue_keys
+                }
 
         plan = await build_dispatch_plan(
             max_workers=MAX_WORKERS_PER_POLL,

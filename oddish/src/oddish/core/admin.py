@@ -19,6 +19,11 @@ from oddish.core.cost_basis import (
     settled_cost_parts,
 )
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
+from oddish.core.model_concurrency import (
+    MAX_MODEL_CONCURRENCY,
+    get_model_concurrency_overrides,
+    set_model_concurrency_override,
+)
 from oddish.core.quotas import (
     effective_limits_by_org_user_all_orgs,
     get_effective_org_limit,
@@ -689,10 +694,13 @@ class QueueThroughputStat(BaseModel):
 
 class QueueCapacityStat(BaseModel):
     queue_key: str
+    active: bool = True
     queued: int
     queued_scheduled: int
     running: int
     limit: int
+    deploy_limit: int
+    override_limit: int | None
     # Fraction running / limit in [0, 1+] (can exceed 1 if a limit was lowered
     # below the current running count). None when limit is 0.
     fill: float | None
@@ -716,6 +724,33 @@ class QueueHealthResponse(BaseModel):
     dispatcher: QueueRuntimeComponentStatus | None
     reconciler: QueueRuntimeComponentStatus | None
     timestamp: str
+
+
+class ModelConcurrencyUpdateRequest(BaseModel):
+    queue_key: str = Field(min_length=1, max_length=512)
+    limit: int | None = Field(default=None, ge=0, le=MAX_MODEL_CONCURRENCY)
+
+
+class ModelConcurrencySetting(BaseModel):
+    queue_key: str
+    limit: int
+    deploy_limit: int
+    override_limit: int | None
+
+
+async def update_model_concurrency_core(
+    session: AsyncSession,
+    request: ModelConcurrencyUpdateRequest,
+) -> ModelConcurrencySetting:
+    queue_key, limit, override_limit = await set_model_concurrency_override(
+        session, request.queue_key, request.limit
+    )
+    return ModelConcurrencySetting(
+        queue_key=queue_key,
+        limit=limit,
+        deploy_limit=settings.get_model_concurrency(queue_key),
+        override_limit=override_limit,
+    )
 
 
 async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
@@ -835,18 +870,31 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
             current = bucket["oldest"]
             bucket["oldest"] = age if current is None else max(current, age)
 
+    active_queue_keys = set(merged)
+    overrides = await get_model_concurrency_overrides(session)
+    for key in settings.get_known_queue_keys() | overrides.keys():
+        merged.setdefault(
+            key,
+            {"queued": 0, "queued_scheduled": 0, "running": 0, "oldest": None},
+        )
+
     capacity: list[QueueCapacityStat] = []
     for key, bucket in merged.items():
-        limit = settings.get_model_concurrency(key)
+        deploy_limit = settings.get_model_concurrency(key)
+        override_limit = overrides.get(key)
+        limit = override_limit if override_limit is not None else deploy_limit
         running = int(bucket["running"] or 0)
         wait_p50, wait_p95 = wait_by_key.get(key, (None, None))
         capacity.append(
             QueueCapacityStat(
                 queue_key=key,
+                active=key in active_queue_keys,
                 queued=int(bucket["queued"] or 0),
                 queued_scheduled=int(bucket["queued_scheduled"] or 0),
                 running=running,
                 limit=limit,
+                deploy_limit=deploy_limit,
+                override_limit=override_limit,
                 fill=(running / limit) if limit > 0 else None,
                 oldest_queued_age_seconds=bucket["oldest"],
                 wait_p50_seconds=wait_p50,
@@ -855,7 +903,7 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
         )
 
     # Most-pressured first: deepest backlog, then highest fill.
-    capacity.sort(key=lambda c: (c.queued, c.running), reverse=True)
+    capacity.sort(key=lambda c: (-c.queued, -c.running, c.queue_key))
 
     totals_queued = sum(c.queued for c in capacity)
     totals_running = sum(c.running for c in capacity)

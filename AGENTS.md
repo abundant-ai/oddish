@@ -103,6 +103,7 @@ Postgres
   - trials / tasks    # domain state + live UI columns
   - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
+  - model_concurrency_overrides # admin-set limits over deploy configuration
         |
         v
 Workers (auto-started by API, or standalone via python -m oddish.workers.queue.worker)
@@ -180,6 +181,9 @@ High-level flow:
   the shared `classify_trial_and_store`, then synthesize the task verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
+- database-backed admin concurrency overrides; these take precedence over
+  `ODDISH_MODEL_CONCURRENCY_OVERRIDES` and are read by both the dispatcher plan
+  and each worker's slot acquisition
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
   stage reconciliation in one cleanup sweep
 - soft-delete semantics on domain rows via the `deleted_at` column and
@@ -683,6 +687,9 @@ silently breaks throughput or correctness — read before touching
    "release only if zero jobs RUNNING on the key") — that was the original bug:
    one live job pinned every leaked lease for ~12h and starved the queue. The
    link is always `queue_slots.locked_by == worker_jobs.current_worker_id`.
+   The limit used for both spawn planning and slot acquisition comes from
+   `model_concurrency_overrides` when an admin override exists, otherwise from
+   the deploy-time `ODDISH_MODEL_CONCURRENCY_OVERRIDES` / default settings.
 
 4. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
    model under two keys gets the *sum* of both buckets against one provider quota

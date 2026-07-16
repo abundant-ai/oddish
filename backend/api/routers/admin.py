@@ -12,6 +12,8 @@ from auth import AuthContext, require_admin
 from models import OrganizationModel, UserModel
 from oddish.core.admin import (
     CostBreakdownResponse,
+    ModelConcurrencySetting,
+    ModelConcurrencyUpdateRequest,
     QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
@@ -25,6 +27,7 @@ from oddish.core.admin import (
     get_orphaned_state_core,
     get_user_cost_breakdown_core,
     get_worker_jobs_admin_core,
+    update_model_concurrency_core,
 )
 from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
@@ -74,6 +77,15 @@ async def get_queue_health(
     """
     async with get_session() as session:
         return await get_queue_health_core(session)
+
+
+@router.put("/concurrency", response_model=ModelConcurrencySetting)
+async def update_model_concurrency(
+    request: ModelConcurrencyUpdateRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelConcurrencySetting:
+    async with get_session() as session:
+        return await update_model_concurrency_core(session, request)
 
 
 @router.get("/worker-jobs", response_model=WorkerJobsResponse)

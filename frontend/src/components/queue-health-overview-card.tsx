@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -220,13 +220,118 @@ function FillBar({ stat }: { stat: QueueCapacityStat }) {
         <div className={`h-full ${barClass}`} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-muted-foreground font-mono text-[11px]">
-        {stat.running}/{stat.limit || "∞"}
+        {stat.running}/{stat.limit}
       </span>
     </div>
   );
 }
 
-function CapacityTable({ rows }: { rows: QueueCapacityStat[] }) {
+function ConcurrencyLimitEditor({
+  stat,
+  onSaved,
+}: {
+  stat: QueueCapacityStat;
+  onSaved: () => Promise<unknown>;
+}) {
+  const [draft, setDraft] = useState(String(stat.limit));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => setDraft(String(stat.limit)), [stat.limit]);
+
+  async function update(limit: number | null) {
+    setSaving(true);
+    setError(null);
+    const response = await fetch("/api/admin/concurrency", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ queue_key: stat.queue_key, limit }),
+    }).catch(() => null);
+    setSaving(false);
+    if (!response?.ok) {
+      const body = await response?.json().catch(() => null);
+      setError(
+        typeof body?.detail === "string"
+          ? body.detail
+          : "Could not save concurrency."
+      );
+      return;
+    }
+    await onSaved();
+  }
+
+  function save() {
+    const limit = Number(draft);
+    if (
+      !draft.trim() ||
+      !Number.isInteger(limit) ||
+      limit < 0 ||
+      limit > 10000
+    ) {
+      setError("Enter a whole number from 0 to 10,000.");
+      return;
+    }
+    void update(limit);
+  }
+
+  return (
+    <div className="flex min-w-40 flex-col items-end gap-1">
+      <div className="flex items-center gap-1">
+        <Input
+          type="number"
+          min={0}
+          max={10000}
+          step={1}
+          value={draft}
+          disabled={saving}
+          aria-label={`Concurrency limit for ${stat.queue_key}`}
+          className="h-7 w-20 text-right font-mono text-[11px]"
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") save();
+            if (event.key === "Escape") {
+              setDraft(String(stat.limit));
+              setError(null);
+            }
+          }}
+        />
+        <Button
+          size="sm"
+          className="h-7 px-2 text-[11px]"
+          disabled={saving || Number(draft) === stat.limit}
+          onClick={save}
+        >
+          Save
+        </Button>
+        {stat.override_limit !== null ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            disabled={saving}
+            onClick={() => void update(null)}
+          >
+            Reset
+          </Button>
+        ) : null}
+      </div>
+      <span className="text-muted-foreground text-[10px]">
+        Deploy default: {stat.deploy_limit}
+      </span>
+      {error ? (
+        <span className="text-destructive text-[10px]">{error}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function CapacityTable({
+  rows,
+  onSaved,
+}: {
+  rows: QueueCapacityStat[];
+  onSaved: () => Promise<unknown>;
+}) {
   if (rows.length === 0) {
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -241,6 +346,7 @@ function CapacityTable({ rows }: { rows: QueueCapacityStat[] }) {
           <TableHead>Queue Key</TableHead>
           <TableHead className="text-right">Queued</TableHead>
           <TableHead>Capacity (running / limit)</TableHead>
+          <TableHead className="text-right">Configured limit</TableHead>
           <TableHead className="text-right">Oldest wait</TableHead>
           <TableHead className="text-right">Queue p50</TableHead>
           <TableHead className="text-right">Queue p95</TableHead>
@@ -289,6 +395,9 @@ function CapacityTable({ rows }: { rows: QueueCapacityStat[] }) {
                 ) : (
                   <FillBar stat={row} />
                 )}
+              </TableCell>
+              <TableCell className="text-right">
+                <ConcurrencyLimitEditor stat={row} onSaved={onSaved} />
               </TableCell>
               <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
                 {formatAgeSeconds(row.oldest_queued_age_seconds)}
@@ -374,7 +483,7 @@ export function QueueHealthOverviewCard() {
   const { data, error, isLoading, mutate } = useSWR<QueueHealthResponse>(
     "/api/admin/queue-health",
     fetcher,
-    { refreshInterval: 10000 },
+    { refreshInterval: 10000 }
   );
 
   const needle = filter.trim().toLowerCase();
@@ -382,7 +491,7 @@ export function QueueHealthOverviewCard() {
     if (!data) return [];
     if (!needle) return data.capacity;
     return data.capacity.filter((row) =>
-      row.queue_key.toLowerCase().includes(needle),
+      row.queue_key.toLowerCase().includes(needle)
     );
   }, [data, needle]);
 
@@ -465,7 +574,7 @@ export function QueueHealthOverviewCard() {
                 placeholder="Filter by queue key..."
                 className="h-8 text-xs"
               />
-              <CapacityTable rows={capacity} />
+              <CapacityTable rows={capacity} onSaved={mutate} />
             </section>
 
             <section className="space-y-2">
