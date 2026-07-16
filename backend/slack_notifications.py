@@ -188,7 +188,6 @@ def build_alerts(
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
 
     alerts: list[SlackAlert] = []
-    experiments_by_id = {experiment.id: experiment for experiment in experiments}
     for experiment in experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
@@ -253,7 +252,6 @@ def build_alerts(
             ):
                 continue
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
-            experiment = experiments_by_id[trial.experiment_id]
             # One message per trial: clearing the escalation floor widens the
             # mention list rather than emitting a second alert.
             escalated = trial.cost_usd > trial_escalation_usd
