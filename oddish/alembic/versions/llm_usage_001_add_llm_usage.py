@@ -43,7 +43,6 @@ def upgrade() -> None:
         ),
         sa.Column("trial_id", sa.String(160), nullable=True),
         sa.Column("task_id", sa.String(160), nullable=True),
-        sa.Column("experiment_id", sa.String(64), nullable=True),
         sa.Column("duration_ms", sa.Integer, nullable=True),
         sa.Column(
             "success", sa.Boolean, nullable=False, server_default=sa.text("true")

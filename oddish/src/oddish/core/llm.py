@@ -51,7 +51,6 @@ class LLMUsageRow:
     cost_basis: str = COST_BASIS_API
     trial_id: str | None = None
     task_id: str | None = None
-    experiment_id: str | None = None
     duration_ms: int | None = None
     success: bool = True
     error: str | None = None
@@ -61,11 +60,6 @@ class LLMUsageRow:
 class LLMResult:
     text: str
     model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_write_tokens: int
-    cost_usd: float | None
 
 
 UsageRecorder = Callable[[LLMUsageRow], Awaitable[None]]
@@ -166,6 +160,33 @@ def _extract_usage(response: Any) -> tuple[int, int, int, int]:
     return prompt, completion, cache_read, cache_write
 
 
+def settle_usage(
+    model: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    native_cost_usd: float | None = None,
+    native_cost_trusted: bool = False,
+) -> tuple[float | None, str]:
+    """(cost_usd, cost_basis) for one call, on the same basis as trial spend."""
+    from oddish.model_pricing import settle_cost_usd
+
+    cost_usd = settle_cost_usd(
+        native_cost_usd,
+        native_cost_trusted=native_cost_trusted,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
+    has_tokens = bool(input_tokens or output_tokens or cache_write_tokens)
+    basis = COST_BASIS_UNPRICED if cost_usd is None and has_tokens else COST_BASIS_API
+    return cost_usd, basis
+
+
 def _is_retryable(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):
@@ -219,7 +240,6 @@ async def complete(
     api_key: str | None = None,
     trial_id: str | None = None,
     task_id: str | None = None,
-    experiment_id: str | None = None,
 ) -> LLMResult:
     """Run one internal completion through litellm and record its usage.
 
@@ -252,7 +272,6 @@ async def complete(
         model=pricing_model,
         trial_id=trial_id,
         task_id=task_id,
-        experiment_id=experiment_id,
     )
     started = time.monotonic()
     try:
@@ -269,18 +288,13 @@ async def complete(
         raise
 
     input_tokens, output_tokens, cache_read, cache_write = _extract_usage(response)
-    from oddish.model_pricing import settle_cost_usd
-
-    cost_usd = settle_cost_usd(
-        None,
-        native_cost_trusted=False,
-        model=pricing_model,
+    cost_usd, cost_basis = settle_usage(
+        pricing_model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        cache_tokens=cache_read,
+        cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
     )
-    has_tokens = bool(input_tokens or output_tokens or cache_write)
     await record_usage(
         replace(
             row,
@@ -289,20 +303,8 @@ async def complete(
             cache_read_tokens=cache_read,
             cache_write_tokens=cache_write,
             cost_usd=cost_usd,
-            cost_basis=(
-                COST_BASIS_UNPRICED
-                if cost_usd is None and has_tokens
-                else COST_BASIS_API
-            ),
+            cost_basis=cost_basis,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
     )
-    return LLMResult(
-        text=_response_text(response),
-        model=pricing_model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read,
-        cache_write_tokens=cache_write,
-        cost_usd=cost_usd,
-    )
+    return LLMResult(text=_response_text(response), model=pricing_model)

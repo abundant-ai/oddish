@@ -53,13 +53,11 @@ async def _record_cli_usage(
     are not, so cost stays NULL with basis ``oauth_flat``.
     """
     from oddish.core.llm import (
-        COST_BASIS_API,
         COST_BASIS_OAUTH_FLAT,
-        COST_BASIS_UNPRICED,
         LLMUsageRow,
         record_usage,
+        settle_usage,
     )
-    from oddish.model_pricing import settle_cost_usd
 
     usage = payload.get("usage")
     usage = usage if isinstance(usage, dict) else {}
@@ -76,22 +74,18 @@ async def _record_cli_usage(
     native = payload.get("total_cost_usd")
     native = float(native) if isinstance(native, (int, float)) else None
     pricing_model = to_anthropic_api_model_id(model_id) or model_id
-    has_tokens = bool(input_tokens or output_tokens)
 
     if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
         cost_usd, cost_basis = None, COST_BASIS_OAUTH_FLAT
     else:
-        cost_usd = settle_cost_usd(
-            native,
-            native_cost_trusted=True,
-            model=pricing_model,
+        cost_usd, cost_basis = settle_usage(
+            pricing_model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cache_tokens=cache_read,
+            cache_read_tokens=cache_read,
             cache_write_tokens=cache_write,
-        )
-        cost_basis = (
-            COST_BASIS_UNPRICED if cost_usd is None and has_tokens else COST_BASIS_API
+            native_cost_usd=native,
+            native_cost_trusted=True,
         )
 
     await record_usage(
@@ -538,7 +532,7 @@ class TrialClassifier:
         )
 
 
-async def _compute_task_verdict_openai(
+async def compute_task_verdict(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
@@ -549,7 +543,7 @@ async def _compute_task_verdict_openai(
     timeout: float | None = None,
     task_id: str | None = None,
 ) -> TaskVerdict:
-    """Compute task verdict using OpenAI to synthesize trial analyses."""
+    """Compute overall task verdict by synthesizing trial analyses."""
     if not classifications:
         return TaskVerdict(
             is_good=False,
@@ -661,26 +655,3 @@ async def _compute_task_verdict_openai(
     )
 
 
-async def compute_task_verdict(
-    classifications: list[TrialClassification],
-    baseline: BaselineValidation | None = None,
-    quality_check_passed: bool = True,
-    model: str = VERDICT_MODEL,
-    console: "Console | None" = None,
-    verbose: bool = False,
-    api_key: str | None = None,
-    timeout: float | None = None,
-    task_id: str | None = None,
-) -> TaskVerdict:
-    """Compute overall task verdict from trial classifications."""
-    return await _compute_task_verdict_openai(
-        classifications,
-        baseline,
-        quality_check_passed,
-        model,
-        console,
-        verbose,
-        api_key,
-        timeout,
-        task_id,
-    )

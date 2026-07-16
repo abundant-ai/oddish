@@ -2019,7 +2019,6 @@ class LLMUsageModel(Base):
     )
     trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     success: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")

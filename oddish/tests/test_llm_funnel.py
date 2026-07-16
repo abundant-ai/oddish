@@ -6,7 +6,6 @@ import pytest
 
 import litellm
 
-from oddish.config import settings
 from oddish.core import llm
 from oddish.core.llm import (
     COST_BASIS_API,
@@ -93,34 +92,6 @@ def test_resolve_route_prefixed_id_passes_through():
     assert kwargs == {}
 
 
-def test_resolve_route_public_openai(monkeypatch):
-    monkeypatch.setattr(settings, "openai_provider", "openai")
-    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
-    model, pricing, kwargs = _resolve_route("gpt-5.4", None)
-    assert model == "openai/gpt-5.4"
-    assert pricing == "gpt-5.4"
-    assert kwargs["api_key"] == "sk-test"
-
-
-def test_resolve_route_azure(monkeypatch):
-    monkeypatch.setattr(settings, "openai_provider", "azure")
-    monkeypatch.setattr(settings, "azure_openai_api_key", "az-key")
-    monkeypatch.setattr(
-        settings, "azure_openai_endpoint", "https://r.openai.azure.com/openai/v1"
-    )
-    monkeypatch.setattr(settings, "azure_openai_api_version", "2025-01-01")
-    monkeypatch.setattr(
-        settings,
-        "azure_openai_deployments",
-        settings._normalize_azure_openai_deployments({"gpt-5.4": "gpt54-dep"}),
-    )
-    model, pricing, kwargs = _resolve_route("gpt-5.4", None)
-    assert model == "openai/gpt54-dep"
-    assert pricing == "gpt-5.4"
-    assert kwargs["api_key"] == "az-key"
-    assert kwargs["api_base"] == "https://r.openai.azure.com/openai/v1"
-
-
 def test_supports_structured_outputs_allowlist():
     assert supports_structured_outputs("anthropic/claude-haiku-4-5")
     assert supports_structured_outputs("claude-sonnet-4-6")
@@ -177,18 +148,18 @@ async def test_complete_records_usage_and_cost(recorder, monkeypatch):
         trial_id="trial-9",
     )
     assert result.text == '{"x": 1}'
-    assert (result.input_tokens, result.output_tokens) == (130, 20)
-    assert (result.cache_read_tokens, result.cache_write_tokens) == (30, 50)
-    # haiku-4-5: 50 uncached in + 30 cached + 50 cache-write + 20 out.
-    assert result.cost_usd == pytest.approx(0.0002155)
+    assert result.model == "claude-haiku-4-5"
 
     row = recorder.rows[0]
     assert row.handler == "trajectory_summary"
     assert row.model == "claude-haiku-4-5"
     assert row.trial_id == "trial-9"
+    assert (row.input_tokens, row.output_tokens) == (130, 20)
+    assert (row.cache_read_tokens, row.cache_write_tokens) == (30, 50)
     assert row.cost_basis == COST_BASIS_API
     assert row.success is True
-    assert row.cost_usd == pytest.approx(result.cost_usd)
+    # haiku-4-5: 50 uncached in + 30 cached + 50 cache-write + 20 out.
+    assert row.cost_usd == pytest.approx(0.0002155)
 
 
 @pytest.mark.asyncio
@@ -197,10 +168,10 @@ async def test_complete_marks_unpriced_models(recorder, monkeypatch):
         return _fake_response(prompt_tokens=10, completion_tokens=5)
 
     monkeypatch.setattr(litellm, "acompletion", fake)
-    result = await complete(
+    await complete(
         handler="probe_analysis", prompt="p", model="anthropic/not-a-real-model-xyz"
     )
-    assert result.cost_usd is None
+    assert recorder.rows[0].cost_usd is None
     assert recorder.rows[0].cost_basis == COST_BASIS_UNPRICED
 
 

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
@@ -1622,15 +1622,13 @@ async def get_internal_llm_spend_core(
     stmt = select(
         LLMUsageModel.handler,
         func.count().label("calls"),
-        func.sum(case((LLMUsageModel.success.is_(False), 1), else_=0)).label(
-            "failed_calls"
-        ),
-        func.sum(case((LLMUsageModel.cost_basis == "unpriced", 1), else_=0)).label(
-            "unpriced_calls"
-        ),
-        func.sum(case((LLMUsageModel.cost_basis == "oauth_flat", 1), else_=0)).label(
-            "oauth_calls"
-        ),
+        func.count().filter(LLMUsageModel.success.is_(False)).label("failed_calls"),
+        func.count()
+        .filter(LLMUsageModel.cost_basis == "unpriced")
+        .label("unpriced_calls"),
+        func.count()
+        .filter(LLMUsageModel.cost_basis == "oauth_flat")
+        .label("oauth_calls"),
         cost_sum.label("cost_usd"),
         func.coalesce(func.sum(LLMUsageModel.input_tokens), 0).label("input_tokens"),
         func.coalesce(func.sum(LLMUsageModel.output_tokens), 0).label("output_tokens"),

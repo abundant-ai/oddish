@@ -657,10 +657,7 @@ async def run_probe_analyzer(
             "general. Return `tool_insights: []` if none meaningfully helped."
         )
 
-    from oddish.config import to_anthropic_api_model_id
     from oddish.core.llm import complete
-
-    model = to_anthropic_api_model_id(model) or model
 
     findings_schema = parse_result_focus(result_focus)
     result = await complete(
@@ -688,7 +685,7 @@ async def run_probe_analyzer(
 
     parsed = _coerce_analyzer_json(raw_text)
 
-    return _normalize_probe_summary(parsed, result_focus=result_focus, model=model)
+    return _normalize_probe_summary(parsed, result_focus=result_focus, model=result.model)
 
 
 def _normalize_probe_summary(parsed: dict, *, result_focus: str, model: str) -> dict:
