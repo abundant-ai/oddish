@@ -8,6 +8,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -64,6 +65,9 @@ _ENV_BUILD_TIMEOUT_BASE_SEC: float = EnvironmentConfig.model_fields[
 # covers Harbor-side environment construction and keeps the outer cap strictly
 # above the inner pod-ready timeout so the more specific inner error surfaces.
 _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
+
+# Hosts the Claude Code CLI fetches from at agent-setup (curl bootstrap / npm).
+_CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
 
 
 def _sized_environment_build_timeout_multiplier(
@@ -368,36 +372,6 @@ async def run_harbor_trial_async(
         env_config = hc.environment.model_copy()
         env_config.type = environment
 
-        # Claude Code installs its CLI during agent-setup by fetching from
-        # downloads.claude.ai (curl bootstrap) or registry.npmjs.org (alpine/npm
-        # path). Harbor auto-allows only the model API (api.anthropic.com), not
-        # the installer CDN, so on an offline/allowlist task Modal's egress
-        # firewall drops the install (curl exit 28 / connection reset) and the
-        # trial fails before the agent ever runs. Add the installer hosts to the
-        # environment allowlist for every claude-code trial. We use the
-        # environment (not agent) allowlist because it is merged into the network
-        # baseline BEFORE agent setup; AgentConfig.extra_allowed_hosts only
-        # applies during agent.run(), which is too late for the install.
-        if "claude-code" in (agent or "").strip().lower():
-            extra_hosts = ["downloads.claude.ai", "registry.npmjs.org"]
-            # Fireworks-routed models (fireworks/... or fw/...) run Claude Code
-            # against api.fireworks.ai. Its endpoint isn't in Harbor's fallback
-            # agent domains, so on an offline/allowlist task the model calls are
-            # firewalled during agent.run(). The environment allowlist feeds the
-            # agent-phase baseline, so declaring it here covers the model calls
-            # too, not just install.
-            model_lower = (model or "").strip().lower()
-            if model_lower.startswith(("fireworks/", "fw/")):
-                extra_hosts.append("api.fireworks.ai")
-            env_config.extra_allowed_hosts = [
-                *env_config.extra_allowed_hosts,
-                *[
-                    host
-                    for host in extra_hosts
-                    if host not in env_config.extra_allowed_hosts
-                ],
-            ]
-
         backend = get_backend(environment.value)
         if backend is not None:
             env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
@@ -434,6 +408,21 @@ async def run_harbor_trial_async(
                 is_probe=is_probe,
                 probe_oddish_env=extra_agent_env,
             )
+
+        # Claude Code downloads its CLI at agent-setup and calls its model
+        # endpoint during agent.run(). On closed-internet tasks Harbor's fallback
+        # domains cover neither the installer CDN nor custom model routes, so
+        # allow both via the environment baseline (which spans install + run).
+        if "claude-code" in (agent or "").strip().lower():
+            hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
+            base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")
+            endpoint_host = urlparse(base_url).hostname if base_url else None
+            if endpoint_host:
+                hosts.append(endpoint_host)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
 
         # Stage the org's shared skills (+ global seeds) into a root under the
         # job dir and hand it to Harbor via ``AgentConfig.skills``. Best-effort;
