@@ -79,7 +79,7 @@ Four checks ship: three ported, one net-new.
 
 | Check | Origin | What it does | Cost to port |
 | --- | --- | --- | --- |
-| `closed_internet` | `check-closed-internet.sh` | Fails `network_mode = "public"` (including implicitly, since Harbor defaults to public) without a non-placeholder justification | ~40 lines, reads `TaskConfig` |
+| `closed_internet` | `check-closed-internet.sh` | Fails any phase whose effective `network_mode` resolves to `public` (including implicitly, and including a separate verifier container or a per-step override) without a ≥20-char justification | resolves via Harbor's own `resolve_trial_network_plan` |
 | `anti_cheat_soundness` | `_anti_cheat_scan.py` | Flags brittle source-scanning anti-cheat regexes | near-verbatim; already Python |
 | `solution_format` | `check-solution-format.sh` | Fails `.patch`/`.diff` in `solution/` and patch-application in `solve.sh` | ~40 lines |
 | `provenance` | net-new | Build-time repo fetches, and `.git` inside the build context | the real work |
@@ -188,8 +188,8 @@ class Finding:
 | Unsuppressed repo fetch in Dockerfile / solve.sh / test.sh | `provenance` | error |
 | `.git` inside `environment/` (the build context) | `provenance` | error |
 | No `.git` in `environment/`, but no `.dockerignore` excluding it | `provenance` | warn |
-| `network_mode = "public"` with no justification | `closed_internet` | error |
-| `network_mode = "public"` with a placeholder justification | `closed_internet` | error |
+| Any phase resolves to public with no justification | `closed_internet` | error |
+| Justification present but under 20 chars, or not a string | `closed_internet` | error |
 | `.patch` / `.diff` in `solution/` | `solution_format` | error |
 | `solve.sh` applies a patch (`git apply` / `patch -p`) | `solution_format` | error |
 | Brittle anti-cheat regex (unsuppressed) | `anti_cheat_soundness` | error |

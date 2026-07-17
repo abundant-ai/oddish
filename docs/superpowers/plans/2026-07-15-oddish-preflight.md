@@ -448,10 +448,22 @@ appends to it as planned.
 - Test: `oddish/tests/test_preflight_checks.py` (append)
 
 **Interfaces:**
-- Consumes: `Finding`, `Severity`; `NetworkMode`, `TaskConfig` from `harbor.models.task.config`.
+- Consumes: `Finding`, `Severity`; `TaskConfig`, `NetworkMode` from `harbor.models.task.config`; Harbor's own network-policy resolver (see below).
 - Produces: `closed_internet.CHECK_ID = "closed_internet"`, `closed_internet.check(task_dir, config) -> list[Finding]`.
 
-**Semantics (verified against Harbor):** a phase is open when its effective `network_mode` is `PUBLIC`. The environment baseline defaults to `PUBLIC`; `[agent]` and `[verifier]` default to `None`, meaning *inherit the baseline*. So a `task.toml` with no network config at all is fully open — that implicit case is the main one this check exists to catch.
+**Semantics — use Harbor's resolver, do not re-derive.** A task has more network
+positions than `[environment]` / `[agent]` / `[verifier]`: a separate verifier
+container (`[verifier.environment]`) has its *own* baseline that also defaults to
+`PUBLIC`, and every `[[steps]]` entry can override agent/verifier per step. An
+earlier draft of this check enumerated three positions by hand and silently
+passed a fully-closed-looking task that ran a public verifier container. Enumerating
+positions is fragile and has bitten this project repeatedly.
+
+Instead, call Harbor's authoritative `resolve_trial_network_plan` once per step
+(and once for the task-level `step=None`), with neutral trial configs, and inspect
+the four resolved policies it returns. This cannot drift: any position Harbor adds
+later is one we inherit for free. The approach and every case below were verified
+end-to-end against the vendored Harbor before this plan was written.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -487,6 +499,50 @@ description = "closed task"
 network_mode = "no-network"
 """
 
+# A separate verifier container that is public, over an otherwise fully closed
+# task. The hand-rolled draft missed this entirely.
+_VERIFIER_ENV_OPEN_TOML = """\
+version = "1.0"
+
+[metadata]
+description = "closed everywhere except a separate verifier container"
+
+[environment]
+network_mode = "no-network"
+
+[agent]
+network_mode = "no-network"
+
+[verifier]
+network_mode = "no-network"
+
+[verifier.environment]
+docker_image = "ubuntu:22.04"
+"""
+
+# A per-step agent override that reopens the network on an otherwise closed task.
+_STEP_OPEN_TOML = """\
+version = "1.0"
+
+[metadata]
+description = "closed task with one step that reopens the agent network"
+
+[environment]
+network_mode = "no-network"
+
+[agent]
+network_mode = "no-network"
+
+[verifier]
+network_mode = "no-network"
+
+[[steps]]
+name = "s1"
+
+[steps.agent]
+network_mode = "public"
+"""
+
 _JUSTIFIED_TOML = """\
 version = "1.0"
 
@@ -504,7 +560,7 @@ def test_closed_internet_flags_explicit_public(make_task):
     findings = closed_internet.check(task_dir, _config(task_dir))
     assert len(findings) == 1
     assert findings[0].severity is Severity.ERROR
-    assert "environment baseline" in findings[0].message
+    assert "[environment]" in findings[0].message
 
 
 def test_closed_internet_flags_implicit_public_default(make_task):
@@ -521,21 +577,47 @@ def test_closed_internet_passes_no_network(make_task):
     assert closed_internet.check(task_dir, _config(task_dir)) == []
 
 
+def test_closed_internet_flags_a_public_separate_verifier_container(make_task):
+    task_dir = make_task(task_toml=_VERIFIER_ENV_OPEN_TOML)
+    findings = closed_internet.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
+    assert "verifier.environment" in findings[0].message
+
+
+def test_closed_internet_flags_a_per_step_agent_override(make_task):
+    task_dir = make_task(task_toml=_STEP_OPEN_TOML)
+    findings = closed_internet.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
+    assert "s1" in findings[0].message
+
+
 def test_closed_internet_passes_with_a_real_justification(make_task):
     task_dir = make_task(task_toml=_JUSTIFIED_TOML)
     assert closed_internet.check(task_dir, _config(task_dir)) == []
 
 
-@pytest.mark.parametrize("placeholder", ["TBD", "todo", "n/a", "xxx", "  ", "short"])
-def test_closed_internet_rejects_placeholder_justifications(make_task, placeholder):
+def test_closed_internet_rejects_a_short_justification(make_task):
     toml = _OPEN_TOML.replace(
         'description = "open task"',
-        f'description = "open task"\nopen_internet_justification = "{placeholder}"',
+        'description = "open task"\nopen_internet_justification = "TBD"',
     )
     task_dir = make_task(task_toml=toml)
     findings = closed_internet.check(task_dir, _config(task_dir))
     assert len(findings) == 1
     assert findings[0].severity is Severity.ERROR
+
+
+def test_closed_internet_rejects_a_non_string_justification(make_task):
+    # A list whose repr is long must not sneak past as a "justification".
+    toml = _OPEN_TOML.replace(
+        'description = "open task"',
+        'description = "open task"\nopen_internet_justification = ["a", "b", "c", "d", "e", "f"]',
+    )
+    task_dir = make_task(task_toml=toml)
+    findings = closed_internet.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
 
 
 def test_closed_internet_flags_an_open_agent_over_a_closed_baseline(make_task):
@@ -564,11 +646,11 @@ allowed_hosts = ["pypi.org"]
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd oddish && uv run pytest tests/test_preflight_checks.py -k closed_internet -v`
-Expected: FAIL with `ImportError: cannot import name 'closed_internet'`
+Expected: FAIL — the current committed check misses the verifier-container and per-step cases.
 
 - [ ] **Step 3: Write the implementation**
 
-Create `oddish/src/oddish/preflight/checks/closed_internet.py`:
+Replace `oddish/src/oddish/preflight/checks/closed_internet.py` entirely:
 
 ```python
 from __future__ import annotations
@@ -576,6 +658,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from harbor.models.task.config import NetworkMode, TaskConfig
+from harbor.models.task.verifier_mode import (
+    resolve_step_verifier_mode,
+    resolve_task_verifier_mode,
+)
+from harbor.models.trial.config import AgentConfig as TrialAgentConfig
+from harbor.models.trial.config import EnvironmentConfig as TrialEnvironmentConfig
+from harbor.trial.network_policy import resolve_trial_network_plan
 
 from oddish.preflight.models import Finding, Severity
 
@@ -584,42 +673,64 @@ CHECK_ID = "closed_internet"
 _JUSTIFICATION_KEY = "open_internet_justification"
 _MIN_JUSTIFICATION_CHARS = 20
 
-# Lowercased exact matches that are not justifications.
-_PLACEHOLDERS = frozenset(
-    {"tbd", "todo", "n/a", "na", "none", "placeholder", "xxx", "fixme", "-"}
-)
+# Neutral trial-side configs: no run-specific agent identity, no extra allowed
+# hosts. They exist only because Harbor's resolver takes them; with empty
+# extra_allowed_hosts they contribute nothing, leaving the task.toml as the sole
+# source of the effective policy.
+_NEUTRAL_AGENT = TrialAgentConfig()
+_NEUTRAL_ENV = TrialEnvironmentConfig()
 
 
-def _is_real_justification(text: str) -> bool:
-    stripped = text.strip()
-    if len(stripped) < _MIN_JUSTIFICATION_CHARS:
+def _is_real_justification(value: object) -> bool:
+    # Only a genuine written string counts. A non-string (list/number/bool)
+    # whose repr happens to be long must not slip through.
+    if not isinstance(value, str):
         return False
-    return stripped.lower() not in _PLACEHOLDERS
+    return len(value.strip()) >= _MIN_JUSTIFICATION_CHARS
 
 
-def _effective(
-    phase_mode: NetworkMode | None, baseline: NetworkMode
-) -> NetworkMode:
-    """A phase with no explicit mode inherits the environment baseline."""
-    return baseline if phase_mode is None else phase_mode
+def _open_phases(config: TaskConfig) -> list[str]:
+    """Every phase Harbor will actually run whose effective policy is PUBLIC.
+
+    Delegates to Harbor's own resolver so we never re-derive inheritance,
+    per-step overrides, or the separate-verifier-container baseline by hand.
+    """
+    steps = config.steps or [None]
+    labels: list[str] = []
+
+    for step in steps:
+        mode = (
+            resolve_task_verifier_mode(config)
+            if step is None
+            else resolve_step_verifier_mode(config, step)
+        )
+        plan = resolve_trial_network_plan(
+            config, _NEUTRAL_AGENT, _NEUTRAL_ENV, step, verifier_mode=mode
+        )
+        suffix = "" if step is None else f" (step {step.name!r})"
+        candidates = [
+            (f"[environment]{suffix}", plan.agent_env_baseline),
+            (f"[agent]{suffix}", plan.agent_phase),
+            (f"[verifier]{suffix}", plan.verifier_phase),
+        ]
+        if plan.verifier_env_baseline is not None:
+            candidates.append(
+                (f"[verifier.environment]{suffix}", plan.verifier_env_baseline)
+            )
+        for label, policy in candidates:
+            if policy.network_mode is NetworkMode.PUBLIC:
+                labels.append(label)
+
+    # De-dupe while keeping first-seen order.
+    return list(dict.fromkeys(labels))
 
 
 def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
-    baseline = config.environment.network_mode
-    phases = {
-        "environment baseline": baseline,
-        "[agent]": _effective(config.agent.network_mode, baseline),
-        "[verifier]": _effective(config.verifier.network_mode, baseline),
-    }
-
-    open_phases = [
-        name for name, mode in phases.items() if mode is NetworkMode.PUBLIC
-    ]
+    open_phases = _open_phases(config)
     if not open_phases:
         return []
 
-    justification = str(config.metadata.get(_JUSTIFICATION_KEY) or "")
-    if _is_real_justification(justification):
+    if _is_real_justification(config.metadata.get(_JUSTIFICATION_KEY)):
         return []
 
     where = ", ".join(open_phases)
@@ -636,7 +747,7 @@ def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
             ),
             fix_hint=(
                 'Set network_mode = "no-network" (or "allowlist" with '
-                "allowed_hosts), or add a [metadata] "
+                "allowed_hosts) on the open phase(s), or add a [metadata] "
                 f"{_JUSTIFICATION_KEY} of at least "
                 f"{_MIN_JUSTIFICATION_CHARS} characters explaining why."
             ),
@@ -644,32 +755,23 @@ def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
     ]
 ```
 
-- [ ] **Step 4: Register the check**
+- [ ] **Step 4: Registry is already correct**
 
-In `oddish/src/oddish/preflight/registry.py`, add the import and append to `CHECKS`:
-
-```python
-from oddish.preflight.checks import closed_internet, dockerfile_leaks
-```
-
-```python
-    Check(
-        id=closed_internet.CHECK_ID,
-        description="Open internet requires a justification",
-        fn=closed_internet.check,
-    ),
-```
+`registry.py` already imports and registers `closed_internet` from the committed
+Task 3. No change needed.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cd oddish && uv run pytest tests/test_preflight_checks.py -v`
-Expected: all passed (8 from Task 2 + 12 new)
+Run: `cd oddish && uv run pytest tests/test_preflight_checks.py -k closed_internet -v`
+Expected: all 10 closed_internet tests pass.
+
+Then the whole preflight suite: `cd oddish && uv run pytest tests/test_preflight_checks.py tests/test_preflight_runner.py -q`
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add oddish/src/oddish/preflight oddish/tests/test_preflight_checks.py
-git commit -m "feat(preflight): require a justification for open-internet tasks"
+git commit -m "fix(preflight): resolve network via Harbor, covering verifier env and steps"
 ```
 
 ---
