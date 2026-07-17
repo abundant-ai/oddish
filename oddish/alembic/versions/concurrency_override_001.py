@@ -2,7 +2,7 @@ from alembic import op
 
 
 revision = "concurrency_override_001"
-down_revision = "analyzers_006"
+down_revision = "analyzers_007"
 branch_labels = depends_on = None
 
 
