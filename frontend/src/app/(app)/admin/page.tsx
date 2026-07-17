@@ -722,7 +722,9 @@ function AdminPageContent() {
           <CostBreakdownCard />
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Spend alerts</CardTitle>
+              <CardTitle className="text-base">
+                Channel spend escalation
+              </CardTitle>
             </CardHeader>
             <CardContent>
               <SlackAlertSettingsForm />

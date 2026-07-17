@@ -82,12 +82,9 @@ def _claim_stubs(monkeypatch: pytest.MonkeyPatch, claimed: set[str], sent: set[s
 
 
 def test_alert_defaults_apply_when_no_admin_has_overridden() -> None:
-    # These are the values alerting runs on until someone edits the pane, so
+    # The channel escalation runs on these until an admin edits the pane, so
     # they are worth pinning even though they are no longer immutable.
     assert DEFAULT_ALERT_SETTINGS == AlertSettings(
-        experiment_milestone_usd=1000.0,
-        experiment_repeat_usd=1000.0,
-        trial_ping_usd=200.0,
         trial_escalation_usd=1000.0,
         always_ping_emails=(
             "charles@abundant.ai",
@@ -97,6 +94,11 @@ def test_alert_defaults_apply_when_no_admin_has_overridden() -> None:
         ),
     )
     assert not DEFAULT_ALERT_SETTINGS.is_override
+    # The DM cutoffs are deploy-time constants, no longer admin-editable; per-user
+    # prefs inherit these when unset.
+    assert notifications.DEFAULT_EXPERIMENT_MILESTONE_USD == 1000.0
+    assert notifications.DEFAULT_EXPERIMENT_REPEAT_USD == 1000.0
+    assert notifications.DEFAULT_TRIAL_PING_USD == 200.0
     # Failure DMs are not cost alerts, so this one stays in code.
     assert notifications.EXPERIMENT_FAILED_RATIO == 0.5
 
@@ -361,12 +363,9 @@ def test_build_alerts_honors_an_admin_override() -> None:
                     "experiment-1", "Exp", "Ada", 0, owner_email="owner@example.com"
                 )
             ],
-            trials=[_trial("t", 160, finished_at=now)],
+            trials=[_trial("t", 250, finished_at=now)],
         ),
         settings=AlertSettings(
-            experiment_milestone_usd=100.0,
-            experiment_repeat_usd=100.0,
-            trial_ping_usd=10.0,
             trial_escalation_usd=50.0,
             always_ping_emails=("oncall@example.com",),
             is_override=True,
@@ -375,38 +374,39 @@ def test_build_alerts_honors_an_admin_override() -> None:
         dashboard_url="https://www.oddish.app",
     )
 
-    # $160 clears all three lowered thresholds; none of it would alert on the
-    # defaults, and the escalation pings the overridden list rather than ours.
-    assert [alert.key for alert in alerts] == [
-        "experiment:experiment-1:100",
-        "trial:t",
-        "trial-escalation:t",
-    ]
-    assert alerts[-1].mention_emails == ("owner@example.com", "oncall@example.com")
+    # The admin pane only tunes the channel escalation. A $250 trial would just
+    # DM its owner on the $1,000 default; the lowered floor also pushes it into
+    # the channel, pinging the overridden list rather than ours.
+    trial_alerts = [alert for alert in alerts if alert.key.startswith("trial")]
+    assert [alert.key for alert in trial_alerts] == ["trial:t", "trial-escalation:t"]
+    assert trial_alerts[-1].mention_emails == (
+        "owner@example.com",
+        "oncall@example.com",
+    )
 
 
-def test_trial_alert_keys_do_not_move_when_the_floor_is_retuned() -> None:
+def test_escalation_alert_keys_do_not_move_when_the_threshold_is_retuned() -> None:
     """The anti-spam invariant behind the settings pane.
 
     Alert keys are the dedup rows, so a key that embedded its threshold would
     make every retune look like a fresh batch and re-notify the whole window.
-    Same trial, same key, whatever the floor is.
+    Same trial, same escalation key, whatever the admin sets the channel floor to.
     """
     now = datetime.now(timezone.utc)
 
-    def trial_keys(floor: float) -> list[str]:
+    def escalation_keys(floor: float) -> list[str]:
         alerts = build_alerts(
             AlertCandidates(
                 experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 0)],
-                trials=[_trial("t", 250, finished_at=now)],
+                trials=[_trial("t", 1500, finished_at=now)],
             ),
-            settings=replace(DEFAULT_ALERT_SETTINGS, trial_ping_usd=floor),
+            settings=replace(DEFAULT_ALERT_SETTINGS, trial_escalation_usd=floor),
             recent_cutoff=now - timedelta(hours=2),
             dashboard_url="https://www.oddish.app",
         )
-        return [a.key for a in alerts if a.key.startswith("trial")]
+        return [a.key for a in alerts if a.key.startswith("trial-escalation")]
 
-    assert trial_keys(200.0) == trial_keys(50.0) == ["trial:t"]
+    assert escalation_keys(1000.0) == escalation_keys(500.0) == ["trial-escalation:t"]
 
 
 def test_build_alerts_escalates_a_very_expensive_trial_to_the_channel() -> None:

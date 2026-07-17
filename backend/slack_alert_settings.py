@@ -1,9 +1,13 @@
-"""Thresholds and escalation list for the Slack cost alerts.
+"""Threshold and ping list for the shared-channel Slack cost escalation.
+
+These govern only the in-channel ping a very expensive trial raises: the floor
+it must clear and who gets @-mentioned. The per-user DM alerts and their cutoffs
+live in ``user_alert_prefs`` and are not set here.
 
 The ``AlertSettings`` field defaults are the deploy-time defaults. A single
-``slack_alert_settings`` row overrides them so an admin can retune alerting from
-the cost dashboard without a redeploy; no row -- or no table yet, mid-migration
--- leaves the defaults standing.
+``slack_alert_settings`` row overrides them so an admin can retune the channel
+escalation from the cost dashboard without a redeploy; no row -- or no table
+yet, mid-migration -- leaves the defaults standing.
 """
 
 from __future__ import annotations
@@ -38,9 +42,6 @@ DEFAULT_ALWAYS_PING_EMAILS: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class AlertSettings:
-    experiment_milestone_usd: float = 1000.0
-    experiment_repeat_usd: float = 1000.0
-    trial_ping_usd: float = 200.0
     trial_escalation_usd: float = 1000.0
     always_ping_emails: tuple[str, ...] = DEFAULT_ALWAYS_PING_EMAILS
     is_override: bool = False
@@ -65,9 +66,6 @@ async def get_alert_settings(session: AsyncSession) -> AlertSettings:
     if row is None:
         return DEFAULT_ALERT_SETTINGS
     return AlertSettings(
-        experiment_milestone_usd=float(row.experiment_milestone_usd),
-        experiment_repeat_usd=float(row.experiment_repeat_usd),
-        trial_ping_usd=float(row.trial_ping_usd),
         trial_escalation_usd=float(row.trial_escalation_usd),
         always_ping_emails=tuple(row.always_ping_emails),
         is_override=True,
@@ -94,17 +92,11 @@ async def read_alert_settings() -> AlertSettings:
 async def set_alert_settings(
     session: AsyncSession,
     *,
-    experiment_milestone_usd: float,
-    experiment_repeat_usd: float,
-    trial_ping_usd: float,
     trial_escalation_usd: float,
     always_ping_emails: list[str],
     updated_by_user_id: str | None,
 ) -> AlertSettings:
     values = {
-        "experiment_milestone_usd": Decimal(str(experiment_milestone_usd)),
-        "experiment_repeat_usd": Decimal(str(experiment_repeat_usd)),
-        "trial_ping_usd": Decimal(str(trial_ping_usd)),
         "trial_escalation_usd": Decimal(str(trial_escalation_usd)),
         "always_ping_emails": always_ping_emails,
         "updated_at": utcnow(),

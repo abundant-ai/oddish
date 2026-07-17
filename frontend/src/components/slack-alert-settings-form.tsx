@@ -9,9 +9,6 @@ import { Label } from "@/components/ui/label";
 import { fetcher } from "@/lib/api";
 
 interface SlackAlertSettings {
-  experiment_milestone_usd: number;
-  experiment_repeat_usd: number;
-  trial_ping_usd: number;
   trial_escalation_usd: number;
   always_ping_emails: string[];
   is_override: boolean;
@@ -31,7 +28,7 @@ export function SlackAlertSettingsForm() {
     mutate,
     error: loadError,
   } = useSWR<SlackAlertSettings>(ENDPOINT, fetcher);
-  const [draft, setDraft] = useState<Partial<SlackAlertSettings> | null>(null);
+  const [escalation, setEscalation] = useState<number | null>(null);
   const [pingsText, setPingsText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,20 +45,11 @@ export function SlackAlertSettingsForm() {
     return <p className="text-sm text-muted-foreground">Loading settings…</p>;
   }
 
-  const value: SlackAlertSettings = { ...data, ...draft };
-  const set = <K extends keyof SlackAlertSettings>(
-    key: K,
-    v: SlackAlertSettings[K],
-  ) => {
-    setError(null);
-    setDraft((d) => ({ ...d, [key]: v }));
-  };
-
-  // The textarea keeps its own raw string so a half-typed address survives a
+  const escalationUsd = escalation ?? data.trial_escalation_usd;
+  // The field keeps its own raw string so a half-typed address survives a
   // keystroke; the parsed list is only derived on save.
-  const pings = pingsText ?? value.always_ping_emails.join(", ");
-
-  const dirty = draft != null || pingsText != null;
+  const pings = pingsText ?? data.always_ping_emails.join(", ");
+  const dirty = escalation != null || pingsText != null;
 
   async function send(method: "PUT" | "DELETE") {
     setSaving(true);
@@ -71,7 +59,10 @@ export function SlackAlertSettingsForm() {
       headers: { "Content-Type": "application/json" },
       body:
         method === "PUT"
-          ? JSON.stringify({ ...value, always_ping_emails: splitList(pings) })
+          ? JSON.stringify({
+              trial_escalation_usd: escalationUsd,
+              always_ping_emails: splitList(pings),
+            })
           : undefined,
     }).catch(() => null);
     setSaving(false);
@@ -86,66 +77,38 @@ export function SlackAlertSettingsForm() {
       setError(detail ?? body?.error ?? "Could not save alert settings.");
       return;
     }
-    setDraft(null);
+    setEscalation(null);
     setPingsText(null);
     void mutate();
   }
 
   function save() {
-    const amounts = [
-      value.experiment_milestone_usd,
-      value.experiment_repeat_usd,
-      value.trial_ping_usd,
-      value.trial_escalation_usd,
-    ];
-    if (amounts.some((n) => !Number.isFinite(n) || n <= 0)) {
-      setError("Every amount must be greater than $0.");
-      return;
-    }
-    if (value.trial_escalation_usd < value.trial_ping_usd) {
-      setError("Escalation must be at or above the trial DM floor.");
+    if (!Number.isFinite(escalationUsd) || escalationUsd <= 0) {
+      setError("The escalation amount must be greater than $0.");
       return;
     }
     void send("PUT");
   }
 
-  const money = (key: keyof SlackAlertSettings, label: string, hint: string) => (
-    <div className="space-y-1">
-      <Label>{label}</Label>
-      <Input
-        type="number"
-        min={1}
-        step={50}
-        value={value[key] as number}
-        onChange={(e) => set(key, Number(e.target.value) as never)}
-      />
-      <p className="text-xs text-muted-foreground">{hint}</p>
-    </div>
-  );
-
   return (
     <div className="max-w-xl space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        {money(
-          "experiment_milestone_usd",
-          "First experiment milestone",
-          "DMs the owner once an experiment's spend first clears this.",
-        )}
-        {money(
-          "experiment_repeat_usd",
-          "Then every",
-          "And again on each further step of this size.",
-        )}
-        {money(
-          "trial_ping_usd",
-          "Trial DM floor",
-          "Any single trial above this DMs its owner.",
-        )}
-        {money(
-          "trial_escalation_usd",
-          "Escalate to channel",
-          "A trial above this also posts to the channel, pinging the list below.",
-        )}
+      <div className="space-y-1">
+        <Label>Escalate to channel above</Label>
+        <Input
+          type="number"
+          min={1}
+          step={50}
+          value={escalationUsd}
+          onChange={(e) => {
+            setError(null);
+            setEscalation(Number(e.target.value));
+          }}
+        />
+        <p className="text-xs text-muted-foreground">
+          Any single trial costing more than this posts to the shared channel and
+          pings the list below. Owner DMs are tuned per person in their own
+          notification settings, not here.
+        </p>
       </div>
       <div className="space-y-1">
         <Label>Always ping on escalation (comma-separated emails)</Label>
@@ -162,7 +125,7 @@ export function SlackAlertSettingsForm() {
         </p>
       </div>
       <p className="text-xs text-muted-foreground">
-        {value.is_override
+        {data.is_override
           ? "Overriding the deploy-time defaults. Applies to every org, within 5 minutes."
           : "Currently on the deploy-time defaults. Saving overrides them for every org."}
       </p>
@@ -170,7 +133,7 @@ export function SlackAlertSettingsForm() {
         <Button size="sm" disabled={saving || !dirty} onClick={save}>
           {saving ? "Saving…" : "Save alert settings"}
         </Button>
-        {value.is_override ? (
+        {data.is_override ? (
           <Button
             size="sm"
             variant="outline"

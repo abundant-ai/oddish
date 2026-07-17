@@ -11,9 +11,6 @@ from auth import require_admin
 from slack_alert_settings import DEFAULT_ALERT_SETTINGS
 
 VALID = {
-    "experiment_milestone_usd": 2000,
-    "experiment_repeat_usd": 500,
-    "trial_ping_usd": 250,
     "trial_escalation_usd": 1500,
     "always_ping_emails": ["ops@example.com", "sre@example.com"],
 }
@@ -75,7 +72,9 @@ async def test_get_returns_defaults_when_no_override_row(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["trial_ping_usd"] == DEFAULT_ALERT_SETTINGS.trial_ping_usd
+    assert (
+        body["trial_escalation_usd"] == DEFAULT_ALERT_SETTINGS.trial_escalation_usd
+    )
     assert body["always_ping_emails"] == list(DEFAULT_ALERT_SETTINGS.always_ping_emails)
     # The pane labels defaults differently from a deliberate override.
     assert body["is_override"] is False
@@ -84,9 +83,6 @@ async def test_get_returns_defaults_when_no_override_row(monkeypatch):
 @pytest.mark.asyncio
 async def test_put_writes_the_override_and_echoes_it_back(monkeypatch):
     row = SimpleNamespace(
-        experiment_milestone_usd=2000,
-        experiment_repeat_usd=500,
-        trial_ping_usd=250,
         trial_escalation_usd=1500,
         always_ping_emails=["ops@example.com", "sre@example.com"],
     )
@@ -117,10 +113,8 @@ async def test_delete_drops_the_override_and_returns_defaults(monkeypatch):
 @pytest.mark.parametrize(
     "field, value",
     [
-        ("trial_ping_usd", 0),
-        ("trial_ping_usd", -5),
-        ("experiment_milestone_usd", 0),
-        ("experiment_repeat_usd", -1),
+        ("trial_escalation_usd", 0),
+        ("trial_escalation_usd", -5),
         ("always_ping_emails", ["not-an-email"]),
     ],
 )
@@ -129,22 +123,6 @@ async def test_put_rejects_nonsense(monkeypatch, field, value):
     monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
 
     response = await _call(_app(), "PUT", json={**VALID, field: value})
-
-    assert response.status_code == 422
-    assert session.calls == []
-
-
-@pytest.mark.asyncio
-async def test_put_rejects_escalation_below_the_trial_floor(monkeypatch):
-    """Below the floor, every alerting trial would escalate and ping the list."""
-    session = _Session()
-    monkeypatch.setattr(admin_router, "get_session", lambda: _fake_session(session))
-
-    response = await _call(
-        _app(),
-        "PUT",
-        json={**VALID, "trial_ping_usd": 500, "trial_escalation_usd": 100},
-    )
 
     assert response.status_code == 422
     assert session.calls == []

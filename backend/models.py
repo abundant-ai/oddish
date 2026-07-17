@@ -492,24 +492,19 @@ class SlackExpenseAlertModel(Base):
 
 
 class SlackAlertSettingsModel(Base):
-    """Admin override for the Slack cost-alert thresholds and ping list.
+    """Admin override for the shared-channel Slack escalation.
 
     At most one row, ``id == SETTINGS_ROW_ID``, enforced by a CHECK: the alerts
     are deployment-wide rather than org-scoped -- the cron scans every org --
     so there is nothing to key this by. A missing row means the defaults in
-    ``slack_alert_settings.py`` stand.
+    ``slack_alert_settings.py`` stand. This covers only the in-channel
+    escalation floor and ping list; the per-user DM cutoffs live in
+    ``user_alert_preferences``.
     """
 
     __tablename__ = "slack_alert_settings"
 
     id: Mapped[str] = mapped_column(Text, primary_key=True)
-    experiment_milestone_usd: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), nullable=False
-    )
-    experiment_repeat_usd: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), nullable=False
-    )
-    trial_ping_usd: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     trial_escalation_usd: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
     )

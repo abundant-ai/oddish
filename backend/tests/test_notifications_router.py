@@ -1,8 +1,8 @@
 """HTTP-level tests for /users/me/alert-preferences (no live Postgres).
 
 Builds the real app but never touches the DB: `get_session` is a fake async
-session, `read_alert_settings` is stubbed, and `require_auth` is overridden per
-scenario.
+session and `require_auth` is overridden per scenario. The inherited cutoffs the
+response reports are deploy-time constants, not DB-backed, so nothing to stub.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ from sqlalchemy.exc import ProgrammingError
 from api.app import create_app
 from api.routers import notifications as notif_router
 from auth import AuthContext, AuthMethod, require_auth
-from slack_alert_settings import AlertSettings
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,10 +30,6 @@ VALID = {
     "experiment_milestone_usd": 2500,
     "trial_ping_usd": 50,
 }
-
-STUB_SETTINGS = AlertSettings(
-    experiment_milestone_usd=1000.0, trial_ping_usd=200.0, is_override=False
-)
 
 
 class _FakeSession:
@@ -69,11 +64,6 @@ class _Ctx:
 
 def _install(monkeypatch, session):
     monkeypatch.setattr(notif_router, "get_session", lambda: _Ctx(session))
-
-    async def _settings():
-        return STUB_SETTINGS
-
-    monkeypatch.setattr(notif_router, "read_alert_settings", _settings)
 
 
 def _user_auth():

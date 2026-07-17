@@ -2,8 +2,8 @@
 cutoffs.
 
 User-session auth only, scoped to the caller -- an oddish API key must not read
-or write someone's notification prefs. The response also reports the current
-global cutoffs so the UI can show what an unset (inherited) cutoff resolves to.
+or write someone's notification prefs. The response also reports the deploy-time
+cutoffs so the UI can show what an unset (inherited) cutoff resolves to.
 """
 
 from __future__ import annotations
@@ -18,8 +18,9 @@ from sqlalchemy.exc import ProgrammingError
 from auth import AuthContext, AuthMethod, require_auth
 from oddish.db import get_session
 from pg_errors import is_undefined_column_or_table_error
-from slack_alert_settings import read_alert_settings
 from user_alert_prefs import (
+    DEFAULT_EXPERIMENT_MILESTONE_USD,
+    DEFAULT_TRIAL_PING_USD,
     UserAlertPrefs,
     get_user_alert_prefs,
     set_user_alert_prefs,
@@ -59,12 +60,13 @@ def _require_user_session(auth: AuthContext) -> str:
     return auth.user_id
 
 
-async def _response(prefs: UserAlertPrefs) -> AlertPreferencesResponse:
-    settings = await read_alert_settings()
+def _response(prefs: UserAlertPrefs) -> AlertPreferencesResponse:
+    # The inherited cutoffs are the deploy-time DM defaults -- not admin-tunable;
+    # the admin pane governs only the shared-channel escalation.
     return AlertPreferencesResponse(
         **asdict(prefs),
-        inherited_experiment_milestone_usd=settings.experiment_milestone_usd,
-        inherited_trial_ping_usd=settings.trial_ping_usd,
+        inherited_experiment_milestone_usd=DEFAULT_EXPERIMENT_MILESTONE_USD,
+        inherited_trial_ping_usd=DEFAULT_TRIAL_PING_USD,
     )
 
 
@@ -87,7 +89,7 @@ async def get_alert_preferences(
             prefs = await get_user_alert_prefs(session, user_id)
     except ProgrammingError as exc:
         raise _unavailable(exc) from exc
-    return await _response(prefs)
+    return _response(prefs)
 
 
 @router.put("", response_model=AlertPreferencesResponse)
@@ -103,4 +105,4 @@ async def update_alert_preferences(
             )
     except ProgrammingError as exc:
         raise _unavailable(exc) from exc
-    return await _response(prefs)
+    return _response(prefs)

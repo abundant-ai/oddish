@@ -1007,7 +1007,7 @@ function NotificationsPanel() {
     setDraft((d) => ({ ...d, [key]: v }));
   };
 
-  // Empty cutoff field means "inherit the global/admin cutoff" — stored as null.
+  // Empty cutoff field means "inherit the deploy-time default" — stored as null.
   const cutoffField = (
     key: "experiment_milestone_usd" | "trial_ping_usd",
     inherited: number,

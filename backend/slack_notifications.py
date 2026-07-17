@@ -35,6 +35,9 @@ from oddish.db import (
 from oddish.model_pricing import has_pricing
 from slack_alert_settings import AlertSettings, read_alert_settings
 from user_alert_prefs import (
+    DEFAULT_EXPERIMENT_MILESTONE_USD,
+    DEFAULT_EXPERIMENT_REPEAT_USD,
+    DEFAULT_TRIAL_PING_USD,
     DEFAULT_USER_ALERT_PREFS,
     UserAlertPrefs,
     read_prefs_by_email,
@@ -42,9 +45,10 @@ from user_alert_prefs import (
 
 log = logging.getLogger("oddish.slack_notifications")
 
-# The cost thresholds and the always-ping list are admin-editable; their
-# defaults live in slack_alert_settings. This one governs failure DMs rather
-# than spend, so it stays a module constant.
+# The in-channel escalation floor and always-ping list are admin-editable; their
+# defaults live in slack_alert_settings. The per-user DM cutoffs default to the
+# DEFAULT_*_USD constants in user_alert_prefs, which each user can override.
+# This one governs failure DMs rather than spend, so it stays a module constant.
 EXPERIMENT_FAILED_RATIO = 0.5
 
 # Slack lookup errors that genuinely mean "this person has no Slack account".
@@ -229,12 +233,12 @@ def build_alerts(
         )
         baseline_cost = total_cost - recent_spend
         # A personal milestone cutoff overrides both the first threshold and the
-        # repeat interval; unset inherits the admin pair.
+        # repeat interval; unset inherits the deploy-time pair.
         if owner_prefs.experiment_milestone_usd is not None:
             first_usd = repeat_usd = owner_prefs.experiment_milestone_usd
         else:
-            first_usd = settings.experiment_milestone_usd
-            repeat_usd = settings.experiment_repeat_usd
+            first_usd = DEFAULT_EXPERIMENT_MILESTONE_USD
+            repeat_usd = DEFAULT_EXPERIMENT_REPEAT_USD
         milestones = _experiment_milestones(total_cost, first_usd, repeat_usd)
         if milestones and owner_prefs.cost_milestone_enabled:
             agent_costs: dict[str, float] = {}
@@ -283,7 +287,7 @@ def build_alerts(
         trial_floor = (
             owner_prefs.trial_ping_usd
             if owner_prefs.trial_ping_usd is not None
-            else settings.trial_ping_usd
+            else DEFAULT_TRIAL_PING_USD
         )
         for trial in experiment_trials:
             if trial.finished_at < recent_cutoff:

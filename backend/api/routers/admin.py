@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import ProgrammingError
 
@@ -320,9 +320,6 @@ async def backfill_task_expansions(
 
 
 class SlackAlertSettingsResponse(BaseModel):
-    experiment_milestone_usd: float
-    experiment_repeat_usd: float
-    trial_ping_usd: float
     trial_escalation_usd: float
     always_ping_emails: list[str]
     # False means nobody has overridden anything and these are the values baked
@@ -331,9 +328,6 @@ class SlackAlertSettingsResponse(BaseModel):
 
 
 class SlackAlertSettingsRequest(BaseModel):
-    experiment_milestone_usd: float = Field(gt=0)
-    experiment_repeat_usd: float = Field(gt=0)
-    trial_ping_usd: float = Field(gt=0)
     trial_escalation_usd: float = Field(gt=0)
     always_ping_emails: list[str] = Field(max_length=50)
 
@@ -347,15 +341,6 @@ class SlackAlertSettingsRequest(BaseModel):
             if not _EMAIL_RE.fullmatch(email.strip()):
                 raise ValueError(f"not an email address: {email!r}")
         return [email.strip() for email in emails]
-
-    @model_validator(mode="after")
-    def _escalation_at_or_above_floor(self) -> SlackAlertSettingsRequest:
-        # Below the floor every alert would escalate, pinging the whole list on
-        # every expensive trial. The DB CHECK says the same thing; this just
-        # answers with a 422 instead of a 500.
-        if self.trial_escalation_usd < self.trial_ping_usd:
-            raise ValueError("trial_escalation_usd must be at or above trial_ping_usd")
-        return self
 
 
 def _settings_response(settings: AlertSettings) -> SlackAlertSettingsResponse:

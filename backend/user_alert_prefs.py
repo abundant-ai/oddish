@@ -3,13 +3,14 @@ cutoffs.
 
 Each user gets a row in ``user_alert_preferences`` only once they change
 something; no row means every default below stands (all five DM types on, both
-cost cutoffs inherited from the global ``slack_alert_settings``). The cutoffs
-are nullable precisely so "inherit the admin default" is distinct from "set it
-to this number" -- a null rides whatever the admin last set, a value pins it for
+cost cutoffs inheriting the deploy-time defaults in this module). The cutoffs
+are nullable precisely so "inherit the default" is distinct from "set it to this
+number" -- a null rides the ``DEFAULT_*_USD`` constant below, a value pins it for
 this person regardless.
 
 Only a person's own DMs are affected. The in-channel escalation on a very
-expensive trial is shared oversight and ignores these entirely.
+expensive trial is shared oversight, admin-tuned from the ``slack_alert_settings``
+pane, and ignores these entirely.
 """
 
 from __future__ import annotations
@@ -29,6 +30,16 @@ from pg_errors import is_undefined_column_or_table_error
 
 log = logging.getLogger("oddish.user_alert_prefs")
 
+# Deploy-time defaults for the two DM cost cutoffs. A user's unset (None)
+# milestone or trial floor inherits these. They are not admin-editable -- the
+# admin pane governs only the shared-channel escalation -- so they live here as
+# plain constants beside the prefs that fall back to them. build_alerts reads
+# them for the inheritance, and the notifications router reports them as the
+# "inherited" value the settings UI shows on an empty field.
+DEFAULT_EXPERIMENT_MILESTONE_USD = 1000.0
+DEFAULT_EXPERIMENT_REPEAT_USD = 1000.0
+DEFAULT_TRIAL_PING_USD = 200.0
+
 
 @dataclass(frozen=True)
 class UserAlertPrefs:
@@ -37,7 +48,7 @@ class UserAlertPrefs:
     experiment_failed_enabled: bool = True
     trial_failed_enabled: bool = True
     qa_failed_enabled: bool = True
-    # None means "inherit the admin/global cutoff"; a value pins it for this
+    # None means "inherit the deploy-time cutoff above"; a value pins it for this
     # person. The milestone value overrides both the first threshold and the
     # repeat interval -- a user thinks in one "DM me every $X", not two.
     experiment_milestone_usd: float | None = None
