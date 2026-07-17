@@ -45,6 +45,8 @@ import {
   Package,
   Trash2,
   GitBranch,
+  Copy,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
@@ -112,7 +114,6 @@ const TrajectoryGraphView = dynamic(
     loading: () => <DrawerPanelLoading label="Loading agent graph..." />,
   },
 );
-
 
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
@@ -383,6 +384,7 @@ export function TrialDetailPanel({
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
   const [showFullError, setShowFullError] = useState(false);
+  const [copiedErrorMessage, setCopiedErrorMessage] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -393,6 +395,18 @@ export function TrialDetailPanel({
   );
 
   const hydratedFromUrl = useRef(false);
+
+  const handleCopyErrorMessage = useCallback(async () => {
+    if (!trial?.error_message) return;
+
+    await navigator.clipboard.writeText(trial.error_message);
+    setCopiedErrorMessage(true);
+    window.setTimeout(() => setCopiedErrorMessage(false), 2000);
+  }, [trial?.error_message]);
+
+  useEffect(() => {
+    setCopiedErrorMessage(false);
+  }, [trial?.id]);
 
   // Hydrate from URL on first open
   useEffect(() => {
@@ -1159,14 +1173,33 @@ export function TrialDetailPanel({
                     <div className="flex items-start gap-2">
                       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
                       <div className="min-w-0 flex-1">
-                        <pre className="font-mono text-sm wrap-break-word whitespace-pre-wrap text-red-600 dark:text-red-400">
-                          {showFullError
-                            ? trial.error_message
-                            : trial.error_message.slice(0, 300)}
-                          {trial.error_message.length > 300 &&
-                            !showFullError &&
-                            "..."}
-                        </pre>
+                        <div className="flex items-start gap-2">
+                          <pre className="min-w-0 flex-1 font-mono text-sm wrap-break-word whitespace-pre-wrap text-red-600 dark:text-red-400">
+                            {showFullError
+                              ? trial.error_message
+                              : trial.error_message.slice(0, 300)}
+                            {trial.error_message.length > 300 &&
+                              !showFullError &&
+                              "..."}
+                          </pre>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={handleCopyErrorMessage}
+                            className="h-6 w-6 shrink-0 text-red-500/60 hover:bg-red-500/10 hover:text-red-600"
+                            title={
+                              copiedErrorMessage ? "Copied error" : "Copy error"
+                            }
+                            aria-label="Copy error message"
+                          >
+                            {copiedErrorMessage ? (
+                              <Check className="h-3.5 w-3.5" />
+                            ) : (
+                              <Copy className="h-3.5 w-3.5" />
+                            )}
+                          </Button>
+                        </div>
                         {trial.error_message.length > 300 && (
                           <Button
                             type="button"
