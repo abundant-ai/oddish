@@ -173,7 +173,7 @@ async def test_run_cancellation_still_persists(monkeypatch):
     saved = _patch_persistence(monkeypatch)
 
     class _HangingClient:
-        async def stream(self, prompt):
+        async def stream(self, prompt, *, system_prompt=None):
             yield "first"
             await asyncio.sleep(3600)
         async def aclose(self):
@@ -230,3 +230,12 @@ async def test_run_persist_completes_when_cancelled_during_persist(monkeypatch):
         await task
     assert saved["db"] == 1           # the DB write completed before run() unwound
     assert saved["s3"] == b"first"
+
+
+@pytest.mark.asyncio
+async def test_block_forwards_system_prompt(monkeypatch):
+    _patch_persistence(monkeypatch)
+    fake = FakeAnalyzerLLMClient(chunks=["ok"])
+    b = _make_block(client=fake, system_prompt="MAP rules")
+    await b.run()
+    assert fake.last_system_prompt == "MAP rules"

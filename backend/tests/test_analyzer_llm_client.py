@@ -135,3 +135,11 @@ async def test_sandbox_client_streams_json_lines_and_closes():
     ]
     await client.aclose()
     assert daytona.deleted is True
+
+
+@pytest.mark.asyncio
+async def test_fake_client_records_system_prompt():
+    c = FakeAnalyzerLLMClient(chunks=["a"])
+    chunks = [x async for x in c.stream("hi", system_prompt="be terse")]
+    assert chunks == ["a"]
+    assert c.last_system_prompt == "be terse"

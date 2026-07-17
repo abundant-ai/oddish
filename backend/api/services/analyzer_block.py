@@ -63,6 +63,7 @@ class AnalyzerBlock:
         analyzer_id: str | None = None,
         block_metadata: dict | None = None,
         client: AnalyzerLLMClient | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -72,6 +73,7 @@ class AnalyzerBlock:
         self.analyzer_id = analyzer_id
         self.block_metadata = block_metadata
         self._client = client
+        self.system_prompt = system_prompt
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -131,7 +133,7 @@ class AnalyzerBlock:
         provisions the backend client (or uses the injected one)."""
         client = self._client or await create_llm_client(self.llm_client_type)
         try:
-            async for chunk in client.stream(self.prompt):
+            async for chunk in client.stream(self.prompt, system_prompt=self.system_prompt):
                 self._chunks.append(chunk)
                 self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
                 yield chunk

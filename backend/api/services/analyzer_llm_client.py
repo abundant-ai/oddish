@@ -23,7 +23,7 @@ class LLMClientType(str, enum.Enum):
 
 @runtime_checkable
 class AnalyzerLLMClient(Protocol):
-    def stream(self, prompt: str) -> AsyncIterator[str]: ...
+    def stream(self, prompt: str, *, system_prompt: str | None = None) -> AsyncIterator[str]: ...
     async def aclose(self) -> None: ...
 
 
@@ -38,8 +38,10 @@ class FakeAnalyzerLLMClient:
     ) -> None:
         self._chunks = chunks or []
         self._exc = exc
+        self.last_system_prompt: str | None = None
 
-    async def stream(self, prompt: str) -> AsyncIterator[str]:
+    async def stream(self, prompt: str, *, system_prompt: str | None = None) -> AsyncIterator[str]:
+        self.last_system_prompt = system_prompt
         for chunk in self._chunks:
             yield chunk
         if self._exc is not None:
@@ -57,12 +59,15 @@ class ApiAnalyzerLLMClient:
         self._max_tokens = max_tokens
         self._inner = AsyncAnthropic()
 
-    async def stream(self, prompt: str) -> AsyncIterator[str]:
-        async with self._inner.messages.stream(
+    async def stream(self, prompt: str, *, system_prompt: str | None = None) -> AsyncIterator[str]:
+        kwargs: dict = dict(
             model=self._model,
             max_tokens=self._max_tokens,
             messages=[{"role": "user", "content": prompt}],
-        ) as stream:
+        )
+        if system_prompt is not None:
+            kwargs["system"] = system_prompt
+        async with self._inner.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
 
@@ -93,13 +98,14 @@ class SandboxAnalyzerLLMClient:
         self._runtime = runtime
         self._session_id = daytona_session_id
 
-    async def stream(self, prompt: str) -> AsyncIterator[str]:
+    async def stream(self, prompt: str, *, system_prompt: str | None = None) -> AsyncIterator[str]:
         async for event in self._runtime.stream_chat(
             self._client,
             self._sandbox,
             content=prompt,
             claude_session_id=None,
             daytona_session_id=self._session_id,
+            system_prompt=system_prompt,
         ):
             yield json.dumps(event)
 
