@@ -1,4 +1,8 @@
-"""Oddish's Claude Code agent wrapper for probe trials.
+"""Oddish's Claude Code agent wrappers.
+
+All Claude Code trials deliver the task over stdin so task text is absent from
+the process command line. Probe trials additionally install Harbor into the
+sandbox so the agent can inspect the harness.
 
 Stock Harbor installs only the claude-code CLI into the sandbox (see
 ``harbor.agents.installed.claude_code.ClaudeCode.install``). Probe trials also
@@ -9,13 +13,13 @@ harbor the orchestrator is running -- read from the installed package's PEP 610
 a git fork, not a PyPI release). In a blessed-variant container that is the
 variant's harbor; for an explicit override the caller can pass ``(source, sha)``.
 
-This wrapper is selected only for probe claude-code trials, via
-``_apply_claude_code_probe_harbor`` in :mod:`oddish.workers.harbor.agent_config`,
-which points ``AgentConfig.import_path`` here.
+The wrappers are selected by ``_apply_claude_code_oddish_wrapper`` in
+:mod:`oddish.workers.harbor.agent_config`.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import shlex
@@ -77,7 +81,41 @@ def _pinned_harbor_requirement(
 
 
 class OddishClaudeCode(ClaudeCode):
-    """Claude Code, plus the harbor package installed in the sandbox."""
+    """Claude Code with task delivery kept off the process command line."""
+
+    def _build_claude_command(self, escaped_instruction: str, extra_flags: str) -> str:
+        """Pipe the prompt over stdin instead of including it in ``claude`` argv.
+
+        Long-horizon tasks often restart services with ``pkill -f``. When the
+        full task is on argv, a service name from that prompt can match and kill
+        the agent itself. Encoding only protects the transport command line;
+        ``base64 -d`` restores the exact UTF-8 prompt on Claude Code's stdin.
+        """
+        try:
+            instruction_parts = shlex.split(escaped_instruction)
+        except ValueError as exc:
+            raise ValueError(
+                "Claude Code instruction is not valid shell quoting"
+            ) from exc
+        if len(instruction_parts) != 1:
+            raise ValueError(
+                "Claude Code instruction must decode to exactly one shell argument"
+            )
+
+        encoded_instruction = base64.b64encode(
+            instruction_parts[0].encode("utf-8")
+        ).decode("ascii")
+        return (
+            'export PATH="$HOME/.local/bin:$PATH"; '
+            f"printf %s {shlex.quote(encoded_instruction)} | base64 -d | "
+            "claude --verbose --output-format=stream-json "
+            f"{extra_flags}"
+            "--print 2>&1 | tee /logs/agent/claude-code.txt"
+        )
+
+
+class OddishProbeClaudeCode(OddishClaudeCode):
+    """Claude Code plus the Harbor package installed for probe trials."""
 
     async def install(self, environment: BaseEnvironment) -> None:
         # Keep the stock CLI + system-package install.
