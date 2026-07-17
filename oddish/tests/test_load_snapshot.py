@@ -105,6 +105,57 @@ async def test_build_load_snapshot_maps_health(monkeypatch):
     assert q.advisory_limit == 48 and q.limit_source == "static"
 
 
+@pytest.mark.asyncio
+async def test_idle_queue_does_not_pin_pressure(monkeypatch):
+    """An inactive key is reported only so the admin editor can list its limit. It
+    keeps a trailing-hour wait_p95 with nothing running, so counting it would peg
+    pressure at 1.0 and throttle submissions on a totally idle system.
+    """
+    health = QueueHealthResponse(
+        totals_queued=0,
+        totals_running=0,
+        throughput=[],
+        capacity=[
+            QueueCapacityStat(
+                queue_key="nop_oracle",
+                active=False,
+                queued=0,
+                queued_scheduled=0,
+                running=0,
+                limit=48,
+                deploy_limit=48,
+                override_limit=None,
+                fill=None,
+                oldest_queued_age_seconds=None,
+                wait_p50_seconds=300.0,
+                # Way over PRESSURE_WAIT_TARGET_S, but from an hour-old claim.
+                wait_p95_seconds=600.0,
+            )
+        ],
+        dispatcher=None,
+        reconciler=None,
+        timestamp="2026-06-22T00:00:00",
+    )
+
+    async def fake_health(session):
+        return health
+
+    async def fake_statuses(session):
+        return {
+            admin.SUBMIT_LATENCY_COMPONENT: {"payload": {"sweep_rtt_p95_ewma": 0.0}}
+        }
+
+    monkeypatch.setattr(admin, "get_queue_health_core", fake_health)
+    monkeypatch.setattr(
+        "oddish.workers.queue.runtime_status.get_queue_runtime_statuses", fake_statuses
+    )
+
+    snap = await admin.build_load_snapshot(session=None)
+
+    assert snap.pressure == 0.0, "an idle system must not report pressure"
+    assert snap.submit_ceiling > admin.CLIENT_FLOOR
+
+
 def _stub_snapshot() -> LoadSnapshot:
     return LoadSnapshot(
         submit_ceiling=64,

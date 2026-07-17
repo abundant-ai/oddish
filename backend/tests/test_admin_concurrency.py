@@ -95,6 +95,35 @@ async def test_admin_concurrency_rejects_invalid_limit():
 
 
 @pytest.mark.asyncio
+async def test_admin_concurrency_rejects_blank_queue_key():
+    """normalize_queue_key("   ") is "default" -- a live queue. A blank key must
+    422, not silently retarget it."""
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            "/admin/concurrency", json={"queue_key": "   ", "limit": 0}
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_admin_concurrency_rejects_a_misspelled_limit_field():
+    """limit=None means "clear the override", so a typo'd field name must 422
+    rather than silently delete one."""
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            "/admin/concurrency",
+            json={"queue_key": "minimax/minimax-m3", "limlt": 96},
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_admin_concurrency_requires_admin():
     """No ``require_admin`` override: the dependency must reject the request."""
     async with AsyncClient(

@@ -91,13 +91,10 @@ async def test_zero_override_is_an_off_switch():
 async def test_set_and_clear_override():
     session = _Session()
 
-    assert await set_model_concurrency_override(session, "MiniMax/MiniMax-M3", 96) == (
-        "minimax/minimax-m3",
-        96,
-    )
+    key = await set_model_concurrency_override(session, "MiniMax/MiniMax-M3", 96)
+    assert key == "minimax/minimax-m3"
     assert "INSERT INTO model_concurrency_overrides" in session.calls[0][0]
 
-    assert await set_model_concurrency_override(
-        session, "MiniMax/MiniMax-M3", None
-    ) == ("minimax/minimax-m3", None)
+    key = await set_model_concurrency_override(session, "MiniMax/MiniMax-M3", None)
+    assert key == "minimax/minimax-m3"
     assert "DELETE FROM model_concurrency_overrides" in session.calls[1][0]

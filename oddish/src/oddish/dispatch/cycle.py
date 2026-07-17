@@ -162,8 +162,7 @@ ConcurrencyLimitsFn = Callable[[tuple[str, ...]], Awaitable[dict[str, int]]]
 async def build_dispatch_plan(
     *,
     max_workers: int,
-    concurrency_for: Callable[[str], int] | None = None,
-    concurrency_limits_for: ConcurrencyLimitsFn | None = None,
+    concurrency_limits_for: ConcurrencyLimitsFn,
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
     _counts: CountsFn = get_worker_job_org_queue_counts,
     _held: HeldFn = count_held_queue_slots,
@@ -173,9 +172,6 @@ async def build_dispatch_plan(
     This is the scheduling brain shared by the generic dispatch cycle and the
     Modal cron. Callers choose how to fan out ``unit_plan``.
     """
-    if concurrency_for is None and concurrency_limits_for is None:
-        raise ValueError("provide concurrency_for or concurrency_limits_for")
-
     queue_units = tuple(await _discover())
     queue_keys = tuple({qk for qk, _variant in queue_units})
     queued_by_org_queue, running_by_queue = await _counts(queue_keys)
@@ -184,11 +180,7 @@ async def build_dispatch_plan(
     # On fast re-fires, plan against max(running, held) per queue_key -- else the
     # dispatcher over-spawns workers that then lose the slot race and exit.
     held_by_queue_key = await _held(queue_keys)
-    if concurrency_limits_for is not None:
-        concurrency_limits = await concurrency_limits_for(queue_keys)
-    else:
-        assert concurrency_for is not None
-        concurrency_limits = {qk: concurrency_for(qk) for qk in queue_keys}
+    concurrency_limits = await concurrency_limits_for(queue_keys)
 
     unit_plan = build_spawn_plan(
         queued_by_org_queue=queued_by_org_queue,
@@ -255,8 +247,7 @@ async def run_dispatch_cycle(
     dispatcher: Dispatcher,
     *,
     max_workers: int,
-    concurrency_for: Callable[[str], int] | None = None,
-    concurrency_limits_for: ConcurrencyLimitsFn | None = None,
+    concurrency_limits_for: ConcurrencyLimitsFn,
     admit: AdmissionCheck = admit_all,
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
@@ -279,7 +270,6 @@ async def run_dispatch_cycle(
         return await _run_dispatch_cycle(
             dispatcher,
             max_workers=max_workers,
-            concurrency_for=concurrency_for,
             concurrency_limits_for=concurrency_limits_for,
             admit=admit,
             on_stage=on_stage,
@@ -293,8 +283,7 @@ async def _run_dispatch_cycle(
     dispatcher: Dispatcher,
     *,
     max_workers: int,
-    concurrency_for: Callable[[str], int] | None = None,
-    concurrency_limits_for: ConcurrencyLimitsFn | None = None,
+    concurrency_limits_for: ConcurrencyLimitsFn,
     admit: AdmissionCheck = admit_all,
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
@@ -303,7 +292,6 @@ async def _run_dispatch_cycle(
 ) -> DispatchCycleResult:
     plan = await build_dispatch_plan(
         max_workers=max_workers,
-        concurrency_for=concurrency_for,
         concurrency_limits_for=concurrency_limits_for,
         _discover=_discover,
         _counts=_counts,
@@ -459,8 +447,7 @@ async def run_dispatch_loop(
     dispatcher: Dispatcher,
     *,
     max_workers: int,
-    concurrency_for: Callable[[str], int] | None = None,
-    concurrency_limits_for: ConcurrencyLimitsFn | None = None,
+    concurrency_limits_for: ConcurrencyLimitsFn,
     admit: AdmissionCheck = admit_all,
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     fallback_interval: float = 20.0,
@@ -491,7 +478,6 @@ async def run_dispatch_loop(
             await run_dispatch_cycle(
                 dispatcher,
                 max_workers=max_workers,
-                concurrency_for=concurrency_for,
                 concurrency_limits_for=concurrency_limits_for,
                 admit=admit,
                 on_stage=on_stage,

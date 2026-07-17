@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -727,8 +727,19 @@ class QueueHealthResponse(BaseModel):
 
 
 class ModelConcurrencyUpdateRequest(BaseModel):
-    queue_key: str = Field(min_length=1, max_length=512)
-    limit: int | None = Field(default=None, ge=0, le=MAX_MODEL_CONCURRENCY)
+    # extra="forbid" so a misspelled field 422s. Without it `{"limlt": 5}` would
+    # validate, and since limit=None means "clear the override", a typo would
+    # silently delete one.
+    model_config = ConfigDict(extra="forbid")
+
+    # Blank-but-present keys must 422 rather than sail through:
+    # normalize_queue_key("   ") is "default", a live queue, so min_length alone
+    # would let a whitespace key silently retarget it.
+    queue_key: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ] = Field(max_length=512)
+    # Required, not defaulted: clearing an override must be an explicit `null`.
+    limit: int | None = Field(ge=0, le=MAX_MODEL_CONCURRENCY)
 
 
 class ModelConcurrencySetting(BaseModel):
@@ -742,9 +753,10 @@ async def update_model_concurrency_core(
     session: AsyncSession,
     request: ModelConcurrencyUpdateRequest,
 ) -> ModelConcurrencySetting:
-    queue_key, override_limit = await set_model_concurrency_override(
+    queue_key = await set_model_concurrency_override(
         session, request.queue_key, request.limit
     )
+    override_limit = request.limit
     deploy_limit = settings.get_model_concurrency(queue_key)
     return ModelConcurrencySetting(
         queue_key=queue_key,
@@ -1025,8 +1037,14 @@ async def build_load_snapshot(session: AsyncSession) -> LoadSnapshot:
     submit_row = statuses.get(SUBMIT_LATENCY_COMPONENT) or {}
     sweep_rtt = (submit_row.get("payload") or {}).get("sweep_rtt_p95_ewma")
 
+    # Live queues only. capacity also carries idle keys so the admin editor can list
+    # every editable limit, and an idle key keeps its trailing-hour wait_p95 with
+    # nothing running -- counting those pins pressure at 1.0 and throttles
+    # submissions on an idle system.
     wait_values = [
-        c.wait_p95_seconds for c in health.capacity if c.wait_p95_seconds is not None
+        c.wait_p95_seconds
+        for c in health.capacity
+        if c.active and c.wait_p95_seconds is not None
     ]
     wait_p95_max = max(wait_values) if wait_values else None
 

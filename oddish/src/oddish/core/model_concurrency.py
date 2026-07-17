@@ -84,9 +84,9 @@ async def set_model_concurrency_override(
     session: AsyncSession,
     queue_key: str,
     limit: int | None,
-) -> tuple[str, int | None]:
+) -> str:
     """Upsert one override (clear it when ``limit`` is None). Returns the
-    normalized queue key and the stored override."""
+    normalized queue key the row was written under."""
     if limit is not None and not 0 <= limit <= MAX_MODEL_CONCURRENCY:
         raise ValueError(f"limit must be between 0 and {MAX_MODEL_CONCURRENCY}")
     normalized = settings.normalize_queue_key(queue_key)
@@ -111,4 +111,4 @@ async def set_model_concurrency_override(
             ),
             {"queue_key": normalized, "concurrency_limit": limit},
         )
-    return normalized, limit
+    return normalized

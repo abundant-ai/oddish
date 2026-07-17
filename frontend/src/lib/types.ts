@@ -811,7 +811,6 @@ interface QueueThroughputStat {
 
 export interface QueueCapacityStat {
   queue_key: string;
-  active: boolean;
   queued: number;
   queued_scheduled: number;
   running: number;
