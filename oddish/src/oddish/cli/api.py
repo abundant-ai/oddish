@@ -857,6 +857,7 @@ def _coerce_kwarg_values(kwargs: dict[str, str]) -> dict[str, Any]:
     plain string (cluster names, zones, image tags). JSON-quoting a value
     ('"123"') is the escape hatch for literal strings that would coerce.
     """
+
     def _reject_nonstandard_constant(name: str) -> Any:
         # json.loads accepts NaN/Infinity/-Infinity, but they do not survive
         # strict JSON serialization (API payloads, JSONB); treat them as the
@@ -2048,13 +2049,23 @@ def _build_experiment_table(experiment_id: str, tasks: list[dict]) -> Table:
     return table
 
 
-def get_experiment_tasks(api_url: str, experiment_id: str) -> list[dict] | None:
-    """Fetch all tasks for an experiment by ID."""
+def get_experiment_tasks(
+    api_url: str, experiment_id: str, *, include_trials: bool = False
+) -> list[dict] | None:
+    """Fetch all tasks for an experiment by ID.
+
+    ``include_trials`` embeds each task's trial rows (needed to select
+    individual trials); it is off by default because callers that only read
+    task-level counters pay for a much larger payload otherwise.
+    """
+    params: dict[str, str] = {"experiment_id": experiment_id}
+    if include_trials:
+        params["include_trials"] = "true"
     try:
-        with httpx.Client(timeout=10.0, headers=get_auth_headers()) as client:
-            response = client.get(
-                f"{api_url}/tasks", params={"experiment_id": experiment_id}
-            )
+        with httpx.Client(
+            timeout=60.0 if include_trials else 10.0, headers=get_auth_headers()
+        ) as client:
+            response = client.get(f"{api_url}/tasks", params=params)
     except Exception as e:
         error_console.print(f"[red]Failed to connect to API:[/red] {e}")
         return None

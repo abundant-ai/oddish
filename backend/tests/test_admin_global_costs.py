@@ -277,6 +277,86 @@ async def test_cost_leaderboard_is_scoped_to_org(global_costs_fixture):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_cost_leaderboard_keeps_github_buckets_drops_unattributed(
+    global_costs_fixture,
+):
+    f = global_costs_fixture
+    gh_task_id = f"task_gh_{uuid.uuid4().hex[:8]}"
+    plain_task_id = f"task_uh_{uuid.uuid4().hex[:8]}"
+    recent = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    async with get_session() as session:
+        session.add(
+            ExperimentModel(id=f"exp_{gh_task_id}", name="gh", org_id=f.org_id)
+        )
+        session.add(
+            ExperimentModel(id=f"exp_{plain_task_id}", name="uh", org_id=f.org_id)
+        )
+        session.add(
+            TaskModel(
+                id=gh_task_id, name="gh-task", org_id=f.org_id, user="x",
+                task_path="s3://test-bucket/gh",
+                tags={"github_username": "ghosty"},
+            )
+        )
+        session.add(
+            TaskModel(
+                id=plain_task_id, name="uh-task", org_id=f.org_id, user="x",
+                task_path="s3://test-bucket/uh",
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                # GitHub-identity spend with no registered payer.
+                _trial(
+                    gh_task_id, 0, org_id=f.org_id, billed_user_id=None,
+                    created_at=recent, finished_at=recent, cost_usd=3.00,
+                ),
+                # Fully unattributed spend: no payer, no GitHub identity,
+                # no submitting credential.
+                _trial(
+                    plain_task_id, 0, org_id=f.org_id, billed_user_id=None,
+                    created_at=recent, finished_at=recent, cost_usd=5.00,
+                ),
+            ]
+        )
+
+    try:
+        async with get_session() as session:
+            leaders = await get_cost_leaderboard_core(
+                session, org_id=f.org_id, window_days=7
+            )
+        by_label = {leader.label: leader for leader in leaders if leader.label}
+        assert "@ghosty" in by_label
+        assert by_label["@ghosty"].user_id is None
+        assert by_label["@ghosty"].cost_usd == pytest.approx(3.00)
+        assert "Unattributed" not in by_label
+        registered = {leader.user_id for leader in leaders if leader.user_id}
+        assert {f.target.id, f.other.id} <= registered
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(
+                    TrialModel.task_id.in_([gh_task_id, plain_task_id])
+                )
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(
+                    TaskModel.id.in_([gh_task_id, plain_task_id])
+                )
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id.in_(
+                        [f"exp_{gh_task_id}", f"exp_{plain_task_id}"]
+                    )
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_prev_window_totals_and_per_user(global_costs_fixture):
     f = global_costs_fixture
     async with get_session() as session:
