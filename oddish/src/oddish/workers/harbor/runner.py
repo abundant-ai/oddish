@@ -368,6 +368,27 @@ async def run_harbor_trial_async(
         env_config = hc.environment.model_copy()
         env_config.type = environment
 
+        # Claude Code installs its CLI during agent-setup by fetching from
+        # downloads.claude.ai (curl bootstrap) or registry.npmjs.org (alpine/npm
+        # path). Harbor auto-allows only the model API (api.anthropic.com), not
+        # the installer CDN, so on an offline/allowlist task Modal's egress
+        # firewall drops the install (curl exit 28 / connection reset) and the
+        # trial fails before the agent ever runs. Add the installer hosts to the
+        # environment allowlist for every claude-code trial. We use the
+        # environment (not agent) allowlist because it is merged into the network
+        # baseline BEFORE agent setup; AgentConfig.extra_allowed_hosts only
+        # applies during agent.run(), which is too late for the install.
+        if "claude-code" in (agent or "").strip().lower():
+            installer_hosts = ["downloads.claude.ai", "registry.npmjs.org"]
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[
+                    host
+                    for host in installer_hosts
+                    if host not in env_config.extra_allowed_hosts
+                ],
+            ]
+
         backend = get_backend(environment.value)
         if backend is not None:
             env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
