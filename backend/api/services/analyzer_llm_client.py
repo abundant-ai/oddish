@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import enum
 import json
-import logging
 import os
 from typing import AsyncIterator, Protocol, runtime_checkable
 
@@ -13,8 +12,6 @@ from oddish.db import generate_id
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient, RealDaytonaClient
 from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
-
-log = logging.getLogger("oddish.analyzer_block.client")
 
 _DEFAULT_MODEL = "claude-opus-4-8"
 
@@ -70,7 +67,7 @@ class ApiAnalyzerLLMClient:
                 yield text
 
     async def aclose(self) -> None:
-        return None
+        await self._inner.close()
 
 
 _DAYTONA_SESSION_ID = "analyzer"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -613,8 +614,8 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
 
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     # input/output are arbitrary JSON (the block's I/O are typed ``any``).
-    input: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
 
     status: Mapped[JobStatus] = mapped_column(
         PGEnum(JobStatus, name="jobstatus", create_type=False),
