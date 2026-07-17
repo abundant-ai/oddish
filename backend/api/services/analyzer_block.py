@@ -26,11 +26,13 @@ class AnalyzerType(str, enum.Enum):
 @dataclass
 class AnalyzerInput:
     input: Any
+    files_to_download: list[str] | None = None
 
 
 @dataclass
 class AnalyzerOutput:
     output: Any
+    files_written: list[str] | None = None
 
 
 def block_key_prefix(analyzer_type: AnalyzerType) -> str:
@@ -73,6 +75,17 @@ class AnalyzerBlock:
         self.prompt = prompt
         self.analyzer_id = analyzer_id
         self._client = client
+        if input.files_to_download:
+            if llm_client_type == LLMClientType.API:
+                raise ValueError(
+                    "files_to_download is sandbox-only; the API backend has no filesystem"
+                )
+            if client is None:
+                raise ValueError(
+                    "files_to_download requires an injected client (a self-provisioned "
+                    "block deletes its sandbox before run() can download)"
+                )
+        self._downloaded_files: dict[str, bytes] = {}
         self.system_prompt = system_prompt
         self.model = model
         if model:
@@ -155,6 +168,21 @@ class AnalyzerBlock:
             async for _ in self.stream_output():
                 pass
             self.output = AnalyzerOutput(output="".join(self._chunks))
+            if self.input.files_to_download:
+                for p in self.input.files_to_download:
+                    if p not in self._downloaded_files:
+                        try:
+                            self._downloaded_files[p] = await self._client._download_file(p)
+                        except Exception:
+                            self.log.exception("download failed for %s; using empty", p)
+                            self._downloaded_files[p] = b""
+                self.output = AnalyzerOutput(
+                    output={
+                        p: self._downloaded_files[p].decode("utf-8", "replace")
+                        for p in self.input.files_to_download
+                    },
+                    files_written=self.output.files_written,
+                )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))
             return self.output

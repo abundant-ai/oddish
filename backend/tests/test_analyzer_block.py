@@ -250,3 +250,78 @@ def test_block_records_model_in_metadata():
 def test_block_without_model_leaves_metadata_untouched():
     b = _make_block(block_metadata={"k": "v"})
     assert b.block_metadata == {"k": "v"}
+
+
+@pytest.mark.asyncio
+async def test_files_to_download_populates_output_map(monkeypatch):
+    _patch_persistence(monkeypatch)
+    fake = FakeAnalyzerLLMClient(
+        chunks=["streamed"],
+        files={"out/reduce.json": b'{"bad":"x"}', "out/findings-1.jsonl": b'{"t":1}\n'},
+    )
+    b = _make_block(
+        llm_client_type=LLMClientType.SANDBOX,
+        client=fake,
+        input=AnalyzerInput(
+            input={"x": 1},
+            files_to_download=["out/reduce.json", "out/findings-1.jsonl"],
+        ),
+    )
+    out = await b.run()
+    assert out.output == {"out/reduce.json": '{"bad":"x"}', "out/findings-1.jsonl": '{"t":1}\n'}
+
+
+@pytest.mark.asyncio
+async def test_files_to_download_missing_file_is_empty_string(monkeypatch):
+    _patch_persistence(monkeypatch)
+    fake = FakeAnalyzerLLMClient(chunks=["s"], files={})  # nothing on disk
+    b = _make_block(
+        llm_client_type=LLMClientType.SANDBOX,
+        client=fake,
+        input=AnalyzerInput(input={}, files_to_download=["out/reduce.json"]),
+    )
+    out = await b.run()
+    assert out.output == {"out/reduce.json": ""}
+
+
+@pytest.mark.asyncio
+async def test_files_to_download_idempotent(monkeypatch):
+    _patch_persistence(monkeypatch)
+    calls = {"n": 0}
+
+    class _CountingFake(FakeAnalyzerLLMClient):
+        async def _download_file(self, path):
+            calls["n"] += 1
+            return b"data"
+
+    fake = _CountingFake(chunks=["s"])
+    b = _make_block(
+        llm_client_type=LLMClientType.SANDBOX,
+        client=fake,
+        input=AnalyzerInput(input={}, files_to_download=["out/reduce.json"]),
+    )
+    await b.run()
+    b._chunks = []                 # simulate a re-run of the download-bearing tail
+    b.status = JobStatus.RUNNING
+    for p in b.input.files_to_download:
+        if p not in b._downloaded_files:
+            b._downloaded_files[p] = await b._client._download_file(p)
+    assert calls["n"] == 1         # second pass fetched nothing new
+
+
+def test_files_to_download_rejected_on_api_backend():
+    with pytest.raises(ValueError, match="files_to_download"):
+        _make_block(
+            llm_client_type=LLMClientType.API,
+            client=FakeAnalyzerLLMClient(),
+            input=AnalyzerInput(input={}, files_to_download=["out/reduce.json"]),
+        )
+
+
+def test_files_to_download_requires_injected_client():
+    with pytest.raises(ValueError, match="injected client"):
+        _make_block(
+            llm_client_type=LLMClientType.SANDBOX,
+            client=None,
+            input=AnalyzerInput(input={}, files_to_download=["out/reduce.json"]),
+        )
