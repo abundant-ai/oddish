@@ -187,3 +187,50 @@ allowed_hosts = ["pypi.org"]
 """
     task_dir = make_task(task_toml=toml)
     assert closed_internet.check(task_dir, _config(task_dir)) == []
+
+
+from oddish.preflight.checks import solution_format
+
+
+def test_solution_format_flags_patch_files(make_task):
+    task_dir = make_task(
+        solve_sh="#!/bin/sh\ncp fix.py /app/\n",
+        extra_files={"solution/fix.patch": "--- a\n+++ b\n"},
+    )
+    findings = solution_format.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
+    assert "fix.patch" in findings[0].message
+
+
+def test_solution_format_flags_diff_files(make_task):
+    task_dir = make_task(
+        solve_sh="#!/bin/sh\n",
+        extra_files={"solution/fix.diff": "--- a\n+++ b\n"},
+    )
+    findings = solution_format.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    ["git apply fix.patch", "patch -p1 < fix.patch", "git am fix.patch"],
+)
+def test_solution_format_flags_patch_application_in_solve_sh(make_task, cmd):
+    task_dir = make_task(solve_sh=f"#!/bin/sh\n{cmd}\n")
+    findings = solution_format.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+    assert findings[0].line == 2
+
+
+def test_solution_format_passes_a_readable_solution(make_task):
+    task_dir = make_task(
+        solve_sh="#!/bin/sh\ncp /solution/fix.py /app/fix.py\n",
+        extra_files={"solution/fix.py": "print('fixed')\n"},
+    )
+    assert solution_format.check(task_dir, _config(task_dir)) == []
+
+
+def test_solution_format_is_silent_without_a_solution_dir(make_task):
+    task_dir = make_task()
+    assert solution_format.check(task_dir, _config(task_dir)) == []
