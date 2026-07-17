@@ -742,13 +742,14 @@ async def update_model_concurrency_core(
     session: AsyncSession,
     request: ModelConcurrencyUpdateRequest,
 ) -> ModelConcurrencySetting:
-    queue_key, limit, override_limit = await set_model_concurrency_override(
+    queue_key, override_limit = await set_model_concurrency_override(
         session, request.queue_key, request.limit
     )
+    deploy_limit = settings.get_model_concurrency(queue_key)
     return ModelConcurrencySetting(
         queue_key=queue_key,
-        limit=limit,
-        deploy_limit=settings.get_model_concurrency(queue_key),
+        limit=deploy_limit if override_limit is None else override_limit,
+        deploy_limit=deploy_limit,
         override_limit=override_limit,
     )
 

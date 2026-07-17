@@ -1162,23 +1162,6 @@ class QueueSlotModel(Base):
     )
 
 
-class ModelConcurrencyOverrideModel(Base):
-    __tablename__ = "model_concurrency_overrides"
-
-    queue_key: Mapped[str] = mapped_column(Text, primary_key=True)
-    concurrency_limit: Mapped[int] = mapped_column(Integer, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=text("now()"), nullable=False
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "concurrency_limit BETWEEN 0 AND 10000",
-            name="ck_model_concurrency_overrides_limit",
-        ),
-    )
-
-
 class WorkerJobModel(TimestampedMixin, Base):
     """Unified queue row for every kind of compute work.
 

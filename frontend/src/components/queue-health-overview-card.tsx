@@ -226,6 +226,10 @@ function FillBar({ stat }: { stat: QueueCapacityStat }) {
   );
 }
 
+// Mirrors MAX_MODEL_CONCURRENCY in oddish/core/model_concurrency.py; the server
+// and the model_concurrency_overrides CHECK constraint both reject anything above it.
+const MAX_CONCURRENCY = 10000;
+
 function ConcurrencyLimitEditor({
   stat,
   onSaved,
@@ -266,9 +270,11 @@ function ConcurrencyLimitEditor({
       !draft.trim() ||
       !Number.isInteger(limit) ||
       limit < 0 ||
-      limit > 10000
+      limit > MAX_CONCURRENCY
     ) {
-      setError("Enter a whole number from 0 to 10,000.");
+      setError(
+        `Enter a whole number from 0 to ${MAX_CONCURRENCY.toLocaleString()}.`
+      );
       return;
     }
     void update(limit);
@@ -280,7 +286,7 @@ function ConcurrencyLimitEditor({
         <Input
           type="number"
           min={0}
-          max={10000}
+          max={MAX_CONCURRENCY}
           step={1}
           value={draft}
           disabled={saving}
@@ -315,9 +321,11 @@ function ConcurrencyLimitEditor({
           </Button>
         ) : null}
       </div>
-      <span className="text-muted-foreground text-[10px]">
-        Deploy default: {stat.deploy_limit}
-      </span>
+      {stat.override_limit !== null ? (
+        <span className="text-muted-foreground text-[10px]">
+          Deploy default: {stat.deploy_limit}
+        </span>
+      ) : null}
       {error ? (
         <span className="text-destructive text-[10px]">{error}</span>
       ) : null}

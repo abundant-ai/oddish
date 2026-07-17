@@ -338,12 +338,16 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
         updated: dict[str, int] = {}
         log: list[dict] = []
         for cap in health.capacity:
-            if not getattr(cap, "active", True):
+            # Queues with no work this cycle are reported for the admin editor
+            # but carry no signal to tune against.
+            if not cap.active:
                 continue
             queue_key = cap.queue_key
-            base = getattr(cap, "limit", settings.get_model_concurrency(queue_key))
-            # A statically-disabled queue (limit 0) stays disabled: never advise
-            # it above zero, so the operator's off switch is honored. Also clear
+            # Already the effective limit: the admin override when set, else deploy.
+            base = cap.limit
+            # A disabled queue (effective limit 0, whether from the deploy config
+            # or an admin override) stays disabled: never advise it above zero, so
+            # the operator's off switch is honored. Also clear
             # any prior advisory row so a later re-enable starts from the static
             # limit instead of briefly overlaying the stale pre-disable advisory
             # (merge_advisory_over_static only overlays where static > 0, so the
@@ -352,11 +356,10 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
                 await _clear_advisory(session, queue_key)
                 continue
             normalized = settings.normalize_queue_key(queue_key)
-            override = (
-                cap.override_limit
-                if getattr(cap, "override_limit", None) is not None
-                else settings.model_concurrency_overrides.get(normalized)
-            )
+            # An admin override stands in for the deploy-time override here.
+            override = cap.override_limit
+            if override is None:
+                override = settings.model_concurrency_overrides.get(normalized)
             cal = ceiling_cal.get(queue_key)
             # Distrust the TPM bound where token telemetry is sparse (the
             # zero-filled r_tokens average understates per-trial tokens and would

@@ -132,21 +132,37 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 }
 
 
-async def _effective_model_concurrency(queue_key: str) -> int:
-    fallback = settings.get_model_concurrency(queue_key)
+async def _effective_model_concurrency_limits(
+    queue_keys: tuple[str, ...],
+) -> dict[str, int]:
+    """The concurrency limits to enforce, keyed by the caller's ``queue_keys``:
+    the admin override when set (else the static limit), overlaid with the fresh
+    advisory when dynamic concurrency is on.
+
+    ONE function on purpose: ``poll_queue`` sizes the spawn plan from it and each
+    worker checks its ``queue_slots`` lease against it, so both enforce the same
+    number -- otherwise the lease could cap below what the dispatcher planned, or
+    the dispatcher over-spawn above the slot pool. Best-effort: an unreadable
+    override/advisory decays to the static value.
+    """
     try:
         async with get_session() as session:
-            limits = await get_effective_model_concurrency_limits(session, (queue_key,))
+            limits = await get_effective_model_concurrency_limits(session, queue_keys)
             if settings.dynamic_model_concurrency:
                 limits = merge_advisory_over_static(
                     limits, await get_advisory_limits(session)
                 )
-        return limits.get(settings.normalize_queue_key(queue_key), fallback)
-    except Exception as e:
-        console.print(
-            f"[yellow]Concurrency limit unavailable ({queue_key}): {e}[/yellow]"
-        )
-        return fallback
+        return limits
+    except Exception as e:  # noqa: BLE001 - limit read is best-effort
+        console.print(f"[yellow]Concurrency limits unavailable: {e}[/yellow]")
+        return {
+            queue_key: settings.get_model_concurrency(queue_key)
+            for queue_key in queue_keys
+        }
+
+
+async def _effective_model_concurrency(queue_key: str) -> int:
+    return (await _effective_model_concurrency_limits((queue_key,)))[queue_key]
 
 
 async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
@@ -640,29 +656,9 @@ async def poll_queue():
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
 
-        async def _modal_concurrency_limits(
-            queue_keys: tuple[str, ...],
-        ) -> dict[str, int]:
-            try:
-                async with get_session() as session:
-                    limits = await get_effective_model_concurrency_limits(
-                        session, queue_keys
-                    )
-                    if settings.dynamic_model_concurrency:
-                        limits = merge_advisory_over_static(
-                            limits, await get_advisory_limits(session)
-                        )
-                return limits
-            except Exception as e:
-                console.print(f"[yellow]Concurrency limits unavailable: {e}[/yellow]")
-                return {
-                    queue_key: settings.get_model_concurrency(queue_key)
-                    for queue_key in queue_keys
-                }
-
         plan = await build_dispatch_plan(
             max_workers=MAX_WORKERS_PER_POLL,
-            concurrency_limits_for=_modal_concurrency_limits,
+            concurrency_limits_for=_effective_model_concurrency_limits,
         )
 
         for queue_key in plan.queue_keys:
