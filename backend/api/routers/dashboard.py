@@ -3,17 +3,126 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
 from dashboard_attribution import resolve_experiments_author, resolve_search_authors
 from models import UserModel
+from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
+
+
+class CostLeaderboardEntry(BaseModel):
+    rank: int
+    name: str
+    cost_usd: float
+
+
+class CostLeaderboardResponse(BaseModel):
+    leaders: list[CostLeaderboardEntry]
+
+
+def _leaderboard_name(
+    ranked: CostLeaderboardUser,
+    users: dict[str, tuple[str | None, str | None, str | None]],
+) -> str | None:
+    """Safe display label: name, else @handle, else the email local part.
+
+    A GitHub-identity fallback bucket has no registered user and carries its
+    own precomputed ``@handle`` label. For registered users the email local
+    part keeps unlinked accounts on the board; the full address must never
+    be returned.
+    """
+    if ranked.user_id is None:
+        return (ranked.label or "").strip() or None
+    user_row = users.get(ranked.user_id)
+    if user_row is None:
+        return None
+    user_name, github_username, email = user_row
+    name = (user_name or "").strip()
+    if name:
+        return name
+    handle = (github_username or "").strip().lstrip("@")
+    if handle:
+        return f"@{handle}"
+    return (email or "").split("@", 1)[0].strip() or None
+
+
+def _leaderboard_entries(
+    ranked_users: list[CostLeaderboardUser],
+    users: dict[str, tuple[str | None, str | None, str | None]],
+    *,
+    limit: int,
+    rank_offset: int = 0,
+) -> list[CostLeaderboardEntry]:
+    """Project internal ids down to the leaderboard's intentionally tiny API."""
+    leaders: list[CostLeaderboardEntry] = []
+    for rank, ranked in enumerate(ranked_users, start=rank_offset + 1):
+        name = _leaderboard_name(ranked, users)
+        if not name:
+            continue
+        leaders.append(
+            CostLeaderboardEntry(rank=rank, name=name, cost_usd=ranked.cost_usd)
+        )
+        if len(leaders) >= limit:
+            break
+    return leaders
+
+
+@router.get("/leaderboard", response_model=CostLeaderboardResponse)
+async def get_cost_leaderboard(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    window_days: int = Query(
+        7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+    limit: int = Query(100, ge=1, le=500),
+) -> CostLeaderboardResponse:
+    """Return only ranked display names and spend, with no admin cost metadata."""
+    effective_window = None if window_days == 0 else window_days
+    async with get_session() as session:
+        ranked_users = await get_cost_leaderboard_core(
+            session, org_id=auth.org_id, window_days=effective_window
+        )
+        leaders: list[CostLeaderboardEntry] = []
+        for offset in range(0, len(ranked_users), limit):
+            batch = ranked_users[offset : offset + limit]
+            batch_user_ids = [entry.user_id for entry in batch if entry.user_id]
+            users: dict[str, tuple[str | None, str | None, str | None]] = {}
+            if batch_user_ids:
+                rows = await session.execute(
+                    select(
+                        UserModel.id,
+                        UserModel.name,
+                        UserModel.github_username,
+                        UserModel.email,
+                    )
+                    .where(
+                        UserModel.id.in_(batch_user_ids),
+                        UserModel.org_id == auth.org_id,
+                    )
+                    .execution_options(include_deleted=True)
+                )
+                users = {
+                    user_id: (name, github_username, email)
+                    for user_id, name, github_username, email in rows.all()
+                }
+            leaders.extend(
+                _leaderboard_entries(
+                    batch,
+                    users,
+                    limit=limit - len(leaders),
+                    rank_offset=offset,
+                )
+            )
+            if len(leaders) >= limit:
+                break
+    return CostLeaderboardResponse(leaders=leaders)
 
 
 def _member_label(user: UserModel) -> dict[str, str] | None:

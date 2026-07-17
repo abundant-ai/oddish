@@ -1,26 +1,26 @@
 import pytest
 from pydantic import ValidationError
 
-from oddish.schemas import AnalyzerCreate, AnalyzerResponse, ExperimentOption
+from oddish.schemas import ReportCreate, ReportResponse, ExperimentOption
 
 
-def test_analyzer_create_requires_name_and_experiments():
-    c = AnalyzerCreate(name="Q3", experiment_ids=["e1", "e2"])
+def test_report_create_requires_experiments():
+    c = ReportCreate(name="Q3", experiment_ids=["e1", "e2"])
     assert c.name == "Q3" and c.experiment_ids == ["e1", "e2"]
 
 
-def test_analyzer_create_rejects_empty_name():
+def test_report_create_name_is_optional():
+    c = ReportCreate(experiment_ids=["e1"])
+    assert c.name is None and c.experiment_ids == ["e1"]
+
+
+def test_report_create_rejects_empty_experiment_ids():
     with pytest.raises(ValidationError):
-        AnalyzerCreate(name="", experiment_ids=["e1"])
+        ReportCreate(name="Q3", experiment_ids=[])
 
 
-def test_analyzer_create_rejects_empty_experiment_ids():
-    with pytest.raises(ValidationError):
-        AnalyzerCreate(name="Q3", experiment_ids=[])
-
-
-def test_analyzer_response_from_attrs_shape():
-    fields = set(AnalyzerResponse.model_fields)
+def test_report_response_from_attrs_shape():
+    fields = set(ReportResponse.model_fields)
     assert {
         "id", "name", "status", "error",
         "bad_failure_content", "good_failure_content",

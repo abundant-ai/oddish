@@ -352,12 +352,21 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     costTrialCount: v.cost_trial_count,
     costHasEstimated: v.cost_has_estimated,
     costHasNative: v.cost_has_native,
+    // Task-scoped view: there is no owned-vs-gathered split, so owned == cost.
+    ownedCostUsd: v.cost_usd,
+    ownedTrialCount: v.cost_trial_count,
+    ownedHasEstimated: v.cost_has_estimated,
+    ownedHasNative: v.cost_has_native,
     tokenCount: 0,
     tokenTrialCount: 0,
+    ownedTokenCount: 0,
+    ownedTokenTrialCount: 0,
     billedCostUsd: v.billed_cost_usd,
     billedTrialCount: v.billed_trial_count,
     billedHasEstimated: v.billed_has_estimated,
     billedHasNative: v.billed_has_native,
+    billedTokenCount: 0,
+    billedTokenTrialCount: 0,
     lastRunAt: v.last_run_at ?? null,
   };
 }

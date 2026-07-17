@@ -7,10 +7,12 @@ import { usePathname } from "next/navigation";
 import {
   OrganizationSwitcher,
   SignInButton,
+  useAuth,
   useClerk,
   useOrganization,
   useUser,
 } from "@clerk/nextjs";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -26,10 +28,10 @@ import {
   ChevronDown,
   FileBarChart,
   FileText,
-  Gauge,
   LogOut,
   SearchCheck,
   Shield,
+  Trophy,
   User,
 } from "lucide-react";
 
@@ -65,8 +67,10 @@ const navSwitcherAppearance = {
 export function Nav() {
   const pathname = usePathname();
   const { user, isLoaded, isSignedIn } = useUser();
+  const { orgRole } = useAuth();
   const { signOut } = useClerk();
   const { organization } = useOrganization();
+  const isOrgAdmin = isOrgAdminRole(orgRole);
 
   // Full reload on org switch. Org-scoped SWR keys and Next's client router
   // cache (RSC payloads, kept ~30s by staleTimes.dynamic) are both keyed on
@@ -143,21 +147,6 @@ export function Nav() {
               </Link>
             </Button>
             <Button
-              variant={pathname === "/usage" ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/usage"
-                className="flex items-center gap-2"
-                data-active={pathname === "/usage"}
-              >
-                <Gauge className="h-4 w-4" />
-                <span>Usage</span>
-              </Link>
-            </Button>
-            <Button
               variant={pathname.startsWith("/analyzers") ? "secondary" : "ghost"}
               size="sm"
               asChild
@@ -170,6 +159,21 @@ export function Nav() {
               >
                 <FileBarChart className="h-4 w-4" />
                 <span>Analyzers</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname === "/leaderboard" ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/leaderboard"
+                className="flex items-center gap-2"
+                data-active={pathname === "/leaderboard"}
+              >
+                <Trophy className="h-4 w-4" />
+                <span>Leaderboard</span>
               </Link>
             </Button>
           </div>
@@ -248,15 +252,17 @@ export function Nav() {
                         Settings
                       </Link>
                     </DropdownMenuItem>
-                    <DropdownMenuItem asChild>
-                      <Link
-                        href="/admin"
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
-                      >
-                        <Shield className="h-4 w-4" />
-                        Admin
-                      </Link>
-                    </DropdownMenuItem>
+                    {isOrgAdmin && (
+                      <DropdownMenuItem asChild>
+                        <Link
+                          href="/admin"
+                          className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
+                        >
+                          <Shield className="h-4 w-4" />
+                          Admin
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuSeparator className="my-2" />
                     <DropdownMenuItem
                       onSelect={() => signOut()}

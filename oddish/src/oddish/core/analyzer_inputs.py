@@ -31,7 +31,22 @@ def subanalysis_from_trial(trial: Any, task_path: str) -> SubAnalysis | None:
         root_cause=a.get("root_cause", ""),
         recommendation=a.get("recommendation", ""),
         trajectory_summary=getattr(trial, "trajectory_summary", None),
+        model=getattr(trial, "model", None),
     )
+
+
+def models_by_task_from_rows(rows: list[tuple[Any, str]]) -> dict[str, list[str]]:
+    """task_id -> the distinct models that ran it, including trials that PASSED.
+
+    Findings record only failures, so this is the sole source for "every model
+    passed" -- without it, saturated and too-hard are indistinguishable.
+    """
+    by_task: dict[str, set[str]] = {}
+    for trial, _task_path in rows:
+        model = getattr(trial, "model", None)
+        if model:
+            by_task.setdefault(trial.task_id, set()).add(model)
+    return {k: sorted(v) for k, v in by_task.items()}
 
 
 def _stub_bundle(trial: Any, task_path: str) -> TrajectoryBundle:

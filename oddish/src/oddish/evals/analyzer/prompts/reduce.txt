@@ -6,17 +6,14 @@ finding's trajectory_link verbatim as a markdown link, e.g.
 ## Counts
 {counts_block}
 
+## Task roster — which models RAN each task, including the ones that PASSED
+{roster_block}
+
 ## Findings (from the per-trial analysts)
 {findings_block}
 
 ## Write four markdown sections:
-- bad_failure_content: reward hacking, worked backwards from the oracle. Organize
-  by 1a (task ambiguity/specification) and 1b (task security/construction).
-- good_failure_content: genuine model-capability failures — what the model failed at.
-- universal_capabilities_content: organize the good failures under 3a problem
-  identification, 3b implementation, 3c syntax, and any emergent capability categories
-  the findings surfaced.
-- headroom_analysis: based on the good failures, where is the most capability headroom?
+{sections_block}
 
 ## Output — return ONLY JSON with exactly these keys:
 {{"bad_failure_content": "...markdown...", "good_failure_content": "...markdown...",

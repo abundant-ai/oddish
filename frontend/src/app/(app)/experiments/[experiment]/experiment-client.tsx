@@ -30,6 +30,7 @@ import type {
   ExperimentCostTotals,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
@@ -231,10 +232,9 @@ function ExperimentContent({
       revalidateOnFocus: false,
     });
 
-  // Merge lightweight task shells with trial-enriched data.  The backend
-  // already scopes each task's trials, counts, and reported ``current_version``
-  // to the experiment-relevant version, so no extra client-side filtering is
-  // required here.
+  // Merge lightweight task shells with trial-enriched data. The backend scopes
+  // trials and counts to the experiment-relevant version while always
+  // reporting the task's selected default as ``current_version``.
   const tasksForExperiment = useMemo(() => {
     const startedAt = isExperimentTimingEnabled() ? performance.now() : 0;
     const merged = mergeExperimentTaskPages(lightweightTasks, trialPages);
@@ -299,8 +299,7 @@ function ExperimentContent({
   const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
-  const canManageExperimentShare =
-    orgRole === "org:admin" || orgRole === "org:owner";
+  const canManageExperimentShare = isOrgAdminRole(orgRole);
 
   // Deletes below write the grid optimistically, so for one round trip the row
   // is gone while the cost tiles still show the pre-delete rollup. Do NOT

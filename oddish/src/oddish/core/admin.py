@@ -1236,6 +1236,19 @@ class CostBreakdownResponse(BaseModel):
     timestamp: str
 
 
+class CostLeaderboardUser(BaseModel):
+    """Internal ranked spend row; the hosted layer resolves a safe display name.
+
+    ``user_id`` is set for registered-user buckets (the hosted layer resolves
+    their label); ``label`` carries the precomputed ``@handle`` for
+    GitHub-identity fallback buckets that have no registered user.
+    """
+
+    user_id: str | None = None
+    label: str | None = None
+    cost_usd: float
+
+
 def _model_label(model: str | None) -> str:
     """Canonicalize a model id so spellings collapse onto one row."""
     return normalize_model_id(model) or "unknown"
@@ -1975,6 +1988,81 @@ async def get_cost_breakdown_core(
         experiments=experiments_out,
         timestamp=now.isoformat(),
     )
+
+
+async def get_cost_leaderboard_core(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    window_days: int | None = 7,
+) -> list[CostLeaderboardUser]:
+    """Rank one org's spend buckets on the admin dashboard spend basis.
+
+    The grouping mirrors ``get_cost_breakdown_core``'s payer precedence.
+    Registered people come back as ``user_id`` rows for the hosted layer to
+    label; spend that carries only a submitted GitHub identity keeps its
+    precomputed ``@handle`` label so unlinked accounts still rank. Only the
+    Unattributed bucket is discarded -- it is not an account. Model remains
+    in the SQL grouping because token-estimated costs are priced per model.
+    """
+    since = (
+        None
+        if window_days is None
+        else datetime.now(timezone.utc) - timedelta(days=window_days)
+    )
+    gh_id_col = TaskModel.tags["github_id"].astext
+    gh_user_col = TaskModel.tags["github_username"].astext
+    query = (
+        select(
+            TrialModel.billed_user_id.label("billed_user_id"),
+            gh_id_col.label("gh_id"),
+            gh_user_col.label("gh_user"),
+            TaskModel.created_by_user_id.label("submitter"),
+            TrialModel.model.label("model"),
+            *settled_cost_columns(),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
+        .where(
+            _real_spend_filter(),
+            TrialModel.finished_at.isnot(None),
+            TrialModel.org_id == org_id,
+        )
+        .group_by(
+            TrialModel.billed_user_id,
+            gh_id_col,
+            gh_user_col,
+            TaskModel.created_by_user_id,
+            TrialModel.model,
+        )
+        .execution_options(include_deleted=True)
+    )
+    if since is not None:
+        query = query.where(TrialModel.finished_at >= since)
+
+    costs_by_key: dict[str, float] = {}
+    identity_by_key: dict[str, tuple[str | None, str | None]] = {}
+    for row in (await session.execute(query)).all():
+        key, user_id, label = _spend_identity(
+            row.billed_user_id, row.gh_id, row.gh_user, row.submitter
+        )
+        if key == _UNATTRIBUTED_KEY:
+            continue
+        identity_by_key[key] = (user_id, label)
+        costs_by_key[key] = costs_by_key.get(key, 0.0) + float(
+            settled_cost_from_row(row)
+        )
+
+    return [
+        CostLeaderboardUser(
+            user_id=identity_by_key[key][0],
+            label=identity_by_key[key][1],
+            cost_usd=round(cost, 4),
+        )
+        for key, cost in sorted(
+            costs_by_key.items(), key=lambda item: (-item[1], item[0])
+        )
+        if cost > 0
+    ]
 
 
 class CostTaskBreakdown(BaseModel):

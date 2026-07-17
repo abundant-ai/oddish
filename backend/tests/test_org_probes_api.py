@@ -58,7 +58,7 @@ async def _cleanup(*, trial_ids, task_ids, experiment_ids, org_ids) -> None:
 async def probed_org():
     """An org with:
       - task A: two probe trials (one newer) + one non-probe trial
-      - task B: one probe trial (oldest of all probes)
+      - task B: three probe trials, incl. a duplicate probe_name (oldest of all probes)
       - task C: only a non-probe trial (must be omitted)
     Plus a second org with a probe trial (must be isolated out).
     """
@@ -82,7 +82,10 @@ async def probed_org():
     other_probe = f"trial_other_{suffix}"
 
     # experiment_id is NOT NULL on TrialModel — every trial needs a valid one.
-    def trial(tid, task_id, oid, eid, created, *, is_probe, status=TrialStatus.SUCCESS):
+    def trial(
+        tid, task_id, oid, eid, created, *, is_probe,
+        status=TrialStatus.SUCCESS, harbor_config=None,
+    ):
         return TrialModel(
             id=tid,
             name=f"{task_id}-{tid}",
@@ -97,6 +100,7 @@ async def probed_org():
             origin=TrialOrigin.ODDISH,
             is_probe=is_probe,
             created_at=created,
+            harbor_config=harbor_config,
         )
 
     async with get_session() as session:
@@ -126,16 +130,17 @@ async def probed_org():
                 )
             )
         await session.flush()
-        session.add(trial(a_old, task_a, org_id, exp_id, base, is_probe=True))
         session.add(
             trial(
-                a_new,
-                task_a,
-                org_id,
-                exp_id,
-                base + timedelta(hours=2),
-                is_probe=True,
-                status=TrialStatus.RUNNING,
+                a_old, task_a, org_id, exp_id, base, is_probe=True,
+                harbor_config={"mode": "probe", "probe_name": "cheat-detection"},
+            )
+        )
+        session.add(
+            trial(
+                a_new, task_a, org_id, exp_id, base + timedelta(hours=2),
+                is_probe=True, status=TrialStatus.RUNNING,
+                harbor_config={"mode": "probe", "probe_name": "prompt-injection"},
             )
         )
         session.add(
@@ -150,12 +155,25 @@ async def probed_org():
         )
         session.add(
             trial(
-                b_probe,
-                task_b,
-                org_id,
-                exp_id,
-                base - timedelta(hours=5),
+                b_probe, task_b, org_id, exp_id, base - timedelta(hours=5),
                 is_probe=True,
+                harbor_config={"mode": "probe", "probe_name": "cheat-detection"},
+            )
+        )
+        b_probe_2 = f"trial_b2_{suffix}"
+        session.add(
+            trial(
+                b_probe_2, task_b, org_id, exp_id, base - timedelta(hours=6),
+                is_probe=True,
+                harbor_config={"mode": "probe"},  # no probe_name → excluded
+            )
+        )
+        b_probe_3 = f"trial_b3_{suffix}"
+        session.add(
+            trial(
+                b_probe_3, task_b, org_id, exp_id, base - timedelta(hours=7),
+                is_probe=True,
+                harbor_config={"mode": "probe", "probe_name": "cheat-detection"},
             )
         )
         session.add(trial(c_real, task_c, org_id, exp_id, base, is_probe=False))
@@ -168,7 +186,7 @@ async def probed_org():
     yield {"org_id": org_id, "task_a": task_a, "task_b": task_b, "task_c": task_c}
 
     await _cleanup(
-        trial_ids=[a_old, a_new, a_real, b_probe, c_real, other_probe],
+        trial_ids=[a_old, a_new, a_real, b_probe, b_probe_2, b_probe_3, c_real, other_probe],
         task_ids=[task_a, task_b, task_c, other_task],
         experiment_ids=[exp_id, other_exp_id],
         org_ids=[org_id, other_org_id],
@@ -187,6 +205,22 @@ async def test_list_org_probes_groups_counts_and_orders(probed_org):
     assert a.run_count == 2  # two probe trials, non-probe excluded
     assert a.last_status == "running"  # status of the most recent probe trial
     b = rows[1]
-    assert b.run_count == 1
+    assert b.run_count == 3
     # A's most recent probe is newer than B's only probe → A first.
     assert a.last_run_at > b.last_run_at
+
+
+@pytest.mark.asyncio
+async def test_list_org_probes_aggregates_probe_names(probed_org):
+    async with get_session() as session:
+        rows = await list_org_probes_core(session, org_id=probed_org["org_id"])
+
+    by_task = {r.task_id: r for r in rows}
+    a = by_task[probed_org["task_a"]]
+    b = by_task[probed_org["task_b"]]
+
+    # Task A: two probe trials with two distinct names.
+    assert sorted(a.probe_names) == ["cheat-detection", "prompt-injection"]
+    # Task B: one named probe + one unnamed + a duplicate "cheat-detection" →
+    # asserts same-task probe_name dedup (two identical names collapse to one).
+    assert b.probe_names == ["cheat-detection"]

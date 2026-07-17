@@ -111,6 +111,32 @@ test("keeps a fresh shell while a stale trial page has another version", () => {
   expect(merged.trials).toBeNull();
 });
 
+test("does not merge stale trials when only the experiment trial pivot changed", () => {
+  const freshShell = task({
+    current_version: 3,
+    current_version_id: "task-1-v3",
+    trial_version: 2,
+    trial_version_id: "task-1-v2",
+    updated_at: "2026-07-14T00:02:00Z",
+  });
+  const staleEnriched = task({
+    current_version: 3,
+    current_version_id: "task-1-v3",
+    trial_version: 1,
+    trial_version_id: "task-1-v1",
+    updated_at: "2026-07-14T00:01:00Z",
+    total: 1,
+    completed: 1,
+    trials: [{ id: "trial-v1" } as Trial],
+  });
+
+  const [merged] = mergeExperimentTaskPages([freshShell], [[staleEnriched]]);
+
+  expect(merged).toBe(freshShell);
+  expect(merged.trial_version_id).toBe("task-1-v2");
+  expect(merged.trials).toBeNull();
+});
+
 test("revalidation bypasses stale browser-cache entries", async () => {
   let requestInput: RequestInfo | URL | undefined;
   let requestInit: RequestInit | undefined;

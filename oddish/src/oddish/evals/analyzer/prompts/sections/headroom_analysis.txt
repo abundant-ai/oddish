@@ -1,0 +1,19 @@
+- headroom_analysis: based on the good failures, where is the most capability
+  headroom, and what should we build next? Cite a task (the finding's `task`) and
+  embed its trajectory_link for every claim; propose nothing you cannot ground in
+  a finding or the task roster, and say "insufficient evidence" rather than
+  speculate. Open with a short paragraph on where the headroom is, then these
+  three h3 subsections verbatim:
+  ### New tasks to farm
+  Task shapes worth authoring, each named concretely and anchored to the specific
+  failure it targets. Generalize from a task that produced a good failure — do not
+  invent domains absent from the findings.
+  ### Harder variants
+  For tasks that already produced good failures, concrete ways to raise difficulty
+  (remove scaffolding, extend the step count, add an adversarial precondition).
+  Name the task and which observed failure the variant sharpens.
+  ### Where to spend effort
+  Rank using the task roster, which lists every model that RAN a task including
+  those that PASSED: every model failed = too hard, no gradient, deprioritize;
+  every model passed = saturated, stop farming it; a stronger model passed where a
+  weaker one failed = live signal, scale it. State which bucket each task is in.

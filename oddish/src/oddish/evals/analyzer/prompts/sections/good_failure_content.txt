@@ -1,0 +1,1 @@
+- good_failure_content: genuine model-capability failures — what the model failed at.

@@ -9,6 +9,37 @@ import { decodeExperimentRouteParam } from "@/lib/utils";
 import { ExperimentClientPage } from "./experiment-client";
 import type { Task } from "@/lib/types";
 
+async function getExperimentName(experimentId: string): Promise<string | null> {
+  try {
+    const authObj = await auth();
+    if (!authObj?.userId) return null;
+
+    const token = await getClerkToken(authObj.getToken);
+    if (!token) return null;
+
+    const url = getBackendUrl(
+      "experiments",
+      `/${encodeURIComponent(experimentId)}/share`
+    );
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: getAuthHeaders(token),
+    });
+    if (!response.ok) {
+      console.error(
+        `[experiment/page] Failed experiment metadata fetch: ${response.status}`
+      );
+      return null;
+    }
+
+    const data = (await response.json()) as { name?: unknown };
+    return typeof data.name === "string" && data.name.trim() ? data.name : null;
+  } catch (error) {
+    console.error("[experiment/page] Experiment metadata fetch failed", error);
+    return null;
+  }
+}
+
 export async function generateMetadata({
   params,
 }: {
@@ -16,9 +47,14 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { experiment } = await params;
   const experimentId = decodeExperimentRouteParam(experiment ?? "");
-  const title = experimentId
-    ? `Experiment ${experimentId} · Oddish`
-    : "Experiment · Oddish";
+  const experimentName = experimentId
+    ? await getExperimentName(experimentId)
+    : null;
+  const title = experimentName
+    ? `${experimentName} · Oddish`
+    : experimentId
+      ? `Experiment ${experimentId} · Oddish`
+      : "Experiment · Oddish";
   const description =
     "View trials, rewards, and task details for this Oddish experiment.";
   const image = "/oddish.png";

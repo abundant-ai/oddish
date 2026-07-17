@@ -193,6 +193,48 @@ async def test_mini_swe_agent_skips_litellm_mcp_handler(tmp_path):
     assert "-c mini -c /tmp/oddish-mini-swe-agent.yaml" in run_command
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "task",
+    [
+        # " -c " in the prompt must not look like a harbor-emitted config flag.
+        'Fix the bug. Reproduce with: python -c "import foo; foo.load()"',
+        "Build fails at `gcc -c src/main.c`; fix the Makefile.",
+        # The prompt may even name mini-swe-agent's own flag.
+        "Document how --exit-immediately interacts with the runner.",
+    ],
+)
+async def test_mini_swe_agent_config_flags_survive_flaglike_prompts(tmp_path, task):
+    """The prompt rides on argv, so a substring scan of the whole command sees
+    task-controlled text. Dropping "-c mini" is fatal (mini-swe's -c is a spec
+    list, not a merge: mini.yaml's required system_template would vanish), and
+    patching the wrong "--exit-immediately" drops the config entirely -- which
+    silently reinstates the orjson crash this fix exists to prevent."""
+    commands: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            commands.append(command)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = OddishMiniSweAgent(
+        logs_dir=tmp_path,
+        model_name="anthropic/claude-opus-4-8",
+        extra_env={"MSWEA_API_KEY": "test-key"},
+    )
+
+    await agent.run(task, _FakeEnvironment(), SimpleNamespace())
+
+    run_command = commands[-1]
+    # The prompt must survive verbatim: patching an occurrence *inside* --task=
+    # both corrupts what the model reads and leaves the real flag unpatched.
+    assert task in run_command
+    # Config flags must land on the real trailing flag...
+    assert "-c mini -c /tmp/oddish-mini-swe-agent.yaml --exit-immediately" in run_command
+    # ...exactly once.
+    assert run_command.count("-c /tmp/oddish-mini-swe-agent.yaml") == 1
+
+
 def test_meta_mini_swe_agent_allowlists_custom_base_url(monkeypatch):
     monkeypatch.setattr(
         "oddish.workers.agents.mini_swe_agent.settings.meta_base_url",

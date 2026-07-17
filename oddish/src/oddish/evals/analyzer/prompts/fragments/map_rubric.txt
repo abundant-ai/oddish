@@ -1,0 +1,8 @@
+Bad bucket:
+  1a = task ambiguity / specification
+  1b = task security / construction
+Good bucket (universal capabilities):
+  3a = problem identification
+  3b = implementation (method largely correct)
+  3c = syntax
+  emergent:<short-label> = a capability gap not covered above

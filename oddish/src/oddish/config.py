@@ -40,7 +40,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+ANALYSIS_MODEL = "global.anthropic.claude-sonnet-4-6"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -1063,6 +1063,21 @@ class Settings(BaseSettings):
     # minute of per-chat provisioning). Unset -> default base image + install
     # at provision time. See docs/cc-chat-snapshot.md to build it.
     cc_chat_daytona_snapshot: str = ""
+
+    # Snapshot for non-chat agent sandboxes (the analyzer). Falls back to the
+    # cc_chat snapshot above, which is the same image: ClaudeCodeRuntime.install
+    # checks claude-code and harbor independently, so a leaner analyzer-only
+    # image would still pay harbor's pip install on every sandbox.
+    agent_daytona_snapshot: str = ""
+
+    @property
+    def analyzer_snapshot(self) -> str:
+        return self.agent_daytona_snapshot or self.cc_chat_daytona_snapshot
+
+    # Kill switch for the sandbox-per-cohort analyzer. Gates registration, not
+    # handler internals, so unsetting it reverts to the core API path with no
+    # branching in either.
+    analyzer_sandbox_enabled: bool = True
 
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an

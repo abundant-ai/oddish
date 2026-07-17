@@ -219,6 +219,8 @@ export interface Task {
   jobs?: VisibleWorkerJob[];
   current_version?: number | null;
   current_version_id?: string | null;
+  trial_version?: number | null;
+  trial_version_id?: string | null;
   trials?: Trial[] | null;
   user_tags?: UserTagRef[];
   created_at: string;
@@ -327,22 +329,40 @@ interface TaskCostTotals {
   total_trials: number;
 }
 
-/** `GET /api/experiments/{id}/cost-totals` — what the experiment SPENT.
+/** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.
  *
- * Covers every trial that ran under it, so it is wider than the grid in two
- * ways: it isn't limited to the trial pages loaded so far, and it counts
- * trials the table filters out (earlier task versions, superseded retries,
- * probes). Those still burned tokens and were still billed. Expect this to
- * exceed the sum of the visible rows; the Cost tooltip says as much. */
+ * `cost_*` prices every member trial — homed here or gathered into this
+ * experiment — i.e. what the work this page renders cost. `owned_*` prices
+ * only trials homed in the experiment (the "New spend" tile); it is the
+ * number that stays additive across experiments. `billed_*` is the subset of
+ * owned spend attributed to a user's quota. Token totals mirror those scopes:
+ * `token_*` member-wide, `owned_token_*` home-only, `billed_token_*` the
+ * billed subset of owned.
+ *
+ * All scopes are wider than the grid in two ways: not limited to the trial
+ * pages loaded so far, and counting trials the table filters out (earlier
+ * task versions, superseded retries, probes). Those still burned tokens and
+ * were still billed. Expect this to exceed the sum of the visible rows; the
+ * Cost tooltip says as much. */
 export interface ExperimentCostTotals {
   cost_usd: number;
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  token_count: number;
+  token_trial_count: number;
+  owned_cost_usd: number;
+  owned_trial_count: number;
+  owned_has_estimated: boolean;
+  owned_has_native: boolean;
+  owned_token_count: number;
+  owned_token_trial_count: number;
   billed_cost_usd: number;
   billed_trial_count: number;
   billed_has_estimated: boolean;
   billed_has_native: boolean;
+  billed_token_count: number;
+  billed_token_trial_count: number;
   total_trials: number;
 }
 
@@ -931,6 +951,16 @@ export interface CostBreakdownResponse {
   timestamp: string;
 }
 
+export interface CostLeaderboardEntry {
+  rank: number;
+  name: string;
+  cost_usd: number;
+}
+
+export interface CostLeaderboardResponse {
+  leaders: CostLeaderboardEntry[];
+}
+
 // ---------------------------------------------------------------------------
 // Admin per-user cost drilldown (GET /api/admin/users/{userId}/costs)
 // ---------------------------------------------------------------------------
@@ -993,17 +1023,17 @@ export interface ExperimentShareInfo {
   description: string | null;
 }
 
-export type AnalyzerStatus =
+export type ReportStatus =
   | "pending"
   | "queued"
   | "running"
   | "success"
   | "failed";
 
-export interface Analyzer {
+export interface Report {
   id: string;
   name: string;
-  status: AnalyzerStatus;
+  status: ReportStatus;
   error?: string | null;
   bad_failure_content?: string | null;
   good_failure_content?: string | null;

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-15]
+
+### Added
+
+- Analyzers: a new cross-experiment trajectory-analysis feature that gathers finished trials from one or more experiments and synthesizes four evidence-backed narrative sections (bad failures, good failures, universal capabilities, headroom) via a Haiku agent-team map/reduce pipeline, with inline `[trajectory](...)` deep links, new `analyzers` REST endpoints, an `oddish analyzer create` CLI, and a dashboard Analyzers tab with list/create/detail pages (#706). Analyzer pipeline logs are now prefixed with the driving job's kind (e.g. `[ANALYZER]`) for easier attribution in mixed worker logs (#710), and the reduce-stage prompt that produced an analyzer's sections is now persisted on the row for debugging/reproducibility, though not exposed via the API (#711).
+- Task pages can now promote any stored task version to be the default: a new `PUT /tasks/{task_id}/versions/{version}/default` endpoint updates the task's current-version pointer (and legacy storage mirrors), and the task page gained a "Make default" action with an optimistic update and inline error handling (#713).
+- Owner-directed expense alerts (expensive experiment/trial) and a new failed-experiment alert (fires when a finished experiment has no active trials and at least half — configurable — of its current trials are FAILED) can now be DMed to the owner on Slack via `SLACK_ALERT_BOT_TOKEN`, matched to their Slack account by account email, alongside the existing webhook and email channels (#703).
+- Oddish task, experiment, and public-share links posted in a configured Slack workspace now unfurl with outcome glyphs, run details, and a compact task-by-agent result matrix for smaller experiments, via a new signed `POST /webhooks/slack/events` endpoint bound to one workspace/org (#700).
+- Trial drawer gained an adaptive Verifier Results card: test-based tasks report Common Test Report Format (CTRF) passed/failed/skipped/pending counts, benchmark-style tasks show scalar metrics, and other tasks fall back to the reward score; historical trials without a persisted summary lazily discover and parse their `verifier/ctrf.json` artifact (#699).
+
+### Changed
+
+- Markdown-rendered hyperlinks (analyzer reports, probe summaries, and other markdown content) now render in a theme-aware blue instead of a hard-to-recognize brown/off-white, so they read as clickable links (#712).
+- The trial Live tab now shares its step, tool-call, and observation rendering with the Trajectory tab, grouping streamed events into collapsible per-turn steps where the newest step auto-expands as the previous one collapses; Claude live-tail events now carry a `turn_id`/`block_index`/`text_mode` so streamed text deltas merge into one step instead of duplicating (#675).
+
+### Fixed
+
+- Analyzer reports no longer wait behind the QA backlog they share a queue with: `ANALYZER` and `QA` jobs both land on the QA queue key, and the claim orders by `priority DESC, running_count ASC, created_at ASC` — but every enqueue site left `priority` at 0, so the first two keys tied and claims fell through to pure FIFO, stranding an analyzer behind whatever QA burst a sweep had just produced (one report waited ~59 minutes to start). Analyzer jobs now enqueue at `priority=1`, so a draining worker picks them up ahead of that backlog (#744).
+- Non-Meta `mini-swe-agent` trials (e.g. Claude, GPT models) no longer crash deterministically on their first model call with `ModuleNotFoundError: orjson` — the `litellm[proxy]` reinstall that previously only applied to Meta-model trials now applies to all mini-swe-agent trials via a shared `OddishMiniSweAgent` base class (#714).
+- Experiment cost rollups now attribute spend only to a trial's home experiment (`trials.experiment_id`), so collection/rollup views that render trials gathered from other experiments no longer double-count that spend on both the collection and the trial's owning experiment (#702).
+- Pricing lookups now walk a specificity-ordered, case-insensitive chain of model-id candidates (exact id, path suffixes, provider vocabulary aliases, spelling variants, then generic provider prefixes) instead of one-off guesses, resolving previously-unpriced production model ids while preserving provider-specific rates; token-bearing trials that still settle to an unpriced `NULL` cost now emit a structured `trial_cost_unpriced` warning to logs and Logfire (#660).
+
+---
+
 ## [2026-07-07]
 
 ### Changed
