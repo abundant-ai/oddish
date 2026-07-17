@@ -379,12 +379,21 @@ async def run_harbor_trial_async(
         # baseline BEFORE agent setup; AgentConfig.extra_allowed_hosts only
         # applies during agent.run(), which is too late for the install.
         if "claude-code" in (agent or "").strip().lower():
-            installer_hosts = ["downloads.claude.ai", "registry.npmjs.org"]
+            extra_hosts = ["downloads.claude.ai", "registry.npmjs.org"]
+            # Fireworks-routed models (fireworks/... or fw/...) run Claude Code
+            # against api.fireworks.ai. Its endpoint isn't in Harbor's fallback
+            # agent domains, so on an offline/allowlist task the model calls are
+            # firewalled during agent.run(). The environment allowlist feeds the
+            # agent-phase baseline, so declaring it here covers the model calls
+            # too, not just install.
+            model_lower = (model or "").strip().lower()
+            if model_lower.startswith(("fireworks/", "fw/")):
+                extra_hosts.append("api.fireworks.ai")
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[
                     host
-                    for host in installer_hosts
+                    for host in extra_hosts
                     if host not in env_config.extra_allowed_hosts
                 ],
             ]
