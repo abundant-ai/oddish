@@ -155,7 +155,7 @@ async def parse_and_save_cohort_result(
 
     storage = get_storage_client()
     prefix = f"analyzer/sandbox/{analyzer_id}"
-    s3_key = f"prefix/{analyzer_id}"
+    s3_key = f"{prefix}/{analyzer_id}"
     data = raw_bytes(stream_text)
     if data:
         await storage.upload_bytes(
@@ -163,6 +163,9 @@ async def parse_and_save_cohort_result(
             s3_key,
             content_type="application/x-ndjson",
         )
+        logger.info(f"Saving data at {s3_key}")
+    else:
+        logger.info(f"No data. stream_text is prolly none: {stream_text}")
 
     findings = _findings_from_jsonl(
         findings_bytes.decode("utf-8", "replace"), bucket, host_by_trial
