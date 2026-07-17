@@ -55,12 +55,34 @@ async def test_api_client_streams_text_deltas(monkeypatch):
         def __init__(self, *a, **k):
             self.messages = _FakeMessages()
 
+        async def close(self):
+            pass
+
     monkeypatch.setattr(
         "api.services.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
     )
     client = ApiAnalyzerLLMClient()
     assert await _collect(client, "hi") == ["Hel", "lo"]
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_api_client_aclose_closes_inner(monkeypatch):
+    closed = {"n": 0}
+
+    class _FakeAnthropic:
+        def __init__(self, *a, **k):
+            self.messages = None
+
+        async def close(self):
+            closed["n"] += 1
+
+    monkeypatch.setattr(
+        "api.services.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
+    )
+    client = ApiAnalyzerLLMClient()
+    await client.aclose()
+    assert closed["n"] == 1
 
 
 from api.services.analyzer_llm_client import (
