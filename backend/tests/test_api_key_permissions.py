@@ -279,9 +279,7 @@ def test_no_github_identity_does_not_auto_publish(monkeypatch):
     from types import SimpleNamespace
 
     published, run = _publish_probe(monkeypatch)
-    run(
-        SimpleNamespace(publish_experiment=None, github_username=None, github_id=None)
-    )
+    run(SimpleNamespace(publish_experiment=None, github_username=None, github_id=None))
     assert published == []
 
 
@@ -312,7 +310,9 @@ def _api_key_auth() -> AuthContext:
 def test_auto_publish_defaults_on_for_github_id_only():
     # A CI run passing --github-id alone (no handle) must auto-publish like a
     # handle-based run, since attribution/linkage now key off github_id.
-    assert _should_auto_publish(_publish_submission(github_id="583231"), _api_key_auth())
+    assert _should_auto_publish(
+        _publish_submission(github_id="583231"), _api_key_auth()
+    )
 
 
 def test_auto_publish_defaults_on_for_github_username_only():
@@ -334,6 +334,34 @@ def test_auto_publish_explicit_flag_overrides_default():
     assert not _should_auto_publish(
         _publish_submission(github_id="583231", publish_experiment=False), auth
     )
-    assert _should_auto_publish(
-        _publish_submission(publish_experiment=True), auth
-    )
+    assert _should_auto_publish(_publish_submission(publish_experiment=True), auth)
+
+
+def test_full_scope_api_key_cannot_toggle_cost_exclusion():
+    # require_admin would pass a FULL-scope key, but the cost-exclusion gate
+    # must not: a key could otherwise exempt its own spend from quotas.
+    import asyncio
+
+    from api.routers.api_keys import update_api_key
+    from api.schemas import UpdateAPIKeyRequest
+
+    for auth in (
+        AuthContext(
+            method=AuthMethod.API_KEY,
+            org_id="org_1",
+            user_id="admin_1",
+            user_role=UserRole.ADMIN,
+            scope=APIKeyScope.FULL,
+        ),
+        _clerk_auth(role=UserRole.MEMBER),
+    ):
+        try:
+            asyncio.run(
+                update_api_key(
+                    "key_1", UpdateAPIKeyRequest(exclude_from_costs=True), auth
+                )
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 403
+        else:
+            raise AssertionError("cost-exclusion toggle should require a JWT admin")

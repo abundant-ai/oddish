@@ -151,9 +151,18 @@ async def create_api_key_endpoint(
 async def update_api_key(
     key_id: str,
     request: UpdateAPIKeyRequest,
-    auth: Annotated[AuthContext, Depends(require_admin)],
+    auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> APIKeyResponse:
     """Set whether spend from this key is excluded from cost accounting."""
+
+    # Same gate as setting the flag at creation: JWT org admins only. A
+    # FULL-scope API key must not pass (require_admin would let it), or a key
+    # could exempt its own spend from quotas and every cost surface.
+    if not can_manage_api_keys(auth):
+        raise HTTPException(
+            status_code=403,
+            detail="Only organization admins may exclude a key from costs",
+        )
 
     async with get_session() as session:
         result = await session.execute(
