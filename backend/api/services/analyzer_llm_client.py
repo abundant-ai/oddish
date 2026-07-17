@@ -113,14 +113,19 @@ class SandboxAnalyzerLLMClient:
         await delete_sandbox_quietly(self._client, self._sandbox)
 
 
-async def create_llm_client(llm_client_type: LLMClientType) -> AnalyzerLLMClient:
+async def create_llm_client(
+    llm_client_type: LLMClientType, *, model: str | None = None
+) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
-        return ApiAnalyzerLLMClient()
+        return ApiAnalyzerLLMClient(model=model) if model else ApiAnalyzerLLMClient()
 
     if llm_client_type == LLMClientType.SANDBOX:
         daytona_client = RealDaytonaClient(api_key=os.environ["DAYTONA_API_KEY"])
+        env_vars = {"ANTHROPIC_API_KEY": settings.anthropic_api_key or ""}
+        if model:
+            env_vars["ANTHROPIC_MODEL"] = model
         sandbox = await Provisioner(client=daytona_client).create(
-            env_vars={"ANTHROPIC_API_KEY": settings.anthropic_api_key or ""},
+            env_vars=env_vars,
             auto_stop_minutes=_AUTO_STOP_MINUTES,
             auto_delete_minutes=_AUTO_DELETE_MINUTES,
             labels={"app": "analyzer", "session_id": generate_id()},

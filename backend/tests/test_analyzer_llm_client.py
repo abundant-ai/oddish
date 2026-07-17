@@ -143,3 +143,14 @@ async def test_fake_client_records_system_prompt():
     chunks = [x async for x in c.stream("hi", system_prompt="be terse")]
     assert chunks == ["a"]
     assert c.last_system_prompt == "be terse"
+
+
+from api.services.analyzer_llm_client import ApiAnalyzerLLMClient
+
+
+@pytest.mark.asyncio
+async def test_create_llm_client_api_honors_model():
+    c = await create_llm_client(LLMClientType.API, model="claude-haiku-4-5-20251001")
+    assert isinstance(c, ApiAnalyzerLLMClient)
+    assert c._model == "claude-haiku-4-5-20251001"
+    await c.aclose()

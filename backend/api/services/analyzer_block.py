@@ -64,6 +64,7 @@ class AnalyzerBlock:
         block_metadata: dict | None = None,
         client: AnalyzerLLMClient | None = None,
         system_prompt: str | None = None,
+        model: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -71,9 +72,12 @@ class AnalyzerBlock:
         self.input = input
         self.prompt = prompt
         self.analyzer_id = analyzer_id
-        self.block_metadata = block_metadata
         self._client = client
         self.system_prompt = system_prompt
+        self.model = model
+        if model:
+            block_metadata = {**(block_metadata or {}), "model": model}
+        self.block_metadata = block_metadata
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -131,7 +135,7 @@ class AnalyzerBlock:
     async def stream_output(self):
         """Yield each output chunk to the caller and accumulate it. Lazily
         provisions the backend client (or uses the injected one)."""
-        client = self._client or await create_llm_client(self.llm_client_type)
+        client = self._client or await create_llm_client(self.llm_client_type, model=self.model)
         try:
             async for chunk in client.stream(self.prompt, system_prompt=self.system_prompt):
                 self._chunks.append(chunk)

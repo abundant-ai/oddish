@@ -239,3 +239,14 @@ async def test_block_forwards_system_prompt(monkeypatch):
     b = _make_block(client=fake, system_prompt="MAP rules")
     await b.run()
     assert fake.last_system_prompt == "MAP rules"
+
+
+def test_block_records_model_in_metadata():
+    b = _make_block(model="claude-haiku-4-5-20251001", block_metadata={"k": "v"})
+    assert b.block_metadata["model"] == "claude-haiku-4-5-20251001"
+    assert b.block_metadata["k"] == "v"
+
+
+def test_block_without_model_leaves_metadata_untouched():
+    b = _make_block(block_metadata={"k": "v"})
+    assert b.block_metadata == {"k": "v"}
