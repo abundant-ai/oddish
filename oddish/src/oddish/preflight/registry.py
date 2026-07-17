@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from oddish.preflight.checks import closed_internet, solution_format
+from oddish.preflight.checks import anti_cheat_soundness, closed_internet, solution_format
 from oddish.preflight.models import Check
 
 # Populated as each check lands. Order is display order.
@@ -14,5 +14,10 @@ CHECKS: list[Check] = [
         id=solution_format.CHECK_ID,
         description="Solutions are readable source, not patches",
         fn=solution_format.check,
+    ),
+    Check(
+        id=anti_cheat_soundness.CHECK_ID,
+        description="No brittle source-scanning anti-cheat",
+        fn=anti_cheat_soundness.check,
     ),
 ]

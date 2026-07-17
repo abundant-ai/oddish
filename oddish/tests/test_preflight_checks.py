@@ -234,3 +234,58 @@ def test_solution_format_passes_a_readable_solution(make_task):
 def test_solution_format_is_silent_without_a_solution_dir(make_task):
     task_dir = make_task()
     assert solution_format.check(task_dir, _config(task_dir)) == []
+
+
+from oddish.preflight.checks import anti_cheat_soundness
+
+
+def test_anti_cheat_flags_import_scan_regex(make_task):
+    task_dir = make_task(
+        extra_files={"tests/test_cheat.py": 'import re\nBAD = re.compile(r"\\bimport\\s+stripe\\b")\n'}
+    )
+    findings = anti_cheat_soundness.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
+    assert findings[0].line == 2
+
+
+def test_anti_cheat_flags_bare_word_library_regex(make_task):
+    task_dir = make_task(
+        extra_files={"tests/test_cheat.py": 'import re\nBAD = re.compile(r"\\bopenpyxl\\b")\n'}
+    )
+    findings = anti_cheat_soundness.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+
+
+def test_anti_cheat_allows_hostname_regex(make_task):
+    # Slashes and dots mean this is a URL, not a library-identifier scan.
+    task_dir = make_task(
+        extra_files={"tests/test_ok.py": 'import re\nOK = re.compile(r"https?://api\\.stripe\\.com")\n'}
+    )
+    assert anti_cheat_soundness.check(task_dir, _config(task_dir)) == []
+
+
+def test_anti_cheat_allows_scoring_tokens(make_task):
+    task_dir = make_task(
+        extra_files={"tests/test_ok.py": 'import re\nOK = re.compile(r"\\bpassed\\b")\n'}
+    )
+    assert anti_cheat_soundness.check(task_dir, _config(task_dir)) == []
+
+
+def test_anti_cheat_respects_suppression_comment(make_task):
+    task_dir = make_task(
+        extra_files={
+            "tests/test_ok.py": (
+                'import re\n'
+                'OK = re.compile(r"\\bopenpyxl\\b")  # anti-cheat-ok: spec forbids this exact library by name\n'
+            )
+        }
+    )
+    assert anti_cheat_soundness.check(task_dir, _config(task_dir)) == []
+
+
+def test_anti_cheat_ignores_non_test_files(make_task):
+    task_dir = make_task(
+        extra_files={"environment/app.py": 'import re\nX = re.compile(r"\\bopenpyxl\\b")\n'}
+    )
+    assert anti_cheat_soundness.check(task_dir, _config(task_dir)) == []
