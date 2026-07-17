@@ -203,13 +203,18 @@ requests to the backend.
 
 The authenticated org-scoped cost leaderboard is served by `GET /leaderboard` in
 `backend/api/routers/dashboard.py`. It shares the admin cost dashboard's
-settled first-party spend basis, but its response deliberately exposes only a
-person's spend rank, display name, and cost. Every query is restricted to the
-active auth organization. The frontend `/leaderboard` page and dashboard
-top-five strip must not add org, email, model, experiment, trial, or internal-id
-fields to that contract. Each row also carries its spend rank so filtering out
-a person with no safe display label cannot renumber the visible leaderboard
-incorrectly.
+settled first-party spend basis and must stay in sync with its per-user rows:
+every spend bucket except Unattributed ranks, including GitHub-identity buckets
+with no registered user (shown by their submitted `@handle`). A registered
+person's display name falls back name → `@github_username` → email local part,
+so an account with no GitHub link still appears; the full email address must
+never be exposed. The response deliberately exposes only a person's spend rank,
+display name, and cost. Every query is restricted to the active auth
+organization. The frontend `/leaderboard` page and dashboard top-five strip
+must not add org, email, model, experiment, trial, or internal-id fields to
+that contract. Each row also carries its spend rank so the rare row with no
+safe display label (e.g. a payer outside the auth org) drops without
+renumbering everyone else.
 
 ### Task Identity
 

@@ -655,6 +655,40 @@ def test_build_agent_config_non_probe_leaves_timeout_unset(monkeypatch):
     assert agent_config.override_timeout_sec is None
 
 
+def test_build_agent_config_wraps_non_probe_claude_code_for_stdin_prompt(
+    monkeypatch,
+):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.agents.claude_code:OddishClaudeCode"
+    )
+
+
+def test_build_agent_config_uses_probe_claude_code_wrapper(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
+    )
+
+
 def test_build_agent_config_mini_swe_anthropic_uses_oddish_wrapper(monkeypatch):
     """Non-Meta mini-swe-agent trials route through the Oddish base subclass so
     install() pulls litellm's proxy extras (orjson/fastapi) into the tool venv."""
