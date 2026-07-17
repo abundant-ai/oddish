@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shlex
 import tempfile
@@ -25,6 +26,12 @@ _STDERR_FILENAME = "grok-build.stderr.log"
 _DEFAULT_MODEL = "v9m-rl-learnability-tp8"
 _XAI_BASE_URL = "https://api.x.ai/v1"
 _XAI_API_KEY_ENV = "XAI_API_KEY"
+# Optional comma-separated key pool; one key is drawn per trial to spread load
+# across accounts. This only buys headroom if the keys belong to *different* xAI
+# teams: the throttle is team-scoped ("You've hit your team's API rate limit"),
+# so a pool of keys on one team shares a single bucket and concurrent trials
+# throttle exactly as they do with one key.
+_XAI_API_KEYS_ENV = "XAI_API_KEYS"
 
 # Where the grok CLI persists its full session store (tool calls + token usage);
 # the headless stdout does not carry these, so we copy this tree into the trial
@@ -119,6 +126,7 @@ class OddishGrokBuild(BaseInstalledAgent):
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self._api_key: str | None = None
         self.reasoning_effort = reasoning_effort
         normalized_backend = (api_backend or "").strip()
         if normalized_backend and normalized_backend not in _VALID_API_BACKENDS:
@@ -259,9 +267,23 @@ class OddishGrokBuild(BaseInstalledAgent):
             env=self._xai_env(),
         )
 
+    def _pick_api_key(self) -> str:
+        pool = [
+            key.strip()
+            for key in (self._get_env(_XAI_API_KEYS_ENV) or "").split(",")
+            if key.strip()
+        ]
+        if pool:
+            return random.choice(pool)
+        return self._get_env(_XAI_API_KEY_ENV) or ""
+
     def _xai_env(self) -> dict[str, str]:
-        api_key = self._get_env(_XAI_API_KEY_ENV)
-        return {_XAI_API_KEY_ENV: api_key} if api_key else {}
+        # Draw once and memoize: this is called twice per trial (the config
+        # write and the run), and a fresh draw per call would hand the CLI a
+        # different key than the one the trial was configured with.
+        if self._api_key is None:
+            self._api_key = self._pick_api_key()
+        return {_XAI_API_KEY_ENV: self._api_key} if self._api_key else {}
 
     async def setup(self, environment: BaseEnvironment) -> None:
         await super().setup(environment)

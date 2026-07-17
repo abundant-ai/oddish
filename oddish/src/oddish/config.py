@@ -40,7 +40,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+ANALYSIS_MODEL = "global.anthropic.claude-sonnet-4-6"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -120,7 +120,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
+HARBOR_DEFAULT_SHA = "237c202cfa8e74ebef9db3cd999eb61965338615"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
