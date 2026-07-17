@@ -1379,6 +1379,7 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
                 org_id=org_id,
                 email="expense-owner@example.com",
                 name="Expense Owner",
+                github_username="Expense Owner",
             )
         )
         session.add(
@@ -1516,6 +1517,143 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> None:
+    # ``owner_user_id`` is the API-key creator / original owner (the "biller");
+    # the experiment's shown ``owner`` handle is whoever actually ran it. Alerts
+    # must reach the handle owner, never the billing user. A handle that matches
+    # no connected user (an off-the-shelf/service label) notifies no one.
+    suffix = uuid4().hex[:12]
+    org_id = f"slack-org-{suffix}"
+    biller_id = f"slack-biller-{suffix}"
+    handle_user_id = f"slack-august-{suffix}"
+    exp_handle_id = f"slack-exp-handle-{suffix}"
+    exp_ots_id = f"slack-exp-ots-{suffix}"
+    task_id = f"slack-task-{suffix}"
+    now = datetime.now(timezone.utc)
+
+    def trial(trial_id: str, experiment_id: str, finished_at: datetime) -> TrialModel:
+        return TrialModel(
+            id=trial_id,
+            name=trial_id,
+            task_id=task_id,
+            experiment_id=experiment_id,
+            agent="claude-code",
+            provider="openai",
+            model="gpt-5.3",
+            queue_key="test",
+            status=TrialStatus.SUCCESS,
+            origin=TrialOrigin.ODDISH,
+            is_probe=False,
+            cost_usd=600,
+            finished_at=finished_at,
+        )
+
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="Handle org", slug=org_id))
+        session.add_all(
+            [
+                # The billing owner behind the API key -- must never be notified.
+                UserModel(
+                    id=biller_id,
+                    org_id=org_id,
+                    email="biller@example.com",
+                    name="Biller",
+                    github_username="biller",
+                ),
+                # The person the experiment names via its owner handle.
+                UserModel(
+                    id=handle_user_id,
+                    org_id=org_id,
+                    email="august@example.com",
+                    name="August Andersen",
+                    github_username="august-andersen",
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                # owner handle -> august; owner_user_id -> the biller.
+                ExperimentModel(
+                    id=exp_handle_id,
+                    name="Handle experiment",
+                    org_id=org_id,
+                    owner="august-andersen",
+                    owner_user_id=biller_id,
+                ),
+                # An off-the-shelf label that matches no connected user's handle.
+                ExperimentModel(
+                    id=exp_ots_id,
+                    name="OTS experiment",
+                    org_id=org_id,
+                    owner="ots-service-label",
+                    owner_user_id=biller_id,
+                ),
+            ]
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                org_id=org_id,
+                user="test",
+                task_path="/tmp/test",
+            )
+        )
+        session.add_all(
+            [
+                trial(f"{exp_handle_id}-base", exp_handle_id, now - timedelta(days=1)),
+                trial(f"{exp_handle_id}-recent", exp_handle_id, now),
+                trial(f"{exp_ots_id}-base", exp_ots_id, now - timedelta(days=1)),
+                trial(f"{exp_ots_id}-recent", exp_ots_id, now),
+            ]
+        )
+
+    try:
+        by_key = {alert.key: alert for alert in await load_alerts(now)}
+
+        # Handle resolves to a single connected user -> notify that user.
+        assert (
+            by_key[f"experiment:{exp_handle_id}:1000"].recipient_email
+            == "august@example.com"
+        )
+        assert (
+            by_key[f"trial:{exp_handle_id}-recent:200"].recipient_email
+            == "august@example.com"
+        )
+        # Unmatched label -> named in the text, notified to no one.
+        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_email is None
+        assert by_key[f"trial:{exp_ots_id}-recent:200"].recipient_email is None
+
+        # The billing user is never a recipient or a mention on any alert.
+        for alert in by_key.values():
+            assert alert.recipient_email != "biller@example.com"
+            assert "biller@example.com" not in alert.mention_emails
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id.in_([exp_handle_id, exp_ots_id])
+                )
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(
+                    UserModel.id.in_([biller_id, handle_user_id])
+                )
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@pytest.mark.asyncio
 async def test_load_alerts_reports_unpriced_model_without_candidate_experiment() -> (
     None
 ):
@@ -1628,6 +1766,7 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
                 org_id=org_id,
                 email="failed-owner@example.com",
                 name="Failed Owner",
+                github_username="Failed Owner",
             )
         )
         session.add(
@@ -1781,6 +1920,7 @@ async def test_load_alerts_reports_crashed_trials_and_qa_failures() -> None:
                 org_id=org_id,
                 email="qa-author@example.com",
                 name="QA Author",
+                github_username="QA Author",
             )
         )
         session.add(
