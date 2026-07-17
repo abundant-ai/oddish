@@ -602,13 +602,24 @@ sweep):
    markers; primary and retry completion is atomic. Indeterminate loud claims
    are not repeated because the external channels do not offer an idempotency
    key, while interrupted silent claims are completed without sending.
-   All thresholds -- the $1,000 milestone/repeat, the $200 trial floor, the
-   $1,000 escalation, and the 0.5 experiment-failed ratio -- are hardcoded
-   module constants, not environment-configurable; the five `ODDISH_SLACK_*`
+   The four cost thresholds -- the $1,000 milestone/repeat, the $200 trial
+   floor, and the $1,000 escalation -- plus the always-ping list are
+   admin-editable at runtime from the Costs tab of `/admin`, backed by the
+   single `slack_alert_settings` row (`PUT /admin/slack-alert-settings`,
+   `require_admin`). The constants in `slack_alert_settings.py` are the
+   defaults that stand when no row exists, and DELETE restores them.
+   `load_alerts` reads the row once per run in a session of its own -- a
+   missing table (deploy-before-migrate) falls back to the defaults rather
+   than aborting the run's transaction. Threshold values are deliberately
+   absent from every alert key: a key that embedded one would mint fresh
+   dedup rows on each retune and re-alert the whole window. The 0.5
+   experiment-failed ratio stays a module constant in `slack_notifications.py`
+   because it governs failure DMs, not spend. The five `ODDISH_SLACK_*`
    threshold env vars (`ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD`,
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`, `ODDISH_SLACK_EXPENSIVE_TRIAL_USD`,
    `ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER`,
-   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO`) are gone. It uses the shared
+   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO`) remain gone -- the pane replaced
+   them rather than restoring them. It uses the shared
    settled-cost basis and contains no agent/LLM path. It is on by default for
    the production app and off by default on preview apps; a preview opts in
    by setting `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing

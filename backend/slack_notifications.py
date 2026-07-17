@@ -32,23 +32,13 @@ from oddish.db import (
     get_session,
 )
 from oddish.model_pricing import has_pricing
+from slack_alert_settings import AlertSettings, read_alert_settings
 
 log = logging.getLogger("oddish.slack_notifications")
 
-# Everyone here is @-mentioned in the channel when a single trial clears
-# TRIAL_ESCALATION_USD. Matched to Slack accounts by email, so these must be the
-# addresses on their Slack profiles, not necessarily their Clerk logins.
-ALWAYS_PING_EMAILS: tuple[str, ...] = (
-    "charles@abundant.ai",
-    "ke@abundant.ai",
-    "meji@abundant.ai",
-    "jesse@abundant.ai",
-)
-
-EXPERIMENT_MILESTONE_USD = 1000.0
-EXPERIMENT_REPEAT_USD = 1000.0
-TRIAL_PING_USD = 200.0
-TRIAL_ESCALATION_USD = 1000.0
+# The cost thresholds and the always-ping list are admin-editable; their
+# defaults live in slack_alert_settings. This one governs failure DMs rather
+# than spend, so it stays a module constant.
 EXPERIMENT_FAILED_RATIO = 0.5
 
 # Slack lookup errors that genuinely mean "this person has no Slack account".
@@ -190,6 +180,7 @@ def _experiment_milestones(
 def build_alerts(
     candidates: AlertCandidates,
     *,
+    settings: AlertSettings,
     recent_cutoff: datetime,
     dashboard_url: str,
 ) -> list[SlackAlert]:
@@ -224,8 +215,8 @@ def build_alerts(
         baseline_cost = total_cost - recent_spend
         milestones = _experiment_milestones(
             total_cost,
-            EXPERIMENT_MILESTONE_USD,
-            EXPERIMENT_REPEAT_USD,
+            settings.experiment_milestone_usd,
+            settings.experiment_repeat_usd,
         )
         if milestones:
             agent_costs: dict[str, float] = {}
@@ -272,10 +263,13 @@ def build_alerts(
                 )
 
         for trial in experiment_trials:
-            if trial.finished_at < recent_cutoff or trial.cost_usd <= TRIAL_PING_USD:
+            if (
+                trial.finished_at < recent_cutoff
+                or trial.cost_usd <= settings.trial_ping_usd
+            ):
                 continue
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
-            escalated = trial.cost_usd > TRIAL_ESCALATION_USD
+            escalated = trial.cost_usd > settings.trial_escalation_usd
             heading = (
                 ":rotating_light: *Very expensive trial*"
                 if escalated
@@ -290,9 +284,12 @@ def build_alerts(
                 f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
                 f"<{task_url}|open task>"
             )
+            # Keys carry no threshold: interpolating an editable one would mint
+            # fresh keys on every retune and re-alert the whole window. A trial's
+            # cost is settled here, so one alert per trial is right either way.
             alerts.append(
                 SlackAlert(
-                    key=f"trial:{trial.id}:{TRIAL_PING_USD:g}",
+                    key=f"trial:{trial.id}",
                     text=text,
                     recipient_email=experiment.owner_email,
                     dm_only=True,
@@ -303,10 +300,10 @@ def build_alerts(
                 # visible outside the DM.
                 alerts.append(
                     SlackAlert(
-                        key=f"trial-escalation:{trial.id}:{TRIAL_ESCALATION_USD:g}",
+                        key=f"trial-escalation:{trial.id}",
                         text=text,
                         mention_emails=_mention_targets(
-                            experiment.owner_email, *ALWAYS_PING_EMAILS
+                            experiment.owner_email, *settings.always_ping_emails
                         ),
                     )
                 )
@@ -380,6 +377,9 @@ def build_alerts(
 async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     now = now or datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(hours=2)
+    # Per run rather than at import: this is a long-lived container, so a
+    # module-scope read would pin whatever was set when it first woke up.
+    settings = await read_alert_settings()
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -722,6 +722,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             failed_trials=failed_trial_records,
             qa_failures=qa_failures,
         ),
+        settings=settings,
         recent_cutoff=recent_cutoff,
         dashboard_url=dashboard_url,
     )

@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
@@ -489,6 +489,37 @@ class SlackExpenseAlertModel(Base):
     notified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class SlackAlertSettingsModel(Base):
+    """Admin override for the Slack cost-alert thresholds and ping list.
+
+    At most one row, ``id == SETTINGS_ROW_ID``, enforced by a CHECK: the alerts
+    are deployment-wide rather than org-scoped -- the cron scans every org --
+    so there is nothing to key this by. A missing row means the defaults in
+    ``slack_alert_settings.py`` stand.
+    """
+
+    __tablename__ = "slack_alert_settings"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    experiment_milestone_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    experiment_repeat_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    trial_ping_usd: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    trial_escalation_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    always_ping_emails: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 # ---------------------------------------------------------------------------

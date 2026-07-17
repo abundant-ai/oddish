@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -17,8 +18,12 @@ from oddish.db import (
     VerdictStatus,
     get_session,
 )
+from slack_alert_settings import (
+    DEFAULT_ALERT_SETTINGS,
+    DEFAULT_ALWAYS_PING_EMAILS,
+    AlertSettings,
+)
 from slack_notifications import (
-    ALWAYS_PING_EMAILS,
     AlertCandidates,
     ExperimentCandidate,
     FailedExperiment,
@@ -76,18 +81,24 @@ def _claim_stubs(monkeypatch: pytest.MonkeyPatch, claimed: set[str], sent: set[s
     monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
 
 
-def test_alert_thresholds_are_hardcoded() -> None:
-    assert notifications.EXPERIMENT_MILESTONE_USD == 1000.0
-    assert notifications.EXPERIMENT_REPEAT_USD == 1000.0
-    assert notifications.TRIAL_PING_USD == 200.0
-    assert notifications.TRIAL_ESCALATION_USD == 1000.0
-    assert notifications.EXPERIMENT_FAILED_RATIO == 0.5
-    assert ALWAYS_PING_EMAILS == (
-        "charles@abundant.ai",
-        "ke@abundant.ai",
-        "meji@abundant.ai",
-        "jesse@abundant.ai",
+def test_alert_defaults_apply_when_no_admin_has_overridden() -> None:
+    # These are the values alerting runs on until someone edits the pane, so
+    # they are worth pinning even though they are no longer immutable.
+    assert DEFAULT_ALERT_SETTINGS == AlertSettings(
+        experiment_milestone_usd=1000.0,
+        experiment_repeat_usd=1000.0,
+        trial_ping_usd=200.0,
+        trial_escalation_usd=1000.0,
+        always_ping_emails=(
+            "charles@abundant.ai",
+            "ke@abundant.ai",
+            "meji@abundant.ai",
+            "jesse@abundant.ai",
+        ),
     )
+    assert not DEFAULT_ALERT_SETTINGS.is_override
+    # Failure DMs are not cost alerts, so this one stays in code.
+    assert notifications.EXPERIMENT_FAILED_RATIO == 0.5
 
 
 @pytest.mark.parametrize(
@@ -158,6 +169,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
             ],
             trials=trials,
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -196,6 +208,7 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
                 _trial("d", 200, model="openai/gpt", finished_at=now),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -222,6 +235,7 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
                 _trial("recent", 50, finished_at=now),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -247,6 +261,7 @@ def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
                 _trial("recent", 1600, finished_at=now),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -269,6 +284,7 @@ def test_build_alerts_new_experiment_fires_every_milestone() -> None:
             experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 3)],
             trials=[_trial("burst", 2400, finished_at=now)],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -296,11 +312,12 @@ def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
             ],
             trials=[_trial("lonely", 201, finished_at=now)],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
 
-    assert [alert.key for alert in alerts] == ["trial:lonely:200"]
+    assert [alert.key for alert in alerts] == ["trial:lonely"]
     alert = alerts[0]
     assert alert.text.splitlines() == [
         ":warning: *Expensive trial*",
@@ -327,11 +344,69 @@ def test_build_alerts_trial_floor_is_exclusive(cost_usd: float, expected: bool) 
             experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
             trials=[_trial("candidate", cost_usd, finished_at=now)],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
 
     assert any(alert.key.startswith("trial:") for alert in alerts) is expected
+
+
+def test_build_alerts_honors_an_admin_override() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    "experiment-1", "Exp", "Ada", 0, owner_email="owner@example.com"
+                )
+            ],
+            trials=[_trial("t", 160, finished_at=now)],
+        ),
+        settings=AlertSettings(
+            experiment_milestone_usd=100.0,
+            experiment_repeat_usd=100.0,
+            trial_ping_usd=10.0,
+            trial_escalation_usd=50.0,
+            always_ping_emails=("oncall@example.com",),
+            is_override=True,
+        ),
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    # $160 clears all three lowered thresholds; none of it would alert on the
+    # defaults, and the escalation pings the overridden list rather than ours.
+    assert [alert.key for alert in alerts] == [
+        "experiment:experiment-1:100",
+        "trial:t",
+        "trial-escalation:t",
+    ]
+    assert alerts[-1].mention_emails == ("owner@example.com", "oncall@example.com")
+
+
+def test_trial_alert_keys_do_not_move_when_the_floor_is_retuned() -> None:
+    """The anti-spam invariant behind the settings pane.
+
+    Alert keys are the dedup rows, so a key that embedded its threshold would
+    make every retune look like a fresh batch and re-notify the whole window.
+    Same trial, same key, whatever the floor is.
+    """
+    now = datetime.now(timezone.utc)
+
+    def trial_keys(floor: float) -> list[str]:
+        alerts = build_alerts(
+            AlertCandidates(
+                experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 0)],
+                trials=[_trial("t", 250, finished_at=now)],
+            ),
+            settings=replace(DEFAULT_ALERT_SETTINGS, trial_ping_usd=floor),
+            recent_cutoff=now - timedelta(hours=2),
+            dashboard_url="https://www.oddish.app",
+        )
+        return [a.key for a in alerts if a.key.startswith("trial")]
+
+    assert trial_keys(200.0) == trial_keys(50.0) == ["trial:t"]
 
 
 def test_build_alerts_escalates_a_very_expensive_trial_to_the_channel() -> None:
@@ -349,20 +424,24 @@ def test_build_alerts_escalates_a_very_expensive_trial_to_the_channel() -> None:
             ],
             trials=[_trial("whale", 1500, finished_at=now)],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
 
     dm, escalation = [alert for alert in alerts if alert.key.startswith("trial")]
-    assert dm.key == "trial:whale:200"
-    assert escalation.key == "trial-escalation:whale:1000"
+    assert dm.key == "trial:whale"
+    assert escalation.key == "trial-escalation:whale"
     assert dm.text == escalation.text
     assert dm.text.splitlines()[0] == ":rotating_light: *Very expensive trial*"
     assert dm.dm_only
     assert dm.recipient_email == "Owner@Example.com"
     assert dm.mention_emails == ()
     assert not escalation.dm_only
-    assert escalation.mention_emails == ("owner@example.com", *ALWAYS_PING_EMAILS)
+    assert escalation.mention_emails == (
+        "owner@example.com",
+        *DEFAULT_ALWAYS_PING_EMAILS,
+    )
 
 
 def test_build_alerts_reports_unpriceable_models_once_each() -> None:
@@ -374,6 +453,7 @@ def test_build_alerts_reports_unpriceable_models_once_each() -> None:
                 UnpricedModel(model="mystery/model-x", trial_count=3, task_id="task/9"),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -395,6 +475,7 @@ def test_build_alerts_unpriceable_model_uses_singular_for_one_trial() -> None:
                 UnpricedModel(model="mystery/model-x", trial_count=1, task_id="task/9"),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -410,6 +491,7 @@ def test_build_alerts_ignores_old_trials() -> None:
             experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
             trials=[_trial("old", 150, finished_at=now - timedelta(hours=3))],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -432,6 +514,7 @@ def test_build_alerts_reports_failed_experiments_as_dm_only() -> None:
                 )
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -484,6 +567,7 @@ def test_build_alerts_failed_experiment_respects_ratio(
                 )
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -506,6 +590,7 @@ def test_build_alerts_reports_failed_trials_as_dm_only() -> None:
                 )
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -545,6 +630,7 @@ def test_build_alerts_collapses_failed_trials_per_task_version() -> None:
                 failed("legacy", None),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -578,6 +664,7 @@ def test_build_alerts_keeps_one_failed_trial_dm_per_owner_of_a_task_version() ->
                 failed("trial-2", "grace@example.com"),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -594,6 +681,7 @@ def test_build_alerts_keeps_one_failed_trial_dm_per_owner_of_a_task_version() ->
                 failed("trial-2", "ada@example.com"),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -624,6 +712,7 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
                 ),
             ],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -1007,7 +1096,7 @@ async def test_send_alerts_skips_dm_only_alerts(
         "https://hooks.slack.test",
         [
             SlackAlert("experiment-failed:1", "dm only", dm_only=True),
-            SlackAlert("trial-escalation:whale:1000", "channel"),
+            SlackAlert("trial-escalation:whale", "channel"),
         ],
     )
 
@@ -1038,9 +1127,9 @@ async def test_send_owner_dms_ignores_channel_alerts(
         "xoxb-token",
         [
             SlackAlert(
-                "trial-escalation:whale:1000",
+                "trial-escalation:whale",
                 "very expensive trial",
-                mention_emails=("owner@example.com", *ALWAYS_PING_EMAILS),
+                mention_emails=("owner@example.com", *DEFAULT_ALWAYS_PING_EMAILS),
             ),
             SlackAlert("unpriced-model:x", "unpriceable"),
         ],
@@ -1082,6 +1171,7 @@ async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
             ],
             trials=[_trial("whale", 1500, finished_at=now)],
         ),
+        settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
@@ -1094,7 +1184,7 @@ async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
     assert posted[0].splitlines()[:2] == [
         " ".join(
             f"<@U-{email.split('@')[0]}>"
-            for email in ("owner@example.com", *ALWAYS_PING_EMAILS)
+            for email in ("owner@example.com", *DEFAULT_ALWAYS_PING_EMAILS)
         ),
         ":rotating_light: *Very expensive trial*",
     ]
@@ -1231,6 +1321,7 @@ async def test_send_owner_dms_dedups_a_task_version_per_recipient(
                         failed("trial-2", "ada@example.com"),
                     ],
                 ),
+                settings=DEFAULT_ALERT_SETTINGS,
                 recent_cutoff=now - timedelta(hours=2),
                 dashboard_url="https://www.oddish.app",
             ),
@@ -1477,7 +1568,7 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
         # the token estimate does not falsely trigger the alert.
         assert [alert.key for alert in alerts] == [
             f"experiment:{experiment_id}:1000",
-            f"trial:{task_id}-outlier:200",
+            f"trial:{task_id}-outlier",
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
