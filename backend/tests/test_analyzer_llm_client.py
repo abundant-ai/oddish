@@ -61,3 +61,55 @@ async def test_api_client_streams_text_deltas(monkeypatch):
     client = ApiAnalyzerLLMClient()
     assert await _collect(client, "hi") == ["Hel", "lo"]
     await client.aclose()
+
+
+from api.services.analyzer_llm_client import (
+    SandboxAnalyzerLLMClient,
+    create_llm_client,
+)
+
+
+@pytest.mark.asyncio
+async def test_create_llm_client_api_branch():
+    client = await create_llm_client(LLMClientType.API)
+    assert isinstance(client, ApiAnalyzerLLMClient)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_client_streams_json_lines_and_closes():
+    sent = {}
+
+    class _FakeSandbox:
+        id = "sbx-1"
+
+    class _FakeRuntime:
+        async def stream_chat(self, client, sandbox, *, content, claude_session_id,
+                              daytona_session_id="cc", system_prompt=None):
+            sent["content"] = content
+            for d in [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]:
+                yield d
+
+    class _FakeDaytona:
+        def __init__(self):
+            self.deleted = False
+        async def delete_sandbox(self, sandbox):
+            self.deleted = True
+
+    daytona = _FakeDaytona()
+    client = SandboxAnalyzerLLMClient(
+        sandbox=_FakeSandbox(),
+        daytona_client=daytona,
+        runtime=_FakeRuntime(),
+        daytona_session_id="analyzer",
+    )
+    out = []
+    async for chunk in client.stream("my prompt"):
+        out.append(chunk)
+    assert sent["content"] == "my prompt"
+    assert [__import__("json").loads(c) for c in out] == [
+        {"type": "text", "text": "one"},
+        {"type": "text", "text": "two"},
+    ]
+    await client.aclose()
+    assert daytona.deleted is True

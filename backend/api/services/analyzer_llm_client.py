@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import enum
+import json
 import logging
+import os
 from typing import AsyncIterator, Protocol, runtime_checkable
 
 from anthropic import AsyncAnthropic
+
+from oddish.config import settings
+from oddish.db import generate_id
+from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
+from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient, RealDaytonaClient
+from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 
 log = logging.getLogger("oddish.analyzer_block.client")
 
@@ -63,3 +71,62 @@ class ApiAnalyzerLLMClient:
 
     async def aclose(self) -> None:
         return None
+
+
+_DAYTONA_SESSION_ID = "analyzer"
+_AUTO_STOP_MINUTES = 15
+_AUTO_DELETE_MINUTES = 30
+
+
+class SandboxAnalyzerLLMClient:
+    """Daytona-sandbox backend: runs claude-code and yields one JSON string per
+    stream-json event. Provisioning happens in ``create_llm_client`` (an async
+    factory) -- constructors cannot be awaited."""
+
+    def __init__(
+        self,
+        *,
+        sandbox: CreatedSandbox,
+        daytona_client: DaytonaClient,
+        runtime: ClaudeCodeRuntime,
+        daytona_session_id: str = _DAYTONA_SESSION_ID,
+    ) -> None:
+        self._sandbox = sandbox
+        self._client = daytona_client
+        self._runtime = runtime
+        self._session_id = daytona_session_id
+
+    async def stream(self, prompt: str) -> AsyncIterator[str]:
+        async for event in self._runtime.stream_chat(
+            self._client,
+            self._sandbox,
+            content=prompt,
+            claude_session_id=None,
+            daytona_session_id=self._session_id,
+        ):
+            yield json.dumps(event)
+
+    async def aclose(self) -> None:
+        await delete_sandbox_quietly(self._client, self._sandbox)
+
+
+async def create_llm_client(llm_client_type: LLMClientType) -> AnalyzerLLMClient:
+    if llm_client_type == LLMClientType.API:
+        return ApiAnalyzerLLMClient()
+
+    if llm_client_type == LLMClientType.SANDBOX:
+        daytona_client = RealDaytonaClient(api_key=os.environ["DAYTONA_API_KEY"])
+        sandbox = await Provisioner(client=daytona_client).create(
+            env_vars={"ANTHROPIC_API_KEY": settings.anthropic_api_key or ""},
+            auto_stop_minutes=_AUTO_STOP_MINUTES,
+            auto_delete_minutes=_AUTO_DELETE_MINUTES,
+            labels={"app": "analyzer", "session_id": generate_id()},
+            daytona_session_id=_DAYTONA_SESSION_ID,
+        )
+        runtime = ClaudeCodeRuntime()
+        await runtime.install(daytona_client, sandbox)
+        return SandboxAnalyzerLLMClient(
+            sandbox=sandbox, daytona_client=daytona_client, runtime=runtime
+        )
+
+    raise ValueError(f"unknown llm_client_type: {llm_client_type!r}")
