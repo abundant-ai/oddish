@@ -68,6 +68,17 @@ _RESUME_PROMPT = (
 # ``$(cat ...)`` substitution is expanded by the sandbox shell (bound only by
 # the far larger in-sandbox Linux ARG_MAX), so grok still receives the full
 # instruction as its ``-p`` argument.
+#
+# That last clause is the limit of what this buys, and it is easy to misread as
+# more: the staging keeps the prompt out of the *orchestrator's* exec argv, not
+# out of grok's. The sandbox shell expands ``$(cat ...)`` before it execs grok,
+# so the plaintext instruction lands on grok's own ``/proc/<pid>/cmdline``. A
+# task that names a service the agent later restarts with ``pkill -f`` can
+# therefore match grok itself and kill the trial (exit 143) -- the self-kill the
+# claude-code wrapper avoids by piping its prompt over stdin. Grok cannot: it
+# takes the prompt only as a required ``-p <PROMPT>`` argv value, with no
+# documented stdin or file input. If it ever gains one, the prompt file is
+# already staged and the fix is small.
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 
