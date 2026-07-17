@@ -30,6 +30,7 @@ def create_api_key(
     created_by_role: str | None = None,
     expires_at: datetime | None = None,
     is_internal: bool = False,
+    exclude_from_costs: bool = False,
 ) -> tuple[APIKeyModel, str]:
     raw_key = generate_api_key()
     api_key = APIKeyModel(
@@ -42,6 +43,7 @@ def create_api_key(
         created_by_role=created_by_role,
         expires_at=expires_at,
         is_internal=is_internal,
+        exclude_from_costs=exclude_from_costs,
     )
     return api_key, raw_key
 

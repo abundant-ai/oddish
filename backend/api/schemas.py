@@ -148,6 +148,7 @@ class APIKeyResponse(BaseModel):
     scope: str
     org_id: str
     is_active: bool
+    exclude_from_costs: bool
     expires_at: str | None
     last_used_at: str | None
     created_at: str
@@ -180,6 +181,13 @@ class CreateAPIKeyRequest(BaseModel):
     name: str
     scope: str = "full"  # full, tasks, or read
     expires_in_days: int | None = None
+    exclude_from_costs: bool = False  # admin-only
+
+
+class UpdateAPIKeyRequest(BaseModel):
+    """Request to update an API key's cost-accounting flag."""
+
+    exclude_from_costs: bool
 
 
 # =============================================================================

@@ -24,10 +24,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, or_, select
 
 from oddish.config import settings
-from oddish.db import TrialModel, TrialOrigin
+from oddish.db import TaskModel, TrialModel, TrialOrigin
+from oddish.db.models import APIKeyModel
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
@@ -42,13 +43,36 @@ from oddish.model_pricing import estimate_cost_usd
 CANCELLED_HARBOR_STAGE = "cancelled"
 
 
+def _cost_excluded_key_spend():
+    """Trials whose task was submitted with a cost-excluded API key.
+
+    Trials don't record the submitting key; the task's audit column
+    ``tasks.api_key_id`` does, so this is a correlated EXISTS (a NULL
+    ``api_key_id`` -- JWT submissions -- never matches). The join condition is
+    explicit because the cross-stack FK between ``tasks`` and ``api_keys`` was
+    dropped. Every cost surface runs with ``include_deleted=True``, so revoking
+    an excluded key does not resurrect its historical spend.
+    """
+    return (
+        select(TaskModel.id)
+        .join(APIKeyModel, TaskModel.api_key_id == APIKeyModel.id)
+        .where(
+            TaskModel.id == TrialModel.task_id,
+            APIKeyModel.exclude_from_costs.is_(True),
+        )
+        .exists()
+    )
+
+
 def first_party_spend_filter():
     """Select actual Oddish executions, excluding non-spend materializations.
 
     Imported trials were paid for outside Oddish. Experiment-combine rows copy
     an existing trial's result and cost, so counting them would charge the same
-    execution twice. Keep this eligibility rule shared by quota accounting and
-    cost reporting so both surfaces count the same execution population.
+    execution twice. Spend from API keys flagged ``exclude_from_costs`` is
+    deliberately not counted. Keep this eligibility rule shared by quota
+    accounting and cost reporting so both surfaces count the same execution
+    population.
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
@@ -56,6 +80,7 @@ def first_party_spend_filter():
             TrialModel.idempotency_key.is_(None),
             TrialModel.idempotency_key.notlike("combine:%"),
         ),
+        ~_cost_excluded_key_spend(),
     )
 
 
@@ -115,9 +140,9 @@ def settled_cost_columns() -> list:
             ),
             0.0,
         ).label("native_cost"),
-        func.coalesce(
-            func.sum(case((has_tokens, estimator_input), else_=0)), 0
-        ).label("est_input"),
+        func.coalesce(func.sum(case((has_tokens, estimator_input), else_=0)), 0).label(
+            "est_input"
+        ),
         func.coalesce(
             func.sum(case((has_tokens, nonnegative_output), else_=0)), 0
         ).label("est_output"),

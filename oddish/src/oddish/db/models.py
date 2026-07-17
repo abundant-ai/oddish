@@ -548,7 +548,9 @@ class AnalyzerModel(TimestampedMixin, Base):
 
     bad_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     good_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    universal_capabilities_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    universal_capabilities_content: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # The reduce-stage prompt that produced the section bodies above; persisted
@@ -979,9 +981,7 @@ class TrialModel(TimestampedMixin, Base):
     # LLM-generated summary of the trajectory; populated lazily on first
     # request to GET /trials/{id}/trajectory/summary. Replaces the prior
     # S3-cached `agent/trajectory_summary.json` sibling file.
-    trajectory_summary: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Condensed agent step-graph of the trajectory (general phases + terminal
     # outcome node), populated on explicit request to
@@ -1423,6 +1423,12 @@ class APIKeyModel(TimestampedMixin, Base):
 
     # Visibility
     is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # Spend from tasks submitted with this key is left out of quota accounting
+    # and every cost view (see ``cost_basis.first_party_spend_filter``).
+    exclude_from_costs: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
 

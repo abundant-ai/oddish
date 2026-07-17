@@ -45,6 +45,7 @@ import { cn } from "@/lib/utils";
 import {
   Building2,
   Check,
+  CircleDollarSign,
   Copy,
   Key,
   Plus,
@@ -176,6 +177,7 @@ interface APIKey {
   key_prefix: string;
   scope: string;
   is_active: boolean;
+  exclude_from_costs: boolean;
   expires_at: string | null;
   last_used_at: string | null;
   created_at: string;
@@ -229,7 +231,7 @@ function ScopeBadge({ scope }: { scope: string }) {
       variant="outline"
       className={cn(
         "rounded-md font-mono text-[11px] font-medium tracking-wide uppercase",
-        variants[scope] ?? "bg-muted text-muted-foreground"
+        variants[scope] ?? "bg-muted text-muted-foreground",
       )}
     >
       {scope}
@@ -285,7 +287,7 @@ function SectionContainer({
       inert={!active}
       className={cn(
         "transition-opacity duration-200 ease-out",
-        active ? "relative opacity-100" : "absolute inset-0 opacity-0"
+        active ? "relative opacity-100" : "absolute inset-0 opacity-0",
       )}
     >
       {children}
@@ -304,7 +306,7 @@ function Panel({
     <Card
       className={cn(
         "border-border/80 bg-card/95 rounded-xl shadow-xs",
-        className
+        className,
       )}
     >
       <CardContent className="p-5">{children}</CardContent>
@@ -544,6 +546,8 @@ function APIKeysPanel() {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<APIKey | null>(null);
   const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [updatingCosts, setUpdatingCosts] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [showAllKeys, setShowAllKeys] = useState(false);
 
   const {
@@ -553,7 +557,7 @@ function APIKeysPanel() {
   } = useSWR<APIKey[]>(`/api/settings/api-keys`, fetcher);
   const { data: permissions } = useSWR<APIKeyPermissions>(
     `/api/settings/api-keys/permissions`,
-    fetcher
+    fetcher,
   );
   const canCreateAPIKeys = permissions?.can_create ?? false;
   const canManageAPIKeys = permissions?.can_manage ?? false;
@@ -565,7 +569,7 @@ function APIKeysPanel() {
     : (keys ?? []).slice(0, VISIBLE_API_KEY_LIMIT);
   const hiddenKeyCount = Math.max(
     0,
-    (keys?.length ?? 0) - VISIBLE_API_KEY_LIMIT
+    (keys?.length ?? 0) - VISIBLE_API_KEY_LIMIT,
   );
   const activeKeyCount = keys?.filter((key) => key.is_active).length ?? 0;
   const recentlyUsedCount =
@@ -596,6 +600,28 @@ function APIKeysPanel() {
     } finally {
       setRevoking(null);
       setRevokeTarget(null);
+    }
+  };
+
+  const handleToggleExcludeFromCosts = async (key: APIKey) => {
+    setUpdateError(null);
+    setUpdatingCosts(key.id);
+    try {
+      const res = await fetch(`/api/settings/api-keys/${key.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ exclude_from_costs: !key.exclude_from_costs }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to update key");
+      }
+
+      mutate(`/api/settings/api-keys`);
+    } catch {
+      setUpdateError("Failed to update API key");
+    } finally {
+      setUpdatingCosts(null);
     }
   };
 
@@ -632,6 +658,11 @@ function APIKeysPanel() {
           <Alert variant="destructive">
             <AlertTitle>Failed to revoke API key</AlertTitle>
             <AlertDescription>{revokeError}</AlertDescription>
+          </Alert>
+        ) : updateError ? (
+          <Alert variant="destructive">
+            <AlertTitle>Failed to update API key</AlertTitle>
+            <AlertDescription>{updateError}</AlertDescription>
           </Alert>
         ) : isLoading ? (
           <p className="text-muted-foreground py-6 text-center text-sm">
@@ -722,7 +753,7 @@ function APIKeysPanel() {
                   key={key.id}
                   className={cn(
                     "border-border bg-background flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between",
-                    !key.is_active && "opacity-50"
+                    !key.is_active && "opacity-50",
                   )}
                 >
                   <div className="min-w-0">
@@ -731,6 +762,14 @@ function APIKeysPanel() {
                         {key.name}
                       </p>
                       <ScopeBadge scope={key.scope} />
+                      {key.exclude_from_costs ? (
+                        <Badge
+                          variant="outline"
+                          className="text-muted-foreground rounded-md text-[11px] font-medium"
+                        >
+                          Not counted in costs
+                        </Badge>
+                      ) : null}
                     </div>
                     <p className="text-muted-foreground mt-1 font-mono text-xs">
                       {key.key_prefix}… · Last used{" "}
@@ -742,6 +781,32 @@ function APIKeysPanel() {
                       <p>Created {formatDate(key.created_at)}</p>
                       <p>Expires {formatDate(key.expires_at)}</p>
                     </div>
+                    {canManageAPIKeys ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleToggleExcludeFromCosts(key)}
+                        disabled={updatingCosts === key.id}
+                        className={cn(
+                          "h-7 w-7 p-0",
+                          key.exclude_from_costs
+                            ? "text-muted-foreground/40 hover:text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                        aria-label={
+                          key.exclude_from_costs
+                            ? `Count ${key.name} in costs`
+                            : `Exclude ${key.name} from costs`
+                        }
+                        title={
+                          key.exclude_from_costs
+                            ? "Count this key's spend in costs"
+                            : "Exclude this key's spend from costs"
+                        }
+                      >
+                        <CircleDollarSign className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : null}
                     {canManageAPIKeys && key.is_active ? (
                       <Button
                         variant="ghost"
@@ -982,9 +1047,7 @@ function DeleteAccountPanel() {
         window.location.assign("/");
       }
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to delete account"
-      );
+      setError(err instanceof Error ? err.message : "Failed to delete account");
       setIsDeleting(false);
     }
   };
@@ -1194,7 +1257,7 @@ function SidebarNav({
               "group h-auto shrink-0 justify-start gap-2.5 rounded-md border border-transparent px-3 py-2 text-left text-sm font-normal lg:w-full",
               active
                 ? "border-border bg-card text-foreground hover:bg-card shadow-xs"
-                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
             )}
           >
             <Icon
@@ -1202,7 +1265,7 @@ function SidebarNav({
                 "h-4 w-4 shrink-0",
                 active
                   ? "text-[color:var(--paper-ink)]"
-                  : "text-muted-foreground group-hover:text-foreground"
+                  : "text-muted-foreground group-hover:text-foreground",
               )}
             />
             <span className="font-medium whitespace-nowrap">{entry.label}</span>

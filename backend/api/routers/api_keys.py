@@ -11,6 +11,7 @@ from api.schemas import (
     APIKeyPermissionsResponse,
     APIKeyResponse,
     CreateAPIKeyRequest,
+    UpdateAPIKeyRequest,
 )
 from auth import (
     APIKeyScope,
@@ -27,6 +28,21 @@ from oddish.db import get_session, utcnow
 
 
 router = APIRouter(prefix="/api-keys", tags=["API Keys"])
+
+
+def _key_response(k: APIKeyModel) -> APIKeyResponse:
+    return APIKeyResponse(
+        id=k.id,
+        name=k.name,
+        key_prefix=k.key_prefix,
+        scope=k.scope.value,
+        org_id=k.org_id,
+        is_active=k.is_active,
+        exclude_from_costs=k.exclude_from_costs,
+        expires_at=k.expires_at.isoformat() if k.expires_at else None,
+        last_used_at=k.last_used_at.isoformat() if k.last_used_at else None,
+        created_at=k.created_at.isoformat(),
+    )
 
 
 @router.get("", response_model=list[APIKeyResponse])
@@ -48,20 +64,7 @@ async def list_api_keys(
         result = await session.execute(stmt)
         keys = result.scalars().all()
 
-        return [
-            APIKeyResponse(
-                id=k.id,
-                name=k.name,
-                key_prefix=k.key_prefix,
-                scope=k.scope.value,
-                org_id=k.org_id,
-                is_active=k.is_active,
-                expires_at=k.expires_at.isoformat() if k.expires_at else None,
-                last_used_at=k.last_used_at.isoformat() if k.last_used_at else None,
-                created_at=k.created_at.isoformat(),
-            )
-            for k in keys
-        ]
+        return [_key_response(k) for k in keys]
 
 
 @router.get("/permissions", response_model=APIKeyPermissionsResponse)
@@ -102,6 +105,14 @@ async def create_api_key_endpoint(
             ),
         )
 
+    # Excluding a key's spend from cost accounting bypasses quota enforcement,
+    # so only org admins may set it.
+    if request.exclude_from_costs and not can_manage_api_keys(auth):
+        raise HTTPException(
+            status_code=403,
+            detail="Only organization admins may exclude a key from costs",
+        )
+
     # Calculate expiry
     expires_at = None
     if request.expires_in_days:
@@ -115,6 +126,7 @@ async def create_api_key_endpoint(
             created_by_user_id=auth.user_id,
             created_by_role=auth.user_role.value if auth.user_role else None,
             expires_at=expires_at,
+            exclude_from_costs=request.exclude_from_costs,
         )
         session.add(api_key_model)
         await session.commit()
@@ -133,6 +145,31 @@ async def create_api_key_endpoint(
             ),
             created_at=api_key_model.created_at.isoformat(),
         )
+
+
+@router.patch("/{key_id}", response_model=APIKeyResponse)
+async def update_api_key(
+    key_id: str,
+    request: UpdateAPIKeyRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> APIKeyResponse:
+    """Set whether spend from this key is excluded from cost accounting."""
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(APIKeyModel)
+            .where(APIKeyModel.id == key_id)
+            .where(APIKeyModel.org_id == auth.org_id)
+        )
+        api_key = result.scalar_one_or_none()
+
+        if not api_key:
+            raise HTTPException(status_code=404, detail="API key not found")
+
+        api_key.exclude_from_costs = request.exclude_from_costs
+        await session.commit()
+
+        return _key_response(api_key)
 
 
 @router.delete("/{key_id}")

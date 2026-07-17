@@ -12,6 +12,14 @@ def test_create_api_key_sets_is_internal():
 def test_create_api_key_defaults_not_internal():
     model, _ = create_api_key(org_id="org_1", name="user key")
     assert model.is_internal is False
+    assert model.exclude_from_costs is False
+
+
+def test_create_api_key_sets_exclude_from_costs():
+    model, _ = create_api_key(
+        org_id="org_1", name="benchmark harness", exclude_from_costs=True
+    )
+    assert model.exclude_from_costs is True
 
 
 def test_create_api_key_stores_creator_role():
