@@ -1075,6 +1075,25 @@ class TrialModel(TimestampedMixin, Base):
     __table_args__ = (
         Index("idx_trials_task_id", "task_id"),
         Index("idx_trials_task_version_id", "task_version_id"),
+        # Task-browser hot path.
+        # The task-list filters and the on-the-fly aggregates all correlate/aggregate trials by
+        # ``(task_id, task_version_id)`` scoped to the task's CURRENT version,
+        # non-superseded, non-probe. This partial composite backs both the
+        # correlated ``EXISTS`` trial filters (agent/model/status/reward/… in
+        # ``_trial_exists``) and the ``GROUP BY (task_id, task_version_id)`` used
+        # by the avg-score / counts / run-time / compare / top-performer
+        # subqueries. Partial keeps it to the live current-version slice; both
+        # columns are set at INSERT and never change, so there is no HOT-update
+        # churn. Create it with ``CREATE INDEX CONCURRENTLY`` (trials is a hot,
+        # high-write table).
+        Index(
+            "idx_trials_live_task_version",
+            "task_id",
+            "task_version_id",
+            postgresql_where=text(
+                "superseded_by_trial_id IS NULL AND is_probe IS NOT TRUE"
+            ),
+        ),
         # Display / API filter path. Claim/stale-reap indexes on
         # trials were retired in the ``worker_jobs`` refactor --
         # scheduling queries now hit ``idx_worker_jobs_claim`` and
