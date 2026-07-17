@@ -350,6 +350,15 @@ task_experiments = Table(
     Column("deleted_at", DateTime(timezone=True), nullable=True),
     Index("idx_task_experiments_experiment_id", "experiment_id"),
     Index("idx_task_experiments_experiment_task", "experiment_id", "task_id"),
+    # The task-browser Experiments filter correlates on ``task_id`` (the existing
+    # composite leads with ``experiment_id``); this task_id-leading partial backs
+    # that ``EXISTS``.
+    Index(
+        "idx_task_experiments_task_experiment_live",
+        "task_id",
+        "experiment_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
 )
 
 
@@ -694,6 +703,33 @@ class TaskModel(TimestampedMixin, Base):
             "org_id",
             text("lower((tags ->> 'github_username'))"),
             postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # Task-browser lead filters (status / priority / verdict) scoped by org,
+        # partial on the soft-delete predicate every read appends.
+        Index(
+            "idx_tasks_org_status_live",
+            "org_id",
+            "status",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_tasks_org_priority_live",
+            "org_id",
+            "priority",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_tasks_org_verdict_status_live",
+            "org_id",
+            "verdict_status",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        # Tag filters (all/any/none) + free-text tag-name matching hit
+        # ``effective_tag_ids`` via array containment / ANY -- GIN indexes that.
+        Index(
+            "idx_tasks_effective_tag_ids_gin",
+            "effective_tag_ids",
+            postgresql_using="gin",
         ),
     )
 
@@ -1093,6 +1129,34 @@ class TrialModel(TimestampedMixin, Base):
             postgresql_where=text(
                 "superseded_by_trial_id IS NULL AND is_probe IS NOT TRUE"
             ),
+        ),
+        # Covering variant for the org-wide GROUP BY (task_id, task_version_id)
+        # aggregate / compare / top-performer scans: leads with org_id (the
+        # scans filter it) and INCLUDEs the metric columns so those aggregates
+        # can run INDEX-ONLY (no heap fetch). Higher write cost + size than the
+        # plain index because the INCLUDEd columns are updated during a trial's
+        # lifecycle -- BENCHMARK ONLY; trim to the winners before prod.
+        Index(
+            "idx_trials_live_org_task_version_cover",
+            "org_id",
+            "task_id",
+            "task_version_id",
+            postgresql_where=text(
+                "superseded_by_trial_id IS NULL AND is_probe IS NOT TRUE"
+            ),
+            postgresql_include=[
+                "reward",
+                "agent",
+                "model",
+                "status",
+                "error_message",
+                "started_at",
+                "finished_at",
+                "input_tokens",
+                "output_tokens",
+                "cache_tokens",
+                "total_steps",
+            ],
         ),
         # Display / API filter path. Claim/stale-reap indexes on
         # trials were retired in the ``worker_jobs`` refactor --
