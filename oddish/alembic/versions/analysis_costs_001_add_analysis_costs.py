@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "analysis_costs_001"
-down_revision: Union[str, Sequence[str], None] = "analyzers_006"
+down_revision: Union[str, Sequence[str], None] = "analyzers_007"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
