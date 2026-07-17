@@ -1237,9 +1237,15 @@ class CostBreakdownResponse(BaseModel):
 
 
 class CostLeaderboardUser(BaseModel):
-    """Internal ranked spend row; the hosted layer resolves a safe display name."""
+    """Internal ranked spend row; the hosted layer resolves a safe display name.
 
-    user_id: str
+    ``user_id`` is set for registered-user buckets (the hosted layer resolves
+    their label); ``label`` carries the precomputed ``@handle`` for
+    GitHub-identity fallback buckets that have no registered user.
+    """
+
+    user_id: str | None = None
+    label: str | None = None
     cost_usd: float
 
 
@@ -1990,12 +1996,14 @@ async def get_cost_leaderboard_core(
     org_id: str,
     window_days: int | None = 7,
 ) -> list[CostLeaderboardUser]:
-    """Rank one org's registered people on the admin dashboard spend basis.
+    """Rank one org's spend buckets on the admin dashboard spend basis.
 
-    The grouping mirrors ``get_cost_breakdown_core``'s payer precedence, but
-    discards GitHub-only and unattributed fallback buckets so callers cannot
-    accidentally expose anything except registered people. Model remains in
-    the SQL grouping because token-estimated costs are priced per model.
+    The grouping mirrors ``get_cost_breakdown_core``'s payer precedence.
+    Registered people come back as ``user_id`` rows for the hosted layer to
+    label; spend that carries only a submitted GitHub identity keeps its
+    precomputed ``@handle`` label so unlinked accounts still rank. Only the
+    Unattributed bucket is discarded -- it is not an account. Model remains
+    in the SQL grouping because token-estimated costs are priced per model.
     """
     since = (
         None
@@ -2031,21 +2039,27 @@ async def get_cost_leaderboard_core(
     if since is not None:
         query = query.where(TrialModel.finished_at >= since)
 
-    costs_by_user: dict[str, float] = {}
+    costs_by_key: dict[str, float] = {}
+    identity_by_key: dict[str, tuple[str | None, str | None]] = {}
     for row in (await session.execute(query)).all():
-        _, user_id, _ = _spend_identity(
+        key, user_id, label = _spend_identity(
             row.billed_user_id, row.gh_id, row.gh_user, row.submitter
         )
-        if user_id is None:
+        if key == _UNATTRIBUTED_KEY:
             continue
-        costs_by_user[user_id] = costs_by_user.get(user_id, 0.0) + float(
+        identity_by_key[key] = (user_id, label)
+        costs_by_key[key] = costs_by_key.get(key, 0.0) + float(
             settled_cost_from_row(row)
         )
 
     return [
-        CostLeaderboardUser(user_id=user_id, cost_usd=round(cost, 4))
-        for user_id, cost in sorted(
-            costs_by_user.items(), key=lambda item: (-item[1], item[0])
+        CostLeaderboardUser(
+            user_id=identity_by_key[key][0],
+            label=identity_by_key[key][1],
+            cost_usd=round(cost, 4),
+        )
+        for key, cost in sorted(
+            costs_by_key.items(), key=lambda item: (-item[1], item[0])
         )
         if cost > 0
     ]
