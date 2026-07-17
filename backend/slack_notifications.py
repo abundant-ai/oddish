@@ -66,6 +66,7 @@ class ExperimentCandidate:
     owner: str | None
     active_trials: int
     owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -282,6 +283,7 @@ def build_alerts(
                             f"<{experiment_url}|open experiment>"
                         ),
                         recipient_email=experiment.owner_email,
+                        recipient_clerk_user_id=experiment.owner_clerk_user_id,
                         dm_only=True,
                         silent=silent,
                     )
@@ -311,6 +313,7 @@ def build_alerts(
                     key=f"trial:{trial.id}:{TRIAL_PING_USD:g}",
                     text=text,
                     recipient_email=experiment.owner_email,
+                    recipient_clerk_user_id=experiment.owner_clerk_user_id,
                     dm_only=True,
                 )
             )
@@ -418,6 +421,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.name,
                     ExperimentModel.owner,
                     UserModel.email.label("owner_email"),
+                    UserModel.clerk_user_id.label("owner_clerk_user_id"),
                     func.count(TrialModel.id)
                     .filter(active_trial)
                     .label("active_trials"),
@@ -446,6 +450,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.name,
                     ExperimentModel.owner,
                     UserModel.email,
+                    UserModel.clerk_user_id,
                 )
                 .execution_options(include_deleted=True)
             )
@@ -457,6 +462,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 owner=row.owner,
                 active_trials=int(row.active_trials or 0),
                 owner_email=row.owner_email,
+                owner_clerk_user_id=row.owner_clerk_user_id,
             )
             for row in candidate_rows
         ]

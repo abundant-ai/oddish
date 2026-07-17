@@ -312,7 +312,7 @@ async def fetch_clerk_org_ids_for_user(clerk_user_id: str) -> list[str]:
     if not CLERK_SECRET_KEY:
         return []
 
-    url = f"https://api.clerk.com/v1/users/{clerk_user_id}/organization_memberships"
+    url = "https://api.clerk.com/v1/users/" f"{clerk_user_id}/organization_memberships"
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 
     try:

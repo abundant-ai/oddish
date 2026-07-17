@@ -2147,10 +2147,27 @@ async def test_database_alert_claim_is_durable() -> None:
             )
 
 
-def test_build_alerts_threads_clerk_user_id_into_failure_dms() -> None:
-    cutoff = datetime(2026, 1, 1, tzinfo=timezone.utc)
+def test_build_alerts_threads_clerk_user_id_into_owner_dms() -> None:
+    # Every owner-DM path — cost milestones, expensive trials, and the failure
+    # DMs — must carry the owner's Clerk id so send_owner_dms can prefer their
+    # Clerk-linked Slack account over the email lookup.
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    cutoff = now - timedelta(hours=2)
     alerts = build_alerts(
         AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    id="experiment/1",
+                    name="Exp",
+                    owner="alice",
+                    active_trials=1,
+                    owner_email="alice@example.com",
+                    owner_clerk_user_id="user_alice",
+                )
+            ],
+            trials=[
+                _trial("trial-1", 1500, experiment_id="experiment/1", finished_at=now)
+            ],
             failed_experiments=[
                 FailedExperiment(
                     id="exp1",
@@ -2166,9 +2183,12 @@ def test_build_alerts_threads_clerk_user_id_into_failure_dms() -> None:
         recent_cutoff=cutoff,
         dashboard_url="https://oddish.test",
     )
-    dm = next(alert for alert in alerts if alert.dm_only)
-    assert dm.recipient_email == "alice@example.com"
-    assert dm.recipient_clerk_user_id == "user_alice"
+    dms = [alert for alert in alerts if alert.dm_only]
+    # Milestone DM, expensive-trial DM, and the failure DM are all present.
+    assert len(dms) >= 3
+    for dm in dms:
+        assert dm.recipient_email == "alice@example.com"
+        assert dm.recipient_clerk_user_id == "user_alice"
 
 
 @pytest.mark.asyncio
