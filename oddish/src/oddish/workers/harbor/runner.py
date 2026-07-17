@@ -8,6 +8,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -64,6 +65,10 @@ _ENV_BUILD_TIMEOUT_BASE_SEC: float = EnvironmentConfig.model_fields[
 # covers Harbor-side environment construction and keeps the outer cap strictly
 # above the inner pod-ready timeout so the more specific inner error surfaces.
 _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
+
+# TODO: Temporary workaround; remove once RishiDesai/harbor has the correct fix.
+# Hosts the Claude Code CLI fetches from at agent-setup (curl bootstrap / npm).
+_CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
 
 
 def _sized_environment_build_timeout_multiplier(
@@ -404,6 +409,23 @@ async def run_harbor_trial_async(
                 is_probe=is_probe,
                 probe_oddish_env=extra_agent_env,
             )
+
+        # TODO: Temporary workaround; remove once RishiDesai/harbor has the
+        # correct fix.
+        # Claude Code downloads its CLI at agent-setup and calls its model
+        # endpoint during agent.run(). On closed-internet tasks Harbor's fallback
+        # domains cover neither the installer CDN nor custom model routes, so
+        # allow both via the environment baseline (which spans install + run).
+        if "claude-code" in (agent or "").strip().lower():
+            hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
+            base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")
+            endpoint_host = urlparse(base_url).hostname if base_url else None
+            if endpoint_host:
+                hosts.append(endpoint_host)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
 
         # Stage the org's shared skills (+ global seeds) into a root under the
         # job dir and hand it to Harbor via ``AgentConfig.skills``. Best-effort;
