@@ -590,13 +590,14 @@ sweep):
    releases the slot in its `finally`, and exits.
 4. `send_slack_expense_notifications()` runs every five minutes in production
    when the webhook or the bot token is configured. It deterministically
-   alerts for experiments at $500 and each additional $500 of spend, and for
-   any recent trial over $100 -- the old "must exceed 2x the same-task/model
+   alerts for experiments at $1,000 and each additional $1,000 of spend, and
+   for any recent trial over $200 -- the old "must exceed 2x the same-task/model
    peer average, with at least one peer" filter (`trial_average_multiplier`)
-   is gone, so the $100 floor is unconditional. A trial over $1,000 produces
-   one alert, not two: its mention list widens to the owner plus a hardcoded
-   always-ping list (`ALWAYS_PING_EMAILS` in `slack_notifications.py`), and
-   its heading becomes ":rotating_light: *Very expensive trial*" in place of
+   is gone, so the $200 floor is unconditional. A trial over $1,000 produces
+   two alerts: the owner's DM, plus a separate in-channel escalation
+   (`trial-escalation:{id}:1000`) mentioning the owner and a hardcoded
+   always-ping list (`ALWAYS_PING_EMAILS` in `slack_notifications.py`). Both
+   carry the ":rotating_light: *Very expensive trial*" heading in place of
    the usual ":warning: *Expensive trial*". Milestones are driven by *new*
    spend: spend that finished within the 2h watch window. Milestones already
    covered by the pre-window baseline (`total - recent`) are claimed and
@@ -605,7 +606,7 @@ sweep):
    markers; primary and retry completion is atomic. Indeterminate loud claims
    are not repeated because the external channels do not offer an idempotency
    key, while interrupted silent claims are completed without sending.
-   All thresholds -- the $500 milestone/repeat, the $100 trial floor, the
+   All thresholds -- the $1,000 milestone/repeat, the $200 trial floor, the
    $1,000 escalation, and the 0.5 experiment-failed ratio -- are hardcoded
    module constants, not environment-configurable; the five `ODDISH_SLACK_*`
    threshold env vars (`ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD`,
@@ -620,16 +621,17 @@ sweep):
    `ODDISH_SLACK_EXPENSE_SECRET_NAME`. The email delivery channel
    (`RESEND_API_KEY`, `ODDISH_EXPENSE_EMAIL_FROM`, `send_owner_emails`,
    `_post_email`) has been deleted entirely.
-   Cost alerts -- experiment milestones and expensive trials -- post to the
-   webhook only, with an `<@...>` mention-line prefix resolved from the
-   relevant emails; they no longer DM or email anyone.
+   Cost alerts -- experiment milestones and expensive trials -- DM their
+   experiment's owner; the email channel is gone. The only cost alert that
+   still reaches the webhook is the over-$1,000 trial escalation, which
+   carries an `<@...>` mention-line prefix resolved from the relevant emails.
    `send_alerts(webhook_url, alerts, *, bot_token=None)` claims each alert
    before resolving its mentions, so already-delivered alerts cost zero Slack
    lookups; a mention-lookup failure never sinks the underlying alert, it
-   just posts without the prefix. Three alert kinds are DM-only
-   (`dm_only=True`, delivered solely by `send_owner_dms`, never posted to the
-   webhook): experiment-failed (pre-existing), and two new ones --
-   trial-failed and qa-failed. Trial-failed fires for any trial with
+   just posts without the prefix. The DM-only kinds (`dm_only=True`,
+   delivered solely by `send_owner_dms`, never posted to the webhook) are
+   experiment milestones, expensive trials, experiment-failed, trial-failed,
+   and qa-failed. Trial-failed fires for any trial with
    `status == FAILED`, or `status == SUCCESS` with `result->>'harbor_exception'`
    set (a crashed agent still gets its verifier run, so the row lands as
    SUCCESS with an exception marker rather than FAILED); SKIPPED trials never
