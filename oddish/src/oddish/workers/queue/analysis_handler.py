@@ -5,6 +5,11 @@ import shutil
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from oddish.analyze.analysis_cost import (
+    AnalysisUsage,
+    build_analysis_cost_row,
+    should_record_cost,
+)
 from oddish.config import settings
 from oddish.db import AnalysisStatus, TaskModel, utcnow
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
@@ -127,6 +132,7 @@ async def classify_trial_and_store(
     trial_dir_to_use: Path | None = None
     classification_result = None
     analysis_error = None
+    analysis_usage: AnalysisUsage | None = None
 
     try:
         (
@@ -195,6 +201,7 @@ async def classify_trial_and_store(
                 task_dir=task_dir_to_use,
                 trial_agent=trial_agent,
             )
+            analysis_usage = classifier.last_usage
 
             # Convert to dict for storage
             classification_result = {
@@ -256,6 +263,17 @@ async def classify_trial_and_store(
                 trial.analysis_status = AnalysisStatus.SUCCESS
                 trial.analysis_finished_at = utcnow()
                 trial.analysis_error = None
+                if should_record_cost(classification_result, analysis_usage):
+                    session.add(
+                        build_analysis_cost_row(
+                            job_kind="trial_classifier",
+                            trial_id=trial_id,
+                            org_id=trial.org_id,
+                            experiment_id=trial.experiment_id,
+                            billed_user_id=trial.billed_user_id,
+                            usage=analysis_usage,
+                        )
+                    )
                 stored_status = AnalysisStatus.SUCCESS
                 console.print(f"[green]Analysis {trial_id} SUCCESS[/green]")
             else:

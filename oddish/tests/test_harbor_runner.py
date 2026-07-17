@@ -13,6 +13,11 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest  # noqa: E402
+from harbor.models.environment_type import EnvironmentType  # noqa: E402
+from harbor.models.trial.config import (  # noqa: E402
+    AgentConfig as HarborAgentConfig,
+    EnvironmentConfig as HarborEnvironmentConfig,
+)
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
@@ -26,6 +31,109 @@ from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
+
+
+def _write_network_policy_task(
+    tmp_path: Path,
+    *,
+    environment_mode: str = "public",
+    agent_mode: str = "no-network",
+    compose: bool = False,
+) -> Path:
+    task_path = tmp_path / "task"
+    environment_dir = task_path / "environment"
+    environment_dir.mkdir(parents=True)
+    (task_path / "task.toml").write_text(
+        f"""schema_version = "1.3"
+
+[environment]
+network_mode = "{environment_mode}"
+
+[agent]
+network_mode = "{agent_mode}"
+""",
+        encoding="utf-8",
+    )
+    if compose:
+        (environment_dir / "docker-compose.yaml").write_text(
+            "services: {}\n", encoding="utf-8"
+        )
+    return task_path
+
+
+def test_inject_daytona_agent_model_hosts_for_restricted_direct_task(
+    monkeypatch, tmp_path
+):
+    task_path = _write_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        import_path="example.agent:Agent",
+        model_name="example-model",
+        env={"MODEL_BASE_URL": "https://model.test/v1"},
+        extra_allowed_hosts=["existing.test"],
+    )
+    captured: dict[str, object] = {}
+
+    def _infer(**kwargs):
+        captured.update(kwargs)
+        return ["model.test", "existing.test"]
+
+    monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
+
+    harbor_runner._inject_daytona_agent_model_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert agent_config.extra_allowed_hosts == ["existing.test", "model.test"]
+    assert captured["agent_kwargs"] == {
+        "extra_env": {"MODEL_BASE_URL": "https://model.test/v1"}
+    }
+
+
+@pytest.mark.parametrize(
+    ("environment_type", "environment_mode", "agent_mode", "compose"),
+    [
+        (EnvironmentType.MODAL, "public", "no-network", False),
+        (EnvironmentType.DAYTONA, "public", "public", False),
+        (EnvironmentType.DAYTONA, "no-network", "no-network", False),
+        (EnvironmentType.DAYTONA, "public", "no-network", True),
+    ],
+)
+def test_inject_daytona_agent_model_hosts_skips_unsupported_shapes(
+    monkeypatch,
+    tmp_path,
+    environment_type,
+    environment_mode,
+    agent_mode,
+    compose,
+):
+    task_path = _write_network_policy_task(
+        tmp_path,
+        environment_mode=environment_mode,
+        agent_mode=agent_mode,
+        compose=compose,
+    )
+    environment_config = HarborEnvironmentConfig(type=environment_type)
+    agent_config = HarborAgentConfig(name="codex", model_name="example-model")
+    infer_calls = 0
+
+    def _infer(**kwargs):
+        nonlocal infer_calls
+        infer_calls += 1
+        return ["model.test"]
+
+    monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
+
+    harbor_runner._inject_daytona_agent_model_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert infer_calls == 0
+    assert agent_config.extra_allowed_hosts == []
 
 
 def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
@@ -653,6 +761,40 @@ def test_build_agent_config_non_probe_leaves_timeout_unset(monkeypatch):
     )
 
     assert agent_config.override_timeout_sec is None
+
+
+def test_build_agent_config_wraps_non_probe_claude_code_for_stdin_prompt(
+    monkeypatch,
+):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.agents.claude_code:OddishClaudeCode"
+    )
+
+
+def test_build_agent_config_uses_probe_claude_code_wrapper(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model=None,
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert agent_config.name is None
+    assert agent_config.import_path == (
+        "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
+    )
 
 
 def test_build_agent_config_mini_swe_anthropic_uses_oddish_wrapper(monkeypatch):
