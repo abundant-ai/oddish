@@ -23,6 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -582,6 +583,57 @@ class AnalyzerModel(TimestampedMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class AnalyzerBlockModel(TimestampedMixin, Base):
+    """One run of a single composable analyzer block.
+
+    Standalone primitive (not part of ``run_analyzer_generation_job``): many
+    blocks chain arbitrarily in test scripts. ``type`` / ``llm_client_type`` are
+    the ``.value`` of the ``AnalyzerType`` / ``LLMClientType`` enums defined in
+    ``backend/api/services`` -- stored as plain strings so this module stays free
+    of any backend-package dependency. Raw streamed output lives in S3 at
+    ``{key_prefix}/{id}``; ``output`` here is the accumulated/parsed result.
+    """
+
+    __tablename__ = "analyzer_blocks"
+    __table_args__ = (
+        Index(
+            "idx_analyzer_blocks_analyzer_id_live",
+            "analyzer_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # input/output are arbitrary JSON (the block's I/O are typed ``any``).
+    input: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    output: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    status: Mapped[JobStatus] = mapped_column(
+        PGEnum(JobStatus, name="jobstatus", create_type=False),
+        default=JobStatus.PENDING,
+        nullable=False,
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    job_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # ``metadata`` is reserved on the declarative Base, so the attribute is
+    # ``block_metadata`` while the DB column is literally named ``metadata``.
+    block_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -1994,6 +2046,7 @@ from oddish.db.soft_delete import register_soft_delete_models
 register_soft_delete_models(
     ExperimentModel,
     AnalyzerModel,
+    AnalyzerBlockModel,
     TaskModel,
     TrialModel,
     TagModel,
