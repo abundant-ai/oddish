@@ -46,8 +46,10 @@ def upgrade() -> None:
         "trials",
         ["org_id", "task_id", "task_version_id"],
         postgresql_where=sa.text(_live),
+        # error_message excluded on purpose: unbounded text overflows the btree
+        # row-size limit (2704 bytes). Bucket counts heap-fetch it instead.
         postgresql_include=[
-            "reward", "agent", "model", "status", "error_message",
+            "reward", "agent", "model", "status",
             "started_at", "finished_at", "input_tokens", "output_tokens",
             "cache_tokens", "total_steps",
         ],

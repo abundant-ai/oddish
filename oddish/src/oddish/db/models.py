@@ -1144,12 +1144,15 @@ class TrialModel(TimestampedMixin, Base):
             postgresql_where=text(
                 "superseded_by_trial_id IS NULL AND is_probe IS NOT TRUE"
             ),
+            # NOTE: error_message is intentionally NOT included -- it is
+            # unbounded text (stack traces) and blows the btree row-size limit
+            # (2704 bytes). The pass/partial/fail/harness bucket counts that read
+            # it just heap-fetch it; every other metric stays index-only.
             postgresql_include=[
                 "reward",
                 "agent",
                 "model",
                 "status",
-                "error_message",
                 "started_at",
                 "finished_at",
                 "input_tokens",
