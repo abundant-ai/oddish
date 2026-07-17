@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from api.services.cc_chat.analyzer_parse import parse_and_save_cohort_result
+from api.services.cc_chat.analyzer_parse import parse_cohort_result
 from api.services.cc_chat.analyzer_prompt import (
     CLI_DEST,
     FINDINGS_GLOB,
@@ -80,7 +80,8 @@ def batches(cohort: list[SubAnalysis]) -> list[list[SubAnalysis]]:
         # what is genuinely at risk.
         return [cohort]
     return [
-        cohort[i : i + MAP_BATCH_SIZE] for i in range(0, len(cohort), MAP_BATCH_SIZE)
+        cohort[i : i + MAP_BATCH_SIZE]
+        for i in range(0, len(cohort), MAP_BATCH_SIZE)
     ]
 
 
@@ -129,11 +130,8 @@ async def run_cohort(
                 # auto_stop is the only backstop that actually fires.
                 auto_stop_minutes=settings.daytona_auto_stop_interval_mins,
                 auto_delete_minutes=settings.daytona_auto_delete_interval_mins,
-                labels={
-                    "purpose": "analyzer-cohort",
-                    "analyzer": analyzer_id,
-                    "bucket": bucket,
-                },
+                labels={"purpose": "analyzer-cohort", "analyzer": analyzer_id,
+                        "bucket": bucket},
             )
             logger.info("%s sandbox id=%s (%d trials)", tag, sandbox.id, len(cohort))
             await client.create_session(sandbox, session_id="cc")
@@ -146,11 +144,8 @@ async def run_cohort(
                 # fresh context is the whole point. Passing --resume here would
                 # chain contexts and reintroduce the linear growth.
                 async for evt in runtime.stream_chat(
-                    client,
-                    sandbox,
-                    content=prompt,
-                    claude_session_id=None,
-                    daytona_session_id="cc",
+                    client, sandbox, content=prompt,
+                    claude_session_id=None, daytona_session_id="cc",
                     system_prompt=system_prompt,
                 ):
                     line = render_event(evt)
@@ -167,12 +162,7 @@ async def run_cohort(
                 # memory that batch 1 was told it could widen the tail budget.
                 await _turn(
                     build_map_batch_prompt(
-                        bucket,
-                        batch,
-                        roster,
-                        oracle_by_trial,
-                        i,
-                        len(plan),
+                        bucket, batch, roster, oracle_by_trial, i, len(plan),
                         TRAJ_TAIL_BYTES,
                     ),
                     f"map {i}/{len(plan)}",
@@ -212,16 +202,10 @@ async def run_cohort(
             except Exception as exc:  # noqa: BLE001 — auto_delete is the backstop
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
-    findings, sections = await parse_and_save_cohort_result(
-        bucket,
-        reduce_b,
-        findings_b,
-        "\n".join(stream_lines),
+    findings, sections = parse_cohort_result(
+        bucket, reduce_b, findings_b, "\n".join(stream_lines),
         # Scoped to this cohort, so a finding for someone else's trial is dropped.
         {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},
-        analyzer_id,
     )
-    logger.info(
-        "%s done: %d findings, sections=%s", tag, len(findings), sorted(sections)
-    )
+    logger.info("%s done: %d findings, sections=%s", tag, len(findings), sorted(sections))
     return findings, sections
