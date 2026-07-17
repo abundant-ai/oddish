@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import enum
 import logging
 from dataclasses import dataclass
@@ -81,6 +82,7 @@ class AnalyzerBlock:
         self.job_started_at = None
         self.job_ended_at = None
         self.job_duration_seconds: float | None = None
+        self._chunks: list[str] = []
 
     @property
     def s3_key(self) -> str:
@@ -123,3 +125,59 @@ class AnalyzerBlock:
             self.log.info("saved block row id=%s status=%s", self.id, self.status.value)
         except Exception:
             self.log.exception("save_to_db failed for id=%s", self.id)
+
+    async def stream_output(self):
+        """Yield each output chunk to the caller and accumulate it. Lazily
+        provisions the backend client (or uses the injected one)."""
+        client = self._client or await create_llm_client(self.llm_client_type)
+        try:
+            async for chunk in client.stream(self.prompt):
+                self._chunks.append(chunk)
+                self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
+                yield chunk
+        finally:
+            # Only close a client we created; an injected one is the caller's.
+            if self._client is None:
+                await client.aclose()
+
+    async def run(self) -> AnalyzerOutput:
+        """Drive the stream to completion, persisting on every exit path."""
+        self.job_started_at = utcnow()
+        self.status = JobStatus.RUNNING
+        self.log.info("block starting (llm_client_type=%s)", self.llm_client_type.value)
+        try:
+            async for _ in self.stream_output():
+                pass
+            self.output = AnalyzerOutput(output="".join(self._chunks))
+            self.status = JobStatus.SUCCESS
+            self.log.info("block succeeded (%d chunk(s))", len(self._chunks))
+            return self.output
+        except BaseException as exc:  # incl. asyncio.CancelledError
+            self.status = JobStatus.FAILED
+            self.error = repr(exc)
+            self.log.exception("block failed")
+            raise
+        finally:
+            self.job_ended_at = utcnow()
+            if self.job_started_at is not None:
+                self.job_duration_seconds = (
+                    self.job_ended_at - self.job_started_at
+                ).total_seconds()
+            # Guarantee the save runs to completion even when run() is being
+            # cancelled. A bare ``await asyncio.shield(...)`` is not enough: if
+            # our await is itself cancelled, the shielded task keeps running but
+            # we'd unwind before it finishes -- dropping the save. So hold the
+            # task handle and, on cancellation, wait for it before re-raising.
+            persist = asyncio.ensure_future(self._persist())
+            try:
+                await asyncio.shield(persist)
+            except asyncio.CancelledError:
+                await persist
+                raise
+
+    async def _persist(self) -> None:
+        """S3 first, then DB. Each is failure-isolated inside its own method, so
+        an S3 outage still lets the DB row land (and vice versa)."""
+        raw = "".join(self._chunks).encode("utf-8")
+        await self.save_to_s3(raw)
+        await self.save_to_db()
