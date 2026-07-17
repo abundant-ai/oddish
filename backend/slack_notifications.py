@@ -46,9 +46,9 @@ ALWAYS_PING_EMAILS: tuple[str, ...] = (
     "jesse@abundant.ai",
 )
 
-EXPERIMENT_MILESTONE_USD = 500.0
-EXPERIMENT_REPEAT_USD = 500.0
-TRIAL_PING_USD = 100.0
+EXPERIMENT_MILESTONE_USD = 1000.0
+EXPERIMENT_REPEAT_USD = 1000.0
+TRIAL_PING_USD = 200.0
 TRIAL_ESCALATION_USD = 1000.0
 EXPERIMENT_FAILED_RATIO = 0.5
 
@@ -281,7 +281,8 @@ def build_alerts(
                             f"{top_agent_cost_lines}\n"
                             f"<{experiment_url}|open experiment>"
                         ),
-                        mention_emails=_mention_targets(experiment.owner_email),
+                        recipient_email=experiment.owner_email,
+                        dm_only=True,
                         silent=silent,
                     )
                 )
@@ -296,24 +297,35 @@ def build_alerts(
                 if escalated
                 else ":warning: *Expensive trial*"
             )
+            text = (
+                f"{heading}\n"
+                f"Title: `{_escape(trial.name)}`\n"
+                f"Experiment: *{_escape(experiment.name)}*\n"
+                f"Cost: *${trial.cost_usd:,.2f}*\n"
+                f"Model: `{_escape(trial.model)}`\n"
+                f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
+                f"<{task_url}|open task>"
+            )
             alerts.append(
                 SlackAlert(
                     key=f"trial:{trial.id}:{TRIAL_PING_USD:g}",
-                    text=(
-                        f"{heading}\n"
-                        f"Title: `{_escape(trial.name)}`\n"
-                        f"Experiment: *{_escape(experiment.name)}*\n"
-                        f"Cost: *${trial.cost_usd:,.2f}*\n"
-                        f"Model: `{_escape(trial.model)}`\n"
-                        f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
-                        f"<{task_url}|open task>"
-                    ),
-                    mention_emails=_mention_targets(
-                        experiment.owner_email,
-                        *(ALWAYS_PING_EMAILS if escalated else ()),
-                    ),
+                    text=text,
+                    recipient_email=experiment.owner_email,
+                    dm_only=True,
                 )
             )
+            if escalated:
+                # The DM above covers the owner; this keeps spend this large
+                # visible outside the DM.
+                alerts.append(
+                    SlackAlert(
+                        key=f"trial-escalation:{trial.id}:{TRIAL_ESCALATION_USD:g}",
+                        text=text,
+                        mention_emails=_mention_targets(
+                            experiment.owner_email, *ALWAYS_PING_EMAILS
+                        ),
+                    )
+                )
 
     for failed in candidates.failed_experiments:
         if (

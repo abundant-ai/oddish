@@ -257,7 +257,7 @@ def _run_trial_retries(
         }
 
     # experiment
-    tasks = get_experiment_tasks(api_url, target_id) or []
+    tasks = get_experiment_tasks(api_url, target_id, include_trials=True) or []
     trial_ids = []
     for task in tasks:
         trial_ids.extend(_failed_trial_ids(task, include_skipped=not gate_baselines))

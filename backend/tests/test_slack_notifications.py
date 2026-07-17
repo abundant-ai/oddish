@@ -77,9 +77,9 @@ def _claim_stubs(monkeypatch: pytest.MonkeyPatch, claimed: set[str], sent: set[s
 
 
 def test_alert_thresholds_are_hardcoded() -> None:
-    assert notifications.EXPERIMENT_MILESTONE_USD == 500.0
-    assert notifications.EXPERIMENT_REPEAT_USD == 500.0
-    assert notifications.TRIAL_PING_USD == 100.0
+    assert notifications.EXPERIMENT_MILESTONE_USD == 1000.0
+    assert notifications.EXPERIMENT_REPEAT_USD == 1000.0
+    assert notifications.TRIAL_PING_USD == 200.0
     assert notifications.TRIAL_ESCALATION_USD == 1000.0
     assert notifications.EXPERIMENT_FAILED_RATIO == 0.5
     assert ALWAYS_PING_EMAILS == (
@@ -136,11 +136,11 @@ def test_verdict_reason(
 
 def test_build_alerts_reports_each_expense_milestone() -> None:
     now = datetime.now(timezone.utc)
-    # Trials sit exactly on the (exclusive) $100 trial floor, so the only alerts
-    # are the milestones.
+    # Every trial sits under the $200 trial floor, so the only alerts are the
+    # milestones.
     trials = [
         _trial(f"trial-{index}", 100, experiment_id="experiment/1", finished_at=now)
-        for index in range(10)
+        for index in range(20)
     ]
     trials.append(
         _trial("trial-tail", 1, experiment_id="experiment/1", finished_at=now)
@@ -163,24 +163,24 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
     )
 
     assert [alert.key for alert in alerts] == [
-        "experiment:experiment/1:500",
         "experiment:experiment/1:1000",
+        "experiment:experiment/1:2000",
     ]
     experiment_alert = alerts[1]
     assert experiment_alert.text.splitlines() == [
         ":money_with_wings: *Expensive experiment*",
         "Title: *Exp &lt;One&gt;*",
-        "Spend milestone: *$1,000.00* (current spend: *$1,001.00*)",
-        "New spend (last 2h): *$1,001.00*",
+        "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
+        "New spend (last 2h): *$2,001.00*",
         "Trials still running: 2",
         "Owner: *Pat &amp; Sam*",
         "Top agent costs:",
-        "• `model-1`: *$1,001.00*",
+        "• `model-1`: *$2,001.00*",
         "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
     ]
-    assert experiment_alert.mention_emails == ("owner@example.com",)
-    assert not experiment_alert.dm_only
-    assert experiment_alert.recipient_email is None
+    assert experiment_alert.dm_only
+    assert experiment_alert.recipient_email == "owner@example.com"
+    assert experiment_alert.mention_emails == ()
 
 
 def test_build_alerts_lists_the_top_three_agent_costs() -> None:
@@ -189,11 +189,11 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
         AlertCandidates(
             experiments=[ExperimentCandidate("experiment-1", "Experiment", "Ada", 0)],
             trials=[
-                _trial("a-1", 150, model="openrouter/opus", finished_at=now),
-                _trial("a-2", 100, model="openrouter/opus", finished_at=now),
-                _trial("b", 200, model="azure/fable", finished_at=now),
-                _trial("c", 100, model="anthropic/sonnet", finished_at=now),
-                _trial("d", 50, model="openai/gpt", finished_at=now),
+                _trial("a-1", 600, model="openrouter/opus", finished_at=now),
+                _trial("a-2", 400, model="openrouter/opus", finished_at=now),
+                _trial("b", 800, model="azure/fable", finished_at=now),
+                _trial("c", 400, model="anthropic/sonnet", finished_at=now),
+                _trial("d", 200, model="openai/gpt", finished_at=now),
             ],
         ),
         recent_cutoff=now - timedelta(hours=2),
@@ -202,9 +202,9 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
 
     assert alerts[0].text.splitlines()[6:10] == [
         "Top agent costs:",
-        "• `openrouter/opus`: *$250.00*",
-        "• `azure/fable`: *$200.00*",
-        "• `anthropic/sonnet`: *$100.00*",
+        "• `openrouter/opus`: *$1,000.00*",
+        "• `azure/fable`: *$800.00*",
+        "• `anthropic/sonnet`: *$400.00*",
     ]
 
 
@@ -228,14 +228,13 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
 
     milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
     assert [a.key for a in milestone_alerts] == [
-        "experiment:experiment-1:500",
         "experiment:experiment-1:1000",
-        "experiment:experiment-1:1500",
         "experiment:experiment-1:2000",
     ]
     assert all(a.silent for a in milestone_alerts)
     assert all(a.text for a in milestone_alerts)
-    assert all(a.mention_emails == ("a@e.com",) for a in milestone_alerts)
+    assert all(a.recipient_email == "a@e.com" for a in milestone_alerts)
+    assert all(a.dm_only for a in milestone_alerts)
 
 
 def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
@@ -244,8 +243,8 @@ def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
         AlertCandidates(
             experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 1)],
             trials=[
-                _trial("old", 900, finished_at=now - timedelta(hours=3)),
-                _trial("recent", 700, finished_at=now),
+                _trial("old", 1500, finished_at=now - timedelta(hours=3)),
+                _trial("recent", 1600, finished_at=now),
             ],
         ),
         recent_cutoff=now - timedelta(hours=2),
@@ -255,12 +254,12 @@ def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
     milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
     silent = [a.key for a in milestone_alerts if a.silent]
     firing = [a for a in milestone_alerts if not a.silent]
-    assert silent == ["experiment:experiment-1:500"]
+    assert silent == ["experiment:experiment-1:1000"]
     assert [a.key for a in firing] == [
-        "experiment:experiment-1:1000",
-        "experiment:experiment-1:1500",
+        "experiment:experiment-1:2000",
+        "experiment:experiment-1:3000",
     ]
-    assert "New spend (last 2h): *$700.00*" in firing[0].text
+    assert "New spend (last 2h): *$1,600.00*" in firing[0].text
 
 
 def test_build_alerts_new_experiment_fires_every_milestone() -> None:
@@ -268,7 +267,7 @@ def test_build_alerts_new_experiment_fires_every_milestone() -> None:
     alerts = build_alerts(
         AlertCandidates(
             experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 3)],
-            trials=[_trial("burst", 1200, finished_at=now)],
+            trials=[_trial("burst", 2400, finished_at=now)],
         ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
@@ -276,8 +275,8 @@ def test_build_alerts_new_experiment_fires_every_milestone() -> None:
 
     milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
     assert [a.key for a in milestone_alerts] == [
-        "experiment:experiment-1:500",
         "experiment:experiment-1:1000",
+        "experiment:experiment-1:2000",
     ]
     assert not any(a.silent for a in milestone_alerts)
 
@@ -295,30 +294,31 @@ def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
                     owner_email="owner@example.com",
                 )
             ],
-            trials=[_trial("lonely", 101, finished_at=now)],
+            trials=[_trial("lonely", 201, finished_at=now)],
         ),
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
 
-    assert [alert.key for alert in alerts] == ["trial:lonely:100"]
+    assert [alert.key for alert in alerts] == ["trial:lonely:200"]
     alert = alerts[0]
     assert alert.text.splitlines() == [
         ":warning: *Expensive trial*",
         "Title: `lonely title`",
         "Experiment: *Experiment*",
-        "Cost: *$101.00*",
+        "Cost: *$201.00*",
         "Model: `model-1`",
         "Author: *Unknown*",
         "<https://www.oddish.app/tasks/task%2F1|open task>",
     ]
-    assert alert.mention_emails == ("owner@example.com",)
-    assert not alert.dm_only
+    assert alert.dm_only
+    assert alert.recipient_email == "owner@example.com"
+    assert alert.mention_emails == ()
 
 
 @pytest.mark.parametrize(
     ("cost_usd", "expected"),
-    [(100, False), (100.01, True)],
+    [(200, False), (200.01, True)],
 )
 def test_build_alerts_trial_floor_is_exclusive(cost_usd: float, expected: bool) -> None:
     now = datetime.now(timezone.utc)
@@ -334,7 +334,7 @@ def test_build_alerts_trial_floor_is_exclusive(cost_usd: float, expected: bool) 
     assert any(alert.key.startswith("trial:") for alert in alerts) is expected
 
 
-def test_build_alerts_escalates_a_very_expensive_trial_in_one_alert() -> None:
+def test_build_alerts_escalates_a_very_expensive_trial_to_the_channel() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
         AlertCandidates(
@@ -353,12 +353,16 @@ def test_build_alerts_escalates_a_very_expensive_trial_in_one_alert() -> None:
         dashboard_url="https://www.oddish.app",
     )
 
-    trial_alerts = [alert for alert in alerts if alert.key.startswith("trial:")]
-    assert [alert.key for alert in trial_alerts] == ["trial:whale:100"]
-    alert = trial_alerts[0]
-    assert alert.text.splitlines()[0] == ":rotating_light: *Very expensive trial*"
-    assert alert.mention_emails == ("owner@example.com", *ALWAYS_PING_EMAILS)
-    assert not alert.dm_only
+    dm, escalation = [alert for alert in alerts if alert.key.startswith("trial")]
+    assert dm.key == "trial:whale:200"
+    assert escalation.key == "trial-escalation:whale:1000"
+    assert dm.text == escalation.text
+    assert dm.text.splitlines()[0] == ":rotating_light: *Very expensive trial*"
+    assert dm.dm_only
+    assert dm.recipient_email == "Owner@Example.com"
+    assert dm.mention_emails == ()
+    assert not escalation.dm_only
+    assert escalation.mention_emails == ("owner@example.com", *ALWAYS_PING_EMAILS)
 
 
 def test_build_alerts_reports_unpriceable_models_once_each() -> None:
@@ -1003,7 +1007,7 @@ async def test_send_alerts_skips_dm_only_alerts(
         "https://hooks.slack.test",
         [
             SlackAlert("experiment-failed:1", "dm only", dm_only=True),
-            SlackAlert("experiment:1:1000", "channel"),
+            SlackAlert("trial-escalation:whale:1000", "channel"),
         ],
     )
 
@@ -1011,7 +1015,7 @@ async def test_send_alerts_skips_dm_only_alerts(
 
 
 @pytest.mark.asyncio
-async def test_send_owner_dms_ignores_cost_alerts(
+async def test_send_owner_dms_ignores_channel_alerts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claimed: set[str] = set()
@@ -1034,13 +1038,8 @@ async def test_send_owner_dms_ignores_cost_alerts(
         "xoxb-token",
         [
             SlackAlert(
-                "experiment:1:1000",
-                "milestone",
-                mention_emails=("owner@example.com",),
-            ),
-            SlackAlert(
-                "trial:whale:100",
-                "expensive trial",
+                "trial-escalation:whale:1000",
+                "very expensive trial",
                 mention_emails=("owner@example.com", *ALWAYS_PING_EMAILS),
             ),
             SlackAlert("unpriced-model:x", "unpriceable"),
@@ -1050,6 +1049,60 @@ async def test_send_owner_dms_ignores_cost_alerts(
     assert posted == []
     assert lookups == []
     assert claimed == set()
+
+
+@pytest.mark.asyncio
+async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(timezone.utc)
+    posted: list[str] = []
+    dmed: list[tuple[str, str]] = []
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    async def lookup(_token: str, email: str) -> str | None:
+        return f"U-{email.split('@')[0]}"
+
+    async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
+        dmed.append((slack_user_id, text))
+
+    _claim_stubs(monkeypatch, set(), set())
+    monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+    monkeypatch.setattr(notifications, "_post_dm", post_dm)
+
+    alerts = build_alerts(
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    "experiment-1", "Exp", "Ada", 0, owner_email="owner@example.com"
+                )
+            ],
+            trials=[_trial("whale", 1500, finished_at=now)],
+        ),
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+    await send_alerts("https://hooks.slack.test", alerts, bot_token="xoxb-token")
+    await send_owner_dms("xoxb-token", alerts)
+
+    # The owner hears about the trial once, privately, and the escalation is the
+    # only thing that reaches the channel -- the milestone no longer does.
+    assert len(posted) == 1
+    assert posted[0].splitlines()[:2] == [
+        " ".join(
+            f"<@U-{email.split('@')[0]}>"
+            for email in ("owner@example.com", *ALWAYS_PING_EMAILS)
+        ),
+        ":rotating_light: *Very expensive trial*",
+    ]
+    assert [text.splitlines()[0] for _, text in dmed] == [
+        ":money_with_wings: *Expensive experiment*",
+        ":rotating_light: *Very expensive trial*",
+    ]
+    assert {user_id for user_id, _ in dmed} == {"U-owner"}
 
 
 @pytest.mark.asyncio
@@ -1360,12 +1413,12 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
                     status=TrialStatus.SUCCESS,
                     origin=TrialOrigin.ODDISH,
                     is_probe=False,
-                    cost_usd=50,
+                    cost_usd=500,
                     finished_at=now - timedelta(days=1),
                 ),
                 # 40M output tokens of a priced model settles to ~$560 via the
-                # token estimate: over the trial floor and past the $500
-                # experiment milestone.
+                # token estimate: over the trial floor, and enough on top of the
+                # baseline to pass the $1,000 experiment milestone.
                 TrialModel(
                     id=f"{task_id}-outlier",
                     name="outlier",
@@ -1423,19 +1476,21 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
         # so it produces a token estimate and never appears as unpriceable --
         # the token estimate does not falsely trigger the alert.
         assert [alert.key for alert in alerts] == [
-            f"experiment:{experiment_id}:500",
-            f"trial:{task_id}-outlier:100",
+            f"experiment:{experiment_id}:1000",
+            f"trial:{task_id}-outlier:200",
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
         assert "New spend (last 2h):" in alerts[0].text
-        assert alerts[0].mention_emails == ("expense-owner@example.com",)
+        assert alerts[0].recipient_email == "expense-owner@example.com"
+        assert alerts[0].dm_only
         assert "Top agent costs:" in alerts[0].text
         assert alerts[1].text.splitlines()[0] == ":warning: *Expensive trial*"
         assert "Title: `outlier`" in alerts[1].text
         assert "Experiment: *Slack expense test*" in alerts[1].text
         assert "Author: *Expense Owner*" in alerts[1].text
-        assert alerts[1].mention_emails == ("expense-owner@example.com",)
+        assert alerts[1].recipient_email == "expense-owner@example.com"
+        assert alerts[1].dm_only
         assert "*Unpriceable model:*" in alerts[2].text
     finally:
         async with get_session() as session:
