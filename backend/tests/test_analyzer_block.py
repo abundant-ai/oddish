@@ -188,3 +188,45 @@ async def test_run_cancellation_still_persists(monkeypatch):
     assert saved["db"] == 1
     assert saved["status"] == JobStatus.FAILED
     assert saved["s3"] == b"first"
+
+
+@pytest.mark.asyncio
+async def test_run_persist_completes_when_cancelled_during_persist(monkeypatch):
+    """Discriminating guard for the shielded-persist pattern: if run() is
+    cancelled while the save is in flight, run() must not finish unwinding until
+    the save completes. A bare `await asyncio.shield(...)` would unwind
+    immediately and leave the DB write unfinished when the task raises.
+    """
+    saved = {"db": 0}
+    entered_s3 = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_s3(self, raw):
+        entered_s3.set()
+        await release.wait()          # hang the save mid-flight
+        saved["s3"] = raw
+
+    async def fake_db(self):
+        saved["db"] += 1
+
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", fake_s3)
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", fake_db)
+
+    # Stream completes normally; the cancellation lands during persist.
+    b = _make_block(client=FakeAnalyzerLLMClient(chunks=["first"]))
+    task = asyncio.create_task(b.run())
+
+    await entered_s3.wait()           # run() is now suspended inside the shielded persist
+    task.cancel()
+
+    # Correct impl re-awaits the still-blocked persist, so the task cannot finish
+    # yet. A bare-shield impl would already be done here (raising CancelledError).
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
+    assert saved["db"] == 0           # save_to_db hasn't run: save_to_s3 still blocked
+
+    release.set()                     # let the save finish
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert saved["db"] == 1           # the DB write completed before run() unwound
+    assert saved["s3"] == b"first"
