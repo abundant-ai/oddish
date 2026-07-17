@@ -24,10 +24,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, or_, select
 
 from oddish.config import settings
-from oddish.db import TrialModel, TrialOrigin
+from oddish.db import CostExcludedLlmKeyModel, TrialModel, TrialOrigin
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
@@ -42,13 +42,35 @@ from oddish.model_pricing import estimate_cost_usd
 CANCELLED_HARBOR_STAGE = "cancelled"
 
 
+def _cost_excluded_key_spend():
+    """Trials stamped with an LLM key that admins flagged cost-excluded.
+
+    A correlated EXISTS on the live ``cost_excluded_llm_keys`` rows. A NULL
+    ``llm_key_hash`` (pre-rollout / unresolved) never matches, so it is kept.
+    The ``deleted_at`` filter is explicit because every cost surface runs with
+    ``include_deleted=True``, which disables the session-level soft-delete
+    filter -- so removing a key from the list re-includes its spend.
+    """
+    return (
+        select(CostExcludedLlmKeyModel.id)
+        .where(
+            CostExcludedLlmKeyModel.key_hash == TrialModel.llm_key_hash,
+            CostExcludedLlmKeyModel.deleted_at.is_(None),
+        )
+        .correlate(TrialModel)
+        .exists()
+    )
+
+
 def first_party_spend_filter():
     """Select actual Oddish executions, excluding non-spend materializations.
 
     Imported trials were paid for outside Oddish. Experiment-combine rows copy
     an existing trial's result and cost, so counting them would charge the same
-    execution twice. Keep this eligibility rule shared by quota accounting and
-    cost reporting so both surfaces count the same execution population.
+    execution twice. Spend stamped with an LLM key on the admin cost-exclusion
+    list (sponsored/free keys) is deliberately not counted. Keep this
+    eligibility rule shared by quota accounting and cost reporting so both
+    surfaces count the same execution population.
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
@@ -56,6 +78,7 @@ def first_party_spend_filter():
             TrialModel.idempotency_key.is_(None),
             TrialModel.idempotency_key.notlike("combine:%"),
         ),
+        ~_cost_excluded_key_spend(),
     )
 
 
