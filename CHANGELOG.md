@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-17]
+
+### Added
+
+- Adds an authenticated, org-scoped cost leaderboard (`GET /leaderboard`) exposing only spend rank, display name, and settled spend for the active org, reusing the admin cost dashboard's settled first-party basis; ships with a dedicated `/leaderboard` page with selectable time windows, a navbar link, and a compact top-five strip on the dashboard for the trailing 7 days (#749).
+- Four new `backend/` `modal run` diagnostic scripts for analyzer/report failures — `ops_create_report.py` (list/create reports for an experiment), `ops_repro_cohort.py` (reproduce a single cohort bucket with visible agent stream logging), `ops_analyzer_buckets.py` (inspect cohort bucketing/prompt sizing), and `ops_watch_report.py` (watch a report's progress) — additive only and not imported by any production path (#743).
+
+### Changed
+
+- Experiment detail pages now resolve and show the human-readable experiment name in the browser tab title and Open Graph/Twitter metadata (`<name> · Oddish`) instead of the raw experiment ID, falling back to the previous ID-based title when the name can't be loaded (#754).
+- Analyzer reduce prompts now include each finding's task and model plus a task roster (which models ran, and passed, each task), and the `headroom_analysis` section is rewritten to recommend concrete next tasks to build, harder variants, and where to prioritize effort — grounded in citations and roster-based saturation signals — instead of a vague capability-headroom summary (#750).
+- Reworked the Slack expense-alert cron: cost alerts (experiment spend milestones, now every $500 instead of $1,000; and any trial over $100, replacing the old $70-plus-2x-peer-average anomaly filter) now `@`-mention people directly in the channel via the existing webhook instead of DMing them, while DMs are reserved for genuine failures — new trial-failed and QA-failed DM alerts join the existing failed-experiment DM, deduped per person per task version. The Resend email delivery channel and its five `ODDISH_SLACK_*` threshold env vars are removed in favor of hardcoded constants (#747).
+- The analyzer's classification model now defaults to Sonnet instead of Haiku, and the analyzer CLI runner logs the model it chooses and resolves for each classification call (#760, #761).
+
+### Fixed
+
+- The `/leaderboard` cost leaderboard no longer silently drops spenders who have neither a `name` nor a linked GitHub account — it now keeps GitHub-identity-only spend buckets (shown by their submitted `@handle`) and falls back a registered user's display name to their email local part, so unlinked accounts appear instead of vanishing (only the true "Unattributed" bucket is still excluded; the full email address is never returned) (#755).
+- Analyzer report markdown now renders trajectory links (`/tasks/{task_id}/probe/{trial_id}`) as clickable blue links even when the LLM emits them with inverted or malformed markdown syntax — a new `linkifyTrajectories` normalizer repairs inverted `[path](description)` links and linkifies bare trajectory paths before rendering, while leaving correct links, external links, and code blocks untouched (#752).
+- `oddish pull --include-task-files` no longer silently drops binary task files (oracle ELF binaries, GPG-encrypted bundles, fixture blobs) as UnicodeDecodeError'd `.error.txt` stubs — task file downloads now return raw bytes end-to-end, mirroring the existing trial-file download path, so binary members round-trip byte-exact instead of vanishing on an edit-and-reupload (#723).
+
+### Removed
+
+- CI no longer posts the sticky "Oddish preview" comment on PRs with preview environment links (Vercel/Modal/Supabase); the `post-preview-links` job and its script are deleted, while the underlying preview deploy jobs are unaffected (#746).
+
+---
+
 ## [2026-07-15]
 
 ### Added
