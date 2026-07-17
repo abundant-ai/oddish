@@ -116,3 +116,75 @@ async def test_save_to_db_adds_row(monkeypatch):
     assert row.output == "result-text"
     assert row.status == JobStatus.SUCCESS
     assert row.block_metadata == {"k": "v"}
+
+
+import asyncio
+
+from api.services.analyzer_llm_client import FakeAnalyzerLLMClient
+
+
+def _patch_persistence(monkeypatch):
+    """Capture save_to_s3 raw + save_to_db without touching S3/DB."""
+    saved = {"s3": None, "db": 0}
+
+    async def fake_s3(self, raw):
+        saved["s3"] = raw
+
+    async def fake_db(self):
+        saved["db"] += 1
+        saved["status"] = self.status
+        saved["output"] = self.output
+        saved["error"] = self.error
+        saved["duration"] = self.job_duration_seconds
+
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", fake_s3)
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", fake_db)
+    return saved
+
+
+@pytest.mark.asyncio
+async def test_run_success_persists_output(monkeypatch):
+    saved = _patch_persistence(monkeypatch)
+    b = _make_block(client=FakeAnalyzerLLMClient(chunks=["foo", "bar"]))
+    out = await b.run()
+    assert out.output == "foobar"
+    assert saved["s3"] == b"foobar"
+    assert saved["db"] == 1
+    assert saved["status"] == JobStatus.SUCCESS
+    assert saved["error"] is None
+    assert saved["duration"] is not None and saved["duration"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_run_failure_persists_failed_and_reraises(monkeypatch):
+    saved = _patch_persistence(monkeypatch)
+    b = _make_block(client=FakeAnalyzerLLMClient(chunks=["partial"], exc=RuntimeError("boom")))
+    with pytest.raises(RuntimeError, match="boom"):
+        await b.run()
+    assert saved["db"] == 1
+    assert saved["status"] == JobStatus.FAILED
+    assert "boom" in saved["error"]
+    # Partial stream still reaches S3.
+    assert saved["s3"] == b"partial"
+
+
+@pytest.mark.asyncio
+async def test_run_cancellation_still_persists(monkeypatch):
+    saved = _patch_persistence(monkeypatch)
+
+    class _HangingClient:
+        async def stream(self, prompt):
+            yield "first"
+            await asyncio.sleep(3600)
+        async def aclose(self):
+            return None
+
+    b = _make_block(client=_HangingClient())
+    task = asyncio.create_task(b.run())
+    await asyncio.sleep(0.05)  # let it yield "first", then hang
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert saved["db"] == 1
+    assert saved["status"] == JobStatus.FAILED
+    assert saved["s3"] == b"first"
