@@ -6,7 +6,7 @@ import os
 import warnings
 from pathlib import Path
 from typing import Any
-
+import logging
 from harbor.models.trial.result import TrialResult
 from openai import OpenAI
 from rich.console import Console
@@ -30,6 +30,8 @@ from .models import (
     TrialClassification,
     TrialClassificationModel,
 )
+
+logger = logging.getLogger(__name__)
 
 
 VERDICT_TIMEOUT = 120.0
@@ -301,7 +303,9 @@ class TrialClassifier:
         """Run Claude Code in print mode and return structured output."""
         schema = json.dumps(TrialClassificationModel.model_json_schema())
         claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
+        logger.info(f"choosing model: {self._model}")
         model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))
+        logger.info(f"resolved model_id: {model_id}")
         command = [
             claude_bin,
             "-p",
