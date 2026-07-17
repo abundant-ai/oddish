@@ -7,6 +7,7 @@ import sys
 import asyncio
 import importlib
 import importlib.util
+import inspect
 import json
 import logging
 import shlex
@@ -26,6 +27,9 @@ ClaudeCode: Any = importlib.import_module(
 logger = logging.getLogger("oddish.harbor_entry")
 
 EVENT_SENTINEL = "_oddish_harbor_event"
+_MINI_SWE_AGENT_NAME = "mini-swe-agent"
+_MINI_SWE_COMPAT_CONFIG = "model:\n" "  model_kwargs:\n" "    _skip_mcp_handler: true\n"
+_MINI_SWE_COMPAT_CONFIG_FILENAME = ".oddish-mini-swe-agent.yaml"
 
 
 def _event_name(event: Any) -> str:
@@ -131,6 +135,27 @@ class _ProbeClaudeCode(ClaudeCode):  # type: ignore[misc, valid-type]
             )
 
 
+def _mini_swe_agent_class() -> type[Any]:
+    return importlib.import_module(
+        "harbor.agents.installed.mini_swe_agent"
+    ).MiniSweAgent
+
+
+def _mini_swe_compat_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build the child-only mini-swe config used by Oddish's normal runner."""
+    mini_swe_agent = _mini_swe_agent_class()
+    if "config_file" not in inspect.signature(mini_swe_agent.__init__).parameters:
+        raise RuntimeError(
+            "Ephemeral Harbor's MiniSweAgent does not support config_file; "
+            "cannot safely apply Oddish's _skip_mcp_handler compatibility config"
+        )
+
+    config_path = Path(payload["jobs_dir"]) / _MINI_SWE_COMPAT_CONFIG_FILENAME
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(_MINI_SWE_COMPAT_CONFIG)
+    return {"config_file": str(config_path)}
+
+
 def _build_job_config(payload: dict[str, Any]):
     from harbor.models.environment_type import EnvironmentType
     from harbor.models.job.config import RetryConfig
@@ -155,6 +180,8 @@ def _build_job_config(payload: dict[str, Any]):
         agent_kwargs["model_name"] = payload["model"]
     if payload.get("extra_agent_env"):
         agent_kwargs["env"] = dict(payload["extra_agent_env"])
+    if (payload["agent"] or "").strip().lower() == _MINI_SWE_AGENT_NAME:
+        agent_kwargs["kwargs"] = _mini_swe_compat_kwargs(payload)
 
     agent_harbor_requirement = payload.get("agent_harbor_requirement")
     if agent_harbor_requirement:

@@ -17,6 +17,8 @@ from harbor.trial.hooks import TrialEvent
 
 from oddish.core.harbor_source import harbor_git_requirement
 from oddish.workers.harbor import ephemeral as harbor_ephemeral
+from oddish.workers.agents.mini_swe_agent import OddishMiniSweAgent
+from oddish.workers.harbor import _entry as harbor_entry
 from oddish.workers.harbor._entry import _ProbeClaudeCode, _build_job_config
 from oddish.workers.harbor.ephemeral import (
     HarborOverrideImportError,
@@ -177,6 +179,84 @@ def test_child_applies_extra_agent_env_to_agent_config(tmp_path):
         }
     )
     assert config.agents[0].env.get("ODDISH_API_KEY") == "secret-mint"
+
+
+def test_child_mini_swe_uses_normal_runner_compat_config(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "mini-swe-agent",
+            "model": "openrouter/z-ai/glm-5.2",
+            "environment": "docker",
+            "environment_config": {},
+            "verifier": {},
+            "artifacts": [],
+        }
+    )
+
+    agent_config = config.agents[0]
+    compat_path = Path(agent_config.kwargs["config_file"])
+    normal_agent = OddishMiniSweAgent(
+        logs_dir=tmp_path / "logs",
+        model_name="openrouter/z-ai/glm-5.2",
+    )
+
+    assert agent_config.name == "mini-swe-agent"
+    assert agent_config.import_path is None
+    assert compat_path.parent == tmp_path / "jobs"
+    assert compat_path.read_text() == normal_agent._oddish_config_yaml(None)
+    assert "_skip_mcp_handler: true" in compat_path.read_text()
+
+
+@pytest.mark.parametrize("agent", ["claude-code", "codex", "nop"])
+def test_child_non_mini_swe_agents_do_not_get_compat_config(tmp_path, agent):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    jobs_dir = tmp_path / "jobs"
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(jobs_dir),
+            "agent": agent,
+            "model": "provider/model",
+            "environment": "docker",
+            "environment_config": {},
+            "verifier": {},
+            "artifacts": [],
+        }
+    )
+
+    assert config.agents[0].kwargs == {}
+    assert not (jobs_dir / ".oddish-mini-swe-agent.yaml").exists()
+
+
+def test_child_mini_swe_fails_loudly_without_config_file_support(tmp_path, monkeypatch):
+    class _UnsupportedMiniSweAgent:
+        def __init__(self, logs_dir, model_name=None):
+            pass
+
+    monkeypatch.setattr(
+        harbor_entry, "_mini_swe_agent_class", lambda: _UnsupportedMiniSweAgent
+    )
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+
+    with pytest.raises(RuntimeError, match="does not support config_file"):
+        _build_job_config(
+            {
+                "task_path": str(task_dir),
+                "jobs_dir": str(tmp_path / "jobs"),
+                "agent": "mini-swe-agent",
+                "model": "openrouter/z-ai/glm-5.2",
+                "environment": "docker",
+                "environment_config": {},
+                "verifier": {},
+                "artifacts": [],
+            }
+        )
 
 
 _SOURCE = "https://github.com/dot-agi/harbor"
