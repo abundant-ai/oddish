@@ -687,6 +687,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "pg_errors",
             "slack_alert_settings",
             "slack_notifications",
+            "user_alert_prefs",
             "statsig_client",
             "worker",
             copy=True,

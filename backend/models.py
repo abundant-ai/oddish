@@ -522,6 +522,47 @@ class SlackAlertSettingsModel(Base):
     updated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class UserAlertPreferencesModel(Base):
+    """A user's own choice of which Slack DM alerts to receive, and at what
+    cutoffs. One row per user, keyed by user id; a missing row means the
+    defaults in ``user_alert_prefs.py`` (all five DM types on, cutoffs inherited
+    from the global settings). The two USD columns are nullable on purpose:
+    NULL inherits the admin/global cutoff, a value pins it for this person.
+    """
+
+    __tablename__ = "user_alert_preferences"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    cost_milestone_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    expensive_trial_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    trial_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    qa_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_milestone_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    trial_ping_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
 # ---------------------------------------------------------------------------
 # Soft-delete registration
 # ---------------------------------------------------------------------------
