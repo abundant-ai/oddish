@@ -35,9 +35,11 @@ class FakeAnalyzerLLMClient:
         *,
         chunks: list[str] | None = None,
         exc: BaseException | None = None,
+        files: dict[str, bytes] | None = None,
     ) -> None:
         self._chunks = chunks or []
         self._exc = exc
+        self._files = files or {}
         self.last_system_prompt: str | None = None
 
     async def stream(self, prompt: str, *, system_prompt: str | None = None) -> AsyncIterator[str]:
@@ -46,6 +48,9 @@ class FakeAnalyzerLLMClient:
             yield chunk
         if self._exc is not None:
             raise self._exc
+
+    async def _download_file(self, path: str) -> bytes:
+        return self._files[path]
 
     async def aclose(self) -> None:
         return None
@@ -108,6 +113,9 @@ class SandboxAnalyzerLLMClient:
             system_prompt=system_prompt,
         ):
             yield json.dumps(event)
+
+    async def _download_file(self, path: str) -> bytes:
+        return await self._client.download_file(self._sandbox, src_path=path)
 
     async def aclose(self) -> None:
         await delete_sandbox_quietly(self._client, self._sandbox)

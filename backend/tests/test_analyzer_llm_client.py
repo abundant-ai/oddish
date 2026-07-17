@@ -154,3 +154,11 @@ async def test_create_llm_client_api_honors_model():
     assert isinstance(c, ApiAnalyzerLLMClient)
     assert c._model == "claude-haiku-4-5-20251001"
     await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fake_client_download_file():
+    c = FakeAnalyzerLLMClient(files={"out/reduce.json": b"{}"})
+    assert await c._download_file("out/reduce.json") == b"{}"
+    with pytest.raises(KeyError):
+        await c._download_file("out/missing.jsonl")
