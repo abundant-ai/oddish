@@ -66,6 +66,7 @@ _ENV_BUILD_TIMEOUT_BASE_SEC: float = EnvironmentConfig.model_fields[
 # above the inner pod-ready timeout so the more specific inner error surfaces.
 _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
 
+# TODO: Temporary workaround; remove once RishiDesai/harbor has the correct fix.
 # Hosts the Claude Code CLI fetches from at agent-setup (curl bootstrap / npm).
 _CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
 
@@ -409,6 +410,8 @@ async def run_harbor_trial_async(
                 probe_oddish_env=extra_agent_env,
             )
 
+        # TODO: Temporary workaround; remove once RishiDesai/harbor has the
+        # correct fix.
         # Claude Code downloads its CLI at agent-setup and calls its model
         # endpoint during agent.run(). On closed-internet tasks Harbor's fallback
         # domains cover neither the installer CDN nor custom model routes, so
