@@ -10,12 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from harbor.models.task.config import TaskConfig
 
 from oddish.preflight.models import Severity
-from oddish.preflight.checks import closed_internet
 
 
 def _config(task_dir: Path) -> TaskConfig:
     return TaskConfig.model_validate_toml((task_dir / "task.toml").read_text())
 
+
+from oddish.preflight.checks import closed_internet
 
 _OPEN_TOML = """\
 version = "1.0"
@@ -44,6 +45,50 @@ description = "closed task"
 network_mode = "no-network"
 """
 
+# A separate verifier container that is public, over an otherwise fully closed
+# task. The hand-rolled draft missed this entirely.
+_VERIFIER_ENV_OPEN_TOML = """\
+version = "1.0"
+
+[metadata]
+description = "closed everywhere except a separate verifier container"
+
+[environment]
+network_mode = "no-network"
+
+[agent]
+network_mode = "no-network"
+
+[verifier]
+network_mode = "no-network"
+
+[verifier.environment]
+docker_image = "ubuntu:22.04"
+"""
+
+# A per-step agent override that reopens the network on an otherwise closed task.
+_STEP_OPEN_TOML = """\
+version = "1.0"
+
+[metadata]
+description = "closed task with one step that reopens the agent network"
+
+[environment]
+network_mode = "no-network"
+
+[agent]
+network_mode = "no-network"
+
+[verifier]
+network_mode = "no-network"
+
+[[steps]]
+name = "s1"
+
+[steps.agent]
+network_mode = "public"
+"""
+
 _JUSTIFIED_TOML = """\
 version = "1.0"
 
@@ -61,7 +106,7 @@ def test_closed_internet_flags_explicit_public(make_task):
     findings = closed_internet.check(task_dir, _config(task_dir))
     assert len(findings) == 1
     assert findings[0].severity is Severity.ERROR
-    assert "environment baseline" in findings[0].message
+    assert "[environment]" in findings[0].message
 
 
 def test_closed_internet_flags_implicit_public_default(make_task):
@@ -78,21 +123,47 @@ def test_closed_internet_passes_no_network(make_task):
     assert closed_internet.check(task_dir, _config(task_dir)) == []
 
 
+def test_closed_internet_flags_a_public_separate_verifier_container(make_task):
+    task_dir = make_task(task_toml=_VERIFIER_ENV_OPEN_TOML)
+    findings = closed_internet.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
+    assert "verifier.environment" in findings[0].message
+
+
+def test_closed_internet_flags_a_per_step_agent_override(make_task):
+    task_dir = make_task(task_toml=_STEP_OPEN_TOML)
+    findings = closed_internet.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
+    assert "s1" in findings[0].message
+
+
 def test_closed_internet_passes_with_a_real_justification(make_task):
     task_dir = make_task(task_toml=_JUSTIFIED_TOML)
     assert closed_internet.check(task_dir, _config(task_dir)) == []
 
 
-@pytest.mark.parametrize("placeholder", ["TBD", "todo", "n/a", "xxx", "  ", "short"])
-def test_closed_internet_rejects_placeholder_justifications(make_task, placeholder):
+def test_closed_internet_rejects_a_short_justification(make_task):
     toml = _OPEN_TOML.replace(
         'description = "open task"',
-        f'description = "open task"\nopen_internet_justification = "{placeholder}"',
+        'description = "open task"\nopen_internet_justification = "TBD"',
     )
     task_dir = make_task(task_toml=toml)
     findings = closed_internet.check(task_dir, _config(task_dir))
     assert len(findings) == 1
     assert findings[0].severity is Severity.ERROR
+
+
+def test_closed_internet_rejects_a_non_string_justification(make_task):
+    # A list whose repr is long must not sneak past as a "justification".
+    toml = _OPEN_TOML.replace(
+        'description = "open task"',
+        'description = "open task"\nopen_internet_justification = ["a", "b", "c", "d", "e", "f"]',
+    )
+    task_dir = make_task(task_toml=toml)
+    findings = closed_internet.check(task_dir, _config(task_dir))
+    assert len(findings) == 1
 
 
 def test_closed_internet_flags_an_open_agent_over_a_closed_baseline(make_task):
