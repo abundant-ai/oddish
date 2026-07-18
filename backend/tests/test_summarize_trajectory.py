@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from api.services.summarize_trajectory import (
     MAX_TEXT_CHARS,
+    SCHEMA_VERSION,
+    TaskContext,
     TRUNCATE_HEAD,
     TRUNCATE_TAIL,
+    build_task_context,
+    get_or_generate_summary,
     preprocess,
 )
 
@@ -32,6 +37,11 @@ def _make_step(step_id: int, **overrides) -> dict:
     return base
 
 
+# ---------------------------------------------------------------------------
+# preprocess
+# ---------------------------------------------------------------------------
+
+
 def test_preprocess_leaves_small_fields_untouched():
     trajectory = {
         "schema_version": "0.1",
@@ -48,15 +58,7 @@ def test_preprocess_leaves_small_fields_untouched():
 def test_preprocess_truncates_large_reasoning_content():
     long_text = "A" * 800 + "B" * 1500 + "C" * 500  # 2800 chars
     step = _make_step(1, reasoning_content=long_text)
-    trajectory = {
-        "schema_version": "0.1",
-        "session_id": "s1",
-        "agent": {"name": "x", "version": "1", "model_name": None},
-        "steps": [step],
-        "notes": None,
-        "final_metrics": None,
-    }
-    out = preprocess(trajectory)
+    out = preprocess({"steps": [step]})
     rc = out["steps"][0]["reasoning_content"]
     assert rc.startswith("A" * TRUNCATE_HEAD)
     assert rc.endswith("C" * TRUNCATE_TAIL)
@@ -83,15 +85,7 @@ def test_preprocess_strips_image_content_parts():
             ]
         },
     )
-    trajectory = {
-        "schema_version": "0.1",
-        "session_id": "s1",
-        "agent": {"name": "x", "version": "1", "model_name": None},
-        "steps": [step],
-        "notes": None,
-        "final_metrics": None,
-    }
-    out = preprocess(trajectory)
+    out = preprocess({"steps": [step]})
     msg_parts = out["steps"][0]["message"]
     assert {p["type"] for p in msg_parts} == {"text"}
     assert any(p["text"] == "[image omitted] (x1)" for p in msg_parts)
@@ -112,38 +106,17 @@ def test_preprocess_truncates_tool_call_argument_values():
             }
         ],
     )
-    trajectory = {
-        "schema_version": "0.1",
-        "session_id": "s1",
-        "agent": {"name": "x", "version": "1", "model_name": None},
-        "steps": [step],
-        "notes": None,
-        "final_metrics": None,
-    }
-    out = preprocess(trajectory)
+    out = preprocess({"steps": [step]})
     args = out["steps"][0]["tool_calls"][0]["arguments"]
-    assert args["path"] == "main.py"  # small string untouched
+    assert args["path"] == "main.py"
     assert "[...truncated" in args["content"]
     assert len(args["content"]) < len(huge)
 
 
 def test_preprocess_truncates_observation_string_content():
     huge = "L" * (MAX_TEXT_CHARS + 1000)
-    step = _make_step(
-        1,
-        observation={
-            "results": [{"source_call_id": "c1", "content": huge}]
-        },
-    )
-    trajectory = {
-        "schema_version": "0.1",
-        "session_id": "s1",
-        "agent": {"name": "x", "version": "1", "model_name": None},
-        "steps": [step],
-        "notes": None,
-        "final_metrics": None,
-    }
-    out = preprocess(trajectory)
+    step = _make_step(1, observation={"results": [{"source_call_id": "c1", "content": huge}]})
+    out = preprocess({"steps": [step]})
     content = out["steps"][0]["observation"]["results"][0]["content"]
     assert "[...truncated" in content
     assert len(content) < len(huge)
@@ -152,375 +125,284 @@ def test_preprocess_truncates_observation_string_content():
 def test_preprocess_does_not_mutate_input():
     huge = "Q" * (MAX_TEXT_CHARS + 100)
     step = _make_step(1, reasoning_content=huge)
-    trajectory = {
-        "schema_version": "0.1",
-        "session_id": "s1",
-        "agent": {"name": "x", "version": "1", "model_name": None},
-        "steps": [step],
-        "notes": None,
-        "final_metrics": None,
-    }
+    trajectory = {"steps": [step]}
     snapshot = deepcopy(trajectory)
     preprocess(trajectory)
     assert trajectory == snapshot
 
 
+# ---------------------------------------------------------------------------
+# generate (via AnalyzerBlock + injected fake client)
+# ---------------------------------------------------------------------------
+
+
 def _trajectory_with_steps(step_ids: list[int]) -> dict:
-    return {
-        "schema_version": "0.1",
-        "session_id": "s1",
-        "agent": {"name": "x", "version": "1", "model_name": None},
-        "steps": [_make_step(sid) for sid in step_ids],
-        "notes": None,
-        "final_metrics": None,
-    }
+    return {"steps": [_make_step(sid) for sid in step_ids]}
 
 
-def _minimal_ctx():
-    """Return a TaskContext with all optional fields None."""
-    from api.services.summarize_trajectory import TaskContext
-
+def _minimal_ctx() -> TaskContext:
     return TaskContext(
-        task_name="test_task",
-        instruction=None,
-        final_reward=None,
-        model_used=None,
-        verifier_output=None,
+        task_name="test_task", instruction=None, final_reward=None,
+        model_used=None, verifier_output=None,
     )
 
 
-def _fake_client_returning(text: str) -> MagicMock:
-    fake_response = MagicMock()
-    fake_response.content = [MagicMock(text=text)]
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(return_value=fake_response)
-    return fake_client
+def _fake_llm(payload: str):
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    return FakeAnalyzerLLMClient(chunks=[payload])
+
+
+def _patch_block_persistence(monkeypatch):
+    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
 
 
 @pytest.mark.asyncio
-async def test_generate_returns_persistable_summary():
-    from api.services.summarize_trajectory import (
-        SCHEMA_VERSION,
-        generate,
+async def test_generate_returns_persistable_summary(monkeypatch):
+    from api.services.summarize_trajectory import generate
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({
+        "summary": "Agent reproduced and fixed a flaky test.",
+        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."},
+                       {"step_id": 3, "title": "Fix", "why": "Patch."}],
+        "components": [{"step_ids": [1, 2], "trajectory_component": "debugging", "summary": "d"}],
+    })
+    result = await generate(
+        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
     )
-    from oddish.config import settings, to_anthropic_api_model_id
-
-    payload = json.dumps(
-        {
-            "summary": "Agent reproduced and fixed a flaky test.",
-            "highlights": [
-                {"step_id": 1, "title": "Reproduces failure", "why": "First confirmation."},
-                {"step_id": 3, "title": "Lands the fix", "why": "Patch applied."},
-            ],
-        }
-    )
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
-
-    # The summary rides the shared analysis-model knob, normalized to the
-    # direct-API id both for the call and in the persisted provenance field.
-    expected_model = (
-        to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
-    )
-    assert result["schema_version"] == SCHEMA_VERSION
-    assert result["model"] == expected_model
-    assert fake.messages.create.call_args.kwargs["model"] == expected_model
-    assert "generated_at" in result
+    assert result["schema_version"] == SCHEMA_VERSION == "4"
     assert result["summary"].startswith("Agent reproduced")
     assert [h["step_id"] for h in result["highlights"]] == [1, 3]
+    assert result["components"][0]["trajectory_component"] == "debugging"
+    assert "phases" not in result
 
 
 @pytest.mark.asyncio
-async def test_generate_drops_highlights_with_unknown_step_ids():
+async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
     from api.services.summarize_trajectory import generate
-
-    payload = json.dumps(
-        {
-            "summary": "x",
-            "highlights": [
-                {"step_id": 1, "title": "ok", "why": "ok"},
-                {"step_id": 999, "title": "bogus", "why": "model hallucinated"},
-            ],
-        }
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({
+        "summary": "x",
+        "highlights": [{"step_id": 1, "title": "ok", "why": "ok"},
+                       {"step_id": 999, "title": "bogus", "why": "hallucinated"}],
+        "components": [],
+    })
+    result = await generate(
+        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
     )
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
-
     assert [h["step_id"] for h in result["highlights"]] == [1]
 
 
 @pytest.mark.asyncio
-async def test_generate_strips_code_fences_around_json():
+async def test_generate_strips_code_fences_around_json(monkeypatch):
     from api.services.summarize_trajectory import generate
-
-    body = json.dumps({"summary": "ok", "highlights": []})
-    fenced = f"```json\n{body}\n```"
-    fake = _fake_client_returning(fenced)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1]), _minimal_ctx())
+    _patch_block_persistence(monkeypatch)
+    body = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    result = await generate(
+        _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm(f"```json\n{body}\n```"),
+    )
     assert result["summary"] == "ok"
-    assert result["highlights"] == []
 
 
 @pytest.mark.asyncio
-async def test_generate_raises_on_malformed_json():
-    from api.services.summarize_trajectory import (
-        SummaryGenerationError,
-        generate,
-    )
-
-    fake = _fake_client_returning("not json at all")
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]), _minimal_ctx())
+async def test_generate_raises_on_malformed_json(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
+    _patch_block_persistence(monkeypatch)
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("not json"))
 
 
 @pytest.mark.asyncio
-async def test_generate_raises_when_model_returns_non_object_json():
-    from api.services.summarize_trajectory import (
-        SummaryGenerationError,
-        generate,
-    )
-
-    fake = _fake_client_returning("[1, 2, 3]")
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]), _minimal_ctx())
+async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
+    _patch_block_persistence(monkeypatch)
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("[1,2,3]"))
 
 
 @pytest.mark.asyncio
-async def test_generate_wraps_anthropic_errors_in_summary_generation_error():
-    """A non-JSON failure (e.g. AuthenticationError, network error) should
-    surface as SummaryGenerationError so the endpoint can return 502."""
-    from api.services.summarize_trajectory import (
-        SummaryGenerationError,
-        generate,
-    )
+async def test_generate_wraps_client_errors(monkeypatch):
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
+    _patch_block_persistence(monkeypatch)
+    client = FakeAnalyzerLLMClient(chunks=[], exc=RuntimeError("boom"))
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=client)
 
-    fake_client = MagicMock()
-    fake_client.messages.create = AsyncMock(
-        side_effect=RuntimeError("anthropic auth failed")
+
+@pytest.mark.asyncio
+async def test_generate_returns_components(monkeypatch):
+    from api.services.summarize_trajectory import generate
+    _patch_block_persistence(monkeypatch)
+    payload = json.dumps({
+        "summary": "s", "highlights": [],
+        "components": [
+            {"step_ids": [1, 2], "trajectory_component": "reading_files", "summary": "look"},
+            {"step_ids": [3], "trajectory_component": "implementing", "summary": "code"},
+        ],
+    })
+    result = await generate(
+        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
     )
-    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
-        with pytest.raises(SummaryGenerationError):
-            await generate(_trajectory_with_steps([1]), _minimal_ctx())
+    assert [c["trajectory_component"] for c in result["components"]] == ["reading_files", "implementing"]
 
 
 # ---------------------------------------------------------------------------
-# get_or_generate_summary tests
+# get_or_generate_summary
 # ---------------------------------------------------------------------------
 
-from types import SimpleNamespace
 
-
-def _fake_trial(*, has_trajectory: bool, trajectory_summary: dict | None):
+def _fake_trial(*, has_trajectory: bool):
     return SimpleNamespace(
         id="t-1",
         name="trial-0",
         trial_s3_key="trials/t-1/",
         has_trajectory=has_trajectory,
-        trajectory_summary=trajectory_summary,
-        # _has_fetchable_trajectory (the summary gate) reads these; a non-grok
-        # agent keeps has_trajectory=False -> no fetchable trajectory, as before.
         agent="claude-code",
         finished_at=None,
     )
 
 
 def _fake_session():
-    """Async session stub: refresh/execute/commit are no-ops for unit tests."""
     session = MagicMock()
-    session.refresh = AsyncMock()
     session.execute = AsyncMock()
     session.commit = AsyncMock()
     return session
 
 
 @pytest.mark.asyncio
-async def test_get_or_generate_returns_db_column_when_fresh():
-    from api.services.summarize_trajectory import (
-        SCHEMA_VERSION,
-        get_or_generate_summary,
-    )
-
-    cached = {
-        "schema_version": SCHEMA_VERSION,
-        "model": "claude-sonnet-4-6",
-        "generated_at": "2026-05-02T00:00:00Z",
-        "summary": "cached",
-        "highlights": [],
-    }
-    trial = _fake_trial(has_trajectory=True, trajectory_summary=cached)
+async def test_get_or_generate_returns_block_when_fresh():
+    cached = {"schema_version": "4", "summary": "cached", "highlights": [], "components": []}
+    trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
-
     with patch(
-        "api.services.summarize_trajectory.generate", new_callable=AsyncMock
-    ) as fake_generate:
+        "api.services.summarize_trajectory._load_fresh_summary_block",
+        new_callable=AsyncMock, return_value=cached,
+    ), patch(
+        "api.services.summarize_trajectory.generate", new_callable=AsyncMock,
+    ) as gen:
         result = await get_or_generate_summary(session, trial)
-
     assert result == cached
-    fake_generate.assert_not_awaited()
+    gen.assert_not_awaited()
     session.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_get_or_generate_returns_none_when_no_trajectory():
-    from api.services.summarize_trajectory import get_or_generate_summary
-
-    trial = _fake_trial(has_trajectory=False, trajectory_summary=None)
+    trial = _fake_trial(has_trajectory=False)
     session = _fake_session()
-
-    result = await get_or_generate_summary(session, trial)
-
+    with patch(
+        "api.services.summarize_trajectory._load_fresh_summary_block",
+        new_callable=AsyncMock, return_value=None,
+    ):
+        result = await get_or_generate_summary(session, trial)
     assert result is None
     session.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_get_or_generate_persists_on_miss():
-    from api.services.summarize_trajectory import (
-        SCHEMA_VERSION,
-        get_or_generate_summary,
-    )
-
-    trial = _fake_trial(has_trajectory=True, trajectory_summary=None)
+    trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
+    fresh = {"schema_version": "4", "summary": "fresh", "highlights": [], "components": []}
 
-    fresh = {
-        "schema_version": SCHEMA_VERSION,
-        "model": "claude-sonnet-4-6",
-        "generated_at": "2026-05-02T00:00:00Z",
-        "summary": "fresh",
-        "highlights": [],
-    }
-
-    async def fake_read_trajectory(trial_arg):
+    async def fake_traj(_t):
         return {"steps": [{"step_id": 1}]}
 
-    async def fake_build_task_context(trial_arg):
-        return TaskContext(
-            task_name="t",
-            instruction=None,
-            final_reward=None,
-            model_used=None,
-            verifier_output=None,
-        )
+    async def fake_ctx(_t):
+        return _minimal_ctx()
 
     with patch(
-        "api.services.summarize_trajectory.read_trial_trajectory",
-        new=fake_read_trajectory,
+        "api.services.summarize_trajectory._load_fresh_summary_block",
+        new_callable=AsyncMock, return_value=None,
     ), patch(
-        "api.services.summarize_trajectory.build_task_context",
-        new=fake_build_task_context,
+        "api.services.summarize_trajectory.read_trial_trajectory", new=fake_traj,
+    ), patch(
+        "api.services.summarize_trajectory.build_task_context", new=fake_ctx,
     ), patch(
         "api.services.summarize_trajectory.generate",
-        new_callable=AsyncMock,
-        return_value=fresh,
+        new_callable=AsyncMock, return_value=fresh,
     ):
         result = await get_or_generate_summary(session, trial)
-
     assert result == fresh
-    session.execute.assert_awaited_once()
+    session.execute.assert_awaited_once()   # the mirror UPDATE
     session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_get_or_generate_regenerates_on_stale_schema():
-    from api.services.summarize_trajectory import (
-        SCHEMA_VERSION,
-        get_or_generate_summary,
-    )
+async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
+    import asyncio as _asyncio
 
-    stale = {
-        "schema_version": "0",
-        "model": "claude-sonnet-4-6",
-        "generated_at": "2026-04-30T00:00:00Z",
-        "summary": "stale",
-        "highlights": [],
-    }
-    trial = _fake_trial(has_trajectory=True, trajectory_summary=stale)
+    trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
+    started: list[str] = []
+    finished: list[str] = []
 
-    fresh = {**stale, "schema_version": SCHEMA_VERSION, "summary": "fresh"}
-
-    async def fake_read_trajectory(trial_arg):
+    async def slow_trajectory(_t):
+        started.append("trajectory")
+        await _asyncio.sleep(0.05)
+        finished.append("trajectory")
         return {"steps": [{"step_id": 1}]}
 
-    async def fake_build_task_context(trial_arg):
-        return TaskContext(
-            task_name="t",
-            instruction=None,
-            final_reward=None,
-            model_used=None,
-            verifier_output=None,
-        )
+    async def slow_context(_t):
+        started.append("context")
+        await _asyncio.sleep(0.05)
+        finished.append("context")
+        return _minimal_ctx()
+
+    fresh = {"schema_version": "4", "summary": "ok", "highlights": [], "components": []}
 
     with patch(
-        "api.services.summarize_trajectory.read_trial_trajectory",
-        new=fake_read_trajectory,
+        "api.services.summarize_trajectory._load_fresh_summary_block",
+        new_callable=AsyncMock, return_value=None,
     ), patch(
-        "api.services.summarize_trajectory.build_task_context",
-        new=fake_build_task_context,
+        "api.services.summarize_trajectory.read_trial_trajectory", new=slow_trajectory,
+    ), patch(
+        "api.services.summarize_trajectory.build_task_context", new=slow_context,
     ), patch(
         "api.services.summarize_trajectory.generate",
-        new_callable=AsyncMock,
-        return_value=fresh,
+        new_callable=AsyncMock, return_value=fresh,
     ):
-        result = await get_or_generate_summary(session, trial)
+        await get_or_generate_summary(session, trial)
 
-    assert result["summary"] == "fresh"
-    session.execute.assert_awaited_once()
+    assert {started[0], started[1]} == {"trajectory", "context"}
+    assert len(finished) == 2
 
 
-from api.services.summarize_trajectory import (
-    SCHEMA_VERSION,
-    TaskContext,
-    build_task_context,
-    get_or_generate_summary,
-)
+# ---------------------------------------------------------------------------
+# build_task_context
+# ---------------------------------------------------------------------------
 
 
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
     return SimpleNamespace(
-        id="t-1",
-        name="trial-0",
-        trial_s3_key="trials/t-1/",
-        reward=reward,
-        model=model,
-        harbor_config=harbor_config,
+        id="t-1", name="trial-0", trial_s3_key="trials/t-1/",
+        reward=reward, model=model, harbor_config=harbor_config,
         task=SimpleNamespace(name=task_name),
     )
 
 
 @pytest.mark.asyncio
 async def test_build_task_context_pulls_all_fields():
-    trial = _trial_with_task(
-        task_name="solve_x", reward=0.75, model="claude-sonnet-4-6"
-    )
+    trial = _trial_with_task(task_name="solve_x", reward=0.75, model="claude-sonnet-4-6")
 
-    async def fake_instruction(trial_arg):
+    async def fake_instruction(_t):
         return "Solve the puzzle."
 
-    async def fake_verifier(trial_arg):
+    async def fake_verifier(_t):
         return "PASS\n"
 
     with patch(
-        "api.services.summarize_trajectory.read_trial_instruction",
-        new=fake_instruction,
+        "api.services.summarize_trajectory.read_trial_instruction", new=fake_instruction,
     ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output",
-        new=fake_verifier,
+        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_verifier,
     ):
         ctx = await build_task_context(trial)
 
     assert ctx == TaskContext(
-        task_name="solve_x",
-        instruction="Solve the puzzle.",
-        final_reward=0.75,
-        model_used="claude-sonnet-4-6",
-        verifier_output="PASS\n",
+        task_name="solve_x", instruction="Solve the puzzle.", final_reward=0.75,
+        model_used="claude-sonnet-4-6", verifier_output="PASS\n",
     )
 
 
@@ -528,15 +410,13 @@ async def test_build_task_context_pulls_all_fields():
 async def test_build_task_context_handles_missing_fields():
     trial = _trial_with_task(task_name="solve_x", reward=None, model=None)
 
-    async def fake_none(trial_arg):
+    async def fake_none(_t):
         return None
 
     with patch(
-        "api.services.summarize_trajectory.read_trial_instruction",
-        new=fake_none,
+        "api.services.summarize_trajectory.read_trial_instruction", new=fake_none,
     ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output",
-        new=fake_none,
+        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_none,
     ):
         ctx = await build_task_context(trial)
 
@@ -550,242 +430,22 @@ async def test_build_task_context_handles_missing_fields():
 @pytest.mark.asyncio
 async def test_build_task_context_falls_back_to_harbor_config_model():
     trial = _trial_with_task(
-        task_name="solve_x",
-        reward=None,
-        model=None,
+        task_name="solve_x", reward=None, model=None,
         harbor_config={"agent": {"model": "claude-sonnet-4-6"}},
     )
 
-    async def fake_none(trial_arg):
+    async def fake_none(_t):
         return None
 
     with patch(
-        "api.services.summarize_trajectory.read_trial_instruction",
-        new=fake_none,
+        "api.services.summarize_trajectory.read_trial_instruction", new=fake_none,
     ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output",
-        new=fake_none,
+        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_none,
     ):
         ctx = await build_task_context(trial)
 
     assert ctx.model_used == "claude-sonnet-4-6"
 
 
-def test_render_prompt_includes_task_block():
-    from api.services.summarize_trajectory import _render_prompt
-
-    trajectory = {"steps": [{"step_id": 1}]}
-    ctx = TaskContext(
-        task_name="solve_x",
-        instruction="Do the thing.",
-        final_reward=1.0,
-        model_used="claude-sonnet-4-6",
-        verifier_output="PASS\n",
-    )
-    prompt = _render_prompt(trajectory, ctx)
-    assert "<task>" in prompt
-    assert "Name: solve_x" in prompt
-    assert "Instruction: Do the thing." in prompt
-    assert "Final reward: 1.0" in prompt
-    assert "Verifier output: PASS" in prompt
-    assert "Model: claude-sonnet-4-6" in prompt
-    assert "<trajectory>" in prompt
-
-
-def test_render_prompt_marks_missing_fields_unavailable():
-    from api.services.summarize_trajectory import _render_prompt
-
-    ctx = TaskContext(
-        task_name="solve_x",
-        instruction=None,
-        final_reward=None,
-        model_used=None,
-        verifier_output=None,
-    )
-    prompt = _render_prompt({"steps": []}, ctx)
-    assert "Instruction: [unavailable]" in prompt
-    assert "Final reward: [unavailable]" in prompt
-    assert "Verifier output: [unavailable]" in prompt
-    assert "Model: [unavailable]" in prompt
-
-
-def test_render_prompt_truncates_long_instruction_and_verifier():
-    from api.services.summarize_trajectory import (
-        MAX_TEXT_CHARS,
-        TRUNCATION_MARKER,
-        _render_prompt,
-    )
-
-    long_text = "A" * (MAX_TEXT_CHARS + 500)
-    ctx = TaskContext(
-        task_name="t",
-        instruction=long_text,
-        final_reward=None,
-        model_used=None,
-        verifier_output=long_text,
-    )
-    prompt = _render_prompt({"steps": []}, ctx)
-    # Both fields are truncated independently — the truncation marker
-    # appears at least twice (once per truncated field).
-    marker_prefix = TRUNCATION_MARKER.split("{")[0]
-    assert prompt.count(marker_prefix) >= 2
-
-
-def test_schema_version_is_three():
-    from api.services.summarize_trajectory import SCHEMA_VERSION
-
-    assert SCHEMA_VERSION == "3"
-
-
-@pytest.mark.asyncio
-async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
-    import asyncio as _asyncio
-
-    trial = _fake_trial(has_trajectory=True, trajectory_summary=None)
-    session = _fake_session()
-
-    started: list[str] = []
-    finished: list[str] = []
-
-    async def slow_trajectory(trial_arg):
-        started.append("trajectory")
-        await _asyncio.sleep(0.05)
-        finished.append("trajectory")
-        return {"steps": [{"step_id": 1}]}
-
-    async def slow_context(trial_arg):
-        started.append("context")
-        await _asyncio.sleep(0.05)
-        finished.append("context")
-        return TaskContext(
-            task_name="t",
-            instruction=None,
-            final_reward=None,
-            model_used=None,
-            verifier_output=None,
-        )
-
-    fresh = {
-        "schema_version": SCHEMA_VERSION,
-        "model": "claude-sonnet-4-6",
-        "generated_at": "2026-05-02T00:00:00Z",
-        "summary": "ok",
-        "highlights": [],
-    }
-
-    with patch(
-        "api.services.summarize_trajectory.read_trial_trajectory",
-        new=slow_trajectory,
-    ), patch(
-        "api.services.summarize_trajectory.build_task_context",
-        new=slow_context,
-    ), patch(
-        "api.services.summarize_trajectory.generate",
-        new_callable=AsyncMock,
-        return_value=fresh,
-    ):
-        await get_or_generate_summary(session, trial)
-
-    # Both started before either finished -> parallel
-    assert {started[0], started[1]} == {"trajectory", "context"}
-    assert len(finished) == 2
-
-
-# ---------------------------------------------------------------------------
-# _normalize_phases
-# ---------------------------------------------------------------------------
-
-def test_normalize_phases_coalesces_and_preserves_recurrence():
-    from api.services.summarize_trajectory import _normalize_phases
-
-    raw = [
-        {"label": "Diagnose", "step_ids": [1, 2], "gist": "look"},
-        {"label": "Fix", "step_ids": [3], "gist": "patch"},
-        {"label": "Diagnose", "step_ids": [4], "gist": "look again"},
-    ]
-    segments = _normalize_phases(raw, [1, 2, 3, 4])
-    assert [(s["label"], s["step_ids"]) for s in segments] == [
-        ("Diagnose", [1, 2]),
-        ("Fix", [3]),
-        ("Diagnose", [4]),
-    ]
-    # gist is shared per label (first non-empty seen)
-    assert segments[0]["gist"] == "look"
-
-
-def test_normalize_phases_drops_unknown_step_ids():
-    from api.services.summarize_trajectory import _normalize_phases
-
-    raw = [{"label": "A", "step_ids": [1, 999], "gist": ""}]
-    segments = _normalize_phases(raw, [1, 2])
-    # 999 is not a real step; step 2 was untagged -> carries forward "A"
-    assert segments == [{"label": "A", "gist": "", "step_ids": [1, 2]}]
-
-
-def test_normalize_phases_carries_forward_untagged_gap():
-    from api.services.summarize_trajectory import _normalize_phases
-
-    raw = [
-        {"label": "Explore", "step_ids": [1], "gist": ""},
-        {"label": "Verify", "step_ids": [4], "gist": ""},
-    ]
-    segments = _normalize_phases(raw, [1, 2, 3, 4])
-    # 2,3 untagged -> carry "Explore"; 4 -> "Verify"
-    assert [(s["label"], s["step_ids"]) for s in segments] == [
-        ("Explore", [1, 2, 3]),
-        ("Verify", [4]),
-    ]
-
-
-def test_normalize_phases_empty_when_nothing_usable():
-    from api.services.summarize_trajectory import _normalize_phases
-
-    assert _normalize_phases(None, [1, 2]) == []
-    assert _normalize_phases([], [1, 2]) == []
-    assert _normalize_phases([{"label": "", "step_ids": [1]}], [1, 2]) == []
-    assert _normalize_phases([{"label": "A", "step_ids": [1]}], []) == []
-
-
-@pytest.mark.asyncio
-async def test_generate_returns_normalized_phases():
-    from api.services.summarize_trajectory import generate
-
-    payload = json.dumps(
-        {
-            "summary": "s",
-            "highlights": [],
-            "phases": [
-                {"label": "Explore", "step_ids": [1, 2], "gist": "look around"},
-                {"label": "Fix", "step_ids": [3], "gist": "patch"},
-            ],
-        }
-    )
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
-
-    assert [(p["label"], p["step_ids"]) for p in result["phases"]] == [
-        ("Explore", [1, 2]),
-        ("Fix", [3]),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_generate_phases_absent_yields_empty_list():
-    from api.services.summarize_trajectory import generate
-
-    payload = json.dumps({"summary": "s", "highlights": []})
-    fake = _fake_client_returning(payload)
-    with patch("anthropic.AsyncAnthropic", return_value=fake):
-        result = await generate(_trajectory_with_steps([1, 2]), _minimal_ctx())
-
-    assert result["phases"] == []
-    assert result["summary"] == "s"
-
-
-def test_render_prompt_requests_phases():
-    from api.services.summarize_trajectory import _render_prompt
-
-    prompt = _render_prompt({"steps": [{"step_id": 1}]}, _minimal_ctx())
-    assert '"phases"' in prompt
-    assert "assign EVERY step" in prompt
+def test_schema_version_is_four():
+    assert SCHEMA_VERSION == "4"

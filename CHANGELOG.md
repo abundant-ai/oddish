@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-16]
+
+### Fixed
+
+- A grok trial killed by an xAI rate limit (`You've hit your team's API rate limit`) is no longer thrown away mid-run: the resume loop that already rescues idle-timeout deaths now also resumes rate-limited ones, sleeping first with a doubling backoff (60s, 120s, 240s) before each replay. The case was previously excluded on purpose, since an immediate `grok -c` re-hits the same wall — the throttle is on the account, not on one replica — but xAI's limits are refilling token buckets, so a resume that waits often lands, and a limit that never clears just fails as it did before. Idle timeouts still resume with no delay. Observed on a trial that spent 19 minutes and 437k tokens, announced its next step, and died to the limit; the truncated trajectory was then graded as a model failure rather than an infra one (#758).
+
+---
+
 ## [2026-07-15]
 
 ### Added

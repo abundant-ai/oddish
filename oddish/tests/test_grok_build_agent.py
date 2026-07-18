@@ -15,7 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from oddish.workers.agents.grok_build import _PROMPT_PATH, OddishGrokBuild
+from oddish.workers.agents import grok_build as grok_build_module
+from oddish.workers.agents.grok_build import (
+    _PROMPT_PATH,
+    _XAI_API_KEY_ENV,
+    _XAI_API_KEYS_ENV,
+    OddishGrokBuild,
+)
 
 
 def test_advertises_atif_support():
@@ -149,11 +155,15 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
     # (absent from the text-only stdout) survive sandbox teardown.
     assert any("grok-session" in c for c in agent_commands)
 
-    # An idle-timeout death resumes the session (bounded) instead of failing
-    # the trial: the xAI-side stream watchdog is the only grok failure that is
-    # both fatal to the CLI and transient server-side. One resume arm per
-    # fallback variant, so the resume replays whichever flag set actually ran.
-    assert "grep -qi 'idle timeout'" in command
+    # An idle-timeout or rate-limit death resumes the session (bounded) instead
+    # of failing the trial: both are fatal to the CLI yet transient server-side,
+    # the stream watchdog because a fresh request lands on a healthy replica and
+    # the rate limit because xAI's buckets refill. One resume arm per fallback
+    # variant, so the resume replays whichever flag set actually ran.
+    assert (
+        "grep -Eqi '(idle timeout|rate limit|rate_limit|too many requests|429)'"
+        in command
+    )
     assert command.count("grok -c -p") == 6
     assert "resumes -lt 3" in command
     # The resume appends to the streamed event log and re-sends a short inline
@@ -238,6 +248,14 @@ echo "Error: You've hit your team's API rate limit." >&2
 exit 1
 """
 
+# Matches none of the fallback greps and neither resume pattern, so the shell
+# must give up on the first death rather than replaying it.
+_UNKNOWN_ERROR_STUB = """
+echo "$*" >> "$LOGDIR/calls.log"
+echo "Error: the model is not available to your team." >&2
+exit 1
+"""
+
 _FALLBACK_THEN_STALL_STUB = f"""
 echo "$*" >> "$LOGDIR/calls.log"
 case "$*" in
@@ -268,10 +286,41 @@ async def test_shell_resumes_after_idle_timeout(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_shell_does_not_resume_other_failures(tmp_path, monkeypatch):
     command = await _generated_command(tmp_path, monkeypatch)
+    rc, calls, _ = _run_in_shell(command, tmp_path, _UNKNOWN_ERROR_STUB)
+    assert rc != 0
+    # A death matching no fallback grep and neither resume pattern must not loop.
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_shell_resumes_rate_limit(tmp_path, monkeypatch):
+    """A rate-limited run resumes instead of throwing the trial away.
+
+    An xAI rate limit kills the CLI mid-run, discarding every turn already
+    spent. The throttle is on the account, so the loop waits (see the backoff
+    below, zeroed here) before each replay rather than re-hitting the limit
+    immediately. A limit that never clears still exits non-zero, as before.
+    """
+    monkeypatch.setattr(grok_build_module, "_RATE_LIMIT_BACKOFF_SEC", 0)
+    command = await _generated_command(tmp_path, monkeypatch)
+    assert "delay=0;" in command
     rc, calls, _ = _run_in_shell(command, tmp_path, _RATE_LIMIT_STUB)
     assert rc != 0
-    # A rate-limit death matches no fallback grep and must not loop.
-    assert len(calls) == 1
+    # Initial arm + the three bounded resumes; a stub that is always limited
+    # exhausts the budget rather than looping forever.
+    assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_resume_waits_between_attempts(tmp_path, monkeypatch):
+    """The backoff is real: resuming into a live throttle just re-hits it.
+
+    Pins the doubling (60s, 120s, 240s) so a future edit cannot silently turn
+    the resume budget into three retries spent inside a second.
+    """
+    command = await _generated_command(tmp_path, monkeypatch)
+    assert "delay=60;" in command
+    assert 'sleep "$delay"; delay=$((delay*2));' in command
 
 
 @pytest.mark.asyncio
@@ -321,3 +370,96 @@ async def test_session_captured_even_when_agent_fails(tmp_path, monkeypatch):
         )
 
     assert any("grok-session" in c for c in agent_commands)
+
+
+def _agent_with_no_xai_env(tmp_path, monkeypatch) -> OddishGrokBuild:
+    """Build an agent with both key vars unset.
+
+    ``_get_env`` falls through to ``os.environ``, and a dev machine running
+    these tests usually has a real ``XAI_API_KEY`` exported. Clearing both vars
+    keeps every key-pool assertion about what the test set, not the ambient
+    shell.
+    """
+    monkeypatch.delenv(_XAI_API_KEY_ENV, raising=False)
+    monkeypatch.delenv(_XAI_API_KEYS_ENV, raising=False)
+    return OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9-stickynote")
+
+
+def test_xai_env_draws_from_the_key_pool(tmp_path, monkeypatch):
+    """A pool spreads concurrent trials across keys, one draw per trial."""
+    agent = _agent_with_no_xai_env(tmp_path, monkeypatch)
+    monkeypatch.setenv(_XAI_API_KEYS_ENV, "key_A,key_B")
+    assert agent._xai_env()[_XAI_API_KEY_ENV] in {"key_A", "key_B"}
+
+
+def test_xai_env_reuses_the_first_drawn_key(tmp_path, monkeypatch):
+    """One key per trial, not per call.
+
+    ``_xai_env`` feeds both the config write and the run exec. If each call
+    re-drew, a trial could authenticate its config against one account and its
+    grok run against another -- and a resumed session would wander between keys
+    mid-run. The draw must happen once and stick.
+    """
+    agent = _agent_with_no_xai_env(tmp_path, monkeypatch)
+    monkeypatch.setenv(_XAI_API_KEYS_ENV, "key_A,key_B")
+
+    draws: list[list[str]] = []
+
+    def _fake_choice(pool):
+        draws.append(list(pool))
+        # Hand back a different key every call, so a lost memoization shows up
+        # as a differing second key rather than as a coin flip.
+        return pool[(len(draws) - 1) % len(pool)]
+
+    monkeypatch.setattr(grok_build_module.random, "choice", _fake_choice)
+
+    first = agent._xai_env()
+    second = agent._xai_env()
+    assert first == second
+    assert len(draws) == 1
+
+
+def test_xai_env_falls_back_to_the_single_key(tmp_path, monkeypatch):
+    """Deployments without a pool keep working on the lone key var."""
+    agent = _agent_with_no_xai_env(tmp_path, monkeypatch)
+    monkeypatch.setenv(_XAI_API_KEY_ENV, "key_solo")
+    assert agent._xai_env() == {_XAI_API_KEY_ENV: "key_solo"}
+
+
+def test_pool_wins_over_the_single_key(tmp_path, monkeypatch):
+    """The pool is the opt-in, so it must beat a leftover single key.
+
+    Both vars are set in practice (the single key predates the pool), and
+    honoring the old one would silently pin every trial to one account.
+    """
+    agent = _agent_with_no_xai_env(tmp_path, monkeypatch)
+    monkeypatch.setenv(_XAI_API_KEY_ENV, "key_stale")
+    monkeypatch.setenv(_XAI_API_KEYS_ENV, "key_A,key_B")
+    assert agent._xai_env()[_XAI_API_KEY_ENV] in {"key_A", "key_B"}
+
+
+def test_xai_env_empty_without_any_key(tmp_path, monkeypatch):
+    """No key configured must stay absent, not become an empty ``XAI_API_KEY``."""
+    agent = _agent_with_no_xai_env(tmp_path, monkeypatch)
+    assert agent._xai_env() == {}
+
+
+def test_pool_tolerates_whitespace_and_empty_entries(tmp_path, monkeypatch):
+    """Hand-edited pool strings carry stray spaces and trailing commas.
+
+    An unstripped entry becomes an ``XAI_API_KEY`` with a leading space and
+    every request 401s, so the parse is pinned rather than the draw.
+    """
+    agent = _agent_with_no_xai_env(tmp_path, monkeypatch)
+    monkeypatch.setenv(_XAI_API_KEYS_ENV, "key_A , , key_B")
+
+    pools: list[list[str]] = []
+
+    def _fake_choice(pool):
+        pools.append(list(pool))
+        return pool[0]
+
+    monkeypatch.setattr(grok_build_module.random, "choice", _fake_choice)
+
+    assert agent._xai_env() == {_XAI_API_KEY_ENV: "key_A"}
+    assert set(pools[0]) == {"key_A", "key_B"}

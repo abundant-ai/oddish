@@ -6,7 +6,7 @@ import os
 import warnings
 from pathlib import Path
 from typing import Any
-
+import logging
 from harbor.models.trial.result import TrialResult
 from openai import OpenAI
 from rich.console import Console
@@ -21,6 +21,7 @@ from oddish.config import (
     to_anthropic_api_model_id,
 )
 from oddish.analyze._sdk_utils import Colors, print_process_stream
+from oddish.analyze.analysis_cost import AnalysisUsage, parse_cli_usage
 
 from .models import (
     BaselineValidation,
@@ -30,6 +31,8 @@ from .models import (
     TrialClassification,
     TrialClassificationModel,
 )
+
+logger = logging.getLogger(__name__)
 
 
 VERDICT_TIMEOUT = 120.0
@@ -138,6 +141,8 @@ class TrialClassifier:
         self._model = model
         self._verbose = verbose
         self._timeout = timeout
+        # Usage/cost of the most recent successful CLI classification, or None.
+        self.last_usage: AnalysisUsage | None = None
         self._setup_authentication()
 
     def _setup_authentication(self) -> None:
@@ -292,6 +297,9 @@ class TrialClassifier:
                 reward=reward,
             )
 
+    def _stash_usage(self, payload: dict, model_id: str | None) -> None:
+        self.last_usage = parse_cli_usage(payload, model_id)
+
     async def _run_claude_cli(
         self,
         prompt: str,
@@ -299,9 +307,12 @@ class TrialClassifier:
         task_dir: Path,
     ) -> Any:
         """Run Claude Code in print mode and return structured output."""
+        self.last_usage = None
         schema = json.dumps(TrialClassificationModel.model_json_schema())
         claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
+        logger.info(f"choosing model: {self._model}")
         model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))
+        logger.info(f"resolved model_id: {model_id}")
         command = [
             claude_bin,
             "-p",
@@ -368,6 +379,8 @@ class TrialClassifier:
             if self._verbose:
                 print_process_stream("Claude stdout", stdout_text, Colors.BLUE)
             raise RuntimeError(f"Claude CLI returned invalid JSON: {exc}") from exc
+
+        self._stash_usage(payload, model_id)
 
         structured_output = payload.get("structured_output")
         if structured_output is not None:

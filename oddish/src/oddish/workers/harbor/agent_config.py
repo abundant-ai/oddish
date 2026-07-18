@@ -42,6 +42,9 @@ from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
 _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
+_ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH = (
+    "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
+)
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
 _ODDISH_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
@@ -312,16 +315,22 @@ def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
     agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
 
 
-def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
-    """Install the harbor package in the sandbox for probe claude-code trials."""
-    if not is_probe or agent_config.import_path is not None:
+def _apply_claude_code_oddish_wrapper(
+    agent_config: AgentConfig, is_probe: bool
+) -> None:
+    """Keep all Claude prompts off argv; probes also install Harbor."""
+    if agent_config.import_path is not None:
         return
     agent_name = (agent_config.name or "").strip().lower()
     if agent_name != "claude-code":
         return
 
     agent_config.name = None
-    agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
+    agent_config.import_path = (
+        _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH
+        if is_probe
+        else _ODDISH_CLAUDE_CODE_IMPORT_PATH
+    )
 
 
 def _apply_claude_code_probe_subagent_model(
@@ -483,7 +492,7 @@ def _build_agent_config(
     _apply_grok_build_oddish_wrapper(agent_config)
     _apply_meta_mini_swe_agent(agent_config)
     _apply_mini_swe_agent(agent_config)
-    _apply_claude_code_probe_harbor(agent_config, is_probe)
+    _apply_claude_code_oddish_wrapper(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 
     return agent_config

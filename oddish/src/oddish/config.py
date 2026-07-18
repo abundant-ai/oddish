@@ -40,7 +40,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+ANALYSIS_MODEL = "global.anthropic.claude-sonnet-4-6"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -119,8 +119,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
-HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
+HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
+HARBOR_DEFAULT_SHA = "555fc203d51ef97d937703654e7d03b29cba4a02"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1024,7 +1024,7 @@ class Settings(BaseSettings):
     live_tail_enabled: bool = True
     live_tail_interval_sec: float = 30.0
 
-    harbor_source_repo: str = "rishidesai/harbor"
+    harbor_source_repo: str = "abundant-ai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
     harbor_source_ref: str = "main"
@@ -1255,6 +1255,11 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
+    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
+    analyzer_anthropic_api_key: str | None = Field(
+        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
