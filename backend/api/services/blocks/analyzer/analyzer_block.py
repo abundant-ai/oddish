@@ -66,6 +66,7 @@ class AnalyzerBlock(Block):
         block_metadata: dict | None = None,
         client: AnalyzerLLMClient | None = None,
         output_transform: Callable[[str], Any] | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -76,6 +77,9 @@ class AnalyzerBlock(Block):
         self.block_metadata = block_metadata
         self._client = client
         self._output_transform = output_transform
+        # Only used when self-provisioning (client is None): which Anthropic key
+        # the backend gets. None -> the analyzer key / global default.
+        self._api_key = api_key
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -133,7 +137,9 @@ class AnalyzerBlock(Block):
     async def stream_output(self):
         """Yield each output chunk to the caller and accumulate it. Lazily
         provisions the backend client (or uses the injected one)."""
-        client = self._client or await create_llm_client(self.llm_client_type)
+        client = self._client or await create_llm_client(
+            self.llm_client_type, api_key=self._api_key
+        )
         try:
             async for chunk in client.stream(self.prompt):
                 self._chunks.append(chunk)

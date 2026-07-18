@@ -270,3 +270,20 @@ async def test_output_transform_failure_marks_failed_and_persists(monkeypatch):
         await b.run()
     assert b.status == JobStatus.FAILED
     assert saved["db"] == 1
+
+
+@pytest.mark.asyncio
+async def test_self_provision_passes_api_key(monkeypatch):
+    _patch_persistence(monkeypatch)
+    captured = {}
+
+    async def fake_create(llm_client_type, *, api_key=None):
+        captured["api_key"] = api_key
+        return FakeAnalyzerLLMClient(chunks=["x"])
+
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_block.create_llm_client", fake_create
+    )
+    b = _make_block(api_key="sk-block")  # client=None -> self-provisions
+    await b.run()
+    assert captured["api_key"] == "sk-block"

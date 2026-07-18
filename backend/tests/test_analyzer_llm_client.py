@@ -98,6 +98,63 @@ async def test_create_llm_client_api_branch():
     await client.aclose()
 
 
+from api.services.blocks.analyzer.analyzer_llm_client import resolve_analyzer_api_key
+from oddish.config import settings as _settings
+
+
+class _RecordingAnthropic:
+    last_api_key: object = "UNSET"
+
+    def __init__(self, *a, api_key=None, **k):
+        type(self).last_api_key = api_key
+        self.messages = None
+
+    async def close(self):
+        pass
+
+
+def _patch_anthropic(monkeypatch):
+    _RecordingAnthropic.last_api_key = "UNSET"
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _RecordingAnthropic,
+    )
+
+
+def test_resolve_analyzer_api_key_order(monkeypatch):
+    monkeypatch.setattr(_settings, "analyzer_anthropic_api_key", "sk-analyzer")
+    monkeypatch.setattr(_settings, "anthropic_api_key", "sk-global")
+    assert resolve_analyzer_api_key("sk-explicit") == "sk-explicit"   # explicit wins
+    assert resolve_analyzer_api_key(None) == "sk-analyzer"            # then analyzer key
+    monkeypatch.setattr(_settings, "analyzer_anthropic_api_key", None)
+    assert resolve_analyzer_api_key(None) == "sk-global"             # then global
+
+
+def test_api_client_passes_explicit_api_key(monkeypatch):
+    _patch_anthropic(monkeypatch)
+    monkeypatch.setattr(_settings, "analyzer_anthropic_api_key", "sk-analyzer")
+    monkeypatch.setattr(_settings, "anthropic_api_key", "sk-global")
+    ApiAnalyzerLLMClient(api_key="sk-explicit")
+    assert _RecordingAnthropic.last_api_key == "sk-explicit"
+
+
+def test_api_client_uses_analyzer_key_when_no_explicit(monkeypatch):
+    _patch_anthropic(monkeypatch)
+    monkeypatch.setattr(_settings, "analyzer_anthropic_api_key", "sk-analyzer")
+    monkeypatch.setattr(_settings, "anthropic_api_key", "sk-global")
+    ApiAnalyzerLLMClient()
+    assert _RecordingAnthropic.last_api_key == "sk-analyzer"
+
+
+@pytest.mark.asyncio
+async def test_create_llm_client_api_passes_api_key(monkeypatch):
+    _patch_anthropic(monkeypatch)
+    monkeypatch.setattr(_settings, "analyzer_anthropic_api_key", None)
+    monkeypatch.setattr(_settings, "anthropic_api_key", "sk-global")
+    await create_llm_client(LLMClientType.API, api_key="sk-passed")
+    assert _RecordingAnthropic.last_api_key == "sk-passed"
+
+
 @pytest.mark.asyncio
 async def test_sandbox_client_streams_json_lines_and_closes():
     sent = {}
