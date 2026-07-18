@@ -6,16 +6,16 @@ from oddish.core.harbor_source import HarborSourceError, assert_allowed
 
 def test_default_fork_lowercase_is_allowed():
     assert_allowed(
-        "https://github.com/rishidesai/harbor",
-        allowed="https://github.com/rishidesai/*",
+        "https://github.com/abundant-ai/harbor",
+        allowed="https://github.com/abundant-ai/*",
     )
 
 
 def test_allowlist_is_case_insensitive_both_sides():
     # User typed mixed-case org; allowlist is lowercase. Must still match.
     assert_allowed(
-        "https://github.com/RishiDesai/Harbor",
-        allowed="https://github.com/rishidesai/*",
+        "https://github.com/Abundant-AI/Harbor",
+        allowed="https://github.com/abundant-ai/*",
     )
     assert_allowed(
         "https://github.com/dot-agi/harbor",

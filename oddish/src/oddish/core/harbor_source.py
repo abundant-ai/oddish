@@ -46,7 +46,7 @@ class HarborVariant:
 
 
 # Routing id for the GKE (TPU) Harbor variant. GKE trials run the GKE-enabled
-# harbor-gke fork, which the lean default Harbor (rishidesai/harbor) does not
+# harbor-gke fork, which the lean default Harbor (abundant-ai/harbor) does not
 # carry; keeping it a variant means only GKE trials pull the heavy k8s +
 # google-cloud stack, on a dedicated worker image.
 GKE_VARIANT_ID = "gke"
