@@ -233,12 +233,26 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
             return None
 
     async with aio.client("s3", region_name=region) as s3:
-        for root in roots:
-            body = await _get(s3, f"{root}/experiment-manifest.yaml")
+        # One independent S3 GET per run-root, so fetch them in parallel. This
+        # loop used to be sequential: tbench-hammer shard 0 has 1,291 roots and
+        # spent ~3.5 min here before importing a single trial. It is also
+        # invisible in the reported rate (t0 starts after it) and is repeated
+        # per shard, since run-roots span tasks and therefore span shards.
+        # Bounded to keep a wide shard from opening thousands of sockets.
+        _mani_sem = asyncio.Semaphore(32)
+
+        async def _fetch_manifest(root: str) -> tuple[str, dict]:
+            async with _mani_sem:
+                body = await _get(s3, f"{root}/experiment-manifest.yaml")
             try:
-                manifests[root] = yaml.safe_load(body) if body else {}
+                return root, (yaml.safe_load(body) if body else {})
             except Exception:
-                manifests[root] = {}
+                return root, {}
+
+        _t_mani = now()
+        manifests = dict(await asyncio.gather(*(_fetch_manifest(r) for r in roots)))
+        print(f"prefetched {len(manifests)} run manifests in "
+              f"{(now() - _t_mani).total_seconds():.1f}s")
 
         # ---- helpers --------------------------------------------------------
         async def build_spec(r: dict) -> ImportedTrialSpec:
