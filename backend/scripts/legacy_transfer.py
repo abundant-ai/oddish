@@ -46,11 +46,29 @@ _parents = Path(__file__).resolve().parents
 REPO = _parents[2] if len(_parents) > 2 else Path("/")
 
 app = modal.App("oddish-legacy-transfer")
+# Harbor commit both oddish/uv.lock and backend/uv.lock resolve for the
+# abundant-ai fork. Keep in sync with those lockfiles.
+HARBOR_SHA = "555fc203d51ef97d937703654e7d03b29cba4a02"
+
 image = (
     modal.Image.debian_slim(python_version="3.13")
     .apt_install("git")
     .add_local_dir(str(REPO / "oddish"), remote_path="/oddish", copy=True, ignore=[".venv/", ".git/"])
-    .run_commands("pip install uv", "cd /oddish && uv pip install --system '.[worker]'")
+    .run_commands(
+        "pip install uv",
+        "cd /oddish && uv pip install --system '.[worker]'",
+        # `uv pip install` is the pip-compatible interface: it applies
+        # [tool.uv] override-dependencies (harbor==0.16.1) but IGNORES
+        # [tool.uv.sources], so harbor resolves from PyPI instead of the
+        # abundant-ai fork. PyPI's 0.16.1 has no harbor.environments.kube_ops,
+        # which oddish/workers/harbor/runner.py imports at module scope -> the
+        # job dies on `import oddish.queue`. The production worker image avoids
+        # this by using uv_sync (project API, honours sources + lockfile); see
+        # backend/modal_app.py::_build_worker_image. Reinstall harbor from the
+        # fork at the exact commit both uv.lock files resolve, so this image
+        # matches production rather than floating on branch main.
+        f"uv pip install --system 'harbor @ git+https://github.com/abundant-ai/harbor@{HARBOR_SHA}'",
+    )
 )
 secret = modal.Secret.from_name("oddish-prod", environment_name="main")
 aws_secret = modal.Secret.from_name("sauron-legacy")
