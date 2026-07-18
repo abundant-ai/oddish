@@ -16,6 +16,14 @@ from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 _DEFAULT_MODEL = "claude-opus-4-8"
 
 
+def resolve_analyzer_api_key(explicit: str | None = None) -> str | None:
+    """Anthropic API key for analyzer blocks, most-specific first: an explicit
+    per-block override, then the analyzer-specific key
+    (``ANALYZER_ANTHROPIC_API_KEY``), then the global ``ANTHROPIC_API_KEY``.
+    Returns None only when none are set (the SDK then errors on first call)."""
+    return explicit or settings.analyzer_anthropic_api_key or settings.anthropic_api_key
+
+
 class LLMClientType(str, enum.Enum):
     SANDBOX = "Sandbox"
     API = "Api"
@@ -52,10 +60,17 @@ class FakeAnalyzerLLMClient:
 class ApiAnalyzerLLMClient:
     """Direct Anthropic API backend: streams text deltas for a single prompt."""
 
-    def __init__(self, *, model: str = _DEFAULT_MODEL, max_tokens: int = 4096) -> None:
+    def __init__(
+        self,
+        *,
+        model: str = _DEFAULT_MODEL,
+        max_tokens: int = 4096,
+        api_key: str | None = None,
+    ) -> None:
         self._model = model
         self._max_tokens = max_tokens
-        self._inner = AsyncAnthropic()
+        key = resolve_analyzer_api_key(api_key)
+        self._inner = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
 
     async def stream(self, prompt: str) -> AsyncIterator[str]:
         async with self._inner.messages.stream(
@@ -107,14 +122,16 @@ class SandboxAnalyzerLLMClient:
         await delete_sandbox_quietly(self._client, self._sandbox)
 
 
-async def create_llm_client(llm_client_type: LLMClientType) -> AnalyzerLLMClient:
+async def create_llm_client(
+    llm_client_type: LLMClientType, *, api_key: str | None = None
+) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
-        return ApiAnalyzerLLMClient()
+        return ApiAnalyzerLLMClient(api_key=api_key)
 
     if llm_client_type == LLMClientType.SANDBOX:
         daytona_client = RealDaytonaClient(api_key=os.environ["DAYTONA_API_KEY"])
         sandbox = await Provisioner(client=daytona_client).create(
-            env_vars={"ANTHROPIC_API_KEY": settings.anthropic_api_key or ""},
+            env_vars={"ANTHROPIC_API_KEY": resolve_analyzer_api_key(api_key) or ""},
             auto_stop_minutes=_AUTO_STOP_MINUTES,
             auto_delete_minutes=_AUTO_DELETE_MINUTES,
             labels={"app": "analyzer", "session_id": generate_id()},

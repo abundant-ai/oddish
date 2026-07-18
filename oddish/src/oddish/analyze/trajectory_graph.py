@@ -581,14 +581,14 @@ def _is_trouble(text: str) -> bool:
 def _graph_from_summary(
     summary: dict[str, Any], ctx: dict[str, Any], outcome: str, digest: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Build the graph from the shipped ``trajectory_summary`` (phases + highlights).
+    """Build the graph from the shipped ``trajectory_summary`` (components + highlights).
 
-    Reuses the summary's phase segmentation as the graph's general steps so the
-    Agent Graph and the Summary tab stay consistent, then layers on the two
-    things the summary lacks: a per-phase status and the terminal outcome node.
+    Reuses the summary's component segmentation as the graph's general steps so
+    the Agent Graph and the Summary tab stay consistent, then layers on the two
+    things the summary lacks: a per-component status and the terminal outcome node.
     """
-    phases = summary.get("phases") if isinstance(summary, dict) else None
-    if not isinstance(phases, list) or not phases:
+    components = summary.get("components") if isinstance(summary, dict) else None
+    if not isinstance(components, list) or not components:
         return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
 
     highlights = summary.get("highlights") or []
@@ -600,21 +600,22 @@ def _graph_from_summary(
                 trouble_steps.add(sid)
 
     steps: list[dict[str, Any]] = []
-    for i, ph in enumerate(phases):
-        if not isinstance(ph, dict):
+    for i, comp in enumerate(components):
+        if not isinstance(comp, dict):
             continue
-        step_ids = [s for s in (ph.get("step_ids") or []) if isinstance(s, int)]
+        step_ids = [s for s in (comp.get("step_ids") or []) if isinstance(s, int)]
         status = "warn" if trouble_steps.intersection(step_ids) else "ok"
+        label = str(comp.get("trajectory_component") or f"Phase {i + 1}").replace("_", " ")
         steps.append(
             {
                 "id": f"s{i}",
-                "title": _clip(ph.get("label") or f"Phase {i + 1}", 80),
-                "detail": _clip(ph.get("gist"), 240),
+                "title": _clip(label, 80),
+                "detail": _clip(comp.get("summary"), 240),
                 "status": status,
             }
         )
-    # Phases were present but every entry was unusable -> fall back rather than
-    # emit a stepless "summary" graph.
+    # Components were present but every entry was unusable -> fall back rather
+    # than emit a stepless "summary" graph.
     if not steps:
         return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
     _mark_terminal_phase(steps, outcome)
@@ -675,7 +676,7 @@ async def build_trajectory_graph(
     ``verifier_output`` (the grader stdout) so phases are judged against the
     goal and the terminal names the failing check.
     ``summary`` is the shipped ``trajectory_summary`` dict when available -- its
-    phases are reused as the graph's steps (no extra LLM call). Without it, a
+    components are reused as the graph's steps (no extra LLM call). Without it, a
     dedicated LLM pass (``model``) segments the run, and failing that a
     deterministic heuristic. Always returns a graph dict::
 
@@ -689,12 +690,12 @@ async def build_trajectory_graph(
     ctx["model"] = model
     outcome = _infer_outcome(ctx)
 
-    # Preferred: reuse the already-generated phase segmentation, even when the
-    # ATIF trajectory didn't parse into steps here (a persisted summary still
+    # Preferred: reuse the already-generated component segmentation, even when
+    # the ATIF trajectory didn't parse into steps here (a persisted summary still
     # describes the run) -- so a summarized trial never falls to "No trajectory".
-    # A present-but-empty phases list routes here too: _graph_from_summary falls
-    # back to the heuristic for it, which avoids a redundant second LLM pass.
-    if summary and isinstance(summary.get("phases"), list):
+    # A present-but-empty components list routes here too: _graph_from_summary
+    # falls back to the heuristic for it, which avoids a redundant second LLM pass.
+    if summary and isinstance(summary.get("components"), list):
         return _graph_from_summary(summary, ctx, outcome, digest)
 
     if not digest:

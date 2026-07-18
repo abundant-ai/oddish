@@ -111,14 +111,14 @@ def test_no_trajectory_still_returns_graph():
     assert g["terminal"]["outcome"] == tg.OUTCOME_ERROR
 
 
-def test_graph_from_summary_reuses_phases_and_flags_trouble():
+def test_graph_from_summary_reuses_components_and_flags_trouble():
     summary = {
-        "schema_version": "3",
+        "schema_version": "4",
         "summary": "Agent explored, patched, and the tests failed.",
-        "phases": [
-            {"label": "Explore", "step_ids": [1, 2], "gist": "read the repo"},
-            {"label": "Patch", "step_ids": [3], "gist": "edited handler"},
-            {"label": "Verify", "step_ids": [4], "gist": "ran tests"},
+        "components": [
+            {"trajectory_component": "reading_files", "step_ids": [1, 2], "summary": "read the repo"},
+            {"trajectory_component": "implementing", "step_ids": [3], "summary": "edited handler"},
+            {"trajectory_component": "testing_public", "step_ids": [4], "summary": "ran tests"},
         ],
         "highlights": [
             {"step_id": 3, "title": "Committed a fix", "why": "edited the handler"},
@@ -134,9 +134,9 @@ def test_graph_from_summary_reuses_phases_and_flags_trouble():
         )
     )
     assert g["source"] == "summary"
-    assert [s["title"] for s in g["steps"]] == ["Explore", "Patch", "Verify"]
-    # the Verify phase holds step 4 (a 'Tests failed' highlight) and is the last
-    # phase of a failed run -> error; earlier phases stay ok.
+    assert [s["title"] for s in g["steps"]] == ["reading files", "implementing", "testing public"]
+    # the last component holds step 4 (a 'Tests failed' highlight) and is the last
+    # component of a failed run -> error; earlier components stay ok.
     assert g["steps"][0]["status"] == "ok"
     assert g["steps"][-1]["status"] == "error"
     assert g["terminal"]["outcome"] == tg.OUTCOME_FAILURE
@@ -160,7 +160,7 @@ def test_summary_used_even_with_empty_digest():
     # has_trajectory but the ATIF didn't parse into steps here; a persisted
     # summary must still drive the graph, not "No trajectory recorded".
     summary = {
-        "phases": [{"label": "Investigate", "step_ids": [1], "gist": "looked"}],
+        "components": [{"trajectory_component": "thinking_diagnose", "step_ids": [1], "summary": "looked"}],
         "highlights": [{"step_id": 1, "title": "Checked metrics", "why": "ok"}],
     }
     g = asyncio.run(
@@ -172,7 +172,7 @@ def test_summary_used_even_with_empty_digest():
         )
     )
     assert g["source"] == "summary"
-    assert [s["title"] for s in g["steps"]] == ["Investigate"]
+    assert [s["title"] for s in g["steps"]] == ["thinking diagnose"]
     # no digest -> falls back to the last highlight for the action
     assert g["terminal"]["last_action"] == "Checked metrics"
 
@@ -181,7 +181,7 @@ def test_empty_digest_highlight_fallback_uses_max_step_id():
     # highlights NOT in step_id order; the fallback must pick the LATEST step,
     # not the last array entry.
     summary = {
-        "phases": [{"label": "Work", "step_ids": [2, 9], "gist": "did work"}],
+        "components": [{"trajectory_component": "implementing", "step_ids": [2, 9], "summary": "did work"}],
         "highlights": [
             {"step_id": 9, "title": "Final commit"},
             {"step_id": 2, "title": "Early probe"},
@@ -198,16 +198,16 @@ def test_empty_digest_highlight_fallback_uses_max_step_id():
     assert g["terminal"]["last_action"] == "Final commit"
 
 
-def test_summary_without_phases_falls_back():
+def test_summary_without_components_falls_back():
     g = asyncio.run(
         tg.build_trajectory_graph(
             _traj(),
             {"status": "success", "reward": 1.0, "task_name": "t", "agent_name": "a"},
             model=None,
-            summary={"schema_version": "3", "summary": "x", "phases": []},
+            summary={"schema_version": "4", "summary": "x", "components": []},
         )
     )
-    # empty phases -> not usable -> heuristic path
+    # empty components -> not usable -> heuristic path
     assert g["source"] == "heuristic"
 
 
@@ -349,8 +349,8 @@ def test_generate_falls_back_to_persisted_summary(monkeypatch):
         id="trial-3", status="success", reward=1.0, error_message=None,
         name="t", agent="a", trajectory_graph=None,
         trajectory_summary={
-            "schema_version": "3",
-            "phases": [{"label": "Explore", "step_ids": [1], "gist": "looked"}],
+            "schema_version": "4",
+            "components": [{"trajectory_component": "reading_files", "step_ids": [1], "summary": "looked"}],
             "highlights": [],
         },
     )
@@ -359,7 +359,7 @@ def test_generate_falls_back_to_persisted_summary(monkeypatch):
         trial_io.generate_and_store_trajectory_graph(session, trial)
     )
     assert graph["source"] == "summary"
-    assert [s["title"] for s in graph["steps"]] == ["Explore"]
+    assert [s["title"] for s in graph["steps"]] == ["reading files"]
 
 
 def test_generate_returns_cached_when_fresh_and_not_refresh(monkeypatch):
@@ -417,7 +417,7 @@ def test_prompt_includes_goal_and_grader_context():
 
 def test_summary_terminal_reason_is_grounded():
     summary = {
-        "phases": [{"label": "Patch", "step_ids": [3], "gist": "edited"}],
+        "components": [{"trajectory_component": "implementing", "step_ids": [3], "summary": "edited"}],
         "highlights": [],
     }
     ctx = {
@@ -469,13 +469,13 @@ def test_fresh_persisted_summary_helper():
     assert trial_io._fresh_persisted_summary(
         SimpleNamespace(trajectory_summary={"schema_version": "2", "phases": []})
     ) is None
-    fresh = {"schema_version": "3", "phases": [{"label": "x"}]}
+    fresh = {"schema_version": "4", "components": [{"trajectory_component": "implementing"}]}
     assert trial_io._fresh_persisted_summary(SimpleNamespace(trajectory_summary=fresh)) == fresh
 
 
-def test_empty_phases_summary_uses_heuristic_not_llm(monkeypatch):
-    # A fresh summary with empty phases must fall to the heuristic, NOT trigger a
-    # second segmentation LLM pass (even when a model is configured).
+def test_empty_components_summary_uses_heuristic_not_llm(monkeypatch):
+    # A fresh summary with empty components must fall to the heuristic, NOT trigger
+    # a second segmentation LLM pass (even when a model is configured).
     called = {"llm": 0}
 
     async def _boom_llm(prompt, model):
@@ -488,8 +488,8 @@ def test_empty_phases_summary_uses_heuristic_not_llm(monkeypatch):
             _traj(),
             {"status": "success", "reward": 1.0, "task_name": "t", "agent_name": "a"},
             model="some-model",
-            summary={"schema_version": "3", "summary": "x", "phases": []},
+            summary={"schema_version": "4", "summary": "x", "components": []},
         )
     )
     assert g["source"] == "heuristic"
-    assert called["llm"] == 0, "empty-phases summary must not run the segmentation LLM"
+    assert called["llm"] == 0, "empty-components summary must not run the segmentation LLM"

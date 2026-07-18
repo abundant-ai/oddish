@@ -40,7 +40,10 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "global.anthropic.claude-sonnet-4-6"
+# Plain Anthropic-style id (no Bedrock inference-profile mapping): the
+# classifier and trajectory analyzers route non-Bedrock Claude ids to the
+# direct Anthropic API.
+ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -120,7 +123,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-HARBOR_DEFAULT_SHA = "237c202cfa8e74ebef9db3cd999eb61965338615"
+HARBOR_DEFAULT_SHA = "555fc203d51ef97d937703654e7d03b29cba4a02"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1255,6 +1258,11 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
+    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
+    analyzer_anthropic_api_key: str | None = Field(
+        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
@@ -1382,8 +1390,17 @@ class Settings(BaseSettings):
                 return provider
         return self.get_provider_for_agent(agent)
 
-    def normalize_trial_model(self, agent: str, model: str | None) -> str | None:
+    def normalize_trial_model(
+        self, agent: str, model: str | None, *, strict: bool = True
+    ) -> str | None:
         """Canonicalize trial model input for storage/routing.
+
+        ``strict=True`` (default, the live create/queue/execute path) raises for
+        a Claude model with no Bedrock runtime id. ``strict=False`` is for
+        read-side rendering/cost/notify over already-stored trials: an imported
+        legacy model (e.g. ``claude-3-5-sonnet-20241022``) has no Bedrock id and
+        never executes, so fall back to the un-collapsed model rather than 500
+        the page.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force the model to the single canonical
@@ -1421,7 +1438,12 @@ class Settings(BaseSettings):
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
 
-        return to_bedrock_model_id(cleaned)
+        if strict:
+            return to_bedrock_model_id(cleaned)
+        try:
+            return to_bedrock_model_id(cleaned)
+        except ValueError:
+            return cleaned
 
     def normalize_queue_key(self, model: str) -> str:
         """Normalize queue keys.
