@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
@@ -499,6 +499,73 @@ class SlackExpenseAlertModel(Base):
     recipient_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     recipient_clerk_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     mention_emails: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+
+class SlackAlertSettingsModel(Base):
+    """Admin override for the shared-channel Slack escalation.
+
+    At most one row, ``id == SETTINGS_ROW_ID``, enforced by a CHECK: the alerts
+    are deployment-wide rather than org-scoped -- the cron scans every org --
+    so there is nothing to key this by. A missing row means the defaults in
+    ``slack_alert_settings.py`` stand. This covers only the in-channel
+    escalation floor and ping list; the per-user DM cutoffs live in
+    ``user_alert_preferences``.
+    """
+
+    __tablename__ = "slack_alert_settings"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    trial_escalation_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    always_ping_emails: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class UserAlertPreferencesModel(Base):
+    """A user's own choice of which Slack DM alerts to receive, and at what
+    cutoffs. One row per user, keyed by user id; a missing row means the
+    defaults in ``user_alert_prefs.py`` (all five DM types on, cutoffs inherited
+    from the global settings). The two USD columns are nullable on purpose:
+    NULL inherits the admin/global cutoff, a value pins it for this person.
+    """
+
+    __tablename__ = "user_alert_preferences"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    cost_milestone_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    expensive_trial_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    trial_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    qa_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_milestone_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    trial_ping_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
 
 
 # ---------------------------------------------------------------------------
