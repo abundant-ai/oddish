@@ -265,9 +265,7 @@ class OrgQuotaModel(TimestampedMixin, Base):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        CheckConstraint(
-            "period_kind IN ('monthly')", name="ck_org_quotas_period_kind"
-        ),
+        CheckConstraint("period_kind IN ('monthly')", name="ck_org_quotas_period_kind"),
     )
 
 
@@ -499,6 +497,7 @@ class SlackExpenseAlertModel(Base):
     )
     payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     recipient_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipient_clerk_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     mention_emails: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
 
