@@ -10,7 +10,7 @@ from oddish.db import generate_id, get_session
 from oddish.db.models import AnalyzerBlockModel, JobStatus, utcnow
 from oddish.db.storage import get_storage_client
 
-from api.services.analyzer_llm_client import (
+from api.services.blocks.analyzer.analyzer_llm_client import (
     AnalyzerLLMClient,
     LLMClientType,
     create_llm_client,

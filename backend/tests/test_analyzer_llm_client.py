@@ -1,6 +1,6 @@
 import pytest
 
-from api.services.analyzer_llm_client import (
+from api.services.blocks.analyzer.analyzer_llm_client import (
     LLMClientType,
     FakeAnalyzerLLMClient,
     ApiAnalyzerLLMClient,
@@ -59,7 +59,7 @@ async def test_api_client_streams_text_deltas(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "api.services.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
     )
     client = ApiAnalyzerLLMClient()
     assert await _collect(client, "hi") == ["Hel", "lo"]
@@ -78,14 +78,14 @@ async def test_api_client_aclose_closes_inner(monkeypatch):
             closed["n"] += 1
 
     monkeypatch.setattr(
-        "api.services.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
     )
     client = ApiAnalyzerLLMClient()
     await client.aclose()
     assert closed["n"] == 1
 
 
-from api.services.analyzer_llm_client import (
+from api.services.blocks.analyzer.analyzer_llm_client import (
     SandboxAnalyzerLLMClient,
     create_llm_client,
 )

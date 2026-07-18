@@ -1,6 +1,6 @@
 import logging
 
-from api.services.analyzer_block import (
+from api.services.blocks.analyzer.analyzer_block import (
     AnalyzerType,
     AnalyzerInput,
     AnalyzerOutput,
@@ -27,8 +27,8 @@ def test_block_logger_prepends_prefix(caplog):
 
 import pytest
 
-from api.services.analyzer_block import AnalyzerBlock
-from api.services.analyzer_llm_client import LLMClientType
+from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+from api.services.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.db.models import JobStatus, utcnow
 
 
@@ -61,7 +61,7 @@ async def test_save_to_s3_uses_prefix_key(monkeypatch):
             calls["ct"] = content_type
 
     monkeypatch.setattr(
-        "api.services.analyzer_block.get_storage_client", lambda: _FakeStorage()
+        "api.services.blocks.analyzer.analyzer_block.get_storage_client", lambda: _FakeStorage()
     )
     b = _make_block()
     await b.save_to_s3(b"raw-bytes")
@@ -77,7 +77,7 @@ async def test_save_to_s3_swallows_and_logs_errors(monkeypatch, caplog):
             raise RuntimeError("s3 down")
 
     monkeypatch.setattr(
-        "api.services.analyzer_block.get_storage_client", lambda: _BoomStorage()
+        "api.services.blocks.analyzer.analyzer_block.get_storage_client", lambda: _BoomStorage()
     )
     b = _make_block()
     await b.save_to_s3(b"x")  # must NOT raise
@@ -97,7 +97,7 @@ async def test_save_to_db_adds_row(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        "api.services.analyzer_block.get_session", lambda: _FakeSession()
+        "api.services.blocks.analyzer.analyzer_block.get_session", lambda: _FakeSession()
     )
     b = _make_block(block_metadata={"k": "v"})
     b.status = JobStatus.SUCCESS
@@ -120,7 +120,7 @@ async def test_save_to_db_adds_row(monkeypatch):
 
 import asyncio
 
-from api.services.analyzer_llm_client import FakeAnalyzerLLMClient
+from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
 
 
 def _patch_persistence(monkeypatch):
