@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-18]
+
+### Added
+
+- Per-user Slack notification preferences: each user can toggle which of five DM alert types they receive (expensive experiment, expensive trial, experiment/trial/QA failed) and set personal dollar cutoffs for the two cost alerts, via a new Notifications section in personal settings backed by a self-scoped `GET`/`PUT /users/me/alert-preferences` and a new `user_alert_preferences` table; an unset cutoff inherits the admin/global default (#779).
+- New append-only `analysis_costs` ledger table tracks LLM spend for analysis jobs, starting with the trial classifier, kept separate from the solving agent's `trials.cost_usd` and capturing model, token counts, and native cost per run (#772).
+- `AnalyzerBlock`: a new composable, self-persisting primitive for running one analyzer LLM job through a swappable backend (direct Anthropic API or Daytona sandbox), streaming its output and guaranteeing a save to S3 + Postgres on every exit path including cancellation; not yet wired into the production analyzer pipeline (#768).
+- Grok Build trials can now draw from a pool of xAI API keys (`XAI_API_KEYS`, comma-separated) chosen at random per trial to spread concurrent trials across accounts, memoized so a trial's config and run always use the same key; falls back to the existing single `XAI_API_KEY` when unset (#769).
+- PR merges to `main` now require a scoped, reachable preview before the branch protection gate passes: frontend-only changes need a live Vercel preview, backend changes additionally need a reachable Modal preview backend, and backend/migration changes further need a ready Supabase preview database (#780).
+
+### Changed
+
+- Harbor dependency now points at the maintained `abundant-ai/harbor` fork instead of the prior `rishidesai/harbor` fork, with both lockfiles, the default source/SHA, and variant classification updated in lockstep; trials already stamped with the old fork remain allowlisted (#785).
+- Cost alerts now DM the experiment owner directly instead of posting to the shared Slack channel: experiment spend milestones fire every $1,000 of spend (up from $500), and expensive-trial DMs fire above $200 (up from $100); trials over $1,000 still additionally post a public in-channel escalation alongside the owner's DM (#774). Alert delivery itself was reworked from an exactly-once retry-marker state machine into a simpler at-least-once outbox that stores each alert's rendered payload, so a failed post keeps retrying even after its spend ages out of the recent window; the Modal timeout was raised to 600s and per-request Slack timeouts tightened to 5s (#787).
+- Trial-classifier analysis calls now use `claude-sonnet-4-6` instead of `claude-haiku-4-5`, with the chosen and resolved model id now logged (#760, #761).
+
+### Fixed
+
+- The GKE (TPU) execution backend now re-registers correctly in prod: the deploy workflow declares the non-secret `ODDISH_GKE_*` cluster/registry coordinates directly instead of relying solely on the `oddish-gcp` secret, which had been re-created without them and had silently disabled all `gke` submissions (#782).
+- Direct-Daytona trials keep their agent's model endpoint reachable when a task restricts network access during the agent phase: run-specific model destinations are now derived at runtime and injected as allowed hosts, and the Harbor/Daytona SDK pins were bumped to the version carrying the underlying network-lifecycle fix (#756).
+- `claude-code` trials on closed-internet (`no-network`/`allowlist`) tasks no longer fail at install or during model calls: the CLI installer hosts (`downloads.claude.ai`, `registry.npmjs.org`) and the resolved custom-route model endpoint host are now allowlisted for the trial's environment (#777).
+- Claude Code trial prompts are no longer placed on the process command line: the task instruction is now piped to the CLI over stdin (base64-encoded in transit), preventing long-horizon tasks that `pkill -f <service>` from occasionally matching and killing the agent's own process (#764).
+- `oddish run <experiment-id> --retry` no longer always reports "No failed trials to retry": `get_experiment_tasks` was missing `include_trials`, so the experiment retry sweep always saw tasks with no trial rows to select from (#722).
+- Admin cost dashboard and cost leaderboard no longer show a person's GitHub-tagged unbilled spend as a separate, non-clickable "unbilled" row when that handle already belongs to a registered user; the handle is now resolved (via `github_id`, falling back to username) and merged into that user's row, while their quota bar is preserved (#771).
+- Retrying a trial that was gathered into a read-only collection experiment (rather than owned by it) no longer drops it from that collection's view: the replacement trial now inherits the superseded trial's `experiment_trials` membership rows (#770).
+- Restored the `post-preview-links` CI job, which posts a sticky PR comment with preview environment links (#765).
+
+---
+
 ## [2026-07-15]
 
 ### Added
