@@ -185,6 +185,16 @@ function inferProviderFromQueueKey(queueKey: string): string {
   return provider || "unknown";
 }
 
+// Reserved presentation buckets in the queues payload for the
+// trajectory-analysis / verdict pipelines (mirrors ANALYSIS_PIPELINE_QUEUE_KEY
+// / VERDICT_PIPELINE_QUEUE_KEY in oddish.config). They carry ALL-TIME
+// trials.analysis_status / tasks.verdict_status counts, not windowed model
+// usage, so rendering them as model rows would pin a pseudo-model with
+// hundreds of thousands of "jobs" to the top of the Usage table and inflate
+// the running/queued totals with pipeline state. Pipeline counts surface via
+// the per-kind breakdown instead; keep them out of the model rows.
+const PIPELINE_QUEUE_KEYS = new Set(["analysis", "verdict"]);
+
 function getQueueQueuedJobs(stats?: QueueStats[string]): number {
   if (!stats) return 0;
   return (Number(stats.pending) || 0) + (Number(stats.queued) || 0);
@@ -325,6 +335,7 @@ function buildUsageRows(
   }
 
   for (const [queueKey, queueStats] of Object.entries(queues ?? {})) {
+    if (PIPELINE_QUEUE_KEYS.has(queueKey)) continue;
     const totalJobs = getQueueTotalJobs(queueStats);
     if (mergedRows.has(queueKey) || totalJobs === 0) continue;
 
