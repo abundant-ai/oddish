@@ -68,9 +68,7 @@ def _github_account_from_clerk_payload(data: dict) -> ClerkGithubIdentity:
     return ClerkGithubIdentity(None, None, None)
 
 
-async def fetch_github_identity_from_clerk(
-    clerk_user_id: str,
-) -> ClerkGithubIdentity | None:
+async def _fetch_clerk_user_payload(clerk_user_id: str) -> dict | None:
     if not CLERK_SECRET_KEY:
         return None
 
@@ -81,18 +79,49 @@ async def fetch_github_identity_from_clerk(
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
-            data = response.json()
+            return response.json()
     except httpx.HTTPError as exc:
         # Any HTTP failure — including 404 — is non-definitive. A 404 is
         # indistinguishable from a misconfigured CLERK_SECRET_KEY (wrong Clerk
-        # instance 404s for EVERY user), so treating it as "definitive
-        # no-github" would let a misconfig silently mass-unlink existing
-        # github_ids. Genuinely deleted Clerk users are soft-deleted via the
-        # membership webhook, so retrying them here is a bounded cost.
+        # instance 404s for EVERY user), so callers must treat None as "unknown",
+        # never as a settled "no linked account": doing otherwise would let a
+        # misconfig silently mass-unlink existing identities. Genuinely deleted
+        # Clerk users are soft-deleted via the membership webhook, so retrying
+        # them here is a bounded cost.
         logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
         return None
 
+
+async def fetch_github_identity_from_clerk(
+    clerk_user_id: str,
+) -> ClerkGithubIdentity | None:
+    data = await _fetch_clerk_user_payload(clerk_user_id)
+    if data is None:
+        return None
     return _github_account_from_clerk_payload(data)
+
+
+def _slack_user_id_from_clerk_payload(data: dict) -> str | None:
+    for account in data.get("external_accounts") or []:
+        if account.get("provider") != "oauth_slack":
+            continue
+        # Clerk stores the Slack account's provider_user_id from Slack's OpenID
+        # Connect. Depending on the connection it is either the bare Slack user
+        # id (U…/W…) or a "<team_id>-<user_id>" composite (T…-U…). Slack user
+        # ids start with U (W for enterprise grid), team ids with T, so take the
+        # user-id segment; anything unrecognized returns None so the caller
+        # falls back to the email-based Slack lookup.
+        for segment in (account.get("provider_user_id") or "").split("-"):
+            if segment[:1] in ("U", "W"):
+                return segment
+    return None
+
+
+async def fetch_slack_user_id_from_clerk(clerk_user_id: str) -> str | None:
+    data = await _fetch_clerk_user_payload(clerk_user_id)
+    if data is None:
+        return None
+    return _slack_user_id_from_clerk_payload(data)
 
 
 async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:

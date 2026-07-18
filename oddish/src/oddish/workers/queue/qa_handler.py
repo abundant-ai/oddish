@@ -115,7 +115,15 @@ def _classifications_from_trials(trials) -> list:
 async def _load_live_trials_for_classification(
     task_id: str,
 ) -> list[tuple[str, AnalysisStatus | None]]:
-    """Return live trial IDs and QA states."""
+    """Return live trial IDs and QA states.
+
+    Trials created by the Sauron->Oddish bulk migration (``imported_at IS NOT
+    NULL``) are excluded: classifying ~1M historical trials was ruled out on
+    cost. This deliberately diverges from small ad-hoc ``oddish import`` rows
+    (``origin='imported'`` but ``imported_at IS NULL``), which keep the stock
+    join-the-QA-job behavior. Migrated trials can still be analyzed manually
+    via backfill_analysis.py.
+    """
     async with get_session() as session:
         rows = (
             await session.execute(
@@ -125,6 +133,9 @@ async def _load_live_trials_for_classification(
                 ).where(
                     TrialModel.task_id == task_id,
                     TrialModel.superseded_by_trial_id.is_(None),
+                    # Exclude bulk-migrated Sauron trials (see docstring): too
+                    # costly to classify ~1M historical rows.
+                    TrialModel.imported_at.is_(None),
                     # Gate-skipped trials never ran (no logs to classify); a
                     # classifier run on them would emit phantom failures and
                     # pollute the verdict + the agent's pass/fail metrics. New
@@ -186,6 +197,36 @@ async def run_task_qa_job(
     classifications: list[TrialClassification] = []
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
+        if not live_trials:
+            # Every live trial is excluded from QA (bulk-migrated imports
+            # filtered by imported_at; gate-skipped trials). Nothing to classify
+            # and no inputs for a verdict -- complete the task cleanly instead of
+            # raising "No successful classifications" (which would record a
+            # FAILED verdict for what is not an error).
+            #
+            # maybe_start_qa_stage now refuses to enqueue a QA job with zero
+            # eligible trials, so this is the belt-and-braces path for a race
+            # (trials excluded between enqueue and run). It MUST leave a
+            # TERMINAL verdict_status: QaJobHandler maps SUCCESS -> ok() and
+            # everything else (including None) -> retryable failure, so a
+            # non-terminal status here would burn every retry and land the job
+            # FAILED. verdict stays None: dashboard counts SUCCESS AND
+            # verdict->>'is_good' IN (true,false), so a null verdict is counted
+            # as neither good nor bad rather than skewing either bucket.
+            async with get_session() as session:
+                task = await session.get(TaskModel, task_id, with_for_update=True)
+                if task and await _worker_job_is_running(session, worker_job_id):
+                    task.verdict = None
+                    task.verdict_status = VerdictStatus.SUCCESS
+                    task.verdict_error = None
+                    task.verdict_finished_at = utcnow()
+                    task.status = TaskStatus.COMPLETED
+                    task.finished_at = utcnow()
+            console.print(
+                f"[yellow]QA {task_id} skipped: no QA-eligible trials "
+                "(all bulk-imported)[/yellow]"
+            )
+            return
         to_classify = [
             trial_id
             for trial_id, analysis_status in live_trials

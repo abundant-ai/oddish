@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -23,6 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ENUM as PGEnum
 from sqlalchemy.ext.asyncio import AsyncAttrs  # type: ignore[attr-defined]
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import DeclarativeBase, mapped_column  # type: ignore[attr-defined]
@@ -489,6 +491,16 @@ class ExperimentModel(TimestampedMixin, Base):
     # Nullable; ``None``/blank means "no description".
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Migration markers (Sauron->Oddish import). NULL for normal rows.
+    # ``imported_at`` = when this row was created by the legacy importer ->
+    # clean audit/rollback (WHERE imported_at IS NOT NULL). ``orig_s3_src`` =
+    # the immutable Sauron run-root S3 path this experiment came from (encodes
+    # base/pr/run); anchor for later duplicate reconciliation.
+    imported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    orig_s3_src: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # ``lazy="select"`` (the default): no production read path actually
     # touches ``experiment.tasks``. Loading an experiment used to fan
     # out into a task fetch via ``task_experiments`` on every access;
@@ -582,6 +594,57 @@ class AnalyzerModel(TimestampedMixin, Base):
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class AnalyzerBlockModel(TimestampedMixin, Base):
+    """One run of a single composable analyzer block.
+
+    Standalone primitive (not part of ``run_analyzer_generation_job``): many
+    blocks chain arbitrarily in test scripts. ``type`` / ``llm_client_type`` are
+    the ``.value`` of the ``AnalyzerType`` / ``LLMClientType`` enums defined in
+    ``backend/api/services`` -- stored as plain strings so this module stays free
+    of any backend-package dependency. Raw streamed output lives in S3 at
+    ``{key_prefix}/{id}``; ``output`` here is the accumulated/parsed result.
+    """
+
+    __tablename__ = "analyzer_blocks"
+    __table_args__ = (
+        Index(
+            "idx_analyzer_blocks_analyzer_id_live",
+            "analyzer_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
+    llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # input/output are arbitrary JSON (the block's I/O are typed ``any``).
+    input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+
+    status: Mapped[JobStatus] = mapped_column(
+        PGEnum(JobStatus, name="jobstatus", create_type=False),
+        default=JobStatus.PENDING,
+        nullable=False,
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    job_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # ``metadata`` is reserved on the declarative Base, so the attribute is
+    # ``block_metadata`` while the DB column is literally named ``metadata``.
+    block_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -720,6 +783,13 @@ class TaskModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     verdict_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Migration provenance: set when created by the Sauron->Oddish importer,
+    # NULL otherwise. Rich provenance lives in ``tags``; this is the clean
+    # audit/rollback marker (WHERE imported_at IS NOT NULL).
+    imported_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -985,7 +1055,7 @@ class TrialModel(TimestampedMixin, Base):
 
     # Condensed agent step-graph of the trajectory (general phases + terminal
     # outcome node), populated on explicit request to
-    # POST /trials/{id}/trajectory/graph. Reuses trajectory_summary's phases.
+    # POST /trials/{id}/trajectory/graph. Reuses trajectory_summary's components.
     trajectory_graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Analysis data (LLM analysis of this trial)
@@ -1013,6 +1083,17 @@ class TrialModel(TimestampedMixin, Base):
         ForeignKey("trials.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+    # Migration markers: set when created by the Sauron->Oddish importer, NULL
+    # otherwise. ``imported_at`` is the clean audit/rollback marker; the source
+    # tag lives in ``harbor_config``. ``orig_s3_src`` is the IMMUTABLE Sauron
+    # attempt-prefix this trial came from -- distinct from ``trial_s3_key``
+    # (the mutable artifact-serving location), so the source survives any later
+    # artifact copy. Anchor for duplicate reconciliation.
+    imported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    orig_s3_src: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
@@ -1114,6 +1195,41 @@ class TrialModel(TimestampedMixin, Base):
             postgresql_where=text("is_probe"),
         ),
     )
+
+
+class AnalysisCostModel(TimestampedMixin, Base):
+    """Append-only ledger of analysis-job LLM spend.
+
+    Distinct from ``trials.cost_usd`` (the solving agent's run). One row per
+    analysis-job execution. ``trial_id`` is a plain indexed string (no DB FK)
+    and is nullable because experiment-level jobs have no single trial.
+    """
+
+    __tablename__ = "analysis_costs"
+    __table_args__ = (
+        Index("ix_analysis_costs_job_kind", "job_kind"),
+        Index("ix_analysis_costs_trial_id", "trial_id"),
+        Index("ix_analysis_costs_experiment_id", "experiment_id"),
+        Index("ix_analysis_costs_org_id", "org_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=generate_id
+    )
+    job_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # "native" = harness-reported (CLI total_cost_usd); "estimated" = priced
+    # via model_pricing. Job A is always "native".
+    cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
 
 
 class TrialEventModel(Base):
@@ -1994,6 +2110,7 @@ from oddish.db.soft_delete import register_soft_delete_models
 register_soft_delete_models(
     ExperimentModel,
     AnalyzerModel,
+    AnalyzerBlockModel,
     TaskModel,
     TrialModel,
     TagModel,

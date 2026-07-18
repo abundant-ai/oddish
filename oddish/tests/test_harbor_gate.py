@@ -10,7 +10,7 @@ from oddish.schemas import HarborConfig
 
 def _settings(**kw):
     return Settings(
-        harbor_allowed_sources="https://github.com/rishidesai/*,https://github.com/dot-agi/*",
+        harbor_allowed_sources="https://github.com/abundant-ai/*,https://github.com/dot-agi/*",
         **kw,
     )
 

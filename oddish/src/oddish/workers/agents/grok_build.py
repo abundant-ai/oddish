@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shlex
 import tempfile
@@ -25,6 +26,12 @@ _STDERR_FILENAME = "grok-build.stderr.log"
 _DEFAULT_MODEL = "v9m-rl-learnability-tp8"
 _XAI_BASE_URL = "https://api.x.ai/v1"
 _XAI_API_KEY_ENV = "XAI_API_KEY"
+# Optional comma-separated key pool; one key is drawn per trial to spread load
+# across accounts. This only buys headroom if the keys belong to *different* xAI
+# teams: the throttle is team-scoped ("You've hit your team's API rate limit"),
+# so a pool of keys on one team shares a single bucket and concurrent trials
+# throttle exactly as they do with one key.
+_XAI_API_KEYS_ENV = "XAI_API_KEYS"
 
 # Where the grok CLI persists its full session store (tool calls + token usage);
 # the headless stdout does not carry these, so we copy this tree into the trial
@@ -52,8 +59,27 @@ _API_BACKEND_RE = re.compile(r'api_backend = "[^"]*"')
 # keyed by cwd, and the pre-run ``rm -rf`` guarantees the most recent session
 # is this trial's) instead of throwing the run away. The failed call never
 # committed to the session store, so a resume loses at most one turn.
-_IDLE_TIMEOUT_PATTERN = "'idle timeout'"
-_MAX_IDLE_TIMEOUT_RESUMES = 3
+_IDLE_TIMEOUT_ALTERNATIVES = "idle timeout"
+
+# xAI rate limits ("You've hit your team's API rate limit") are the other death
+# that destroys an otherwise healthy run: the CLI exits non-zero and the trial
+# is thrown away mid-implementation, having already spent its turns. Unlike the
+# idle timeout this is *not* fixed by an immediate retry -- the throttle is on
+# the account, so a resume that fires straight away hits the same wall -- but
+# xAI's limits are refilling token buckets, so a resume that waits often lands.
+# Hence the shared resume loop below sleeps with an exponential backoff before
+# replaying a rate-limited arm, and resumes idle timeouts immediately. When the
+# limit is credit exhaustion rather than a bucket the backoff simply defers the
+# same failure, which is no worse than failing now.
+_RATE_LIMIT_ALTERNATIVES = "rate limit|rate_limit|too many requests|429"
+_RATE_LIMIT_PATTERN = f"'({_RATE_LIMIT_ALTERNATIVES})'"
+_RESUMABLE_ERROR_PATTERN = (
+    f"'({_IDLE_TIMEOUT_ALTERNATIVES}|{_RATE_LIMIT_ALTERNATIVES})'"
+)
+# First backoff, doubled per resume: 60s, 120s, 240s (7m worst case, against a
+# multi-hour agent timeout).
+_RATE_LIMIT_BACKOFF_SEC = 60
+_MAX_RESUMES = 3
 _RESUME_PROMPT = (
     "The previous request failed with a transient API error. "
     "Continue the original task from where you left off."
@@ -100,6 +126,7 @@ class OddishGrokBuild(BaseInstalledAgent):
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        self._api_key: str | None = None
         self.reasoning_effort = reasoning_effort
         normalized_backend = (api_backend or "").strip()
         if normalized_backend and normalized_backend not in _VALID_API_BACKENDS:
@@ -240,9 +267,23 @@ class OddishGrokBuild(BaseInstalledAgent):
             env=self._xai_env(),
         )
 
+    def _pick_api_key(self) -> str:
+        pool = [
+            key.strip()
+            for key in (self._get_env(_XAI_API_KEYS_ENV) or "").split(",")
+            if key.strip()
+        ]
+        if pool:
+            return random.choice(pool)
+        return self._get_env(_XAI_API_KEY_ENV) or ""
+
     def _xai_env(self) -> dict[str, str]:
-        api_key = self._get_env(_XAI_API_KEY_ENV)
-        return {_XAI_API_KEY_ENV: api_key} if api_key else {}
+        # Draw once and memoize: this is called twice per trial (the config
+        # write and the run), and a fresh draw per call would hand the CLI a
+        # different key than the one the trial was configured with.
+        if self._api_key is None:
+            self._api_key = self._pick_api_key()
+        return {_XAI_API_KEY_ENV: self._api_key} if self._api_key else {}
 
     async def setup(self, environment: BaseEnvironment) -> None:
         await super().setup(environment)
@@ -390,14 +431,20 @@ class OddishGrokBuild(BaseInstalledAgent):
             "rc=$?; rv=5; "
             "fi; "
             # Resume (rather than fail the trial) when the run died to the
-            # stream watchdog. Appending to stdout keeps the streamed event log
-            # whole; overwriting stderr makes each grep reflect only the latest
-            # attempt, so any different failure (rate limit, flag error) exits
-            # the loop.
-            "resumes=0; "
-            f"while [ $rc -ne 0 ] && [ $resumes -lt {_MAX_IDLE_TIMEOUT_RESUMES} ] "
-            f"&& grep -qi {_IDLE_TIMEOUT_PATTERN} {stderr_path}; do "
+            # stream watchdog or an xAI rate limit. Appending to stdout keeps
+            # the streamed event log whole; overwriting stderr makes each grep
+            # reflect only the latest attempt, so any other failure (flag error)
+            # still exits the loop. A rate-limited arm waits out the throttle
+            # first -- resuming instantly would just re-hit the same limit and
+            # burn the resume budget in seconds -- while an idle timeout, whose
+            # cure is landing on a fresh replica, resumes with no delay.
+            f"resumes=0; delay={_RATE_LIMIT_BACKOFF_SEC}; "
+            f"while [ $rc -ne 0 ] && [ $resumes -lt {_MAX_RESUMES} ] "
+            f"&& grep -Eqi {_RESUMABLE_ERROR_PATTERN} {stderr_path}; do "
             "resumes=$((resumes+1)); "
+            f"if grep -Eqi {_RATE_LIMIT_PATTERN} {stderr_path}; then "
+            'sleep "$delay"; delay=$((delay*2)); '
+            "fi; "
             'case "$rv" in '
             + " ".join(
                 f"{index}) {resume_arm(index)} >>{stdout_path} 2>{stderr_path};;"
