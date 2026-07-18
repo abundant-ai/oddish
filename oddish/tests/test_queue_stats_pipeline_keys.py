@@ -99,7 +99,14 @@ async def test_pipeline_counts_use_reserved_buckets() -> None:
 
 
 @pytest.mark.asyncio
-async def test_assemble_routes_model_trials_to_trial_pipeline() -> None:
+async def test_assemble_routes_model_trials_to_trial_pipeline(monkeypatch) -> None:
+    # Give the QA job bucket a concurrency override distinct from every
+    # default so the reserved-bucket assertion below cannot pass vacuously
+    # (default == default).
+    monkeypatch.setitem(
+        settings.model_concurrency_overrides, VERDICT_MODEL_KEY, 999
+    )
+
     stats = await get_queue_stats(_FakeSession())
     queue_stats, pipeline = _assemble_queue_and_pipeline(stats)
 
@@ -112,10 +119,40 @@ async def test_assemble_routes_model_trials_to_trial_pipeline() -> None:
 
     # The reserved buckets are always present (zero-filled via known keys) and
     # report the QA job bucket's concurrency, not a phantom per-model limit.
-    qa_concurrency = settings.get_model_concurrency(settings.get_qa_queue_key())
     for key in (ANALYSIS_PIPELINE_QUEUE_KEY, VERDICT_PIPELINE_QUEUE_KEY):
         assert key in queue_stats
-        assert queue_stats[key]["recommended_concurrency"] == qa_concurrency
+        assert queue_stats[key]["recommended_concurrency"] == 999
+        assert (
+            queue_stats[key]["recommended_concurrency"]
+            != settings.default_model_concurrency
+        )
+
+
+class _FakeOrgSession:
+    """By-org variant of ``_FakeSession`` for ``get_queue_stats_by_org``."""
+
+    async def execute(self, statement, params: dict[str, Any] | None = None):
+        sql = str(statement)
+        if "FROM trials" in sql and "COALESCE(queue_key, provider)" in sql:
+            return _Result([("org-a", ANALYSIS_MODEL_KEY, "RUNNING", 2)])
+        if "analysis_status" in sql:
+            return _Result([("org-a", AnalysisStatus.RUNNING, 41)])
+        if "verdict_status" in sql:
+            return _Result([("org-a", VerdictStatus.QUEUED, 17)])
+        raise AssertionError(f"unexpected statement: {sql[:120]}")
+
+
+@pytest.mark.asyncio
+async def test_by_org_stats_use_reserved_buckets() -> None:
+    from oddish.queue import get_queue_stats_by_org
+
+    stats_by_org = await get_queue_stats_by_org(_FakeOrgSession())
+
+    org_stats = stats_by_org["org-a"]
+    assert org_stats[ANALYSIS_PIPELINE_QUEUE_KEY]["running"] == 41
+    assert org_stats[VERDICT_PIPELINE_QUEUE_KEY]["queued"] == 17
+    # The analysis model's own bucket keeps only its trial counts.
+    assert org_stats[ANALYSIS_MODEL_KEY]["running"] == 2
 
 
 def test_reserved_keys_survive_normalization() -> None:

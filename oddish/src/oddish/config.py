@@ -71,6 +71,14 @@ NOP_ORACLE_QUEUE_KEY = "nop_oracle"
 # (an incident showed 4k+ phantom "running workers" under one model).
 ANALYSIS_PIPELINE_QUEUE_KEY = "analysis"
 VERDICT_PIPELINE_QUEUE_KEY = "verdict"
+
+# Sentinel prefix stamped on ``trials.analysis_error`` when orphaned-pipeline
+# cleanup finalizes a stranded classification as FAILED. These rows mean "the
+# QA job died before classifying this trial", NOT "classification ran and
+# failed" -- so resurrect paths (a task re-opened by appending trials, a QA
+# retry) match on this prefix and reopen them for the next QA pass instead of
+# permanently excluding the trial from the verdict.
+ORPHANED_ANALYSIS_ERROR_PREFIX = "Analysis orphaned: "
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 # Suffixed/prefixed variants of the deterministic baseline agents (e.g.
 # "oracle-v2", "agent-nop"). Kept in sync with the dashboard's

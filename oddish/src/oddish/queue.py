@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.config import (
     ANALYSIS_PIPELINE_QUEUE_KEY,
     NOP_ORACLE_QUEUE_KEY,
+    ORPHANED_ANALYSIS_ERROR_PREFIX,
     VERDICT_PIPELINE_QUEUE_KEY,
     is_nop_oracle_agent,
     settings,
@@ -442,6 +443,61 @@ async def enqueue_trial_worker_job(
             parent_job_id=parent_job_id,
             harbor_variant_id=harbor_variant_id,
         ),
+    )
+
+
+async def requeue_inflight_trial_analysis(
+    session: AsyncSession, *, task_id: str
+) -> None:
+    """Reopen analyses a dead or cancelled QA attempt left behind.
+
+    RUNNING rows go back to QUEUED (the next QA pass re-classifies anything
+    non-terminal), and FAILED rows stamped with the orphaned-analysis sentinel
+    (finalized by cleanup while no QA attempt existed) are reopened too --
+    they mean "never classified", not "classification ran and failed", so a
+    resurrected task must not carry them into its verdict as permanent gaps.
+
+    Rows a QA pass would never classify (superseded, bulk-imported, SKIPPED,
+    gate-skipped) are left alone so the orphan sweep's FAILED finalization
+    doesn't oscillate with this reset. The id-selection takes its row locks
+    with SKIP LOCKED so this never *waits* on a trial row another writer
+    holds -- callers may hold the task row lock, and blocking here inverts
+    the trials-then-task order ``cancel_tasks_runs`` documents (deadlock).
+    Contended rows are healed by the next sweep instead. Raw SQL: the
+    soft-delete filter is explicit.
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    analysis_status = 'QUEUED',
+                   analysis_error = NULL,
+                   analysis_finished_at = NULL
+            WHERE  id IN (
+                SELECT id
+                FROM   trials
+                WHERE  task_id = :task_id
+                  AND  deleted_at IS NULL
+                  AND  superseded_by_trial_id IS NULL
+                  AND  imported_at IS NULL
+                  AND  status <> 'SKIPPED'
+                  AND  COALESCE(error_message, '') NOT LIKE :gate_skip_pattern
+                  AND  (
+                      analysis_status = 'RUNNING'
+                      OR (
+                          analysis_status = 'FAILED'
+                          AND analysis_error LIKE :orphan_pattern
+                      )
+                  )
+                FOR UPDATE SKIP LOCKED
+            )
+            """
+        ),
+        {
+            "task_id": task_id,
+            "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
+            "orphan_pattern": f"{ORPHANED_ANALYSIS_ERROR_PREFIX}%",
+        },
     )
 
 
@@ -1227,21 +1283,11 @@ async def append_trials_to_task(
         # A classification the cancelled job had mid-flight skips its store
         # (``should_store`` sees the job is no longer RUNNING), which would
         # leave that trial's ``analysis_status`` stuck on RUNNING until the
-        # replacement QA job re-claims it. Move it back to QUEUED now so the
-        # pipeline reflects "waiting for the re-run", not a live
-        # classification. Raw SQL: soft-delete filter is explicit.
-        await session.execute(
-            text(
-                """
-                UPDATE trials
-                SET    analysis_status = 'QUEUED'
-                WHERE  task_id = :task_id
-                  AND  deleted_at IS NULL
-                  AND  analysis_status = 'RUNNING'
-                """
-            ),
-            {"task_id": task.id},
-        )
+        # replacement QA job re-claims it. Requeue it now -- and reopen any
+        # orphan-finalized FAILED rows, since this append resurrects the task
+        # and the fresh QA pass must classify them rather than inherit a
+        # permanent gap.
+        await requeue_inflight_trial_analysis(session, task_id=task.id)
 
     # Gate the appended LLM trials on this scope's baselines (the just-added
     # ones and any that already exist), blocking/releasing/cancelling under the

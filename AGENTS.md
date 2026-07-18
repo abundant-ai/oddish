@@ -529,11 +529,15 @@ presentation buckets only; the task-level QA worker job still enqueues under
 
 Related invariant: a QA job that dies or is cancelled mid-classification must
 not strand its trials in a non-terminal `analysis_status`. The stale-heartbeat
-QA mirror resets them (RETRYING → `QUEUED`, FAILED → `FAILED`), the
-append-supersede cancel path requeues in-flight rows, and
+QA mirror resets them (RETRYING → `QUEUED`, FAILED → `FAILED` with the
+`ORPHANED_ANALYSIS_ERROR_PREFIX` sentinel), the append-supersede cancel path
+requeues in-flight rows via `requeue_inflight_trial_analysis` (which also
+reopens sentinel-FAILED rows when an append resurrects the task), and
 `_reset_orphaned_trial_analysis` in the cleanup sweep is the backstop. If you
 add a new way to kill or cancel a QA job, reset its task's in-flight
-`analysis_status` the same way.
+`analysis_status` the same way — and select the trial rows `FOR UPDATE SKIP
+LOCKED`: these writers may hold the task row lock, and *waiting* on trial rows
+inverts the trials-then-task lock order `cancel_tasks_runs` takes (deadlock).
 
 ---
 

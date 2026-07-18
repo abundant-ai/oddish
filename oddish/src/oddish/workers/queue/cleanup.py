@@ -27,7 +27,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import SQLAlchemyError
 
-from oddish.config import NOP_ORACLE_QUEUE_KEY, settings
+from oddish.config import (
+    NOP_ORACLE_QUEUE_KEY,
+    ORPHANED_ANALYSIS_ERROR_PREFIX,
+    settings,
+)
+from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.db import (
@@ -102,19 +107,24 @@ STUCK_ANALYZING_REASON = (
 # cancelled ``should_store`` write) leaves that trial non-terminal with nothing
 # left to finish it. Historically these accumulated forever (an incident found
 # 4k+ of them rendering as phantom "running" analyses). Two arms:
-#   * never-classifiable rows (superseded / SKIPPED / bulk-imported trials, or
-#     a terminal task with no active QA job) are finalized FAILED;
+#   * never-classifiable rows (superseded / SKIPPED / bulk-imported /
+#     gate-skipped trials, a soft-deleted task, or a terminal task with no
+#     active QA job) are finalized FAILED, stamped with the
+#     orphaned-analysis sentinel so a later resurrect can reopen them;
 #   * rows a future QA attempt will re-classify are moved RUNNING -> QUEUED so
 #     the UI reflects "waiting", not a live classification.
 # Staleness-gated well above the QA per-trial classification window so we
 # never race an in-flight write, and batched so a large backlog drains over a
-# few ticks instead of one giant transaction.
+# few ticks instead of one giant transaction. Both arms select their rows
+# FOR UPDATE SKIP LOCKED (of trials only): the sweep transaction may already
+# hold task row locks, and waiting on a trial row inverts the trials-then-task
+# lock order ``cancel_tasks_runs`` documents (deadlock).
 ORPHANED_ANALYSIS_MINUTES = 30
 ORPHANED_ANALYSIS_BATCH_LIMIT = 2000
 ORPHANED_ANALYSIS_REASON = (
-    "Classification was orphaned (its QA job died or was cancelled and no "
-    "further attempt will classify this trial); marked terminal by "
-    "orphaned-pipeline cleanup."
+    ORPHANED_ANALYSIS_ERROR_PREFIX
+    + "its QA job died or was cancelled and no further attempt will classify "
+    "this trial; marked terminal by orphaned-pipeline cleanup."
 )
 
 
@@ -406,8 +416,14 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             # No further QA attempt will run for this task, so any trial the
             # dead job left mid-classification would stay non-terminal forever
             # (and count as a phantom "running" analysis in the dashboard
-            # pipeline). Finalize them alongside the verdict. Raw SQL: add the
-            # soft-delete filter explicitly.
+            # pipeline). Finalize them alongside the verdict, stamped with the
+            # orphaned-analysis sentinel so a later resurrect (append) can
+            # reopen them. The id-selection takes trial row locks with SKIP
+            # LOCKED: we already hold the task row lock, and *waiting* on a
+            # trial row here inverts the trials-then-task lock order
+            # ``cancel_tasks_runs`` documents (deadlock; a lock wait would
+            # also stall the whole sweep). Contended rows are healed by the
+            # orphan sweep instead. Raw SQL: soft-delete filter is explicit.
             await session.execute(
                 text(
                     """
@@ -415,36 +431,37 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                     SET    analysis_status = 'FAILED',
                            analysis_error = :reason,
                            analysis_finished_at = NOW()
-                    WHERE  task_id = :task_id
-                      AND  deleted_at IS NULL
-                      AND  analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                    WHERE  id IN (
+                        SELECT id
+                        FROM   trials
+                        WHERE  task_id = :task_id
+                          AND  deleted_at IS NULL
+                          AND  analysis_status IN
+                                   ('PENDING', 'QUEUED', 'RUNNING')
+                        FOR UPDATE SKIP LOCKED
+                    )
                     """
                 ),
                 {
                     "task_id": task.id,
-                    "reason": row["error_message"]
-                    or "Task QA job failed before classifying this trial.",
+                    "reason": ORPHANED_ANALYSIS_ERROR_PREFIX
+                    + (
+                        row["error_message"]
+                        or "task QA job failed before classifying this trial."
+                    ),
                 },
             )
         else:
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = row["error_message"]
-            # The retry re-classifies anything non-terminal; move trials the
-            # dead attempt left RUNNING back to QUEUED so the UI shows
-            # "queued for retry" instead of a phantom in-flight classification
-            # (mirrors the legacy per-trial ANALYSIS reap above).
-            await session.execute(
-                text(
-                    """
-                    UPDATE trials
-                    SET    analysis_status = 'QUEUED'
-                    WHERE  task_id = :task_id
-                      AND  deleted_at IS NULL
-                      AND  analysis_status = 'RUNNING'
-                    """
-                ),
-                {"task_id": task.id},
-            )
+            # The retry re-classifies anything non-terminal; requeue the rows
+            # the dead attempt left in flight (and reopen orphan-finalized
+            # ones) so the UI shows "queued for retry" instead of a phantom
+            # in-flight classification. Shared helper: SKIP LOCKED, same
+            # lock-order rationale as the FAILED arm above.
+            from oddish.queue import requeue_inflight_trial_analysis
+
+            await requeue_inflight_trial_analysis(session, task_id=task.id)
         return None
 
     if kind == "ANALYZER":
@@ -1136,11 +1153,14 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
     leak path (and for rows leaked before the mirror existed).
 
     Arm 1 finalizes rows no QA attempt will ever classify again -- superseded
-    retries, SKIPPED trials, bulk-imported (Sauron) rows, or trials of a
-    terminal task with no active QA worker_job -- as FAILED. A task that is
-    merely missing its QA job while still VERDICT_PENDING is deliberately NOT
-    matched: ``_heal_stale_verdict_pending`` (which runs earlier in this same
-    sweep transaction) re-enqueues those, and the fresh job re-classifies.
+    retries, SKIPPED and gate-skipped trials, bulk-imported (Sauron) rows,
+    soft-deleted tasks, or trials of a terminal task with no active QA
+    worker_job -- as FAILED, stamped with ``ORPHANED_ANALYSIS_ERROR_PREFIX``
+    so ``requeue_inflight_trial_analysis`` can reopen them if the task is
+    later resurrected by an append. A task that is merely missing its QA job
+    while still VERDICT_PENDING is deliberately NOT matched:
+    ``_heal_stale_verdict_pending`` (which runs earlier in this same sweep
+    transaction) re-enqueues those, and the fresh job re-classifies.
 
     Arm 2 moves RUNNING rows whose task will get another QA pass (task not
     terminal, no QA job currently RUNNING) back to QUEUED so the dashboard
@@ -1173,6 +1193,8 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
                               tr.superseded_by_trial_id IS NOT NULL
                               OR tr.status = 'SKIPPED'
                               OR tr.imported_at IS NOT NULL
+                              OR COALESCE(tr.error_message, '')
+                                     LIKE :gate_skip_pattern
                               OR t.deleted_at IS NOT NULL
                               OR (
                                   t.status IN ('COMPLETED', 'FAILED')
@@ -1190,6 +1212,7 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
                               )
                           )
                         LIMIT :batch_limit
+                        FOR UPDATE OF tr SKIP LOCKED
                     )
                     """
                 ),
@@ -1197,6 +1220,7 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
                     "reason": ORPHANED_ANALYSIS_REASON,
                     "stale_minutes": ORPHANED_ANALYSIS_MINUTES,
                     "batch_limit": ORPHANED_ANALYSIS_BATCH_LIMIT,
+                    "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
                 },
             ),
         ).rowcount
@@ -1220,6 +1244,8 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
                           AND  tr.superseded_by_trial_id IS NULL
                           AND  tr.imported_at IS NULL
                           AND  tr.status <> 'SKIPPED'
+                          AND  COALESCE(tr.error_message, '')
+                                   NOT LIKE :gate_skip_pattern
                           AND  COALESCE(tr.analysis_started_at, tr.updated_at)
                                    < NOW() - make_interval(mins => :stale_minutes)
                           AND  t.deleted_at IS NULL
@@ -1233,12 +1259,14 @@ async def _reset_orphaned_trial_analysis(session) -> tuple[int, int]:
                                 AND  wj.status::text = 'RUNNING'
                           )
                         LIMIT :batch_limit
+                        FOR UPDATE OF tr SKIP LOCKED
                     )
                     """
                 ),
                 {
                     "stale_minutes": ORPHANED_ANALYSIS_MINUTES,
                     "batch_limit": ORPHANED_ANALYSIS_BATCH_LIMIT,
+                    "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
                 },
             ),
         ).rowcount
