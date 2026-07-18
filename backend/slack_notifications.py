@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import httpx
 import modal
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from auth.provisioning import fetch_slack_user_id_from_clerk
@@ -401,6 +401,54 @@ def build_alerts(
     return alerts
 
 
+def _owner_email_by_handle():
+    """Resolve the notify target from the experiment's shown ``owner`` handle.
+
+    We notify the person the alert names: ``owner``, the displayed GitHub handle.
+    Not ``owner_user_id`` -- a set-once FK that falls back to the API key's creator,
+    so on re-runs and off-the-shelf sweeps it points at a different person than the
+    one named. Returns the email only when the handle maps to exactly one active
+    user in the org; a shared or unlinked handle yields NULL, notifying no one
+    rather than the wrong person.
+    """
+    handle = func.lower(func.ltrim(ExperimentModel.owner, "@"))
+    return (
+        select(case((func.count() == 1, func.max(UserModel.email)), else_=None))
+        .where(
+            ExperimentModel.owner.isnot(None),
+            UserModel.github_username.isnot(None),
+            func.lower(func.ltrim(UserModel.github_username, "@")) == handle,
+            UserModel.org_id == ExperimentModel.org_id,
+            UserModel.is_active.is_(True),
+            UserModel.deleted_at.is_(None),
+        )
+        .scalar_subquery()
+    )
+
+
+def _owner_clerk_user_id_by_handle():
+    """Clerk user id of the single active user ``_owner_email_by_handle`` resolves.
+
+    Kept parallel to that resolver -- same shown-handle match -- so the
+    Clerk-linked Slack lookup targets the person the alert names. NULL (delivery
+    falls back to the email lookup) when the handle is shared, unlinked, or that
+    user has no linked Clerk id.
+    """
+    handle = func.lower(func.ltrim(ExperimentModel.owner, "@"))
+    return (
+        select(case((func.count() == 1, func.max(UserModel.clerk_user_id)), else_=None))
+        .where(
+            ExperimentModel.owner.isnot(None),
+            UserModel.github_username.isnot(None),
+            func.lower(func.ltrim(UserModel.github_username, "@")) == handle,
+            UserModel.org_id == ExperimentModel.org_id,
+            UserModel.is_active.is_(True),
+            UserModel.deleted_at.is_(None),
+        )
+        .scalar_subquery()
+    )
+
+
 async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     now = now or datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(hours=2)
@@ -422,22 +470,13 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.id,
                     ExperimentModel.name,
                     ExperimentModel.owner,
-                    UserModel.email.label("owner_email"),
-                    UserModel.clerk_user_id.label("owner_clerk_user_id"),
+                    _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
                     func.count(TrialModel.id)
                     .filter(active_trial)
                     .label("active_trials"),
                 )
                 .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
-                .outerjoin(
-                    UserModel,
-                    and_(
-                        UserModel.id == ExperimentModel.owner_user_id,
-                        UserModel.org_id == ExperimentModel.org_id,
-                        UserModel.is_active.is_(True),
-                        UserModel.deleted_at.is_(None),
-                    ),
-                )
                 .where(
                     ExperimentModel.is_collection.is_(False),
                     ExperimentModel.deleted_at.is_(None),
@@ -451,8 +490,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.id,
                     ExperimentModel.name,
                     ExperimentModel.owner,
-                    UserModel.email,
-                    UserModel.clerk_user_id,
+                    ExperimentModel.org_id,
                 )
                 .execution_options(include_deleted=True)
             )
@@ -561,23 +599,14 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.id,
                     ExperimentModel.name,
                     ExperimentModel.owner,
-                    UserModel.email.label("owner_email"),
-                    UserModel.clerk_user_id.label("owner_clerk_user_id"),
+                    _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
                     func.count(TrialModel.id).label("total_trials"),
                     func.count(TrialModel.id)
                     .filter(TrialModel.status == TrialStatus.FAILED)
                     .label("failed_trials"),
                 )
                 .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
-                .outerjoin(
-                    UserModel,
-                    and_(
-                        UserModel.id == ExperimentModel.owner_user_id,
-                        UserModel.org_id == ExperimentModel.org_id,
-                        UserModel.is_active.is_(True),
-                        UserModel.deleted_at.is_(None),
-                    ),
-                )
                 .where(
                     ExperimentModel.is_collection.is_(False),
                     ExperimentModel.deleted_at.is_(None),
@@ -589,8 +618,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.id,
                     ExperimentModel.name,
                     ExperimentModel.owner,
-                    UserModel.email,
-                    UserModel.clerk_user_id,
+                    ExperimentModel.org_id,
                 )
                 .having(
                     func.count(TrialModel.id).filter(
@@ -621,19 +649,10 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     TrialModel.task_version_id,
                     ExperimentModel.name.label("experiment_name"),
                     ExperimentModel.owner,
-                    UserModel.email.label("owner_email"),
-                    UserModel.clerk_user_id.label("owner_clerk_user_id"),
+                    _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
                 )
                 .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
-                .outerjoin(
-                    UserModel,
-                    and_(
-                        UserModel.id == ExperimentModel.owner_user_id,
-                        UserModel.org_id == ExperimentModel.org_id,
-                        UserModel.is_active.is_(True),
-                        UserModel.deleted_at.is_(None),
-                    ),
-                )
                 .where(
                     ExperimentModel.is_collection.is_(False),
                     ExperimentModel.deleted_at.is_(None),
