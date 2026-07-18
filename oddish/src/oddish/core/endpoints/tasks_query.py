@@ -93,7 +93,7 @@ def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bo
         return None, False
     from oddish.config import settings
 
-    model_name = settings.normalize_trial_model(row["agent"], row["model"])
+    model_name = settings.normalize_trial_model(row["agent"], row["model"], strict=False)
     estimated = estimate_cost_usd(
         model_name or row["model"],
         row["input_tokens"],

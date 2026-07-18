@@ -1561,6 +1561,7 @@ async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> N
                 UserModel(
                     id=handle_user_id,
                     org_id=org_id,
+                    clerk_user_id="clerk_august",
                     email="august@example.com",
                     name="August Andersen",
                     github_username="august-andersen",
@@ -1620,6 +1621,14 @@ async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> N
         # Unmatched label -> named in the text, notified to no one.
         assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_email is None
         assert by_key[f"trial:{exp_ots_id}-recent:200"].recipient_email is None
+
+        # The Clerk id resolves from the same handle, so a Clerk-linked Slack DM
+        # reaches the named owner; the unmatched label carries no Clerk id.
+        assert (
+            by_key[f"experiment:{exp_handle_id}:1000"].recipient_clerk_user_id
+            == "clerk_august"
+        )
+        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_clerk_user_id is None
 
         # The billing user is never a recipient or a mention on any alert.
         for alert in by_key.values():
@@ -2297,3 +2306,159 @@ async def test_database_outbox_is_durable() -> None:
                     )
                 )
             )
+
+
+def test_build_alerts_threads_clerk_user_id_into_owner_dms() -> None:
+    # Every owner-DM path — cost milestones, expensive trials, and the failure
+    # DMs — must carry the owner's Clerk id so delivery can prefer their
+    # Clerk-linked Slack account over the email lookup.
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    cutoff = now - timedelta(hours=2)
+    alerts = build_alerts(
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    id="experiment/1",
+                    name="Exp",
+                    owner="alice",
+                    active_trials=1,
+                    owner_email="alice@example.com",
+                    owner_clerk_user_id="user_alice",
+                )
+            ],
+            trials=[
+                _trial("trial-1", 1500, experiment_id="experiment/1", finished_at=now)
+            ],
+            failed_experiments=[
+                FailedExperiment(
+                    id="exp1",
+                    name="Exp",
+                    owner="alice",
+                    failed_trials=5,
+                    total_trials=5,
+                    owner_email="alice@example.com",
+                    owner_clerk_user_id="user_alice",
+                )
+            ],
+        ),
+        recent_cutoff=cutoff,
+        dashboard_url="https://oddish.test",
+    )
+    dms = [alert for alert in alerts if alert.dm_only]
+    # Milestone DM, expensive-trial DM, and the failure DM are all present.
+    assert len(dms) >= 3
+    for dm in dms:
+        assert dm.recipient_email == "alice@example.com"
+        assert dm.recipient_clerk_user_id == "user_alice"
+
+
+@pytest.mark.asyncio
+async def test_resolve_dm_slack_id_prefers_clerk_linked_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email_lookups: list[str] = []
+
+    async def fetch_clerk(clerk_user_id: str) -> str | None:
+        assert clerk_user_id == "user_123"
+        return "UCLERK"
+
+    async def lookup(_token: str, email: str) -> str | None:
+        email_lookups.append(email)
+        return "UEMAIL"
+
+    monkeypatch.setattr(notifications, "fetch_slack_user_id_from_clerk", fetch_clerk)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    resolved = await notifications._resolve_dm_slack_id(
+        "xoxb-token", "user_123", "owner@example.com"
+    )
+    assert resolved == "UCLERK"
+    # A Clerk-linked account means the email path is never consulted.
+    assert email_lookups == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_dm_slack_id_falls_back_to_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clerk_calls: list[str] = []
+
+    async def fetch_clerk(clerk_user_id: str) -> str | None:
+        clerk_calls.append(clerk_user_id)
+        return None
+
+    async def lookup(_token: str, email: str) -> str | None:
+        assert email == "owner@example.com"
+        return "UEMAIL"
+
+    monkeypatch.setattr(notifications, "fetch_slack_user_id_from_clerk", fetch_clerk)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    # No Slack account linked in Clerk -> fall back to the email lookup.
+    assert (
+        await notifications._resolve_dm_slack_id(
+            "xoxb-token", "user_123", "owner@example.com"
+        )
+        == "UEMAIL"
+    )
+    assert clerk_calls == ["user_123"]
+    # No Clerk id at all short-circuits before ever calling Clerk.
+    assert (
+        await notifications._resolve_dm_slack_id(
+            "xoxb-token", None, "owner@example.com"
+        )
+        == "UEMAIL"
+    )
+    assert clerk_calls == ["user_123"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_uses_clerk_slack_id_over_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: dict[str, dict] = {}
+    posted: list[tuple[str, str]] = []
+    email_lookups: list[str] = []
+
+    async def fetch_clerk(clerk_user_id: str) -> str | None:
+        return "UCLERK" if clerk_user_id == "user_123" else None
+
+    async def lookup(_token: str, email: str) -> str | None:
+        email_lookups.append(email)
+        return "UEMAIL"
+
+    async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
+        posted.append((slack_user_id, text))
+
+    _outbox_stubs(monkeypatch, rows)
+    monkeypatch.setattr(notifications, "fetch_slack_user_id_from_clerk", fetch_clerk)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+    monkeypatch.setattr(notifications, "_post_dm", post_dm)
+
+    await _record_and_deliver(
+        [
+            SlackAlert(
+                "experiment-failed:1",
+                "clerk-linked dm",
+                recipient_email="owner@example.com",
+                recipient_clerk_user_id="user_123",
+                dm_only=True,
+            ),
+            SlackAlert(
+                "experiment-failed:2",
+                "email-fallback dm",
+                recipient_email="other@example.com",
+                recipient_clerk_user_id="user_999",
+                dm_only=True,
+            ),
+        ],
+        bot_token="xoxb-token",
+    )
+
+    assert posted == [("UCLERK", "clerk-linked dm"), ("UEMAIL", "email-fallback dm")]
+    # Only the recipient with no Clerk-linked Slack account hits the email path.
+    assert email_lookups == ["other@example.com"]
+    assert _sent_keys(rows) == {
+        "dm:experiment-failed:1:owner@example.com",
+        "dm:experiment-failed:2:other@example.com",
+    }
