@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-07-18]
 
+### Changed
+
+- The shared analysis model (`ODDISH_ANALYSIS_MODEL` — trajectory graph, trajectory summary, trial classifier, probe analysis) now defaults to Claude Sonnet 5 as the plain Anthropic-style id `claude-sonnet-5`, replacing the Bedrock inference-profile id `global.anthropic.claude-sonnet-4-6`. Plain Claude ids route analysis calls to the direct Anthropic API, and the analysis queue key changes accordingly to `anthropic/claude-sonnet-5` (#794).
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `anthropic/claude-sonnet-5` queue-key concurrency lease to 128 (up from the 48 default), giving the relocated analysis model the same headroom its predecessor queue key had; operators can still override the whole JSON via the env var / `oddish-prod` secret (#795).
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `global.anthropic.claude-sonnet-4-6` queue-key concurrency lease to 128 (up from the 48 default) — the queue key every Sonnet 4.6 trial id spelling normalizes to; operators can still override the whole JSON via the env var / `oddish-prod` secret (#796).
+
 ### Fixed
 
 - Dashboard queue stats no longer fold the trajectory-analysis and verdict pipeline counts into the analysis/verdict *model*'s queue bucket. They now live under reserved `analysis` / `verdict` queue keys, so trials awaiting or undergoing classification can no longer masquerade as that model's queued/running trial workers (an incident showed 4k+ phantom "running" rows under one model's queue while the model's real trials were misrouted into the "analyses" pipeline). The reserved buckets report the QA job bucket's concurrency instead of a meaningless per-model default.
