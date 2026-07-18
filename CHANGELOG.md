@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-18]
+
+### Changed
+
+- The shared analysis model (`ODDISH_ANALYSIS_MODEL` — trajectory graph, trajectory summary, trial classifier, probe analysis) now defaults to Claude Sonnet 5 as the plain Anthropic-style id `claude-sonnet-5`, replacing the Bedrock inference-profile id `global.anthropic.claude-sonnet-4-6`. Plain Claude ids route analysis calls to the direct Anthropic API, and the analysis queue key changes accordingly to `anthropic/claude-sonnet-5` (#794).
+
+---
+
 ## [2026-07-16]
 
 ### Fixed
