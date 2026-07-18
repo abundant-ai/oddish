@@ -116,7 +116,8 @@ def _ext_id(prefix: str) -> str:
 @app.function(image=image, secrets=[secret, aws_secret], timeout=60 * 60 * 6)
 async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                    scope_base: str | None, limit: int | None,
-                   concurrency: int, retry_failed: bool) -> None:
+                   concurrency: int, retry_failed: bool,
+                   shard: int, num_shards: int) -> None:
     import asyncio
     import json
     from datetime import datetime, timezone
@@ -126,6 +127,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
     import aioboto3
     import yaml
     from sqlalchemy import select, text
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     import oddish.queue as _oq
     from oddish.config import settings
@@ -183,6 +185,19 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         where += " AND run_id = :run"; params["run"] = scope_run
     if scope_pr is not None:
         where += " AND pr_number = :pr"; params["pr"] = scope_pr
+    # Shard the work across independent containers. Partition on task_id, NOT
+    # on the row: the importer takes a per-task lock and run-order index is
+    # per-task, so a task must live in EXACTLY ONE shard or two shards would
+    # contend on the same lock and interleave the index. Hashing the task name
+    # guarantees that without any coordination between shards.
+    #   substr(md5(...),1,7)::bit(28)::int is always 0..2^28-1, so no abs() and
+    #   no INT_MIN overflow. coalesce guards a NULL task_id from silently
+    #   dropping the row (NULL % n = NULL = not equal to any shard).
+    if num_shards > 1:
+        where += (" AND ((('x' || substr(md5(coalesce(task_id,'')), 1, 7))::bit(28)::int)"
+                  " % :nshards) = :shard")
+        params["nshards"] = num_shards
+        params["shard"] = shard
     sql = (f"SELECT s3_prefix, s3_base, pr_number, run_id, agent_key, model_key, "
            f"task_id, attempt, has_reward, has_trajectory, last_modified "
            f"FROM leg_trial_ledger WHERE {where} "
@@ -194,7 +209,9 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
 
     n_tasks = len({r["task_id"] for r in rows})
     n_exps = len({_root_of(r["s3_prefix"]) for r in rows})
-    print(f"scope: trials={len(rows)} tasks={n_tasks} experiments={n_exps} execute={execute}")
+    shard_label = f" shard={shard}/{num_shards}" if num_shards > 1 else ""
+    print(f"scope: trials={len(rows)} tasks={n_tasks} experiments={n_exps} "
+          f"execute={execute}{shard_label}")
     if not rows:
         print("nothing to do")
         return
@@ -322,19 +339,28 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                       f"eta={eta_min:.0f}min  (+{created['trials']} new, "
                       f"{created['skipped']} skipped, {created['errors']} errors)")
 
-        # 3a. Pre-create ALL experiments up-front, sequentially. With concurrent
-        # task-groups, two groups can share a run-root experiment; creating them
-        # here once avoids duplicate-PK races inside the groups.
+        # 3a. Pre-create ALL experiments up-front, sequentially. Two task-groups
+        # can share a run-root experiment, so creating them here once avoids
+        # duplicate-PK races inside the groups.
+        #
+        # ACROSS SHARDS this needs more than sequencing. Sharding partitions by
+        # task_id, but a run-root spans MULTIPLE tasks, so the same experiment
+        # id is legitimately reached by several shards at once (a 4-shard dry
+        # run on tbench-hammer claimed 4,922 experiments for a base that has
+        # far fewer). Separate containers cannot see each other's uncommitted
+        # rows, so check-then-insert would race and one shard would die on a
+        # unique violation mid-run. INSERT ... ON CONFLICT DO NOTHING makes the
+        # create atomic and idempotent; rowcount tells us whether WE created it,
+        # so the counter stays honest across shards.
         exp_ids: dict[str, str] = {}   # run-root path -> experiment id
         async with get_session() as sess:
             for root in roots:
                 eid = _exp_id(root)
-                exp = await sess.get(ExperimentModel, eid)
-                if exp is None:
-                    m = manifests.get(root, {}) or {}
-                    meta = m.get("metadata", {}) or {}
-                    rt = m.get("runtime", {}) or {}
-                    exp = ExperimentModel(
+                m = manifests.get(root, {}) or {}
+                meta = m.get("metadata", {}) or {}
+                rt = m.get("runtime", {}) or {}
+                res = await sess.execute(
+                    pg_insert(ExperimentModel.__table__).values(
                         id=eid, org_id=ORG_ID,
                         name=meta.get("name") or f"Legacy {root.rsplit('/', 1)[-1]}",
                         description=meta.get("description"),
@@ -342,9 +368,9 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                         link=rt.get("workflow_url"),
                         imported_at=now(),
                         orig_s3_src=f"{root}/",  # immutable run-root anchor
-                    )
-                    sess.add(exp)
-                    await sess.flush()
+                    ).on_conflict_do_nothing(index_elements=["id"])
+                )
+                if res.rowcount:
                     created["experiments"] += 1
                 exp_ids[root] = eid
             await sess.commit()
@@ -483,7 +509,19 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
 
         rows.sort(key=lambda r: r["task_id"])
         groups = [(tid, list(g)) for tid, g in groupby(rows, key=lambda r: r["task_id"])]
-        print(f"processing {len(groups)} task-groups with concurrency={max(1, concurrency)}")
+        # Longest-processing-time-first. Groups run concurrently but each group
+        # is sequential, so the run cannot finish before its largest remaining
+        # group does. Dispatching biggest-first means the long poles start at
+        # t=0 and the small groups backfill around them; dispatching in
+        # task_id order can leave a 900-trial group starting last and running
+        # alone with every other slot idle. On reflection-ai (89 groups, c=16)
+        # the last 14% of trials burned 28% of the wall clock. Ordering only --
+        # run order WITHIN a group is untouched, which is the ordering that
+        # actually matters for the run-order index.
+        groups.sort(key=lambda g: len(g[1]), reverse=True)
+        biggest = len(groups[0][1]) if groups else 0
+        print(f"processing {len(groups)} task-groups with concurrency={max(1, concurrency)}"
+              f"  (largest group={biggest} trials, dispatched first)")
         await asyncio.gather(*(_process_group(tid, grp) for tid, grp in groups))
 
     print("=" * 60)
@@ -495,7 +533,12 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
 @app.local_entrypoint()
 def main(execute: bool = False, scope_pr: int | None = None, scope_run: str | None = None,
          scope_base: str | None = None, limit: int | None = None,
-         concurrency: int = 1, retry_failed: bool = False) -> None:
+         concurrency: int = 1, retry_failed: bool = False,
+         shard: int = 0, num_shards: int = 1) -> None:
+    if num_shards < 1:
+        raise SystemExit("--num-shards must be >= 1")
+    if not 0 <= shard < num_shards:
+        raise SystemExit(f"--shard must be in [0, {num_shards - 1}]")
     transfer.remote(execute=execute, scope_pr=scope_pr, scope_run=scope_run,
                     scope_base=scope_base, limit=limit, concurrency=concurrency,
-                    retry_failed=retry_failed)
+                    retry_failed=retry_failed, shard=shard, num_shards=num_shards)
