@@ -10,7 +10,13 @@ from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import NOP_ORACLE_QUEUE_KEY, is_nop_oracle_agent, settings
+from oddish.config import (
+    ANALYSIS_PIPELINE_QUEUE_KEY,
+    NOP_ORACLE_QUEUE_KEY,
+    VERDICT_PIPELINE_QUEUE_KEY,
+    is_nop_oracle_agent,
+    settings,
+)
 from oddish.core.baseline_gate import (
     GATE_SKIP_PREFIX,
     GateOutcome,
@@ -1218,6 +1224,24 @@ async def append_trials_to_task(
             ),
             {"task_id": task.id},
         )
+        # A classification the cancelled job had mid-flight skips its store
+        # (``should_store`` sees the job is no longer RUNNING), which would
+        # leave that trial's ``analysis_status`` stuck on RUNNING until the
+        # replacement QA job re-claims it. Move it back to QUEUED now so the
+        # pipeline reflects "waiting for the re-run", not a live
+        # classification. Raw SQL: soft-delete filter is explicit.
+        await session.execute(
+            text(
+                """
+                UPDATE trials
+                SET    analysis_status = 'QUEUED'
+                WHERE  task_id = :task_id
+                  AND  deleted_at IS NULL
+                  AND  analysis_status = 'RUNNING'
+                """
+            ),
+            {"task_id": task.id},
+        )
 
     # Gate the appended LLM trials on this scope's baselines (the just-added
     # ones and any that already exist), blocking/releasing/cancelling under the
@@ -1790,16 +1814,23 @@ def _assemble_queue_and_pipeline(
     queue_keys = set(stats.keys()) | settings.get_known_queue_keys()
     for queue_key in sorted(queue_keys):
         provider_stats = stats.get(queue_key, _empty_queue_counts())
+        if queue_key in (ANALYSIS_PIPELINE_QUEUE_KEY, VERDICT_PIPELINE_QUEUE_KEY):
+            # The pipeline buckets are not their own concurrency gates: both
+            # classification and the verdict run inside the task-level QA
+            # worker job, whose bucket is the verdict model's queue key.
+            concurrency = settings.get_model_concurrency(settings.get_qa_queue_key())
+        else:
+            concurrency = settings.get_model_concurrency(queue_key)
         queue_stats[queue_key] = {
             **provider_stats,
-            "recommended_concurrency": settings.get_model_concurrency(queue_key),
+            "recommended_concurrency": concurrency,
         }
 
     trial_pipeline: dict[str, int] = {}
     analysis_pipeline: dict[str, int] = {}
     verdict_pipeline: dict[str, int] = {}
-    analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_qa_queue_key()
+    analysis_queue_key = ANALYSIS_PIPELINE_QUEUE_KEY
+    verdict_queue_key = VERDICT_PIPELINE_QUEUE_KEY
 
     for queue_key, provider_stats in stats.items():
         for status_name, count in provider_stats.items():
@@ -1824,10 +1855,18 @@ def _assemble_queue_and_pipeline(
 
 
 async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get queue statistics by queue_key across trial/analysis/verdict jobs."""
+    """Get queue statistics by queue_key across trial/analysis/verdict jobs.
+
+    Trial counts are bucketed by the trial's own ``queue_key``. Analysis and
+    verdict pipeline counts go into the reserved ``analysis`` / ``verdict``
+    buckets (``ANALYSIS_PIPELINE_QUEUE_KEY`` / ``VERDICT_PIPELINE_QUEUE_KEY``),
+    NOT the analysis/verdict model's queue key — keying them off a model merges
+    pipeline state into that model's queue bucket and misreports both (e.g.
+    thousands of trials mid-classification shown as "running" model workers).
+    """
     stats: dict[str, dict[str, int]] = {}
-    analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_qa_queue_key()
+    analysis_queue_key = ANALYSIS_PIPELINE_QUEUE_KEY
+    verdict_queue_key = VERDICT_PIPELINE_QUEUE_KEY
 
     if org_id:
         result = await session.execute(
@@ -1896,8 +1935,8 @@ async def get_queue_stats_by_org(
     to refresh every org's queue/pipeline slice in one scan instead of one
     scan per org. Rows with a NULL ``org_id`` are skipped (no org reads them).
     """
-    analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_qa_queue_key()
+    analysis_queue_key = ANALYSIS_PIPELINE_QUEUE_KEY
+    verdict_queue_key = VERDICT_PIPELINE_QUEUE_KEY
     stats_by_org: dict[str, dict[str, dict[str, int]]] = {}
 
     def _org_bucket(org_id: str) -> dict[str, dict[str, int]]:

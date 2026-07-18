@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-18]
+
+### Fixed
+
+- Dashboard queue stats no longer fold the trajectory-analysis and verdict pipeline counts into the analysis/verdict *model*'s queue bucket. They now live under reserved `analysis` / `verdict` queue keys, so trials awaiting or undergoing classification can no longer masquerade as that model's queued/running trial workers (an incident showed 4k+ phantom "running" rows under one model's queue while the model's real trials were misrouted into the "analyses" pipeline). The reserved buckets report the QA job bucket's concurrency instead of a meaningless per-model default.
+- A QA job that dies or is cancelled mid-classification no longer strands trials in a non-terminal `analysis_status`. The stale-heartbeat reap now resets the dead job's task trials inline (RETRYING → `QUEUED`, exhausted → `FAILED`), the append-supersede cancel requeues in-flight rows, and a new `_reset_orphaned_trial_analysis` cleanup phase heals any remaining orphans: never-classifiable rows (superseded / skipped / bulk-imported trials, or terminal tasks with no active QA job) are finalized `FAILED`, while rows a future QA attempt will re-classify are moved back to `QUEUED`. Previously these accumulated forever as phantom in-flight analyses.
+
+---
+
 ## [2026-07-16]
 
 ### Fixed

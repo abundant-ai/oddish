@@ -513,6 +513,28 @@ so it won't catch the omission — the failure only shows up on the compact
 experiment page. Builder unit tests can't catch it either (in-memory models
 have all attrs set); the bug lives in the query options, not the builder.
 
+### Dashboard pipeline stats use reserved queue keys
+
+`get_queue_stats` / `get_queue_stats_by_org` (`oddish/src/oddish/queue.py`)
+bucket trial counts by each trial's own `queue_key`, and the
+trajectory-analysis / verdict pipeline counts under the **reserved**
+`analysis` / `verdict` buckets (`ANALYSIS_PIPELINE_QUEUE_KEY` /
+`VERDICT_PIPELINE_QUEUE_KEY` in `oddish/src/oddish/config.py`). Never key
+pipeline counts off the analysis/verdict *model*'s queue key: that folds
+pipeline state into a real model's bucket — an incident rendered 4k+ trials
+mid-classification as "running workers" under one model's queue while that
+model's actual trials were routed into the "analyses" pipeline. These are
+presentation buckets only; the task-level QA worker job still enqueues under
+`get_qa_queue_key()` (the verdict model's concurrency bucket).
+
+Related invariant: a QA job that dies or is cancelled mid-classification must
+not strand its trials in a non-terminal `analysis_status`. The stale-heartbeat
+QA mirror resets them (RETRYING → `QUEUED`, FAILED → `FAILED`), the
+append-supersede cancel path requeues in-flight rows, and
+`_reset_orphaned_trial_analysis` in the cleanup sweep is the backstop. If you
+add a new way to kill or cancel a QA job, reset its task's in-flight
+`analysis_status` the same way.
+
 ---
 
 ## `backend/` — Hosted Cloud Layer

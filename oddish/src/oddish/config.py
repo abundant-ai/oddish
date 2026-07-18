@@ -60,6 +60,17 @@ def next_probe_model(index: int) -> str:
 
 
 NOP_ORACLE_QUEUE_KEY = "nop_oracle"
+
+# Reserved queue keys the dashboard queue/pipeline stats use for the
+# trajectory-analysis and task-verdict pipelines. These are *presentation*
+# buckets over ``trials.analysis_status`` / ``tasks.verdict_status`` — NOT
+# worker_jobs queue keys — and exist so pipeline counts can never be folded
+# into (and impersonate) a real model's queue bucket. Before this split, the
+# analysis pipeline was keyed off the analysis *model*'s queue key, so every
+# trial mid-classification showed up as "running" under that model's queue
+# (an incident showed 4k+ phantom "running workers" under one model).
+ANALYSIS_PIPELINE_QUEUE_KEY = "analysis"
+VERDICT_PIPELINE_QUEUE_KEY = "verdict"
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 # Suffixed/prefixed variants of the deterministic baseline agents (e.g.
 # "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
@@ -1527,8 +1538,8 @@ class Settings(BaseSettings):
     def get_known_queue_keys(self) -> set[str]:
         keys = {
             NOP_ORACLE_QUEUE_KEY,
-            self.get_analysis_queue_key(),
-            self.get_qa_queue_key(),
+            ANALYSIS_PIPELINE_QUEUE_KEY,
+            VERDICT_PIPELINE_QUEUE_KEY,
         }
         keys.update(self.model_concurrency_overrides.keys())
         return keys
