@@ -1387,8 +1387,17 @@ class Settings(BaseSettings):
                 return provider
         return self.get_provider_for_agent(agent)
 
-    def normalize_trial_model(self, agent: str, model: str | None) -> str | None:
+    def normalize_trial_model(
+        self, agent: str, model: str | None, *, strict: bool = True
+    ) -> str | None:
         """Canonicalize trial model input for storage/routing.
+
+        ``strict=True`` (default, the live create/queue/execute path) raises for
+        a Claude model with no Bedrock runtime id. ``strict=False`` is for
+        read-side rendering/cost/notify over already-stored trials: an imported
+        legacy model (e.g. ``claude-3-5-sonnet-20241022``) has no Bedrock id and
+        never executes, so fall back to the un-collapsed model rather than 500
+        the page.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force the model to the single canonical
@@ -1426,7 +1435,12 @@ class Settings(BaseSettings):
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
 
-        return to_bedrock_model_id(cleaned)
+        if strict:
+            return to_bedrock_model_id(cleaned)
+        try:
+            return to_bedrock_model_id(cleaned)
+        except ValueError:
+            return cleaned
 
     def normalize_queue_key(self, model: str) -> str:
         """Normalize queue keys.
