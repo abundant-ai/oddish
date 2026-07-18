@@ -433,9 +433,9 @@ async def get_trial_trajectory_summary(
 ) -> dict:
     """Get a Claude-generated summary of the trajectory.
 
-    Returns the persisted summary from `trials.trajectory_summary` when
-    fresh, otherwise generates one and writes it back. 404 when the trial
-    has no trajectory; 502 if generation fails.
+    Returns the summary from the latest `analyzer_blocks` row (mirrored to
+    `trials.trajectory_summary`) when fresh, otherwise generates one. 404 when
+    the trial has no trajectory; 502 if generation fails.
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
