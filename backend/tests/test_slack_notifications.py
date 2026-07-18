@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -28,9 +29,9 @@ from slack_notifications import (
     TrialSpend,
     UnpricedModel,
     build_alerts,
+    deliver_pending_alerts,
     load_alerts,
-    send_alerts,
-    send_owner_dms,
+    record_alerts,
 )
 
 
@@ -54,26 +55,44 @@ def _trial(
     )
 
 
-def _claim_stubs(monkeypatch: pytest.MonkeyPatch, claimed: set[str], sent: set[str]):
-    async def claim(key: str) -> bool:
-        if key in claimed:
-            return False
-        claimed.add(key)
-        return True
+def _outbox_stubs(monkeypatch: pytest.MonkeyPatch, rows: dict[str, dict]) -> None:
+    """In-memory outbox table honoring the first-write-wins insert."""
+
+    async def insert_rows(new_rows: list[dict]) -> None:
+        for row in new_rows:
+            rows.setdefault(row["alert_key"], dict(row))
+
+    async def pending() -> list[SimpleNamespace]:
+        ordered = sorted(rows.values(), key=lambda row: row["claimed_at"])
+        return [SimpleNamespace(**row) for row in ordered if row["notified_at"] is None]
 
     async def mark_sent(*keys: str) -> None:
-        sent.update(key for key in keys if key in claimed)
+        now = datetime.now(timezone.utc)
+        for key in keys:
+            if key in rows:
+                rows[key]["notified_at"] = now
 
-    async def is_pending(key: str) -> bool:
-        return key in claimed and key not in sent
-
-    async def is_sent(key: str) -> bool:
-        return key in sent
-
-    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_insert_alert_rows", insert_rows)
+    monkeypatch.setattr(notifications, "_pending_alert_rows", pending)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
-    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
-    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+
+
+def _sent_keys(rows: dict[str, dict]) -> set[str]:
+    return {key for key, row in rows.items() if row["notified_at"] is not None}
+
+
+def _pending_keys(rows: dict[str, dict]) -> set[str]:
+    return {key for key, row in rows.items() if row["notified_at"] is None}
+
+
+async def _record_and_deliver(
+    alerts: list[SlackAlert],
+    *,
+    webhook_url: str = "",
+    bot_token: str = "",
+) -> None:
+    await record_alerts(alerts, channel=bool(webhook_url), dms=bool(bot_token))
+    await deliver_pending_alerts(webhook_url, bot_token)
 
 
 def test_alert_thresholds_are_hardcoded() -> None:
@@ -641,53 +660,68 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_claims_once_and_retries_failed_posts(
+async def test_deliver_posts_recorded_alerts_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    claimed: set[str] = set()
-    sent: set[str] = set()
+    rows: dict[str, dict] = {}
     posted: list[str] = []
 
     async def post(_url: str, text: str) -> None:
         posted.append(text)
-        if text == "fail":
-            raise RuntimeError("failed")
 
-    _claim_stubs(monkeypatch, claimed, sent)
+    _outbox_stubs(monkeypatch, rows)
     monkeypatch.setattr(notifications, "_post", post)
 
-    await send_alerts("https://hooks.slack.test", [SlackAlert("sent", "ok")])
-    await send_alerts("https://hooks.slack.test", [SlackAlert("sent", "ok")])
+    for _ in range(2):
+        await _record_and_deliver(
+            [SlackAlert("experiment:1:500", "body")],
+            webhook_url="https://hooks.slack.test",
+        )
 
-    await send_alerts(
-        "https://hooks.slack.test",
-        [
-            SlackAlert("failed", "fail"),
-            SlackAlert("after-failure", "ok"),
-        ],
-    )
-
-    assert posted == ["ok", "fail", "ok"]
-    assert sent == {"sent", "after-failure"}
-    assert "failed" in claimed
-    assert "retry:slack:failed" in claimed
-    assert "after-failure" in claimed
-
-    await send_alerts(
-        "https://hooks.slack.test",
-        [SlackAlert("failed", "recovered", silent=True)],
-    )
-
-    assert posted == ["ok", "fail", "ok", "recovered"]
-    assert {"failed", "retry:slack:failed"}.issubset(sent)
+    assert posted == ["body"]
+    assert _sent_keys(rows) == {"experiment:1:500"}
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_prefixes_mentions_and_looks_up_after_claiming(
+async def test_deliver_retries_a_failed_post_with_its_stored_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    claimed: set[str] = set()
-    sent: set[str] = set()
+    rows: dict[str, dict] = {}
+    posted: list[str] = []
+    healthy = False
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+        if text == "flaky" and not healthy:
+            raise RuntimeError("failed")
+
+    _outbox_stubs(monkeypatch, rows)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await _record_and_deliver(
+        [SlackAlert("flaky-key", "flaky"), SlackAlert("ok-key", "ok")],
+        webhook_url="https://hooks.slack.test",
+    )
+    assert posted == ["flaky", "ok"]
+    assert _sent_keys(rows) == {"ok-key"}
+    assert _pending_keys(rows) == {"flaky-key"}
+
+    # Next run the milestone's spend has aged out of the recent window, so
+    # build_alerts recomputes it as silent with different text. The pending
+    # row keeps its original payload and keeps retrying regardless.
+    healthy = True
+    await _record_and_deliver(
+        [SlackAlert("flaky-key", "recomputed", silent=True)],
+        webhook_url="https://hooks.slack.test",
+    )
+    assert posted == ["flaky", "ok", "flaky"]
+    assert _pending_keys(rows) == set()
+
+
+@pytest.mark.asyncio
+async def test_deliver_prefixes_mentions_and_looks_up_only_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     posted: list[str] = []
     lookups: list[str] = []
 
@@ -698,7 +732,7 @@ async def test_send_alerts_prefixes_mentions_and_looks_up_after_claiming(
         lookups.append(email)
         return {"owner@example.com": "U123", "ke@abundant.ai": "U456"}.get(email)
 
-    _claim_stubs(monkeypatch, claimed, sent)
+    _outbox_stubs(monkeypatch, {})
     monkeypatch.setattr(notifications, "_post", post)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
@@ -709,19 +743,24 @@ async def test_send_alerts_prefixes_mentions_and_looks_up_after_claiming(
             mention_emails=("owner@example.com", "ke@abundant.ai", "nobody@e.com"),
         )
     ]
-    await send_alerts("https://hooks.slack.test", alerts, bot_token="xoxb-token")
+    await _record_and_deliver(
+        alerts, webhook_url="https://hooks.slack.test", bot_token="xoxb-token"
+    )
 
     assert posted == ["<@U123> <@U456>\nbody"]
     assert lookups == ["owner@example.com", "ke@abundant.ai", "nobody@e.com"]
 
+    # Once sent, a re-record leaves nothing pending: no repost, no lookups.
     lookups.clear()
-    await send_alerts("https://hooks.slack.test", alerts, bot_token="xoxb-token")
+    await _record_and_deliver(
+        alerts, webhook_url="https://hooks.slack.test", bot_token="xoxb-token"
+    )
     assert posted == ["<@U123> <@U456>\nbody"]
     assert lookups == []
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_looks_an_email_up_once_per_run(
+async def test_deliver_looks_an_email_up_once_per_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     posted: list[str] = []
@@ -734,16 +773,16 @@ async def test_send_alerts_looks_an_email_up_once_per_run(
         lookups.append(email)
         return "U123"
 
-    _claim_stubs(monkeypatch, set(), set())
+    _outbox_stubs(monkeypatch, {})
     monkeypatch.setattr(notifications, "_post", post)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
-    await send_alerts(
-        "https://hooks.slack.test",
+    await _record_and_deliver(
         [
             SlackAlert("trial:1:100", "one", mention_emails=("owner@example.com",)),
             SlackAlert("trial:2:100", "two", mention_emails=("owner@example.com",)),
         ],
+        webhook_url="https://hooks.slack.test",
         bot_token="xoxb-token",
     )
 
@@ -752,7 +791,7 @@ async def test_send_alerts_looks_an_email_up_once_per_run(
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_caches_a_terminal_lookup_miss_for_the_run(
+async def test_deliver_caches_a_terminal_lookup_miss_for_the_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     posted: list[str] = []
@@ -765,16 +804,16 @@ async def test_send_alerts_caches_a_terminal_lookup_miss_for_the_run(
         lookups.append(email)
         return None
 
-    _claim_stubs(monkeypatch, set(), set())
+    _outbox_stubs(monkeypatch, {})
     monkeypatch.setattr(notifications, "_post", post)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
-    await send_alerts(
-        "https://hooks.slack.test",
+    await _record_and_deliver(
         [
             SlackAlert("trial:1:100", "one", mention_emails=("nobody@example.com",)),
             SlackAlert("trial:2:100", "two", mention_emails=("nobody@example.com",)),
         ],
+        webhook_url="https://hooks.slack.test",
         bot_token="xoxb-token",
     )
 
@@ -784,7 +823,7 @@ async def test_send_alerts_caches_a_terminal_lookup_miss_for_the_run(
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_does_not_cache_a_transient_lookup_failure(
+async def test_deliver_does_not_cache_a_transient_lookup_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     posted: list[str] = []
@@ -799,16 +838,16 @@ async def test_send_alerts_does_not_cache_a_transient_lookup_failure(
             raise RuntimeError("slack user lookup failed: ratelimited")
         return "U123"
 
-    _claim_stubs(monkeypatch, set(), set())
+    _outbox_stubs(monkeypatch, {})
     monkeypatch.setattr(notifications, "_post", post)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
-    await send_alerts(
-        "https://hooks.slack.test",
+    await _record_and_deliver(
         [
             SlackAlert("trial:1:100", "one", mention_emails=("owner@example.com",)),
             SlackAlert("trial:2:100", "two", mention_emails=("owner@example.com",)),
         ],
+        webhook_url="https://hooks.slack.test",
         bot_token="xoxb-token",
     )
 
@@ -818,7 +857,7 @@ async def test_send_alerts_does_not_cache_a_transient_lookup_failure(
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_without_a_bot_token_posts_unprefixed(
+async def test_deliver_without_a_bot_token_posts_unprefixed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     posted: list[str] = []
@@ -826,21 +865,22 @@ async def test_send_alerts_without_a_bot_token_posts_unprefixed(
     async def post(_url: str, text: str) -> None:
         posted.append(text)
 
-    _claim_stubs(monkeypatch, set(), set())
+    _outbox_stubs(monkeypatch, {})
     monkeypatch.setattr(notifications, "_post", post)
 
-    await send_alerts(
-        "https://hooks.slack.test",
+    await _record_and_deliver(
         [SlackAlert("trial:1:100", "body", mention_emails=("owner@example.com",))],
+        webhook_url="https://hooks.slack.test",
     )
 
     assert posted == ["body"]
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_survives_mention_lookup_failures(
+async def test_deliver_survives_mention_lookup_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    rows: dict[str, dict] = {}
     posted: list[str] = []
 
     async def post(_url: str, text: str) -> None:
@@ -851,12 +891,11 @@ async def test_send_alerts_survives_mention_lookup_failures(
             raise RuntimeError("slack down")
         return "U123"
 
-    _claim_stubs(monkeypatch, set(), set())
+    _outbox_stubs(monkeypatch, rows)
     monkeypatch.setattr(notifications, "_post", post)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
-    await send_alerts(
-        "https://hooks.slack.test",
+    await _record_and_deliver(
         [
             SlackAlert(
                 "trial:1:100", "all broken", mention_emails=("boom@example.com",)
@@ -875,6 +914,7 @@ async def test_send_alerts_survives_mention_lookup_failures(
                 mention_emails=("boom@example.com", "owner@example.com"),
             ),
         ],
+        webhook_url="https://hooks.slack.test",
         bot_token="xoxb-token",
     )
 
@@ -883,14 +923,14 @@ async def test_send_alerts_survives_mention_lookup_failures(
         "<@U123>\npartly resolved",
         "<@U123>\nresolved after the failure",
     ]
+    assert _pending_keys(rows) == set()
 
 
 @pytest.mark.asyncio
-async def test_silent_alerts_complete_both_channels_without_sending(
+async def test_silent_alerts_settle_both_channels_without_sending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    claimed: set[str] = set()
-    sent: set[str] = set()
+    rows: dict[str, dict] = {}
     posted: list[str] = []
     looked_up: list[str] = []
 
@@ -901,154 +941,37 @@ async def test_silent_alerts_complete_both_channels_without_sending(
         looked_up.append(email)
         return "U123"
 
-    _claim_stubs(monkeypatch, claimed, sent)
+    _outbox_stubs(monkeypatch, rows)
     monkeypatch.setattr(notifications, "_post", post)
     monkeypatch.setattr(notifications, "_post_dm", post)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
-    channel_alert = SlackAlert(
-        "experiment:1:1000",
-        "historical",
-        mention_emails=("owner@example.com",),
-        silent=True,
-    )
-    dm_alert = SlackAlert(
-        "experiment-failed:1",
-        "historical",
-        recipient_email="owner@example.com",
-        dm_only=True,
-        silent=True,
-    )
-    await send_alerts(
-        "https://hooks.slack.test",
-        [channel_alert, dm_alert],
+    await _record_and_deliver(
+        [
+            SlackAlert(
+                "experiment:1:1000",
+                "historical",
+                mention_emails=("owner@example.com",),
+                silent=True,
+            ),
+            SlackAlert(
+                "experiment-failed:1",
+                "historical",
+                recipient_email="owner@example.com",
+                dm_only=True,
+                silent=True,
+            ),
+        ],
+        webhook_url="https://hooks.slack.test",
         bot_token="xoxb-token",
     )
-    await send_owner_dms("xoxb-token", [channel_alert, dm_alert])
 
     assert posted == []
     assert looked_up == []
-    assert (
-        sent
-        == claimed
-        == {
-            "experiment:1:1000",
-            "dm:experiment-failed:1:owner@example.com",
-        }
-    )
-
-
-@pytest.mark.asyncio
-async def test_send_alerts_closes_retry_after_partial_success_without_reposting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    alert_key = "experiment:1:1000"
-    retry_key = f"retry:slack:{alert_key}"
-    claimed = {alert_key, retry_key}
-    sent = {alert_key}
-    posted: list[str] = []
-
-    async def post(_url: str, text: str) -> None:
-        posted.append(text)
-
-    _claim_stubs(monkeypatch, claimed, sent)
-    monkeypatch.setattr(notifications, "_post", post)
-
-    await send_alerts(
-        "https://hooks.slack.test",
-        [SlackAlert(alert_key, "already delivered", silent=True)],
-    )
-
-    assert posted == []
-    assert retry_key in sent
-
-
-@pytest.mark.asyncio
-async def test_send_alerts_does_not_repeat_pending_primary_claims(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    loud_key = "experiment:1:1000"
-    silent_key = "experiment:1:2000"
-    claimed = {loud_key, silent_key}
-    sent: set[str] = set()
-    posted: list[str] = []
-
-    async def post(_url: str, text: str) -> None:
-        posted.append(text)
-
-    _claim_stubs(monkeypatch, claimed, sent)
-    monkeypatch.setattr(notifications, "_post", post)
-
-    await send_alerts(
-        "https://hooks.slack.test",
-        [
-            SlackAlert(loud_key, "retry loud"),
-            SlackAlert(silent_key, "do not post", silent=True),
-        ],
-    )
-
-    assert posted == []
-    assert sent == set()
-
-
-@pytest.mark.asyncio
-async def test_send_alerts_skips_dm_only_alerts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    posted: list[str] = []
-
-    async def post(_url: str, text: str) -> None:
-        posted.append(text)
-
-    _claim_stubs(monkeypatch, set(), set())
-    monkeypatch.setattr(notifications, "_post", post)
-
-    await send_alerts(
-        "https://hooks.slack.test",
-        [
-            SlackAlert("experiment-failed:1", "dm only", dm_only=True),
-            SlackAlert("trial-escalation:whale:1000", "channel"),
-        ],
-    )
-
-    assert posted == ["channel"]
-
-
-@pytest.mark.asyncio
-async def test_send_owner_dms_ignores_channel_alerts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    claimed: set[str] = set()
-    sent: set[str] = set()
-    lookups: list[str] = []
-    posted: list[tuple[str, str]] = []
-
-    async def lookup(_token: str, email: str) -> str | None:
-        lookups.append(email)
-        return "U123"
-
-    async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
-        posted.append((slack_user_id, text))
-
-    _claim_stubs(monkeypatch, claimed, sent)
-    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
-    monkeypatch.setattr(notifications, "_post_dm", post_dm)
-
-    await send_owner_dms(
-        "xoxb-token",
-        [
-            SlackAlert(
-                "trial-escalation:whale:1000",
-                "very expensive trial",
-                mention_emails=("owner@example.com", *ALWAYS_PING_EMAILS),
-            ),
-            SlackAlert("unpriced-model:x", "unpriceable"),
-        ],
-    )
-
-    assert posted == []
-    assert lookups == []
-    assert claimed == set()
+    assert _sent_keys(rows) == {
+        "experiment:1:1000",
+        "dm:experiment-failed:1:owner@example.com",
+    }
 
 
 @pytest.mark.asyncio
@@ -1068,7 +991,7 @@ async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
     async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
         dmed.append((slack_user_id, text))
 
-    _claim_stubs(monkeypatch, set(), set())
+    _outbox_stubs(monkeypatch, {})
     monkeypatch.setattr(notifications, "_post", post)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
     monkeypatch.setattr(notifications, "_post_dm", post_dm)
@@ -1085,8 +1008,9 @@ async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
     )
-    await send_alerts("https://hooks.slack.test", alerts, bot_token="xoxb-token")
-    await send_owner_dms("xoxb-token", alerts)
+    await _record_and_deliver(
+        alerts, webhook_url="https://hooks.slack.test", bot_token="xoxb-token"
+    )
 
     # The owner hears about the trial once, privately, and the escalation is the
     # only thing that reaches the channel -- the milestone no longer does.
@@ -1106,11 +1030,89 @@ async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
 
 
 @pytest.mark.asyncio
-async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
+async def test_deliver_settles_pre_outbox_rows_without_posting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    claimed: set[str] = set()
-    sent: set[str] = set()
+    # Rows claimed before the outbox carried a payload; there is nothing to
+    # deliver, so they settle instead of surfacing as pending forever.
+    rows: dict[str, dict] = {
+        "experiment:1:1000": {
+            "alert_key": "experiment:1:1000",
+            "claimed_at": datetime.now(timezone.utc),
+            "notified_at": None,
+            "payload": None,
+            "recipient_email": None,
+            "mention_emails": None,
+        }
+    }
+    posted: list[str] = []
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    _outbox_stubs(monkeypatch, rows)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await deliver_pending_alerts("https://hooks.slack.test", "")
+
+    assert posted == []
+    assert _sent_keys(rows) == {"experiment:1:1000"}
+
+
+@pytest.mark.asyncio
+async def test_record_routes_alerts_by_configured_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: dict[str, dict] = {}
+    posted: list[str] = []
+    dms: list[tuple[str, str]] = []
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
+        dms.append((slack_user_id, text))
+
+    async def lookup(_token: str, _email: str) -> str | None:
+        return "U123"
+
+    _outbox_stubs(monkeypatch, rows)
+    monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_post_dm", post_dm)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    alerts = [
+        SlackAlert("trial-escalation:whale:1000", "channel"),
+        SlackAlert(
+            "experiment-failed:1",
+            "dm only",
+            recipient_email="owner@example.com",
+            dm_only=True,
+        ),
+        SlackAlert("qa-failed:task/3", "no recipient", dm_only=True),
+    ]
+
+    # Webhook-only: DM alerts are not recorded, so nothing piles up
+    # undeliverable.
+    await _record_and_deliver(alerts, webhook_url="https://hooks.slack.test")
+    assert posted == ["channel"]
+    assert dms == []
+    assert set(rows) == {"trial-escalation:whale:1000"}
+
+    # Bot-only: channel alerts are not recorded.
+    rows.clear()
+    posted.clear()
+    await _record_and_deliver(alerts, bot_token="xoxb-token")
+    assert posted == []
+    assert dms == [("U123", "dm only")]
+    assert set(rows) == {"dm:experiment-failed:1:owner@example.com"}
+
+
+@pytest.mark.asyncio
+async def test_deliver_dms_per_recipient_and_retries_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: dict[str, dict] = {}
     lookups: list[str] = []
     posted: list[tuple[str, str]] = []
 
@@ -1125,7 +1127,7 @@ async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
         if text == "fail":
             raise RuntimeError("failed")
 
-    _claim_stubs(monkeypatch, claimed, sent)
+    _outbox_stubs(monkeypatch, rows)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
     monkeypatch.setattr(notifications, "_post_dm", post_dm)
 
@@ -1135,10 +1137,9 @@ async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
         recipient_email=" Owner@Example.com ",
         dm_only=True,
     )
-    await send_owner_dms("xoxb-token", [delivered])
-    await send_owner_dms("xoxb-token", [delivered])
-    await send_owner_dms(
-        "xoxb-token",
+    await _record_and_deliver([delivered], bot_token="xoxb-token")
+    await _record_and_deliver([delivered], bot_token="xoxb-token")
+    await _record_and_deliver(
         [
             SlackAlert(
                 "trial-failed:task/1",
@@ -1164,9 +1165,8 @@ async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
                 recipient_email="error@example.com",
                 dm_only=True,
             ),
-            SlackAlert("qa-failed:task/3", "no recipient", dm_only=True),
-            SlackAlert("unpriced-model:x", "admin-only Slack alert"),
         ],
+        bot_token="xoxb-token",
     )
 
     assert posted == [("U123", "dm text"), ("U123", "fail"), ("U123", "qa dm")]
@@ -1176,26 +1176,25 @@ async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
         "unknown@example.com",
         "error@example.com",
     ]
-    assert sent == {
+    # The recipient is normalized into the key, the settled "no Slack account"
+    # answer completes its row, and both explicit failures stay pending for
+    # the next run.
+    assert _sent_keys(rows) == {
         "dm:experiment-failed:1:owner@example.com",
-        "dm:experiment-failed:2:unknown@example.com",
         "dm:qa-failed:task/2:owner@example.com",
+        "dm:experiment-failed:2:unknown@example.com",
     }
-    for failed_key in (
+    assert _pending_keys(rows) == {
         "dm:trial-failed:task/1:owner@example.com",
         "dm:experiment-failed:3:error@example.com",
-    ):
-        assert failed_key in claimed
-        assert f"retry:{failed_key}" in claimed
-    assert "retry:dm:experiment-failed:2:unknown@example.com" not in claimed
+    }
 
 
 @pytest.mark.asyncio
-async def test_send_owner_dms_dedups_a_task_version_per_recipient(
+async def test_deliver_dedups_a_task_version_per_recipient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    claimed: set[str] = set()
-    sent: set[str] = set()
+    rows: dict[str, dict] = {}
     posted: list[tuple[str, str]] = []
 
     async def lookup(_token: str, email: str) -> str | None:
@@ -1204,7 +1203,7 @@ async def test_send_owner_dms_dedups_a_task_version_per_recipient(
     async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
         posted.append((slack_user_id, text))
 
-    _claim_stubs(monkeypatch, claimed, sent)
+    _outbox_stubs(monkeypatch, rows)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
     monkeypatch.setattr(notifications, "_post_dm", post_dm)
 
@@ -1222,8 +1221,7 @@ async def test_send_owner_dms_dedups_a_task_version_per_recipient(
 
     # Two broken trials on one task version, seen across two separate runs.
     for _ in range(2):
-        await send_owner_dms(
-            "xoxb-token",
+        await _record_and_deliver(
             build_alerts(
                 AlertCandidates(
                     failed_trials=[
@@ -1234,10 +1232,11 @@ async def test_send_owner_dms_dedups_a_task_version_per_recipient(
                 recent_cutoff=now - timedelta(hours=2),
                 dashboard_url="https://www.oddish.app",
             ),
+            bot_token="xoxb-token",
         )
 
     assert len(posted) == 1
-    assert sent == {"dm:trial-failed:task/1@v2:ada@example.com"}
+    assert _sent_keys(rows) == {"dm:trial-failed:task/1@v2:ada@example.com"}
 
 
 def _mock_slack_http(monkeypatch: pytest.MonkeyPatch, handler) -> None:
@@ -1281,11 +1280,10 @@ async def test_lookup_slack_user_parses_slack_responses(
 
 
 @pytest.mark.asyncio
-async def test_send_owner_dms_retries_a_throttled_lookup_instead_of_settling_it(
+async def test_deliver_retries_a_throttled_dm_lookup_instead_of_settling_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    claimed: set[str] = set()
-    sent: set[str] = set()
+    rows: dict[str, dict] = {}
     posted: list[str] = []
 
     async def lookup(_token: str, _email: str) -> str | None:
@@ -1294,7 +1292,7 @@ async def test_send_owner_dms_retries_a_throttled_lookup_instead_of_settling_it(
     async def post_dm(_token: str, _user: str, text: str) -> None:
         posted.append(text)
 
-    _claim_stubs(monkeypatch, claimed, sent)
+    _outbox_stubs(monkeypatch, rows)
     monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
     monkeypatch.setattr(notifications, "_post_dm", post_dm)
 
@@ -1304,12 +1302,11 @@ async def test_send_owner_dms_retries_a_throttled_lookup_instead_of_settling_it(
         recipient_email="owner@example.com",
         dm_only=True,
     )
-    await send_owner_dms("xoxb-token", [alert])
+    await _record_and_deliver([alert], bot_token="xoxb-token")
 
     assert posted == []
-    # Never marked delivered, and a retry marker keeps it eligible next run.
-    assert sent == set()
-    assert "retry:dm:trial-failed:t-v1:owner@example.com" in claimed
+    # Never marked delivered: the row stays pending for the next run.
+    assert _pending_keys(rows) == {"dm:trial-failed:t-v1:owner@example.com"}
 
 
 @pytest.mark.asyncio
@@ -1379,6 +1376,7 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
                 org_id=org_id,
                 email="expense-owner@example.com",
                 name="Expense Owner",
+                github_username="Expense Owner",
             )
         )
         session.add(
@@ -1516,6 +1514,152 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> None:
+    # ``owner_user_id`` is the API-key creator / original owner (the "biller");
+    # the experiment's shown ``owner`` handle is whoever actually ran it. Alerts
+    # must reach the handle owner, never the billing user. A handle that matches
+    # no connected user (an off-the-shelf/service label) notifies no one.
+    suffix = uuid4().hex[:12]
+    org_id = f"slack-org-{suffix}"
+    biller_id = f"slack-biller-{suffix}"
+    handle_user_id = f"slack-august-{suffix}"
+    exp_handle_id = f"slack-exp-handle-{suffix}"
+    exp_ots_id = f"slack-exp-ots-{suffix}"
+    task_id = f"slack-task-{suffix}"
+    now = datetime.now(timezone.utc)
+
+    def trial(trial_id: str, experiment_id: str, finished_at: datetime) -> TrialModel:
+        return TrialModel(
+            id=trial_id,
+            name=trial_id,
+            task_id=task_id,
+            experiment_id=experiment_id,
+            agent="claude-code",
+            provider="openai",
+            model="gpt-5.3",
+            queue_key="test",
+            status=TrialStatus.SUCCESS,
+            origin=TrialOrigin.ODDISH,
+            is_probe=False,
+            cost_usd=600,
+            finished_at=finished_at,
+        )
+
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="Handle org", slug=org_id))
+        session.add_all(
+            [
+                # The billing owner behind the API key -- must never be notified.
+                UserModel(
+                    id=biller_id,
+                    org_id=org_id,
+                    email="biller@example.com",
+                    name="Biller",
+                    github_username="biller",
+                ),
+                # The person the experiment names via its owner handle.
+                UserModel(
+                    id=handle_user_id,
+                    org_id=org_id,
+                    clerk_user_id="clerk_august",
+                    email="august@example.com",
+                    name="August Andersen",
+                    github_username="august-andersen",
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                # owner handle -> august; owner_user_id -> the biller.
+                ExperimentModel(
+                    id=exp_handle_id,
+                    name="Handle experiment",
+                    org_id=org_id,
+                    owner="august-andersen",
+                    owner_user_id=biller_id,
+                ),
+                # An off-the-shelf label that matches no connected user's handle.
+                ExperimentModel(
+                    id=exp_ots_id,
+                    name="OTS experiment",
+                    org_id=org_id,
+                    owner="ots-service-label",
+                    owner_user_id=biller_id,
+                ),
+            ]
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                org_id=org_id,
+                user="test",
+                task_path="/tmp/test",
+            )
+        )
+        session.add_all(
+            [
+                trial(f"{exp_handle_id}-base", exp_handle_id, now - timedelta(days=1)),
+                trial(f"{exp_handle_id}-recent", exp_handle_id, now),
+                trial(f"{exp_ots_id}-base", exp_ots_id, now - timedelta(days=1)),
+                trial(f"{exp_ots_id}-recent", exp_ots_id, now),
+            ]
+        )
+
+    try:
+        by_key = {alert.key: alert for alert in await load_alerts(now)}
+
+        # Handle resolves to a single connected user -> notify that user.
+        assert (
+            by_key[f"experiment:{exp_handle_id}:1000"].recipient_email
+            == "august@example.com"
+        )
+        assert (
+            by_key[f"trial:{exp_handle_id}-recent:200"].recipient_email
+            == "august@example.com"
+        )
+        # Unmatched label -> named in the text, notified to no one.
+        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_email is None
+        assert by_key[f"trial:{exp_ots_id}-recent:200"].recipient_email is None
+
+        # The Clerk id resolves from the same handle, so a Clerk-linked Slack DM
+        # reaches the named owner; the unmatched label carries no Clerk id.
+        assert (
+            by_key[f"experiment:{exp_handle_id}:1000"].recipient_clerk_user_id
+            == "clerk_august"
+        )
+        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_clerk_user_id is None
+
+        # The billing user is never a recipient or a mention on any alert.
+        for alert in by_key.values():
+            assert alert.recipient_email != "biller@example.com"
+            assert "biller@example.com" not in alert.mention_emails
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id.in_([exp_handle_id, exp_ots_id])
+                )
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(
+                    UserModel.id.in_([biller_id, handle_user_id])
+                )
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@pytest.mark.asyncio
 async def test_load_alerts_reports_unpriced_model_without_candidate_experiment() -> (
     None
 ):
@@ -1628,6 +1772,7 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
                 org_id=org_id,
                 email="failed-owner@example.com",
                 name="Failed Owner",
+                github_username="Failed Owner",
             )
         )
         session.add(
@@ -1781,6 +1926,7 @@ async def test_load_alerts_reports_crashed_trials_and_qa_failures() -> None:
                 org_id=org_id,
                 email="qa-author@example.com",
                 name="QA Author",
+                github_username="QA Author",
             )
         )
         session.add(
@@ -2111,37 +2257,208 @@ async def test_load_alerts_reports_failed_verdict_jobs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_database_alert_claim_is_durable() -> None:
-    alert_key = f"test-alert-{uuid4().hex}"
+async def test_database_outbox_is_durable() -> None:
+    loud_key = f"test-alert-{uuid4().hex}"
     silent_key = f"test-alert-silent-{uuid4().hex}"
-    retry_key = f"retry:{alert_key}"
+    now = datetime.now(timezone.utc)
+
+    def row(key: str, *, payload: str, silent: bool) -> dict:
+        return {
+            "alert_key": key,
+            "claimed_at": now,
+            "notified_at": now if silent else None,
+            "payload": payload,
+            "recipient_email": None,
+            "mention_emails": ["owner@example.com"],
+        }
 
     try:
-        assert await notifications._claim_alert(alert_key)
-        assert not await notifications._claim_alert(alert_key)
-        assert await notifications._alert_is_pending(alert_key)
-        assert not await notifications._alert_is_sent(alert_key)
-
-        await notifications._mark_alert_sent(alert_key)
-        assert await notifications._alert_is_sent(alert_key)
-        assert not await notifications._alert_is_pending(alert_key)
-
-        # An already-sent key is never re-delivered.
-        assert not await notifications._start_delivery(
-            alert_key, silent=False, retry_key=retry_key
+        await notifications._insert_alert_rows(
+            [
+                row(loud_key, payload="first", silent=False),
+                row(silent_key, payload="historical", silent=True),
+            ]
+        )
+        # First write wins: re-recording must not rewrite payload or state.
+        await notifications._insert_alert_rows(
+            [row(loud_key, payload="second", silent=False)]
         )
 
-        # A silent alert claims and completes without asking for a delivery.
-        assert not await notifications._start_delivery(
-            silent_key, silent=True, retry_key=f"retry:{silent_key}"
-        )
-        assert await notifications._alert_is_sent(silent_key)
+        pending = {
+            pending_row.alert_key: pending_row
+            for pending_row in await notifications._pending_alert_rows()
+        }
+        assert silent_key not in pending
+        assert pending[loud_key].payload == "first"
+        assert pending[loud_key].mention_emails == ["owner@example.com"]
+
+        await notifications._mark_alert_sent(loud_key)
+        assert loud_key not in {
+            pending_row.alert_key
+            for pending_row in await notifications._pending_alert_rows()
+        }
     finally:
         async with get_session() as session:
             await session.execute(
                 notifications.SlackExpenseAlertModel.__table__.delete().where(
                     notifications.SlackExpenseAlertModel.alert_key.in_(
-                        [alert_key, silent_key, retry_key, f"retry:{silent_key}"]
+                        [loud_key, silent_key]
                     )
                 )
             )
+
+
+def test_build_alerts_threads_clerk_user_id_into_owner_dms() -> None:
+    # Every owner-DM path — cost milestones, expensive trials, and the failure
+    # DMs — must carry the owner's Clerk id so delivery can prefer their
+    # Clerk-linked Slack account over the email lookup.
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    cutoff = now - timedelta(hours=2)
+    alerts = build_alerts(
+        AlertCandidates(
+            experiments=[
+                ExperimentCandidate(
+                    id="experiment/1",
+                    name="Exp",
+                    owner="alice",
+                    active_trials=1,
+                    owner_email="alice@example.com",
+                    owner_clerk_user_id="user_alice",
+                )
+            ],
+            trials=[
+                _trial("trial-1", 1500, experiment_id="experiment/1", finished_at=now)
+            ],
+            failed_experiments=[
+                FailedExperiment(
+                    id="exp1",
+                    name="Exp",
+                    owner="alice",
+                    failed_trials=5,
+                    total_trials=5,
+                    owner_email="alice@example.com",
+                    owner_clerk_user_id="user_alice",
+                )
+            ],
+        ),
+        recent_cutoff=cutoff,
+        dashboard_url="https://oddish.test",
+    )
+    dms = [alert for alert in alerts if alert.dm_only]
+    # Milestone DM, expensive-trial DM, and the failure DM are all present.
+    assert len(dms) >= 3
+    for dm in dms:
+        assert dm.recipient_email == "alice@example.com"
+        assert dm.recipient_clerk_user_id == "user_alice"
+
+
+@pytest.mark.asyncio
+async def test_resolve_dm_slack_id_prefers_clerk_linked_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email_lookups: list[str] = []
+
+    async def fetch_clerk(clerk_user_id: str) -> str | None:
+        assert clerk_user_id == "user_123"
+        return "UCLERK"
+
+    async def lookup(_token: str, email: str) -> str | None:
+        email_lookups.append(email)
+        return "UEMAIL"
+
+    monkeypatch.setattr(notifications, "fetch_slack_user_id_from_clerk", fetch_clerk)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    resolved = await notifications._resolve_dm_slack_id(
+        "xoxb-token", "user_123", "owner@example.com"
+    )
+    assert resolved == "UCLERK"
+    # A Clerk-linked account means the email path is never consulted.
+    assert email_lookups == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_dm_slack_id_falls_back_to_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clerk_calls: list[str] = []
+
+    async def fetch_clerk(clerk_user_id: str) -> str | None:
+        clerk_calls.append(clerk_user_id)
+        return None
+
+    async def lookup(_token: str, email: str) -> str | None:
+        assert email == "owner@example.com"
+        return "UEMAIL"
+
+    monkeypatch.setattr(notifications, "fetch_slack_user_id_from_clerk", fetch_clerk)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+
+    # No Slack account linked in Clerk -> fall back to the email lookup.
+    assert (
+        await notifications._resolve_dm_slack_id(
+            "xoxb-token", "user_123", "owner@example.com"
+        )
+        == "UEMAIL"
+    )
+    assert clerk_calls == ["user_123"]
+    # No Clerk id at all short-circuits before ever calling Clerk.
+    assert (
+        await notifications._resolve_dm_slack_id(
+            "xoxb-token", None, "owner@example.com"
+        )
+        == "UEMAIL"
+    )
+    assert clerk_calls == ["user_123"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_uses_clerk_slack_id_over_email(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: dict[str, dict] = {}
+    posted: list[tuple[str, str]] = []
+    email_lookups: list[str] = []
+
+    async def fetch_clerk(clerk_user_id: str) -> str | None:
+        return "UCLERK" if clerk_user_id == "user_123" else None
+
+    async def lookup(_token: str, email: str) -> str | None:
+        email_lookups.append(email)
+        return "UEMAIL"
+
+    async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
+        posted.append((slack_user_id, text))
+
+    _outbox_stubs(monkeypatch, rows)
+    monkeypatch.setattr(notifications, "fetch_slack_user_id_from_clerk", fetch_clerk)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+    monkeypatch.setattr(notifications, "_post_dm", post_dm)
+
+    await _record_and_deliver(
+        [
+            SlackAlert(
+                "experiment-failed:1",
+                "clerk-linked dm",
+                recipient_email="owner@example.com",
+                recipient_clerk_user_id="user_123",
+                dm_only=True,
+            ),
+            SlackAlert(
+                "experiment-failed:2",
+                "email-fallback dm",
+                recipient_email="other@example.com",
+                recipient_clerk_user_id="user_999",
+                dm_only=True,
+            ),
+        ],
+        bot_token="xoxb-token",
+    )
+
+    assert posted == [("UCLERK", "clerk-linked dm"), ("UEMAIL", "email-fallback dm")]
+    # Only the recipient with no Clerk-linked Slack account hits the email path.
+    assert email_lookups == ["other@example.com"]
+    assert _sent_keys(rows) == {
+        "dm:experiment-failed:1:owner@example.com",
+        "dm:experiment-failed:2:other@example.com",
+    }

@@ -265,9 +265,7 @@ class OrgQuotaModel(TimestampedMixin, Base):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        CheckConstraint(
-            "period_kind IN ('monthly')", name="ck_org_quotas_period_kind"
-        ),
+        CheckConstraint("period_kind IN ('monthly')", name="ck_org_quotas_period_kind"),
     )
 
 
@@ -480,6 +478,14 @@ class UserProviderKeyModel(TimestampedMixin, Base):
 
 
 class SlackExpenseAlertModel(Base):
+    """Outbox row for one Slack expense alert, delivered at-least-once.
+
+    A row is recorded with its rendered ``payload`` when the alert first
+    fires (``notified_at`` NULL means pending) and marked sent after the
+    Slack post succeeds. Silent alerts are recorded born-sent. Rows from
+    before the outbox carried no payload and are settled on sight.
+    """
+
     __tablename__ = "slack_expense_alerts"
 
     alert_key: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -489,6 +495,10 @@ class SlackExpenseAlertModel(Base):
     notified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipient_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipient_clerk_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mention_emails: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
 
 # ---------------------------------------------------------------------------
