@@ -13,6 +13,7 @@ import modal
 from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
+from auth.provisioning import fetch_slack_user_id_from_clerk
 from modal_app import app, image, slack_notification_secrets
 from models import SlackExpenseAlertModel, UserModel
 from oddish.core.admin import _real_spend_filter
@@ -67,6 +68,7 @@ class ExperimentCandidate:
     owner: str | None
     active_trials: int
     owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class FailedExperiment:
     failed_trials: int
     total_trials: int
     owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,7 @@ class FailedTrial:
     experiment_name: str
     owner: str | None
     owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -114,6 +118,7 @@ class QaFailure:
     task_version_id: str | None
     reason: str
     owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,7 @@ class SlackAlert:
     key: str
     text: str
     recipient_email: str | None = None
+    recipient_clerk_user_id: str | None = None
     mention_emails: tuple[str, ...] = ()
     dm_only: bool = False
     silent: bool = False
@@ -202,7 +208,12 @@ def build_alerts(
     alerts: list[SlackAlert] = []
     seen_failure_dms: set[tuple[str, str]] = set()
 
-    def add_failure_dm(key: str, recipient: str | None, text: str) -> None:
+    def add_failure_dm(
+        key: str,
+        recipient: str | None,
+        text: str,
+        clerk_user_id: str | None = None,
+    ) -> None:
         # Dedup on (key, recipient), not key alone: many broken trials on one
         # task version collapse to a single DM per person, but two owners
         # running that same version each still hear about it. The durable DM
@@ -212,7 +223,13 @@ def build_alerts(
             return
         seen_failure_dms.add(dedup)
         alerts.append(
-            SlackAlert(key=key, text=text, recipient_email=recipient, dm_only=True)
+            SlackAlert(
+                key=key,
+                text=text,
+                recipient_email=recipient,
+                recipient_clerk_user_id=clerk_user_id,
+                dm_only=True,
+            )
         )
 
     for experiment in candidates.experiments:
@@ -268,6 +285,7 @@ def build_alerts(
                             f"<{experiment_url}|open experiment>"
                         ),
                         recipient_email=experiment.owner_email,
+                        recipient_clerk_user_id=experiment.owner_clerk_user_id,
                         dm_only=True,
                         silent=silent,
                     )
@@ -297,6 +315,7 @@ def build_alerts(
                     key=f"trial:{trial.id}:{TRIAL_PING_USD:g}",
                     text=text,
                     recipient_email=experiment.owner_email,
+                    recipient_clerk_user_id=experiment.owner_clerk_user_id,
                     dm_only=True,
                 )
             )
@@ -329,6 +348,7 @@ def build_alerts(
             f"Owner: *{_escape(failed.owner or 'Unknown')}*\n"
             f"<{dashboard_url}/experiments/"
             f"{quote(quote(failed.id, safe=''), safe='')}|open experiment>",
+            failed.owner_clerk_user_id,
         )
 
     for failed_trial in candidates.failed_trials:
@@ -344,6 +364,7 @@ def build_alerts(
             f"Experiment: *{_escape(failed_trial.experiment_name)}*\n"
             f"Owner: *{_escape(failed_trial.owner or 'Unknown')}*\n"
             f"<{task_url}|open task>",
+            failed_trial.owner_clerk_user_id,
         )
 
     for qa_failure in candidates.qa_failures:
@@ -358,6 +379,7 @@ def build_alerts(
             f"Task: *{_escape(qa_failure.task_name)}*\n"
             f"Reason: {_escape(qa_failure.reason)}\n"
             f"<{task_url}|open task>",
+            qa_failure.owner_clerk_user_id,
         )
 
     for unpriced in candidates.unpriced_models:
@@ -404,6 +426,29 @@ def _owner_email_by_handle():
     )
 
 
+def _owner_clerk_user_id_by_handle():
+    """Clerk user id of the single active user ``_owner_email_by_handle`` resolves.
+
+    Kept parallel to that resolver -- same shown-handle match -- so the
+    Clerk-linked Slack lookup targets the person the alert names. NULL (delivery
+    falls back to the email lookup) when the handle is shared, unlinked, or that
+    user has no linked Clerk id.
+    """
+    handle = func.lower(func.ltrim(ExperimentModel.owner, "@"))
+    return (
+        select(case((func.count() == 1, func.max(UserModel.clerk_user_id)), else_=None))
+        .where(
+            ExperimentModel.owner.isnot(None),
+            UserModel.github_username.isnot(None),
+            func.lower(func.ltrim(UserModel.github_username, "@")) == handle,
+            UserModel.org_id == ExperimentModel.org_id,
+            UserModel.is_active.is_(True),
+            UserModel.deleted_at.is_(None),
+        )
+        .scalar_subquery()
+    )
+
+
 async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     now = now or datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(hours=2)
@@ -426,6 +471,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.name,
                     ExperimentModel.owner,
                     _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
                     func.count(TrialModel.id)
                     .filter(active_trial)
                     .label("active_trials"),
@@ -456,6 +502,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 owner=row.owner,
                 active_trials=int(row.active_trials or 0),
                 owner_email=row.owner_email,
+                owner_clerk_user_id=row.owner_clerk_user_id,
             )
             for row in candidate_rows
         ]
@@ -553,6 +600,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.name,
                     ExperimentModel.owner,
                     _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
                     func.count(TrialModel.id).label("total_trials"),
                     func.count(TrialModel.id)
                     .filter(TrialModel.status == TrialStatus.FAILED)
@@ -602,6 +650,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.name.label("experiment_name"),
                     ExperimentModel.owner,
                     _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
                 )
                 .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
                 .where(
@@ -638,6 +687,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     TaskModel.verdict_status,
                     TaskModel.verdict_error,
                     UserModel.email.label("owner_email"),
+                    UserModel.clerk_user_id.label("owner_clerk_user_id"),
                 )
                 .outerjoin(
                     UserModel,
@@ -686,6 +736,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             failed_trials=int(row.failed_trials or 0),
             total_trials=int(row.total_trials or 0),
             owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
         )
         for row in failed_rows
     ]
@@ -697,6 +748,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             experiment_name=str(row.experiment_name),
             owner=row.owner,
             owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
         )
         for row in failed_trial_rows
     ]
@@ -707,6 +759,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             task_version_id=row.current_version_id,
             reason=_verdict_reason(row.verdict_status, row.verdict_error),
             owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
         )
         for row in qa_rows
     ]
@@ -753,6 +806,21 @@ async def _lookup_slack_user(bot_token: str, email: str) -> str | None:
         raise RuntimeError(f"slack user lookup failed: {error}")
     log.warning("slack user lookup failed email=%s error=%s", email, error)
     return None
+
+
+async def _resolve_dm_slack_id(
+    bot_token: str, clerk_user_id: str | None, email: str
+) -> str | None:
+    # Prefer the Slack account the user linked through Clerk: that identity is
+    # authoritative, whereas users.lookupByEmail silently misses anyone whose
+    # Oddish email differs from their Slack workspace email. Fall back to the
+    # email lookup only when Clerk has no linked Slack account (or is
+    # unreachable), so delivery never regresses for users who never linked one.
+    if clerk_user_id:
+        slack_user_id = await fetch_slack_user_id_from_clerk(clerk_user_id)
+        if slack_user_id:
+            return slack_user_id
+    return await _lookup_slack_user(bot_token, email)
 
 
 async def _post_dm(bot_token: str, slack_user_id: str, text: str) -> None:
@@ -802,6 +870,7 @@ async def _pending_alert_rows() -> list:
             SlackExpenseAlertModel.alert_key,
             SlackExpenseAlertModel.payload,
             SlackExpenseAlertModel.recipient_email,
+            SlackExpenseAlertModel.recipient_clerk_user_id,
             SlackExpenseAlertModel.mention_emails,
         )
         .where(SlackExpenseAlertModel.notified_at.is_(None))
@@ -839,6 +908,7 @@ async def record_alerts(
     now = datetime.now(timezone.utc)
     rows: list[dict] = []
     for alert in alerts:
+        clerk_user_id: str | None = None
         if alert.dm_only:
             recipient: str | None = (alert.recipient_email or "").strip().lower()
             if not dms or not recipient:
@@ -847,6 +917,9 @@ async def record_alerts(
             # DMs stay deduplicated.
             key = f"dm:{alert.key}:{recipient}"
             mentions: list | None = None
+            # Carried into the row so delivery can prefer the recipient's
+            # Clerk-linked Slack account over the email lookup.
+            clerk_user_id = alert.recipient_clerk_user_id
         elif channel:
             key = alert.key
             recipient = None
@@ -860,6 +933,7 @@ async def record_alerts(
                 "notified_at": now if alert.silent else None,
                 "payload": alert.text,
                 "recipient_email": recipient,
+                "recipient_clerk_user_id": clerk_user_id,
                 "mention_emails": mentions,
             }
         )
@@ -907,8 +981,11 @@ async def deliver_pending_alerts(webhook_url: str, bot_token: str) -> None:
                 if not bot_token:
                     continue
                 if row.recipient_email not in lookup_cache:
-                    lookup_cache[row.recipient_email] = await _lookup_slack_user(
-                        bot_token, row.recipient_email
+                    # Prefer the recipient's Clerk-linked Slack account; fall
+                    # back to matching their Oddish email against Slack's
+                    # directory when they have none linked.
+                    lookup_cache[row.recipient_email] = await _resolve_dm_slack_id(
+                        bot_token, row.recipient_clerk_user_id, row.recipient_email
                     )
                 if slack_user_id := lookup_cache[row.recipient_email]:
                     await _post_dm(bot_token, slack_user_id, row.payload)
