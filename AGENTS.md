@@ -591,8 +591,8 @@ sweep):
    peer average, with at least one peer" filter (`trial_average_multiplier`)
    is gone, so the $200 floor is unconditional. A trial over $1,000 produces
    two alerts: the owner's DM, plus a separate in-channel escalation
-   (`trial-escalation:{id}:1000`) mentioning the owner and a hardcoded
-   always-ping list (`ALWAYS_PING_EMAILS` in `slack_notifications.py`). Both
+   (`trial-escalation:{id}`) mentioning the owner and the admin-editable
+   always-ping list (see below). Both
    carry the ":rotating_light: *Very expensive trial*" heading in place of
    the usual ":warning: *Expensive trial*". Milestones are driven by *new*
    spend: spend that finished within the 2h watch window. Milestones already

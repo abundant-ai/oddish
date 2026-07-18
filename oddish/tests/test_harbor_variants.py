@@ -32,9 +32,7 @@ def test_classify_default_normalizes_git_prefix_and_case():
         == "default"
     )
     assert (
-        classify_variant(
-            "https://github.com/RishiDesai/Harbor", HARBOR_DEFAULT_SHA
-        )
+        classify_variant("https://github.com/Abundant-AI/Harbor", HARBOR_DEFAULT_SHA)
         == "default"
     )
 

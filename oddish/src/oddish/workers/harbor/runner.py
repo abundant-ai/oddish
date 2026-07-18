@@ -8,17 +8,25 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
+from harbor.environments.kube_ops import kube_chart_present
+from harbor.environments.modal_network import infer_agent_domains
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.config import (
     EnvironmentConfig,
     MCPServerConfig,
+    NetworkMode,
     TaskConfig as HarborTaskConfig,
+    normalize_allowed_hosts,
 )
+from harbor.models.trial.config import AgentConfig as HarborAgentConfig
+from harbor.models.trial.config import EnvironmentConfig as HarborEnvironmentConfig
 from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
+from harbor.utils.env import resolve_env_vars
 
 from oddish.config import BEDROCK_ENV_VARS, settings
 from oddish.runtime.registry import get_backend
@@ -64,6 +72,10 @@ _ENV_BUILD_TIMEOUT_BASE_SEC: float = EnvironmentConfig.model_fields[
 # covers Harbor-side environment construction and keeps the outer cap strictly
 # above the inner pod-ready timeout so the more specific inner error surfaces.
 _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
+
+# TODO: Temporary workaround; remove once RishiDesai/harbor has the correct fix.
+# Hosts the Claude Code CLI fetches from at agent-setup (curl bootstrap / npm).
+_CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
 
 
 def _sized_environment_build_timeout_multiplier(
@@ -140,6 +152,67 @@ def _effective_task_build_timeout_sec(task_path: Path) -> float:
     except Exception:
         return _ENV_BUILD_TIMEOUT_BASE_SEC
     return base if base > 0 else _ENV_BUILD_TIMEOUT_BASE_SEC
+
+
+def _inject_daytona_agent_model_hosts(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Keep model transport reachable during a restricted Daytona agent phase.
+
+    Harbor can switch direct Daytona sandboxes after agent setup, but it needs
+    the run-specific model destinations to turn a restrictive phase policy into
+    a model-only allowlist. Infer those destinations from the fully normalized
+    agent config at runtime so task bundles never contain provider endpoints.
+    """
+    if environment_config.type != EnvironmentType.DAYTONA:
+        return
+    if environment_config.import_path is not None:
+        return
+
+    environment_dir = task_path / "environment"
+    if (environment_dir / "docker-compose.yaml").exists():
+        return
+    if environment_config.extra_docker_compose:
+        return
+    if kube_chart_present(environment_dir, environment_config.kwargs):
+        return
+
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(
+            (task_path / "task.toml").read_text()
+        )
+    except Exception:
+        return
+
+    baseline = task_config.environment.resolve_baseline()
+    if baseline.network_mode != NetworkMode.PUBLIC:
+        return
+
+    task_policy = task_config.agent.explicit_phase_policy()
+    effective_policies = []
+    for step in task_config.steps or [None]:
+        step_policy = step.agent.explicit_phase_policy() if step is not None else None
+        effective_policies.append(step_policy or task_policy or baseline)
+    if all(policy.network_mode == NetworkMode.PUBLIC for policy in effective_policies):
+        return
+
+    agent_kwargs = dict(agent_config.kwargs or {})
+    if agent_config.env:
+        agent_kwargs["extra_env"] = resolve_env_vars(agent_config.env)
+    inferred_hosts = normalize_allowed_hosts(
+        infer_agent_domains(
+            name=agent_config.name,
+            import_path=agent_config.import_path,
+            model_name=agent_config.model_name,
+            agent_kwargs=agent_kwargs,
+        )
+    )
+    agent_config.extra_allowed_hosts = list(
+        dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts])
+    )
 
 
 def _read_query_cli_text() -> str:
@@ -404,6 +477,28 @@ async def run_harbor_trial_async(
                 is_probe=is_probe,
                 probe_oddish_env=extra_agent_env,
             )
+            _inject_daytona_agent_model_hosts(
+                task_path=effective_task_path,
+                environment_config=env_config,
+                agent_config=agent_config,
+            )
+
+        # TODO: Temporary workaround; remove once RishiDesai/harbor has the
+        # correct fix.
+        # Claude Code downloads its CLI at agent-setup and calls its model
+        # endpoint during agent.run(). On closed-internet tasks Harbor's fallback
+        # domains cover neither the installer CDN nor custom model routes, so
+        # allow both via the environment baseline (which spans install + run).
+        if "claude-code" in (agent or "").strip().lower():
+            hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
+            base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")
+            endpoint_host = urlparse(base_url).hostname if base_url else None
+            if endpoint_host:
+                hosts.append(endpoint_host)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
 
         # Stage the org's shared skills (+ global seeds) into a root under the
         # job dir and hand it to Harbor via ``AgentConfig.skills``. Best-effort;
