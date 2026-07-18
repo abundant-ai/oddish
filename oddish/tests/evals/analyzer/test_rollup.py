@@ -59,14 +59,14 @@ def test_models_hit_ratio_uses_the_roster_not_the_findings():
 
 
 def test_ratio_normalizes_both_sides():
-    """Roster holds the same model under two spellings (plain + Bedrock). If the
-    roster side skipped normalization, these would count as 2 distinct models
-    instead of collapsing to 1 — inflating the denominator and letting
-    models_hit exceed the roster."""
+    """Roster holds the same model under two spellings (plain + provider
+    prefixed). If the roster side skipped normalization, these would count as
+    2 distinct models instead of collapsing to 1 — inflating the denominator
+    and letting models_hit exceed the roster."""
     out = build_rollup(
         [_f(subtype="Missing File Reference", model="claude-opus-4-8",
             task_id="alpha", task_path="tasks/alpha")],
-        {"alpha": ["claude-opus-4-8", "global.anthropic.claude-opus-4-8"]},
+        {"alpha": ["claude-opus-4-8", "anthropic/claude-opus-4-8"]},
     )
     g = out["task_construction"]["groups"][0]
     assert g["models_total"] == 1
@@ -74,6 +74,8 @@ def test_ratio_normalizes_both_sides():
 
 
 def test_model_spellings_collapse_to_one_group():
+    """Plain and provider-prefixed spellings collapse; a Bedrock-shaped id is a
+    distinct transport and keeps its own group."""
     out = build_rollup(
         [
             _f(trial_id="t1", classification="GOOD_FAILURE", subtype="Logic Error",
@@ -86,8 +88,10 @@ def test_model_spellings_collapse_to_one_group():
         {"task": ["claude-opus-4-8"]},
     )
     groups = out["good_failures"]["groups"]
-    assert len(groups) == 1
-    assert groups[0]["gaps"][0]["count"] == 3
+    assert len(groups) == 2
+    counts = {g["key"]: g["gaps"][0]["count"] for g in groups}
+    assert counts["claude-opus-4-8"] == 2
+    assert counts["global.anthropic.claude-opus-4-8"] == 1
 
 
 def test_none_model_groups_as_unknown():

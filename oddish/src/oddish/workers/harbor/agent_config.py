@@ -23,13 +23,13 @@ from oddish.config import (
     is_moonshot_model,
     is_xai_model,
     is_zai_model,
+    looks_like_bedrock_model_id,
     to_meta_model_id,
     minimax_api_model_id,
     minimax_bare_model_id,
     moonshot_bare_model_id,
     settings,
     to_anthropic_api_model_id,
-    to_bedrock_model_id,
     to_fireworks_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
@@ -76,13 +76,20 @@ def _is_mini_swe_agent(agent_config: AgentConfig) -> bool:
 def _to_litellm_claude_model_id(model: str | None) -> str | None:
     """Provider-prefix a Claude id for litellm-based (non claude-code) agents.
 
-    claude-code consumes the bare Bedrock inference-profile id via its own
-    InvokeModel transport; every other Harbor agent (mini-swe, ...) runs the
-    model through litellm, which requires a ``provider/model`` id. Route Claude
-    to the direct Anthropic API (``ANTHROPIC_API_KEY``, which Harbor forwards
-    into the agent sandbox for ``anthropic/`` models) as ``anthropic/<api-id>``.
-    Non-Claude and already-prefixed ids pass through unchanged.
+    claude-code consumes a bare model id via its own transport; every other
+    Harbor agent (mini-swe, ...) runs the model through litellm, which requires
+    a ``provider/model`` id. Each id shape keeps its own endpoint: a
+    Bedrock-shaped id routes through litellm's ``bedrock/`` provider, a plain
+    Claude id routes to the direct Anthropic API (``ANTHROPIC_API_KEY``, which
+    Harbor forwards into the agent sandbox for ``anthropic/`` models) as
+    ``anthropic/<api-id>``. Non-Claude and already-prefixed ids pass through
+    unchanged.
     """
+    if model and looks_like_bedrock_model_id(model):
+        stripped = model.strip()
+        if stripped.lower().startswith("bedrock/"):
+            return stripped
+        return f"bedrock/{stripped}"
     api_id = to_anthropic_api_model_id(model)
     if not api_id or "/" in api_id:
         return api_id
@@ -357,22 +364,6 @@ def _apply_claude_code_probe_subagent_model(
     agent_config.env = env
 
 
-def _agent_uses_bedrock() -> bool:
-    """Mirror Harbor's claude-code Bedrock-mode detection."""
-    if os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").strip() == "1":
-        return True
-    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip():
-        return True
-    return False
-
-
-def _claude_code_forces_direct_api(is_probe: bool) -> bool:
-    """Whether a claude-code agent must use the direct Anthropic API over Bedrock."""
-    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
-        return False
-    return is_probe or settings.claude_code_force_direct_api
-
-
 def _apply_probe_oddish_creds(
     agent_config: AgentConfig, probe_env: dict[str, str] | None
 ) -> None:
@@ -463,13 +454,19 @@ def _build_agent_config(
         agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
     elif not _is_claude_code_agent(agent_config):
         # litellm-based agents need a "provider/model" id; claude-code is the
-        # only agent that consumes the bare Bedrock inference-profile id.
+        # only agent that consumes a bare model id.
         agent_config.model_name = _to_litellm_claude_model_id(agent_config.model_name)
-    elif _claude_code_forces_direct_api(is_probe):
-        agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
-    elif _agent_uses_bedrock():
-        agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    elif looks_like_bedrock_model_id(agent_config.model_name):
+        # Bedrock-shaped ids (inference profiles, ARNs) route through AWS
+        # Bedrock. Claude Code consumes the bare id; strip only a redundant
+        # "bedrock/" transport prefix.
+        model_name = (agent_config.model_name or "").strip()
+        if model_name.lower().startswith("bedrock/"):
+            model_name = model_name.split("/", 1)[1]
+        agent_config.model_name = model_name
     else:
+        # Plain Anthropic-style ids route to the direct Anthropic API; the
+        # runner strips the Bedrock env signals for these trials.
         agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
 
     _apply_claude_code_openrouter_env(agent_config)

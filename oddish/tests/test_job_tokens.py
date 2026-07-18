@@ -76,10 +76,11 @@ def test_scoped_model_env_openai_only_carries_openai() -> None:
     assert "ANTHROPIC_API_KEY" not in env
 
 
-def test_scoped_model_env_litellm_claude_scopes_anthropic_key() -> None:
-    # A Bedrock-classified Claude model on a non-claude-code (litellm) agent runs
-    # as anthropic/<id>, so the scoped bundle must carry ANTHROPIC_API_KEY, not
-    # the CLAUDE_CODE_USE_BEDROCK routing flag it can't use.
+def test_scoped_model_env_litellm_bedrock_falls_back_to_blanket() -> None:
+    # A Bedrock-shaped Claude model on a non-claude-code (litellm) agent runs
+    # through litellm's bedrock provider on the ambient AWS creds; there is no
+    # single API key to scope, so return {} and let the dual-read fall back to
+    # the blanket secret.
     settings = _fake_settings(anthropic_api_key="sk-ant")
     settings.get_provider_for_trial = lambda agent, model: "bedrock"
     env = job_tokens.scoped_model_env(
@@ -87,7 +88,7 @@ def test_scoped_model_env_litellm_claude_scopes_anthropic_key() -> None:
         model="global.anthropic.claude-opus-4-8",
         settings=settings,
     )
-    assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
+    assert env == {}
 
 
 def test_scoped_model_env_meta_only_carries_meta_key() -> None:

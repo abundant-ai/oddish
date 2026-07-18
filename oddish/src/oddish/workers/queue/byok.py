@@ -88,28 +88,14 @@ def uses_direct_anthropic(agent: str, model: str | None, *, settings: Any) -> bo
     """Whether the trial reaches the direct Anthropic API, so an injected
     ``ANTHROPIC_API_KEY`` actually takes effect.
 
-    Oddish canonicalizes claude models to a Bedrock runtime id, so
-    ``get_provider_for_trial`` reports "bedrock" for them. Only claude-code
-    reroutes such a trial to the direct Anthropic API: the harbor runner
-    surfaces the user key in the worker's ambient env and blanks the baked-in
-    Bedrock creds for claude-code alone, so the direct-vs-Bedrock decision
-    (which reads ``os.environ``) picks the direct transport. Any other agent
-    stays on real Bedrock, which authenticates with AWS SigV4 creds an API key
-    can't serve -- so a user key only takes effect for claude-code, and the
-    resolver must not claim eligibility it can't deliver.
-
-    A provider that is already direct-Anthropic (not the Bedrock reroute) works
-    for any agent, since the key rides in the agent env.
+    A plain Anthropic-style Claude id resolves to the "anthropic" provider and
+    runs on the direct Anthropic API, where a user key applies. A
+    Bedrock-shaped id resolves to "bedrock" and genuinely runs on AWS Bedrock,
+    which authenticates with AWS credentials an API key can't serve -- so the
+    resolver must not claim eligibility it can't deliver there.
     """
     provider = (settings.get_provider_for_trial(agent, model) or "").lower()
-    if provider in _ANTHROPIC_PROVIDERS:
-        return True
-    is_claude_code = "claude-code" in (agent or "").strip().lower()
-    return (
-        is_claude_code
-        and provider == "bedrock"
-        and bool(getattr(settings, "claude_code_force_direct_api", False))
-    )
+    return provider in _ANTHROPIC_PROVIDERS
 
 
 def merge_byok_env(

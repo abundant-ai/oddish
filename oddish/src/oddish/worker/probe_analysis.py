@@ -187,9 +187,10 @@ def _make_client():
     the installed SDK's ``AsyncAnthropicBedrock`` only speaks SigV4, but the
     only Bedrock-capable credential in the worker is the bearer token
     (``AWS_BEARER_TOKEN_BEDROCK``) the SDK can't consume, while the ambient AWS
-    creds are S3-scoped and SigV4-sign to a 403. Callers normalize Bedrock model
-    ids back to their plain API id via ``config.to_anthropic_api_model_id`` so
-    the model reaching this client is one the direct API accepts.
+    creds are S3-scoped and SigV4-sign to a 403. The analyzer model settings
+    are therefore plain API ids; callers strip any ``anthropic/`` provider
+    prefix via ``config.to_anthropic_api_model_id`` so the model reaching this
+    client is one the direct API accepts.
     """
     from anthropic import AsyncAnthropic
 
@@ -688,11 +689,9 @@ async def run_probe_analyzer(
             "general. Return `tool_insights: []` if none meaningfully helped."
         )
 
-    # The probe summary runs on the direct Anthropic API (see _make_client). The
-    # cloud callers pass settings.analysis_model, a Bedrock inference-profile id
-    # (e.g. "global.anthropic.claude-haiku-4-5-...-v1:0"); normalize it back to
-    # the plain API id ("claude-haiku-4-5") the direct API accepts. Plain ids
-    # (local dev's "claude-sonnet-4-6") pass through unchanged.
+    # The probe summary runs on the direct Anthropic API (see _make_client).
+    # Strip any "anthropic/"/"claude/" provider prefix so the id reaching the
+    # client is the bare API id; plain ids pass through unchanged.
     from oddish.config import to_anthropic_api_model_id
 
     model = to_anthropic_api_model_id(model) or model

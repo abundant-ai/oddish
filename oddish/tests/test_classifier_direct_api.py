@@ -18,31 +18,17 @@ def _env(**overrides: str) -> dict[str, str]:
     return base
 
 
-def test_bedrock_id_without_api_key_stays_on_bedrock(monkeypatch):
-    """No direct-API key -> force-direct is a no-op; keep Bedrock id + env."""
-    monkeypatch.setattr(classifier.settings, "claude_code_force_direct_api", True)
+def test_bedrock_id_stays_on_bedrock():
+    """A Bedrock-shaped analysis model keeps the Bedrock id + env."""
     model_id, env = classifier._resolve_analysis_model_and_env(_BEDROCK_HAIKU, _env())
     assert model_id == _BEDROCK_HAIKU
     assert env.get("CLAUDE_CODE_USE_BEDROCK") == "1"
     assert env.get("AWS_BEARER_TOKEN_BEDROCK") == "tok"
 
 
-def test_bedrock_id_with_api_key_and_flag_on_forces_direct(monkeypatch):
-    """Incident mitigation: Bedrock id maps to the plain API id and the Bedrock
-    env signals are stripped so the CLI uses ANTHROPIC_API_KEY."""
-    monkeypatch.setattr(classifier.settings, "claude_code_force_direct_api", True)
-    model_id, env = classifier._resolve_analysis_model_and_env(
-        _BEDROCK_HAIKU, _env(ANTHROPIC_API_KEY="sk-ant-test")
-    )
-    assert model_id == "claude-haiku-4-5"
-    assert "CLAUDE_CODE_USE_BEDROCK" not in env
-    assert "AWS_BEARER_TOKEN_BEDROCK" not in env
-    assert env.get("ANTHROPIC_API_KEY") == "sk-ant-test"
-
-
-def test_bedrock_id_with_api_key_and_flag_off_stays_on_bedrock(monkeypatch):
-    """Flag off restores Bedrock routing even with an ANTHROPIC_API_KEY."""
-    monkeypatch.setattr(classifier.settings, "claude_code_force_direct_api", False)
+def test_bedrock_id_stays_on_bedrock_even_with_api_key():
+    """An ambient ANTHROPIC_API_KEY does not hijack a Bedrock-shaped id -- the
+    model id shape picks the route."""
     model_id, env = classifier._resolve_analysis_model_and_env(
         _BEDROCK_HAIKU, _env(ANTHROPIC_API_KEY="sk-ant-test")
     )
@@ -50,14 +36,11 @@ def test_bedrock_id_with_api_key_and_flag_off_stays_on_bedrock(monkeypatch):
     assert env.get("CLAUDE_CODE_USE_BEDROCK") == "1"
 
 
-@pytest.mark.parametrize("force_direct", [True, False])
-def test_plain_model_id_always_routes_direct(monkeypatch, force_direct):
-    """A non-Bedrock model id always drops the Bedrock env, regardless of flag."""
-    monkeypatch.setattr(
-        classifier.settings, "claude_code_force_direct_api", force_direct
-    )
-    model_id, env = classifier._resolve_analysis_model_and_env(
-        "claude-haiku-4-5", _env()
-    )
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "anthropic/claude-haiku-4-5"])
+def test_plain_model_id_routes_direct(model):
+    """A non-Bedrock model id drops the Bedrock env and runs bare on the
+    direct Anthropic API."""
+    model_id, env = classifier._resolve_analysis_model_and_env(model, _env())
     assert model_id == "claude-haiku-4-5"
     assert "CLAUDE_CODE_USE_BEDROCK" not in env
+    assert "AWS_BEARER_TOKEN_BEDROCK" not in env

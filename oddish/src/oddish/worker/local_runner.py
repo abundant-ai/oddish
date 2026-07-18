@@ -525,15 +525,17 @@ async def _run_harbor_trial(trial_id: str) -> None:
     trials_dir = Path(f"/tmp/oddish-local-trials/{trial_id}")
     trials_dir.mkdir(parents=True, exist_ok=True)
 
-    # oddish routes Claude through AWS Bedrock (model ids like
-    # ``global.anthropic.claude-...``). In the cloud the Modal image supplies
-    # the AWS creds + ``CLAUDE_CODE_USE_BEDROCK`` ambiently; locally nothing
-    # does, so forward the host's AWS creds into the agent container -- without
-    # this the in-container ``claude`` CLI has no way to invoke the Bedrock id
-    # and exits 1. Mirrors ``harbor_runner._apply_claude_code_openrouter_env``.
+    # A Bedrock-shaped Claude id (``global.anthropic.claude-...``) routes
+    # through AWS Bedrock. In the cloud the Modal image supplies the AWS creds
+    # + ``CLAUDE_CODE_USE_BEDROCK`` ambiently; locally nothing does, so forward
+    # the host's AWS creds into the agent container -- without this the
+    # in-container ``claude`` CLI has no way to invoke the Bedrock id and exits
+    # 1. Plain Anthropic ids need no such env: the agent authenticates with the
+    # ambient ``ANTHROPIC_API_KEY``. Mirrors
+    # ``harbor_runner._apply_claude_code_openrouter_env``.
     # Offline tasks run network_mode:none under Harbor's Docker env, which
-    # blocks the model API (Bedrock) the agent must call -- so the agent can't
-    # run locally. Prod (Modal) reaches Bedrock via a domain allowlist; local
+    # blocks the model API the agent must call -- so the agent can't run
+    # locally. Prod (Modal) reaches the model API via a domain allowlist; local
     # Docker has no such primitive. For LOCAL runs, relax the constraint so the
     # container has egress and Harbor's normal install + the agent both work.
     # Trades offline isolation for a working local run; prod keeps real
@@ -542,7 +544,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         if enable_local_internet(actual_task_path):
             logger.info(
                 "probe: local offline task %s -- enabled internet so the agent "
-                "can reach Bedrock (isolation relaxed locally only)",
+                "can reach its model API (isolation relaxed locally only)",
                 trial_id,
             )
 

@@ -21,8 +21,9 @@ _UNKNOWN_MODEL = "unknown"
 
 
 def _model_key(raw: str | None) -> str:
-    """Collapse the spellings of one model. The same model appears plain,
-    provider-prefixed, or as a Bedrock inference-profile id."""
+    """Collapse the spellings of one model. The same model appears plain or
+    provider-prefixed; Bedrock-shaped ids keep their own key (they are a
+    distinct transport)."""
     return to_anthropic_api_model_id(raw) or _UNKNOWN_MODEL
 
 

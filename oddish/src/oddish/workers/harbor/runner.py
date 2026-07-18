@@ -28,14 +28,13 @@ from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
-from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.config import BEDROCK_ENV_VARS, looks_like_bedrock_model_id, settings
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_staging import stage_org_skills
 from .agent_config import (
     _build_agent_config,
-    _claude_code_forces_direct_api,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -457,12 +456,10 @@ async def run_harbor_trial_async(
             model=model,
             raw_harbor_config=raw,
         )
-        # A BYOK user key arrives in the agent env, but claude-code's
-        # direct-vs-Bedrock routing reads os.environ -- both to pick the model
-        # id (in _build_agent_config) and to blank Bedrock creds (below). Surface
-        # the user key as ambient for the build + run so the trial routes to the
-        # direct Anthropic API even on a worker with no platform key; the agent
-        # then authenticates with the user's key.
+        # A BYOK user key arrives in the agent env, but Harbor's own
+        # Bedrock-mode check reads os.environ. Surface the user key as ambient
+        # for the build + run so a direct-Anthropic-API trial authenticates
+        # with the user's key even on a worker with no platform key.
         byok_anthropic_env: dict[str, str] = {}
         if "claude-code" in (agent or "").strip().lower():
             _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
@@ -553,13 +550,12 @@ async def run_harbor_trial_async(
         # os.environ-based Bedrock-mode check agrees with the direct model id.
         runtime_env.update(byok_anthropic_env)
         is_claude_code = "claude-code" in (agent or "").strip().lower()
-        if is_claude_code and (
-            byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
-        ):
+        if is_claude_code and not looks_like_bedrock_model_id(agent_config.model_name):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
-            # bakes in Bedrock credentials. Blank them when claude-code runs
-            # against the direct Anthropic API -- platform force-direct, or a
-            # BYOK user key.
+            # bakes in Bedrock credentials so Bedrock is the default route.
+            # A non-Bedrock-shaped model id means this trial runs against the
+            # direct Anthropic API (ANTHROPIC_API_KEY) -- blank the Bedrock
+            # signals so that route wins.
             runtime_env.update({var: "" for var in BEDROCK_ENV_VARS})
         with _temporary_env(runtime_env):
             job = await Job.create(config)

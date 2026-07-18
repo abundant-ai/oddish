@@ -52,23 +52,13 @@ def _resolve_analysis_model_and_env(
 
     The Modal image bakes the Bedrock env vars so Claude Code defaults to
     Bedrock, and the CLI picks its route from the environment (not ``--model``).
-    Two cases route this analysis call to the direct Anthropic API instead:
-
-    * a plain (non-Bedrock) analysis model id, or
-    * the force-direct incident toggle (``settings.claude_code_force_direct_api``,
-      default on; mirrors ``harbor_runner._claude_code_forces_direct_api``) when
-      an ``ANTHROPIC_API_KEY`` is present -- the workers' Bedrock credentials
-      can't run inference (400 "Operation not allowed"), so every Bedrock
-      analysis call fails until that flag is flipped off.
-
-    In both direct-API cases, normalize any Bedrock inference-profile id back to
-    its plain API id and strip the Bedrock signals so the CLI authenticates with
-    ``ANTHROPIC_API_KEY``. Otherwise keep the Bedrock id and env untouched.
+    The model id shape selects the endpoint: a Bedrock-shaped id keeps the
+    Bedrock env untouched, while a plain Anthropic-style id strips the Bedrock
+    signals so the CLI authenticates with ``ANTHROPIC_API_KEY`` against the
+    direct Anthropic API.
     """
     env = dict(base_env)
-    has_api_key = bool(env.get("ANTHROPIC_API_KEY", "").strip())
-    force_direct = has_api_key and settings.claude_code_force_direct_api
-    if looks_like_bedrock_model_id(model) and not force_direct:
+    if looks_like_bedrock_model_id(model):
         return model, env
     for name in BEDROCK_ENV_VARS:
         env.pop(name, None)

@@ -90,91 +90,55 @@ def test_model_concurrency_overrides_can_override_nop_oracle_queue(monkeypatch):
     assert settings.get_model_concurrency("default") == 3
 
 
-def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
+def test_plain_claude_trial_model_stays_on_direct_anthropic(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
-    expected = "global.anthropic.claude-sonnet-4-6"
-
+    # A plain Anthropic-style id is persisted as-is and routes to the direct
+    # Anthropic API -- it is never rewritten into a Bedrock inference profile.
     assert (
-        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6") == expected
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6")
+        == "claude-sonnet-4-6"
     )
     assert (
         settings.normalize_trial_model("claude-code", "anthropic/claude-sonnet-4-6")
-        == expected
+        == "anthropic/claude-sonnet-4-6"
     )
     assert (
-        settings.get_provider_for_trial("claude-code", "claude-sonnet-4-6") == "bedrock"
+        settings.get_provider_for_trial("claude-code", "claude-sonnet-4-6")
+        == "anthropic"
     )
     assert (
-        settings.get_queue_key_for_trial("claude-code", "claude-sonnet-4-6") == expected
+        settings.get_queue_key_for_trial("claude-code", "claude-sonnet-4-6")
+        == "anthropic/claude-sonnet-4-6"
     )
     assert settings.get_provider_for_trial("claude-code", None) == "bedrock"
 
 
-def test_opus_4_8_maps_to_global_inference_profile(monkeypatch):
+def test_bedrock_claude_trial_model_stays_on_bedrock(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
-    # Opus 4.8's invokable Bedrock id is the "global." cross-region inference
-    # profile (the bare "anthropic.claude-opus-4-8" foundation-model id is not
-    # invokable on-demand via the legacy InvokeModel API Claude Code uses).
-    expected = "global.anthropic.claude-opus-4-8"
+    # A Bedrock-shaped id is persisted as-is and keeps its own provider/queue
+    # bucket, distinct from the direct Anthropic API bucket for the same model.
+    bedrock_id = "global.anthropic.claude-sonnet-4-6"
 
-    assert settings.normalize_trial_model("claude-code", "claude-opus-4-8") == expected
-    assert (
-        settings.normalize_trial_model("claude-code", "anthropic/claude-opus-4-8")
-        == expected
-    )
-    assert settings.normalize_queue_key("claude-opus-4-8") == expected
-    assert settings.normalize_queue_key("anthropic/claude-opus-4-8") == expected
+    assert settings.normalize_trial_model("claude-code", bedrock_id) == bedrock_id
+    assert settings.get_provider_for_trial("claude-code", bedrock_id) == "bedrock"
+    assert settings.get_queue_key_for_trial("claude-code", bedrock_id) == bedrock_id
+    assert settings.normalize_queue_key(bedrock_id) == bedrock_id
 
 
-def test_dotted_marketing_spelling_maps_to_global_inference_profile(monkeypatch):
+def test_plain_claude_ids_pass_through_unmapped(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
-    # The marketing spelling uses a dotted minor version ("claude-opus-4.8"),
-    # but the Bedrock table is keyed by the canonical dashed id
-    # ("claude-opus-4-8"). The dotted alias must resolve rather than raising
-    # (an unmapped Claude id surfaces as a 500 at trial submit).
-    assert (
-        settings.normalize_trial_model("claude-code", "claude-opus-4.8")
-        == "global.anthropic.claude-opus-4-8"
-    )
-    assert (
-        settings.normalize_trial_model("claude-code", "anthropic/claude-opus-4.8")
-        == "global.anthropic.claude-opus-4-8"
-    )
-    assert (
-        settings.normalize_trial_model("claude-code", "claude-sonnet-4.6")
-        == "global.anthropic.claude-sonnet-4-6"
-    )
-
-
-def test_fable_5_maps_to_global_inference_profile(monkeypatch):
-    settings = _settings(monkeypatch, clear_openai_env=False)
-
-    # Fable 5's invokable Bedrock id is the "global." cross-region inference
-    # profile, dateless and without a version suffix (same shape as Opus 4.8).
-    # Note the id is "claude-fable-5", NOT "claude-fable-v5" — Bedrock rejects
-    # the latter with "The provided model identifier is invalid".
-    expected = "global.anthropic.claude-fable-5"
-
-    assert settings.normalize_trial_model("claude-code", "claude-fable-5") == expected
-    assert (
-        settings.normalize_trial_model("claude-code", "anthropic/claude-fable-5")
-        == expected
-    )
-    assert settings.normalize_queue_key("claude-fable-5") == expected
-    assert settings.normalize_queue_key("anthropic/claude-fable-5") == expected
-
-
-def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
-    settings = _settings(monkeypatch, clear_openai_env=False)
-
-    expected = "global.anthropic.claude-sonnet-4-6"
-
-    assert settings.normalize_queue_key("claude-sonnet-4-6") == expected
-    assert settings.normalize_queue_key("anthropic/claude-sonnet-4-6") == expected
-    assert settings.normalize_queue_key(f"bedrock/{expected}") == expected
+    # No Claude alias table: current and legacy plain ids all pass through
+    # untouched and share the direct-API queue bucket via the inferred
+    # "anthropic/" prefix.
+    for model in ("claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"):
+        assert settings.normalize_trial_model("claude-code", model) == model, model
+        assert settings.normalize_queue_key(model) == f"anthropic/{model}", model
+        assert (
+            settings.normalize_queue_key(f"anthropic/{model}") == f"anthropic/{model}"
+        ), model
 
 
 def test_openrouter_claude_model_routes_through_openrouter(monkeypatch):
@@ -389,13 +353,12 @@ def test_glm_queue_key_has_independent_concurrency(monkeypatch):
     assert settings.get_model_concurrency("global.anthropic.claude-opus-4-8") == 64
 
 
-def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
+def test_legacy_claude_model_passes_through_reads_and_writes(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
     legacy_key = "anthropic/claude-sonnet-4-6-20250514"
 
     assert settings.normalize_queue_key(legacy_key) == legacy_key
-    with pytest.raises(ValueError):
-        settings.normalize_trial_model("claude-code", legacy_key)
+    assert settings.normalize_trial_model("claude-code", legacy_key) == legacy_key
 
 
 def test_openai_provider_defaults_to_azure(monkeypatch):

@@ -1,8 +1,8 @@
-"""Claude/Bedrock digest generation for ingested documents.
+"""Claude digest generation for ingested documents.
 
 Split so the deterministic parts (prompt build, response parse) are unit-
 tested without a network call, and only ``generate_digest`` touches the API.
-Reuses the Bedrock routing from ``probe_analysis``.
+Mirrors the direct-Anthropic-API client setup from ``probe_analysis``.
 """
 
 from __future__ import annotations
@@ -68,9 +68,9 @@ async def generate_digest(
     Bedrock credential in the API/worker (only an S3-scoped key plus a bearer
     token the pinned SDK can't consume), so internal Claude calls go through the
     direct Anthropic API (``ANTHROPIC_API_KEY``). Routing the digest through
-    ``AsyncAnthropicBedrock`` instead 500s every document upload. Normalize any
-    Bedrock inference-profile id back to its plain API id so the model reaching
-    the client is one the direct API accepts.
+    ``AsyncAnthropicBedrock`` instead 500s every document upload. Strip any
+    ``anthropic/`` provider prefix so the model reaching the client is a bare
+    API id.
     """
     from anthropic import AsyncAnthropic
 

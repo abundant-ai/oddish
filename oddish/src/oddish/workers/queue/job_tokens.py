@@ -98,17 +98,16 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         key = getattr(settings, "anthropic_api_key", None)
         return {"ANTHROPIC_API_KEY": key} if key else {}
     if provider == "bedrock":
-        # Non-claude-code (litellm) agents run a Bedrock-classified Claude model
-        # over the direct Anthropic API as ``anthropic/<id>`` (see
-        # _to_litellm_claude_model_id), so scope the matching ANTHROPIC_API_KEY
-        # rather than the Bedrock routing flag they can't use.
+        # A Bedrock-shaped model id genuinely runs on AWS Bedrock. Bedrock
+        # authenticates with AWS creds, not a single API key; scoping those
+        # needs STS (a future enhancement). For claude-code, carry only the
+        # routing flag; the worker's dual-read keeps the ambient AWS creds for
+        # the rest. Non-claude-code (litellm) agents route ``bedrock/<id>``
+        # through litellm's bedrock provider, which likewise rides the ambient
+        # AWS creds -- return {} so the dual-read falls back to the blanket
+        # secret.
         if not _agent_is_claude_code(agent):
-            key = getattr(settings, "anthropic_api_key", None)
-            return {"ANTHROPIC_API_KEY": key} if key else {}
-        # claude-code invokes Bedrock directly (InvokeModel) with AWS creds, not
-        # a single API key; scoping those needs STS (a future enhancement).
-        # Carry only the routing flag; the worker's dual-read keeps the ambient
-        # AWS creds for the rest.
+            return {}
         return {"CLAUDE_CODE_USE_BEDROCK": "1"}
     if provider == "gemini":
         key = getattr(settings, "gemini_api_key", None)

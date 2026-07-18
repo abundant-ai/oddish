@@ -15,27 +15,25 @@ def _settings(**kw) -> Settings:
     return Settings(_env_file=None, **kw)
 
 
-def test_uses_direct_anthropic_for_claude_code_when_forced_direct():
-    s = _settings(claude_code_force_direct_api=True)
+def test_uses_direct_anthropic_for_plain_claude_id():
+    # A plain Anthropic-style id routes to the direct Anthropic API for any
+    # agent, so a user key applies.
+    s = _settings()
     assert byok.uses_direct_anthropic("claude-code", "claude-opus-4-8", settings=s)
+    assert byok.uses_direct_anthropic("terminus-2", "claude-opus-4-8", settings=s)
 
 
-def test_uses_direct_anthropic_false_for_non_claude_code_bedrock_claude():
-    # Claude canonicalizes to a Bedrock id; only claude-code reroutes it to the
-    # direct API, so another agent can't use a user key and is not eligible --
-    # otherwise the resolver would inject a key the runner never surfaces.
-    s = _settings(claude_code_force_direct_api=True)
-    assert not byok.uses_direct_anthropic("terminus-2", "claude-opus-4-8", settings=s)
-    assert not byok.uses_direct_anthropic("codex", "claude-opus-4-8", settings=s)
-
-
-def test_uses_direct_anthropic_false_for_real_bedrock():
-    s = _settings(claude_code_force_direct_api=False)
-    assert not byok.uses_direct_anthropic("claude-code", "claude-opus-4-8", settings=s)
+def test_uses_direct_anthropic_false_for_bedrock_shaped_id():
+    # A Bedrock-shaped id genuinely runs on AWS Bedrock, where an Anthropic API
+    # key can't authenticate -- not eligible for BYOK.
+    s = _settings()
+    assert not byok.uses_direct_anthropic(
+        "claude-code", "global.anthropic.claude-opus-4-8", settings=s
+    )
 
 
 def test_uses_direct_anthropic_false_for_openai():
-    s = _settings(claude_code_force_direct_api=True)
+    s = _settings()
     assert not byok.uses_direct_anthropic("codex", "openai/gpt-5.2", settings=s)
 
 

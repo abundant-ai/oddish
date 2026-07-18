@@ -57,7 +57,7 @@ async def _build_trial_summary(
         index=index,
         trial_id=trial.id,
         agent=trial.agent,
-        model=settings.normalize_trial_model(trial.agent, trial.model, strict=False),
+        model=settings.normalize_trial_model(trial.agent, trial.model),
         status=trial.status.value if trial.status else "pending",
         reward=trial.reward,
         duration_seconds=duration_seconds,

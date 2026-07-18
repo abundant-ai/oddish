@@ -408,10 +408,17 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
-- Claude trials run through AWS Bedrock only. `CLAUDE_CODE_USE_BEDROCK=1` is
-  baked into the Modal image, and Claude model aliases must normalize to an
-  invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. `ANTHROPIC_API_KEY` is not a trial route.
+- Claude models can be called either via the direct Anthropic API or via AWS
+  Bedrock, and the model id shape picks the route. A plain Anthropic-style id
+  (`claude-opus-4-8`, `anthropic/claude-opus-4-8`) routes to the direct
+  Anthropic API using `ANTHROPIC_API_KEY`; a Bedrock-shaped id
+  (`global.anthropic.claude-...`, other region-prefixed inference profiles,
+  ARNs) routes through AWS Bedrock using `AWS_BEARER_TOKEN_BEDROCK`. Neither id
+  shape is rewritten into the other. `CLAUDE_CODE_USE_BEDROCK=1` is baked into
+  the Modal image as the default route; the harbor runner blanks the Bedrock
+  env per-trial for non-Bedrock-shaped ids (`looks_like_bedrock_model_id`).
+  Queue/concurrency keys come from the full id, so Anthropic API traffic and
+  Bedrock traffic for the same Claude model are accounted separately.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.

@@ -170,9 +170,10 @@ async def test_probe_analyzer_parses_json_response():
 
 
 @pytest.mark.asyncio
-async def test_probe_analyzer_routes_bedrock_model_through_direct_api():
-    """A cloud Bedrock model id is normalized to the plain id and run on the
-    direct Anthropic API -- never the SigV4-only ``AsyncAnthropicBedrock``."""
+async def test_probe_analyzer_runs_on_direct_api_with_bare_model_id():
+    """The probe analyzer always uses the direct Anthropic API client -- never
+    the SigV4-only ``AsyncAnthropicBedrock`` -- and strips any ``anthropic/``
+    provider prefix down to the bare API id."""
     fake_client = _fake_client()
 
     with (
@@ -185,13 +186,13 @@ async def test_probe_analyzer_routes_bedrock_model_through_direct_api():
             verifier_stdout="",
             reward=1.0,
             result_focus="",
-            model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
+            model="anthropic/claude-haiku-4-5",
         )
 
     direct.assert_called_once()
     bedrock.assert_not_called()
-    # The Bedrock inference-profile id is resolved to its plain API id, both for
-    # the actual API call and for the model recorded on the summary.
+    # The bare API id is used both for the actual API call and for the model
+    # recorded on the summary.
     assert result["model"] == "claude-haiku-4-5"
     assert fake_client.messages.create.await_args.kwargs["model"] == "claude-haiku-4-5"
 

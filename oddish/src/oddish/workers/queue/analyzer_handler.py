@@ -108,9 +108,8 @@ def _build_analyzer_eval_config() -> AnalyzerEvalConfig:
     core.py stays pure (no DB/env reads); this is the one place that
     translates settings into a ``AnalyzerEvalConfig``. Analyzer generation runs
     in-process on the direct Anthropic API (see evals/analyzer/core.py
-    ``_default_client``), so the configured Bedrock inference-profile id must
-    be converted to its direct-API form -- same convention as
-    ``worker/probe_analysis.py``.
+    ``_default_client``), so strip any ``anthropic/`` provider prefix from the
+    configured model -- same convention as ``worker/probe_analysis.py``.
     """
     config = AnalyzerEvalConfig()
     analysis_model = to_anthropic_api_model_id(settings.analysis_model) or config.analysis_model

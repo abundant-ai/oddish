@@ -1145,7 +1145,7 @@ def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
 
     Mirrors the runner's own fork on ``variant_id``. BYOK is honored only
     in-process: the ephemeral child builds its agent from the raw trial model
-    without the direct/Bedrock normalization a user key needs, and it serializes
+    without the ambient-key surfacing a user key needs, and it serializes
     the agent env into a payload.json under the uploaded job dir. So a user key
     must not be resolved for these trials -- they keep the platform credentials.
     """

@@ -155,8 +155,8 @@ async def generate(
     )
 
     # The summary runs on the shared analysis model (the same
-    # ODDISH_ANALYSIS_MODEL knob as the trajectory graph). Normalize Bedrock
-    # inference-profile ids back to the plain API id; plain ids pass through.
+    # ODDISH_ANALYSIS_MODEL knob as the trajectory graph). Strip any
+    # "anthropic/" provider prefix; plain ids pass through.
     model = (
         to_anthropic_api_model_id(settings.analysis_model)
         or settings.analysis_model

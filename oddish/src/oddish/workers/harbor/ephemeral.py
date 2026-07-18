@@ -15,7 +15,7 @@ from typing import Any
 from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialEvent
 
-from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.config import BEDROCK_ENV_VARS, looks_like_bedrock_model_id, settings
 from oddish.core.harbor_source import harbor_git_requirement
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -23,7 +23,6 @@ from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from ._entry import EVENT_SENTINEL
 from oddish.workers.agents.claude_code import _pinned_harbor_requirement
 from .agent_config import (
-    _claude_code_forces_direct_api,
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
@@ -58,21 +57,23 @@ class HarborOverrideImportError(Exception):
 
 
 def _runtime_env_overrides(
-    *, agent: str, model: str | None, raw_harbor_config: dict[str, Any], is_probe: bool
+    *, agent: str, model: str | None, raw_harbor_config: dict[str, Any]
 ) -> dict[str, str]:
     """Build child runtime env overrides."""
     uses_openai = _trial_uses_openai_provider(
         agent=agent, model=model, raw_harbor_config=raw_harbor_config
     )
-    _, openai_model = _trial_requested_model(
+    _, requested_model = _trial_requested_model(
         agent=agent, model=model, raw_harbor_config=raw_harbor_config
     )
     env: dict[str, str] = {}
     if uses_openai:
-        env.update(settings.get_openai_agent_env(model=openai_model))
+        env.update(settings.get_openai_agent_env(model=requested_model))
     if "claude-code" in (
         agent or ""
-    ).strip().lower() and _claude_code_forces_direct_api(is_probe):
+    ).strip().lower() and not looks_like_bedrock_model_id(requested_model):
+        # Non-Bedrock-shaped model id: the trial runs on the direct Anthropic
+        # API, so blank the ambient Bedrock signals for the child.
         env.update({var: "" for var in BEDROCK_ENV_VARS})
     return env
 
@@ -129,7 +130,6 @@ def _build_payload(
             agent=agent,
             model=model,
             raw_harbor_config=raw_harbor_config,
-            is_probe=is_probe,
         ),
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
