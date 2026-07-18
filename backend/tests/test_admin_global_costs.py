@@ -679,3 +679,48 @@ async def test_github_tagged_spend_merges_into_the_handle_owner():
                     OrganizationModel.id == org_id
                 )
             )
+
+
+def test_utc_window_start_snaps_to_bucket_boundary():
+    """Trailing windows floor to their bucket's UTC boundary, not a mid-bucket
+    instant, so the earliest chart bar is always a complete period."""
+    from oddish.core.admin import _utc_window_start
+
+    now = datetime(2026, 7, 17, 14, 37, 12, tzinfo=timezone.utc)  # a Friday
+    # <=2 days uses hourly bars -> floor to the UTC hour.
+    assert _utc_window_start(now, 1) == datetime(2026, 7, 16, 14, tzinfo=timezone.utc)
+    # Daily bars -> floor to UTC midnight, window_days whole days back.
+    assert _utc_window_start(now, 7) == datetime(2026, 7, 10, tzinfo=timezone.utc)
+    assert _utc_window_start(now, 30) == datetime(2026, 6, 17, tzinfo=timezone.utc)
+    # >120 days uses weekly bars -> floor to Monday 00:00 UTC (Postgres' anchor).
+    assert _utc_window_start(now, 200) == datetime(2025, 12, 29, tzinfo=timezone.utc)
+    # All-time stays unbounded.
+    assert _utc_window_start(now, None) is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_series_buckets_are_utc_aligned(global_costs_fixture):
+    """Daily bars must sit on UTC midnight so they line up with the frontend's
+    ``timeZone: "UTC"`` axis, whatever timezone the DB session runs in."""
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(session, window_days=7)
+    assert result.bucket == "day"
+    starts = [
+        b.bucket_start
+        for series in (
+            result.series_by_agent,
+            result.series_by_model,
+            result.series_by_user,
+        )
+        for b in series.buckets
+    ]
+    assert starts, "expected at least one daily bucket"
+    for start in starts:
+        assert start.utcoffset() == timedelta(0), start
+        assert (start.hour, start.minute, start.second, start.microsecond) == (
+            0,
+            0,
+            0,
+            0,
+        ), start
