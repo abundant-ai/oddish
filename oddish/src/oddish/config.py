@@ -1255,6 +1255,11 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
+    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
+    analyzer_anthropic_api_key: str | None = Field(
+        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")

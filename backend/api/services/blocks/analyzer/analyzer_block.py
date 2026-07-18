@@ -4,23 +4,25 @@ import asyncio
 import enum
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from oddish.db import generate_id, get_session
 from oddish.db.models import AnalyzerBlockModel, JobStatus, utcnow
 from oddish.db.storage import get_storage_client
 
-from api.services.analyzer_llm_client import (
+from api.services.blocks.analyzer.analyzer_llm_client import (
     AnalyzerLLMClient,
     LLMClientType,
     create_llm_client,
 )
+from api.services.blocks.block import Block
 
 
 class AnalyzerType(str, enum.Enum):
     TRAJECTORY_FAILURE_ANALYSIS = "trajectory_failure_analysis"
     HEADROOM_ANALYSIS = "headroom_analysis"
     SCALING_ANALYSIS = "scaling_analysis"
+    TRAJECTORY_SUMMARY = "trajectory_summary"
 
 
 @dataclass
@@ -49,7 +51,7 @@ def block_logger(key_prefix: str) -> logging.LoggerAdapter:
     return _PrefixAdapter(logging.getLogger("oddish.analyzer_block"), {"prefix": key_prefix})
 
 
-class AnalyzerBlock:
+class AnalyzerBlock(Block):
     """One composable analyzer job. Runs a prompt through a swappable backend,
     streams the output, and persists to S3 + DB on every exit path."""
 
@@ -63,6 +65,8 @@ class AnalyzerBlock:
         analyzer_id: str | None = None,
         block_metadata: dict | None = None,
         client: AnalyzerLLMClient | None = None,
+        output_transform: Callable[[str], Any] | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -72,6 +76,10 @@ class AnalyzerBlock:
         self.analyzer_id = analyzer_id
         self.block_metadata = block_metadata
         self._client = client
+        self._output_transform = output_transform
+        # Only used when self-provisioning (client is None): which Anthropic key
+        # the backend gets. None -> the analyzer key / global default.
+        self._api_key = api_key
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -129,7 +137,9 @@ class AnalyzerBlock:
     async def stream_output(self):
         """Yield each output chunk to the caller and accumulate it. Lazily
         provisions the backend client (or uses the injected one)."""
-        client = self._client or await create_llm_client(self.llm_client_type)
+        client = self._client or await create_llm_client(
+            self.llm_client_type, api_key=self._api_key
+        )
         try:
             async for chunk in client.stream(self.prompt):
                 self._chunks.append(chunk)
@@ -148,7 +158,10 @@ class AnalyzerBlock:
         try:
             async for _ in self.stream_output():
                 pass
-            self.output = AnalyzerOutput(output="".join(self._chunks))
+            raw = "".join(self._chunks)
+            self.output = AnalyzerOutput(
+                output=self._output_transform(raw) if self._output_transform else raw
+            )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))
             return self.output
