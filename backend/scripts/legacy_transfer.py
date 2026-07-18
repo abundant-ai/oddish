@@ -290,9 +290,13 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         total = len(rows)
         t0 = now()
 
+        # Report ~10 times per run, capped at every 100 trials for big chunks.
+        # A fixed step of 100 goes completely silent on a small pilot chunk.
+        step = max(1, min(100, total // 10))
+
         def tick() -> None:
             done = created["trials"] + created["skipped"] + created["errors"]
-            if done % 100 == 0 and done:
+            if done % step == 0 and done:
                 secs = max((now() - t0).total_seconds(), 1e-9)
                 rate = done / secs
                 eta_min = (total - done) / rate / 60 if rate else 0
