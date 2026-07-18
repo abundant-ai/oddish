@@ -41,7 +41,7 @@ dependencies = [
     "cryptography>=42",
     # Harbor (task models, agent config, dataset handling). Published wheels
     # resolve this PyPI release; local and hosted development intentionally
-    # override it with the rishidesai/harbor fork below.
+    # override it with the abundant-ai/harbor fork below.
     "harbor==0.18.0",
     # JSON Schema validation (result_focus structured-output schema checks).
     "jsonschema>=4.0",
@@ -108,9 +108,9 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-# Rishi's main branch includes the Daytona network-policy lifecycle fix.
+# The Abundant AI main branch includes the Daytona network-policy lifecycle fix.
 # uv.lock records the exact commit used by the worker image.
-harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
+harbor = { git = "https://github.com/abundant-ai/harbor", branch = "main" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

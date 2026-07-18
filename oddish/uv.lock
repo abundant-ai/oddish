@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" }]
+overrides = [{ name = "harbor", git = "https://github.com/abundant-ai/harbor?branch=main" }]
 
 [[package]]
 name = "aioboto3"
@@ -950,7 +950,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.16.1"
-source = { git = "https://github.com/rishidesai/harbor?branch=main#237c202cfa8e74ebef9db3cd999eb61965338615" }
+source = { git = "https://github.com/abundant-ai/harbor?branch=main#237c202cfa8e74ebef9db3cd999eb61965338615" }
 dependencies = [
     { name = "datasets" },
     { name = "dirhash" },
@@ -1776,7 +1776,7 @@ requires-dist = [
     { name = "daytona", marker = "extra == 'worker'", specifier = ">=0.192.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
-    { name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" },
+    { name = "harbor", git = "https://github.com/abundant-ai/harbor?branch=main" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "litellm", specifier = "==1.83.14" },
