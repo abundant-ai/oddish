@@ -950,7 +950,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.16.1"
-source = { git = "https://github.com/abundant-ai/harbor?branch=main#237c202cfa8e74ebef9db3cd999eb61965338615" }
+source = { git = "https://github.com/abundant-ai/harbor?branch=main#555fc203d51ef97d937703654e7d03b29cba4a02" }
 dependencies = [
     { name = "datasets" },
     { name = "dirhash" },
