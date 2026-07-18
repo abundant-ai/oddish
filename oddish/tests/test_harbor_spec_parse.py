@@ -8,7 +8,7 @@ from oddish.config import (
     parse_harbor_spec,
 )
 
-FORK = "https://github.com/rishidesai/harbor"
+FORK = "https://github.com/abundant-ai/harbor"
 
 
 def test_r3_bare_ref_uses_locked_fork():
@@ -57,9 +57,9 @@ def test_default_sha_matches_uv_lock_pin():
     # The backend mirrors oddish's harbor pin; guard it too so a future re-pin
     # that updates only oddish can't silently split the two workers' harbor.
     backend_lock = open("../backend/uv.lock", encoding="utf-8").read()
-    assert HARBOR_DEFAULT_SHA in backend_lock, (
-        "HARBOR_DEFAULT_SHA drifted from backend/uv.lock"
-    )
+    assert (
+        HARBOR_DEFAULT_SHA in backend_lock
+    ), "HARBOR_DEFAULT_SHA drifted from backend/uv.lock"
 
 
 def test_probe_harbor_ref_matches_pyproject_pin():
@@ -75,7 +75,7 @@ def test_probe_harbor_ref_matches_pyproject_pin():
 def test_pyproject_default_source_matches_config():
     # pyproject<->config drift guard: the baked default harbor source in
     # pyproject must equal HARBOR_DEFAULT_SOURCE, so the default worker image
-    # bakes exactly the pin the server classifies as "default" (rishidesai, NOT
+    # bakes exactly the pin the server classifies as "default" (abundant-ai, NOT
     # harbor-gke -- that is a blessed variant on its own image).
     with open("pyproject.toml", "rb") as fh:
         harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]

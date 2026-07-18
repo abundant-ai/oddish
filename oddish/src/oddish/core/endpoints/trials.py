@@ -201,6 +201,23 @@ async def retry_trial_core(
     session.add(new_trial)
     await session.flush()
 
+    # A collection gathers a trial through ``experiment_trials`` without
+    # rewriting its scalar ``experiment_id``, so copying that column alone
+    # leaves the retry invisible there: the old trial drops out as superseded
+    # and the new one was never gathered. Inherit the live membership rows.
+    await session.execute(
+        text(
+            """
+            INSERT INTO experiment_trials (experiment_id, trial_id, created_at)
+            SELECT experiment_id, :new_trial_id, NOW()
+            FROM   experiment_trials
+            WHERE  trial_id = :old_trial_id
+              AND  deleted_at IS NULL
+            """
+        ),
+        {"new_trial_id": new_trial_id, "old_trial_id": old_trial.id},
+    )
+
     cas = await session.execute(
         text(
             """
