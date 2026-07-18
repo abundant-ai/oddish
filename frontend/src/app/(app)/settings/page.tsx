@@ -1058,11 +1058,7 @@ function NotificationsPanel() {
 
   return (
     <Panel>
-      <PanelHeader
-        icon={Bell}
-        title="Notifications"
-        description="Slack DMs sent to you. Turn any off, or set your own cost cutoffs. Channel posts aren't affected."
-      />
+      <PanelHeader icon={Bell} title="Notifications" />
       <div className="space-y-5 pt-4">
         {error ? (
           <Alert variant="destructive">
