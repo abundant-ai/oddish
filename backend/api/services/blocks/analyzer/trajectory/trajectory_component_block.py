@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
 from api.services.blocks.block import Block
@@ -67,11 +67,24 @@ class TrajectoryComponentModel(BaseModel):
 
 
 class TrajectoryOutput(BaseModel):
-    # Loose element types so one bad element doesn't fail the whole parse;
-    # filter_output does the strict per-element validation + step-id filtering.
+    # One bad element must not fail the whole parse: the pre-validator below drops
+    # non-dict entries and coerces summary, so a single stray list item (LLMs
+    # occasionally emit one) degrades gracefully. filter_output then does the
+    # strict per-element validation + step-id filtering.
     summary: str = ""
     highlights: list[dict] = []
     components: list[dict] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_bad_elements(cls, data):
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        data["summary"] = str(data.get("summary") or "")
+        data["highlights"] = [h for h in (data.get("highlights") or []) if isinstance(h, dict)]
+        data["components"] = [c for c in (data.get("components") or []) if isinstance(c, dict)]
+        return data
 
 
 _MAX_TEXT_CHARS = 2000

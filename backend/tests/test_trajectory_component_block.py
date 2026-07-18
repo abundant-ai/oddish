@@ -77,6 +77,28 @@ def test_parse_drops_component_with_bad_taxonomy(caplog):
     assert [c["trajectory_component"] for c in out.components] == ["implementing"]
 
 
+def test_parse_drops_non_dict_list_elements_without_failing():
+    # A single stray non-dict element in highlights/components must degrade
+    # gracefully (dropped), not abort the whole summary with a 502.
+    raw = json.dumps({
+        "summary": "ok",
+        "highlights": [{"step_id": 1, "title": "t", "why": "w"}, "oops"],
+        "components": [
+            "junk",
+            {"step_ids": [1], "trajectory_component": "implementing", "summary": "y"},
+        ],
+    })
+    out = TrajectoryBlock(_input()).parse(raw)
+    assert [h["step_id"] for h in out.highlights] == [1]
+    assert [c["trajectory_component"] for c in out.components] == ["implementing"]
+
+
+def test_parse_coerces_non_string_summary():
+    raw = json.dumps({"summary": 123, "highlights": [], "components": []})
+    out = TrajectoryBlock(_input()).parse(raw)
+    assert out.summary == "123"
+
+
 def test_parse_raises_on_malformed_json():
     with pytest.raises(BlockParseError):
         TrajectoryBlock(_input()).parse("not json")
