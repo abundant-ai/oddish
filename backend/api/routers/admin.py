@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import and_, func, select
 
 from auth import AuthContext, require_admin
+from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, UserModel
 from oddish.core.admin import (
     CostBreakdownResponse,
@@ -178,6 +179,7 @@ async def get_costs(
             window_days=effective_window,
             experiment_limit=experiment_limit,
             user_limit=user_limit,
+            resolve_github_users=resolve_github_users,
         )
         await _enrich_cost_breakdown(session, result)
     return result

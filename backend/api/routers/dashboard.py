@@ -8,7 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import APIKeyScope, AuthContext, require_auth
-from dashboard_attribution import resolve_experiments_author, resolve_search_authors
+from dashboard_attribution import (
+    resolve_experiments_author,
+    resolve_github_users,
+    resolve_search_authors,
+)
 from models import UserModel
 from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
@@ -87,7 +91,10 @@ async def get_cost_leaderboard(
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
         ranked_users = await get_cost_leaderboard_core(
-            session, org_id=auth.org_id, window_days=effective_window
+            session,
+            org_id=auth.org_id,
+            window_days=effective_window,
+            resolve_github_users=resolve_github_users,
         )
         leaders: list[CostLeaderboardEntry] = []
         for offset in range(0, len(ranked_users), limit):
