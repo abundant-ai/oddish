@@ -1159,6 +1159,41 @@ def _series_bucket(window_days: int | None) -> str:
     return "week"
 
 
+def _utc_date_trunc(bucket: str, column):
+    """``date_trunc`` that always lands on a UTC boundary.
+
+    Postgres ``date_trunc(field, timestamptz)`` truncates in the session's
+    ``TimeZone`` GUC, which oddish never pins to UTC -- so bare truncation drifts
+    with whatever zone the pooler hands us. Converting to UTC wall-clock, then
+    truncating, then re-anchoring as UTC keeps the result a ``timestamptz`` sitting
+    on a UTC midnight/hour/week, matching the frontend's ``timeZone: "UTC"`` axis.
+    The double ``AT TIME ZONE 'UTC'`` is version-independent (no PG16 3-arg form).
+    """
+    return func.timezone("UTC", func.date_trunc(bucket, func.timezone("UTC", column)))
+
+
+def _utc_window_start(now: datetime, window_days: int | None) -> datetime | None:
+    """Snap a trailing window's start down to its bucket's UTC boundary.
+
+    ``now - window_days`` lands mid-bucket, so the earliest chart bar is a partial
+    day/hour. Flooring to the bucket boundary (UTC) makes that leftmost bar a
+    complete period and keeps every cost window anchored to the same UTC grid the
+    chart renders on. ``None`` (all-time) stays unbounded.
+    """
+    if window_days is None:
+        return None
+    since = now - timedelta(days=window_days)
+    bucket = _series_bucket(window_days)
+    if bucket == "hour":
+        return since.replace(minute=0, second=0, microsecond=0)
+    if bucket == "week":
+        # Postgres date_trunc('week') anchors weeks on Monday; match it here so
+        # the snapped start lines up with the weekly bars.
+        monday = since - timedelta(days=since.weekday())
+        return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    return since.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 class CostModelBreakdown(BaseModel):
     model: str
     provider: str
@@ -1416,7 +1451,7 @@ async def _cost_time_series(
     Settlement-time axis (``finished_at``): in-flight trials (``finished_at``
     NULL) are excluded so this matches the quota basis exactly.
     """
-    bucket_col = func.date_trunc(bucket, TrialModel.finished_at)
+    bucket_col = _utc_date_trunc(bucket, TrialModel.finished_at)
     gh_id_col = TaskModel.tags["github_id"].astext
     gh_user_col = TaskModel.tags["github_username"].astext
 
@@ -1688,7 +1723,7 @@ async def get_cost_breakdown_core(
     (the self-hosted path).
     """
     now = datetime.now(timezone.utc)
-    since = None if window_days is None else now - timedelta(days=window_days)
+    since = _utc_window_start(now, window_days)
 
     bucket = _series_bucket(window_days)
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
@@ -1899,9 +1934,14 @@ async def get_cost_breakdown_core(
         prev_by_user: dict[tuple[str | None, str], float] = {}
         prev_window_cost: float | None = None
     else:
+        # Snapping ``since`` to a UTC boundary stretches the live window past
+        # ``window_days`` (it now includes the in-progress bucket), so the prior
+        # window must match the live span exactly -- not a fixed ``window_days`` --
+        # to keep the delta an apples-to-apples comparison.
+        window_span = now - since
         prev_by_user, prev_window_cost = await _prev_window_costs(
             session,
-            prev_start=now - 2 * timedelta(days=window_days),
+            prev_start=since - window_span,
             prev_end=since,
             resolve_github_users=resolve_github_users,
         )
@@ -2083,11 +2123,7 @@ async def get_cost_leaderboard_core(
     bucket is discarded -- it is not an account. Model remains in the SQL
     grouping because token-estimated costs are priced per model.
     """
-    since = (
-        None
-        if window_days is None
-        else datetime.now(timezone.utc) - timedelta(days=window_days)
-    )
+    since = _utc_window_start(datetime.now(timezone.utc), window_days)
     gh_id_col = TaskModel.tags["github_id"].astext
     gh_user_col = TaskModel.tags["github_username"].astext
     query = (
@@ -2215,7 +2251,7 @@ async def get_user_cost_breakdown_core(
 ) -> UserCostBreakdownResponse:
     """One user's settled billed spend: totals, per-task rollup, by-model series."""
     now = datetime.now(timezone.utc)
-    since = None if window_days is None else now - timedelta(days=window_days)
+    since = _utc_window_start(now, window_days)
     bucket = _series_bucket(window_days)
 
     filters = [
@@ -2227,7 +2263,7 @@ async def get_user_cost_breakdown_core(
     if since is not None:
         filters.append(TrialModel.finished_at >= since)
 
-    bucket_col = func.date_trunc(bucket, TrialModel.finished_at)
+    bucket_col = _utc_date_trunc(bucket, TrialModel.finished_at)
 
     detail_query = (
         select(

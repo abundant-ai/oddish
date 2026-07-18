@@ -1,6 +1,6 @@
 import logging
 
-from api.services.analyzer_block import (
+from api.services.blocks.analyzer.analyzer_block import (
     AnalyzerType,
     AnalyzerInput,
     AnalyzerOutput,
@@ -27,8 +27,8 @@ def test_block_logger_prepends_prefix(caplog):
 
 import pytest
 
-from api.services.analyzer_block import AnalyzerBlock
-from api.services.analyzer_llm_client import LLMClientType
+from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+from api.services.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.db.models import JobStatus, utcnow
 
 
@@ -61,7 +61,7 @@ async def test_save_to_s3_uses_prefix_key(monkeypatch):
             calls["ct"] = content_type
 
     monkeypatch.setattr(
-        "api.services.analyzer_block.get_storage_client", lambda: _FakeStorage()
+        "api.services.blocks.analyzer.analyzer_block.get_storage_client", lambda: _FakeStorage()
     )
     b = _make_block()
     await b.save_to_s3(b"raw-bytes")
@@ -77,7 +77,7 @@ async def test_save_to_s3_swallows_and_logs_errors(monkeypatch, caplog):
             raise RuntimeError("s3 down")
 
     monkeypatch.setattr(
-        "api.services.analyzer_block.get_storage_client", lambda: _BoomStorage()
+        "api.services.blocks.analyzer.analyzer_block.get_storage_client", lambda: _BoomStorage()
     )
     b = _make_block()
     await b.save_to_s3(b"x")  # must NOT raise
@@ -97,7 +97,7 @@ async def test_save_to_db_adds_row(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        "api.services.analyzer_block.get_session", lambda: _FakeSession()
+        "api.services.blocks.analyzer.analyzer_block.get_session", lambda: _FakeSession()
     )
     b = _make_block(block_metadata={"k": "v"})
     b.status = JobStatus.SUCCESS
@@ -120,7 +120,7 @@ async def test_save_to_db_adds_row(monkeypatch):
 
 import asyncio
 
-from api.services.analyzer_llm_client import FakeAnalyzerLLMClient
+from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
 
 
 def _patch_persistence(monkeypatch):
@@ -230,3 +230,60 @@ async def test_run_persist_completes_when_cancelled_during_persist(monkeypatch):
         await task
     assert saved["db"] == 1           # the DB write completed before run() unwound
     assert saved["s3"] == b"first"
+
+
+from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+from api.services.blocks.block import Block
+
+
+def test_analyzer_block_is_a_block():
+    assert issubclass(AnalyzerBlock, Block)
+
+
+@pytest.mark.asyncio
+async def test_output_transform_replaces_output(monkeypatch):
+    saved = _patch_persistence(monkeypatch)
+    b = _make_block(
+        analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
+        client=FakeAnalyzerLLMClient(chunks=['{"a":', ' 1}']),
+        output_transform=lambda raw: {"parsed": raw},
+    )
+    out = await b.run()
+    assert out.output == {"parsed": '{"a": 1}'}
+    # The raw text (not the transformed dict) is what gets archived to S3.
+    assert saved["s3"] == b'{"a": 1}'
+
+
+@pytest.mark.asyncio
+async def test_output_transform_failure_marks_failed_and_persists(monkeypatch):
+    saved = _patch_persistence(monkeypatch)
+
+    def boom(_raw):
+        raise ValueError("bad parse")
+
+    b = _make_block(
+        analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
+        client=FakeAnalyzerLLMClient(chunks=["x"]),
+        output_transform=boom,
+    )
+    with pytest.raises(ValueError, match="bad parse"):
+        await b.run()
+    assert b.status == JobStatus.FAILED
+    assert saved["db"] == 1
+
+
+@pytest.mark.asyncio
+async def test_self_provision_passes_api_key(monkeypatch):
+    _patch_persistence(monkeypatch)
+    captured = {}
+
+    async def fake_create(llm_client_type, *, api_key=None):
+        captured["api_key"] = api_key
+        return FakeAnalyzerLLMClient(chunks=["x"])
+
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_block.create_llm_client", fake_create
+    )
+    b = _make_block(api_key="sk-block")  # client=None -> self-provisions
+    await b.run()
+    assert captured["api_key"] == "sk-block"
