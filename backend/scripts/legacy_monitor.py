@@ -130,10 +130,24 @@ async def watch(scope_base: str | None, interval: int, minutes: int) -> bool:
         prev_done, prev_t, prev_failed = done, t, failed
         await asyncio.sleep(interval)
 
+    else:
+        # Loop fell out on the deadline rather than on a break. Say so loudly:
+        # a silent stop mid-run reads as a crash or a stalled job, when in fact
+        # the transfer is still going and only the observer timed out.
+        counts = await snapshot()
+        pending = counts.get("discovered", 0)
+        if pending:
+            print(f"\nMONITOR DEADLINE ({minutes}min) reached -- the TRANSFER IS STILL "
+                  f"RUNNING with {pending} rows pending.")
+            print("  This is the monitor stopping, not the job. Re-run with a larger "
+                  "--minutes to keep watching:")
+            print(f"  modal run backend/scripts/legacy_monitor.py "
+                  f"--scope-base {scope_base or '<base>'} --interval {interval} --minutes 480")
+
     await conn.close()
     return True
 
 
 @app.local_entrypoint()
-def main(scope_base: str | None = None, interval: int = 20, minutes: int = 180) -> None:
+def main(scope_base: str | None = None, interval: int = 20, minutes: int = 480) -> None:
     watch.remote(scope_base=scope_base, interval=interval, minutes=minutes)
