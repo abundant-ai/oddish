@@ -127,6 +127,30 @@ def test_bedrock_claude_trial_model_stays_on_bedrock(monkeypatch):
     assert settings.normalize_queue_key(bedrock_id) == bedrock_id
 
 
+def test_bare_claude_provider_does_not_depend_on_litellm_registry(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # litellm's registry only knows released model ids; a brand-new bare Claude
+    # id must still deterministically resolve to the direct-API provider
+    # instead of falling back to claude-code's fixed "bedrock" provider.
+    import oddish.config as config
+
+    def _unknown_model(model):
+        raise ValueError(f"LLM Provider NOT provided for {model!r}")
+
+    monkeypatch.setattr(config, "get_llm_provider", _unknown_model)
+
+    assert (
+        settings.get_provider_for_trial("claude-code", "claude-opus-4-8") == "anthropic"
+    )
+    assert (
+        settings.get_provider_for_trial(
+            "claude-code", "global.anthropic.claude-opus-4-8"
+        )
+        == "bedrock"
+    )
+
+
 def test_plain_claude_ids_pass_through_unmapped(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
@@ -281,10 +305,7 @@ def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):
         settings.get_queue_key_for_trial("grok-build", "grok/redacted-model")
         == "xai/redacted-model"
     )
-    assert (
-        settings.get_provider_for_trial("grok-build", "grok/redacted-model")
-        == "xai"
-    )
+    assert settings.get_provider_for_trial("grok-build", "grok/redacted-model") == "xai"
 
 
 def test_grok_build_without_model_uses_xai_provider_bucket(monkeypatch):

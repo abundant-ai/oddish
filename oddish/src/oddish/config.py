@@ -719,6 +719,13 @@ def _get_provider_from_model(model_name: str) -> str | None:
         llm_provider = None
     if llm_provider:
         return _normalize_model_provider(str(llm_provider))
+    # litellm's registry only knows released model ids, so a bare id for a new
+    # Claude model can fail detection there. A bare non-Bedrock claude-* id
+    # always runs on the direct Anthropic API; resolve it deterministically
+    # (mirrors _infer_provider_prefix's fallback) instead of letting the
+    # caller fall back to claude-code's fixed "bedrock" provider.
+    if model_name.strip().lower().startswith("claude"):
+        return "anthropic"
     return None
 
 
