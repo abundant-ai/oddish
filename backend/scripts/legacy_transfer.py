@@ -139,6 +139,18 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
     )
     from oddish.schemas import ImportedTrialSpec
 
+    # litellm prints "Provider List: https://docs.litellm.ai/docs/providers" to
+    # stdout every time it is asked about a model id it does not recognise --
+    # which, for legacy Sauron model ids, is constantly. It produced hundreds of
+    # lines per run and buried the actual output. This flag is litellm's
+    # documented switch for that chatter and is process-local, so deployed
+    # prod code is unaffected.
+    try:
+        import litellm
+        litellm.suppress_debug_info = True
+    except Exception:
+        pass
+
     # ------------------------------------------------------------------
     # Suppress QA enqueue for THIS import process only (lead ruling: no
     # analysis cost from the migration). The importer resolves

@@ -78,6 +78,18 @@ async def validate(scope_base: str | None, scope_run: str | None,
     import asyncpg
     from oddish.config import settings
 
+    # litellm prints "Provider List: https://docs.litellm.ai/docs/providers" to
+    # stdout every time it is asked about a model id it does not recognise --
+    # which, for legacy Sauron model ids, is constantly. It produced hundreds of
+    # lines per run and buried the actual output. This flag is litellm's
+    # documented switch for that chatter and is process-local, so deployed
+    # prod code is unaffected.
+    try:
+        import litellm
+        litellm.suppress_debug_info = True
+    except Exception:
+        pass
+
     failures: list[str] = []
 
     def check(name: str, ok: bool, detail: str = "") -> None:
@@ -132,8 +144,13 @@ async def validate(scope_base: str | None, scope_run: str | None,
     check("no duplicate idempotency keys", dup_keys == 0, f"dups={dup_keys}")
 
     # Ledger completeness (HARD FAIL). Every trial in scope must be finished:
-    # either 'transferred' (moved in) or 'skipped' (deliberately excluded, e.g.
-    # the dedup mirror rows). Anything still 'discovered' (never attempted),
+    # 'transferred' (moved in), or deliberately excluded as 'skipped' /
+    # 'duplicate'. Both exclusion labels matter: the Sauron-mirror true-dups
+    # (native Oddish trials written back into the legacy bucket) were first
+    # marked 'skipped' and later relabelled 'duplicate', and this gate only
+    # knew the old name -- so abundant-ai/experiments hard-failed with
+    # UNFINISHED=duplicate:24292 even though 142,064 + 24,292 = 166,356
+    # accounted for every single ledger row. Anything still 'discovered' (never attempted),
     # 'transferring' (stuck mid-move), or 'failed' (errored) means the move is
     # incomplete and data is silently missing. The ledger already records each
     # trial's state, so we read that column directly — unlike comparing two
@@ -144,8 +161,8 @@ async def validate(scope_base: str | None, scope_run: str | None,
     # leg_trial_ledger IS the migration's own worklist — every row is a legacy
     # trial that must move. There are no foreign/untagged rows to filter out;
     # the only rows we deliberately don't move are the dedup mirrors, already
-    # marked 'skipped' and excluded below. So any in-scope row that is not
-    # 'transferred'/'skipped' is a genuine un-moved trial and SHOULD fail the
+    # marked 'skipped'/'duplicate' and excluded below. So any in-scope row that
+    # is not one of those three is a genuine un-moved trial and SHOULD fail the
     # gate. Validating a broader scope than you transferred will (correctly)
     # report the untouched remainder as unfinished — that is the point.
     lwhere = "TRUE"
@@ -159,7 +176,7 @@ async def validate(scope_base: str | None, scope_run: str | None,
     ledger_n = await conn.fetchval(f"SELECT count(*) FROM leg_trial_ledger WHERE {lwhere}", *largs)
     unfinished = await conn.fetch(
         f"SELECT status, count(*) AS n FROM leg_trial_ledger "
-        f"WHERE {lwhere} AND status NOT IN ('transferred','skipped') "
+        f"WHERE {lwhere} AND status NOT IN ('transferred','skipped','duplicate') "
         f"GROUP BY status ORDER BY status", *largs)
     n_unfinished = sum(r["n"] for r in unfinished)
     detail = f"ledger={ledger_n} imported={total}"
