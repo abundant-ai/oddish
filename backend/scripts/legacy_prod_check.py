@@ -42,7 +42,7 @@ EXPECTED_COLUMNS = {
 
 
 @app.function(image=image, secrets=[secret], timeout=300)
-async def check(scope_base: str | None, scope_pr: int | None) -> bool:
+async def check(scope_base: str | None, scope_pr: int | None, show_errors: bool) -> bool:
     import asyncpg
 
     url = os.environ["ODDISH_DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
@@ -157,6 +157,33 @@ async def check(scope_base: str | None, scope_pr: int | None) -> bool:
     except Exception as exc:  # noqa: BLE001
         check_one("ledger readable", False, repr(exc))
 
+    # ------------------------------------------------------- Failure detail
+    # The ledger stores each failure's reason in `error`, but nothing surfaced
+    # it -- the runbook said "read the error column" with no way to do so.
+    # Group by reason so a systemic cause is obvious versus scattered
+    # one-offs.
+    if show_errors:
+        print("\n== Failed ledger rows, grouped by reason ==")
+        try:
+            errs = await conn.fetch(
+                f"""
+                SELECT coalesce(error, '(no reason recorded)') AS reason,
+                       count(*) AS n,
+                       min(s3_prefix) AS example
+                FROM leg_trial_ledger
+                WHERE status = 'failed' AND {where}
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 20
+                """,
+                *args,
+            )
+            if not errs:
+                print("  (no failed rows in scope)")
+            for e in errs:
+                print(f"  n={e['n']:<6} {e['reason'][:150]}")
+                print(f"           e.g. {e['example']}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [error] {exc!r}")
+
     # -------------------------------------------------- Rollback dry count
     print("\n== Rollback preview (COUNT ONLY - deletes nothing) ==")
     tag_where = "harbor_config->>'source' = $1"
@@ -195,7 +222,8 @@ async def check(scope_base: str | None, scope_pr: int | None) -> bool:
 
 
 @app.local_entrypoint()
-def main(scope_base: str | None = None, scope_pr: int | None = None) -> None:
-    ok = check.remote(scope_base=scope_base, scope_pr=scope_pr)
+def main(scope_base: str | None = None, scope_pr: int | None = None,
+         show_errors: bool = False) -> None:
+    ok = check.remote(scope_base=scope_base, scope_pr=scope_pr, show_errors=show_errors)
     if not ok:
         raise SystemExit(1)

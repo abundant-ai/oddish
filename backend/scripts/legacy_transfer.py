@@ -526,7 +526,14 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                         async with get_session() as sess:
                             await sess.execute(text(
                                 "UPDATE leg_trial_ledger SET status='failed', error=:e "
-                                "WHERE s3_prefix=:p"), {"e": str(e)[:500], "p": r["s3_prefix"]})
+                                "WHERE s3_prefix=:p"),
+                                # repr, not str: an exception raised with no
+                                # message stringifies to "" -- TimeoutError()
+                                # being the one we actually hit -- which wrote
+                                # blank reasons into the ledger and made the
+                                # failures undiagnosable after the fact.
+                                {"e": f"{type(e).__name__}: {e}"[:500],
+                                 "p": r["s3_prefix"]})
                             await sess.commit()
                         print(f"  ERROR {r['s3_prefix']}: {e!r}")
                         tick()
