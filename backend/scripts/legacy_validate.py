@@ -194,6 +194,7 @@ async def validate(scope_base: str | None, scope_run: str | None,
     random.shuffle(rows)
     rows = rows[: max(0, sample)]
     reward_mismatch = missing_prefix = missing_result = model_suspect = 0
+    missing_log = 0
     session = aioboto3.Session()
     async with session.client("s3", region_name=settings.s3_region or "us-east-1") as s3:
         for r in rows:
@@ -230,15 +231,33 @@ async def validate(scope_base: str | None, scope_run: str | None,
                 if r["reward"] is None or abs(float(r["reward"]) - src) > 1e-9:
                     reward_mismatch += 1
                     print(f"    reward mismatch {r['id']}: db={r['reward']} s3={src}")
-            # Prove orig_s3_src points at a real trial dir. trial.log is the
-            # universal signature (present for every discovered trial); a miss
-            # means the stored prefix is wrong (a transfer bug). result.json is
-            # tracked separately as info only: ~2% of genuine source trials
-            # (harness errors) never wrote one, so its absence is not a defect.
+            # Prove orig_s3_src points at a real trial dir WITHOUT betting on any
+            # single filename. Two previous versions of this gate were wrong for
+            # exactly that reason: result.json is missing for ~2% of genuine
+            # trials (harness errors), and trial.log -- its replacement -- turned
+            # out not to be universal either. It is present in attempt-layout
+            # repos (reflection-ai, vals-experiments) but missing for some
+            # flat-layout trials, which failed nov-5-export 6/50 even though
+            # result.json AND the reward files were present at those same
+            # prefixes, i.e. the prefixes were provably correct.
+            #
+            # A prefix listing cannot false-positive: if ANY object exists under
+            # the prefix then the path is real, whatever the layout wrote there.
+            try:
+                listing = await s3.list_objects_v2(
+                    Bucket=DEFAULT_BUCKET, Prefix=prefix, MaxKeys=1)
+                if not listing.get("KeyCount"):
+                    missing_prefix += 1
+                    print(f"    empty prefix {r['id']}: {prefix}")
+            except Exception as exc:
+                missing_prefix += 1
+                print(f"    prefix probe failed {r['id']}: {exc!r}")
+            # Per-file presence is now INFO only -- useful for spotting a repo
+            # whose layout differs, never a reason to fail the run.
             try:
                 await s3.head_object(Bucket=DEFAULT_BUCKET, Key=f"{prefix}trial.log")
             except Exception:
-                missing_prefix += 1
+                missing_log += 1
             try:
                 await s3.head_object(Bucket=DEFAULT_BUCKET, Key=f"{prefix}result.json")
             except Exception:
@@ -250,8 +269,10 @@ async def validate(scope_base: str | None, scope_run: str | None,
                 model_suspect += 1
     check("sampled rewards match reward.txt", reward_mismatch == 0,
           f"mismatches={reward_mismatch}/{len(rows)}")
-    check("sampled orig_s3_src prefixes valid (trial.log present)", missing_prefix == 0,
-          f"missing={missing_prefix}/{len(rows)}")
+    check("sampled orig_s3_src prefixes valid (objects exist under prefix)",
+          missing_prefix == 0, f"empty={missing_prefix}/{len(rows)}")
+    info("sampled trial.log present (info: not universal across layouts)",
+         f"missing={missing_log}/{len(rows)}")
     info("sampled result.json present (info: some source trials lack it)",
          f"missing={missing_result}/{len(rows)}")
     check("model looks un-collapsed (no doubled prefix)", model_suspect == 0,
