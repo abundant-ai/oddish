@@ -120,6 +120,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                    shard: int, num_shards: int) -> None:
     import asyncio
     import json
+    import random
     from datetime import datetime, timezone
     from itertools import groupby
     from uuid import uuid4
@@ -367,27 +368,71 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         # create atomic and idempotent; rowcount tells us whether WE created it,
         # so the counter stays honest across shards.
         exp_ids: dict[str, str] = {}   # run-root path -> experiment id
+
+        # `roots` is SORTED, and shards share run-roots, so every shard used to
+        # walk the identical list in the identical order -- N processes queueing
+        # on the same row, then the next same row. Postgres serializes them and
+        # a long enough wait raises asyncpg TimeoutError. This loop had no
+        # except, so that killed the whole shard before it imported a single
+        # trial (nov-5-export lost 2 of 8 shards here; their logs show
+        # "prefetched ... manifests" and then nothing).
+        #
+        # Note --concurrency does NOT help: this phase is one sequential stream
+        # per shard, so contention is purely a function of shard count.
+        #
+        # Shuffling per shard breaks the lockstep -- shards spread across
+        # different rows instead of contending for the same one. The seed is
+        # per-shard so the order is deterministic and reproducible.
+        exp_order = list(roots)
+        random.Random(f"shard-{shard}-of-{num_shards}").shuffle(exp_order)
+
+        exp_retries = 0
         async with get_session() as sess:
-            for root in roots:
+            for root in exp_order:
                 eid = _exp_id(root)
                 m = manifests.get(root, {}) or {}
                 meta = m.get("metadata", {}) or {}
                 rt = m.get("runtime", {}) or {}
-                res = await sess.execute(
-                    pg_insert(ExperimentModel.__table__).values(
-                        id=eid, org_id=ORG_ID,
-                        name=meta.get("name") or f"Legacy {root.rsplit('/', 1)[-1]}",
-                        description=meta.get("description"),
-                        owner=rt.get("repository"),
-                        link=rt.get("workflow_url"),
-                        imported_at=now(),
-                        orig_s3_src=f"{root}/",  # immutable run-root anchor
-                    ).on_conflict_do_nothing(index_elements=["id"])
-                )
-                if res.rowcount:
-                    created["experiments"] += 1
+                stmt = pg_insert(ExperimentModel.__table__).values(
+                    id=eid, org_id=ORG_ID,
+                    name=meta.get("name") or f"Legacy {root.rsplit('/', 1)[-1]}",
+                    description=meta.get("description"),
+                    owner=rt.get("repository"),
+                    link=rt.get("workflow_url"),
+                    imported_at=now(),
+                    orig_s3_src=f"{root}/",  # immutable run-root anchor
+                ).on_conflict_do_nothing(index_elements=["id"])
+
+                # Retry rather than die. A timeout here is contention, not a
+                # data problem: the same statement succeeds moments later, and
+                # it is idempotent, so replaying it is always safe.
+                for attempt in range(1, 6):
+                    try:
+                        res = await sess.execute(stmt)
+                        # Commit EACH row rather than batching the whole loop
+                        # into one transaction. Two reasons, both about locks:
+                        # a single transaction holds a row lock on every
+                        # experiment it inserted until the very end, so N shards
+                        # sit on thousands of locks for minutes -- that window
+                        # is probably a bigger contention source than the
+                        # ordering was. And a rollback mid-loop would discard
+                        # every earlier insert, so retrying inside one long
+                        # transaction is not even correct.
+                        await sess.commit()
+                        if res.rowcount:
+                            created["experiments"] += 1
+                        break
+                    except Exception as e:
+                        await sess.rollback()
+                        if attempt == 5:
+                            # Still don't kill the shard. Another shard almost
+                            # certainly created this row; if not, the per-trial
+                            # import will fail loudly and be retryable.
+                            print(f"  EXP CREATE gave up after {attempt}: {root} {e!r}")
+                            break
+                        exp_retries += 1
+                        await asyncio.sleep(min(2 ** (attempt - 1), 8) * (0.5 + random.random()))
                 exp_ids[root] = eid
-            await sess.commit()
 
         # 3b. Task-groups run CONCURRENTLY up to --concurrency; each group's
         # trials import SEQUENTIALLY (run-order index only matters within a
@@ -534,6 +579,8 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         # actually matters for the run-order index.
         groups.sort(key=lambda g: len(g[1]), reverse=True)
         biggest = len(groups[0][1]) if groups else 0
+        if exp_retries:
+            print(f"experiment pre-create retried {exp_retries}x under contention")
         print(f"processing {len(groups)} task-groups with concurrency={max(1, concurrency)}"
               f"  (largest group={biggest} trials, dispatched first)")
         await asyncio.gather(*(_process_group(tid, grp) for tid, grp in groups))
