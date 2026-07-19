@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-19]
+
+### Added
+
+- The dashboard's admin Costs tab can now set the shared-channel cost-escalation floor (the threshold a trial's spend must clear to post to the group Slack channel) and its always-ping list, backed by an editable `slack_alert_settings` row with a "Reset to defaults" option; owner DM cutoffs remain a separate, per-user notification preference (#775).
+- A three-step Sauron → Oddish trial-migration pipeline (discover / transfer / validate) runs on Modal to bulk-import legacy S3 trials into the Abundant org via idempotent ledger tables, stamping `imported_at` / `orig_s3_src` on tasks, trials, and experiments; QA now skips already-imported trials and only enqueues a QA stage when QA-eligible trials remain (#741).
+
+### Changed
+
+- Oddish's Harbor dependency now points at the `abundant-ai/harbor` fork (previously `rishidesai/harbor`) across both lockfiles, the runtime default, and image pins, with the prior fork kept in the compatibility allowlist for previously stamped trials (#785).
+- Bumped the baked default Harbor pin to the `abundant-ai/harbor` merge commit that preserves installed-agent return codes and treats an intentional post-submission SIGTERM (exit 143) as terminal when verification is enabled, keeping normal experiments on the default worker path (#791).
+- Owner Slack DMs (expensive-experiment/trial pings, failed-experiment/trial/QA alerts) now prefer the recipient's Clerk-linked Slack account (their `oauth_slack` external account) to resolve the Slack user id directly, falling back to the email-based directory lookup only when no Slack account is linked in Clerk; in-channel @-mentions still resolve by email (#784).
+- Slack expense-alert delivery switched from an exactly-once retry-marker state machine to a simpler at-least-once outbox that stores each alert's rendered payload and recipient and retries any unsent row on the next run, fixing a bug where a failed alert stopped retrying once its spend aged out of the recent window; the Modal job timeout was also raised to 600s while per-request Slack timeouts dropped to 5s (#787).
+- Trajectory-summary generation now runs on a shared `Block` base (fault-tolerant prompt building + parsing) with a new `TrajectoryBlock`, and the hosted `analyzer_blocks` table is now the summary's source of truth; free-form `phases` are replaced by taxonomy-classified `components` (schema version 4), consumed by the trajectory graph and its reuse gate (#790).
+
+### Fixed
+
+- The admin cost dashboard's Last 24h/7d/30d/90d windows and daily/weekly chart bars are now bucketed and floored on true UTC boundaries instead of the database session's ambient timezone, so the leftmost bar is a complete period and lines up with the frontend's UTC-labeled axis; the previous-window delta comparison now spans an equal-length prior window (#792).
+- The experiment-detail task grid (`GET /experiments/{id}/task-shells`) no longer times out on large rollup experiments: the underlying queries now fetch member task ids from the indexed `task_experiments` table first and load by primary key, instead of scanning tasks newest-first with a per-row `EXISTS` probe that had to walk the whole org's task set to fill the page (#793).
+- Cost and failure Slack alerts now DM the experiment's displayed `owner` GitHub handle instead of its `owner_user_id` billing FK, which pointed at whoever created the API key on re-run/append experiments or CI sweeps and could notify the wrong person entirely (#786).
+
+---
+
 ## [2026-07-18]
 
 ### Changed
