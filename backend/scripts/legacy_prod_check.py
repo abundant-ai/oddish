@@ -147,12 +147,32 @@ async def check(scope_base: str | None, scope_pr: int | None, show_errors: bool)
             info(f"  status={r['status']}", str(r["n"]))
 
         if scope_base or scope_pr is not None:
-            total = sum(r["n"] for r in ledger)
-            discovered = sum(r["n"] for r in ledger if r["status"] == "discovered")
+            counts = {r["status"]: r["n"] for r in ledger}
+            total = sum(counts.values())
+            pending = counts.get("discovered", 0)
+            done = counts.get("transferred", 0)
+            stuck = counts.get("failed", 0) + counts.get("transferring", 0)
+
+            # This used to hard-FAIL unless the whole scope was untransferred,
+            # which is only meaningful as a pre-transfer readiness check. Run
+            # after a completed base it reported FAILED on a perfectly healthy
+            # result and made a clean run look broken. Readiness is now stated
+            # as info; the only genuine defect is a row stuck in 'failed' or
+            # 'transferring', so that is what the gate checks.
+            if total == 0:
+                info("scope state", "no ledger rows -- check the scope spelling")
+            elif pending == total:
+                info("scope state", f"fully pending, {total} rows -- ready to transfer")
+            elif pending == 0 and not stuck:
+                info("scope state", f"COMPLETE -- {done}/{total} transferred, nothing pending")
+            else:
+                info("scope state",
+                     f"partial -- {done} transferred, {pending} pending, {stuck} stuck")
+
             check_one(
-                "pilot slice untransferred (safe to run)",
-                total > 0 and discovered == total,
-                f"discovered={discovered}/{total}",
+                "no rows stuck in 'failed'/'transferring'",
+                stuck == 0,
+                f"stuck={stuck} (sweep with --retry-failed)" if stuck else "",
             )
     except Exception as exc:  # noqa: BLE001
         check_one("ledger readable", False, repr(exc))
