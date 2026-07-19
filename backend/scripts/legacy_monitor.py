@@ -62,6 +62,7 @@ async def watch(scope_base: str | None, interval: int, minutes: int) -> bool:
     deadline = now().timestamp() + minutes * 60
     # Smooth the rate a little; a single interval is noisy when shards stagger.
     recent: list[float] = []
+    idle = 0
 
     while now().timestamp() < deadline:
         counts = await snapshot()
@@ -103,9 +104,28 @@ async def watch(scope_base: str | None, interval: int, minutes: int) -> bool:
         print(f"{stamp:8}  {done:>9} {left:>9} {failed:>7}  {rate:>7.2f} {eta:>9}  "
               f"{health['active']:>5} {health['locks']:>5}   {pct:5.1f}%{warn}")
 
-        if left == 0:
-            print("\nALL WORK COMPLETE for this scope.")
+        # Exit on 'discovered' hitting zero, NOT on left==0. left includes
+        # failed rows, which never clear by themselves -- only a --retry-failed
+        # run picks them up. Waiting for left==0 means spinning forever at 100%.
+        pending = counts.get("discovered", 0)
+        if pending == 0:
+            if failed:
+                print(f"\nNo pending work left. {failed} row(s) FAILED -- sweep them with:")
+                print(f"  modal run backend/scripts/legacy_transfer.py "
+                      f"--scope-base {scope_base or '<base>'} --execute --retry-failed")
+            else:
+                print("\nALL WORK COMPLETE for this scope.")
             break
+
+        # Nothing moving and nothing failing usually means every shard died.
+        if prev_done is not None and done == prev_done:
+            idle += 1
+            if idle >= 3:
+                print(f"\nNo progress for {idle} intervals with {pending} rows still "
+                      f"pending -- shards are probably all dead. Check the shard logs.")
+                break
+        else:
+            idle = 0
 
         prev_done, prev_t, prev_failed = done, t, failed
         await asyncio.sleep(interval)
