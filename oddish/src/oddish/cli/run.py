@@ -45,7 +45,9 @@ from oddish.cli.config import (
     is_modal_api_url,
     require_api_key,
 )
+from oddish.cli.preflight import gate_preflight
 from oddish.experiment import generate_experiment_name
+from oddish.preflight.runner import run_checks
 
 console = Console()
 
@@ -502,6 +504,16 @@ def run(
             ),
         ),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Submit even if preflight checks fail. Findings are still "
+                "printed. Unrelated to --force-new-version."
+            ),
+        ),
+    ] = False,
     agent_env: Annotated[
         Optional[list[str]],
         typer.Option(
@@ -825,6 +837,18 @@ def run(
             n_tasks=n_tasks,
             quiet=quiet,
         )
+
+    # Gate before upload: a task that leaks its own answer should never cost a
+    # trial. Unlike validate_tasks(), one bad task fails the whole run — a
+    # pre-commit hook does not let 19 of 20 files through.
+    #
+    # Do NOT pass json_output here. `run --json` owns its single stdout JSON
+    # document; letting the gate emit its own `{"ok":...}` blob would concatenate
+    # two JSON documents on stdout and break `json.loads`. The gate instead
+    # renders findings to stderr (human) and aborts via typer.Exit on failure —
+    # consistent with run()'s other pre-upload aborts (the linkage gate).
+    if task_paths:
+        gate_preflight(run_checks(task_paths), force=force)
 
     # Ensure each run uses a single experiment unless specified.
     if not experiment_id and not existing_task_ids:
