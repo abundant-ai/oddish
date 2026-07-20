@@ -379,6 +379,7 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
         )
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )

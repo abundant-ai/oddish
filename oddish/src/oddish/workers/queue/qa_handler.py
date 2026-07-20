@@ -6,10 +6,10 @@ from sqlalchemy import func, select
 
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
+from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
-    TaskStatus,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -295,17 +295,7 @@ async def run_task_qa_job(
             timeout=180,
         )
 
-        verdict_result = {
-            "is_good": verdict.is_good,
-            "confidence": verdict.confidence,
-            "primary_issue": verdict.primary_issue,
-            "reasoning": verdict.reasoning,
-            "recommendations": verdict.recommendations,
-            "task_problem_count": verdict.task_problem_count,
-            "agent_problem_count": verdict.agent_problem_count,
-            "success_count": verdict.success_count,
-            "harness_error_count": verdict.harness_error_count,
-        }
+        verdict_result = build_verdict_payload(verdict, classifications)
 
         console.print(
             f"[green]Verdict computed:[/green] {'GOOD' if verdict.is_good else 'NEEDS REVIEW'} "
@@ -326,38 +316,19 @@ async def run_task_qa_job(
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
-    async def _store_results() -> None:
-        async with get_session() as session:
-            task = await session.get(TaskModel, task_id, with_for_update=True)
-            if not task:
-                return
-
-            if not await _worker_job_is_running(session, worker_job_id):
-                console.print(
-                    f"[dim]QA {task_id} result ignored; job was cancelled[/dim]"
-                )
-                return
-
-            if verdict_result:
-                task.verdict = verdict_result
-                task.verdict_status = VerdictStatus.SUCCESS
-                task.verdict_error = None
-                task.verdict_finished_at = utcnow()
-                task.status = TaskStatus.COMPLETED
-                task.finished_at = utcnow()
-                console.print(
-                    f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]"
-                )
-            else:
-                task.verdict_status = VerdictStatus.FAILED
-                task.verdict_error = (
-                    verdict_error or "Verdict synthesis failed with exception"
-                )
-                task.verdict_finished_at = utcnow()
-                task.status = TaskStatus.COMPLETED
-                task.finished_at = utcnow()
-                console.print(
-                    f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
-                )
-
-    await asyncio.shield(_store_results())
+    status = await asyncio.shield(
+        sync_verdict_to_task(
+            task_id,
+            payload=verdict_result,
+            error=verdict_error,
+            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+        )
+    )
+    if status is None:
+        console.print(f"[dim]QA {task_id} result ignored; job was cancelled[/dim]")
+    elif verdict_result:
+        console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
+    else:
+        console.print(
+            f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
+        )
