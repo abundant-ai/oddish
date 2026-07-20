@@ -40,7 +40,10 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "global.anthropic.claude-sonnet-4-6"
+# Plain Anthropic-style id (no Bedrock inference-profile mapping): the
+# classifier and trajectory analyzers route non-Bedrock Claude ids to the
+# direct Anthropic API.
+ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -60,6 +63,25 @@ def next_probe_model(index: int) -> str:
 
 
 NOP_ORACLE_QUEUE_KEY = "nop_oracle"
+
+# Reserved queue keys the dashboard queue/pipeline stats use for the
+# trajectory-analysis and task-verdict pipelines. These are *presentation*
+# buckets over ``trials.analysis_status`` / ``tasks.verdict_status`` — NOT
+# worker_jobs queue keys — and exist so pipeline counts can never be folded
+# into (and impersonate) a real model's queue bucket. Before this split, the
+# analysis pipeline was keyed off the analysis *model*'s queue key, so every
+# trial mid-classification showed up as "running" under that model's queue
+# (an incident showed 4k+ phantom "running workers" under one model).
+ANALYSIS_PIPELINE_QUEUE_KEY = "analysis"
+VERDICT_PIPELINE_QUEUE_KEY = "verdict"
+
+# Sentinel prefix stamped on ``trials.analysis_error`` when orphaned-pipeline
+# cleanup finalizes a stranded classification as FAILED. These rows mean "the
+# QA job died before classifying this trial", NOT "classification ran and
+# failed" -- so resurrect paths (a task re-opened by appending trials, a QA
+# retry) match on this prefix and reopen them for the next QA pass instead of
+# permanently excluding the trial from the verdict.
+ORPHANED_ANALYSIS_ERROR_PREFIX = "Analysis orphaned: "
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 # Suffixed/prefixed variants of the deterministic baseline agents (e.g.
 # "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
@@ -119,8 +141,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
-HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "237c202cfa8e74ebef9db3cd999eb61965338615"
+HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
+HARBOR_DEFAULT_SHA = "555fc203d51ef97d937703654e7d03b29cba4a02"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1024,7 +1046,7 @@ class Settings(BaseSettings):
     live_tail_enabled: bool = True
     live_tail_interval_sec: float = 30.0
 
-    harbor_source_repo: str = "rishidesai/harbor"
+    harbor_source_repo: str = "abundant-ai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
     harbor_source_ref: str = "main"
@@ -1255,6 +1277,11 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
+    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
+    analyzer_anthropic_api_key: str | None = Field(
+        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
@@ -1382,8 +1409,17 @@ class Settings(BaseSettings):
                 return provider
         return self.get_provider_for_agent(agent)
 
-    def normalize_trial_model(self, agent: str, model: str | None) -> str | None:
+    def normalize_trial_model(
+        self, agent: str, model: str | None, *, strict: bool = True
+    ) -> str | None:
         """Canonicalize trial model input for storage/routing.
+
+        ``strict=True`` (default, the live create/queue/execute path) raises for
+        a Claude model with no Bedrock runtime id. ``strict=False`` is for
+        read-side rendering/cost/notify over already-stored trials: an imported
+        legacy model (e.g. ``claude-3-5-sonnet-20241022``) has no Bedrock id and
+        never executes, so fall back to the un-collapsed model rather than 500
+        the page.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force the model to the single canonical
@@ -1421,7 +1457,12 @@ class Settings(BaseSettings):
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
 
-        return to_bedrock_model_id(cleaned)
+        if strict:
+            return to_bedrock_model_id(cleaned)
+        try:
+            return to_bedrock_model_id(cleaned)
+        except ValueError:
+            return cleaned
 
     def normalize_queue_key(self, model: str) -> str:
         """Normalize queue keys.
@@ -1469,10 +1510,13 @@ class Settings(BaseSettings):
     def get_qa_queue_key(self) -> str:
         """Concurrency bucket for the task-level QA job.
 
-        Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
-        existing per-model concurrency overrides keep applying.
+        Keyed off ``analysis_model``: the bulk of a QA job's LLM work is the
+        per-trial classification pass, which runs on the analysis model, so the
+        job leases slots from that model's concurrency bucket (and existing
+        per-model concurrency overrides keep applying). The single
+        verdict-synthesis call on ``verdict_model`` rides along.
         """
-        return self.normalize_queue_key(self.verdict_model)
+        return self.normalize_queue_key(self.analysis_model)
 
     def get_task_expand_queue_key(self) -> str:
         """Dedicated queue key for task-expansion jobs.
@@ -1508,8 +1552,8 @@ class Settings(BaseSettings):
     def get_known_queue_keys(self) -> set[str]:
         keys = {
             NOP_ORACLE_QUEUE_KEY,
-            self.get_analysis_queue_key(),
-            self.get_qa_queue_key(),
+            ANALYSIS_PIPELINE_QUEUE_KEY,
+            VERDICT_PIPELINE_QUEUE_KEY,
         }
         keys.update(self.model_concurrency_overrides.keys())
         return keys

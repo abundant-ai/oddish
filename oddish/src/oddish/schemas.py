@@ -1423,6 +1423,15 @@ class ImportedTrialSpec(BaseModel):
             "rejected by the unique index."
         ),
     )
+    imported_at: datetime | None = Field(
+        None,
+        description=(
+            "Bulk-migration marker (Sauron->Oddish). When set it is written on "
+            "the trial row IN the import transaction, so the QA pipeline's "
+            "imported_at-based exclusion can never race a follow-up UPDATE. "
+            "Leave None for ad-hoc imports (stock analysis behavior)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_terminal_status(self) -> "ImportedTrialSpec":
@@ -1834,6 +1843,7 @@ class ReportResponse(BaseModel):
     num_bad_failures: int | None = None
     num_good_failures: int | None = None
     breakdown: dict | None = None
+    by_model: dict | None = None
     experiment_ids: list[str] = []
     created_at: datetime | None = None
     finished_at: datetime | None = None

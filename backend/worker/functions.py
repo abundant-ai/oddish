@@ -61,7 +61,7 @@ from modal_app import (
 from backfill_github_id import backfill_github_id
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
-from oddish.core.model_concurrency import get_effective_model_concurrency_limits
+from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
@@ -135,30 +135,30 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 async def _effective_model_concurrency_limits(
     queue_keys: tuple[str, ...],
 ) -> dict[str, int]:
-    """The concurrency limits to enforce, keyed by the caller's ``queue_keys``:
-    the admin override when set (else the static limit), overlaid with the fresh
-    advisory when dynamic concurrency is on.
-
-    ONE function on purpose: ``poll_queue`` sizes the spawn plan from it and each
-    worker checks its ``queue_slots`` lease against it, so both enforce the same
-    number -- otherwise the lease could cap below what the dispatcher planned, or
-    the dispatcher over-spawn above the slot pool. Best-effort: an unreadable
-    override/advisory decays to the static value.
-    """
+    """Load override and advisory limits, failing closed on override errors."""
     try:
         async with get_session() as session:
-            limits = await get_effective_model_concurrency_limits(session, queue_keys)
+            overrides = await get_model_concurrency_overrides(session, queue_keys)
+            limits = {
+                key: overrides.get(
+                    settings.normalize_queue_key(key),
+                    settings.get_model_concurrency(key),
+                )
+                for key in queue_keys
+            }
             if settings.dynamic_model_concurrency:
+                hard_caps = {
+                    key: overrides[settings.normalize_queue_key(key)]
+                    for key in queue_keys
+                    if settings.normalize_queue_key(key) in overrides
+                }
                 limits = merge_advisory_over_static(
-                    limits, await get_advisory_limits(session)
+                    limits, await get_advisory_limits(session), hard_caps=hard_caps
                 )
         return limits
-    except Exception as e:  # noqa: BLE001 - limit read is best-effort
+    except Exception as e:  # noqa: BLE001 - an unknown override must stop dispatch
         console.print(f"[yellow]Concurrency limits unavailable: {e}[/yellow]")
-        return {
-            queue_key: settings.get_model_concurrency(queue_key)
-            for queue_key in queue_keys
-        }
+        return dict.fromkeys(queue_keys, 0)
 
 
 async def _effective_model_concurrency(queue_key: str) -> int:

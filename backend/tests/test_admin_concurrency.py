@@ -11,8 +11,6 @@ from oddish.config import settings
 
 
 class _Session:
-    """Records statements and reports no existing override rows."""
-
     def __init__(self):
         self.calls = []
 
@@ -96,8 +94,6 @@ async def test_admin_concurrency_rejects_invalid_limit():
 
 @pytest.mark.asyncio
 async def test_admin_concurrency_rejects_blank_queue_key():
-    """normalize_queue_key("   ") is "default" -- a live queue. A blank key must
-    422, not silently retarget it."""
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
@@ -110,8 +106,6 @@ async def test_admin_concurrency_rejects_blank_queue_key():
 
 @pytest.mark.asyncio
 async def test_admin_concurrency_rejects_a_misspelled_limit_field():
-    """limit=None means "clear the override", so a typo'd field name must 422
-    rather than silently delete one."""
     async with AsyncClient(
         transport=ASGITransport(app=_app()), base_url="http://test"
     ) as client:
@@ -125,7 +119,6 @@ async def test_admin_concurrency_rejects_a_misspelled_limit_field():
 
 @pytest.mark.asyncio
 async def test_admin_concurrency_requires_admin():
-    """No ``require_admin`` override: the dependency must reject the request."""
     async with AsyncClient(
         transport=ASGITransport(app=create_app()), base_url="http://test"
     ) as client:

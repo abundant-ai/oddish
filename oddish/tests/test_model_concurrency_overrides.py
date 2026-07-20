@@ -5,6 +5,7 @@ import pytest
 from oddish.config import settings
 from oddish.core.model_concurrency import (
     get_effective_model_concurrency_limits,
+    load_effective_model_concurrency_limits,
     set_model_concurrency_override,
 )
 from oddish.workers.queue.worker_job_dispatcher import build_spawn_plan
@@ -37,8 +38,6 @@ async def test_effective_limits_prefer_database_override():
         session, ["MiniMax/MiniMax-M3", "unconfigured/model"]
     )
 
-    # Keyed by what the caller passed; the override still matches through
-    # normalization rather than by raw string equality.
     assert limits["MiniMax/MiniMax-M3"] == 72
     assert limits["unconfigured/model"] > 0
     assert session.calls[0][1] == {
@@ -48,10 +47,6 @@ async def test_effective_limits_prefer_database_override():
 
 @pytest.mark.asyncio
 async def test_effective_limits_are_keyed_by_the_callers_queue_key():
-    """``build_spawn_plan`` reads a missing key as limit 0 and silently stalls
-    the queue, so the dict must key off the caller's spelling even where
-    ``normalize_queue_key`` rewrites it (a Claude alias -> a Bedrock id).
-    """
     raw = "anthropic/claude-haiku-4-5-20251001"
     assert settings.normalize_queue_key(raw) != raw, "picked a key that isn't rewritten"
 
@@ -85,6 +80,28 @@ async def test_zero_override_is_an_off_switch():
         max_workers=10,
     )
     assert plan == [], "a 0 override must stop the queue dead"
+
+
+@pytest.mark.asyncio
+async def test_override_read_error_fails_closed(monkeypatch):
+    class BrokenSession(_Session):
+        async def execute(self, statement, params=None):
+            raise RuntimeError("override table unavailable")
+
+    class SessionContext:
+        async def __aenter__(self):
+            return BrokenSession()
+
+        async def __aexit__(self, *args):
+            return None
+
+    monkeypatch.setattr("oddish.db.get_session", SessionContext)
+
+    limits = await load_effective_model_concurrency_limits(
+        ("minimax/minimax-m3", "openai/gpt-5.4-mini")
+    )
+
+    assert limits == {"minimax/minimax-m3": 0, "openai/gpt-5.4-mini": 0}
 
 
 @pytest.mark.asyncio

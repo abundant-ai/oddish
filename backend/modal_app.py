@@ -480,6 +480,8 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '{"google/gemini-3.5-flash": 128, '
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
     '"minimax/minimax-m3": 128, '
+    '"global.anthropic.claude-sonnet-4-6": 128, '
+    '"anthropic/claude-sonnet-5": 256, '
     '"openai/gpt-5.4-mini": 128, '
     '"zai/glm-5.2": 64}',
 )
@@ -685,7 +687,10 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "modal_app",
             "models",
             "observability",
+            "pg_errors",
+            "slack_alert_settings",
             "slack_notifications",
+            "user_alert_prefs",
             "statsig_client",
             "worker",
             copy=True,

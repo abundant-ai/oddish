@@ -10,8 +10,16 @@ from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import NOP_ORACLE_QUEUE_KEY, is_nop_oracle_agent, settings
+from oddish.config import (
+    ANALYSIS_PIPELINE_QUEUE_KEY,
+    NOP_ORACLE_QUEUE_KEY,
+    ORPHANED_ANALYSIS_ERROR_PREFIX,
+    VERDICT_PIPELINE_QUEUE_KEY,
+    is_nop_oracle_agent,
+    settings,
+)
 from oddish.core.baseline_gate import (
+    GATE_SKIP_PREFIX,
     GateOutcome,
     evaluate_baseline_gate,
 )
@@ -435,6 +443,61 @@ async def enqueue_trial_worker_job(
             parent_job_id=parent_job_id,
             harbor_variant_id=harbor_variant_id,
         ),
+    )
+
+
+async def requeue_inflight_trial_analysis(
+    session: AsyncSession, *, task_id: str
+) -> None:
+    """Reopen analyses a dead or cancelled QA attempt left behind.
+
+    RUNNING rows go back to QUEUED (the next QA pass re-classifies anything
+    non-terminal), and FAILED rows stamped with the orphaned-analysis sentinel
+    (finalized by cleanup while no QA attempt existed) are reopened too --
+    they mean "never classified", not "classification ran and failed", so a
+    resurrected task must not carry them into its verdict as permanent gaps.
+
+    Rows a QA pass would never classify (superseded, bulk-imported, SKIPPED,
+    gate-skipped) are left alone so the orphan sweep's FAILED finalization
+    doesn't oscillate with this reset. The id-selection takes its row locks
+    with SKIP LOCKED so this never *waits* on a trial row another writer
+    holds -- callers may hold the task row lock, and blocking here inverts
+    the trials-then-task order ``cancel_tasks_runs`` documents (deadlock).
+    Contended rows are healed by the next sweep instead. Raw SQL: the
+    soft-delete filter is explicit.
+    """
+    await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    analysis_status = 'QUEUED',
+                   analysis_error = NULL,
+                   analysis_finished_at = NULL
+            WHERE  id IN (
+                SELECT id
+                FROM   trials
+                WHERE  task_id = :task_id
+                  AND  deleted_at IS NULL
+                  AND  superseded_by_trial_id IS NULL
+                  AND  imported_at IS NULL
+                  AND  status <> 'SKIPPED'
+                  AND  COALESCE(error_message, '') NOT LIKE :gate_skip_pattern
+                  AND  (
+                      analysis_status = 'RUNNING'
+                      OR (
+                          analysis_status = 'FAILED'
+                          AND analysis_error LIKE :orphan_pattern
+                      )
+                  )
+                FOR UPDATE SKIP LOCKED
+            )
+            """
+        ),
+        {
+            "task_id": task_id,
+            "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
+            "orphan_pattern": f"{ORPHANED_ANALYSIS_ERROR_PREFIX}%",
+        },
     )
 
 
@@ -1217,6 +1280,14 @@ async def append_trials_to_task(
             ),
             {"task_id": task.id},
         )
+        # A classification the cancelled job had mid-flight skips its store
+        # (``should_store`` sees the job is no longer RUNNING), which would
+        # leave that trial's ``analysis_status`` stuck on RUNNING until the
+        # replacement QA job re-claims it. Requeue it now -- and reopen any
+        # orphan-finalized FAILED rows, since this append resurrects the task
+        # and the fresh QA pass must classify them rather than inherit a
+        # permanent gap.
+        await requeue_inflight_trial_analysis(session, task_id=task.id)
 
     # Gate the appended LLM trials on this scope's baselines (the just-added
     # ones and any that already exist), blocking/releasing/cancelling under the
@@ -1300,13 +1371,44 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if pending_count > 0:
         return False
 
+    # Only enqueue QA when there is actually something to classify. A task can
+    # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
+    # trial is a bulk-migrated Sauron import (excluded on cost) or was skipped by
+    # the baseline gate (never ran, no logs). Enqueueing then produces a job that
+    # can only no-op: run_task_qa_job would leave a non-terminal verdict, which
+    # QaJobHandler reads back as a retryable failure -> the job burns all its
+    # attempts and lands FAILED for what is not an error. Complete the task
+    # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
+    qa_eligible = 0
     if task.run_analysis:
+        qa_eligible = await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                and_(
+                    TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.imported_at.is_(None),
+                    TrialModel.status != TrialStatus.SKIPPED,
+                    func.coalesce(TrialModel.error_message, "").notlike(
+                        f"{GATE_SKIP_PREFIX}%"
+                    ),
+                )
+            )
+        )
+
+    if task.run_analysis and qa_eligible:
         task.status = TaskStatus.VERDICT_PENDING
         task.verdict_status = VerdictStatus.QUEUED
         await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
+        # No QA job runs for this task (analysis off, or nothing QA-eligible),
+        # so clear any verdict bookkeeping left over from an earlier
+        # VERDICT_PENDING pass -- otherwise the task can end COMPLETED while
+        # verdict_status still reads QUEUED (e.g. a task bounced back to RUNNING
+        # by a late-arriving trial, then completed here with no eligible trials).
+        task.verdict_status = None
+        task.verdict_error = None
 
     await session.flush()
     return True
@@ -1758,16 +1860,23 @@ def _assemble_queue_and_pipeline(
     queue_keys = set(stats.keys()) | settings.get_known_queue_keys()
     for queue_key in sorted(queue_keys):
         provider_stats = stats.get(queue_key, _empty_queue_counts())
+        if queue_key in (ANALYSIS_PIPELINE_QUEUE_KEY, VERDICT_PIPELINE_QUEUE_KEY):
+            # The pipeline buckets are not their own concurrency gates: both
+            # classification and the verdict run inside the task-level QA
+            # worker job, whose bucket is the analysis model's queue key.
+            concurrency = settings.get_model_concurrency(settings.get_qa_queue_key())
+        else:
+            concurrency = settings.get_model_concurrency(queue_key)
         queue_stats[queue_key] = {
             **provider_stats,
-            "recommended_concurrency": settings.get_model_concurrency(queue_key),
+            "recommended_concurrency": concurrency,
         }
 
     trial_pipeline: dict[str, int] = {}
     analysis_pipeline: dict[str, int] = {}
     verdict_pipeline: dict[str, int] = {}
-    analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_qa_queue_key()
+    analysis_queue_key = ANALYSIS_PIPELINE_QUEUE_KEY
+    verdict_queue_key = VERDICT_PIPELINE_QUEUE_KEY
 
     for queue_key, provider_stats in stats.items():
         for status_name, count in provider_stats.items():
@@ -1792,10 +1901,18 @@ def _assemble_queue_and_pipeline(
 
 
 async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get queue statistics by queue_key across trial/analysis/verdict jobs."""
+    """Get queue statistics by queue_key across trial/analysis/verdict jobs.
+
+    Trial counts are bucketed by the trial's own ``queue_key``. Analysis and
+    verdict pipeline counts go into the reserved ``analysis`` / ``verdict``
+    buckets (``ANALYSIS_PIPELINE_QUEUE_KEY`` / ``VERDICT_PIPELINE_QUEUE_KEY``),
+    NOT the analysis/verdict model's queue key — keying them off a model merges
+    pipeline state into that model's queue bucket and misreports both (e.g.
+    thousands of trials mid-classification shown as "running" model workers).
+    """
     stats: dict[str, dict[str, int]] = {}
-    analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_qa_queue_key()
+    analysis_queue_key = ANALYSIS_PIPELINE_QUEUE_KEY
+    verdict_queue_key = VERDICT_PIPELINE_QUEUE_KEY
 
     if org_id:
         result = await session.execute(
@@ -1864,8 +1981,8 @@ async def get_queue_stats_by_org(
     to refresh every org's queue/pipeline slice in one scan instead of one
     scan per org. Rows with a NULL ``org_id`` are skipped (no org reads them).
     """
-    analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_qa_queue_key()
+    analysis_queue_key = ANALYSIS_PIPELINE_QUEUE_KEY
+    verdict_queue_key = VERDICT_PIPELINE_QUEUE_KEY
     stats_by_org: dict[str, dict[str, dict[str, int]]] = {}
 
     def _org_bucket(org_id: str) -> dict[str, dict[str, int]]:

@@ -1032,6 +1032,32 @@ export type ReportStatus =
   | "success"
   | "failed";
 
+export interface ModelDenominators {
+  trials: number;
+  scored: number;
+  solved: number;
+  mean_reward: number | null;
+  analyzed: number;
+  bad: number;
+  good: number;
+}
+
+export interface ByModelEntry {
+  model: string;
+  bucket: "bad" | "good" | "all";
+  narrative: string;
+  relative_strengths: string;
+  relative_weaknesses: string;
+  distinctive_failures: string[];
+}
+
+export interface ByModel {
+  version: number;
+  comparison: string;
+  denominators: Record<string, ModelDenominators>;
+  models: ByModelEntry[];
+}
+
 export interface Report {
   id: string;
   name: string;
@@ -1045,6 +1071,7 @@ export interface Report {
   num_bad_failures?: number | null;
   num_good_failures?: number | null;
   breakdown?: Record<string, number> | null;
+  by_model?: ByModel | null;
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;

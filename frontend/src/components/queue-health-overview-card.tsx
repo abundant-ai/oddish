@@ -226,8 +226,7 @@ function FillBar({ stat }: { stat: QueueCapacityStat }) {
   );
 }
 
-// Mirrors MAX_MODEL_CONCURRENCY in oddish/core/model_concurrency.py; the server
-// and the model_concurrency_overrides CHECK constraint both reject anything above it.
+// Keep in sync with the server and database constraint.
 const MAX_CONCURRENCY = 10000;
 
 function ConcurrencyLimitEditor({

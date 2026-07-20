@@ -4,33 +4,37 @@ import asyncio
 import enum
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from oddish.db import generate_id, get_session
 from oddish.db.models import AnalyzerBlockModel, JobStatus, utcnow
 from oddish.db.storage import get_storage_client
 
-from api.services.analyzer_llm_client import (
+from api.services.blocks.analyzer.analyzer_llm_client import (
     AnalyzerLLMClient,
     LLMClientType,
     create_llm_client,
 )
+from api.services.blocks.block import Block
 
 
 class AnalyzerType(str, enum.Enum):
     TRAJECTORY_FAILURE_ANALYSIS = "trajectory_failure_analysis"
     HEADROOM_ANALYSIS = "headroom_analysis"
     SCALING_ANALYSIS = "scaling_analysis"
+    TRAJECTORY_SUMMARY = "trajectory_summary"
 
 
 @dataclass
 class AnalyzerInput:
     input: Any
+    files_to_download: list[str] | None = None
 
 
 @dataclass
 class AnalyzerOutput:
     output: Any
+    files_written: list[str] | None = None
 
 
 def block_key_prefix(analyzer_type: AnalyzerType) -> str:
@@ -46,10 +50,12 @@ class _PrefixAdapter(logging.LoggerAdapter):
 def block_logger(key_prefix: str) -> logging.LoggerAdapter:
     """A logger whose every record (including exceptions) is tagged with the
     block's key_prefix, so all of one block's output is greppable by type."""
-    return _PrefixAdapter(logging.getLogger("oddish.analyzer_block"), {"prefix": key_prefix})
+    return _PrefixAdapter(
+        logging.getLogger("oddish.analyzer_block"), {"prefix": key_prefix}
+    )
 
 
-class AnalyzerBlock:
+class AnalyzerBlock(Block):
     """One composable analyzer job. Runs a prompt through a swappable backend,
     streams the output, and persists to S3 + DB on every exit path."""
 
@@ -63,6 +69,10 @@ class AnalyzerBlock:
         analyzer_id: str | None = None,
         block_metadata: dict | None = None,
         client: AnalyzerLLMClient | None = None,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        output_transform: Callable[[str], Any] | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -70,8 +80,27 @@ class AnalyzerBlock:
         self.input = input
         self.prompt = prompt
         self.analyzer_id = analyzer_id
-        self.block_metadata = block_metadata
         self._client = client
+        if input.files_to_download:
+            if llm_client_type == LLMClientType.API:
+                raise ValueError(
+                    "files_to_download is sandbox-only; the API backend has no filesystem"
+                )
+            if client is None:
+                raise ValueError(
+                    "files_to_download requires an injected client (a self-provisioned "
+                    "block deletes its sandbox before run() can download)"
+                )
+        self._downloaded_files: dict[str, bytes] = {}
+        self.system_prompt = system_prompt
+        self.model = model
+        if model:
+            block_metadata = {**(block_metadata or {}), "model": model}
+        self.block_metadata = block_metadata
+        self._output_transform = output_transform
+        # Only used when self-provisioning (client is None): which Anthropic key
+        # the backend gets. None -> the analyzer key / global default.
+        self._api_key = api_key
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -129,9 +158,13 @@ class AnalyzerBlock:
     async def stream_output(self):
         """Yield each output chunk to the caller and accumulate it. Lazily
         provisions the backend client (or uses the injected one)."""
-        client = self._client or await create_llm_client(self.llm_client_type)
+        client = self._client or await create_llm_client(
+            self.llm_client_type, api_key=self._api_key
+        )
         try:
-            async for chunk in client.stream(self.prompt):
+            async for chunk in client.stream(
+                self.prompt, system_prompt=self.system_prompt
+            ):
                 self._chunks.append(chunk)
                 self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
                 yield chunk
@@ -139,6 +172,22 @@ class AnalyzerBlock:
             # Only close a client we created; an injected one is the caller's.
             if self._client is None:
                 await client.aclose()
+
+    async def _download_requested_files(self) -> dict[str, str]:
+        """Pull each requested path off the sandbox. A file the agent never
+        wrote decodes to "" so one missing batch costs only its own batch
+        instead of failing the whole cohort."""
+        files: dict[str, str] = {}
+        for path in self.input.files_to_download or []:
+            try:
+                raw = await self._client._download_file(path)
+            except Exception:
+                self.log.warning("download failed for %s", path, exc_info=True)
+                files[path] = ""
+                continue
+            self._downloaded_files[path] = raw
+            files[path] = raw.decode("utf-8", errors="replace")
+        return files
 
     async def run(self) -> AnalyzerOutput:
         """Drive the stream to completion, persisting on every exit path."""
@@ -148,7 +197,17 @@ class AnalyzerBlock:
         try:
             async for _ in self.stream_output():
                 pass
-            self.output = AnalyzerOutput(output="".join(self._chunks))
+            if self.input.files_to_download:
+                self.output = AnalyzerOutput(
+                    output=await self._download_requested_files()
+                )
+            else:
+                raw = "".join(self._chunks)
+                self.output = AnalyzerOutput(
+                    output=self._output_transform(raw)
+                    if self._output_transform
+                    else raw
+                )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))
             return self.output

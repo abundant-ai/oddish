@@ -568,6 +568,16 @@ def test_merge_never_overrides_a_statically_disabled_queue():
     assert cc.merge_advisory_over_static(static, advisory) == {"openai/gpt-5.2": 0}
 
 
+def test_merge_never_exceeds_an_admin_override():
+    static = {"openai/gpt-5.2": 10}
+    advisory = {"openai/gpt-5.2": 100}
+    hard_caps = {"openai/gpt-5.2": 10}
+
+    assert cc.merge_advisory_over_static(
+        static, advisory, hard_caps=hard_caps
+    ) == {"openai/gpt-5.2": 10}
+
+
 def test_merge_empty_advisory_is_static():
     static = {"openai/gpt-5.2": 8}
     assert cc.merge_advisory_over_static(static, {}) == {"openai/gpt-5.2": 8}

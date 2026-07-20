@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -107,10 +108,6 @@ async def test_build_load_snapshot_maps_health(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_idle_queue_does_not_pin_pressure(monkeypatch):
-    """An inactive key is reported only so the admin editor can list its limit. It
-    keeps a trailing-hour wait_p95 with nothing running, so counting it would peg
-    pressure at 1.0 and throttle submissions on a totally idle system.
-    """
     health = QueueHealthResponse(
         totals_queued=0,
         totals_running=0,
@@ -120,7 +117,7 @@ async def test_idle_queue_does_not_pin_pressure(monkeypatch):
                 queue_key="nop_oracle",
                 active=False,
                 queued=0,
-                queued_scheduled=0,
+                queued_scheduled=3,
                 running=0,
                 limit=48,
                 deploy_limit=48,
@@ -128,7 +125,6 @@ async def test_idle_queue_does_not_pin_pressure(monkeypatch):
                 fill=None,
                 oldest_queued_age_seconds=None,
                 wait_p50_seconds=300.0,
-                # Way over PRESSURE_WAIT_TARGET_S, but from an hour-old claim.
                 wait_p95_seconds=600.0,
             )
         ],
@@ -154,6 +150,56 @@ async def test_idle_queue_does_not_pin_pressure(monkeypatch):
 
     assert snap.pressure == 0.0, "an idle system must not report pressure"
     assert snap.submit_ceiling > admin.CLIENT_FLOOR
+
+
+@pytest.mark.asyncio
+async def test_scheduled_only_queue_is_inactive(monkeypatch):
+    queue_key = "openai/gpt-5.2"
+
+    class Session:
+        def __init__(self):
+            self.rows = iter(
+                [
+                    [],
+                    [
+                        SimpleNamespace(
+                            queue_key=queue_key,
+                            queued_ready=0,
+                            queued_scheduled=3,
+                            running=0,
+                            oldest_queued_age_seconds=None,
+                        )
+                    ],
+                    [
+                        SimpleNamespace(
+                            queue_key=queue_key, wait_p50=300.0, wait_p95=600.0
+                        )
+                    ],
+                ]
+            )
+
+        async def execute(self, statement, params=None):
+            return SimpleNamespace(all=lambda: next(self.rows))
+
+    async def no_overrides(session):
+        return {}
+
+    async def no_statuses(session):
+        return {}
+
+    monkeypatch.setattr(admin, "get_model_concurrency_overrides", no_overrides)
+    monkeypatch.setattr(
+        type(admin.settings), "get_known_queue_keys", lambda self: {queue_key}
+    )
+    monkeypatch.setattr(
+        "oddish.workers.queue.runtime_status.get_queue_runtime_statuses", no_statuses
+    )
+
+    health = await admin.get_queue_health_core(Session())
+    capacity = next(c for c in health.capacity if c.queue_key == queue_key)
+
+    assert capacity.queued_scheduled == 3
+    assert not capacity.active
 
 
 def _stub_snapshot() -> LoadSnapshot:
