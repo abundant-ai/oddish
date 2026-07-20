@@ -357,6 +357,28 @@ async def test_qa_handler_resets_terminal_state_on_retry(monkeypatch):
     assert outcome.success is not None
 
 
+@pytest.mark.asyncio
+async def test_qa_handler_forwards_verdict_synth_fn_to_run_task_qa_job(monkeypatch):
+    """The handler's verdict_synth_fn attribute must reach run_task_qa_job --
+    otherwise a backend subclass overriding it would silently have no effect."""
+    task_row = SimpleNamespace(verdict_status=VerdictStatus.RUNNING, verdict_error=None)
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(task_row)
+    )
+
+    called = _patch_run(monkeypatch, "run_task_qa_job")
+
+    async def _other_strategy(classifications, baseline, quality_check_passed, timeout):
+        return None
+
+    class _Sub(QaJobHandler):
+        verdict_synth_fn = staticmethod(_other_strategy)
+
+    await _Sub().run(_verdict_claim())
+
+    assert called["kwargs"]["verdict_synth_fn"] is _other_strategy
+
+
 # ---------------------------------------------------------------------------
 # Handler registry side effects
 # ---------------------------------------------------------------------------

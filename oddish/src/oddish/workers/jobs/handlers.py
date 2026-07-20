@@ -29,7 +29,7 @@ from oddish.registry_auth import (
 )
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
-from oddish.workers.queue.qa_handler import run_task_qa_job
+from oddish.workers.queue.qa_handler import default_verdict_synth, run_task_qa_job
 from oddish.workers.queue.analyzer_handler import (
     default_eval_rows,
     run_analyzer_generation_job,
@@ -175,6 +175,9 @@ class QaJobHandler:
     the task verdict. Backed by ``run_task_qa_job``."""
 
     kind = WorkerJobKind.QA
+    # Swapped by the hosted backend's AnalyzerBlock-backed subclass; staticmethod
+    # so the attribute stays a plain function rather than binding as a method.
+    verdict_synth_fn = staticmethod(default_verdict_synth)
 
     def default_queue_key(self, job: WorkerJobLike) -> str:
         return job.queue_key or "qa"
@@ -201,6 +204,7 @@ class QaJobHandler:
             queue_key=job.queue_key,
             modal_function_call_id=job.modal_function_call_id,
             worker_job_id=job.id,
+            verdict_synth_fn=self.verdict_synth_fn,
         )
 
         async with get_session() as session:

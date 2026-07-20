@@ -117,6 +117,14 @@ from .analyzer_sandbox import install_sandbox_analyzer_handler
 if install_sandbox_analyzer_handler():
     console.print("[dim]analyzer: sandbox-per-cohort handler registered[/dim]")
 
+# Swap the core QA handler's verdict-synthesis strategy for the
+# AnalyzerBlock-backed one. Gated by settings.verdict_via_analyzer_block;
+# off -> the legacy compute_task_verdict path, unchanged.
+from .verdict_synth import install_verdict_block_qa_handler
+
+if install_verdict_block_qa_handler():
+    console.print("[dim]qa: verdict-via-analyzer-block handler registered[/dim]")
+
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
 # The QA hook refreshes the whole PR comment (per-trial classifications +

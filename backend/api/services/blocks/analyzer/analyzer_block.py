@@ -23,6 +23,7 @@ class AnalyzerType(str, enum.Enum):
     HEADROOM_ANALYSIS = "headroom_analysis"
     SCALING_ANALYSIS = "scaling_analysis"
     TRAJECTORY_SUMMARY = "trajectory_summary"
+    TASK_VERDICT = "task_verdict"
 
 
 @dataclass

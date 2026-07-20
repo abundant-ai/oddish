@@ -23,3 +23,7 @@ def test_analyzer_snapshot_empty_when_neither_set():
 
 def test_analyzer_sandbox_enabled_defaults_on():
     assert Settings().analyzer_sandbox_enabled is True
+
+
+def test_verdict_via_analyzer_block_defaults_off():
+    assert Settings().verdict_via_analyzer_block is False

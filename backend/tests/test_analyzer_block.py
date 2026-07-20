@@ -15,6 +15,10 @@ def test_key_prefix_uses_enum_value():
     )
 
 
+def test_task_verdict_analyzer_type_value():
+    assert AnalyzerType.TASK_VERDICT.value == "task_verdict"
+
+
 def test_io_dataclasses_accept_any():
     assert AnalyzerInput(input={"a": 1}).input == {"a": 1}
     assert AnalyzerOutput(output="text").output == "text"
