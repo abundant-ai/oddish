@@ -2122,9 +2122,11 @@ it near the other boolean options (e.g. after `skip_artifacts`):
 resolve→upload (add a `force: bool` parameter to that helper and pass it at the
 call site).
 
-4. In the helper, between the `resolve_local_task_paths(...)` assignment and the
-`upload_tasks_with_progress(...)` call, insert the gate — identical to `run`'s,
-and for the same reason NOT passing `json_output` (upload owns its stdout JSON):
+4. `upload.py` has **two** persist paths, and BOTH must be gated (the second was
+found in review):
+
+   a. `_run_task_upload` — the main `oddish upload <task>` flow. Insert the gate
+   between its `resolve_local_task_paths(...)` and `upload_tasks_with_progress(...)`:
 ```python
     # Gate before the upload persists a runnable task version: a task that leaks
     # its own answer must not become runnable via `oddish run --task <id>`.
@@ -2132,6 +2134,19 @@ and for the same reason NOT passing `json_output` (upload owns its stdout JSON):
     # renders findings to stderr and aborts via typer.Exit on failure.
     gate_preflight(run_checks(task_paths), force=force)
 ```
+
+   b. `_run_trial_import` — the `oddish upload <jobs> --path <task>` one-shot flow,
+   which creates a task inline via `upload_task(api_url, path_option, register=True, …)`
+   (singular). Thread `force` into `_run_trial_import` too, and gate the single
+   `path_option` task dir right before that `upload_task(...)` call:
+```python
+    if path_option is not None:
+        gate_preflight(run_checks([path_option]), force=force)
+        ...
+        upload_result = upload_task(api_url, path_option, register=True, user=user)
+```
+   Both flows register a runnable task; leaving either ungated reproduces the same
+   `upload → run --task <id>` bypass.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
