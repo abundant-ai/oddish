@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     SecretStr,
+    StringConstraints,
     field_validator,
     model_validator,
 )
@@ -652,18 +653,24 @@ class TaskMetadata(BaseModel):
     description: str | None = Field(default=None, max_length=8192)
     category: str | None = Field(default=None, max_length=128)
     category_raw: str | None = Field(default=None, max_length=128)
-    topic_tags: list[str] = Field(default_factory=list, max_length=64)
+    topic_tags: list[Annotated[str, StringConstraints(max_length=128)]] = Field(
+        default_factory=list, max_length=64
+    )
     author_name: str | None = Field(default=None, max_length=255)
     author_email: str | None = Field(default=None, max_length=255)
     author_organization: str | None = Field(default=None, max_length=255)
-    expert_time_hours: float | None = Field(default=None, ge=0, le=10000)
+    # le matches Numeric(6, 2) on task_versions.expert_time_hours_snapshot (and
+    # tasks.expert_time_hours) -- 10000 would pass here but overflow at INSERT.
+    expert_time_hours: float | None = Field(default=None, ge=0, le=9999.99)
 
     allow_internet: bool | None = None
     cpus: int | None = Field(default=None, ge=0, le=1024)
     memory_mb: int | None = Field(default=None, ge=0, le=8_388_608)
     storage_mb: int | None = Field(default=None, ge=0, le=8_388_608)
     gpus: int | None = Field(default=None, ge=0, le=64)
-    gpu_types: list[str] = Field(default_factory=list, max_length=16)
+    gpu_types: list[Annotated[str, StringConstraints(max_length=64)]] = Field(
+        default_factory=list, max_length=16
+    )
     agent_timeout_sec: int | None = Field(default=None, ge=0, le=1_000_000)
     verifier_timeout_sec: int | None = Field(default=None, ge=0, le=1_000_000)
     build_timeout_sec: int | None = Field(default=None, ge=0, le=1_000_000)

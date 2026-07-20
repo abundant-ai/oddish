@@ -117,3 +117,73 @@ def test_negative_cpus_is_rejected():
 
     with pytest.raises(ValidationError):
         TaskMetadata(cpus=-1)
+
+
+def test_expert_time_hours_upper_bound_is_rejected():
+    """le must match Numeric(6, 2)'s max representable value (9999.99), not a
+    round 10000 that would pass here and overflow at INSERT."""
+    from pydantic import ValidationError
+
+    from oddish.schemas import TaskMetadata
+
+    with pytest.raises(ValidationError):
+        TaskMetadata(expert_time_hours=10000)
+
+
+def test_oversized_topic_tags_list_is_rejected():
+    from pydantic import ValidationError
+
+    from oddish.schemas import TaskMetadata
+
+    with pytest.raises(ValidationError):
+        TaskMetadata(topic_tags=[f"tag-{i}" for i in range(65)])
+
+
+def test_oversized_topic_tag_element_is_rejected():
+    """Regression guard: max_length on list[str] bounds list length, not each
+    element's length -- a single element must also be bounded."""
+    from pydantic import ValidationError
+
+    from oddish.schemas import TaskMetadata
+
+    with pytest.raises(ValidationError):
+        TaskMetadata(topic_tags=["x" * 200])
+
+
+def test_all_zero_category_slugifies_to_none():
+    """slugify('---') == '' -- the empty slug must persist as None, not ''."""
+    meta = project_task_config({"metadata": {"category": "---"}})
+    assert meta.category is None
+
+
+def test_sweep_and_task_submission_accept_absent_metadata():
+    """Old-CLI compatibility for the sweep path (`oddish run`'s upload)."""
+    from oddish.schemas import TaskSubmission, TaskSweepSubmission
+
+    submission = TaskSubmission(
+        task_path="/tmp/demo", trials=[{"agent": "nop"}]
+    )
+    assert submission.task_metadata is None
+    assert submission.provenance is None
+
+    sweep = TaskSweepSubmission(task_id="demo-1234abcd", configs=[{"agent": "nop"}])
+    assert sweep.task_metadata is None
+    assert sweep.provenance is None
+
+
+def test_task_provenance_constructs_with_no_arguments():
+    from oddish.schemas import TaskProvenance
+
+    provenance = TaskProvenance()
+    assert provenance.source_repo is None
+    assert provenance.source_commit is None
+    assert provenance.uploader_is_ci is None
+
+
+def test_task_provenance_oversized_source_repo_is_rejected():
+    from pydantic import ValidationError
+
+    from oddish.schemas import TaskProvenance
+
+    with pytest.raises(ValidationError):
+        TaskProvenance(source_repo="x" * 256)

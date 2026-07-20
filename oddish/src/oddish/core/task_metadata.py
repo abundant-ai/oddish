@@ -33,6 +33,7 @@ def project_task_config(config: dict) -> TaskMetadata:
     verifier = config.get("verifier") or {}
 
     category_raw = metadata.get("category")
+    category_slug = slugify(str(category_raw)) if category_raw else ""
     topic_tags = [
         slug
         for slug in (slugify(str(tag)) for tag in (metadata.get("tags") or []))
@@ -41,7 +42,7 @@ def project_task_config(config: dict) -> TaskMetadata:
 
     return TaskMetadata(
         description=metadata.get("description"),
-        category=slugify(str(category_raw)) if category_raw else None,
+        category=category_slug or None,
         category_raw=str(category_raw) if category_raw else None,
         topic_tags=topic_tags,
         author_name=metadata.get("author_name"),
