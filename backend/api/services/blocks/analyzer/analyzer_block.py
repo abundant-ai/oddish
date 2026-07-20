@@ -173,6 +173,22 @@ class AnalyzerBlock(Block):
             if self._client is None:
                 await client.aclose()
 
+    async def _download_requested_files(self) -> dict[str, str]:
+        """Pull each requested path off the sandbox. A file the agent never
+        wrote decodes to "" so one missing batch costs only its own batch
+        instead of failing the whole cohort."""
+        files: dict[str, str] = {}
+        for path in self.input.files_to_download or []:
+            try:
+                raw = await self._client._download_file(path)
+            except Exception:
+                self.log.warning("download failed for %s", path, exc_info=True)
+                files[path] = ""
+                continue
+            self._downloaded_files[path] = raw
+            files[path] = raw.decode("utf-8", errors="replace")
+        return files
+
     async def run(self) -> AnalyzerOutput:
         """Drive the stream to completion, persisting on every exit path."""
         self.job_started_at = utcnow()
@@ -181,10 +197,17 @@ class AnalyzerBlock(Block):
         try:
             async for _ in self.stream_output():
                 pass
-            raw = "".join(self._chunks)
-            self.output = AnalyzerOutput(
-                output=self._output_transform(raw) if self._output_transform else raw
-            )
+            if self.input.files_to_download:
+                self.output = AnalyzerOutput(
+                    output=await self._download_requested_files()
+                )
+            else:
+                raw = "".join(self._chunks)
+                self.output = AnalyzerOutput(
+                    output=self._output_transform(raw)
+                    if self._output_transform
+                    else raw
+                )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))
             return self.output

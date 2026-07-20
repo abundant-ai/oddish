@@ -119,12 +119,12 @@ async def run_cohort(
 ) -> tuple[list[Finding], dict[str, str]]:
     # Imported here so the module still loads if the block layer is refactored;
     # the cohort is the only caller that wires blocks to a shared sandbox client.
-    from api.services.analyzer_block import (
+    from api.services.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
         AnalyzerInput,
         AnalyzerType,
     )
-    from api.services.analyzer_llm_client import (
+    from api.services.blocks.analyzer.analyzer_llm_client import (
         LLMClientType,
         SandboxAnalyzerLLMClient,
     )

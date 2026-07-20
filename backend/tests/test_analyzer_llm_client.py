@@ -202,7 +202,7 @@ async def test_fake_client_records_system_prompt():
     assert c.last_system_prompt == "be terse"
 
 
-from api.services.analyzer_llm_client import ApiAnalyzerLLMClient
+from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
 
 
 @pytest.mark.asyncio
