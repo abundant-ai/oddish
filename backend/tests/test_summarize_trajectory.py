@@ -483,6 +483,7 @@ def _summary_payload() -> str:
 async def test_generate_and_build_summary_block_agree(monkeypatch):
     """generate() must build its block through build_summary_block(), so the
     harness and production cannot drift in prompt, model, or metadata."""
+    import api.services.summarize_trajectory as summarize_trajectory_module
     from api.services.summarize_trajectory import (
         build_summary_block,
         generate,
@@ -492,6 +493,21 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     _patch_block_persistence(monkeypatch)
     trajectory = _trajectory_with_steps([1, 2])
     ctx = _minimal_ctx()
+
+    # Spy on the module-level call site so the assertions below check what
+    # generate() actually passed, not what the test independently constructs
+    # (which would be self-consistent regardless of generate()'s behavior).
+    real_build_summary_block = build_summary_block
+    captured: dict = {}
+
+    def _spying_build_summary_block(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        captured["block"] = real_build_summary_block(*args, **kwargs)
+        return captured["block"]
+
+    monkeypatch.setattr(
+        summarize_trajectory_module, "build_summary_block", _spying_build_summary_block
+    )
 
     recorder = _RecordingLLM(_summary_payload())
     await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x", client=recorder)
@@ -505,6 +521,7 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     )
 
     assert recorder.prompt == block.prompt
-    assert block.block_metadata["schema_version"] == SCHEMA_VERSION
-    assert block.block_metadata["model"] == resolve_summary_model()
-    assert block.analyzer_id == "tr_x"
+    assert captured["kwargs"]["model"] == resolve_summary_model()
+    assert captured["kwargs"]["analyzer_id"] == "tr_x"
+    assert captured["block"].block_metadata["schema_version"] == SCHEMA_VERSION
+    assert captured["block"].block_metadata["model"] == resolve_summary_model()
