@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -229,98 +229,50 @@ function FillBar({ stat }: { stat: QueueCapacityStat }) {
 // Keep in sync with the server and database constraint.
 const MAX_CONCURRENCY = 10000;
 
-function ConcurrencyLimitEditor({
+function ConcurrencyLimitCell({
   stat,
-  onSaved,
+  value,
+  dirty,
+  disabled,
+  onChange,
+  onSave,
+  onReset,
 }: {
   stat: QueueCapacityStat;
-  onSaved: () => Promise<unknown>;
+  value: string;
+  dirty: boolean;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  onReset: () => void;
 }) {
-  const [draft, setDraft] = useState(String(stat.limit));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => setDraft(String(stat.limit)), [stat.limit]);
-
-  async function update(limit: number | null) {
-    setSaving(true);
-    setError(null);
-    const response = await fetch("/api/admin/concurrency", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ queue_key: stat.queue_key, limit }),
-    }).catch(() => null);
-    setSaving(false);
-    if (!response?.ok) {
-      const body = await response?.json().catch(() => null);
-      setError(
-        typeof body?.detail === "string"
-          ? body.detail
-          : "Could not save concurrency."
-      );
-      return;
-    }
-    await onSaved();
-  }
-
-  function save() {
-    const limit = Number(draft);
-    if (
-      !draft.trim() ||
-      !Number.isInteger(limit) ||
-      limit < 0 ||
-      limit > MAX_CONCURRENCY
-    ) {
-      setError(
-        `Enter a whole number from 0 to ${MAX_CONCURRENCY.toLocaleString()}.`
-      );
-      return;
-    }
-    void update(limit === stat.deploy_limit ? null : limit);
-  }
-
-  const reset =
-    stat.override_limit !== null && Number(draft) === stat.deploy_limit;
-
   return (
-    <div className="flex min-w-56 flex-col items-end gap-1">
-      <div className="flex items-center justify-end gap-2 whitespace-nowrap">
-        {stat.override_limit !== null && (
-          <span
-            className="text-muted-foreground text-[10px]"
-            title="Save this value to use the deploy default"
-          >
-            Default {stat.deploy_limit}
-          </span>
-        )}
-        <Input
-          type="number"
-          min={0}
-          max={MAX_CONCURRENCY}
-          step={1}
-          value={draft}
-          disabled={saving}
-          aria-label={`Concurrency limit for ${stat.queue_key}`}
-          className="h-7 w-16 text-right font-mono text-[11px]"
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") save();
-            if (event.key === "Escape") {
-              setDraft(String(stat.limit));
-              setError(null);
-            }
-          }}
-        />
-        <Button
-          size="sm"
-          className="h-7 min-w-12 px-2 text-[11px]"
-          disabled={saving || (Number(draft) === stat.limit && !reset)}
-          onClick={save}
+    <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+      {stat.override_limit !== null && (
+        <span
+          className="text-muted-foreground text-[10px]"
+          title="Enter this value to fall back to the deploy default"
         >
-          {saving ? "Saving" : "Save"}
-        </Button>
-      </div>
-      {error && <span className="text-destructive text-[10px]">{error}</span>}
+          Default {stat.deploy_limit}
+        </span>
+      )}
+      <Input
+        type="number"
+        min={0}
+        max={MAX_CONCURRENCY}
+        step={1}
+        value={value}
+        disabled={disabled}
+        aria-label={`Concurrency limit for ${stat.queue_key}`}
+        className={`h-7 w-16 text-right font-mono text-[11px] ${
+          dirty ? "border-amber-400" : ""
+        }`}
+        onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") onSave();
+          if (event.key === "Escape") onReset();
+        }}
+      />
     </div>
   );
 }
@@ -332,6 +284,97 @@ function CapacityTable({
   rows: QueueCapacityStat[];
   onSaved: () => Promise<unknown>;
 }) {
+  // Edited limits, keyed by queue_key. A row without an entry (or whose entry
+  // matches the current effective limit) is considered unchanged.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const draftFor = (row: QueueCapacityStat) =>
+    drafts[row.queue_key] ?? String(row.limit);
+
+  const isDirty = (row: QueueCapacityStat) => {
+    const draft = drafts[row.queue_key];
+    return draft !== undefined && draft !== String(row.limit);
+  };
+
+  const dirtyRows = useMemo(
+    () => rows.filter(isDirty),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, drafts]
+  );
+
+  function setDraft(key: string, value: string) {
+    setDrafts((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function clearDraft(key: string) {
+    setDrafts((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    setError(null);
+  }
+
+  async function saveAll() {
+    // Validate every edited row before touching the server.
+    for (const row of dirtyRows) {
+      const raw = drafts[row.queue_key];
+      const limit = Number(raw);
+      if (
+        !raw.trim() ||
+        !Number.isInteger(limit) ||
+        limit < 0 ||
+        limit > MAX_CONCURRENCY
+      ) {
+        setError(
+          `${row.queue_key}: enter a whole number from 0 to ${MAX_CONCURRENCY.toLocaleString()}.`
+        );
+        return;
+      }
+    }
+
+    setSaving(true);
+    setError(null);
+    const failures: string[] = [];
+    const saved: string[] = [];
+    for (const row of dirtyRows) {
+      const limit = Number(drafts[row.queue_key]);
+      const response = await fetch("/api/admin/concurrency", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        // Clearing the override back to the deploy default is expressed as null.
+        body: JSON.stringify({
+          queue_key: row.queue_key,
+          limit: limit === row.deploy_limit ? null : limit,
+        }),
+      }).catch(() => null);
+      if (!response?.ok) {
+        const body = await response?.json().catch(() => null);
+        failures.push(
+          `${row.queue_key}: ${
+            typeof body?.detail === "string" ? body.detail : "save failed"
+          }`
+        );
+      } else {
+        saved.push(row.queue_key);
+      }
+    }
+    setSaving(false);
+    // Drop drafts that persisted; keep failed edits so they can be retried.
+    if (saved.length > 0) {
+      setDrafts((prev) => {
+        const next = { ...prev };
+        for (const key of saved) delete next[key];
+        return next;
+      });
+    }
+    if (failures.length > 0) setError(failures.join(" · "));
+    await onSaved();
+  }
+
   if (rows.length === 0) {
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -340,79 +383,107 @@ function CapacityTable({
     );
   }
   return (
-    <Table className="min-w-[980px]">
-      <TableHeader>
-        <TableRow className="whitespace-nowrap">
-          <TableHead className="min-w-72">Queue key</TableHead>
-          <TableHead className="w-20 text-right">Queued</TableHead>
-          <TableHead className="min-w-44">Running / limit</TableHead>
-          <TableHead className="min-w-64 text-right">Limit</TableHead>
-          <TableHead className="w-24 text-right">Oldest</TableHead>
-          <TableHead className="w-20 text-right">p50</TableHead>
-          <TableHead className="w-20 text-right">p95</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => {
-          const underfilled =
-            row.queued > 0 && row.fill != null && row.fill < 0.85;
-          return (
-            <TableRow key={row.queue_key}>
-              <TableCell>
-                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                  <QueueKeyIcon queueKey={row.queue_key} size={12} />
-                  <span className="font-mono text-[11px]">{row.queue_key}</span>
-                </span>
-              </TableCell>
-              <TableCell className="text-right font-mono text-[11px]">
-                {row.queued > 0 ? (
-                  <span className={underfilled ? "text-amber-400" : ""}>
-                    {row.queued}
-                    {row.queued_scheduled > 0 ? (
-                      <span className="text-muted-foreground">
-                        {" "}
-                        (+{row.queued_scheduled})
-                      </span>
-                    ) : null}
+    <div className="space-y-2">
+      <Table className="min-w-[980px]">
+        <TableHeader>
+          <TableRow className="whitespace-nowrap">
+            <TableHead className="min-w-72">Queue key</TableHead>
+            <TableHead className="w-20 text-right">Queued</TableHead>
+            <TableHead className="min-w-44">Running / limit</TableHead>
+            <TableHead className="min-w-64 text-right">Limit</TableHead>
+            <TableHead className="w-24 text-right">Oldest</TableHead>
+            <TableHead className="w-20 text-right">p50</TableHead>
+            <TableHead className="w-20 text-right">p95</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => {
+            const underfilled =
+              row.queued > 0 && row.fill != null && row.fill < 0.85;
+            return (
+              <TableRow key={row.queue_key}>
+                <TableCell>
+                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                    <QueueKeyIcon queueKey={row.queue_key} size={12} />
+                    <span className="font-mono text-[11px]">
+                      {row.queue_key}
+                    </span>
                   </span>
-                ) : (
-                  <span className="text-muted-foreground/40">0</span>
-                )}
-              </TableCell>
-              <TableCell>
-                {underfilled ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span className="cursor-help">
-                        <FillBar stat={row} />
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {row.queued} queued but only {row.running}/{row.limit}{" "}
-                      running — spare capacity is not being filled.
-                    </TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <FillBar stat={row} />
-                )}
-              </TableCell>
-              <TableCell className="text-right">
-                <ConcurrencyLimitEditor stat={row} onSaved={onSaved} />
-              </TableCell>
-              <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
-                {formatAgeSeconds(row.oldest_queued_age_seconds)}
-              </TableCell>
-              <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
-                {formatAgeSeconds(row.wait_p50_seconds)}
-              </TableCell>
-              <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
-                {formatAgeSeconds(row.wait_p95_seconds)}
-              </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+                </TableCell>
+                <TableCell className="text-right font-mono text-[11px]">
+                  {row.queued > 0 ? (
+                    <span className={underfilled ? "text-amber-400" : ""}>
+                      {row.queued}
+                      {row.queued_scheduled > 0 ? (
+                        <span className="text-muted-foreground">
+                          {" "}
+                          (+{row.queued_scheduled})
+                        </span>
+                      ) : null}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/40">0</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {underfilled ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="cursor-help">
+                          <FillBar stat={row} />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {row.queued} queued but only {row.running}/{row.limit}{" "}
+                        running — spare capacity is not being filled.
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <FillBar stat={row} />
+                  )}
+                </TableCell>
+                <TableCell className="text-right">
+                  <ConcurrencyLimitCell
+                    stat={row}
+                    value={draftFor(row)}
+                    dirty={isDirty(row)}
+                    disabled={saving}
+                    onChange={(value) => setDraft(row.queue_key, value)}
+                    onSave={saveAll}
+                    onReset={() => clearDraft(row.queue_key)}
+                  />
+                </TableCell>
+                <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
+                  {formatAgeSeconds(row.oldest_queued_age_seconds)}
+                </TableCell>
+                <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
+                  {formatAgeSeconds(row.wait_p50_seconds)}
+                </TableCell>
+                <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
+                  {formatAgeSeconds(row.wait_p95_seconds)}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+      <div className="flex items-center justify-end gap-3">
+        {error && <span className="text-destructive text-[11px]">{error}</span>}
+        <span className="text-muted-foreground text-[11px]">
+          {dirtyRows.length > 0
+            ? `${dirtyRows.length} unsaved change${dirtyRows.length === 1 ? "" : "s"}`
+            : "No changes"}
+        </span>
+        <Button
+          size="sm"
+          className="h-7 text-[11px]"
+          disabled={saving || dirtyRows.length === 0}
+          onClick={saveAll}
+        >
+          {saving ? "Saving…" : "Save changes"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
