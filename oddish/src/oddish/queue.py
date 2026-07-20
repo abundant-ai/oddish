@@ -1863,7 +1863,7 @@ def _assemble_queue_and_pipeline(
         if queue_key in (ANALYSIS_PIPELINE_QUEUE_KEY, VERDICT_PIPELINE_QUEUE_KEY):
             # The pipeline buckets are not their own concurrency gates: both
             # classification and the verdict run inside the task-level QA
-            # worker job, whose bucket is the verdict model's queue key.
+            # worker job, whose bucket is the analysis model's queue key.
             concurrency = settings.get_model_concurrency(settings.get_qa_queue_key())
         else:
             concurrency = settings.get_model_concurrency(queue_key)

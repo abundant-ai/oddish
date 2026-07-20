@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-20]
+
+### Changed
+
+- The task-level QA worker job now leases concurrency from the **analysis model's** queue key (`get_qa_queue_key()` returns `normalize_queue_key(analysis_model)`, currently `anthropic/claude-sonnet-5`) instead of the verdict model's. The bulk of a QA job's LLM work is the per-trial classification pass on the analysis model; keying the lease off the verdict model capped QA throughput at the verdict bucket's default (48) while the analysis bucket sat idle. ANALYZER jobs share the QA queue key and move with it.
+- Raise the baked `anthropic/claude-sonnet-5` queue-key concurrency override in the Modal deploy from 128 to 256, giving the relocated QA jobs and the analysis model's trials more headroom; operators can still override the whole JSON via the env var / `oddish-prod` secret.
+
+---
+
 ## [2026-07-18]
 
 ### Changed
