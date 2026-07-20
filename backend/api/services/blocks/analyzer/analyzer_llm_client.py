@@ -97,7 +97,6 @@ class ApiAnalyzerLLMClient:
         max_tokens: int = 4096,
         thinking: dict | None = None,
         api_key: str | None = None,
-        thinking: dict | None = None,
         output_schema: dict | None = None,
     ) -> None:
         self._model = model
@@ -109,11 +108,10 @@ class ApiAnalyzerLLMClient:
         # reasoning and truncated block output mid-JSON. Analyzer blocks parse
         # their output, so a truncated response is a hard failure, not a
         # degraded one. Pass thinking= to opt back in per call site.
-        self._thinking = thinking if thinking is not None else {"type": "disabled"}
+        self._thinking = thinking if thinking is not None else _THINKING_DISABLED
         # When set, the response is constrained to this JSON schema during
         # generation instead of being hand-written into free text.
         self._output_schema = output_schema
-        self._thinking = thinking if thinking is not None else _THINKING_DISABLED
         key = resolve_analyzer_api_key(api_key)
         self._inner = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
 
