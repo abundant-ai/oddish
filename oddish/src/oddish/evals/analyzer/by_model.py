@@ -57,3 +57,59 @@ def build_denominators(
         }
         for key, d in acc.items()
     }
+
+
+BY_MODEL_VERSION = 1
+
+
+def normalize_entries(
+    entries: list[dict], denominators: dict[str, dict], *, bucket: str
+) -> list[dict]:
+    """Host-authoritative cleanup of the LLM's per-model entries.
+
+    The model name is the LLM's only structural input here, so it is normalized
+    and then checked against the denominators — which are derived from trial
+    rows. An entry naming a model that never ran is a hallucinated comparison
+    group and is dropped, never stored. Mirrors core.py's rule that
+    model/task/link on a Finding are host facts, never the model's echo.
+    """
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        key = _model_key(entry.get("model"))
+        if key not in denominators:
+            continue
+        if (key, bucket) in seen:
+            continue
+        seen.add((key, bucket))
+
+        raw_failures = entry.get("distinctive_failures")
+        failures = (
+            [str(x) for x in raw_failures] if isinstance(raw_failures, list) else []
+        )
+
+        out.append({
+            "model": key,
+            "bucket": bucket,
+            "narrative": str(entry.get("narrative") or ""),
+            "relative_strengths": str(entry.get("relative_strengths") or ""),
+            "relative_weaknesses": str(entry.get("relative_weaknesses") or ""),
+            "distinctive_failures": failures,
+        })
+
+    out.sort(key=lambda e: e["model"])
+    return out
+
+
+def build_by_model_payload(
+    entries: list[dict], comparison: str, denominators: dict[str, dict]
+) -> dict:
+    return {
+        "version": BY_MODEL_VERSION,
+        "comparison": comparison,
+        "denominators": denominators,
+        "models": entries,
+    }

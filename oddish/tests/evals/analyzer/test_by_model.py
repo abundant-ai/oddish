@@ -1,4 +1,8 @@
-from oddish.evals.analyzer.by_model import build_denominators
+from oddish.evals.analyzer.by_model import (
+    build_by_model_payload,
+    build_denominators,
+    normalize_entries,
+)
 from oddish.evals.analyzer.schemas import Finding
 
 
@@ -68,3 +72,99 @@ def test_trial_model_rewards_reads_model_and_reward_from_rows():
         (SimpleNamespace(model=None, reward=None), "tasks/b"),
     ]
     assert trial_model_rewards(rows) == [("claude-opus-4-8", 1.0), (None, None)]
+
+
+_DENOMS = {
+    "claude-opus-4-8": {"trials": 10, "scored": 10, "solved": 6, "mean_reward": 0.6,
+                        "analyzed": 4, "bad": 1, "good": 3},
+    "claude-sonnet-5": {"trials": 10, "scored": 10, "solved": 3, "mean_reward": 0.3,
+                        "analyzed": 7, "bad": 2, "good": 5},
+}
+
+
+def test_entry_model_is_normalized_to_the_host_key():
+    out = normalize_entries(
+        [{"model": "anthropic/claude-opus-4-8", "narrative": "n"}], _DENOMS, bucket="all"
+    )
+    assert out[0]["model"] == "claude-opus-4-8"
+
+
+def test_hallucinated_model_is_dropped():
+    out = normalize_entries(
+        [
+            {"model": "claude-opus-4-8", "narrative": "real"},
+            {"model": "gpt-9-turbo", "narrative": "invented"},
+        ],
+        _DENOMS,
+        bucket="all",
+    )
+    assert [e["model"] for e in out] == ["claude-opus-4-8"]
+
+
+def test_entries_are_tagged_with_their_bucket():
+    out = normalize_entries(
+        [{"model": "claude-opus-4-8", "narrative": "n"}], _DENOMS, bucket="bad"
+    )
+    assert out[0]["bucket"] == "bad"
+
+
+def test_duplicate_model_and_bucket_keeps_first_only():
+    out = normalize_entries(
+        [
+            {"model": "claude-opus-4-8", "narrative": "first"},
+            {"model": "claude-opus-4-8", "narrative": "second"},
+        ],
+        _DENOMS,
+        bucket="bad",
+    )
+    assert len(out) == 1
+    assert out[0]["narrative"] == "first"
+
+
+def test_same_model_in_two_buckets_yields_two_entries():
+    bad = normalize_entries(
+        [{"model": "claude-opus-4-8", "narrative": "b"}], _DENOMS, bucket="bad"
+    )
+    good = normalize_entries(
+        [{"model": "claude-opus-4-8", "narrative": "g"}], _DENOMS, bucket="good"
+    )
+    merged = bad + good
+    assert {e["bucket"] for e in merged} == {"bad", "good"}
+
+
+def test_missing_optional_fields_default_and_do_not_raise():
+    out = normalize_entries([{"model": "claude-opus-4-8"}], _DENOMS, bucket="all")
+    assert out[0]["narrative"] == ""
+    assert out[0]["relative_strengths"] == ""
+    assert out[0]["relative_weaknesses"] == ""
+    assert out[0]["distinctive_failures"] == []
+
+
+def test_distinctive_failures_coerced_to_list_of_str():
+    out = normalize_entries(
+        [{"model": "claude-opus-4-8", "distinctive_failures": "not a list"}],
+        _DENOMS,
+        bucket="all",
+    )
+    assert out[0]["distinctive_failures"] == []
+
+
+def test_payload_shape_is_versioned():
+    entries = normalize_entries(
+        [{"model": "claude-opus-4-8", "narrative": "n"}], _DENOMS, bucket="all"
+    )
+    payload = build_by_model_payload(entries, "compare", _DENOMS)
+    assert payload["version"] == 1
+    assert payload["comparison"] == "compare"
+    assert payload["denominators"] == _DENOMS
+    assert payload["models"] == entries
+
+
+def test_single_model_still_produces_a_payload():
+    denoms = {"claude-opus-4-8": _DENOMS["claude-opus-4-8"]}
+    entries = normalize_entries(
+        [{"model": "claude-opus-4-8", "narrative": "n"}], denoms, bucket="all"
+    )
+    payload = build_by_model_payload(entries, "", denoms)
+    assert len(payload["models"]) == 1
+    assert payload["comparison"] == ""
