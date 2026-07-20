@@ -69,3 +69,35 @@ def test_task_version_model_has_runtime_and_snapshot_columns():
 
     assert isinstance(columns["description_snapshot"].type, Text)
     assert isinstance(task_columns["description"].type, Text)
+
+
+def test_task_upload_event_model_shape():
+    from oddish.db.models import TaskUploadEventModel
+
+    columns = TaskUploadEventModel.__table__.columns
+    assert TaskUploadEventModel.__tablename__ == "task_upload_events"
+    # task_version_id is NULL for content-unchanged re-uploads, which is the
+    # whole reason this table exists separately from task_versions.
+    assert columns["task_version_id"].nullable
+    assert not columns["task_id"].nullable
+    # created_version must be NOT NULL: it's the only thing that survives
+    # ON DELETE SET NULL to distinguish a real version-creating upload from
+    # a content-unchanged no-op.
+    assert "created_version" in columns, "TaskUploadEventModel missing column created_version"
+    assert not columns["created_version"].nullable
+    for name in (
+        "content_hash",
+        "source_repo",
+        "source_commit",
+        "source_ref",
+        "source_path",
+        "ci_provider",
+        "ci_run_id",
+        "ci_run_url",
+        "ci_pr_number",
+        "uploader_is_ci",
+        "uploader_user_id",
+        "uploader_cli_version",
+        "uploader_host",
+    ):
+        assert name in columns, f"TaskUploadEventModel missing column {name}"

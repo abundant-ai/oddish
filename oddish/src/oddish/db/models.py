@@ -946,6 +946,55 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
 
+class TaskUploadEventModel(Base):
+    """One row per task-upload attempt, including content-unchanged no-ops.
+
+    A no-op re-upload creates no task_versions row, so version history cannot
+    answer "where was this last uploaded from" — the last upload and the last
+    version are not the same event.
+    """
+
+    __tablename__ = "task_upload_events"
+    # idx_task_upload_events_task_created is created CONCURRENTLY by the
+    # taskreg_003 migration, not declared here, to avoid model/migration
+    # index-name drift (see ixdrift01_add_model_indexes.py).
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    task_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+    )
+    task_version_id: Mapped[str | None] = mapped_column(
+        String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    # SET NULL on version delete makes task_version_id alone indistinguishable
+    # from a no-op upload; this records the fact at write time so it survives
+    # the FK going NULL. No default anywhere — every writer must state it.
+    created_version: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    source_repo: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    ci_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ci_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ci_run_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ci_pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    uploader_is_ci: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    uploader_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    uploader_cli_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    uploader_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=text("now()"),
+        nullable=False,
+    )
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 
