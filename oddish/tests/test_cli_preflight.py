@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -165,3 +167,68 @@ def test_upload_force_proceeds_past_preflight(make_task, monkeypatch):
     monkeypatch.setattr(upload_module, "upload_tasks_with_progress", _sentinel)
     result = runner.invoke(app, ["upload", str(task_dir), "--force"])
     assert "reached upload" in str(result.exception)
+
+
+# The trial-import one-shot (`oddish upload <jobs> --path <task>`) has its own
+# inline call to `upload_task` (not the main `_run_task_upload` path above), so
+# it needs its own gate. Driving it through the CLI would require a faithful
+# harbor-jobs directory (result.json per trial subdir); instead we call
+# `_run_trial_import` directly with a stubbed `upload_task`, which exercises
+# the same gate-before-persist code path without that fixture overhead.
+
+
+def test_trial_import_one_shot_aborts_before_upload_when_preflight_fails(
+    make_task, monkeypatch
+):
+    task_dir = make_task(
+        dockerfile=_FETCH_DOCKERFILE, extra_files={"environment/.dockerignore": "**/.git\n"}
+    )
+    upload_module = importlib.import_module("oddish.cli.upload")
+
+    uploaded: list[object] = []
+    monkeypatch.setattr(
+        upload_module,
+        "upload_task",
+        lambda *a, **k: uploaded.append(a) or {"task_id": "should-not-happen"},
+    )
+
+    with pytest.raises(typer.Exit):
+        upload_module._run_trial_import(
+            api_url="http://x",
+            harbor_job_path=Path("/nonexistent/jobs-dir"),
+            task_id_opt=None,
+            path_option=task_dir,
+            experiment_id=None,
+            user=None,
+            skip_artifacts=False,
+            force=False,
+            quiet=True,
+            json_output=False,
+        )
+    assert uploaded == [], "preflight must abort before the inline task upload persists"
+
+
+def test_trial_import_one_shot_force_proceeds_past_preflight(make_task, monkeypatch):
+    task_dir = make_task(
+        dockerfile=_FETCH_DOCKERFILE, extra_files={"environment/.dockerignore": "**/.git\n"}
+    )
+    upload_module = importlib.import_module("oddish.cli.upload")
+
+    def _sentinel(*a, **k):
+        raise RuntimeError("reached upload")
+
+    monkeypatch.setattr(upload_module, "upload_task", _sentinel)
+
+    with pytest.raises(RuntimeError, match="reached upload"):
+        upload_module._run_trial_import(
+            api_url="http://x",
+            harbor_job_path=Path("/nonexistent/jobs-dir"),
+            task_id_opt=None,
+            path_option=task_dir,
+            experiment_id=None,
+            user=None,
+            skip_artifacts=False,
+            force=True,
+            quiet=True,
+            json_output=False,
+        )

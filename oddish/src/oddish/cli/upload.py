@@ -277,6 +277,7 @@ def upload(
             experiment_id=experiment_id,
             user=user,
             skip_artifacts=skip_artifacts,
+            force=force,
             quiet=quiet,
             json_output=json_output,
         )
@@ -455,6 +456,7 @@ def _run_trial_import(
     experiment_id: str | None,
     user: str | None,
     skip_artifacts: bool,
+    force: bool,
     quiet: bool,
     json_output: bool,
 ) -> None:
@@ -466,6 +468,13 @@ def _run_trial_import(
 
     # One-shot: upload the task alongside the trial import.
     if path_option is not None:
+        # Gate before the upload persists a runnable task version -- same
+        # reasoning as ``_run_task_upload``: this inline upload also makes
+        # the task runnable via `oddish run --task <id>`, so it must not
+        # bypass preflight just because it's reached via --path here
+        # instead of the main upload flow. No json_output -- upload owns
+        # its single stdout JSON document.
+        gate_preflight(run_checks([path_option]), force=force)
         if not quiet:
             console.print(f"[dim]Uploading task from {path_option}...[/dim]")
         upload_result = upload_task(
