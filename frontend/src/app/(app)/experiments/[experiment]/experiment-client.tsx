@@ -35,6 +35,7 @@ import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
   fetchFreshExperimentTaskPage,
+  hasFatalExperimentTaskLoadError,
   mergeExperimentTaskPages,
 } from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
@@ -254,6 +255,10 @@ function ExperimentContent({
     }
     return merged;
   }, [lightweightTasks, trialPages]);
+  const hasFatalTaskLoadError = hasFatalExperimentTaskLoadError(
+    lightweightError,
+    tasksForExperiment
+  );
 
   const probeHostTask = useMemo(
     () => resolveProbeHostTask(tasksForExperiment),
@@ -540,7 +545,10 @@ function ExperimentContent({
           costTotalsPending={costTotalsPending}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
-          hasError={Boolean(lightweightError)}
+          // SWR retains successful fallback/revalidation data when a later
+          // request fails. Keep that usable grid visible instead of replacing
+          // it with the fatal error state during a transient backend failure.
+          hasError={hasFatalTaskLoadError}
           loadFullTrialOnOpen
           headerLeft={
             isEditingName ? (
@@ -668,6 +676,13 @@ function ExperimentContent({
               <Alert variant="destructive">
                 <AlertTitle>Rename failed</AlertTitle>
                 <AlertDescription>{nameError}</AlertDescription>
+              </Alert>
+            ) : lightweightError && tasksForExperiment.length > 0 ? (
+              <Alert>
+                <AlertTitle>Could not refresh experiment</AlertTitle>
+                <AlertDescription>
+                  Showing the most recently loaded task data.
+                </AlertDescription>
               </Alert>
             ) : null
           }
