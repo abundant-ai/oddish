@@ -191,7 +191,7 @@ class Finding:
 | Any phase resolves to public with no justification | `closed_internet` | error |
 | Justification present but under 20 chars, or not a string | `closed_internet` | error |
 | `.patch` / `.diff` in `solution/` | `solution_format` | error |
-| `solve.sh` applies a patch (`git apply` / `patch -p`) | `solution_format` | error |
+| `solve.sh` applies a patch (`git apply` / `patch -p`), outside a comment | `solution_format` | error |
 | Brittle anti-cheat regex (unsuppressed) | `anti_cheat_soundness` | error |
 
 `warn` exists so that "you have no `.dockerignore`" is not shouted with the same
@@ -308,15 +308,24 @@ error). `--json` emits findings via the existing `print_json()`
 `--json` is cheap now and annoying to retrofit; it is also the precondition for
 harbor-lh ever rendering an oddish-driven sticky comment.
 
-### `oddish run --force`
+### `oddish run --force` and `oddish upload --force`
 
-`run` calls the same preflight entry after task resolution
-(`cli/run.py:800-828`) and before upload (`cli/run.py:934`). The gate sits on the
-seam before the irreversible, costly step.
+`run` calls the preflight gate after task resolution and before upload — the
+seam before the irreversible, costly step. `oddish run --json` keeps emitting a
+single JSON document: the gate is called without `json_output`, so it renders
+findings to stderr and aborts via `typer.Exit`, never printing its own JSON blob
+to stdout.
 
-Any error-severity finding on any task aborts the run. `--force` proceeds anyway
-but **still prints every finding, downgraded to yellow warnings**. Skipping the
-gate must not mean skipping the information.
+`upload` is gated the **same way**, for the same reason. Without it, the two-step
+`oddish upload <leaky-task>` → `oddish run --task <id>` would reach trials without
+ever passing preflight — `upload` persists a runnable task version, and the
+`--task <id>` run path has no local directory to check. Gating `upload` closes
+that bypass so the guarantee holds end to end. (The whole-branch review caught
+this gap.)
+
+Any error-severity finding on any task aborts the command. `--force` proceeds
+anyway but **still prints every finding, downgraded to yellow warnings**. Skipping
+the gate must not mean skipping the information.
 
 `--force` is the repo's established idiom for this (`cli/cancel.py:54`,
 `cli/backfill_analysis.py:42`), and is currently unused in `run.py`.

@@ -836,6 +836,15 @@ def test_solution_format_passes_a_readable_solution(make_task):
 def test_solution_format_is_silent_without_a_solution_dir(make_task):
     task_dir = make_task()
     assert solution_format.check(task_dir, _config(task_dir)) == []
+
+
+def test_solution_format_ignores_a_patch_mention_in_a_trailing_comment(make_task):
+    # A comment mentioning "git apply" is not a patch application. This check has
+    # no suppression grammar, so a false positive here would be un-suppressible.
+    task_dir = make_task(
+        solve_sh="#!/bin/sh\ncp fix.py /app/  # do NOT git apply the upstream patch\n"
+    )
+    assert solution_format.check(task_dir, _config(task_dir)) == []
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -861,6 +870,11 @@ CHECK_ID = "solution_format"
 
 _PATCH_SUFFIXES = frozenset({".patch", ".diff"})
 _PATCH_APPLY_RE = re.compile(r"\b(?:git\s+apply|git\s+am|patch\s+-p\d)\b")
+# Strip a trailing comment before matching, so a solve.sh line that merely
+# mentions "git apply" in a comment does not false-positive. This check has no
+# suppression grammar, so an un-suppressible false positive would force the whole
+# run — hence the strip. (Same treatment as the provenance fetch scan.)
+_TRAILING_COMMENT_RE = re.compile(r"(?:^|\s)#")
 
 
 def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
@@ -893,9 +907,9 @@ def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
     if solve_sh.is_file():
         text = solve_sh.read_text(encoding="utf-8", errors="ignore")
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if line.lstrip().startswith("#"):
-                continue
-            if _PATCH_APPLY_RE.search(line):
+            m = _TRAILING_COMMENT_RE.search(line)
+            code = line[: m.start()] if m else line
+            if _PATCH_APPLY_RE.search(code):
                 findings.append(
                     Finding(
                         check_id=CHECK_ID,
@@ -2007,6 +2021,138 @@ Add to `CHANGELOG.md` under the unreleased heading:
 ```bash
 git add oddish/src/oddish/cli/run.py oddish/tests/test_cli_preflight.py CHANGELOG.md
 git commit -m "feat(run): gate submission on preflight, add --force override"
+```
+
+---
+
+### Task 9: Gate `oddish upload` too (close the two-step bypass)
+
+The final whole-branch review found a hole: `oddish upload <leaky-task>` persists a
+runnable task version with no preflight, and `oddish run --task <id>` then runs it
+without ever checking it. The gate must guard the `upload` path as well, or the
+"a leaky task never reaches trials" guarantee is defeated in two steps.
+
+**Files:**
+- Modify: `oddish/src/oddish/cli/upload.py`, `CHANGELOG.md`
+- Test: `oddish/tests/test_cli_preflight.py` (append)
+
+**Interfaces:** consumes `gate_preflight` (`oddish.cli.preflight`) and `run_checks`
+(`oddish.preflight.runner`) — the same ones `run` uses.
+
+`upload.py` structure (verified): the `upload(...)` Typer command (line 74) delegates
+to a helper that calls `resolve_local_task_paths(...)` (line ~337) then
+`upload_tasks_with_progress(...)` (line ~352). `--force` is unused in upload.py, so
+it's free. The helper already threads `quiet` and `json_output`.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `oddish/tests/test_cli_preflight.py`:
+
+```python
+def test_upload_aborts_when_preflight_fails(make_task, monkeypatch):
+    task_dir = make_task(
+        dockerfile=_FETCH_DOCKERFILE, extra_files={"environment/.dockerignore": "**/.git\n"}
+    )
+    upload_module = importlib.import_module("oddish.cli.upload")
+    monkeypatch.setattr(upload_module, "get_api_url", lambda *a, **k: "http://x")
+    monkeypatch.setattr(upload_module, "require_api_key", lambda *a, **k: "key")
+
+    uploaded: list[object] = []
+    monkeypatch.setattr(
+        upload_module, "upload_tasks_with_progress",
+        lambda *a, **k: uploaded.append(a) or [],
+    )
+    result = runner.invoke(app, ["upload", str(task_dir)])
+    assert result.exit_code == 1
+    assert uploaded == [], "preflight must abort before upload persists the task"
+    assert "provenance" in result.output
+
+
+def test_upload_force_proceeds_past_preflight(make_task, monkeypatch):
+    task_dir = make_task(
+        dockerfile=_FETCH_DOCKERFILE, extra_files={"environment/.dockerignore": "**/.git\n"}
+    )
+    upload_module = importlib.import_module("oddish.cli.upload")
+    monkeypatch.setattr(upload_module, "get_api_url", lambda *a, **k: "http://x")
+    monkeypatch.setattr(upload_module, "require_api_key", lambda *a, **k: "key")
+
+    def _sentinel(*a, **k):
+        raise RuntimeError("reached upload")
+
+    monkeypatch.setattr(upload_module, "upload_tasks_with_progress", _sentinel)
+    result = runner.invoke(app, ["upload", str(task_dir), "--force"])
+    assert "reached upload" in str(result.exception)
+```
+
+Note: the exact `get_api_url`/`require_api_key` names to stub depend on what
+`upload.py` actually calls before the resolve step — check the file and stub
+whatever preamble would otherwise fail without a server. If `upload()` needs
+other args (e.g. it errors without an agent or a message), pass the minimal set
+that reaches the resolve→gate→upload path; adjust the invoke args accordingly.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cd oddish && uv run pytest tests/test_cli_preflight.py -k upload -v`
+Expected: FAIL — no `--force` on upload, and no gate, so the run proceeds to the
+stubbed upload (or exits 0) instead of aborting.
+
+- [ ] **Step 3: Add `--force` and the gate**
+
+In `oddish/src/oddish/cli/upload.py`:
+
+1. Add the imports near the other CLI imports:
+```python
+from oddish.cli.preflight import gate_preflight
+from oddish.preflight.runner import run_checks
+```
+
+2. Add a `--force` option to the `upload(...)` command (line 74) signature — place
+it near the other boolean options (e.g. after `skip_artifacts`):
+```python
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Upload even if preflight checks fail. Findings are still printed.",
+        ),
+    ] = False,
+```
+
+3. Thread `force` from the `upload()` command into the helper that does the
+resolve→upload (add a `force: bool` parameter to that helper and pass it at the
+call site).
+
+4. In the helper, between the `resolve_local_task_paths(...)` assignment and the
+`upload_tasks_with_progress(...)` call, insert the gate — identical to `run`'s,
+and for the same reason NOT passing `json_output` (upload owns its stdout JSON):
+```python
+    # Gate before the upload persists a runnable task version: a task that leaks
+    # its own answer must not become runnable via `oddish run --task <id>`.
+    # No json_output — upload owns its single stdout JSON document; the gate
+    # renders findings to stderr and aborts via typer.Exit on failure.
+    gate_preflight(run_checks(task_paths), force=force)
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cd oddish && uv run pytest tests/test_cli_preflight.py -k upload -v`
+Expected: both new tests pass.
+
+- [ ] **Step 5: Regression-check the upload path**
+
+Run: `cd oddish && uv run pytest tests/test_cli_upload.py -q`
+Expected: still passes. If an existing upload test now trips preflight (a stub
+task.toml or a task that isn't closed-network), that's the same interaction the
+linkage test hit — insulate it by stubbing `run_checks` to `[]` in that test, or
+give its fixture a preflight-passing task. Do NOT weaken the gate.
+
+- [ ] **Step 6: Changelog + commit**
+
+Add to the CHANGELOG `Changed` entry that `oddish upload` is now gated too (same
+`--force` override). Then:
+```bash
+git add oddish/src/oddish/cli/upload.py oddish/tests/test_cli_preflight.py CHANGELOG.md
+git commit -m "feat(upload): gate upload on preflight too, closing the upload->run-by-id bypass"
 ```
 
 ---
