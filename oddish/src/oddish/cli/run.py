@@ -486,8 +486,7 @@ def run(
             "--harbor-environment-kwarg",
             help=(
                 "Harbor environment kwarg in KEY=VALUE format "
-                "(can be used multiple times). For closed-internet Modal "
-                "evals prefer --allow-agent-host and --disable-web-tools."
+                "(can be used multiple times)."
             ),
         ),
     ] = None,
@@ -523,9 +522,10 @@ def run(
         typer.Option(
             "--allow-agent-host",
             help=(
-                "Hostname the agent may reach during a restricted (allowlist) "
-                "agent phase, e.g. api.anthropic.com. Maps to Harbor "
-                "AgentConfig.extra_allowed_hosts (can be used multiple times)."
+                "Extra hostname for a restricted agent phase "
+                "(Harbor AgentConfig.extra_allowed_hosts). Usually unnecessary: "
+                "Oddish auto-injects the model API host for closed-internet "
+                "tasks (can be used multiple times)."
             ),
         ),
     ] = None,
@@ -534,8 +534,9 @@ def run(
         typer.Option(
             "--disable-web-tools/--no-disable-web-tools",
             help=(
-                "Disable the agent's server-side web tools for closed-internet "
-                "evals (claude-code: disallowed_tools=WebSearch WebFetch; "
+                "Force-disable server-side web tools. Usually unnecessary: "
+                "Oddish does this automatically on closed-internet agent phases "
+                "(claude-code: disallowed_tools=WebSearch WebFetch; "
                 "codex: web_search=disabled). Explicit --agent-kwarg values win."
             ),
         ),

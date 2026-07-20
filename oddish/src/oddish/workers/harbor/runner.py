@@ -154,49 +154,89 @@ def _effective_task_build_timeout_sec(task_path: Path) -> float:
     return base if base > 0 else _ENV_BUILD_TIMEOUT_BASE_SEC
 
 
-def _inject_daytona_agent_model_hosts(
-    *,
-    task_path: Path,
-    environment_config: HarborEnvironmentConfig,
-    agent_config: HarborAgentConfig,
-) -> None:
-    """Keep model transport reachable during a restricted Daytona agent phase.
+def _task_has_dynamic_restricted_agent_phase(task_path: Path) -> bool:
+    """True when env starts public but the agent phase is restricted.
 
-    Harbor can switch direct Daytona sandboxes after agent setup, but it needs
-    the run-specific model destinations to turn a restrictive phase policy into
-    a model-only allowlist. Infer those destinations from the fully normalized
-    agent config at runtime so task bundles never contain provider endpoints.
+    That is the swe-marathon closed-internet shape (public setup → allowlist /
+    no-network agent → no-network verifier) that needs run-specific model hosts
+    and web-tool disable applied transparently.
     """
-    if environment_config.type != EnvironmentType.DAYTONA:
-        return
-    if environment_config.import_path is not None:
-        return
-
-    environment_dir = task_path / "environment"
-    if (environment_dir / "docker-compose.yaml").exists():
-        return
-    if environment_config.extra_docker_compose:
-        return
-    if kube_chart_present(environment_dir, environment_config.kwargs):
-        return
-
     try:
         task_config = HarborTaskConfig.model_validate_toml(
             (task_path / "task.toml").read_text()
         )
     except Exception:
-        return
+        return False
 
     baseline = task_config.environment.resolve_baseline()
     if baseline.network_mode != NetworkMode.PUBLIC:
-        return
+        return False
 
     task_policy = task_config.agent.explicit_phase_policy()
     effective_policies = []
     for step in task_config.steps or [None]:
         step_policy = step.agent.explicit_phase_policy() if step is not None else None
         effective_policies.append(step_policy or task_policy or baseline)
-    if all(policy.network_mode == NetworkMode.PUBLIC for policy in effective_policies):
+    return any(policy.network_mode != NetworkMode.PUBLIC for policy in effective_policies)
+
+
+def _supports_auto_restricted_agent_network(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+) -> bool:
+    """Whether this trial shape should get automatic closed-internet defaults."""
+    if environment_config.import_path is not None:
+        return False
+    if environment_config.type not in (EnvironmentType.DAYTONA, EnvironmentType.MODAL):
+        return False
+
+    environment_dir = task_path / "environment"
+    # Compose / kube sandboxes do not use the same phase-policy switching path.
+    if (environment_dir / "docker-compose.yaml").exists():
+        return False
+    if environment_config.extra_docker_compose:
+        return False
+    if kube_chart_present(environment_dir, environment_config.kwargs):
+        return False
+    return _task_has_dynamic_restricted_agent_phase(task_path)
+
+
+def _apply_restricted_agent_web_tool_defaults(
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Disable server-side web tools unless the user already set a toggle."""
+    from oddish.cli.closed_internet import web_tool_kwargs_for_agent
+
+    defaults = web_tool_kwargs_for_agent(
+        agent_name=agent_config.name,
+        import_path=agent_config.import_path,
+    )
+    if not defaults:
+        return
+    kwargs = dict(agent_config.kwargs or {})
+    for key, value in defaults.items():
+        kwargs.setdefault(key, value)
+    agent_config.kwargs = kwargs
+
+
+def _inject_restricted_agent_model_hosts(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Keep model transport reachable during a restricted agent phase.
+
+    Harbor can switch Modal/Daytona sandboxes after agent setup, but it needs
+    the run-specific model destinations to turn a restrictive phase policy into
+    a model-only allowlist. Infer those destinations from the fully normalized
+    agent config at runtime so task bundles never contain provider endpoints.
+    """
+    if not _supports_auto_restricted_agent_network(
+        task_path=task_path,
+        environment_config=environment_config,
+    ):
         return
 
     agent_kwargs = dict(agent_config.kwargs or {})
@@ -212,6 +252,45 @@ def _inject_daytona_agent_model_hosts(
     )
     agent_config.extra_allowed_hosts = list(
         dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts])
+    )
+
+
+def _apply_restricted_agent_network_defaults(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Transparent closed-internet defaults for restricted agent phases.
+
+    Users should not need ``--allow-agent-host`` / ``--disable-web-tools`` for
+    the common public→restricted agent-phase task shape; those CLI flags remain
+    as explicit overrides.
+    """
+    if not _supports_auto_restricted_agent_network(
+        task_path=task_path,
+        environment_config=environment_config,
+    ):
+        return
+    _inject_restricted_agent_model_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+    _apply_restricted_agent_web_tool_defaults(agent_config)
+
+
+def _inject_daytona_agent_model_hosts(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Backward-compatible alias for restricted-agent host injection."""
+    _inject_restricted_agent_model_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
     )
 
 
@@ -477,7 +556,7 @@ async def run_harbor_trial_async(
                 is_probe=is_probe,
                 probe_oddish_env=extra_agent_env,
             )
-            _inject_daytona_agent_model_hosts(
+            _apply_restricted_agent_network_defaults(
                 task_path=effective_task_path,
                 environment_config=env_config,
                 agent_config=agent_config,
@@ -487,7 +566,8 @@ async def run_harbor_trial_async(
         # endpoint during agent.run(). On closed-internet tasks, installer CDN
         # hosts and custom model routes are not always in the task allowlist, so
         # allow both via the environment baseline (which spans install + run).
-        # Prefer also passing --allow-agent-host for the model API host.
+        # Model API hosts are also injected automatically for restricted agent
+        # phases via _apply_restricted_agent_network_defaults.
         if "claude-code" in (agent or "").strip().lower():
             hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
             base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")

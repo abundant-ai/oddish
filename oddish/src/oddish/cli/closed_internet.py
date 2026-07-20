@@ -1,6 +1,7 @@
 """Helpers for closed-internet Oddish runs on upstream Harbor network policy.
 
-Matches swe-marathon ``scripts/run-benchmark.sh``:
+Workers apply these automatically when a task's agent phase is restricted.
+CLI flags remain available as explicit overrides:
 
 - ``--allow-agent-host`` → Harbor ``AgentConfig.extra_allowed_hosts``
 - ``--disable-web-tools`` → agent kwargs that turn off server-side web tools
@@ -12,6 +13,33 @@ from typing import Any
 
 
 _CLAUDE_WEB_TOOLS = "WebSearch WebFetch"
+
+
+def web_tool_kwargs_for_agent(
+    *,
+    agent_name: str | None,
+    import_path: str | None = None,
+) -> dict[str, Any]:
+    """Return default kwargs that disable web tools for a known agent family.
+
+    Empty when the agent has no known toggle. Callers should ``setdefault`` these
+    so explicit user kwargs always win.
+    """
+    name = (agent_name or "").strip().lower()
+    path = (import_path or "").strip().lower()
+
+    if "claude-code" in name or "claude_code" in path:
+        return {"disallowed_tools": _CLAUDE_WEB_TOOLS}
+    if (
+        name == "codex"
+        or name.startswith("codex-")
+        or path.endswith(":oddishcodex")
+        or path.endswith(":azurecompatiblecodex")
+    ):
+        return {"web_search": "disabled"}
+    if "grok-build" in name or "grok_build" in path:
+        return {"disable_web_search": True}
+    return {}
 
 
 def apply_allow_agent_hosts(
@@ -33,24 +61,19 @@ def apply_disable_web_tools(
     *,
     agent_name: str | None,
     agent_config: dict[str, Any],
+    import_path: str | None = None,
 ) -> dict[str, Any]:
     """Inject agent kwargs that disable web search/fetch when unset.
 
     Explicit user kwargs always win. Agents without a known web-tool toggle are
     left unchanged (callers can still pass ``--agent-kwarg`` directly).
     """
-    name = (agent_name or "").strip().lower()
     kwargs = dict(agent_config.get("kwargs") or {})
-
-    if "claude-code" in name:
-        kwargs.setdefault("disallowed_tools", _CLAUDE_WEB_TOOLS)
-    elif name == "codex" or name.startswith("codex-"):
-        kwargs.setdefault("web_search", "disabled")
-    elif name == "grok-build" or name.startswith("grok-build"):
-        # Upstream/Oddish Grok Build already defaults web search off; make the
-        # closed-internet intent explicit when the flag is set.
-        kwargs.setdefault("disable_web_search", True)
-
+    for key, value in web_tool_kwargs_for_agent(
+        agent_name=agent_name,
+        import_path=import_path or agent_config.get("import_path"),
+    ).items():
+        kwargs.setdefault(key, value)
     if kwargs:
         agent_config["kwargs"] = kwargs
     return agent_config

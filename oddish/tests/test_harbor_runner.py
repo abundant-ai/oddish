@@ -61,11 +61,12 @@ network_mode = "{agent_mode}"
     return task_path
 
 
-def test_inject_daytona_agent_model_hosts_for_restricted_direct_task(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL])
+def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
+    monkeypatch, tmp_path, environment_type
 ):
     task_path = _write_network_policy_task(tmp_path)
-    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(
         import_path="example.agent:Agent",
         model_name="example-model",
@@ -80,7 +81,7 @@ def test_inject_daytona_agent_model_hosts_for_restricted_direct_task(
 
     monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
 
-    harbor_runner._inject_daytona_agent_model_hosts(
+    harbor_runner._inject_restricted_agent_model_hosts(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
@@ -92,16 +93,42 @@ def test_inject_daytona_agent_model_hosts_for_restricted_direct_task(
     }
 
 
+def test_apply_restricted_agent_network_defaults_disables_web_tools(
+    monkeypatch, tmp_path
+):
+    task_path = _write_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.MODAL)
+    agent_config = HarborAgentConfig(
+        name="claude-code",
+        model_name="anthropic/claude-opus-4-8",
+        kwargs={"effort": "max"},
+    )
+    monkeypatch.setattr(
+        harbor_runner, "infer_agent_domains", lambda **kwargs: ["api.anthropic.com"]
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert agent_config.extra_allowed_hosts == ["api.anthropic.com"]
+    assert agent_config.kwargs["disallowed_tools"] == "WebSearch WebFetch"
+    assert agent_config.kwargs["effort"] == "max"
+
+
 @pytest.mark.parametrize(
     ("environment_type", "environment_mode", "agent_mode", "compose"),
     [
-        (EnvironmentType.MODAL, "public", "no-network", False),
         (EnvironmentType.DAYTONA, "public", "public", False),
         (EnvironmentType.DAYTONA, "no-network", "no-network", False),
         (EnvironmentType.DAYTONA, "public", "no-network", True),
+        (EnvironmentType.MODAL, "public", "no-network", True),
+        (EnvironmentType.DOCKER, "public", "no-network", False),
     ],
 )
-def test_inject_daytona_agent_model_hosts_skips_unsupported_shapes(
+def test_inject_restricted_agent_model_hosts_skips_unsupported_shapes(
     monkeypatch,
     tmp_path,
     environment_type,
@@ -126,7 +153,7 @@ def test_inject_daytona_agent_model_hosts_skips_unsupported_shapes(
 
     monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
 
-    harbor_runner._inject_daytona_agent_model_hosts(
+    harbor_runner._inject_restricted_agent_model_hosts(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
