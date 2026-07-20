@@ -276,32 +276,51 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
             # has_reward=false trials genuinely have none (harness errors) and
             # correctly become reward=None/FAILED; this fallback just catches the
             # ~0.2% that store their score as reward.json/reward-float.txt.
+            # Fetch every candidate object CONCURRENTLY, then decide.
+            #
+            # This used to walk the reward candidates one await at a time, then
+            # result.json, then config.json -- up to 6 sequential round trips per
+            # trial, each one a full network hop. Firing them together collapses
+            # that to roughly one round trip. Priority is unchanged: the results
+            # are evaluated in exactly the old order, so a trial whose score is
+            # in reward.txt still resolves from reward.txt.
+            #
+            # The trade is that we always issue all 6 GETs instead of stopping at
+            # the first hit. S3 requests are cheap and this is latency-bound, so
+            # more requests for fewer round trips is the right side of it. It also
+            # removes a source of base-to-base variance: a layout where the first
+            # candidate usually misses used to cost 3-4 extra sequential hops,
+            # which may be part of why gemini-code-rl-export ran at 9.6/s while
+            # nov-5-export ran at 23.5/s on identical settings.
+            _keys = (f"{prefix}verifier/reward.txt",
+                     f"{prefix}verifier/verifier/reward.txt",
+                     f"{prefix}verifier/reward-float.txt",
+                     f"{prefix}verifier/reward.json",
+                     f"{prefix}result.json",
+                     f"{prefix}config.json")
+            _r_txt1, _r_txt2, _r_float, _r_json, rj, cj = await asyncio.gather(
+                *(_get(s3, k) for k in _keys))
+
             reward = None
-            for k in (f"{prefix}verifier/reward.txt",
-                      f"{prefix}verifier/verifier/reward.txt",
-                      f"{prefix}verifier/reward-float.txt"):
-                b = await _get(s3, k)
+            for b in (_r_txt1, _r_txt2, _r_float):
                 if b is not None:
                     try:
                         reward = float(b.decode().strip()); break
                     except ValueError:
                         pass
-            if reward is None:
-                b = await _get(s3, f"{prefix}verifier/reward.json")
-                if b:
-                    try:
-                        j = json.loads(b)
-                        if isinstance(j, (int, float)):
-                            reward = float(j)
-                        elif isinstance(j, dict):
-                            for key in ("reward", "score", "value"):
-                                v = j.get(key)
-                                if isinstance(v, (int, float)):
-                                    reward = float(v); break
-                    except Exception:
-                        pass
+            if reward is None and _r_json:
+                try:
+                    j = json.loads(_r_json)
+                    if isinstance(j, (int, float)):
+                        reward = float(j)
+                    elif isinstance(j, dict):
+                        for key in ("reward", "score", "value"):
+                            v = j.get(key)
+                            if isinstance(v, (int, float)):
+                                reward = float(v); break
+                except Exception:
+                    pass
             # tokens/timing: result.json (FINALIZE-LATER: confirm exact keys)
-            rj = await _get(s3, f"{prefix}result.json")
             result = {}
             if rj:
                 try:
@@ -310,7 +329,6 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                     result = {}
             # model: prefer config.json, else cleaned path model_key
             model = _clean_model(r["model_key"])
-            cj = await _get(s3, f"{prefix}config.json")
             if cj:
                 try:
                     cfg = json.loads(cj)
@@ -579,14 +597,22 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                 _t_patch = time.perf_counter()
                 async with get_session() as sess:
                     if trial_id is not None:
+                        # Both UPDATEs in ONE statement via a data-modifying CTE.
+                        # They were two separate round trips; at ~10 round trips
+                        # per trial under pooler contention, halving this pair is
+                        # a real saving across 680k trials. Semantics are
+                        # identical -- a CTE and its outer statement share one
+                        # snapshot and commit atomically, exactly as the two
+                        # statements did inside this transaction.
                         await sess.execute(text(
-                            "UPDATE trials SET orig_s3_src=:k, "
-                            "imported_at=COALESCE(imported_at, :t) WHERE id=:id"),
-                            {"k": r["s3_prefix"], "t": now(), "id": trial_id})
-                        await sess.execute(text(
+                            "WITH t AS ("
+                            "  UPDATE trials SET orig_s3_src=:k, "
+                            "  imported_at=COALESCE(imported_at, :t) WHERE id=:id"
+                            ") "
                             "UPDATE leg_trial_ledger SET status='transferred', "
                             "oddish_trial_id=:id, transferred_at=:t WHERE s3_prefix=:p"),
-                            {"id": trial_id, "t": now(), "p": r["s3_prefix"]})
+                            {"k": r["s3_prefix"], "t": now(),
+                             "id": trial_id, "p": r["s3_prefix"]})
                     else:
                         # Conflict was reported but the existing trial couldn't be
                         # located -> nothing actually landed. Marking 'transferred'
