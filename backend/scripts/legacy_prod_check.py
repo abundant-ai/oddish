@@ -42,7 +42,8 @@ EXPECTED_COLUMNS = {
 
 
 @app.function(image=image, secrets=[secret], timeout=300)
-async def check(scope_base: str | None, scope_pr: int | None, show_errors: bool) -> bool:
+async def check(scope_base: str | None, scope_pr: int | None, show_errors: bool,
+                show_activity: bool) -> bool:
     import asyncpg
 
     url = os.environ["ODDISH_DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
@@ -177,6 +178,53 @@ async def check(scope_base: str | None, scope_pr: int | None, show_errors: bool)
     except Exception as exc:  # noqa: BLE001
         check_one("ledger readable", False, repr(exc))
 
+    # ---------------------------------------------------- Live DB activity
+    # For diagnosing a stalled shard: is its worklist query actually running,
+    # is it blocked on a lock, or did it never reach the database at all
+    # (i.e. the container is still queued for a Modal worker)?
+    if show_activity:
+        print("\n== Currently running queries (longest first) ==")
+        try:
+            acts = await conn.fetch(
+                """
+                SELECT pid, state,
+                       now() - query_start          AS elapsed,
+                       wait_event_type, wait_event,
+                       left(regexp_replace(query, '\\s+', ' ', 'g'), 160) AS q
+                FROM pg_stat_activity
+                WHERE datname = current_database()
+                  AND state <> 'idle'
+                  AND pid <> pg_backend_pid()
+                ORDER BY query_start
+                LIMIT 25
+                """
+            )
+            if not acts:
+                print("  (nothing running -- if a shard is stalled it has not "
+                      "reached the DB, so it is queued for a Modal worker)")
+            for a in acts:
+                wait = f"{a['wait_event_type']}/{a['wait_event']}" if a["wait_event_type"] else "-"
+                print(f"  pid={a['pid']:<8} {str(a['elapsed'])[:14]:<14} {a['state']:<20} wait={wait}")
+                print(f"           {a['q']}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [error] {exc!r}")
+
+        print("\n== Indexes on leg_trial_ledger ==")
+        try:
+            idx = await conn.fetch(
+                "SELECT indexname, indexdef FROM pg_indexes "
+                "WHERE tablename = 'leg_trial_ledger' ORDER BY indexname"
+            )
+            if not idx:
+                print("  (none -- every worklist query is a full scan)")
+            for i in idx:
+                print(f"  {i['indexname']}: {i['indexdef'][:130]}")
+            size = await conn.fetchval(
+                "SELECT pg_size_pretty(pg_total_relation_size('leg_trial_ledger'))")
+            print(f"  table size: {size}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [error] {exc!r}")
+
     # ------------------------------------------------------- Failure detail
     # The ledger stores each failure's reason in `error`, but nothing surfaced
     # it -- the runbook said "read the error column" with no way to do so.
@@ -243,7 +291,8 @@ async def check(scope_base: str | None, scope_pr: int | None, show_errors: bool)
 
 @app.local_entrypoint()
 def main(scope_base: str | None = None, scope_pr: int | None = None,
-         show_errors: bool = False) -> None:
-    ok = check.remote(scope_base=scope_base, scope_pr=scope_pr, show_errors=show_errors)
+         show_errors: bool = False, show_activity: bool = False) -> None:
+    ok = check.remote(scope_base=scope_base, scope_pr=scope_pr, show_errors=show_errors,
+                      show_activity=show_activity)
     if not ok:
         raise SystemExit(1)
