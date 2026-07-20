@@ -752,7 +752,7 @@ class TaskModel(TimestampedMixin, Base):
 
     # Descriptive metadata: what the task IS, not trial results.
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    category: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
     category_raw: Mapped[str | None] = mapped_column(String(128), nullable=True)
     author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     author_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
