@@ -82,3 +82,108 @@ async def resolve_cohort(
     stmt = stmt.where(TrialModel.is_probe.is_(False)).order_by(TrialModel.id.asc())
     rows = (await session.execute(stmt)).scalars().all()
     return filter_fetchable(rows, limit=limit)
+
+
+async def summarize_trial(
+    trial,
+    trajectory: dict,
+    task_context,
+    *,
+    model: str,
+    persist: bool,
+    client=None,
+) -> dict:
+    """Run the summary block for one trial and return its full record.
+
+    Never raises for a trial-level failure: a failed block still yields a
+    record carrying ``status``, ``error``, and whatever ``raw`` accumulated.
+    """
+    from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+    from api.services.summarize_trajectory import SCHEMA_VERSION, build_summary_block
+
+    owned = client is None
+    # max_tokens=2048 matches generate()'s production cap.
+    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
+    block = build_summary_block(
+        trajectory, task_context, analyzer_id=trial.id, model=model, client=llm,
+    )
+
+    if not persist:
+        async def _noop(*_a, **_k):
+            return None
+        block.save_to_s3 = _noop  # type: ignore[method-assign]
+        block.save_to_db = _noop  # type: ignore[method-assign]
+
+    summary: dict | None = None
+    try:
+        out = await block.run()
+        summary = out.output
+    except asyncio.CancelledError:
+        # Cancellation is not a trial-level failure -- never swallow it.
+        raise
+    except Exception:
+        # block.run() already recorded status/error and re-raised; the record
+        # below carries them, so a bad trial does not abort the cohort.
+        pass
+    finally:
+        if owned:
+            await llm.aclose()
+
+    return {
+        "trial_id": trial.id,
+        "task_name": task_context.task_name,
+        "final_reward": task_context.final_reward,
+        "model": model,
+        "schema_version": SCHEMA_VERSION,
+        "status": block.status.value,
+        "duration_s": block.job_duration_seconds,
+        "error": block.error,
+        "prompt": block.prompt,
+        "raw": "".join(block._chunks),
+        "summary": summary,
+    }
+
+
+async def run_cohort(
+    session,
+    *,
+    trials: list[str] | None = None,
+    task: str | None = None,
+    experiment: str | None = None,
+    limit: int = 0,
+    model: str | None = None,
+    persist: bool = False,
+) -> list[dict]:
+    """Resolve the cohort, then summarize every trial in it.
+
+    Trajectories and task context are read inside the caller's session; the
+    blocks then run outside it, bounded by ``MAX_CONCURRENCY``.
+    """
+    from api.services.summarize_trajectory import build_task_context, resolve_summary_model
+    from oddish.core.trial_io import read_trial_trajectory
+
+    model = model or resolve_summary_model()
+    cohort = await resolve_cohort(
+        session, trials=trials, task=task, experiment=experiment, limit=limit,
+    )
+    print(f"resolved {len(cohort)} trials: {', '.join(t.id for t in cohort)}")
+
+    prepared = []
+    for trial in cohort:
+        trajectory = await read_trial_trajectory(trial)
+        if trajectory is None:
+            print(f"  skip {trial.id}: no fetchable trajectory")
+            continue
+        prepared.append((trial, trajectory, await build_task_context(trial)))
+
+    sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+    async def _one(trial, trajectory, ctx) -> dict:
+        async with sem:
+            record = await summarize_trial(
+                trial, trajectory, ctx, model=model, persist=persist,
+            )
+            print(f"  {record['trial_id']}: {record['status']}")
+            return record
+
+    return list(await asyncio.gather(*(_one(*p) for p in prepared)))

@@ -218,3 +218,100 @@ async def test_resolve_cohort_limit_applies_after_fetchable_filter():
             result = await resolve_cohort(session, experiment="exp1", limit=1)
 
     assert [t.id for t in result] == ["trial-2-good"]
+
+
+import json
+
+from api.services.summarize_trajectory import TaskContext
+
+
+def _ctx() -> TaskContext:
+    return TaskContext(
+        task_name="my-task", instruction=None, final_reward=1.0,
+        model_used="claude-opus-4-8", verifier_output=None,
+    )
+
+
+# Named distinctly from the DB-backed `_trial` helper above (line 97) --
+# same name would shadow it at module scope and break those tests.
+def _summary_trial(trial_id="tr_a"):
+    return SimpleNamespace(id=trial_id, reward=1.0)
+
+
+def _traj() -> dict:
+    return {"steps": [{
+        "step_id": 1, "timestamp": "2026-04-30T12:00:00Z", "source": "agent",
+        "model_name": "claude-opus-4-8", "message": "hi", "reasoning_content": None,
+        "tool_calls": None, "observation": None, "metrics": None,
+    }]}
+
+
+def _payload() -> str:
+    return json.dumps({
+        "summary": "Fixed it.",
+        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
+        "components": [{"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}],
+    })
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_returns_full_record():
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summary_dump import summarize_trial
+
+    record = await summarize_trial(
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
+        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+    )
+
+    assert record["trial_id"] == "tr_a"
+    assert record["task_name"] == "my-task"
+    assert record["final_reward"] == 1.0
+    assert record["model"] == "claude-opus-4-8"
+    assert record["schema_version"] == "4"
+    assert record["status"] == "success"
+    assert record["error"] is None
+    assert isinstance(record["duration_s"], float)
+    assert "my-task" in record["prompt"]
+    assert record["raw"] == _payload()
+    assert record["summary"]["summary"] == "Fixed it."
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_records_raw_on_parse_failure():
+    """A revised taxonomy that fails to parse is exactly when raw matters most,
+    and that is the path where block.run() raises."""
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summary_dump import summarize_trial
+
+    record = await summarize_trial(
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
+        client=FakeAnalyzerLLMClient(chunks=["not json at all"]),
+    )
+
+    assert record["status"] == "failed"
+    assert record["error"] is not None
+    assert record["raw"] == "not json at all"
+    assert record["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_does_not_persist_by_default(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summary_dump import summarize_trial
+
+    s3 = AsyncMock()
+    db = AsyncMock()
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", s3)
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", db)
+
+    await summarize_trial(
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
+        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+    )
+
+    s3.assert_not_awaited()
+    db.assert_not_awaited()
