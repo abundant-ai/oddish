@@ -101,6 +101,18 @@ def test_hallucinated_model_is_dropped():
     assert [e["model"] for e in out] == ["claude-opus-4-8"]
 
 
+def test_non_string_model_is_dropped_without_raising():
+    out = normalize_entries(
+        [
+            {"model": 42, "narrative": "bad"},
+            {"model": "claude-opus-4-8", "narrative": "good"},
+        ],
+        _DENOMS,
+        bucket="all",
+    )
+    assert [e["model"] for e in out] == ["claude-opus-4-8"]
+
+
 def test_entries_are_tagged_with_their_bucket():
     out = normalize_entries(
         [{"model": "claude-opus-4-8", "narrative": "n"}], _DENOMS, bucket="bad"

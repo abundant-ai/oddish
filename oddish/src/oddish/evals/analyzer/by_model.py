@@ -79,7 +79,10 @@ def normalize_entries(
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        key = _model_key(entry.get("model"))
+        raw_model = entry.get("model")
+        if raw_model is not None and not isinstance(raw_model, str):
+            continue
+        key = _model_key(raw_model)
         if key not in denominators:
             continue
         if (key, bucket) in seen:
