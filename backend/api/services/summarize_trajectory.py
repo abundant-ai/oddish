@@ -34,6 +34,15 @@ TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "4"
 
+# Output scales with STEP COUNT: the prompt assigns every step to a component
+# and emits its step_ids, so a few hundred steps cannot fit in the old 2048.
+# Measured on real trajectories, 227-389-step trials truncated mid-array at
+# ~5k chars and failed to parse; a 2465-step trial needs ~10k chars of step
+# ids alone. The block parses its output, so truncation is a hard failure.
+# summary_dump imports this rather than copying it -- the original bug was
+# exactly that copy drifting.
+SUMMARY_MAX_TOKENS = 16000
+
 
 def _truncate(text: str) -> str:
     if len(text) <= MAX_TEXT_CHARS:
@@ -204,8 +213,9 @@ async def generate(
 
     model = resolve_summary_model()
     owned = client is None
-    # max_tokens=2048 preserves the pre-migration token cap.
-    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
+    llm = client or ApiAnalyzerLLMClient(
+        model=model, max_tokens=SUMMARY_MAX_TOKENS
+    )
     block = build_summary_block(
         trajectory, task_context, analyzer_id=analyzer_id, model=model, client=llm,
     )

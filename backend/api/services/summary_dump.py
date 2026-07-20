@@ -134,14 +134,21 @@ async def summarize_trial(
     accumulated -- including failures raised before a block even exists.
     """
     from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
-    from api.services.summarize_trajectory import SCHEMA_VERSION, build_summary_block
+    from api.services.summarize_trajectory import (
+        SCHEMA_VERSION,
+        SUMMARY_MAX_TOKENS,
+        build_summary_block,
+    )
     from oddish.db.models import JobStatus
 
     owned = client is None
     llm = None
     try:
-        # max_tokens=2048 matches generate()'s production cap.
-        llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
+        # Shared with generate() so the two cannot drift -- the original bug
+        # was this call site copying generate()'s 2048 cap.
+        llm = client or ApiAnalyzerLLMClient(
+            model=model, max_tokens=SUMMARY_MAX_TOKENS
+        )
         block = build_summary_block(
             trajectory, task_context, analyzer_id=trial.id, model=model, client=llm,
         )
