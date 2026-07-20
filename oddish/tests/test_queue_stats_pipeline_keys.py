@@ -31,7 +31,12 @@ from oddish.queue import (  # noqa: E402
 )
 
 ANALYSIS_MODEL_KEY = settings.get_analysis_queue_key()
-VERDICT_MODEL_KEY = settings.get_qa_queue_key()
+VERDICT_MODEL_KEY = settings.normalize_queue_key(settings.verdict_model)
+# The QA job's concurrency bucket, reported by the reserved pipeline buckets.
+# QA leases from the analysis model's bucket, so this coincides with
+# ANALYSIS_MODEL_KEY -- keep VERDICT_MODEL_KEY above as the verdict model's own
+# key so trials running ON that model still exercise a distinct bucket.
+QA_JOB_KEY = settings.get_qa_queue_key()
 
 
 class _Result:
@@ -103,9 +108,7 @@ async def test_assemble_routes_model_trials_to_trial_pipeline(monkeypatch) -> No
     # Give the QA job bucket a concurrency override distinct from every
     # default so the reserved-bucket assertion below cannot pass vacuously
     # (default == default).
-    monkeypatch.setitem(
-        settings.model_concurrency_overrides, VERDICT_MODEL_KEY, 999
-    )
+    monkeypatch.setitem(settings.model_concurrency_overrides, QA_JOB_KEY, 999)
 
     stats = await get_queue_stats(_FakeSession())
     queue_stats, pipeline = _assemble_queue_and_pipeline(stats)

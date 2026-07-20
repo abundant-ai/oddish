@@ -43,6 +43,7 @@ oddish-pulls/
 
 # Git worktrees (local isolation)
 .worktrees/
+.claude/worktrees/
 
 # Playwright e2e artifacts
 frontend/test-results/
