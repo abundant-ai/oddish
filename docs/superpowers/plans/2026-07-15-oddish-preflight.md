@@ -1605,7 +1605,6 @@ import json
 from pathlib import Path
 import sys
 
-import pytest
 from typer.testing import CliRunner
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -1740,16 +1739,21 @@ def gate_preflight(
     if not failed:
         return
 
+    # In --json mode the document is the whole output; no human narration on
+    # either stream. Matches the repo convention (cancel.py, costs.py, ...) and
+    # keeps `oddish preflight --json | jq` clean.
     if force:
-        error_console.print(
-            "\n[yellow]Preflight failed but --force was given; submitting anyway.[/yellow]"
-        )
+        if not json_output:
+            error_console.print(
+                "\n[yellow]Preflight failed but --force was given; submitting anyway.[/yellow]"
+            )
         return
 
-    error_console.print(
-        "\n[red]Preflight failed.[/red] Fix the errors above, or re-run with "
-        "[bold]--force[/bold] to submit anyway."
-    )
+    if not json_output:
+        error_console.print(
+            "\n[red]Preflight failed.[/red] Fix the errors above, or re-run with "
+            "[bold]--force[/bold] to submit anyway."
+        )
     raise typer.Exit(1)
 
 
