@@ -459,26 +459,16 @@ class TrialClassifier:
         )
 
 
-def _compute_task_verdict_openai(
+def build_verdict_prompt(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
-    model: str = VERDICT_MODEL,
-    console: "Console | None" = None,
-    verbose: bool = False,
-    api_key: str | None = None,
-    timeout: float | None = None,
-) -> TaskVerdict:
-    """Compute task verdict using OpenAI to synthesize trial analyses."""
-    if not classifications:
-        return TaskVerdict(
-            is_good=False,
-            confidence="low",
-            primary_issue="No trials to analyze",
-            reasoning="No verdict could be computed because the task has no analyzed trials yet.",
-            recommendations=["Run agent trials first"],
-        )
+) -> str:
+    """Render the verdict-synthesis prompt.
 
+    Extracted so the legacy path and the AnalyzerBlock path send byte-identical
+    prompts; the parity test asserts nothing useful otherwise.
+    """
     if baseline:
         if baseline.is_valid:
             baseline_summary = (
@@ -507,12 +497,35 @@ def _compute_task_verdict_openai(
         )
     trial_classifications = "\n".join(trial_lines)
 
-    prompt = _VERDICT_PROMPT.format(
+    return _VERDICT_PROMPT.format(
         num_trials=len(classifications),
         baseline_summary=baseline_summary,
         quality_check_summary=quality_check_summary,
         trial_classifications=trial_classifications,
     )
+
+
+def _compute_task_verdict_openai(
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None = None,
+    quality_check_passed: bool = True,
+    model: str = VERDICT_MODEL,
+    console: "Console | None" = None,
+    verbose: bool = False,
+    api_key: str | None = None,
+    timeout: float | None = None,
+) -> TaskVerdict:
+    """Compute task verdict using OpenAI to synthesize trial analyses."""
+    if not classifications:
+        return TaskVerdict(
+            is_good=False,
+            confidence="low",
+            primary_issue="No trials to analyze",
+            reasoning="No verdict could be computed because the task has no analyzed trials yet.",
+            recommendations=["Run agent trials first"],
+        )
+
+    prompt = build_verdict_prompt(classifications, baseline, quality_check_passed)
 
     client, runtime_model, provider_label = _build_verdict_openai_client(
         model=model,

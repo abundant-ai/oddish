@@ -8,6 +8,7 @@ from oddish.analyze.models import (
 )
 from oddish.analyze.classifier import (
     TrialClassifier,
+    build_verdict_prompt,
     classify_trial,
     compute_task_verdict,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "TaskVerdict",
     "TrialClassification",
     "TrialClassifier",
+    "build_verdict_prompt",
     "classify_trial",
     "compute_task_verdict",
 ]
