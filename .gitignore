@@ -54,3 +54,14 @@ frontend/playwright/.cache/
 .superpowers/
 /ABI-69-notes.md
 /.junie/
+
+# Sauron -> Oddish migration run artifacts (temporary; remove with the leg_* scripts).
+# These are per-shard stdout/stderr from legacy_transfer runs and watchdog logs,
+# regenerated on every run -- never part of the committed record.
+shard*.log
+*_shard*.log
+shard*.err
+*_shard*.err
+migration_watchdog.log
+*.log.*.bak
+*.err.*.bak
