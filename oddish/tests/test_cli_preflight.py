@@ -107,3 +107,26 @@ def test_run_force_proceeds_and_still_prints_findings(make_task, monkeypatch):
     # Getting past the gate is proved by the sentinel firing.
     assert "reached upload" in str(result.exception)
     assert "provenance" in result.output
+
+
+def test_run_json_gate_emits_no_json_blob_of_its_own(make_task, monkeypatch):
+    # `run --json` owns its single stdout JSON document. The preflight gate must
+    # NOT print its own {"ok":...} blob, or the two would concatenate on stdout
+    # and break json.loads. A clean task passes the gate silently; we stop at the
+    # upload sentinel, before run() emits its own JSON, and assert the gate wrote
+    # no JSON at all.
+    task_dir = make_task(extra_files={"environment/.dockerignore": "**/.git\n"})
+    _stub_run_preamble(monkeypatch)
+
+    def _sentinel(*a, **k):
+        raise RuntimeError("reached upload")
+
+    monkeypatch.setattr(run_module, "upload_tasks_with_progress", _sentinel)
+
+    result = runner.invoke(
+        app, ["run", str(task_dir), "--agent", "claude-code", "--json"]
+    )
+    assert "reached upload" in str(result.exception)  # passed the gate
+    # The gate contributed no JSON document to stdout.
+    assert '"ok"' not in result.output
+    assert '"findings"' not in result.output
