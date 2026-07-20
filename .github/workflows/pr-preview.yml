@@ -354,16 +354,18 @@ jobs:
 
           if [ "$backend_required" = "true" ]; then
             readiness_url="${BACKEND_API_URL%/}/openapi.json"
-            for attempt in $(seq 1 36); do
+            # --max-time must outlast a backend cold start (~30s+); a shorter
+            # one abandons every attempt mid-boot so no retry count can pass.
+            for attempt in $(seq 1 12); do
               body_file="$(mktemp)"
-              status="$(curl --silent --output "$body_file" --write-out '%{http_code}' --max-time 10 "$readiness_url" || true)"
+              status="$(curl --silent --output "$body_file" --write-out '%{http_code}' --max-time 120 "$readiness_url" || true)"
               if [ "$status" = "200" ] && [ -s "$body_file" ]; then
                 rm -f "$body_file"
                 echo "- Backend preview is ready: $readiness_url" >> "$GITHUB_STEP_SUMMARY"
                 break
               fi
               rm -f "$body_file"
-              if [ "$attempt" = "36" ]; then
+              if [ "$attempt" = "12" ]; then
                 fail "Preview backend never became ready at $readiness_url."
               fi
               sleep 5
