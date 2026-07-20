@@ -207,9 +207,15 @@ Scoped to the Docker build context (`environment/`), the only place a fetch can
 bake into the agent's image. Scan `environment/Dockerfile` and every `*.sh`
 under `environment/` for:
 
-- `git clone`, `git fetch`
-- `pip install git+…`
-- archive URLs: `*/archive/*.tar.gz`, `codeload.github.com`, release tarballs
+- `git clone` (including `git lfs clone`), `git fetch`
+- any package manager's `git+<scheme>://…` dependency (matched by URL scheme, so
+  `pip install git+…`, `npm install git+…`, `yarn add git+…` all fire — one rule
+  instead of an enumeration of tools)
+- archive URLs: `*/archive/*.tar.gz`, `*/tarball/<ref>`, `codeload.github.com`
+
+A trailing comment is stripped before matching, so a line that merely mentions a
+fetch in a comment does not false-positive; the `# provenance-ok:` suppression is
+read from the full line first, so it still works.
 
 It deliberately does **not** scan `solution/solve.sh` or `tests/test.sh`. Harbor
 runs those in the oracle and verify phases, which execute after and outside the
@@ -249,6 +255,14 @@ context can enter the image, so only a `.git` there can reach the agent.
 - **Warn** if no `.git` is present under `environment/` and no `.dockerignore`
   excludes it — the leak is latent rather than live, and a future `COPY` of a
   git checkout would go unnoticed.
+
+The `.dockerignore` consulted is `environment/.dockerignore`, **not** the task
+root. Docker reads `.dockerignore` from the build-context root, and Harbor sets
+the context to `environment/` — Harbor does no `.dockerignore` relocation (its
+source contains zero references to the filename). Reading a task-root
+`.dockerignore` would give false confidence: a `.git` it appears to exclude
+would still ship, because the real build never consults that file. This was a
+Critical bug in an earlier draft, caught in review.
 
 Any `.git` elsewhere in the task directory is ignored: Docker refuses paths
 outside the build context, so it provably cannot be baked in. Flagging it would
