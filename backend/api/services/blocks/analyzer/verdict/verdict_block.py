@@ -59,6 +59,12 @@ class VerdictBlock(Block):
                 "formatter": lambda _d: vp.verdict_section(
                     self.classifications, self.baseline, self.quality_check_passed
                 ),
+                # Pass the sentinel explicitly rather than relying on
+                # render_section's default text. Otherwise build_prompt's guard
+                # is matching a string it only *duplicates* from Block, and an
+                # upstream edit to that default would silently stop the match --
+                # reopening the placeholder hole with no test failing.
+                "fallback": _FALLBACK_SENTINEL,
             },
         ]
 
