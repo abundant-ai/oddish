@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-20]
+
+### Changed
+
+- QA verdict synthesis now defaults to the shared analysis model (`claude-sonnet-5`) instead of a dedicated OpenAI verdict model, deprecating the `VERDICT_MODEL = "gpt-5.4"` constant. Claude ids route the verdict call through the Claude CLI with a `--json-schema` structured output — the same binary, auth routing, and JSON contract the trial classifier uses — while a non-Claude `ODDISH_VERDICT_MODEL` override keeps the OpenAI / Azure OpenAI client path. `get_qa_queue_key()` stays keyed off `verdict_model`, so the QA/analyzer concurrency bucket now coincides with the analysis queue key `anthropic/claude-sonnet-5` and its raised 128 lease by default (#806).
+
+---
+
 ## [2026-07-18]
 
 ### Changed
