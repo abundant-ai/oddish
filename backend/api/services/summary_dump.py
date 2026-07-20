@@ -13,6 +13,7 @@ a stale summary instead of exercising a revised taxonomy.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -84,6 +85,39 @@ async def resolve_cohort(
     return filter_fetchable(rows, limit=limit)
 
 
+def failed_record(trial, task_context, *, model: str, error: str) -> dict:
+    """Record for a trial that never got far enough to have a block.
+
+    The harness contract is one record per attempted trial, so a failure with
+    no block is still data. Fields are read defensively -- the very shapes that
+    raise here are the ones likeliest to be missing attributes.
+    """
+    from api.services.summarize_trajectory import SCHEMA_VERSION
+
+    task = getattr(trial, "task", None)
+    return {
+        "trial_id": getattr(trial, "id", None),
+        "task_name": (
+            getattr(task_context, "task_name", None)
+            if task_context is not None
+            else getattr(task, "name", None)
+        ),
+        "final_reward": (
+            getattr(task_context, "final_reward", None)
+            if task_context is not None
+            else getattr(trial, "reward", None)
+        ),
+        "model": model,
+        "schema_version": SCHEMA_VERSION,
+        "status": "failed",
+        "duration_s": None,
+        "error": error,
+        "prompt": None,
+        "raw": "",
+        "summary": None,
+    }
+
+
 async def summarize_trial(
     trial,
     trajectory: dict,
@@ -95,18 +129,31 @@ async def summarize_trial(
 ) -> dict:
     """Run the summary block for one trial and return its full record.
 
-    Never raises for a trial-level failure: a failed block still yields a
-    record carrying ``status``, ``error``, and whatever ``raw`` accumulated.
+    Never raises for a trial-level failure (cancellation excepted): a failure
+    yields a record carrying ``status``, ``error``, and whatever ``raw``
+    accumulated -- including failures raised before a block even exists.
     """
     from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
     from api.services.summarize_trajectory import SCHEMA_VERSION, build_summary_block
+    from oddish.db.models import JobStatus
 
     owned = client is None
-    # max_tokens=2048 matches generate()'s production cap.
-    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
-    block = build_summary_block(
-        trajectory, task_context, analyzer_id=trial.id, model=model, client=llm,
-    )
+    llm = None
+    try:
+        # max_tokens=2048 matches generate()'s production cap.
+        llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
+        block = build_summary_block(
+            trajectory, task_context, analyzer_id=trial.id, model=model, client=llm,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # A malformed trajectory raises in build_prompt(), before any block
+        # exists to carry the error -- synthesize the record instead.
+        if owned and llm is not None:
+            with contextlib.suppress(Exception):
+                await llm.aclose()
+        return failed_record(trial, task_context, model=model, error=repr(exc))
 
     if not persist:
         async def _noop(*_a, **_k):
@@ -115,19 +162,31 @@ async def summarize_trial(
         block.save_to_db = _noop  # type: ignore[method-assign]
 
     summary: dict | None = None
+    harness_error: str | None = None
     try:
         out = await block.run()
         summary = out.output
     except asyncio.CancelledError:
         # Cancellation is not a trial-level failure -- never swallow it.
         raise
-    except Exception:
-        # block.run() already recorded status/error and re-raised; the record
-        # below carries them, so a bad trial does not abort the cohort.
-        pass
+    except Exception as exc:
+        # block.run() usually recorded status/error before re-raising, but not
+        # when its own finally raised (e.g. _persist's utf-8 encode on a lone
+        # surrogate) -- keep the exception so that case is not reported clean.
+        harness_error = repr(exc)
     finally:
         if owned:
-            await llm.aclose()
+            try:
+                await llm.aclose()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                harness_error = harness_error or repr(exc)
+
+    error = block.error or harness_error
+    status = block.status
+    if status == JobStatus.SUCCESS and (summary is None or error is not None):
+        status = JobStatus.FAILED
 
     return {
         "trial_id": trial.id,
@@ -135,9 +194,9 @@ async def summarize_trial(
         "final_reward": task_context.final_reward,
         "model": model,
         "schema_version": SCHEMA_VERSION,
-        "status": block.status.value,
+        "status": status.value,
         "duration_s": block.job_duration_seconds,
-        "error": block.error,
+        "error": error,
         "prompt": block.prompt,
         "raw": "".join(block._chunks),
         "summary": summary,
@@ -168,17 +227,30 @@ async def run_cohort(
     )
     print(f"resolved {len(cohort)} trials: {', '.join(t.id for t in cohort)}")
 
-    prepared = []
+    # One slot per attempted trial, filled in cohort order. A prep failure
+    # occupies its slot immediately; summarized trials claim theirs below.
+    slots: list[dict | None] = []
+    prepared: list[tuple[int, object, dict, object]] = []
     for trial in cohort:
-        trajectory = await read_trial_trajectory(trial)
-        if trajectory is None:
-            print(f"  skip {trial.id}: no fetchable trajectory")
+        try:
+            trajectory = await read_trial_trajectory(trial)
+            # None means "no trajectory", not an error -- skip, don't record.
+            if trajectory is None:
+                print(f"  skip {trial.id}: no fetchable trajectory")
+                continue
+            ctx = await build_task_context(trial)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"  {trial.id}: prep failed: {exc!r}")
+            slots.append(failed_record(trial, None, model=model, error=repr(exc)))
             continue
-        prepared.append((trial, trajectory, await build_task_context(trial)))
+        prepared.append((len(slots), trial, trajectory, ctx))
+        slots.append(None)
 
     sem = asyncio.Semaphore(MAX_CONCURRENCY)
 
-    async def _one(trial, trajectory, ctx) -> dict:
+    async def _one(_idx, trial, trajectory, ctx) -> dict:
         async with sem:
             record = await summarize_trial(
                 trial, trajectory, ctx, model=model, persist=persist,
@@ -186,4 +258,17 @@ async def run_cohort(
             print(f"  {record['trial_id']}: {record['status']}")
             return record
 
-    return list(await asyncio.gather(*(_one(*p) for p in prepared)))
+    outcomes = await asyncio.gather(
+        *(_one(*p) for p in prepared), return_exceptions=True
+    )
+    for (idx, trial, _traj, ctx), outcome in zip(prepared, outcomes):
+        if isinstance(outcome, asyncio.CancelledError):
+            raise outcome
+        if isinstance(outcome, BaseException):
+            # summarize_trial is meant never to raise; belt-and-braces so a
+            # regression there costs one record, not the whole cohort.
+            slots[idx] = failed_record(trial, ctx, model=model, error=repr(outcome))
+        else:
+            slots[idx] = outcome
+
+    return [r for r in slots if r is not None]

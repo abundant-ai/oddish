@@ -315,3 +315,221 @@ async def test_summarize_trial_does_not_persist_by_default(monkeypatch):
 
     s3.assert_not_awaited()
     db.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_persists_when_persist_is_true(monkeypatch):
+    """Counterpart to the persist=False test: an implementation that always
+    stubbed the savers would satisfy that one alone."""
+    from unittest.mock import AsyncMock
+
+    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summary_dump import summarize_trial
+
+    s3 = AsyncMock()
+    db = AsyncMock()
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", s3)
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", db)
+
+    record = await summarize_trial(
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=True,
+        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+    )
+
+    assert record["status"] == "success"
+    s3.assert_awaited_once()
+    db.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_propagates_cancellation():
+    import asyncio
+
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summary_dump import summarize_trial
+
+    with pytest.raises(asyncio.CancelledError):
+        await summarize_trial(
+            _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
+            client=FakeAnalyzerLLMClient(exc=asyncio.CancelledError()),
+        )
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_records_failure_raised_before_the_block_exists():
+    """A trajectory that isn't a dict is rejected by TrajectoryInput inside
+    build_summary_block -- before any block exists to carry status/error.
+    That must still be a record, not an exception."""
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summary_dump import summarize_trial
+
+    record = await summarize_trial(
+        _summary_trial(), ["not", "a", "dict"], _ctx(),
+        model="claude-opus-4-8", persist=False,
+        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+    )
+
+    assert record["trial_id"] == "tr_a"
+    assert record["task_name"] == "my-task"
+    assert record["status"] == "failed"
+    assert record["error"] is not None
+    assert record["prompt"] is None
+    assert record["raw"] == ""
+    assert record["summary"] is None
+    assert record["duration_s"] is None
+
+
+def _surrogate_payload() -> str:
+    """Valid JSON whose text carries a lone surrogate: parses fine, but
+    _persist's utf-8 encode raises -- from run()'s finally, after SUCCESS."""
+    return _payload().replace("Fixed it.", "Fixed it." + "\ud800")
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_never_reports_success_without_a_summary():
+    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from api.services.summary_dump import summarize_trial
+
+    record = await summarize_trial(
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
+        client=FakeAnalyzerLLMClient(chunks=[_surrogate_payload()]),
+    )
+
+    assert record["summary"] is None
+    assert record["status"] == "failed"
+    assert record["error"] is not None
+    assert "UnicodeEncodeError" in record["error"]
+
+
+# ---------------------------------------------------------------------------
+# run_cohort -- no DB, no S3: resolve_cohort / trajectory / context are stubbed.
+# ---------------------------------------------------------------------------
+
+
+class _FakePromptClient:
+    """Stands in for ApiAnalyzerLLMClient. The prompt carries the task name, so
+    a per-trial verdict can be keyed off it without ordering assumptions."""
+
+    def __init__(self, *, model=None, max_tokens=None):
+        pass
+
+    async def stream(self, prompt):
+        yield "not json at all" if "task-bad" in prompt else _payload()
+
+    async def aclose(self):
+        return None
+
+
+def _cohort_trial(trial_id, task_name):
+    return SimpleNamespace(
+        id=trial_id, reward=1.0, task=SimpleNamespace(name=task_name)
+    )
+
+
+def _stub_cohort(monkeypatch, cohort, *, prep_raises_for=()):
+    import api.services.blocks.analyzer.analyzer_llm_client as llm_mod
+    import api.services.summarize_trajectory as st
+    import api.services.summary_dump as sd
+    import oddish.core.trial_io as trial_io
+
+    async def _resolve(_session, **_kw):
+        return cohort
+
+    async def _read(trial):
+        if trial.id in prep_raises_for:
+            raise RuntimeError(f"s3 blew up for {trial.id}")
+        return _traj()
+
+    async def _ctx_for(trial):
+        return TaskContext(
+            task_name=trial.task.name, instruction=None, final_reward=1.0,
+            model_used="claude-opus-4-8", verifier_output=None,
+        )
+
+    monkeypatch.setattr(sd, "resolve_cohort", _resolve)
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _read)
+    monkeypatch.setattr(st, "build_task_context", _ctx_for)
+    monkeypatch.setattr(llm_mod, "ApiAnalyzerLLMClient", _FakePromptClient)
+
+
+@pytest.mark.asyncio
+async def test_run_cohort_one_failing_trial_does_not_abort_the_cohort(monkeypatch):
+    from api.services.summary_dump import run_cohort
+
+    cohort = [
+        _cohort_trial("tr-1", "task-good"),
+        _cohort_trial("tr-2", "task-bad"),
+        _cohort_trial("tr-3", "task-good"),
+    ]
+    _stub_cohort(monkeypatch, cohort)
+
+    records = await run_cohort(None, experiment="exp1", model="claude-opus-4-8")
+
+    assert [r["trial_id"] for r in records] == ["tr-1", "tr-2", "tr-3"]
+    assert [r["status"] for r in records] == ["success", "failed", "success"]
+    assert records[1]["raw"] == "not json at all"
+
+
+@pytest.mark.asyncio
+async def test_run_cohort_survives_summarize_trial_raising(monkeypatch):
+    """Defense in depth for the un-guarded gather: even if summarize_trial
+    regressed to raising, the other trials' records must survive."""
+    import api.services.summary_dump as sd
+    from api.services.summary_dump import run_cohort
+
+    cohort = [_cohort_trial(f"tr-{i}", "task-good") for i in (1, 2, 3)]
+    _stub_cohort(monkeypatch, cohort)
+
+    async def _boom(trial, *_a, **_kw):
+        if trial.id == "tr-2":
+            raise RuntimeError("summarize_trial regressed")
+        return {"trial_id": trial.id, "status": "success"}
+
+    monkeypatch.setattr(sd, "summarize_trial", _boom)
+
+    records = await run_cohort(None, experiment="exp1", model="claude-opus-4-8")
+
+    assert [r["trial_id"] for r in records] == ["tr-1", "tr-2", "tr-3"]
+    assert records[1]["status"] == "failed"
+    assert "summarize_trial regressed" in records[1]["error"]
+
+
+@pytest.mark.asyncio
+async def test_run_cohort_prep_failure_yields_a_record_and_continues(monkeypatch):
+    from api.services.summary_dump import run_cohort
+
+    cohort = [
+        _cohort_trial("tr-1", "task-good"),
+        _cohort_trial("tr-2", "task-good"),
+        _cohort_trial("tr-3", "task-good"),
+    ]
+    _stub_cohort(monkeypatch, cohort, prep_raises_for={"tr-2"})
+
+    records = await run_cohort(None, experiment="exp1", model="claude-opus-4-8")
+
+    # In cohort order, with the prep failure holding its own slot.
+    assert [r["trial_id"] for r in records] == ["tr-1", "tr-2", "tr-3"]
+    assert [r["status"] for r in records] == ["success", "failed", "success"]
+    assert "s3 blew up for tr-2" in records[1]["error"]
+    assert records[1]["task_name"] == "task-good"
+    assert records[1]["prompt"] is None
+    assert records[1]["summary"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_cohort_skips_trials_with_no_trajectory_without_recording(monkeypatch):
+    import oddish.core.trial_io as trial_io
+    from api.services.summary_dump import run_cohort
+
+    cohort = [_cohort_trial("tr-1", "task-good"), _cohort_trial("tr-2", "task-good")]
+    _stub_cohort(monkeypatch, cohort)
+
+    async def _read(trial):
+        return None if trial.id == "tr-2" else _traj()
+
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _read)
+
+    records = await run_cohort(None, experiment="exp1", model="claude-opus-4-8")
+
+    assert [r["trial_id"] for r in records] == ["tr-1"]
