@@ -13,12 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
-# Previews run with min_containers=0, so the probe pays a full cold start --
-# and when Modal has no CPU worker free the function sits in the scheduler
-# ("waiting to be scheduled ... acquiring more capacity") with no container and
-# no logs. That queue wait alone has exceeded 3 minutes, which read as a dead
-# backend even though the app came up healthy shortly after CI gave up.
-TIMEOUT_S = 600
+TIMEOUT_S = 180
 POLL_INTERVAL_S = 5
 
 
