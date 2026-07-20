@@ -1,11 +1,11 @@
 """Dev harness: run the trajectory-SUMMARY AnalyzerBlock for a single trial.
 
 Entry point is the *first (and only) AnalyzerBlock* of the generate-summary
-process — the same block `summarize_trajectory.generate()` builds: a
-`TrajectoryBlock` supplies the prompt + `to_summary` parser, and an
-`AnalyzerBlock` (API backend) streams it and self-persists to `analyzer_blocks`
-+ S3. This script wires that block by hand so you can inspect the block object
-(status / id / output / error / duration), not just the returned dict.
+process. It reuses `summarize_trajectory.build_summary_block` — the single
+construction site shared with `generate()` — so this harness can't drift from
+production in prompt / parser / block metadata. Running the block directly (not
+`get_or_generate_summary`) also bypasses the cache, so a revised taxonomy is
+actually exercised instead of returning a same-schema cached summary.
 
 Set TRIAL_ID below, then run from the backend package (its uv env has `oddish`
 + `api.services` importable) with prod DB + S3 + Anthropic creds in the env:
@@ -29,21 +29,12 @@ import json
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from api.services.blocks.analyzer.analyzer_block import (
-    AnalyzerBlock,
-    AnalyzerInput,
-    AnalyzerType,
+from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+from api.services.summarize_trajectory import (
+    build_summary_block,
+    build_task_context,
+    resolve_summary_model,
 )
-from api.services.blocks.analyzer.analyzer_llm_client import (
-    ApiAnalyzerLLMClient,
-    LLMClientType,
-)
-from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
-    TrajectoryBlock,
-    TrajectoryInput,
-)
-from api.services.summarize_trajectory import SCHEMA_VERSION, build_task_context
-from oddish.config import settings, to_anthropic_api_model_id
 from oddish.core.trial_io import read_trial_trajectory
 from oddish.db import get_session
 from oddish.db.models import TrialModel
@@ -51,14 +42,12 @@ from oddish.db.models import TrialModel
 # ---- configure me -----------------------------------------------------------
 TRIAL_ID = "REPLACE_WITH_A_TRIAL_ID"
 DRY_RUN = True   # True = don't persist the analyzer_blocks row / S3 object
-MODEL_OVERRIDE: str | None = None  # None -> settings.analysis_model
+MODEL_OVERRIDE: str | None = None  # None -> resolve_summary_model()
 # -----------------------------------------------------------------------------
 
 
 def _model() -> str:
-    if MODEL_OVERRIDE:
-        return MODEL_OVERRIDE
-    return to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
+    return MODEL_OVERRIDE or resolve_summary_model()
 
 
 async def run() -> None:
@@ -86,24 +75,9 @@ async def run() -> None:
           f"reward={task_context.final_reward}  steps={len(trajectory.get('steps') or [])}")
 
     model = _model()
-    tb = TrajectoryBlock(TrajectoryInput(
-        task_name=task_context.task_name,
-        instruction=task_context.instruction,
-        final_reward=task_context.final_reward,
-        model_used=task_context.model_used,
-        verifier_output=task_context.verifier_output,
-        trajectory=trajectory,
-    ))
     llm = ApiAnalyzerLLMClient(model=model, max_tokens=2048)
-    block = AnalyzerBlock(
-        analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
-        llm_client_type=LLMClientType.API,
-        input=AnalyzerInput(input={"trial_id": TRIAL_ID, "task_name": task_context.task_name}),
-        prompt=tb.build_prompt(),
-        analyzer_id=TRIAL_ID,
-        block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
-        output_transform=lambda raw: tb.to_summary(raw, model=model),
-        client=llm,
+    block = build_summary_block(
+        trajectory, task_context, analyzer_id=TRIAL_ID, model=model, client=llm,
     )
 
     if DRY_RUN:
