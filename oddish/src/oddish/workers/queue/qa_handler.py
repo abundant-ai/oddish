@@ -12,6 +12,7 @@ from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
+    TaskStatus,
     TrialModel,
     TrialStatus,
     VerdictStatus,

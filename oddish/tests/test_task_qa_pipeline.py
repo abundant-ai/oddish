@@ -400,6 +400,66 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_task_qa_job_completes_with_no_live_trials(monkeypatch):
+    """Zero QA-eligible live trials must complete the task with a TERMINAL
+    verdict_status.
+
+    Regression test: this branch references ``TaskStatus``, and a cherry-pick
+    once dropped that import from qa_handler while the branch still used it,
+    raising NameError at runtime. QaJobHandler maps verdict_status=SUCCESS ->
+    ok() and everything else (including a NameError leaving it unset) ->
+    retryable failure, so that NameError would burn every retry and land the
+    job FAILED for what is not an error. See the long comment above the
+    ``if not live_trials:`` branch in qa_handler.py.
+    """
+    task = SimpleNamespace(
+        id="task-15",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    session = _QASession(task=task, trials=[])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return []
+
+    async def fail_classify(_trial_id, should_store=None):
+        raise AssertionError("must not classify when there are no live trials")
+
+    async def fail_verdict_synth(*_args, **_kwargs):
+        raise AssertionError("verdict synthesis must not run with no live trials")
+
+    def fail_compute_verdict(**_kwargs):
+        raise AssertionError("verdict synthesis must not run with no live trials")
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "classify_trial_and_store", fail_classify)
+    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fail_compute_verdict)
+
+    await qa_handler.run_task_qa_job(
+        "task-15", queue_key="qa", verdict_synth_fn=fail_verdict_synth
+    )
+
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.verdict is None
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict_finished_at is not None
+    assert task.finished_at is not None
+
+
+@pytest.mark.asyncio
 async def test_run_task_qa_job_skips_when_already_terminal(monkeypatch):
     task = SimpleNamespace(
         id="task-10",
