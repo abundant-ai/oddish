@@ -27,6 +27,8 @@ param(
     [int]$Refresh = 0          # seconds; 0 = print once and exit
 )
 
+$script:PrevSamples = @{}
+
 function Show-Status {
     param([string]$Pattern)
 
@@ -71,44 +73,49 @@ function Show-Status {
         }
 
         if ($prog) {
-            # Take the last TWO progress lines and difference them.
-            #
-            # The rate printed in the log is CUMULATIVE from the shard's t0,
-            # which starts before the experiment pre-create -- so on harbor-forge
-            # it averages in ~40 minutes of zero progress and badly understates
-            # the truth. Each line gives done and cumulative rate, so elapsed is
-            # done/rate. Differencing two points cancels the t0 offset entirely
-            # and yields the real current rate, from logs already on disk.
-            $last2 = $lines | Select-String -Pattern "^\s+progress" | Select-Object -Last 2
             $m = [regex]::Match($prog.Line, "progress (\d+)/(\d+)\s+rate=([\d.]+).*?(\d+) errors")
             if ($m.Success) {
                 $d = [int]$m.Groups[1].Value
-                $t = [int]$m.Groups[2].Value
-                $rCum = [double]$m.Groups[3].Value
                 $e = [int]$m.Groups[4].Value
 
-                $r = $rCum          # fall back to cumulative if we only have one point
+                # Measure the rate against the REAL clock between samples.
+                #
+                # Two earlier attempts were wrong. The log's own rate= is
+                # cumulative from a t0 that starts before the ~40 minute
+                # experiment pre-create, so it understates badly. Deriving
+                # elapsed as done/rate and differencing two log lines cancels
+                # that offset in theory, but rate is printed to two decimals and
+                # elapsed is ~4000s, so rounding moves it by ~11s against a real
+                # gap of ~55s -- adverse rounding collapses the gap and the rate
+                # explodes (it reported 40/s for a shard doing ~2/s).
+                #
+                # Sampling done against Get-Date needs no derivation and cannot
+                # be destabilised by the log's precision.
+                $r = 0.0
                 $inst = $false
-                if ($last2.Count -eq 2) {
-                    $m1 = [regex]::Match($last2[0].Line, "progress (\d+)/\d+\s+rate=([\d.]+)")
-                    if ($m1.Success) {
-                        $d1 = [double]$m1.Groups[1].Value; $r1 = [double]$m1.Groups[2].Value
-                        $d2 = [double]$d;                  $r2 = $rCum
-                        if ($r1 -gt 0 -and $r2 -gt 0) {
-                            $t1 = $d1 / $r1
-                            $t2 = $d2 / $r2
-                            if ($t2 -gt $t1) { $r = ($d2 - $d1) / ($t2 - $t1); $inst = $true }
-                        }
+                $prev = $script:PrevSamples[$log.Name]
+                if ($prev) {
+                    $dt = ((Get-Date) - $prev.At).TotalSeconds
+                    if ($dt -ge 5 -and $d -ge $prev.Done) {
+                        $r = ($d - $prev.Done) / $dt
+                        $inst = $true
                     }
                 }
+                $script:PrevSamples[$log.Name] = @{ Done = $d; At = (Get-Date) }
 
                 $done += $d; $errors += $e
-                if ($shardTotal -gt 0) { $total += $shardTotal } else { $total += $t }
+                if ($shardTotal -gt 0) { $total += $shardTotal } else { $total += [int]$m.Groups[2].Value }
+
                 $state = "running"
-                if (-not $inst) { $state = "running (cumulative rate)" }
-                if ($doneLine) { $state = "DONE"; $finished++ } else { $rate += $r; $running++ }
-                Write-Host ("{0,-22} {1,10} {2,10} {3,9:N2} {4,8}  {5}{6}" -f `
-                            $log.Name, $d, $t, $r, $e, $state, $suffix)
+                if (-not $inst) { $state = "running (measuring...)" }
+                if ($doneLine) { $state = "DONE"; $finished++ }
+                elseif ($inst) { $rate += $r; $running++ }
+                else { $running++ }
+
+                $rateTxt = "-"
+                if ($inst) { $rateTxt = "{0:N2}" -f $r }
+                Write-Host ("{0,-22} {1,10} {2,10} {3,9} {4,8}  {5}{6}" -f `
+                            $log.Name, $d, $shardTotal, $rateTxt, $e, $state, $suffix)
                 continue
             }
         }
