@@ -64,6 +64,12 @@ const navSwitcherAppearance = {
   },
 };
 
+/**
+ * @deprecated Agents and Analyzers are no longer shown in the primary header.
+ * Keep their links here while the legacy routes remain directly accessible.
+ */
+const SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV = false;
+
 export function Nav() {
   const pathname = usePathname();
   const { user, isLoaded, isSignedIn } = useUser();
@@ -131,36 +137,42 @@ export function Nav() {
                 <span>Tasks</span>
               </Link>
             </Button>
-            <Button
-              variant={pathname.startsWith("/qa") ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/qa"
-                className="flex items-center gap-2"
-                data-active={pathname.startsWith("/qa")}
-              >
-                <SearchCheck className="h-4 w-4" />
-                <span>Agents</span>
-              </Link>
-            </Button>
-            <Button
-              variant={pathname.startsWith("/analyzers") ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/analyzers"
-                className="flex items-center gap-2"
-                data-active={pathname.startsWith("/analyzers")}
-              >
-                <FileBarChart className="h-4 w-4" />
-                <span>Analyzers</span>
-              </Link>
-            </Button>
+            {SHOW_DEPRECATED_AGENT_AND_ANALYZER_NAV && (
+              <>
+                <Button
+                  variant={pathname.startsWith("/qa") ? "secondary" : "ghost"}
+                  size="sm"
+                  asChild
+                  className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+                >
+                  <Link
+                    href="/qa"
+                    className="flex items-center gap-2"
+                    data-active={pathname.startsWith("/qa")}
+                  >
+                    <SearchCheck className="h-4 w-4" />
+                    <span>Agents</span>
+                  </Link>
+                </Button>
+                <Button
+                  variant={
+                    pathname.startsWith("/analyzers") ? "secondary" : "ghost"
+                  }
+                  size="sm"
+                  asChild
+                  className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+                >
+                  <Link
+                    href="/analyzers"
+                    className="flex items-center gap-2"
+                    data-active={pathname.startsWith("/analyzers")}
+                  >
+                    <FileBarChart className="h-4 w-4" />
+                    <span>Analyzers</span>
+                  </Link>
+                </Button>
+              </>
+            )}
             <Button
               variant={pathname === "/leaderboard" ? "secondary" : "ghost"}
               size="sm"
