@@ -48,12 +48,12 @@ def patched(monkeypatch):
     async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
         calls.append({"bucket": bucket, "cohort": [sa.trial_id for sa in cohort]})
         if bucket == "bad":
-            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}
+            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}, ([], "")
         return [_finding("good-1", "good")], {
             "good_failure_content": "# Good",
             "universal_capabilities_content": "# Caps",
             "headroom_analysis": "# Head",
-        }
+        }, ([], "")
 
     monkeypatch.setattr(m, "run_cohort", fake_run_cohort)
     monkeypatch.setattr(m, "_read_cli_source", lambda: b"cli")
@@ -149,7 +149,7 @@ async def test_failure_waits_for_siblings_to_tear_down(patched, monkeypatch):
             raise RuntimeError("sandbox exploded")
         await asyncio.sleep(0.05)
         good_finished = True
-        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}
+        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}, ([], "")
 
     monkeypatch.setattr(m, "run_cohort", flaky)
     with pytest.raises(RuntimeError, match="sandbox exploded"):
@@ -188,7 +188,7 @@ async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch
     )
 
     async def empty(client, runtime, *, bucket, cohort, **kw):
-        return [], {"bad_failure_content": ""}
+        return [], {"bad_failure_content": ""}, ([], "")
 
     monkeypatch.setattr(m, "run_cohort", empty)
     with pytest.raises(RuntimeError, match="no findings"):

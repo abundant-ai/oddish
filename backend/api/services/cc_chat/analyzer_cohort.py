@@ -109,7 +109,8 @@ async def run_cohort(
     api_key: str,
     cli_src: bytes,
     models_by_task: dict[str, list[str]] | None = None,
-) -> tuple[list[Finding], dict[str, str]]:
+    denominators: dict[str, dict] | None = None,
+) -> tuple[list[Finding], dict[str, str], tuple[list[dict], str]]:
     tag = f"[analyzer {analyzer_id}][{bucket}]"
     plan = batches(cohort)
     # Retained only to serve the parse-fallback; never persisted.
@@ -175,7 +176,9 @@ async def run_cohort(
             # recreating the context blowup this batching exists to prevent.
             logger.info("%s reduce over %s", tag, FINDINGS_GLOB)
             await _turn(
-                build_reduce_only_prompt(bucket, counts, len(plan), models_by_task),
+                build_reduce_only_prompt(
+                    bucket, counts, len(plan), models_by_task, denominators
+                ),
                 "reduce",
             )
 
@@ -202,10 +205,10 @@ async def run_cohort(
             except Exception as exc:  # noqa: BLE001 — auto_delete is the backstop
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
-    findings, sections = parse_cohort_result(
+    findings, sections, by_model = parse_cohort_result(
         bucket, reduce_b, findings_b, "\n".join(stream_lines),
         # Scoped to this cohort, so a finding for someone else's trial is dropped.
         {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},
     )
     logger.info("%s done: %d findings, sections=%s", tag, len(findings), sorted(sections))
-    return findings, sections
+    return findings, sections, by_model
