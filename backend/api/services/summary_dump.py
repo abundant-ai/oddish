@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.helpers import _has_fetchable_trajectory
-from oddish.db.models import TaskModel, TrialModel
+from oddish.db.models import TaskModel, TrialModel, experiment_trials
 
 MAX_CONCURRENCY = 4
 
@@ -78,7 +78,22 @@ async def resolve_cohort(
             TaskModel.name == task
         )
     else:
-        stmt = stmt.where(TrialModel.experiment_id == experiment)
+        # Collection experiments gather existing trials into a new experiment
+        # for viewing WITHOUT moving them (see experiment_trials' comment in
+        # oddish/db/models.py), so trials.experiment_id still points at each
+        # trial's home experiment -- membership is the union of both forms.
+        # experiment_trials is a Core Table, not a mapped class, so the
+        # soft-delete auto-filter (register_soft_delete_models, ORM-only)
+        # never touches it; deleted_at is filtered explicitly here.
+        member_ids = select(TrialModel.id).where(
+            TrialModel.experiment_id == experiment
+        ).union(
+            select(experiment_trials.c.trial_id).where(
+                experiment_trials.c.experiment_id == experiment,
+                experiment_trials.c.deleted_at.is_(None),
+            )
+        )
+        stmt = stmt.where(TrialModel.id.in_(member_ids))
 
     stmt = stmt.where(TrialModel.is_probe.is_(False)).order_by(TrialModel.id.asc())
     rows = (await session.execute(stmt)).scalars().all()
