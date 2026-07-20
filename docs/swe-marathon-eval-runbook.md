@@ -12,8 +12,11 @@ Harbor `ExceptionGroup`) is **not** valid; delete and rerun those.
 
 ## 0. Prereqs / setup
 
-1. `git pull` both `oddish` and `swe-marathon` (tasks live in
-   `swe-marathon/tasks/<name>/task.toml`).
+1. `git pull` both `oddish` and `swe-marathon`. Treat
+   `swe-marathon/tasks/dataset.toml` as the canonical 20-task manifest (including
+   registry digests), and each `swe-marathon/tasks/<name>/task.toml` as the
+   source of truth for phase network policy, resources, and timeouts. Do not
+   reuse a task list or resource table from an older eval.
 2. Confirm the agent+model are **routed** in `oddish/src/oddish/config.py` and
    `oddish/src/oddish/workers/harbor/agent_config.py`. A new vendor needs: a
    provider prefix + queue key (`is_*_model` / `to_*_model_id`), env injection
@@ -30,17 +33,37 @@ Harbor `ExceptionGroup`) is **not** valid; delete and rerun those.
    `OPENAI_API_KEY`, not a vendor-specific name).
 4. CLI points at hosted Oddish: `ODDISH_API_URL` + `ODDISH_API_KEY`.
 
-## 1. Categorize the 20 tasks
+## 1. Confirm the current 20 tasks and execution classes
 
-From each `task.toml` `[environment]/[agent]/[verifier].network_mode` and the
-presence of a CUA verifier (`tests/cua*`):
+The current SWE-Marathon v1.1 split, derived from `tasks/dataset.toml`, each
+task's `task.toml`, and `scripts/run-benchmark.sh`, is:
 
-- **Closed-internet (7):** agent=`allowlist`, verifier=`no-network` —
-  `embedding-eval`, `kubernetes-rust-rewrite`, `nextjs-vite-rewrite`,
-  `parameter-golf`, `post-train-ifeval-gpu`, `trimul-cuda`, `zstd-decoder`.
-- **CUA verifier (4):** `excel-clone`, `mastodon-clone`, `s3-clone`,
-  `slack-clone` (browser-agent verifier on an Anthropic key).
-- **Open (9):** everything else (agent runs on public internet).
+- **Open internet (5):** `excel-clone`, `mastodon-clone`, `s3-clone`,
+  `slack-clone`, `stripe-clone`.
+  - Four use a CUA verifier: `excel-clone`, `mastodon-clone`, `s3-clone`, and
+    `slack-clone` (browser-agent verifier on an Anthropic key).
+  - `stripe-clone` is open but does not use the CUA verifier.
+- **Internet restricted (15):** `biofabric-rust-rewrite`, `embedding-eval`,
+  `find-network-alignments`, `jax-pytorch-rewrite`,
+  `kubernetes-rust-rewrite`, `nextjs-vite-rewrite`, `parameter-golf`,
+  `post-train-ifeval-gpu`, `ruby-rust-port`, `rust-c-compiler`,
+  `rust-java-lsp`, `trimul-cuda`, `vliw-kernel-optimization`, `wasm-simd`,
+  `zstd-decoder`.
+  - Most build in a public environment, then switch the agent to an allowlist
+    and the verifier to no network.
+  - `ruby-rust-port` and `rust-java-lsp` instead inherit a minimal Cargo/Rust
+    build allowlist across phases. They still count as restricted, not open.
+
+Five tasks require a GPU on Modal: `embedding-eval` (H100),
+`jax-pytorch-rewrite` (A100), `parameter-golf` (H100),
+`post-train-ifeval-gpu` (H100), and `trimul-cuda` (H100). In v1.1,
+`post-train-ifeval-gpu` replaces the old `post-train-ifeval` task; do not submit
+or export new trials under the superseded name.
+
+This classification is an operational snapshot, not a second manifest. Before
+each eval, diff it against `tasks/dataset.toml` and `scripts/run-benchmark.sh`,
+then inspect the selected task's `task.toml` for its current CPU, RAM, storage,
+GPU, timeout, and phase-specific network settings.
 
 ## 2. Submit
 
@@ -133,9 +156,12 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
 
 ## 4. Workflow (breadth → depth → babysit)
 
-1. **Validate** with 1 trial each on a representative open / patched-closed-net /
-   CUA task. Confirm: auth works (tokens climbing), trajectory captured,
-   closed-net setup succeeds, CUA verifier runs.
+1. **Validate** with 1 trial each on representative classes: open non-CUA
+   (`stripe-clone`), CUA (`slack-clone`), phase-restricted
+   (`zstd-decoder`), inherited build-allowlist (`ruby-rust-port`), and GPU
+   (`post-train-ifeval-gpu`). Confirm: auth works (tokens climbing),
+   trajectory captured, restricted-network setup succeeds, the requested GPU
+   is provisioned, and the CUA verifier runs.
 2. **Breadth** across all 20 at a small N.
 3. **Depth:** the per-eval target `N` is usually **5**, but confirm it per
    request — vendors sometimes ask for more (e.g. this Meta run used **N=8**).
