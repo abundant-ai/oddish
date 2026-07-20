@@ -506,7 +506,7 @@ class _RaisingAcloseClient:
     def __init__(self, *, model=None, max_tokens=None):
         pass
 
-    async def stream(self, prompt):
+    async def stream(self, prompt, *, system_prompt=None):
         yield _payload()
 
     async def aclose(self):
@@ -547,7 +547,7 @@ class _FakePromptClient:
     def __init__(self, *, model=None, max_tokens=None):
         pass
 
-    async def stream(self, prompt):
+    async def stream(self, prompt, *, system_prompt=None):
         yield "not json at all" if "task-bad" in prompt else _payload()
 
     async def aclose(self):
