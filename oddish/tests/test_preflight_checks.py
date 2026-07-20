@@ -236,6 +236,15 @@ def test_solution_format_is_silent_without_a_solution_dir(make_task):
     assert solution_format.check(task_dir, _config(task_dir)) == []
 
 
+def test_solution_format_ignores_a_patch_mention_in_a_trailing_comment(make_task):
+    # A comment mentioning "git apply" is not a patch application. This check has
+    # no suppression grammar, so a false positive here would be un-suppressible.
+    task_dir = make_task(
+        solve_sh="#!/bin/sh\ncp fix.py /app/  # do NOT git apply the upstream patch\n"
+    )
+    assert solution_format.check(task_dir, _config(task_dir)) == []
+
+
 from oddish.preflight.checks import anti_cheat_soundness
 
 

@@ -11,6 +11,7 @@ CHECK_ID = "solution_format"
 
 _PATCH_SUFFIXES = frozenset({".patch", ".diff"})
 _PATCH_APPLY_RE = re.compile(r"\b(?:git\s+apply|git\s+am|patch\s+-p\d)\b")
+_TRAILING_COMMENT_RE = re.compile(r"(?:^|\s)#")
 
 
 def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
@@ -43,9 +44,9 @@ def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
     if solve_sh.is_file():
         text = solve_sh.read_text(encoding="utf-8", errors="ignore")
         for lineno, line in enumerate(text.splitlines(), start=1):
-            if line.lstrip().startswith("#"):
-                continue
-            if _PATCH_APPLY_RE.search(line):
+            m = _TRAILING_COMMENT_RE.search(line)
+            code = line[: m.start()] if m else line
+            if _PATCH_APPLY_RE.search(code):
                 findings.append(
                     Finding(
                         check_id=CHECK_ID,
