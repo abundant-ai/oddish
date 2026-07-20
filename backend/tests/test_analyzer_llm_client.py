@@ -311,3 +311,28 @@ async def test_fake_client_download_file():
     assert await c._download_file("out/reduce.json") == b"{}"
     with pytest.raises(KeyError):
         await c._download_file("out/missing.jsonl")
+
+
+def test_init_signature_has_no_duplicate_parameters():
+    """Guards against a merge reintroducing a module-level SyntaxError.
+
+    #810 and #812 each added ``thinking`` to this constructor in parallel. The
+    parameter lists did not overlap textually, so git merged both cleanly into
+    a duplicate argument -- a SyntaxError that made the whole module
+    unimportable, taking every analyzer and report path down with it. Nothing
+    in the suite caught it because an unimportable module fails at collection,
+    which reads as an errored test file rather than a broken product.
+    """
+    import inspect
+
+    names = list(inspect.signature(ApiAnalyzerLLMClient.__init__).parameters)
+    assert len(names) == len(set(names)), f"duplicate parameter in {names}"
+
+
+def test_thinking_defaults_to_disabled_and_is_overridable():
+    # The dedupe had to pick one of two assignments; this pins the surviving
+    # behaviour so a future cleanup cannot silently re-enable thinking, which
+    # would spend the output budget on reasoning and truncate block JSON.
+    assert ApiAnalyzerLLMClient(api_key="k")._thinking == {"type": "disabled"}
+    explicit = {"type": "enabled", "budget_tokens": 1024}
+    assert ApiAnalyzerLLMClient(api_key="k", thinking=explicit)._thinking == explicit
