@@ -293,6 +293,7 @@ def test_format_exception_message_includes_exception_group_children():
 
 def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
@@ -362,6 +363,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
 
 def test_store_trial_results_persists_total_steps(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
@@ -446,6 +448,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.FAILED,
@@ -518,6 +521,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
 
 def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.FAILED,
@@ -1922,6 +1926,7 @@ def test_cleanup_trial_wrapper_dirs_skips_missing_base(monkeypatch, tmp_path):
 
 def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
     return SimpleNamespace(
+        id="trial-1",
         task_id="task-retry-gate",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,

@@ -483,12 +483,11 @@ async def run_harbor_trial_async(
                 agent_config=agent_config,
             )
 
-        # TODO: Temporary workaround; remove once RishiDesai/harbor has the
-        # correct fix.
         # Claude Code downloads its CLI at agent-setup and calls its model
-        # endpoint during agent.run(). On closed-internet tasks Harbor's fallback
-        # domains cover neither the installer CDN nor custom model routes, so
+        # endpoint during agent.run(). On closed-internet tasks, installer CDN
+        # hosts and custom model routes are not always in the task allowlist, so
         # allow both via the environment baseline (which spans install + run).
+        # Prefer also passing --allow-agent-host for the model API host.
         if "claude-code" in (agent or "").strip().lower():
             hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
             base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")

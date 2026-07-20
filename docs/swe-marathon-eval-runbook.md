@@ -47,12 +47,17 @@ presence of a CUA verifier (`tests/cua*`):
 ```bash
 oddish run -p <task-dir> --agent <agent> --model <provider/model> \
   --n-trials <N> --experiment <exp-id-or-name> -e modal --json \
-  [--override-memory-mb <MB>] [--agent-kwarg k=v] [--ae ENV=VAL]
+  [--override-memory-mb <MB>] [--agent-kwarg k=v] [--ae ENV=VAL] \
+  [--allow-agent-host <model-host>] [--disable-web-tools]
 ```
 
 - Always `-e modal`. First `--experiment <name>` submission creates the
   experiment; reuse the id (e.g. `a52b8b51`) afterwards.
 - `--ae ODDISH_EVAL_NONCE=$(date +%s%N)` is a harmless distinct env var.
+- Closed-internet tasks should pass the model host and disable web tools,
+  matching swe-marathon `scripts/run-benchmark.sh`, e.g.
+  `--allow-agent-host api.anthropic.com --disable-web-tools`
+  (or `--agent-kwarg disallowed_tools="WebSearch WebFetch"` for claude-code).
 
 ## 3. Load-bearing gotchas (each cost real debugging time)
 
@@ -63,22 +68,15 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
    current count, or delete some first. (There is also a real 24h idempotency
    key = SHA-256 of the whole sweep payload; a different payload → different key.)
 
-2. **The Modal/Harbor fork cannot switch network policy between phases.** A
-   closed-internet task's intended `public` env → `allowlist` agent →
-   `no-network` verifier fails with *"cannot change network policy after start"*
-   (surfaces as a Harbor `ExceptionGroup`). **Fix:** copy the task dir and patch
-   `task.toml` so `[environment]`, `[agent]`, and `[verifier]` all use
-   `network_mode="allowlist"` with a single `allowed_hosts` list, then submit
-   `-p <patched-dir>`. Because setup now runs *under* the allowlist (not public),
-   `allowed_hosts` must include **every host the agent's install step needs**,
-   not just the model API:
-   - model API host (e.g. `api.x.ai`, `api.ai.meta.com`) + object storage
-     (`storage.googleapis.com`),
-   - tool install: `astral.sh`, `github.com`, `objects.githubusercontent.com`,
-     `raw.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`,
-   - apt (some base images `apt-get install` prereqs): `deb.debian.org`,
-     `security.debian.org`, `archive.ubuntu.com`, `security.ubuntu.com`.
-   Missing install hosts show up as agent-setup `exit 100` (apt) / `exit 2` (uv).
+2. **Closed-internet tasks need the model host + web-tool disable.** Oddish's
+   Harbor pin is based on upstream dynamic network policy, so phase switching
+   (`public` env → `allowlist` agent → `no-network` verifier) works on Modal.
+   Still pass `--allow-agent-host <model API host>` so the agent can reach the
+   provider during the allowlisted agent phase, and `--disable-web-tools` (or
+   the equivalent `--agent-kwarg`) so the agent cannot use server-side web
+   search/fetch. If a task's setup still needs package hosts under a shared
+   allowlist, include those hosts in `task.toml` / `--allow-agent-host` as
+   needed (model API, registries, apt mirrors).
 
 3. **OOM (`exit 137`).** High reasoning effort (e.g. `reasoning_effort=xhigh`) +
    heavy build/test/training commands blow past default RAM → container

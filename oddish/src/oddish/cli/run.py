@@ -485,9 +485,9 @@ def run(
             "--environment-kwarg",
             "--harbor-environment-kwarg",
             help=(
-                "Harbor environment kwarg in KEY=VALUE format, e.g. "
-                "agent_tools_image=ghcr.io/org/harbor-agent-tools:tag "
-                "(can be used multiple times)"
+                "Harbor environment kwarg in KEY=VALUE format "
+                "(can be used multiple times). For closed-internet Modal "
+                "evals prefer --allow-agent-host and --disable-web-tools."
             ),
         ),
     ] = None,
@@ -518,6 +518,28 @@ def run(
             help="Agent kwarg in key=value format (can be used multiple times)",
         ),
     ] = None,
+    allow_agent_hosts: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--allow-agent-host",
+            help=(
+                "Hostname the agent may reach during a restricted (allowlist) "
+                "agent phase, e.g. api.anthropic.com. Maps to Harbor "
+                "AgentConfig.extra_allowed_hosts (can be used multiple times)."
+            ),
+        ),
+    ] = None,
+    disable_web_tools: Annotated[
+        bool,
+        typer.Option(
+            "--disable-web-tools/--no-disable-web-tools",
+            help=(
+                "Disable the agent's server-side web tools for closed-internet "
+                "evals (claude-code: disallowed_tools=WebSearch WebFetch; "
+                "codex: web_search=disabled). Explicit --agent-kwarg values win."
+            ),
+        ),
+    ] = False,
     artifact_paths: Annotated[
         Optional[list[str]],
         typer.Option(
@@ -892,6 +914,8 @@ def run(
             environment_kwargs=environment_kwargs,
             agent_env=agent_env,
             agent_kwargs=agent_kwargs,
+            allow_agent_hosts=allow_agent_hosts,
+            disable_web_tools=disable_web_tools,
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
             content_hash=task_content_hash,
