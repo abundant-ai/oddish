@@ -354,6 +354,8 @@ class TaskSubmission(BaseModel):
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
     registry_auth: list[RegistryAuth] | None = Field(None)
+    task_metadata: TaskMetadata | None = None
+    provenance: TaskProvenance | None = None
 
     @model_validator(mode="after")
     def require_models(self):
@@ -519,6 +521,8 @@ class TaskSweepSubmission(BaseModel):
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
     registry_auth: list[RegistryAuth] | None = Field(None)
+    task_metadata: TaskMetadata | None = None
+    provenance: TaskProvenance | None = None
 
     @field_validator("github_id", mode="before")
     @classmethod
@@ -642,6 +646,45 @@ class TrialCollectionRequest(BaseModel):
 # =============================================================================
 
 
+class TaskMetadata(BaseModel):
+    """Descriptive + runtime metadata projected from task.toml."""
+
+    description: str | None = Field(default=None, max_length=8192)
+    category: str | None = Field(default=None, max_length=128)
+    category_raw: str | None = Field(default=None, max_length=128)
+    topic_tags: list[str] = Field(default_factory=list, max_length=64)
+    author_name: str | None = Field(default=None, max_length=255)
+    author_email: str | None = Field(default=None, max_length=255)
+    author_organization: str | None = Field(default=None, max_length=255)
+    expert_time_hours: float | None = Field(default=None, ge=0, le=10000)
+
+    allow_internet: bool | None = None
+    cpus: int | None = Field(default=None, ge=0, le=1024)
+    memory_mb: int | None = Field(default=None, ge=0, le=8_388_608)
+    storage_mb: int | None = Field(default=None, ge=0, le=8_388_608)
+    gpus: int | None = Field(default=None, ge=0, le=64)
+    gpu_types: list[str] = Field(default_factory=list, max_length=16)
+    agent_timeout_sec: int | None = Field(default=None, ge=0, le=1_000_000)
+    verifier_timeout_sec: int | None = Field(default=None, ge=0, le=1_000_000)
+    build_timeout_sec: int | None = Field(default=None, ge=0, le=1_000_000)
+
+
+class TaskProvenance(BaseModel):
+    """Where a task upload came from."""
+
+    source_repo: str | None = Field(default=None, max_length=255)
+    source_commit: str | None = Field(default=None, max_length=64)
+    source_ref: str | None = Field(default=None, max_length=255)
+    source_path: str | None = Field(default=None, max_length=4096)
+    ci_provider: str | None = Field(default=None, max_length=64)
+    ci_run_id: str | None = Field(default=None, max_length=64)
+    ci_run_url: str | None = Field(default=None, max_length=2048)
+    ci_pr_number: int | None = Field(default=None, ge=0)
+    uploader_is_ci: bool | None = None
+    uploader_cli_version: str | None = Field(default=None, max_length=64)
+    uploader_host: str | None = Field(default=None, max_length=255)
+
+
 class TaskUploadInitRequest(BaseModel):
     """Request to prepare a task upload."""
 
@@ -660,6 +703,8 @@ class TaskUploadInitRequest(BaseModel):
             "stamp (e.g. to flip run_analysis on)."
         ),
     )
+    task_metadata: TaskMetadata | None = None
+    provenance: TaskProvenance | None = None
 
 
 class TaskUploadCompleteRequest(BaseModel):
@@ -698,6 +743,8 @@ class TaskUploadCompleteRequest(BaseModel):
             "Defaults to LOW. Ignored when the task already exists."
         ),
     )
+    task_metadata: TaskMetadata | None = None
+    provenance: TaskProvenance | None = None
 
 
 class UploadResponse(BaseModel):
