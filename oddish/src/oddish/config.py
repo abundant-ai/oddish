@@ -1176,6 +1176,14 @@ class Settings(BaseSettings):
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
 
+    # Debounce before a settled task's QA job becomes claimable. Appends re-arm
+    # QA every round (cancel + re-enqueue), and each pass re-synthesizes the
+    # verdict over the *whole* live trial set -- O(trials) per 5-trial append on
+    # a task that has accumulated hundreds. Enqueuing the row ``available_after``
+    # this window means appends landing inside it cancel a row no worker could
+    # have claimed, so a burst collapses to one pass. 0 disables the debounce.
+    qa_coalesce_seconds: int = 180
+
     # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()
 

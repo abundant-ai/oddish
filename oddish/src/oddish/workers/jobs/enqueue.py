@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -45,6 +46,9 @@ class EnqueueRequest:
     # of the effective dispatch key: the dispatcher counts/spawns per
     # (queue_key, harbor_variant_id) and the claim is scoped to it.
     harbor_variant_id: str = "default"
+    # When set, withholds the row until this timestamp: the claim requires
+    # ``available_after <= NOW()``. Defaults to "claimable immediately".
+    available_after: datetime | None = None
 
 
 def _validated_payload(request: EnqueueRequest, validate: bool) -> dict[str, Any]:
@@ -88,7 +92,7 @@ async def enqueue_worker_job(
         payload=payload,
         attempts=0,
         max_attempts=request.max_attempts,
-        available_after=utcnow(),
+        available_after=request.available_after or utcnow(),
         org_id=request.org_id,
         harbor_variant_id=request.harbor_variant_id,
     )

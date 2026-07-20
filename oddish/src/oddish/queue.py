@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -506,11 +507,18 @@ async def enqueue_qa_worker_job(
     *,
     task_id: str,
     org_id: str | None,
+    delay_seconds: int = 0,
 ) -> WorkerJobModel:
     """Enqueue the single task-level QA job for a task.
 
     One job per task: it classifies every live trial's trajectory and then
     synthesizes the task verdict.
+
+    ``delay_seconds`` withholds the row from the claim for that long. Callers
+    on the settle path pass ``settings.qa_coalesce_seconds`` so a burst of
+    appends -- each of which cancels the pending QA row and re-arms it --
+    collapses into a single pass instead of one full verdict synthesis per
+    append. Manual reruns and heals pass 0: someone is waiting on those.
     """
     return await enqueue_worker_job(
         session,
@@ -521,6 +529,11 @@ async def enqueue_qa_worker_job(
             subject_table="tasks",
             subject_id=task_id,
             org_id=org_id,
+            available_after=(
+                utcnow() + timedelta(seconds=delay_seconds)
+                if delay_seconds > 0
+                else None
+            ),
         ),
     )
 
@@ -1398,7 +1411,16 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if task.run_analysis and qa_eligible:
         task.status = TaskStatus.VERDICT_PENDING
         task.verdict_status = VerdictStatus.QUEUED
-        await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
+        # Debounced: an append landing inside the window cancels this row
+        # before any worker could claim it, so repeated appends cost one QA
+        # pass rather than one per append. The task advances to
+        # VERDICT_PENDING immediately either way.
+        await enqueue_qa_worker_job(
+            session,
+            task_id=task_id,
+            org_id=task.org_id,
+            delay_seconds=settings.qa_coalesce_seconds,
+        )
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()

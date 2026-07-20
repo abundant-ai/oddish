@@ -161,7 +161,7 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
 
     verdict_calls: list[str] = []
 
-    async def fake_verdict_enqueue(_session, *, task_id, org_id):
+    async def fake_verdict_enqueue(_session, *, task_id, org_id, delay_seconds=0):
         verdict_calls.append(task_id)
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
