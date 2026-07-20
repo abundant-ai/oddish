@@ -470,6 +470,10 @@ if SLACK_EXPENSE_SECRET_NAME:
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
+# DEPRECATED: ODDISH_DEFAULT_MODEL_CONCURRENCY (tuning the global fallback in
+# deploy env) is superseded by per-model admin overrides (PUT /admin/concurrency,
+# Queue Health card), which take effect at runtime without a redeploy. Still
+# injected below so the fallback stays 48; setting it logs a deprecation warning.
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
 NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
 # Per-model queue-key concurrency overrides. Baked into the deploy so the

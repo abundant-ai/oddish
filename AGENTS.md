@@ -794,7 +794,8 @@ poolers such as Supavisor / PgBouncer.
 
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
-`ODDISH_DEFAULT_MODEL_CONCURRENCY` / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
+`ODDISH_DEFAULT_MODEL_CONCURRENCY` (deprecated — tune per-model limits via the
+admin override instead) / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
 `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS` / `MODAL_APP_NAME` /
 `MODAL_SECRET_ENVIRONMENT` env vars. `modal_app.py` is the
 source of truth for the full list and defaults (e.g.

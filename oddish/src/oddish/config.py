@@ -1153,7 +1153,12 @@ class Settings(BaseSettings):
     db_pool_size: ClassVar[int] = 5
 
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
-    # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
+    # values. ODDISH_DEFAULT_MODEL_CONCURRENCY is DEPRECATED: tuning the global
+    # fallback in code/deploy env is superseded by setting explicit per-model
+    # limits in the Queue Health admin card (PUT /admin/concurrency), which take
+    # effect at runtime without a redeploy. The built-in fallback below stays as
+    # a floor for queue keys nobody has set a limit for; overriding it via env
+    # logs a deprecation warning (see _warn_deprecated_default_concurrency).
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 256
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
@@ -1394,6 +1399,22 @@ class Settings(BaseSettings):
                 "concurrency controller has been superseded by database-backed "
                 "admin overrides (PUT /admin/concurrency, Queue Health card). "
                 "Set per-model limits there instead; this flag may be removed."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _warn_deprecated_default_concurrency(self) -> "Settings":
+        # Soft-deprecation: manually tuning the global fallback via the env var
+        # is superseded by explicit per-model admin overrides. Fires once per
+        # process, only when the knob is actually set (the built-in default is
+        # unaffected). Behavior is unchanged.
+        if os.getenv("ODDISH_DEFAULT_MODEL_CONCURRENCY") is not None:
+            logger.warning(
+                "ODDISH_DEFAULT_MODEL_CONCURRENCY is deprecated: manually tuning "
+                "the global fallback concurrency in code/deploy env is superseded "
+                "by database-backed admin overrides (PUT /admin/concurrency, Queue "
+                "Health card). Set explicit per-model limits there instead; this "
+                "knob may be removed."
             )
         return self
 
