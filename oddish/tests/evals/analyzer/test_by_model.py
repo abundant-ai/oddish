@@ -180,3 +180,14 @@ def test_single_model_still_produces_a_payload():
     payload = build_by_model_payload(entries, "", denoms)
     assert len(payload["models"]) == 1
     assert payload["comparison"] == ""
+
+
+def test_output_carries_by_model_payload():
+    from oddish.evals.analyzer.schemas import AnalyzerEvalOutput
+
+    out = AnalyzerEvalOutput(sections={"bad": "", "good": "", "capabilities": "",
+                                       "headroom": ""})
+    assert out.by_model is None
+
+    out.by_model = {"version": 1, "comparison": "", "denominators": {}, "models": []}
+    assert out.by_model["version"] == 1
