@@ -164,14 +164,6 @@ jobs:
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_API_MAX_CONTAINERS: "2"
-      # Previews share one Modal environment with every other open PR, and the
-      # prod-sized API box (2 CPU / 4096MB -> 4.8GiB) can sit unschedulable
-      # there indefinitely -- Modal answers the request with "waiting to be
-      # scheduled on a CPU worker ... Relaxing requirements (memory=4.8GiB) may
-      # lead to faster scheduling" while the smaller worker containers place
-      # fine. A preview only has to serve /openapi.json and the e2e smoke tests.
-      ODDISH_MODAL_API_CPU: "1.0"
-      ODDISH_MODAL_API_MEMORY_MB: "2048"
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
