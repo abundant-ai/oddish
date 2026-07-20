@@ -431,53 +431,71 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         exp_order = list(roots)
         random.Random(f"shard-{shard}-of-{num_shards}").shuffle(exp_order)
 
+        # Insert in BATCHES, one statement per batch, instead of one statement
+        # and one commit per row. On harbor-forge each shard pre-creates ~19,000
+        # experiments; per-row commits made that ~40 MINUTES of pure startup
+        # before a single trial imported, and it is paid again on every 6h
+        # timeout and every preemption. A 100-row multi-VALUES insert is one
+        # round trip instead of 100, so the same work takes well under a minute.
+        #
+        # Short transactions are still what avoids the original deadlock: a
+        # batch holds locks only for the duration of one statement, not for the
+        # whole loop. Combined with the per-shard shuffle above, shards neither
+        # march in lockstep nor sit on thousands of locks.
+        #
+        # ON CONFLICT DO NOTHING keeps it idempotent, so retrying a whole batch
+        # is safe, and rowcount still reports how many WE created.
+        EXP_BATCH = 100
         exp_retries = 0
+        _t_exp = time.perf_counter()
+        _n_exp = len(exp_order)
         async with get_session() as sess:
-            for root in exp_order:
-                eid = _exp_id(root)
-                m = manifests.get(root, {}) or {}
-                meta = m.get("metadata", {}) or {}
-                rt = m.get("runtime", {}) or {}
-                stmt = pg_insert(ExperimentModel.__table__).values(
-                    id=eid, org_id=ORG_ID,
-                    name=meta.get("name") or f"Legacy {root.rsplit('/', 1)[-1]}",
-                    description=meta.get("description"),
-                    owner=rt.get("repository"),
-                    link=rt.get("workflow_url"),
-                    imported_at=now(),
-                    orig_s3_src=f"{root}/",  # immutable run-root anchor
-                ).on_conflict_do_nothing(index_elements=["id"])
+            for _i in range(0, _n_exp, EXP_BATCH):
+                chunk = exp_order[_i:_i + EXP_BATCH]
+                values = []
+                for root in chunk:
+                    eid = _exp_id(root)
+                    m = manifests.get(root, {}) or {}
+                    meta = m.get("metadata", {}) or {}
+                    rt = m.get("runtime", {}) or {}
+                    values.append(dict(
+                        id=eid, org_id=ORG_ID,
+                        name=meta.get("name") or f"Legacy {root.rsplit('/', 1)[-1]}",
+                        description=meta.get("description"),
+                        owner=rt.get("repository"),
+                        link=rt.get("workflow_url"),
+                        imported_at=now(),
+                        orig_s3_src=f"{root}/",  # immutable run-root anchor
+                    ))
+                    exp_ids[root] = eid
 
-                # Retry rather than die. A timeout here is contention, not a
-                # data problem: the same statement succeeds moments later, and
-                # it is idempotent, so replaying it is always safe.
+                stmt = (pg_insert(ExperimentModel.__table__)
+                        .values(values)
+                        .on_conflict_do_nothing(index_elements=["id"]))
                 for attempt in range(1, 6):
                     try:
                         res = await sess.execute(stmt)
-                        # Commit EACH row rather than batching the whole loop
-                        # into one transaction. Two reasons, both about locks:
-                        # a single transaction holds a row lock on every
-                        # experiment it inserted until the very end, so N shards
-                        # sit on thousands of locks for minutes -- that window
-                        # is probably a bigger contention source than the
-                        # ordering was. And a rollback mid-loop would discard
-                        # every earlier insert, so retrying inside one long
-                        # transaction is not even correct.
                         await sess.commit()
-                        if res.rowcount:
-                            created["experiments"] += 1
+                        created["experiments"] += res.rowcount or 0
                         break
                     except Exception as e:
                         await sess.rollback()
                         if attempt == 5:
-                            # Still don't kill the shard. Another shard almost
-                            # certainly created this row; if not, the per-trial
-                            # import will fail loudly and be retryable.
-                            print(f"  EXP CREATE gave up after {attempt}: {root} {e!r}")
+                            # Never kill the shard here. Another shard almost
+                            # certainly created these rows; if not, the per-trial
+                            # import fails loudly and stays retryable.
+                            print(f"  EXP CREATE batch gave up after {attempt}: {e!r}")
                             break
                         exp_retries += 1
                         await asyncio.sleep(min(2 ** (attempt - 1), 8) * (0.5 + random.random()))
-                exp_ids[root] = eid
+
+                # This phase used to print NOTHING while it ran, so 40 minutes of
+                # real work was indistinguishable from a hang.
+                if (_i // EXP_BATCH) % 10 == 0 or _i + EXP_BATCH >= _n_exp:
+                    print(f"  pre-create {min(_i + EXP_BATCH, _n_exp)}/{_n_exp} experiments "
+                          f"({time.perf_counter() - _t_exp:.0f}s elapsed)")
+        print(f"pre-created experiments in {time.perf_counter() - _t_exp:.1f}s "
+              f"(+{created['experiments']} new, {exp_retries} retries)")
 
         # 3b. Task-groups run CONCURRENTLY up to --concurrency; each group's
         # trials import SEQUENTIALLY (run-order index only matters within a
