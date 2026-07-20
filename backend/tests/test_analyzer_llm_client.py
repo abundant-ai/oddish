@@ -443,3 +443,13 @@ async def test_create_llm_client_openai_branch(monkeypatch):
 async def test_create_llm_client_openai_requires_explicit_model():
     with pytest.raises(ValueError, match="model"):
         await create_llm_client(LLMClientType.OPENAI)
+
+
+def test_llm_client_type_values_are_pinned():
+    """The enum's string values land in analyzer_blocks.llm_client_type
+    (analyzer_block.py persists ``.value``), so a typo would be written to rows
+    and silently break later queries. Comparisons elsewhere are by identity, so
+    nothing else would catch it."""
+    assert LLMClientType.OPENAI.value == "OpenAi"
+    assert LLMClientType.API.value == "Api"
+    assert LLMClientType.SANDBOX.value == "Sandbox"
