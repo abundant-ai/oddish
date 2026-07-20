@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import models  # noqa: F401  registers cloud tables on the shared Base
+from api.services.summarize_trajectory import TaskContext
 from api.services.summary_dump import resolve_cohort, validate_scope
 from models import OrganizationModel
 from oddish.db.models import (
@@ -220,11 +222,6 @@ async def test_resolve_cohort_limit_applies_after_fetchable_filter():
     assert [t.id for t in result] == ["trial-2-good"]
 
 
-import json
-
-from api.services.summarize_trajectory import TaskContext
-
-
 def _ctx() -> TaskContext:
     return TaskContext(
         task_name="my-task", instruction=None, final_reward=1.0,
@@ -402,6 +399,42 @@ async def test_summarize_trial_never_reports_success_without_a_summary():
     assert "UnicodeEncodeError" in record["error"]
 
 
+class _RaisingAcloseClient:
+    """A client whose block work succeeds but whose owned-client teardown
+    fails -- distinct from a block-level failure."""
+
+    def __init__(self, *, model=None, max_tokens=None):
+        pass
+
+    async def stream(self, prompt):
+        yield _payload()
+
+    async def aclose(self):
+        raise RuntimeError("teardown blew up")
+
+
+@pytest.mark.asyncio
+async def test_summarize_trial_keeps_success_when_only_teardown_fails(monkeypatch):
+    """A good summary must not be relabeled failed just because aclose()
+    raised after the block already succeeded."""
+    import api.services.blocks.analyzer.analyzer_llm_client as llm_mod
+    from api.services.summary_dump import summarize_trial
+
+    monkeypatch.setattr(llm_mod, "ApiAnalyzerLLMClient", _RaisingAcloseClient)
+
+    # No `client=` kwarg -- summarize_trial must construct (and own, and
+    # therefore aclose()) the client itself for this path to exercise.
+    record = await summarize_trial(
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
+    )
+
+    assert record["status"] == "success"
+    assert record["summary"] is not None
+    assert record["summary"]["summary"] == "Fixed it."
+    assert record["error"] is not None
+    assert "teardown blew up" in record["error"]
+
+
 # ---------------------------------------------------------------------------
 # run_cohort -- no DB, no S3: resolve_cohort / trajectory / context are stubbed.
 # ---------------------------------------------------------------------------
@@ -533,3 +566,68 @@ async def test_run_cohort_skips_trials_with_no_trajectory_without_recording(monk
     records = await run_cohort(None, experiment="exp1", model="claude-opus-4-8")
 
     assert [r["trial_id"] for r in records] == ["tr-1"]
+
+
+@pytest.mark.asyncio
+async def test_run_cohort_reports_unknown_explicit_trial_id_as_skipped(monkeypatch):
+    from api.services.summary_dump import run_cohort
+
+    # resolve_cohort is stubbed to always return this cohort, standing in for
+    # it having already dropped "tr-missing" -- run_cohort must diff against
+    # what was requested to notice.
+    cohort = [_cohort_trial("tr-1", "task-good"), _cohort_trial("tr-2", "task-good")]
+    _stub_cohort(monkeypatch, cohort)
+
+    result = await run_cohort(
+        None, trials=["tr-1", "tr-missing", "tr-2"], model="claude-opus-4-8",
+    )
+
+    assert [r["trial_id"] for r in result] == ["tr-1", "tr-2"]
+    assert result.skipped == [{"trial_id": "tr-missing", "reason": "no such trial"}]
+
+
+@pytest.mark.asyncio
+async def test_run_cohort_reports_missing_trajectory_as_skipped(monkeypatch):
+    import oddish.core.trial_io as trial_io
+    from api.services.summary_dump import run_cohort
+
+    cohort = [_cohort_trial("tr-1", "task-good"), _cohort_trial("tr-2", "task-good")]
+    _stub_cohort(monkeypatch, cohort)
+
+    async def _read(trial):
+        return None if trial.id == "tr-2" else _traj()
+
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _read)
+
+    result = await run_cohort(None, experiment="exp1", model="claude-opus-4-8")
+
+    assert result.skipped == [{"trial_id": "tr-2", "reason": "no fetchable trajectory"}]
+
+
+@pytest.mark.asyncio
+async def test_run_cohort_skips_do_not_abort_and_other_records_still_return(monkeypatch):
+    """Both an unknown id and a missing trajectory in one run: neither aborts
+    the cohort, and the surviving trials still get records."""
+    import oddish.core.trial_io as trial_io
+    from api.services.summary_dump import run_cohort
+
+    cohort = [
+        _cohort_trial("tr-1", "task-good"),
+        _cohort_trial("tr-2", "task-good"),
+        _cohort_trial("tr-3", "task-good"),
+    ]
+    _stub_cohort(monkeypatch, cohort)
+
+    async def _read(trial):
+        return None if trial.id == "tr-2" else _traj()
+
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _read)
+
+    result = await run_cohort(
+        None, trials=["tr-1", "tr-2", "tr-3", "tr-missing"], model="claude-opus-4-8",
+    )
+
+    assert [r["trial_id"] for r in result] == ["tr-1", "tr-3"]
+    assert len(result.skipped) == 2
+    assert {"trial_id": "tr-missing", "reason": "no such trial"} in result.skipped
+    assert {"trial_id": "tr-2", "reason": "no fetchable trajectory"} in result.skipped

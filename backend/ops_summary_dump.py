@@ -19,9 +19,11 @@ dotenv's ODDISH_DATABASE_URL wins inside the container and the run dies on
 ``ConnectionRefused 127.0.0.1:5432`` instead of reading prod. Move it aside for
 the run and restore it afterwards.
 
-``index.json`` describes the LAST run only, while per-trial files accumulate in
-the output directory. Use a fresh --out per cohort if a downstream script
-enumerates via the index.
+``index.json`` describes the LAST run's cohort only, even with ``--append``
+(per-trial files accumulate; the index does not). A non-empty ``--out`` is
+refused unless ``--append`` is passed, so a run can't silently overwrite a
+directory holding a different cohort's files. Use a fresh ``--out`` per
+cohort if a downstream script enumerates via the index.
 
 Imports only ``modal_app``, so no scheduled worker or reconciler functions are
 registered.
@@ -43,7 +45,7 @@ async def dump(
     limit: int = 0,
     model: str = "",
     persist: bool = False,
-) -> list[dict]:
+) -> dict:
     from oddish.config import Settings
 
     # Short-lived read-mostly job; avoid adding a warm pooler connection.
@@ -54,7 +56,7 @@ async def dump(
 
     trial_ids = [t.strip() for t in trials.split(",") if t.strip()]
     async with get_session() as session:
-        return await run_cohort(
+        result = await run_cohort(
             session,
             trials=trial_ids or None,
             task=task or None,
@@ -63,6 +65,8 @@ async def dump(
             model=model or None,
             persist=persist,
         )
+        # CohortResult isn't JSON-serializable over the Modal RPC boundary as-is.
+        return {"records": list(result), "skipped": result.skipped}
 
 
 @app.local_entrypoint()
@@ -74,18 +78,36 @@ def main(
     out: str = "./summaries",
     model: str = "",
     persist: bool = False,
+    append: bool = False,
 ) -> None:
-    records = dump.remote(
+    # Validate locally first -- a forgotten scope flag should fail immediately,
+    # not after a ~10-minute Modal cold start.
+    from api.services.summary_dump import validate_scope
+
+    trial_ids = [t.strip() for t in trials.split(",") if t.strip()]
+    validate_scope(trials=trial_ids or None, task=task or None, experiment=experiment or None)
+
+    out_dir = Path(out)
+    if out_dir.exists() and any(out_dir.iterdir()) and not append:
+        print(
+            f"refusing to write into non-empty output directory {out_dir} -- "
+            "pass --append to add to it"
+        )
+        return
+
+    result = dump.remote(
         trials=trials, task=task, experiment=experiment,
         limit=limit, model=model, persist=persist,
     )
+    records = result["records"]
+    skipped = result["skipped"]
 
-    out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    for record in records:
-        (out_dir / f"{record['trial_id']}.json").write_text(
-            json.dumps(record, indent=2)
-        )
+    for i, record in enumerate(records):
+        # trial_id can be None on a defensive failure path; fall back to a
+        # per-record name so two such failures don't collide.
+        name = record["trial_id"] or f"unknown-{i}"
+        (out_dir / f"{name}.json").write_text(json.dumps(record, indent=2))
 
     index = {
         "scope": {
@@ -98,8 +120,9 @@ def main(
             {"trial_id": r["trial_id"], "status": r["status"], "error": r["error"]}
             for r in records
         ],
+        "skipped": skipped,
     }
     (out_dir / "index.json").write_text(json.dumps(index, indent=2))
 
     ok = sum(1 for r in records if r["status"] == "success")
-    print(f"\nwrote {len(records)} record(s) to {out_dir} ({ok} success)")
+    print(f"\nwrote {len(records)} record(s) to {out_dir} ({ok} success, {len(skipped)} skipped)")

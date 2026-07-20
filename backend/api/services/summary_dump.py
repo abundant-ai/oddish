@@ -185,7 +185,9 @@ async def summarize_trial(
 
     error = block.error or harness_error
     status = block.status
-    if status == JobStatus.SUCCESS and (summary is None or error is not None):
+    # A teardown-only error (aclose() raising after a real summary) must not
+    # relabel an otherwise-good record -- only a missing summary downgrades.
+    if status == JobStatus.SUCCESS and summary is None:
         status = JobStatus.FAILED
 
     return {
@@ -203,6 +205,18 @@ async def summarize_trial(
     }
 
 
+class CohortResult(list):
+    """Records for the cohort, plus which requested trials produced none.
+
+    Subclasses ``list`` so existing callers that treat the result as a plain
+    ``list[dict]`` keep working unchanged; ``skipped`` is additive.
+    """
+
+    def __init__(self, records: list[dict], skipped: list[dict]) -> None:
+        super().__init__(records)
+        self.skipped = skipped
+
+
 async def run_cohort(
     session,
     *,
@@ -212,7 +226,7 @@ async def run_cohort(
     limit: int = 0,
     model: str | None = None,
     persist: bool = False,
-) -> list[dict]:
+) -> CohortResult:
     """Resolve the cohort, then summarize every trial in it.
 
     Trajectories and task context are read inside the caller's session; the
@@ -227,6 +241,16 @@ async def run_cohort(
     )
     print(f"resolved {len(cohort)} trials: {', '.join(t.id for t in cohort)}")
 
+    # resolve_cohort silently drops unknown explicit ids; diff against what
+    # was asked for so a typo'd id is reported, not swallowed.
+    skipped: list[dict] = []
+    if trials:
+        resolved_ids = {t.id for t in cohort}
+        skipped.extend(
+            {"trial_id": tid, "reason": "no such trial"}
+            for tid in trials if tid not in resolved_ids
+        )
+
     # One slot per attempted trial, filled in cohort order. A prep failure
     # occupies its slot immediately; summarized trials claim theirs below.
     slots: list[dict | None] = []
@@ -234,9 +258,10 @@ async def run_cohort(
     for trial in cohort:
         try:
             trajectory = await read_trial_trajectory(trial)
-            # None means "no trajectory", not an error -- skip, don't record.
+            # None means "no trajectory" -- skip, but still report it.
             if trajectory is None:
                 print(f"  skip {trial.id}: no fetchable trajectory")
+                skipped.append({"trial_id": trial.id, "reason": "no fetchable trajectory"})
                 continue
             ctx = await build_task_context(trial)
         except asyncio.CancelledError:
@@ -271,4 +296,4 @@ async def run_cohort(
         else:
             slots[idx] = outcome
 
-    return [r for r in slots if r is not None]
+    return CohortResult([r for r in slots if r is not None], skipped)
