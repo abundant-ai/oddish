@@ -47,7 +47,7 @@ def _client_app(monkeypatch, users, ranked) -> tuple[FastAPI, _Session]:
     async def fake_get_session():
         yield session
 
-    async def fake_leaderboard(_session, *, org_id, window_days):
+    async def fake_leaderboard(_session, *, org_id, window_days, resolve_github_users):
         return ranked
 
     monkeypatch.setattr(dashboard_router, "get_session", fake_get_session)
@@ -93,9 +93,12 @@ async def test_leaderboard_returns_only_rank_name_and_cost(monkeypatch) -> None:
     async def fake_get_session():
         yield session
 
-    async def fake_leaderboard(_session, *, org_id, window_days):
+    async def fake_leaderboard(_session, *, org_id, window_days, resolve_github_users):
         seen["org_id"] = org_id
         seen["window_days"] = window_days
+        # Spend tagged with a handle belongs to whoever owns it, so the endpoint
+        # has to hand the resolver down or the ranking under-counts that person.
+        seen["resolver"] = resolve_github_users.__name__
         return [
             CostLeaderboardUser(user_id="user-3", cost_usd=20.0),
             CostLeaderboardUser(user_id="user-1", cost_usd=12.34),
@@ -114,7 +117,11 @@ async def test_leaderboard_returns_only_rank_name_and_cost(monkeypatch) -> None:
         response = await client.get("/leaderboard?window_days=0&limit=3")
 
     assert response.status_code == 200
-    assert seen == {"org_id": "org-1", "window_days": None}
+    assert seen == {
+        "org_id": "org-1",
+        "window_days": None,
+        "resolver": "resolve_github_users",
+    }
     # An email-only user shows their email local part, never the full address.
     assert response.json() == {
         "leaders": [

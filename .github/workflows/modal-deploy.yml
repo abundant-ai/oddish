@@ -28,9 +28,20 @@ jobs:
       MODAL_ENVIRONMENT: main
       # Hold LLM trials until a task's nop/oracle baselines validate it.
       ODDISH_GATE_LLM_ON_BASELINES: "1"
-      # Enable the GKE (TPU) execution backend in prod; coordinates + SA
-      # creds ride in the oddish-gcp secret, attached only when this is set.
+      # Enable the GKE (TPU) execution backend in prod. The SA credential
+      # rides in the oddish-gcp secret (attached when ODDISH_GKE_ENABLED is
+      # set); the non-secret cluster/registry coordinates are declared here
+      # so the backend registers deterministically -- even if oddish-gcp is
+      # ever re-created with only the key (which silently un-registered GKE
+      # once, since gke_cluster_name failed to derive without a project id).
       ODDISH_GKE_ENABLED: "true"
+      ODDISH_GKE_PROJECT_ID: "abundant-default"
+      ODDISH_GKE_REGION: "us-east5"
+      ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
+      ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
+      ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
+      ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
+      ODDISH_GKE_IDLE_CLUSTER_TTL_HOURS: "1"
       # Point uv at the .venv pre-built into the base image.  `uv sync
       # --frozen` then validates that venv against the current lockfile
       # and only patches the editable oddish path — typically a no-op

@@ -42,7 +42,7 @@ def test_gke_variant_registered_with_expected_pin():
 def test_gke_variant_is_not_the_reverted_default():
     # The whole point of the decoupling: harbor-gke is a distinct variant, not
     # the default the lean image bakes.
-    assert HARBOR_DEFAULT_SOURCE == "https://github.com/rishidesai/harbor"
+    assert HARBOR_DEFAULT_SOURCE == "https://github.com/abundant-ai/harbor"
     assert HARBOR_VARIANTS[GKE_VARIANT_ID].source != HARBOR_DEFAULT_SOURCE
 
 
@@ -97,7 +97,7 @@ def test_stamp_respects_explicit_caller_override_on_gke():
 
 def test_stamp_treats_explicit_default_fork_pin_like_unset_on_gke():
     # A GKE trial that explicitly pins the DEFAULT fork (e.g. --harbor
-    # rishidesai/harbor) must STILL be redirected to harbor-gke: the default fork
+    # abundant-ai/harbor) must STILL be redirected to harbor-gke: the default fork
     # carries no GKE support, so honoring it would silently run GKE on the lean
     # default image. Treated exactly like source=None, and normalized so git+ /
     # case spellings of the default are caught too.
@@ -121,7 +121,7 @@ def test_stamp_leaves_genuinely_different_fork_untouched_on_gke():
     # (its ephemeral child installs harbor[gke]).
     for src in (
         "https://github.com/dot-agi/harbor",
-        "https://github.com/rishidesai/harbor-fork",
+        "https://github.com/abundant-ai/harbor-fork",
     ):
         hc = HarborConfig(source=src, ref="main")
         stamped = stamp_gke_harbor_source(hc, EnvironmentType.GKE)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -1072,16 +1073,23 @@ def _spend_identity(
     github_id: str | None,
     github_username: str | None,
     submitter_user_id: str | None,
+    github_user_id: str | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Attribute a trial's spend to a payer, falling back past unregistered spend.
 
-    Precedence: the active billed user, else the submitted GitHub identity (id,
-    then handle), else the submitting credential's user, else one Unattributed
-    bucket. Returns ``(key, real_user_id, label)``: ``key`` dedups both the
-    by-user rows and the by-user series; ``real_user_id`` is the actual user
-    whose name labels the row (the billed user or the submitter), or None for a
-    GitHub-handle / Unattributed row; ``label`` is a precomputed display label,
-    or None when ``real_user_id`` supplies the name via the enrichment step.
+    Precedence: the active billed user, else the registered user behind the
+    submitted GitHub identity, else that identity itself (id, then handle), else
+    the submitting credential's user, else one Unattributed bucket. Returns
+    ``(key, real_user_id, label)``: ``key`` dedups both the by-user rows and the
+    by-user series; ``real_user_id`` is the user whose name labels the row, or
+    None for a GitHub-handle / Unattributed row; ``label`` is a precomputed
+    display label, or None when ``real_user_id`` supplies the name via the
+    enrichment step.
+
+    ``github_user_id`` is that identity resolved to a registered user, or None
+    when nobody matched or no resolver ran (the self-hosted path). Keying on it
+    merges a person's unbilled CI spend into the row their billed spend already
+    keys, rather than a ghost ``@handle`` row beside it.
 
     Whether a row is drilldown-linkable is decided by the caller, not here: any
     row with a ``real_user_id`` links to that user's drilldown, even when it
@@ -1091,6 +1099,8 @@ def _spend_identity(
     """
     if billed_user_id:
         return billed_user_id, billed_user_id, None
+    if github_user_id:
+        return github_user_id, github_user_id, None
     github_id = (github_id or "").strip() or None
     github_username = (github_username or "").strip() or None
     if github_id:
@@ -1106,6 +1116,40 @@ def _spend_identity(
     return _UNATTRIBUTED_KEY, None, "Unattributed"
 
 
+# (org_id, github_id, github_username) exactly as tagged on the task.
+GithubIdentity = tuple[str | None, str | None, str | None]
+
+# Maps task-tagged GitHub identities to the registered users behind them.
+# Injected, not imported: resolving one needs the hosted ``users`` table, which
+# ``oddish/`` must not reach into (see the package boundary in AGENTS.md).
+GithubUserResolver = Callable[
+    [AsyncSession, set[GithubIdentity]], Awaitable[Mapping[GithubIdentity, str]]
+]
+
+
+def _github_identity(row: Any) -> GithubIdentity | None:
+    """The identity worth resolving, or None: a billed row never consults one."""
+    if row.billed_user_id:
+        return None
+    github_id = (row.gh_id or "").strip() or None
+    github_username = (row.gh_user or "").strip() or None
+    if not github_id and not github_username:
+        return None
+    return (row.trial_org_id, github_id, github_username)
+
+
+async def _github_users_for_rows(
+    session: AsyncSession, rows: list[Any], resolver: GithubUserResolver | None
+) -> Mapping[GithubIdentity, str]:
+    """Resolve every GitHub identity across ``rows`` in one batch, not per row."""
+    if resolver is None:
+        return {}
+    identities = {i for i in map(_github_identity, rows) if i is not None}
+    if not identities:
+        return {}
+    return await resolver(session, identities)
+
+
 def _series_bucket(window_days: int | None) -> str:
     """Pick a chart bucket size that fits the window."""
     if window_days is not None and window_days <= 2:
@@ -1113,6 +1157,41 @@ def _series_bucket(window_days: int | None) -> str:
     if window_days is not None and window_days <= 120:
         return "day"
     return "week"
+
+
+def _utc_date_trunc(bucket: str, column):
+    """``date_trunc`` that always lands on a UTC boundary.
+
+    Postgres ``date_trunc(field, timestamptz)`` truncates in the session's
+    ``TimeZone`` GUC, which oddish never pins to UTC -- so bare truncation drifts
+    with whatever zone the pooler hands us. Converting to UTC wall-clock, then
+    truncating, then re-anchoring as UTC keeps the result a ``timestamptz`` sitting
+    on a UTC midnight/hour/week, matching the frontend's ``timeZone: "UTC"`` axis.
+    The double ``AT TIME ZONE 'UTC'`` is version-independent (no PG16 3-arg form).
+    """
+    return func.timezone("UTC", func.date_trunc(bucket, func.timezone("UTC", column)))
+
+
+def _utc_window_start(now: datetime, window_days: int | None) -> datetime | None:
+    """Snap a trailing window's start down to its bucket's UTC boundary.
+
+    ``now - window_days`` lands mid-bucket, so the earliest chart bar is a partial
+    day/hour. Flooring to the bucket boundary (UTC) makes that leftmost bar a
+    complete period and keeps every cost window anchored to the same UTC grid the
+    chart renders on. ``None`` (all-time) stays unbounded.
+    """
+    if window_days is None:
+        return None
+    since = now - timedelta(days=window_days)
+    bucket = _series_bucket(window_days)
+    if bucket == "hour":
+        return since.replace(minute=0, second=0, microsecond=0)
+    if bucket == "week":
+        # Postgres date_trunc('week') anchors weeks on Monday; match it here so
+        # the snapped start lines up with the weekly bars.
+        monday = since - timedelta(days=since.weekday())
+        return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    return since.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 class CostModelBreakdown(BaseModel):
@@ -1361,14 +1440,18 @@ def _build_dimension_series(
 
 
 async def _cost_time_series(
-    session: AsyncSession, *, since: datetime | None, bucket: str
+    session: AsyncSession,
+    *,
+    since: datetime | None,
+    bucket: str,
+    resolve_github_users: GithubUserResolver | None = None,
 ) -> tuple[CostSeries, CostSeries, CostSeries]:
     """Billable cost over time, stacked three ways: by agent, model, and user.
 
     Settlement-time axis (``finished_at``): in-flight trials (``finished_at``
     NULL) are excluded so this matches the quota basis exactly.
     """
-    bucket_col = func.date_trunc(bucket, TrialModel.finished_at)
+    bucket_col = _utc_date_trunc(bucket, TrialModel.finished_at)
     gh_id_col = TaskModel.tags["github_id"].astext
     gh_user_col = TaskModel.tags["github_username"].astext
 
@@ -1378,6 +1461,9 @@ async def _cost_time_series(
             TrialModel.agent.label("agent"),
             TrialModel.model.label("model"),
             TrialModel.billed_user_id.label("billed_user_id"),
+            # Only groups finer; every stack re-aggregates by its own key, so
+            # totals are unchanged. Carried because identities resolve per org.
+            TrialModel.org_id.label("trial_org_id"),
             gh_id_col.label("gh_id"),
             gh_user_col.label("gh_user"),
             TaskModel.created_by_user_id.label("submitter"),
@@ -1393,6 +1479,7 @@ async def _cost_time_series(
             TrialModel.agent,
             TrialModel.model,
             TrialModel.billed_user_id,
+            TrialModel.org_id,
             gh_id_col,
             gh_user_col,
             TaskModel.created_by_user_id,
@@ -1404,6 +1491,7 @@ async def _cost_time_series(
 
     query = query.execution_options(include_deleted=True)
     rows = (await session.execute(query)).all()
+    github_users = await _github_users_for_rows(session, rows, resolve_github_users)
 
     agent_per_bucket: dict[datetime, dict[str, float]] = {}
     agent_totals: dict[str, float] = {}
@@ -1431,8 +1519,9 @@ async def _cost_time_series(
     for row in rows:
         cost = settled_cost_from_row(row)
         bstart = row.bucket
+        gh_user_id = github_users.get(_github_identity(row))
         u_key, _u_real, u_label = _spend_identity(
-            row.billed_user_id, row.gh_id, row.gh_user, row.submitter
+            row.billed_user_id, row.gh_id, row.gh_user, row.submitter, gh_user_id
         )
         if u_label is not None:
             user_labels[u_key] = u_label
@@ -1519,7 +1608,11 @@ async def _primary_task_authors(
 
 
 async def _prev_window_costs(
-    session: AsyncSession, *, prev_start: datetime, prev_end: datetime
+    session: AsyncSession,
+    *,
+    prev_start: datetime,
+    prev_end: datetime,
+    resolve_github_users: GithubUserResolver | None = None,
 ) -> tuple[dict[tuple[str | None, str], float], float]:
     """Per-(org, payer) spend and total spend for the prior adjacent window.
 
@@ -1530,7 +1623,7 @@ async def _prev_window_costs(
     gh_user_col = TaskModel.tags["github_username"].astext
     query = (
         select(
-            TrialModel.org_id.label("org_id"),
+            TrialModel.org_id.label("trial_org_id"),
             TrialModel.billed_user_id.label("billed_user_id"),
             gh_id_col.label("gh_id"),
             gh_user_col.label("gh_user"),
@@ -1556,15 +1649,17 @@ async def _prev_window_costs(
         .execution_options(include_deleted=True)
     )
     rows = (await session.execute(query)).all()
+    github_users = await _github_users_for_rows(session, rows, resolve_github_users)
 
     prev_by_user: dict[tuple[str | None, str], float] = {}
     prev_cost = 0.0
     for row in rows:
         cost = settled_cost_from_row(row)
+        gh_user_id = github_users.get(_github_identity(row))
         identity_key, _, _ = _spend_identity(
-            row.billed_user_id, row.gh_id, row.gh_user, row.submitter
+            row.billed_user_id, row.gh_id, row.gh_user, row.submitter, gh_user_id
         )
-        key = (row.org_id, identity_key)
+        key = (row.trial_org_id, identity_key)
         prev_by_user[key] = prev_by_user.get(key, 0.0) + cost
         prev_cost += cost
     return prev_by_user, round(prev_cost, 4)
@@ -1619,14 +1714,20 @@ async def get_cost_breakdown_core(
     window_days: int | None = 7,
     experiment_limit: int = 100,
     user_limit: int = 100,
+    resolve_github_users: GithubUserResolver | None = None,
 ) -> CostBreakdownResponse:
-    """Add up billable trial spend for the admin cost dashboard."""
+    """Add up billable trial spend for the admin cost dashboard.
+
+    ``resolve_github_users`` folds unbilled GitHub-tagged spend into the row of
+    the registered user behind the handle; omitted, those rows stay label-only
+    (the self-hosted path).
+    """
     now = datetime.now(timezone.utc)
-    since = None if window_days is None else now - timedelta(days=window_days)
+    since = _utc_window_start(now, window_days)
 
     bucket = _series_bucket(window_days)
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
-        session, since=since, bucket=bucket
+        session, since=since, bucket=bucket, resolve_github_users=resolve_github_users
     )
 
     # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
@@ -1694,6 +1795,7 @@ async def get_cost_breakdown_core(
         detail_query = detail_query.where(TrialModel.finished_at >= since)
 
     rows = (await session.execute(detail_query)).all()
+    github_users = await _github_users_for_rows(session, rows, resolve_github_users)
 
     by_model: dict[tuple[str, str], dict[str, Any]] = {}
     experiments: dict[str, dict[str, Any]] = {}
@@ -1708,8 +1810,9 @@ async def get_cost_breakdown_core(
 
     for row in rows:
         owner_user_id = _normalize_owner_user_id(row.owner_user_id)
+        gh_user_id = github_users.get(_github_identity(row))
         user_key, user_real_id, user_label = _spend_identity(
-            row.billed_user_id, row.gh_id, row.gh_user, row.submitter
+            row.billed_user_id, row.gh_id, row.gh_user, row.submitter, gh_user_id
         )
         row_billed = row.billed_user_id is not None
         model = _model_label(row.model)
@@ -1831,10 +1934,16 @@ async def get_cost_breakdown_core(
         prev_by_user: dict[tuple[str | None, str], float] = {}
         prev_window_cost: float | None = None
     else:
+        # Snapping ``since`` to a UTC boundary stretches the live window past
+        # ``window_days`` (it now includes the in-progress bucket), so the prior
+        # window must match the live span exactly -- not a fixed ``window_days`` --
+        # to keep the delta an apples-to-apples comparison.
+        window_span = now - since
         prev_by_user, prev_window_cost = await _prev_window_costs(
             session,
-            prev_start=now - 2 * timedelta(days=window_days),
+            prev_start=since - window_span,
             prev_end=since,
+            resolve_github_users=resolve_github_users,
         )
 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -1902,14 +2011,20 @@ async def get_cost_breakdown_core(
                 if since is None
                 else round(prev_by_user.get((u["org_id"], u["key"]), 0.0), 4)
             ),
+            # Quota and in-flight describe the PERSON, not this row: both are
+            # computed from billed spend alone, so they stay well-defined on a
+            # row that also carries unbilled spend. Gating them on ``all_billed``
+            # too would blank the quota bar for anyone whose GitHub-tagged or
+            # submitter-fallback spend landed here -- and ``has_unbilled_spend``
+            # already says the row totals more than the billed basis.
             inflight_trial_count=(
                 inflight_counts.get((u["org_id"], u["real_user_id"]), 0)
-                if u["all_billed"] and u["real_user_id"]
+                if u["real_user_id"]
                 else 0
             ),
             quota_spent_usd=(
                 float(quota_spent.get((u["org_id"], u["real_user_id"]), 0.0))
-                if u["all_billed"] and u["real_user_id"]
+                if u["real_user_id"]
                 else None
             ),
             quota_limit_usd=(
@@ -1919,7 +2034,7 @@ async def get_cost_breakdown_core(
                         settings.default_daily_quota_usd,
                     )
                 )
-                if u["all_billed"] and u["real_user_id"]
+                if u["real_user_id"]
                 else None
             ),
         )
@@ -1995,26 +2110,26 @@ async def get_cost_leaderboard_core(
     *,
     org_id: str,
     window_days: int | None = 7,
+    resolve_github_users: GithubUserResolver | None = None,
 ) -> list[CostLeaderboardUser]:
     """Rank one org's spend buckets on the admin dashboard spend basis.
 
-    The grouping mirrors ``get_cost_breakdown_core``'s payer precedence.
-    Registered people come back as ``user_id`` rows for the hosted layer to
-    label; spend that carries only a submitted GitHub identity keeps its
-    precomputed ``@handle`` label so unlinked accounts still rank. Only the
-    Unattributed bucket is discarded -- it is not an account. Model remains
-    in the SQL grouping because token-estimated costs are priced per model.
+    The grouping mirrors ``get_cost_breakdown_core``'s payer precedence,
+    ``resolve_github_users`` included -- so a handle owned by a registered
+    person ranks under that person instead of beside them. Registered people
+    come back as ``user_id`` rows for the hosted layer to label; spend whose
+    GitHub identity belongs to nobody registered keeps its precomputed
+    ``@handle`` label so unlinked accounts still rank. Only the Unattributed
+    bucket is discarded -- it is not an account. Model remains in the SQL
+    grouping because token-estimated costs are priced per model.
     """
-    since = (
-        None
-        if window_days is None
-        else datetime.now(timezone.utc) - timedelta(days=window_days)
-    )
+    since = _utc_window_start(datetime.now(timezone.utc), window_days)
     gh_id_col = TaskModel.tags["github_id"].astext
     gh_user_col = TaskModel.tags["github_username"].astext
     query = (
         select(
             TrialModel.billed_user_id.label("billed_user_id"),
+            TrialModel.org_id.label("trial_org_id"),
             gh_id_col.label("gh_id"),
             gh_user_col.label("gh_user"),
             TaskModel.created_by_user_id.label("submitter"),
@@ -2029,6 +2144,7 @@ async def get_cost_leaderboard_core(
         )
         .group_by(
             TrialModel.billed_user_id,
+            TrialModel.org_id,
             gh_id_col,
             gh_user_col,
             TaskModel.created_by_user_id,
@@ -2039,11 +2155,19 @@ async def get_cost_leaderboard_core(
     if since is not None:
         query = query.where(TrialModel.finished_at >= since)
 
+    rows = (await session.execute(query)).all()
+    github_users = await _github_users_for_rows(session, rows, resolve_github_users)
+
     costs_by_key: dict[str, float] = {}
     identity_by_key: dict[str, tuple[str | None, str | None]] = {}
-    for row in (await session.execute(query)).all():
+    for row in rows:
+        identity = _github_identity(row)
         key, user_id, label = _spend_identity(
-            row.billed_user_id, row.gh_id, row.gh_user, row.submitter
+            row.billed_user_id,
+            row.gh_id,
+            row.gh_user,
+            row.submitter,
+            github_users.get(identity) if identity else None,
         )
         if key == _UNATTRIBUTED_KEY:
             continue
@@ -2127,7 +2251,7 @@ async def get_user_cost_breakdown_core(
 ) -> UserCostBreakdownResponse:
     """One user's settled billed spend: totals, per-task rollup, by-model series."""
     now = datetime.now(timezone.utc)
-    since = None if window_days is None else now - timedelta(days=window_days)
+    since = _utc_window_start(now, window_days)
     bucket = _series_bucket(window_days)
 
     filters = [
@@ -2139,7 +2263,7 @@ async def get_user_cost_breakdown_core(
     if since is not None:
         filters.append(TrialModel.finished_at >= since)
 
-    bucket_col = func.date_trunc(bucket, TrialModel.finished_at)
+    bucket_col = _utc_date_trunc(bucket, TrialModel.finished_at)
 
     detail_query = (
         select(
