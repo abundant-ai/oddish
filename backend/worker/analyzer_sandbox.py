@@ -54,6 +54,9 @@ _SECTION_COLUMN = {
     "headroom_analysis": "headroom",
 }
 
+# Mirrors by-model-view.tsx's BUCKET_LABELS for the bucket badges.
+_COMPARISON_HEADING = {"bad": "Reward hacking", "good": "Capability"}
+
 
 def _read_cli_source() -> bytes:
     return (files("oddish") / "assets" / "oddish-query").read_bytes()
@@ -184,7 +187,7 @@ async def sandbox_eval_rows(
     findings: list[Finding] = []
     sections = dict(_EMPTY_SECTIONS)
     by_model_entries: list[dict] = []
-    comparisons: list[str] = []
+    comparisons: list[tuple[str, str]] = []
     denominators = build_denominators(trial_model_rewards(rows), [])
 
     for (bucket, cohort), (cohort_findings, cohort_sections, cohort_by_model) in zip(
@@ -205,11 +208,21 @@ async def sandbox_eval_rows(
             normalize_entries(raw_entries, denominators, bucket=bucket)
         )
         if comparison.strip():
-            comparisons.append(comparison.strip())
+            comparisons.append((bucket, comparison.strip()))
+
+    if len(comparisons) > 1:
+        # Two cohorts read the same trajectories through different lenses;
+        # unlabeled, their comparisons can look like they contradict each
+        # other. Headings match the bucket badges in by-model-view.tsx.
+        combined_comparison = "\n\n".join(
+            f"### {_COMPARISON_HEADING[b]}\n\n{c}" for b, c in comparisons
+        )
+    else:
+        combined_comparison = comparisons[0][1] if comparisons else ""
 
     by_model = build_by_model_payload(
         by_model_entries,
-        "\n\n".join(comparisons),
+        combined_comparison,
         build_denominators(trial_model_rewards(rows), findings),
     )
 

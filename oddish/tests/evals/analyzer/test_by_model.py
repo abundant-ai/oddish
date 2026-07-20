@@ -113,6 +113,21 @@ def test_non_string_model_is_dropped_without_raising():
     assert [e["model"] for e in out] == ["claude-opus-4-8"]
 
 
+def test_missing_or_none_model_is_dropped_not_attributed_to_unknown():
+    out = normalize_entries(
+        [
+            {"narrative": "no model key at all"},
+            {"model": None, "narrative": "explicit none"},
+            {"model": "claude-opus-4-8", "narrative": "good"},
+        ],
+        {**_DENOMS, "unknown": {"trials": 1, "scored": 0, "solved": 0,
+                                 "mean_reward": None, "analyzed": 0, "bad": 0,
+                                 "good": 0}},
+        bucket="all",
+    )
+    assert [e["model"] for e in out] == ["claude-opus-4-8"]
+
+
 def test_entries_are_tagged_with_their_bucket():
     out = normalize_entries(
         [{"model": "claude-opus-4-8", "narrative": "n"}], _DENOMS, bucket="bad"

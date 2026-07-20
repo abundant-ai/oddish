@@ -53,8 +53,14 @@ function EntryBody({ entry }: { entry: ByModelEntry }) {
 }
 
 export function ByModelView({ payload }: { payload: ByModel }) {
+  // Denominators are host-computed from trial rows and are the authority on
+  // which models exist; union in payload.models too so nothing the LLM did
+  // describe ever disappears if it names a model missing its denominators.
   const models = Array.from(
-    new Set(payload.models.map((e) => e.model)),
+    new Set([
+      ...Object.keys(payload.denominators),
+      ...payload.models.map((e) => e.model),
+    ]),
   ).sort();
 
   return (
@@ -96,9 +102,13 @@ export function ByModelView({ payload }: { payload: ByModel }) {
               )}
             </CardHeader>
             <CardContent className="space-y-4">
-              {entries.map((entry, i) => (
-                <EntryBody key={i} entry={entry} />
-              ))}
+              {entries.length > 0 ? (
+                entries.map((entry, i) => <EntryBody key={i} entry={entry} />)
+              ) : (
+                <p className="text-muted-foreground text-sm">
+                  No per-model narrative was produced for this model.
+                </p>
+              )}
             </CardContent>
           </Card>
         );

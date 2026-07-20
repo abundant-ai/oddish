@@ -80,7 +80,9 @@ def normalize_entries(
         if not isinstance(entry, dict):
             continue
         raw_model = entry.get("model")
-        if raw_model is not None and not isinstance(raw_model, str):
+        # None/missing would otherwise fall through to _model_key -> "unknown",
+        # a live denominators key, misattributing a malformed entry to it.
+        if not isinstance(raw_model, str):
             continue
         key = _model_key(raw_model)
         if key not in denominators:
