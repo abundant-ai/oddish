@@ -128,9 +128,18 @@ async def check() -> bool:
             print("The 'leave artifacts in place' plan has a clock on it. Either copy")
             print("the artifacts, or get the rule scoped to exclude these prefixes.")
             return False
-        print("VERDICT: no enabled expiration/archive threat detected. Leaving the")
-        print("artifacts in place and serving them cross-bucket is safe on current config.")
-        print("(Re-check if bucket policy changes; this is a point-in-time read.)")
+        if not config_readable:
+            print("VERDICT: INCONCLUSIVE. The read-only sauron-legacy credential is")
+            print("denied s3:GetLifecycleConfiguration / GetBucketVersioning, so the")
+            print("policy could NOT be read. The object sample is 100% STANDARD, which")
+            print("means nothing has been archived or deleted AS OF NOW -- but that does")
+            print("not rule out a future-dated expiration or transition rule.")
+            print("To confirm, an admin with s3:GetLifecycleConfiguration must run:")
+            print(f"  aws s3api get-bucket-lifecycle-configuration --bucket {BUCKET}")
+            return False
+        print("VERDICT: policy READ and no enabled expiration/archive threat found, and")
+        print("the object sample is 100% STANDARD. Leaving artifacts in place and serving")
+        print("them cross-bucket is safe on current config. (Point-in-time read.)")
         return True
 
 
