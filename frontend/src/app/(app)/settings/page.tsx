@@ -959,12 +959,12 @@ const ALERT_TOGGLES: {
   {
     key: "cost_milestone_enabled",
     label: "Expensive experiment",
-    description: "Each time one of your experiments passes a spend milestone.",
+    description: "An experiment's spend passes a milestone within 24 hours.",
   },
   {
     key: "expensive_trial_enabled",
     label: "Expensive trial",
-    description: "A single trial of yours costs more than your trial cutoff.",
+    description: "A trial finished within 24 hours costs more than your cutoff.",
   },
   {
     key: "experiment_failed_enabled",

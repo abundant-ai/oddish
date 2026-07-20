@@ -97,9 +97,22 @@ class ApiAnalyzerLLMClient:
         max_tokens: int = 4096,
         thinking: dict | None = None,
         api_key: str | None = None,
+        thinking: dict | None = None,
+        output_schema: dict | None = None,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
+        # Thinking is set EXPLICITLY, never left to the model default. Sonnet 5
+        # runs adaptive thinking when the field is omitted (Sonnet 4.6 ran
+        # without it), and max_tokens caps thinking + response *together* -- so
+        # moving analysis_model to sonnet-5 silently spent the output budget on
+        # reasoning and truncated block output mid-JSON. Analyzer blocks parse
+        # their output, so a truncated response is a hard failure, not a
+        # degraded one. Pass thinking= to opt back in per call site.
+        self._thinking = thinking if thinking is not None else {"type": "disabled"}
+        # When set, the response is constrained to this JSON schema during
+        # generation instead of being hand-written into free text.
+        self._output_schema = output_schema
         self._thinking = thinking if thinking is not None else _THINKING_DISABLED
         key = resolve_analyzer_api_key(api_key)
         self._inner = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
@@ -115,6 +128,14 @@ class ApiAnalyzerLLMClient:
         )
         if system_prompt is not None:
             kwargs["system"] = system_prompt
+        if self._output_schema is not None:
+            # output_config is not a named kwarg on anthropic 0.76.0 (the break
+            # behind #493), so it goes through extra_body.
+            kwargs["extra_body"] = {
+                "output_config": {
+                    "format": {"type": "json_schema", "schema": self._output_schema}
+                }
+            }
         async with self._inner.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text

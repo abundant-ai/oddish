@@ -53,6 +53,10 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
 - Always `-e modal`. First `--experiment <name>` submission creates the
   experiment; reuse the id (e.g. `a52b8b51`) afterwards.
 - `--ae ODDISH_EVAL_NONCE=$(date +%s%N)` is a harmless distinct env var.
+- Closed-internet tasks are handled automatically: Oddish infers the model
+  API host and disables server-side web tools for restricted agent phases.
+  Optional overrides still exist (`--allow-agent-host`, `--disable-web-tools`)
+  if you need an extra host or want to force the web-tool disable.
 
 ## 3. Load-bearing gotchas (each cost real debugging time)
 
@@ -63,22 +67,13 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
    current count, or delete some first. (There is also a real 24h idempotency
    key = SHA-256 of the whole sweep payload; a different payload → different key.)
 
-2. **The Modal/Harbor fork cannot switch network policy between phases.** A
-   closed-internet task's intended `public` env → `allowlist` agent →
-   `no-network` verifier fails with *"cannot change network policy after start"*
-   (surfaces as a Harbor `ExceptionGroup`). **Fix:** copy the task dir and patch
-   `task.toml` so `[environment]`, `[agent]`, and `[verifier]` all use
-   `network_mode="allowlist"` with a single `allowed_hosts` list, then submit
-   `-p <patched-dir>`. Because setup now runs *under* the allowlist (not public),
-   `allowed_hosts` must include **every host the agent's install step needs**,
-   not just the model API:
-   - model API host (e.g. `api.x.ai`, `api.ai.meta.com`) + object storage
-     (`storage.googleapis.com`),
-   - tool install: `astral.sh`, `github.com`, `objects.githubusercontent.com`,
-     `raw.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`,
-   - apt (some base images `apt-get install` prereqs): `deb.debian.org`,
-     `security.debian.org`, `archive.ubuntu.com`, `security.ubuntu.com`.
-   Missing install hosts show up as agent-setup `exit 100` (apt) / `exit 2` (uv).
+2. **Closed-internet tasks are automatic on Modal/Daytona.** Oddish's Harbor
+   pin uses upstream dynamic network policy, so phase switching (`public` env →
+   `allowlist` agent → `no-network` verifier) works. At trial time Oddish also
+   injects the inferred model host and disables web tools for that restricted
+   agent phase — no extra CLI flags required for the common case. Use
+   `--allow-agent-host` only for additional hosts (registries, apt mirrors)
+   that the task allowlist does not already cover.
 
 3. **OOM (`exit 137`).** High reasoning effort (e.g. `reasoning_effort=xhigh`) +
    heavy build/test/training commands blow past default RAM → container

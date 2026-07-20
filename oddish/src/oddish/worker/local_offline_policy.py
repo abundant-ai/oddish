@@ -1,9 +1,10 @@
 """Network-policy relaxation for offline / probe trials.
 
 Offline tasks run under ``no-network`` (or an ``allowlist`` covering only the
-model API). On Modal that's a CIDR allowlist; on local Docker it's
-``network_mode: none``. Either way the agent loses egress to everything except
-its model endpoint -- which breaks two things probe trials need:
+model API). On Modal Harbor uses upstream dynamic domain allowlists; on local
+Docker it's ``network_mode: none``. Either way the agent loses egress to
+everything except its model endpoint -- which breaks two things probe trials
+need:
 
   * Harbor's claude-code install (``curl downloads.claude.ai/.../bootstrap.sh``),
     which otherwise SYN-times-out (~127s, curl exit 28), failing the whole trial.

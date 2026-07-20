@@ -28,14 +28,14 @@ def test_plain_strings_pass_through():
             "cluster_name": "oddish-tpu-usw4",
             "region": "us-west4",
             "topology": "2x2",
-            "agent_tools_image": "ghcr.io/org/tools:tag",
+            "region": "us-east",
         }
     )
     assert coerced == {
         "cluster_name": "oddish-tpu-usw4",
         "region": "us-west4",
         "topology": "2x2",
-        "agent_tools_image": "ghcr.io/org/tools:tag",
+        "region": "us-east",
     }
 
 

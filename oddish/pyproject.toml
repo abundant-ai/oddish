@@ -108,8 +108,7 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-# The Abundant AI main branch includes the Daytona network-policy lifecycle fix.
-# uv.lock records the exact commit used by the worker image.
+# abundant-ai/harbor main. uv.lock records the exact commit used by the worker image.
 harbor = { git = "https://github.com/abundant-ai/harbor", branch = "main" }
 
 [tool.uv]

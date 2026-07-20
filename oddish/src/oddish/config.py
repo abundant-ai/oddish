@@ -142,7 +142,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-HARBOR_DEFAULT_SHA = "555fc203d51ef97d937703654e7d03b29cba4a02"
+# Pin of abundant-ai/harbor@main (upstream-style NetworkPolicy; no fork Modal CIDR stack).
+HARBOR_DEFAULT_SHA = "d070837196905505cd1944099fb93e1b9ad80fd2"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
