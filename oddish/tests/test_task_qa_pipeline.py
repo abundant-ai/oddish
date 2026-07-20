@@ -217,9 +217,7 @@ async def test_stage_completes_when_no_qa_eligible_trials(monkeypatch):
         verdict_status=None,
         finished_at=None,
     )
-    session = _StageSession(
-        trial=trial, task=task, pending_count=0, qa_eligible=0
-    )
+    session = _StageSession(trial=trial, task=task, pending_count=0, qa_eligible=0)
 
     async def fail_verdict_enqueue(*_args, **_kwargs):
         raise AssertionError("no QA job when there is nothing to classify")
@@ -254,9 +252,7 @@ async def test_stage_clears_stale_verdict_status_on_completion(monkeypatch):
         verdict_error="left over",
         finished_at=None,
     )
-    session = _StageSession(
-        trial=trial, task=task, pending_count=0, qa_eligible=0
-    )
+    session = _StageSession(trial=trial, task=task, pending_count=0, qa_eligible=0)
 
     async def fail_verdict_enqueue(*_args, **_kwargs):
         raise AssertionError("no QA job when there is nothing to classify")
@@ -442,6 +438,12 @@ async def test_run_task_qa_job_completes_with_no_live_trials(monkeypatch):
         raise AssertionError("verdict synthesis must not run with no live trials")
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    # Unreachable on the green path (the branch returns early), but a regression
+    # that falls through to the shielded write would otherwise hit the real DB
+    # from a unit test -- which is exactly what happened in this test's RED run.
+    monkeypatch.setattr(
+        "oddish.core.verdict_sync.get_session", fake_get_session, raising=False
+    )
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
@@ -452,6 +454,12 @@ async def test_run_task_qa_job_completes_with_no_live_trials(monkeypatch):
         "task-15", queue_key="qa", verdict_synth_fn=fail_verdict_synth
     )
 
+    # Both of the next two asserts are load-bearing; neither is redundant.
+    # ``_QASession`` is a plain fake with no rollback, so a NameError raised
+    # after line 252 of qa_handler leaves verdict_status already SUCCESS on the
+    # in-memory object -- the status assert is what actually caught the original
+    # regression. The verdict_status assert pins the terminal-status contract
+    # against a direct edit.
     assert task.verdict_status == VerdictStatus.SUCCESS
     assert task.verdict is None
     assert task.status == TaskStatus.COMPLETED
