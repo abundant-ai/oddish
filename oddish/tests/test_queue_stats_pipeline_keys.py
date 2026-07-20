@@ -7,6 +7,10 @@ under one model), and that model's real trial counts were routed into the
 "analyses" pipeline. Analysis/verdict counts now live under the reserved
 ``analysis`` / ``verdict`` buckets regardless of which models the pipelines
 run on.
+
+``verdict_model`` now defaults to the shared analysis model, so the two model
+queue keys coincide out of the box; the fixture pins two distinct models to
+preserve the original incident shape (each pipeline on its own model).
 """
 
 from __future__ import annotations
@@ -30,8 +34,16 @@ from oddish.queue import (  # noqa: E402
     get_queue_stats,
 )
 
-ANALYSIS_MODEL_KEY = settings.get_analysis_queue_key()
-VERDICT_MODEL_KEY = settings.get_qa_queue_key()
+
+@pytest.fixture
+def model_keys(monkeypatch) -> tuple[str, str]:
+    """Pin distinct analysis/verdict models; return their queue keys."""
+    monkeypatch.setattr(settings, "analysis_model", "claude-haiku-4-5")
+    monkeypatch.setattr(settings, "verdict_model", "claude-sonnet-4-6")
+    analysis_key = settings.get_analysis_queue_key()
+    verdict_key = settings.get_qa_queue_key()
+    assert analysis_key != verdict_key
+    return analysis_key, verdict_key
 
 
 class _Result:
@@ -45,6 +57,10 @@ class _Result:
 class _FakeSession:
     """Dispatches the three ``get_queue_stats`` scans off the statement text."""
 
+    def __init__(self, analysis_key: str, verdict_key: str) -> None:
+        self._analysis_key = analysis_key
+        self._verdict_key = verdict_key
+
     async def execute(self, statement, params: dict[str, Any] | None = None):
         sql = str(statement)
         if "FROM trials" in sql and "COALESCE(queue_key, provider)" in sql:
@@ -52,9 +68,9 @@ class _FakeSession:
             # models themselves -- the collision the reserved keys prevent.
             return _Result(
                 [
-                    (ANALYSIS_MODEL_KEY, "RUNNING", 7),
-                    (ANALYSIS_MODEL_KEY, "QUEUED", 3),
-                    (VERDICT_MODEL_KEY, "RUNNING", 5),
+                    (self._analysis_key, "RUNNING", 7),
+                    (self._analysis_key, "QUEUED", 3),
+                    (self._verdict_key, "RUNNING", 5),
                     ("openai/gpt-5.5", "SUCCESS", 11),
                 ]
             )
@@ -76,8 +92,9 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_pipeline_counts_use_reserved_buckets() -> None:
-    stats = await get_queue_stats(_FakeSession())
+async def test_pipeline_counts_use_reserved_buckets(model_keys) -> None:
+    analysis_key, verdict_key = model_keys
+    stats = await get_queue_stats(_FakeSession(analysis_key, verdict_key))
 
     # Analysis/verdict pipeline counts land in the reserved buckets ...
     assert stats[ANALYSIS_PIPELINE_QUEUE_KEY]["running"] == 4099
@@ -86,7 +103,7 @@ async def test_pipeline_counts_use_reserved_buckets() -> None:
     assert stats[VERDICT_PIPELINE_QUEUE_KEY]["running"] == 45
 
     # ... and the models' own buckets carry ONLY their trial counts.
-    assert stats[ANALYSIS_MODEL_KEY] == {
+    assert stats[analysis_key] == {
         "pending": 0,
         "queued": 3,
         "running": 7,
@@ -95,19 +112,20 @@ async def test_pipeline_counts_use_reserved_buckets() -> None:
         "retrying": 0,
         "skipped": 0,
     }
-    assert stats[VERDICT_MODEL_KEY]["running"] == 5
+    assert stats[verdict_key]["running"] == 5
 
 
 @pytest.mark.asyncio
-async def test_assemble_routes_model_trials_to_trial_pipeline(monkeypatch) -> None:
+async def test_assemble_routes_model_trials_to_trial_pipeline(
+    model_keys, monkeypatch
+) -> None:
+    analysis_key, verdict_key = model_keys
     # Give the QA job bucket a concurrency override distinct from every
     # default so the reserved-bucket assertion below cannot pass vacuously
     # (default == default).
-    monkeypatch.setitem(
-        settings.model_concurrency_overrides, VERDICT_MODEL_KEY, 999
-    )
+    monkeypatch.setitem(settings.model_concurrency_overrides, verdict_key, 999)
 
-    stats = await get_queue_stats(_FakeSession())
+    stats = await get_queue_stats(_FakeSession(analysis_key, verdict_key))
     queue_stats, pipeline = _assemble_queue_and_pipeline(stats)
 
     # Trials running on the analysis/verdict models count as trials, not as
@@ -131,10 +149,13 @@ async def test_assemble_routes_model_trials_to_trial_pipeline(monkeypatch) -> No
 class _FakeOrgSession:
     """By-org variant of ``_FakeSession`` for ``get_queue_stats_by_org``."""
 
+    def __init__(self, analysis_key: str) -> None:
+        self._analysis_key = analysis_key
+
     async def execute(self, statement, params: dict[str, Any] | None = None):
         sql = str(statement)
         if "FROM trials" in sql and "COALESCE(queue_key, provider)" in sql:
-            return _Result([("org-a", ANALYSIS_MODEL_KEY, "RUNNING", 2)])
+            return _Result([("org-a", self._analysis_key, "RUNNING", 2)])
         if "analysis_status" in sql:
             return _Result([("org-a", AnalysisStatus.RUNNING, 41)])
         if "verdict_status" in sql:
@@ -143,16 +164,17 @@ class _FakeOrgSession:
 
 
 @pytest.mark.asyncio
-async def test_by_org_stats_use_reserved_buckets() -> None:
+async def test_by_org_stats_use_reserved_buckets(model_keys) -> None:
     from oddish.queue import get_queue_stats_by_org
 
-    stats_by_org = await get_queue_stats_by_org(_FakeOrgSession())
+    analysis_key, _ = model_keys
+    stats_by_org = await get_queue_stats_by_org(_FakeOrgSession(analysis_key))
 
     org_stats = stats_by_org["org-a"]
     assert org_stats[ANALYSIS_PIPELINE_QUEUE_KEY]["running"] == 41
     assert org_stats[VERDICT_PIPELINE_QUEUE_KEY]["queued"] == 17
     # The analysis model's own bucket keeps only its trial counts.
-    assert org_stats[ANALYSIS_MODEL_KEY]["running"] == 2
+    assert org_stats[analysis_key]["running"] == 2
 
 
 def test_reserved_keys_survive_normalization() -> None:

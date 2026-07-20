@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import warnings
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,6 @@ from oddish.config import (
     ANALYSIS_MODEL,
     BEDROCK_ENV_VARS,
     OPENAI_PROVIDER_OPENAI,
-    VERDICT_MODEL,
     looks_like_bedrock_model_id,
     settings,
     to_anthropic_api_model_id,
@@ -459,26 +459,25 @@ class TrialClassifier:
         )
 
 
-def _compute_task_verdict_openai(
-    classifications: list[TrialClassification],
-    baseline: BaselineValidation | None = None,
-    quality_check_passed: bool = True,
-    model: str = VERDICT_MODEL,
-    console: "Console | None" = None,
-    verbose: bool = False,
-    api_key: str | None = None,
-    timeout: float | None = None,
-) -> TaskVerdict:
-    """Compute task verdict using OpenAI to synthesize trial analyses."""
-    if not classifications:
-        return TaskVerdict(
-            is_good=False,
-            confidence="low",
-            primary_issue="No trials to analyze",
-            reasoning="No verdict could be computed because the task has no analyzed trials yet.",
-            recommendations=["Run agent trials first"],
-        )
+def _is_claude_model_id(model: str) -> bool:
+    """True for model ids the Claude CLI can serve.
 
+    Covers plain Claude ids (``claude-sonnet-5``), provider-prefixed ids
+    (``anthropic/claude-sonnet-5``), and Bedrock inference-profile ids
+    (``global.anthropic.claude-...``). Everything else keeps the
+    OpenAI / Azure OpenAI verdict path.
+    """
+    if looks_like_bedrock_model_id(model):
+        return True
+    tail = model.split("/", 1)[-1].strip().lower()
+    return tail.startswith("claude")
+
+
+def _build_verdict_prompt(
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None,
+    quality_check_passed: bool,
+) -> str:
     if baseline:
         if baseline.is_valid:
             baseline_summary = (
@@ -507,12 +506,59 @@ def _compute_task_verdict_openai(
         )
     trial_classifications = "\n".join(trial_lines)
 
-    prompt = _VERDICT_PROMPT.format(
+    return _VERDICT_PROMPT.format(
         num_trials=len(classifications),
         baseline_summary=baseline_summary,
         quality_check_summary=quality_check_summary,
         trial_classifications=trial_classifications,
     )
+
+
+def _finalize_task_verdict(
+    parsed: TaskVerdictModel,
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None,
+) -> TaskVerdict:
+    task_problem_count = sum(1 for c in classifications if c.is_task_problem)
+    agent_problem_count = sum(
+        1 for c in classifications if c.classification == Classification.GOOD_FAILURE
+    )
+    success_count = sum(
+        1
+        for c in classifications
+        if c.classification in (Classification.GOOD_SUCCESS, Classification.BAD_SUCCESS)
+    )
+    harness_error_count = sum(
+        1 for c in classifications if c.classification == Classification.HARNESS_ERROR
+    )
+
+    return TaskVerdict(
+        is_good=parsed.is_good,
+        confidence=parsed.confidence,
+        primary_issue=parsed.primary_issue,
+        reasoning=parsed.reasoning,
+        recommendations=parsed.recommendations,
+        task_problem_count=task_problem_count,
+        agent_problem_count=agent_problem_count,
+        success_count=success_count,
+        harness_error_count=harness_error_count,
+        classifications=classifications,
+        baseline=baseline,
+    )
+
+
+def _compute_task_verdict_openai(
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None,
+    quality_check_passed: bool,
+    model: str,
+    console: "Console | None" = None,
+    verbose: bool = False,
+    api_key: str | None = None,
+    timeout: float | None = None,
+) -> TaskVerdict:
+    """Compute task verdict using OpenAI to synthesize trial analyses."""
+    prompt = _build_verdict_prompt(classifications, baseline, quality_check_passed)
 
     client, runtime_model, provider_label = _build_verdict_openai_client(
         model=model,
@@ -556,32 +602,140 @@ def _compute_task_verdict_openai(
             )
         raise RuntimeError(f"Verdict synthesis failed: {exc}") from exc
 
-    task_problem_count = sum(1 for c in classifications if c.is_task_problem)
-    agent_problem_count = sum(
-        1 for c in classifications if c.classification == Classification.GOOD_FAILURE
-    )
-    success_count = sum(
-        1
-        for c in classifications
-        if c.classification in (Classification.GOOD_SUCCESS, Classification.BAD_SUCCESS)
-    )
-    harness_error_count = sum(
-        1 for c in classifications if c.classification == Classification.HARNESS_ERROR
-    )
+    return _finalize_task_verdict(verdict_model, classifications, baseline)
 
-    return TaskVerdict(
-        is_good=verdict_model.is_good,
-        confidence=verdict_model.confidence,
-        primary_issue=verdict_model.primary_issue,
-        reasoning=verdict_model.reasoning,
-        recommendations=verdict_model.recommendations,
-        task_problem_count=task_problem_count,
-        agent_problem_count=agent_problem_count,
-        success_count=success_count,
-        harness_error_count=harness_error_count,
-        classifications=classifications,
-        baseline=baseline,
-    )
+
+def _run_claude_verdict_cli(
+    prompt: str,
+    *,
+    model: str,
+    timeout: float,
+    verbose: bool,
+) -> TaskVerdictModel:
+    """Run the Claude CLI in print mode and parse the verdict structured output.
+
+    Mirrors ``TrialClassifier._run_claude_cli`` (same binary, auth routing, and
+    JSON/structured-output contract) but synchronously: ``compute_task_verdict``
+    is a blocking call inside the async QA job, exactly like the OpenAI client
+    path it replaces.
+    """
+    schema = json.dumps(TaskVerdictModel.model_json_schema())
+    claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
+    model_id, env = _resolve_analysis_model_and_env(model, dict(os.environ))
+    command = [
+        claude_bin,
+        "-p",
+        prompt,
+        "--model",
+        model_id,
+        "--output-format",
+        "json",
+        "--json-schema",
+        schema,
+        "--tools",
+        "Read,Glob",
+        "--allowedTools",
+        "Read",
+        "Glob",
+        "--permission-mode",
+        "bypassPermissions",
+        "--dangerously-skip-permissions",
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        raise TimeoutError(
+            f"Claude CLI verdict synthesis timed out after {timeout}s"
+        ) from None
+
+    stdout_text = completed.stdout.decode("utf-8", errors="replace")
+    stderr_text = completed.stderr.decode("utf-8", errors="replace")
+
+    if verbose:
+        print_process_stream("Claude stderr", stderr_text, Colors.MAGENTA)
+
+    if completed.returncode != 0:
+        error_text = (
+            stderr_text.strip() or stdout_text.strip() or "Unknown Claude CLI error"
+        )
+        raise RuntimeError(
+            f"Claude CLI exited with code {completed.returncode}: {error_text}"
+        )
+
+    try:
+        payload = json.loads(stdout_text)
+    except json.JSONDecodeError as exc:
+        if verbose:
+            print_process_stream("Claude stdout", stdout_text, Colors.BLUE)
+        raise RuntimeError(f"Claude CLI returned invalid JSON: {exc}") from exc
+
+    structured_output = payload.get("structured_output")
+    if structured_output is None:
+        result = payload.get("result")
+        if isinstance(result, dict):
+            structured_output = result
+        elif isinstance(result, str):
+            try:
+                structured_output = json.loads(result)
+            except json.JSONDecodeError:
+                structured_output = None
+
+    if structured_output is None:
+        raise RuntimeError("Claude CLI JSON response did not contain structured_output")
+
+    return TaskVerdictModel.model_validate(structured_output)
+
+
+def _compute_task_verdict_claude(
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None,
+    quality_check_passed: bool,
+    model: str,
+    console: "Console | None" = None,
+    verbose: bool = False,
+    timeout: float | None = None,
+) -> TaskVerdict:
+    """Compute task verdict using the Claude CLI to synthesize trial analyses."""
+    prompt = _build_verdict_prompt(classifications, baseline, quality_check_passed)
+
+    if console:
+        console.print("  [dim]Synthesizing verdict with Claude CLI...[/dim]")
+
+    if verbose:
+        print(
+            f"\n{Colors.YELLOW}[Verdict] Synthesizing task verdict with Claude CLI ({model})...{Colors.RESET}",
+            flush=True,
+        )
+
+    try:
+        parsed = _run_claude_verdict_cli(
+            prompt,
+            model=model,
+            timeout=timeout or VERDICT_TIMEOUT,
+            verbose=verbose,
+        )
+
+        if verbose:
+            print(
+                f"{Colors.GREEN}[Verdict] Verdict synthesis complete{Colors.RESET}\n",
+                flush=True,
+            )
+    except Exception as exc:
+        exc_type = type(exc).__name__
+        if verbose:
+            print(
+                f"{Colors.RED}[Verdict] Failed ({exc_type}): {exc}{Colors.RESET}\n",
+                flush=True,
+            )
+        raise RuntimeError(f"Verdict synthesis failed: {exc}") from exc
+
+    return _finalize_task_verdict(parsed, classifications, baseline)
 
 
 def _build_verdict_openai_client(
@@ -617,13 +771,38 @@ def compute_task_verdict(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
-    model: str = VERDICT_MODEL,
+    model: str = ANALYSIS_MODEL,
     console: "Console | None" = None,
     verbose: bool = False,
     api_key: str | None = None,
     timeout: float | None = None,
 ) -> TaskVerdict:
-    """Compute overall task verdict from trial classifications."""
+    """Compute overall task verdict from trial classifications.
+
+    Claude model ids (the default: verdict synthesis shares the analysis
+    model) run through the Claude CLI; any non-Claude override keeps the
+    OpenAI / Azure OpenAI client path.
+    """
+    if not classifications:
+        return TaskVerdict(
+            is_good=False,
+            confidence="low",
+            primary_issue="No trials to analyze",
+            reasoning="No verdict could be computed because the task has no analyzed trials yet.",
+            recommendations=["Run agent trials first"],
+        )
+
+    if _is_claude_model_id(model):
+        return _compute_task_verdict_claude(
+            classifications,
+            baseline,
+            quality_check_passed,
+            model,
+            console,
+            verbose,
+            timeout,
+        )
+
     return _compute_task_verdict_openai(
         classifications,
         baseline,

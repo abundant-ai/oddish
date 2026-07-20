@@ -42,7 +42,9 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 
 # Plain Anthropic-style id (no Bedrock inference-profile mapping): the
 # classifier and trajectory analyzers route non-Bedrock Claude ids to the
-# direct Anthropic API.
+# direct Anthropic API. Verdict synthesis (the QA job's final stage) also
+# runs on this model by default via ``settings.verdict_model``; the old
+# dedicated gpt-5.4 verdict model is deprecated.
 ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
@@ -50,7 +52,6 @@ ANALYSIS_MODEL = "claude-sonnet-5"
 # ANALYSIS_MODEL so it does not change the analysis queue key or the
 # TrialClassifier model. Normalized to a direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
-VERDICT_MODEL = "gpt-5.4"
 
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
@@ -1174,7 +1175,11 @@ class Settings(BaseSettings):
     queue_key_buckets: dict[str, str] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
-    verdict_model: str = VERDICT_MODEL
+    # Verdict-synthesis model for the QA job's final stage. Defaults to the
+    # shared analysis model (a Claude id served via the Claude CLI). A
+    # non-Claude ODDISH_VERDICT_MODEL override still routes through the
+    # OpenAI / Azure OpenAI client.
+    verdict_model: str = ANALYSIS_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()
@@ -1511,7 +1516,10 @@ class Settings(BaseSettings):
         """Concurrency bucket for the task-level QA job.
 
         Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
-        existing per-model concurrency overrides keep applying.
+        existing per-model concurrency overrides keep applying. Since
+        ``verdict_model`` defaults to the shared analysis model, this
+        coincides with ``get_analysis_queue_key()`` unless an operator
+        overrides ``ODDISH_VERDICT_MODEL``.
         """
         return self.normalize_queue_key(self.verdict_model)
 
