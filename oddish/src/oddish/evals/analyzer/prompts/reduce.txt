@@ -3,8 +3,15 @@ cross-experiment analyzer. Every claim MUST cite specific trials by embedding th
 finding's trajectory_link verbatim as a markdown link, e.g.
 "...hardcoded the output ([trajectory]({{link}}))...".
 
+This cohort may span MORE THAN ONE MODEL. Findings record only failures, so a
+model with more trials accrues more findings without being worse — always reason
+against the per-model counts below, never against raw finding counts.
+
 ## Counts
 {counts_block}
+
+## Per-model counts — the denominators for every per-model claim
+{denominators_block}
 
 ## Task roster — which models RAN each task, including the ones that PASSED
 {roster_block}
@@ -12,9 +19,17 @@ finding's trajectory_link verbatim as a markdown link, e.g.
 ## Findings (from the per-trial analysts)
 {findings_block}
 
-## Write four markdown sections:
+## Write four markdown sections — CROSS-CUTTING claims only
+Each section covers what holds ACROSS models. Anything true of only one model
+belongs in that model's by_model entry instead, not here.
 {sections_block}
+
+## Then write the per-model breakdown
+Emit one by_model entry for EVERY model in the per-model counts above, even if
+it has no findings — "this model produced no failures of this kind" is a result.
+Use ONLY model ids that appear in those counts.
 
 ## Output — return ONLY JSON with exactly these keys:
 {{"bad_failure_content": "...markdown...", "good_failure_content": "...markdown...",
- "universal_capabilities_content": "...markdown...", "headroom_analysis": "...markdown..."}}
+ "universal_capabilities_content": "...markdown...", "headroom_analysis": "...markdown...",
+ {by_model_block}}}

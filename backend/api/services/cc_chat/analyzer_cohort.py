@@ -116,7 +116,8 @@ async def run_cohort(
     api_key: str,
     cli_src: bytes,
     models_by_task: dict[str, list[str]] | None = None,
-) -> tuple[list[Finding], dict[str, str]]:
+    denominators: dict[str, dict] | None = None,
+) -> tuple[list[Finding], dict[str, str], tuple[list[dict], str]]:
     # Imported here so the module still loads if the block layer is refactored;
     # the cohort is the only caller that wires blocks to a shared sandbox client.
     from api.services.blocks.analyzer.analyzer_block import (
@@ -216,26 +217,13 @@ async def run_cohort(
             # REDUCE gets NO fetch-more system prompt: its whole job is to read
             # the findings files, and telling it to pull trajectories would both
             # contradict its user prompt and let it refetch the entire cohort --
-            # recreating the context blowup this batching exists to prevent. It
-            # downloads reduce.json plus every batch's findings file; a missing
-            # file decodes to "" and costs only its own batch.
-            logger.info("%s reduce over findings", tag)
-            reduce_block = AnalyzerBlock(
-                analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
-                llm_client_type=LLMClientType.SANDBOX,
-                input=AnalyzerInput(
-                    input={"bucket": bucket, "counts": counts},
-                    files_to_download=[
-                        REDUCE_PATH,
-                        *(findings_path(i) for i in range(1, len(plan) + 1)),
-                    ],
+            # recreating the context blowup this batching exists to prevent.
+            logger.info("%s reduce over %s", tag, FINDINGS_GLOB)
+            await _turn(
+                build_reduce_only_prompt(
+                    bucket, counts, len(plan), models_by_task, denominators
                 ),
-                prompt=build_reduce_only_prompt(
-                    bucket, counts, len(plan), models_by_task
-                ),
-                model=HAIKU_MODEL,
-                analyzer_id=analyzer_id,
-                client=llm,
+                "reduce",
             )
             reduce_out = await reduce_block.run()
             raw_stream.extend(reduce_block._chunks)
@@ -264,15 +252,10 @@ async def run_cohort(
             except Exception as exc:  # noqa: BLE001 — auto_delete is the backstop
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
-    findings, sections = parse_cohort_result(
-        bucket,
-        reduce_b,
-        findings_b,
-        _render_stream(raw_stream),
+    findings, sections, by_model = parse_cohort_result(
+        bucket, reduce_b, findings_b, "\n".join(stream_lines),
         # Scoped to this cohort, so a finding for someone else's trial is dropped.
         {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},
     )
-    logger.info(
-        "%s done: %d findings, sections=%s", tag, len(findings), sorted(sections)
-    )
-    return findings, sections
+    logger.info("%s done: %d findings, sections=%s", tag, len(findings), sorted(sections))
+    return findings, sections, by_model

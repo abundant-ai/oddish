@@ -14,13 +14,19 @@ from oddish.evals.analyzer.prompt_builder import (
 # verbatim -- the live API path depends on this prose. headroom_analysis is
 # deliberately excluded: it was rewritten to also ask for scaling suggestions,
 # so pinning its old bytes would pin the bug this section exists to fix.
+#
+# Updated for per-model reduce wiring: each of the three briefs below gained a
+# trailing "cover only what holds across models" line, so the pin now includes it.
 _ORIGINAL_BLOCK = (
     "- bad_failure_content: reward hacking, worked backwards from the oracle. Organize\n"
     "  by 1a (task ambiguity/specification) and 1b (task security/construction).\n"
+    "Cover only what holds across models; put single-model observations in that model's by_model entry.\n"
     "- good_failure_content: genuine model-capability failures — what the model failed at.\n"
+    "Cover only what holds across models; put single-model observations in that model's by_model entry.\n"
     "- universal_capabilities_content: organize the good failures under 3a problem\n"
     "  identification, 3b implementation, 3c syntax, and any emergent capability categories\n"
-    "  the findings surfaced."
+    "  the findings surfaced.\n"
+    "Cover only what holds across models; put single-model observations in that model's by_model entry."
 )
 
 
@@ -74,3 +80,55 @@ def test_section_brief_reads_the_fragment():
 def test_every_section_key_has_a_fragment():
     for key in SECTION_KEYS:
         assert section_brief(key).strip()
+
+
+def test_by_model_output_shape_names_every_required_key():
+    from oddish.evals.analyzer.prompt_builder import by_model_output_shape
+
+    shape = by_model_output_shape()
+    for key in (
+        "by_model", "cross_model_comparison", "model", "narrative",
+        "relative_strengths", "relative_weaknesses", "distinctive_failures",
+    ):
+        assert key in shape
+
+
+def test_denominators_block_renders_counts_per_model():
+    from oddish.evals.analyzer.prompt_builder import denominators_block
+
+    block = denominators_block({
+        "claude-opus-4-8": {"trials": 10, "scored": 10, "solved": 6,
+                            "mean_reward": 0.6, "analyzed": 4, "bad": 1, "good": 3},
+    })
+    assert "claude-opus-4-8" in block
+    assert "10 trials" in block
+    assert "6 solved" in block
+
+
+def test_denominators_block_handles_unscored_models():
+    from oddish.evals.analyzer.prompt_builder import denominators_block
+
+    block = denominators_block({
+        "claude-opus-4-8": {"trials": 2, "scored": 0, "solved": 0,
+                            "mean_reward": None, "analyzed": 0, "bad": 0, "good": 0},
+    })
+    assert "mean reward n/a" in block
+
+
+def test_denominators_block_empty_is_explicit():
+    from oddish.evals.analyzer.prompt_builder import denominators_block
+
+    assert denominators_block({}) == "(no per-model denominators available)"
+
+
+def test_reduce_prompt_includes_denominators_and_by_model_shape():
+    from oddish.evals.analyzer.prompt_builder import build_reduce_prompt
+
+    prompt = build_reduce_prompt(
+        [], {"trials": 1, "bad": 0, "good": 1}, {"t1": ["claude-opus-4-8"]},
+        denominators={"claude-opus-4-8": {"trials": 1, "scored": 1, "solved": 0,
+                                          "mean_reward": 0.0, "analyzed": 1,
+                                          "bad": 0, "good": 1}},
+    )
+    assert "claude-opus-4-8" in prompt
+    assert "cross_model_comparison" in prompt

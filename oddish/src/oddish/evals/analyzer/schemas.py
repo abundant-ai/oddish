@@ -59,3 +59,7 @@ class AnalyzerEvalOutput:
     # task_id -> raw trial.model values that RAN the task, including those that
     # passed it. Findings only record failures, so this cannot be derived from them.
     models_by_task: dict[str, list[str]] = field(default_factory=dict)
+    # Per-model insights payload (see evals/analyzer/by_model.py). None when the
+    # strategy produced no per-model data — that is the legacy render signal and
+    # must stay distinguishable from an empty payload.
+    by_model: dict | None = None
