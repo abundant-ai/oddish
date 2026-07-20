@@ -41,7 +41,6 @@ These were confirmed against `harbor/models/task/config.py`. Do not re-derive:
 - `oddish/src/oddish/preflight/runner.py` — `run_checks`, `has_errors`
 - `oddish/src/oddish/preflight/registry.py` — `CHECKS`
 - `oddish/src/oddish/preflight/checks/__init__.py`
-- `oddish/src/oddish/preflight/checks/dockerfile_leaks.py`
 - `oddish/src/oddish/preflight/checks/closed_internet.py`
 - `oddish/src/oddish/preflight/checks/solution_format.py`
 - `oddish/src/oddish/preflight/checks/anti_cheat_soundness.py`
@@ -1512,7 +1511,7 @@ def check(task_dir: Path, config: TaskConfig) -> list[Finding]:
 
 - [ ] **Step 4: Register the check**
 
-In `registry.py`, import `provenance` and insert it **second**, right after `dockerfile_leaks` — both are leak checks and should render together:
+In `registry.py`, import `provenance` and insert it **second**, right after `closed_internet` — the two leak-related checks (provenance, then the network check) render together:
 
 ```python
     Check(
@@ -1570,7 +1569,11 @@ from oddish.cli import app
 
 runner = CliRunner()
 
-_LEAKY_DOCKERFILE = "FROM ubuntu:24.04\nCOPY solution/solve.sh /app/\n"
+# A build-context fetch: the only ERROR this otherwise-clean task trips.
+# make_task's default task.toml is network_mode="no-network" (closed_internet
+# passes) and the .dockerignore suppresses the .git WARN, so exactly one
+# finding fires — a provenance fetch.
+_FETCH_DOCKERFILE = "FROM ubuntu:24.04\nRUN git clone https://github.com/foo/bar /src\n"
 
 
 def test_preflight_exits_zero_on_a_clean_task(make_task):
@@ -1581,11 +1584,11 @@ def test_preflight_exits_zero_on_a_clean_task(make_task):
 
 def test_preflight_exits_one_on_an_error_finding(make_task):
     task_dir = make_task(
-        dockerfile=_LEAKY_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
+        dockerfile=_FETCH_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
     )
     result = runner.invoke(app, ["preflight", str(task_dir)])
     assert result.exit_code == 1
-    assert "dockerfile_leaks" in result.output
+    assert "provenance" in result.output
 
 
 def test_preflight_exits_zero_when_only_warnings(make_task):
@@ -1597,13 +1600,13 @@ def test_preflight_exits_zero_when_only_warnings(make_task):
 
 def test_preflight_json_emits_a_parseable_document(make_task):
     task_dir = make_task(
-        dockerfile=_LEAKY_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
+        dockerfile=_FETCH_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
     )
     result = runner.invoke(app, ["preflight", str(task_dir), "--json"])
     assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["ok"] is False
-    assert payload["findings"][0]["check_id"] == "dockerfile_leaks"
+    assert payload["findings"][0]["check_id"] == "provenance"
     assert payload["findings"][0]["severity"] == "error"
 
 
@@ -1813,7 +1816,7 @@ def _stub_run_preamble(monkeypatch):
 
 def test_run_aborts_before_upload_when_preflight_fails(make_task, monkeypatch):
     task_dir = make_task(
-        dockerfile=_LEAKY_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
+        dockerfile=_FETCH_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
     )
     _stub_run_preamble(monkeypatch)
 
@@ -1831,7 +1834,7 @@ def test_run_aborts_before_upload_when_preflight_fails(make_task, monkeypatch):
 
 def test_run_force_proceeds_and_still_prints_findings(make_task, monkeypatch):
     task_dir = make_task(
-        dockerfile=_LEAKY_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
+        dockerfile=_FETCH_DOCKERFILE, extra_files={".dockerignore": "**/.git\n"}
     )
     _stub_run_preamble(monkeypatch)
 
@@ -1845,7 +1848,7 @@ def test_run_force_proceeds_and_still_prints_findings(make_task, monkeypatch):
     )
     # Getting past the gate is proved by the sentinel firing.
     assert "reached upload" in str(result.exception)
-    assert "dockerfile_leaks" in result.output
+    assert "provenance" in result.output
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
