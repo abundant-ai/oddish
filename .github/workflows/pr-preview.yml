@@ -354,7 +354,10 @@ jobs:
 
           if [ "$backend_required" = "true" ]; then
             readiness_url="${BACKEND_API_URL%/}/openapi.json"
-            for attempt in $(seq 1 36); do
+            # 120 x 5s: a preview backend runs min_containers=0, so this can pay
+            # a cold start plus a Modal scheduler queue wait for a free CPU
+            # worker. Matches TIMEOUT_S in wait_for_modal_ready.py.
+            for attempt in $(seq 1 120); do
               body_file="$(mktemp)"
               status="$(curl --silent --output "$body_file" --write-out '%{http_code}' --max-time 10 "$readiness_url" || true)"
               if [ "$status" = "200" ] && [ -s "$body_file" ]; then
@@ -363,7 +366,7 @@ jobs:
                 break
               fi
               rm -f "$body_file"
-              if [ "$attempt" = "36" ]; then
+              if [ "$attempt" = "120" ]; then
                 fail "Preview backend never became ready at $readiness_url."
               fi
               sleep 5
