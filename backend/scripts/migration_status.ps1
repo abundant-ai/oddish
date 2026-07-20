@@ -40,7 +40,9 @@ function Show-Status {
     $running = 0; $finished = 0; $starting = 0
 
     Write-Host ""
-    Write-Host ("{0,-22} {1,>10} {2,>10} {3,>9} {4,>8}  {5}" -f `
+    # PowerShell alignment is a signed width -- negative left, positive right.
+    # There is no ">" prefix; using one is a format error at runtime.
+    Write-Host ("{0,-22} {1,10} {2,10} {3,9} {4,8}  {5}" -f `
                 "shard", "done", "of", "rate/s", "errors", "state")
     Write-Host ("-" * 78)
 
