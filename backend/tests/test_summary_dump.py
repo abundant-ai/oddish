@@ -731,3 +731,61 @@ async def test_run_cohort_skips_do_not_abort_and_other_records_still_return(monk
     assert len(result.skipped) == 2
     assert {"trial_id": "tr-missing", "reason": "no such trial"} in result.skipped
     assert {"trial_id": "tr-2", "reason": "no fetchable trajectory"} in result.skipped
+
+
+# ---------------------------------------------------------------------------
+# Output-token cap (shared by prod + harness)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingClient:
+    """Stands in for ApiAnalyzerLLMClient to record its construction kwargs."""
+
+    last_kwargs: dict = {}
+
+    def __init__(self, **kwargs):
+        type(self).last_kwargs = kwargs
+
+    async def stream(self, prompt, *, system_prompt=None):
+        yield _payload()
+
+    async def aclose(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
+    """A dump is only trustworthy if it sends what prod sends. The 2048 cap
+    truncated long trajectories mid-JSON, so both sides must move together."""
+    import api.services.blocks.analyzer.analyzer_llm_client as llm_mod
+    from api.services.summarize_trajectory import (
+        SUMMARY_MAX_TOKENS,
+        TaskContext,
+        generate,
+    )
+    from api.services.summary_dump import summarize_trial
+
+    from unittest.mock import AsyncMock
+
+    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+
+    monkeypatch.setattr(llm_mod, "ApiAnalyzerLLMClient", _CapturingClient)
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
+
+    ctx = TaskContext(
+        task_name="t", instruction=None, final_reward=None,
+        model_used=None, verifier_output=None,
+    )
+
+    await generate(_traj(), ctx, analyzer_id="tr_x")
+    prod_kwargs = _CapturingClient.last_kwargs
+
+    await summarize_trial(
+        _summary_trial(), _traj(), ctx, model="claude-sonnet-5", persist=False,
+    )
+    harness_kwargs = _CapturingClient.last_kwargs
+
+    assert prod_kwargs["max_tokens"] == SUMMARY_MAX_TOKENS
+    assert harness_kwargs["max_tokens"] == SUMMARY_MAX_TOKENS
+    assert SUMMARY_MAX_TOKENS > 2048
