@@ -103,7 +103,7 @@ async def test_run_cohort_returns_findings_and_sections():
     client = FakeDaytonaClient()
     runtime = _FakeRuntime([{"type": "result", "subtype": "success"}],
                            files=_good_files())
-    findings, sections = await ac.run_cohort(client, runtime, **_kwargs())
+    findings, sections, _ = await ac.run_cohort(client, runtime, **_kwargs())
     assert sections == {"bad_failure_content": "# Bad"}
     assert [f.trial_id for f in findings] == ["bad-1"]
     assert findings[0].trajectory_link == "/tasks/t1/probe/bad-1"
@@ -152,7 +152,7 @@ async def test_run_cohort_falls_back_to_stream_when_files_absent():
         {"type": "assistant", "message": {"content": [{"type": "text",
                                                        "text": reduce_line}]}},
     ])
-    _, sections = await ac.run_cohort(client, runtime, **_kwargs())
+    _, sections, _ = await ac.run_cohort(client, runtime, **_kwargs())
     assert sections == {"bad_failure_content": "# Stream"}
 
 
@@ -176,7 +176,7 @@ async def test_parse_happens_after_teardown(monkeypatch):
 
     def spy(*a, **kw):
         seen["deleted_at_parse_time"] = len(client.deleted)
-        return ([], {"bad_failure_content": "# B"})
+        return ([], {"bad_failure_content": "# B"}, ([], ""))
 
     monkeypatch.setattr(ac, "parse_cohort_result", spy)
     await ac.run_cohort(client, runtime, **_kwargs())
@@ -398,7 +398,7 @@ async def test_host_concatenates_every_batch_file():
         files[ap.findings_path(i)] = _line(tid)
     runtime = _CountingRuntime([], files=files)
 
-    findings, _ = await ac.run_cohort(client, runtime, **_kwargs(
+    findings, _, _ = await ac.run_cohort(client, runtime, **_kwargs(
         cohort=cohort, host_by_trial=hosts, oracle_by_trial={}))
 
     # All three survive: a shared file would have kept only the last writer's.
@@ -424,6 +424,6 @@ async def test_a_batch_that_wrote_nothing_costs_only_its_own_batch():
         "headroom_signal": "h"}) + "\n").encode()
     runtime = _CountingRuntime([], files=files)
 
-    findings, _ = await ac.run_cohort(client, runtime, **_kwargs(
+    findings, _, _ = await ac.run_cohort(client, runtime, **_kwargs(
         cohort=cohort, host_by_trial=hosts, oracle_by_trial={}))
     assert sorted(f.trial_id for f in findings) == ["t0", "t20"]

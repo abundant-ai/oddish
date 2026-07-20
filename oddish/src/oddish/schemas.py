@@ -1843,6 +1843,7 @@ class ReportResponse(BaseModel):
     num_bad_failures: int | None = None
     num_good_failures: int | None = None
     breakdown: dict | None = None
+    by_model: dict | None = None
     experiment_ids: list[str] = []
     created_at: datetime | None = None
     finished_at: datetime | None = None
