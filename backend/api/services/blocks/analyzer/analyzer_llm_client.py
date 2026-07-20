@@ -19,6 +19,21 @@ from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 
 _DEFAULT_MODEL = "claude-opus-4-8"
 
+# Analyzer blocks ask for a single JSON object and size max_tokens for that
+# object alone. Thinking is billed against the same max_tokens ceiling, so on a
+# model that thinks by default (sonnet-5 and later: omitting `thinking` runs
+# adaptive, where sonnet-4-6 ran it off) reasoning silently eats the budget and
+# the JSON is cut mid-token. Pin it off rather than relying on the model default.
+_THINKING_DISABLED: dict = {"type": "disabled"}
+
+
+class OutputBudgetExceeded(RuntimeError):
+    """The model hit ``max_tokens`` before finishing its response.
+
+    Raised instead of letting a truncated body reach the block parser, where it
+    only ever surfaced as an unexplained ``non-JSON output`` error.
+    """
+
 
 def resolve_analyzer_api_key(explicit: str | None = None) -> str | None:
     """Anthropic API key for analyzer blocks, most-specific first: an explicit
@@ -80,6 +95,7 @@ class ApiAnalyzerLLMClient:
         *,
         model: str = _DEFAULT_MODEL,
         max_tokens: int = 4096,
+        thinking: dict | None = None,
         api_key: str | None = None,
         thinking: dict | None = None,
         output_schema: dict | None = None,
@@ -97,6 +113,7 @@ class ApiAnalyzerLLMClient:
         # When set, the response is constrained to this JSON schema during
         # generation instead of being hand-written into free text.
         self._output_schema = output_schema
+        self._thinking = thinking if thinking is not None else _THINKING_DISABLED
         key = resolve_analyzer_api_key(api_key)
         self._inner = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
 
@@ -122,6 +139,15 @@ class ApiAnalyzerLLMClient:
         async with self._inner.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
+            final = await stream.get_final_message()
+        # text_stream ends identically on a complete reply and on a truncated
+        # one, so without this the caller parses a half-written object.
+        if getattr(final, "stop_reason", None) == "max_tokens":
+            raise OutputBudgetExceeded(
+                f"model {self._model} hit max_tokens={self._max_tokens} before "
+                f"finishing (thinking={self._thinking.get('type')!r}); "
+                f"usage={getattr(final, 'usage', None)}"
+            )
 
     async def aclose(self) -> None:
         await self._inner.close()

@@ -213,9 +213,9 @@ async def generate(
 
     model = resolve_summary_model()
     owned = client is None
-    llm = client or ApiAnalyzerLLMClient(
-        model=model, max_tokens=SUMMARY_MAX_TOKENS
-    )
+    # 2048 is the pre-migration cap, and it only holds because the client pins
+    # thinking off -- thinking shares this ceiling with the JSON body.
+    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
     block = build_summary_block(
         trajectory, task_context, analyzer_id=analyzer_id, model=model, client=llm,
     )
