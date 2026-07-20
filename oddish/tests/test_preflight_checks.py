@@ -298,18 +298,18 @@ from oddish.preflight.checks import provenance
     "line",
     [
         "RUN git clone https://github.com/foo/bar /src",
+        "RUN git lfs clone https://github.com/foo/bar",
         "RUN git fetch origin main",
         "RUN pip install git+https://github.com/foo/bar@abc123",
+        "RUN npm install git+ssh://git@github.com/foo/bar",
         "RUN curl -L https://github.com/foo/bar/archive/main.tar.gz | tar xz",
+        "RUN curl -L https://github.com/foo/bar/tarball/main | tar xz",
         "RUN wget https://codeload.github.com/foo/bar/tar.gz/main",
     ],
 )
 def test_provenance_flags_repo_fetches_in_dockerfile(make_task, line):
     task_dir = make_task(dockerfile=f"FROM ubuntu:24.04\n{line}\n")
-    findings = [
-        f for f in provenance.check(task_dir, _config(task_dir))
-        if "fetch" in f.message or "clone" in f.message.lower()
-    ]
+    findings = [f for f in provenance.check(task_dir, _config(task_dir)) if f.line == 2]
     assert len(findings) == 1
     assert findings[0].severity is Severity.ERROR
     assert findings[0].line == 2
@@ -332,13 +332,22 @@ def test_provenance_ignores_fetch_outside_the_build_context(make_task, rel):
     # solve.sh (oracle) and test.sh (verifier) run in phases the agent never
     # sees, so a fetch there cannot leak branch history to the agent.
     task_dir = make_task(
-        extra_files={rel: "#!/bin/sh\ngit clone https://github.com/foo/bar\n", ".dockerignore": "**/.git\n"}
+        extra_files={
+            rel: "#!/bin/sh\ngit clone https://github.com/foo/bar\n",
+            "environment/.dockerignore": "**/.git\n",
+        }
     )
-    fetch_findings = [
-        f for f in provenance.check(task_dir, _config(task_dir))
-        if "fetch" in f.message or "clone" in f.message.lower()
-    ]
-    assert fetch_findings == []
+    assert provenance.check(task_dir, _config(task_dir)) == []
+
+
+def test_provenance_ignores_a_fetch_in_a_trailing_comment(make_task):
+    # A comment merely mentioning a fetch is not a fetch. The `#` here is a
+    # trailing comment, not a suppression.
+    task_dir = make_task(
+        dockerfile="FROM ubuntu:24.04\nRUN echo done  # remember: never git clone the upstream\n",
+        extra_files={"environment/.dockerignore": ".git\n"},
+    )
+    assert provenance.check(task_dir, _config(task_dir)) == []
 
 
 def test_provenance_accepts_a_valid_suppression(make_task):
@@ -347,7 +356,7 @@ def test_provenance_accepts_a_valid_suppression(make_task):
             "FROM ubuntu:24.04\n"
             "RUN git clone https://github.com/foo/dep  # provenance-ok: pinned third-party dep, not the task upstream\n"
         ),
-        extra_files={".dockerignore": ".git\n"},
+        extra_files={"environment/.dockerignore": ".git\n"},
     )
     assert provenance.check(task_dir, _config(task_dir)) == []
 
@@ -358,7 +367,7 @@ def test_provenance_rejects_a_too_short_suppression_reason(make_task):
             "FROM ubuntu:24.04\n"
             "RUN git clone https://github.com/foo/dep  # provenance-ok: dep\n"
         ),
-        extra_files={".dockerignore": ".git\n"},
+        extra_files={"environment/.dockerignore": ".git\n"},
     )
     findings = provenance.check(task_dir, _config(task_dir))
     assert len(findings) == 1
@@ -368,15 +377,15 @@ def test_provenance_rejects_a_too_short_suppression_reason(make_task):
 def test_provenance_rejects_a_suppression_with_no_reason(make_task):
     task_dir = make_task(
         dockerfile="FROM ubuntu:24.04\nRUN git clone https://x/y  # provenance-ok:\n",
-        extra_files={".dockerignore": ".git\n"},
+        extra_files={"environment/.dockerignore": ".git\n"},
     )
     assert len(provenance.check(task_dir, _config(task_dir))) == 1
 
 
-def test_provenance_ignores_comments(make_task):
+def test_provenance_ignores_whole_line_comments(make_task):
     task_dir = make_task(
         dockerfile="FROM ubuntu:24.04\n# RUN git clone https://github.com/foo/bar\n",
-        extra_files={".dockerignore": ".git\n"},
+        extra_files={"environment/.dockerignore": ".git\n"},
     )
     assert provenance.check(task_dir, _config(task_dir)) == []
 
@@ -388,14 +397,32 @@ def test_provenance_flags_a_git_dir_inside_the_build_context(make_task):
     assert findings[0].severity is Severity.ERROR
 
 
-def test_provenance_accepts_a_git_dir_excluded_by_dockerignore(make_task):
+def test_provenance_accepts_a_git_dir_excluded_by_context_dockerignore(make_task):
+    # A .dockerignore at the build-context root (environment/) is the one Docker
+    # actually reads, so it correctly suppresses the .git finding.
     task_dir = make_task(
         extra_files={
             "environment/repo/.git/HEAD": "ref: refs/heads/main\n",
-            ".dockerignore": "**/.git\n",
+            "environment/.dockerignore": "**/.git\n",
         }
     )
     assert provenance.check(task_dir, _config(task_dir)) == []
+
+
+def test_provenance_flags_git_when_dockerignore_is_at_the_task_root(make_task):
+    # Regression: Docker reads .dockerignore from environment/, NOT the task
+    # root. A root .dockerignore does not protect the real build, so a .git in
+    # environment/ must still be flagged despite it — otherwise the check gives
+    # false confidence on a task that genuinely leaks.
+    task_dir = make_task(
+        extra_files={
+            "environment/repo/.git/HEAD": "ref: refs/heads/main\n",
+            ".dockerignore": "**/.git\n",  # wrong location, ignored by Docker
+        }
+    )
+    findings = [f for f in provenance.check(task_dir, _config(task_dir)) if ".git" in f.message]
+    assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
 
 
 @pytest.mark.parametrize(
@@ -405,9 +432,8 @@ def test_provenance_accepts_a_git_dir_excluded_by_dockerignore(make_task):
 def test_provenance_ignores_a_git_dir_outside_the_build_context(make_task, git_file):
     # Only environment/ is the Docker build context; Docker refuses paths
     # outside it, so a .git here provably cannot reach the agent's image.
-    # Flagging it would be an ERROR on something that cannot happen.
     task_dir = make_task(
-        extra_files={git_file: "ref: refs/heads/main\n", ".dockerignore": "**/.git\n"}
+        extra_files={git_file: "ref: refs/heads/main\n", "environment/.dockerignore": "**/.git\n"}
     )
     assert provenance.check(task_dir, _config(task_dir)) == []
 
@@ -419,6 +445,6 @@ def test_provenance_warns_when_no_dockerignore_exists(make_task):
     assert findings[0].severity is Severity.WARN
 
 
-def test_provenance_is_clean_with_a_dockerignore_and_no_git(make_task):
-    task_dir = make_task(extra_files={".dockerignore": ".git/\n"})
+def test_provenance_is_clean_with_a_context_dockerignore_and_no_git(make_task):
+    task_dir = make_task(extra_files={"environment/.dockerignore": ".git/\n"})
     assert provenance.check(task_dir, _config(task_dir)) == []

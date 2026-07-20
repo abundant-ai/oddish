@@ -19,15 +19,27 @@ _MIN_REASON_CHARS = 10
 _SUPPRESS_RE = re.compile(r"#\s*provenance-ok\s*:\s*(\S.*)$")
 
 _FETCH_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\bgit\s+clone\b"), "git clone"),
+    # `git lfs clone` is a full clone too, so allow an optional `lfs`.
+    (re.compile(r"\bgit\s+(?:lfs\s+)?clone\b"), "git clone"),
     (re.compile(r"\bgit\s+fetch\b"), "git fetch"),
-    (re.compile(r"\bpip\s+install\b[^\n]*\bgit\+"), "pip install git+"),
+    # Any package manager's git+ dependency (pip / npm / yarn / pnpm / cargo /
+    # ...). Match by URL scheme, not by tool name — enumerating tools is how the
+    # earlier drafts of these checks kept missing an idiomatic form.
+    (re.compile(r"\bgit\+(?:https?|ssh|git|file)://"), "git+ URL dependency"),
     (
         re.compile(r"https?://[^\s\"']*/archive/[^\s\"']*\.(?:tar\.gz|tgz|zip)"),
         "repo archive URL",
     ),
+    # GitHub /tarball/<ref> has no extension and redirects to codeload.
+    (re.compile(r"https?://[^\s\"']*/tarball/[^\s\"']+"), "repo tarball URL"),
     (re.compile(r"https?://codeload\.[^\s\"']+"), "codeload URL"),
 )
+
+# Strip a trailing shell/Dockerfile comment (a `#` at line start or after
+# whitespace) before pattern-matching, so a comment merely *mentioning* a fetch
+# does not false-positive. Suppression is read from the full line first, so a
+# `# provenance-ok:` reason is still seen.
+_TRAILING_COMMENT_RE = re.compile(r"(?:^|\s)#")
 
 _DOCKERIGNORE_GIT_ENTRIES = frozenset({".git", ".git/", "**/.git", "**/.git/", "*/.git"})
 
@@ -69,11 +81,14 @@ def _fetch_findings(task_dir: Path) -> list[Finding]:
         for lineno, line in enumerate(text.splitlines(), start=1):
             if line.lstrip().startswith("#"):
                 continue
-            hit = next((label for p, label in _FETCH_PATTERNS if p.search(line)), None)
+            # Read suppression from the full line, THEN drop any trailing comment
+            # so a fetch mentioned only in a comment cannot false-positive.
+            reason = _suppression_reason(line)
+            m = _TRAILING_COMMENT_RE.search(line)
+            code = line[: m.start()] if m else line
+            hit = next((label for p, label in _FETCH_PATTERNS if p.search(code)), None)
             if hit is None:
                 continue
-
-            reason = _suppression_reason(line)
             if reason is not None and len(reason) >= _MIN_REASON_CHARS:
                 continue
 
@@ -100,7 +115,11 @@ def _fetch_findings(task_dir: Path) -> list[Finding]:
 
 
 def _dockerignore_excludes_git(task_dir: Path) -> bool:
-    dockerignore = task_dir / ".dockerignore"
+    # Docker reads .dockerignore from the build-context ROOT, which Harbor sets
+    # to environment/ (docker.py:240) — NOT the task root. A .dockerignore at the
+    # task root is never consulted by the real build, so reading it here would
+    # give false confidence (a .git it "excludes" still ships).
+    dockerignore = task_dir / "environment" / ".dockerignore"
     if not dockerignore.is_file():
         return False
     entries = {
