@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-20]
+
+### Changed
+
+- The task-level QA worker job now leases concurrency from the **analysis model's** queue key (`get_qa_queue_key()` returns `normalize_queue_key(analysis_model)`, currently `anthropic/claude-sonnet-5`) instead of the verdict model's. The bulk of a QA job's LLM work is the per-trial classification pass on the analysis model; keying the lease off the verdict model capped QA throughput at the verdict bucket's default (48) while the analysis bucket sat idle. ANALYZER jobs share the QA queue key and move with it (#802).
+- Raise the baked `anthropic/claude-sonnet-5` queue-key concurrency override in the Modal deploy from 128 to 256, giving the relocated QA jobs and the analysis model's trials more headroom; operators can still override the whole JSON via the env var / `oddish-prod` secret (#802).
+
+---
+
+## [2026-07-18]
+
+### Changed
+
+- The shared analysis model (`ODDISH_ANALYSIS_MODEL` — trajectory graph, trajectory summary, trial classifier, probe analysis) now defaults to Claude Sonnet 5 as the plain Anthropic-style id `claude-sonnet-5`, replacing the Bedrock inference-profile id `global.anthropic.claude-sonnet-4-6`. Plain Claude ids route analysis calls to the direct Anthropic API, and the analysis queue key changes accordingly to `anthropic/claude-sonnet-5` (#794).
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `anthropic/claude-sonnet-5` queue-key concurrency lease to 128 (up from the 48 default), giving the relocated analysis model the same headroom its predecessor queue key had; operators can still override the whole JSON via the env var / `oddish-prod` secret (#795).
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `global.anthropic.claude-sonnet-4-6` queue-key concurrency lease to 128 (up from the 48 default) — the queue key every Sonnet 4.6 trial id spelling normalizes to; operators can still override the whole JSON via the env var / `oddish-prod` secret (#796).
+
+### Fixed
+
+- Dashboard queue stats no longer fold the trajectory-analysis and verdict pipeline counts into the analysis/verdict *model*'s queue bucket. They now live under reserved `analysis` / `verdict` queue keys, so trials awaiting or undergoing classification can no longer masquerade as that model's queued/running trial workers (an incident showed 4k+ phantom "running" rows under one model's queue while the model's real trials were misrouted into the "analyses" pipeline). The reserved buckets report the QA job bucket's concurrency instead of a meaningless per-model default.
+- A QA job that dies or is cancelled mid-classification no longer strands trials in a non-terminal `analysis_status`. The stale-heartbeat reap now resets the dead job's task trials inline (RETRYING → `QUEUED`, exhausted → `FAILED`), the append-supersede cancel requeues in-flight rows, and a new `_reset_orphaned_trial_analysis` cleanup phase heals any remaining orphans: never-classifiable rows (superseded / skipped / gate-skipped / bulk-imported trials, soft-deleted tasks, or terminal tasks with no active QA job) are finalized `FAILED`, while rows a future QA attempt will re-classify are moved back to `QUEUED`. Previously these accumulated forever as phantom in-flight analyses. Orphan-finalized rows carry an `Analysis orphaned:` sentinel prefix on `analysis_error`, and resurrecting a task by appending trials reopens them so the fresh QA pass classifies them instead of inheriting a permanent verdict gap. Every reset selects its trial rows `FOR UPDATE SKIP LOCKED` so the sweep can never deadlock against the trials-then-task lock order the cancel path takes.
+
+---
+
 ## [2026-07-16]
 
 ### Fixed
@@ -40,8 +64,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-07-07]
 
+### Added
+
+- `oddish preflight <path>` checks local tasks for integrity problems before
+  they cost a trial: solution/tests baked into the agent image, repo fetches or
+  `.git` directories that expose branch history, unjustified open internet,
+  patch-file solutions, and brittle source-scanning anti-cheat. `--json` emits
+  findings for CI.
+- `oddish run` now runs preflight before upload. `--force` submits anyway and
+  still prints the findings. `oddish upload` is gated the same way (same
+  `--force` override) — closing a two-step bypass where uploading a leaky task
+  directly, then running it by ID, skipped preflight entirely.
+
 ### Changed
 
+- `oddish run` aborts when **any** resolved task fails preflight. Previously a
+  broken task in a multi-task run was reported and silently skipped while the
+  rest proceeded. Use `--force` for the old behaviour.
 - API key creation is now self-service for every organization, gated on the caller's role in their current org instead of membership in the hardcoded Abundant org. `can_create_api_keys` no longer checks an org-slug/Clerk-org allowlist — any `admin` or `member` (Clerk-JWT auth only) may create keys for their own org, admins minting `full`/`tasks`/`read` and members minting `tasks`/`read`. API-key auth still cannot mint keys, and listing/revoking all org keys stays admin-only. Removed `API_KEY_CREATOR_ORG_SLUGS` / `API_KEY_CREATOR_CLERK_ORG_IDS` and refreshed the stale `@abundant.ai`/Abundant-org wording in the settings UI, endpoint errors, and docs (#617).
 
 ### Fixed

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -33,23 +34,22 @@ from oddish.db import (
     get_session,
 )
 from oddish.model_pricing import has_pricing
+from slack_alert_settings import AlertSettings, read_alert_settings
+from user_alert_prefs import (
+    DEFAULT_EXPERIMENT_MILESTONE_USD,
+    DEFAULT_EXPERIMENT_REPEAT_USD,
+    DEFAULT_TRIAL_PING_USD,
+    DEFAULT_USER_ALERT_PREFS,
+    UserAlertPrefs,
+    read_prefs_by_email,
+)
 
 log = logging.getLogger("oddish.slack_notifications")
 
-# Everyone here is @-mentioned in the channel when a single trial clears
-# TRIAL_ESCALATION_USD. Matched to Slack accounts by email, so these must be the
-# addresses on their Slack profiles, not necessarily their Clerk logins.
-ALWAYS_PING_EMAILS: tuple[str, ...] = (
-    "charles@abundant.ai",
-    "ke@abundant.ai",
-    "meji@abundant.ai",
-    "jesse@abundant.ai",
-)
-
-EXPERIMENT_MILESTONE_USD = 1000.0
-EXPERIMENT_REPEAT_USD = 1000.0
-TRIAL_PING_USD = 200.0
-TRIAL_ESCALATION_USD = 1000.0
+# The in-channel escalation floor and always-ping list are admin-editable; their
+# defaults live in slack_alert_settings. The per-user DM cutoffs default to the
+# DEFAULT_*_USD constants in user_alert_prefs, which each user can override.
+# This one governs failure DMs rather than spend, so it stays a module constant.
 EXPERIMENT_FAILED_RATIO = 0.5
 
 # Slack lookup errors that genuinely mean "this person has no Slack account".
@@ -142,9 +142,6 @@ class SlackAlert:
     silent: bool = False
 
 
-_MILESTONE_EPSILON = 1e-6
-
-
 def _escape(value: str) -> str:
     return html.escape(value, quote=False)
 
@@ -198,9 +195,18 @@ def _experiment_milestones(
 def build_alerts(
     candidates: AlertCandidates,
     *,
+    settings: AlertSettings,
     recent_cutoff: datetime,
     dashboard_url: str,
+    user_prefs: Mapping[str, UserAlertPrefs] | None = None,
 ) -> list[SlackAlert]:
+    prefs_by_email = user_prefs or {}
+
+    def prefs_for(email: str | None) -> UserAlertPrefs:
+        return prefs_by_email.get(
+            (email or "").strip().lower(), DEFAULT_USER_ALERT_PREFS
+        )
+
     trials_by_experiment: dict[str, list[TrialSpend]] = {}
     for trial in candidates.trials:
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
@@ -233,20 +239,22 @@ def build_alerts(
         )
 
     for experiment in candidates.experiments:
-        experiment_trials = trials_by_experiment.get(experiment.id, [])
-        total_cost = sum(trial.cost_usd for trial in experiment_trials)
-        recent_spend = sum(
-            trial.cost_usd
-            for trial in experiment_trials
+        experiment_trials = [
+            trial
+            for trial in trials_by_experiment.get(experiment.id, [])
             if trial.finished_at >= recent_cutoff
-        )
-        baseline_cost = total_cost - recent_spend
-        milestones = _experiment_milestones(
-            total_cost,
-            EXPERIMENT_MILESTONE_USD,
-            EXPERIMENT_REPEAT_USD,
-        )
-        if milestones:
+        ]
+        owner_prefs = prefs_for(experiment.owner_email)
+        total_cost = sum(trial.cost_usd for trial in experiment_trials)
+        # A personal milestone cutoff overrides both the first threshold and the
+        # repeat interval; unset inherits the deploy-time pair.
+        if owner_prefs.experiment_milestone_usd is not None:
+            first_usd = repeat_usd = owner_prefs.experiment_milestone_usd
+        else:
+            first_usd = DEFAULT_EXPERIMENT_MILESTONE_USD
+            repeat_usd = DEFAULT_EXPERIMENT_REPEAT_USD
+        milestones = _experiment_milestones(total_cost, first_usd, repeat_usd)
+        if milestones and owner_prefs.cost_milestone_enabled:
             agent_costs: dict[str, float] = {}
             for trial in experiment_trials:
                 agent_costs[trial.model] = (
@@ -264,38 +272,46 @@ def build_alerts(
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
             for milestone in milestones:
-                key = f"experiment:{experiment.id}:{milestone:g}"
-                # Milestones already covered before the watch window opened are
-                # historical: claim them silently so pre-existing spend never
-                # dumps a backlog of alerts into any delivery channel.
-                silent = milestone <= baseline_cost + _MILESTONE_EPSILON
+                # Legacy keys represented lifetime spend; keep rolling-window
+                # claims separate so those rows cannot suppress this alert.
+                key = f"experiment-24h:{experiment.id}:{milestone:g}"
                 alerts.append(
                     SlackAlert(
                         key=key,
                         text=(
                             ":money_with_wings: *Expensive experiment*\n"
                             f"Title: *{_escape(experiment.name)}*\n"
-                            f"Spend milestone: *${milestone:,.2f}* "
-                            f"(current spend: *${total_cost:,.2f}*)\n"
-                            f"New spend (last 2h): *${recent_spend:,.2f}*\n"
+                            f"24-hour spend milestone: *${milestone:,.2f}*\n"
+                            f"Cost in past 24 hours: *${total_cost:,.2f}*\n"
                             f"Trials still running: {experiment.active_trials}\n"
                             f"Owner: *{_escape(experiment.owner or 'Unknown')}*\n"
-                            "Top agent costs:\n"
+                            "Top agent costs in past 24 hours:\n"
                             f"{top_agent_cost_lines}\n"
                             f"<{experiment_url}|open experiment>"
                         ),
                         recipient_email=experiment.owner_email,
                         recipient_clerk_user_id=experiment.owner_clerk_user_id,
                         dm_only=True,
-                        silent=silent,
                     )
                 )
 
+        trial_floor = (
+            owner_prefs.trial_ping_usd
+            if owner_prefs.trial_ping_usd is not None
+            else DEFAULT_TRIAL_PING_USD
+        )
         for trial in experiment_trials:
-            if trial.finished_at < recent_cutoff or trial.cost_usd <= TRIAL_PING_USD:
+            # The owner's DM answers to their personal floor and toggle. The
+            # escalation is shared oversight on the global threshold and ignores
+            # both -- so a personal floor set above $1k can't silence the
+            # channel, and a personal mute can't either.
+            escalated = trial.cost_usd > settings.trial_escalation_usd
+            wants_dm = (
+                owner_prefs.expensive_trial_enabled and trial.cost_usd > trial_floor
+            )
+            if not (escalated or wants_dm):
                 continue
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
-            escalated = trial.cost_usd > TRIAL_ESCALATION_USD
             heading = (
                 ":rotating_light: *Very expensive trial*"
                 if escalated
@@ -305,29 +321,31 @@ def build_alerts(
                 f"{heading}\n"
                 f"Title: `{_escape(trial.name)}`\n"
                 f"Experiment: *{_escape(experiment.name)}*\n"
-                f"Cost: *${trial.cost_usd:,.2f}*\n"
+                f"Cost in past 24 hours: *${trial.cost_usd:,.2f}*\n"
                 f"Model: `{_escape(trial.model)}`\n"
                 f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
                 f"<{task_url}|open task>"
             )
-            alerts.append(
-                SlackAlert(
-                    key=f"trial:{trial.id}:{TRIAL_PING_USD:g}",
-                    text=text,
-                    recipient_email=experiment.owner_email,
-                    recipient_clerk_user_id=experiment.owner_clerk_user_id,
-                    dm_only=True,
-                )
-            )
-            if escalated:
-                # The DM above covers the owner; this keeps spend this large
-                # visible outside the DM.
+            # Keys carry no threshold: interpolating an editable one would mint
+            # fresh keys on every retune and re-alert the whole window. A trial's
+            # cost is settled here, so one alert per trial is right either way.
+            if wants_dm:
                 alerts.append(
                     SlackAlert(
-                        key=f"trial-escalation:{trial.id}:{TRIAL_ESCALATION_USD:g}",
+                        key=f"trial:{trial.id}",
+                        text=text,
+                        recipient_email=experiment.owner_email,
+                        recipient_clerk_user_id=experiment.owner_clerk_user_id,
+                        dm_only=True,
+                    )
+                )
+            if escalated:
+                alerts.append(
+                    SlackAlert(
+                        key=f"trial-escalation:{trial.id}",
                         text=text,
                         mention_emails=_mention_targets(
-                            experiment.owner_email, *ALWAYS_PING_EMAILS
+                            experiment.owner_email, *settings.always_ping_emails
                         ),
                     )
                 )
@@ -337,6 +355,7 @@ def build_alerts(
             not failed.failed_trials
             or not failed.total_trials
             or failed.failed_trials < failed.total_trials * EXPERIMENT_FAILED_RATIO
+            or not prefs_for(failed.owner_email).experiment_failed_enabled
         ):
             continue
         add_failure_dm(
@@ -352,6 +371,8 @@ def build_alerts(
         )
 
     for failed_trial in candidates.failed_trials:
+        if not prefs_for(failed_trial.owner_email).trial_failed_enabled:
+            continue
         bucket = _version_bucket(failed_trial.task_id, failed_trial.task_version_id)
         task_url = _task_url(
             dashboard_url, failed_trial.task_id, failed_trial.task_version_id
@@ -368,6 +389,8 @@ def build_alerts(
         )
 
     for qa_failure in candidates.qa_failures:
+        if not prefs_for(qa_failure.owner_email).qa_failed_enabled:
+            continue
         bucket = _version_bucket(qa_failure.task_id, qa_failure.task_version_id)
         task_url = _task_url(
             dashboard_url, qa_failure.task_id, qa_failure.task_version_id
@@ -391,7 +414,7 @@ def build_alerts(
                 text=(
                     f":grey_question: *Unpriceable model:* "
                     f"`{_escape(unpriced.model)}` has no price — "
-                    f"{unpriced.trial_count} recent trial{plural} recorded "
+                    f"{unpriced.trial_count} trial{plural} in the past 24 hours recorded "
                     f"token usage but settled to *$0* because no rate could be "
                     f"resolved (spend is going uncounted). Add it to the "
                     f"pricing table · <{task_url}|open task>"
@@ -451,7 +474,12 @@ def _owner_clerk_user_id_by_handle():
 
 async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     now = now or datetime.now(timezone.utc)
-    recent_cutoff = now - timedelta(hours=2)
+    cost_cutoff = now - timedelta(hours=24)
+    failure_cutoff = now - timedelta(hours=2)
+    # Per run rather than at import: this is a long-lived container, so a
+    # module-scope read would pin whatever was set when it first woke up.
+    settings = await read_alert_settings()
+    user_prefs = await read_prefs_by_email()
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -483,7 +511,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     _real_spend_filter(),
                     or_(
                         active_trial,
-                        TrialModel.finished_at >= recent_cutoff,
+                        TrialModel.finished_at >= cost_cutoff,
                     ),
                 )
                 .group_by(
@@ -527,7 +555,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     )
                     .where(
                         TrialModel.experiment_id.in_(experiment_ids),
-                        TrialModel.finished_at.isnot(None),
+                        TrialModel.finished_at >= cost_cutoff,
                         _real_spend_filter(),
                     )
                     .group_by(
@@ -557,7 +585,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     func.max(TrialModel.task_id).label("task_id"),
                 )
                 .where(
-                    TrialModel.finished_at >= recent_cutoff,
+                    TrialModel.finished_at >= cost_cutoff,
                     TrialModel.cost_usd.is_(None),
                     func.coalesce(TrialModel.harbor_stage, "")
                     != CANCELLED_HARBOR_STAGE,
@@ -588,7 +616,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             select(TrialModel.experiment_id)
             .where(
                 current_trial,
-                TrialModel.finished_at >= recent_cutoff,
+                TrialModel.finished_at >= failure_cutoff,
                 _real_spend_filter(),
             )
             .distinct()
@@ -657,7 +685,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.is_collection.is_(False),
                     ExperimentModel.deleted_at.is_(None),
                     current_trial,
-                    TrialModel.finished_at >= recent_cutoff,
+                    TrialModel.finished_at >= failure_cutoff,
                     broken_trial,
                     _real_spend_filter(),
                 )
@@ -700,7 +728,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 )
                 .where(
                     TaskModel.deleted_at.is_(None),
-                    TaskModel.verdict_finished_at >= recent_cutoff,
+                    TaskModel.verdict_finished_at >= failure_cutoff,
                     qa_failed,
                 )
                 .execution_options(include_deleted=True)
@@ -775,8 +803,10 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             failed_trials=failed_trial_records,
             qa_failures=qa_failures,
         ),
-        recent_cutoff=recent_cutoff,
+        settings=settings,
+        recent_cutoff=cost_cutoff,
         dashboard_url=dashboard_url,
+        user_prefs=user_prefs,
     )
 
 
@@ -853,9 +883,8 @@ async def _insert_alert_rows(rows: list[dict]) -> None:
     if not rows:
         return
     # First write wins: an existing pending or sent row keeps its original
-    # payload and state, so re-recording an alert -- including re-recording it
-    # as silent once its spend ages out of the recent window -- never rewrites
-    # or revives history. A pending row keeps retrying until delivered.
+    # payload and state, so re-recording an alert never rewrites or revives
+    # history. A pending row keeps retrying until delivered.
     async with get_session() as session:
         await session.execute(
             insert(SlackExpenseAlertModel)
@@ -899,9 +928,9 @@ async def record_alerts(
 ) -> None:
     """Write each alert into the outbox with its rendered payload.
 
-    Silent alerts are recorded born-sent: they settle the milestone without a
-    post. Storing the payload frees delivery from recomputation, so a failed
-    post keeps retrying even after its spend ages out of the recent window.
+    Silent alerts are recorded born-sent. Storing the payload frees delivery
+    from recomputation, so a failed post keeps retrying even after the source
+    alert no longer qualifies.
     Only alert kinds whose delivery channel is configured are recorded, so
     nothing piles up undeliverable.
     """

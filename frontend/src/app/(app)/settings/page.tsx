@@ -40,9 +40,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { fetcher } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
+  Bell,
   Building2,
   Check,
   Copy,
@@ -127,7 +129,12 @@ const clerkEmbeddedAppearance = {
   },
 };
 
-type SettingsSection = "profile" | "workspace" | "api-keys" | "byok";
+type SettingsSection =
+  | "profile"
+  | "workspace"
+  | "api-keys"
+  | "byok"
+  | "notifications";
 
 const SECTIONS: {
   id: SettingsSection;
@@ -159,6 +166,12 @@ const SECTIONS: {
     description: "Use your own Anthropic key for your runs.",
     icon: Key,
   },
+  {
+    id: "notifications",
+    label: "Notifications",
+    description: "Choose which Slack alerts you receive, and at what cutoffs.",
+    icon: Bell,
+  },
 ];
 
 function isSettingsSection(value: string | null): value is SettingsSection {
@@ -166,7 +179,8 @@ function isSettingsSection(value: string | null): value is SettingsSection {
     value === "profile" ||
     value === "workspace" ||
     value === "api-keys" ||
-    value === "byok"
+    value === "byok" ||
+    value === "notifications"
   );
 }
 
@@ -922,6 +936,190 @@ function ByokPanel() {
 }
 
 // =============================================================================
+// Notifications
+// =============================================================================
+
+interface AlertPrefs {
+  cost_milestone_enabled: boolean;
+  expensive_trial_enabled: boolean;
+  experiment_failed_enabled: boolean;
+  trial_failed_enabled: boolean;
+  qa_failed_enabled: boolean;
+  experiment_milestone_usd: number | null;
+  trial_ping_usd: number | null;
+  inherited_experiment_milestone_usd: number;
+  inherited_trial_ping_usd: number;
+}
+
+const ALERT_TOGGLES: {
+  key: keyof AlertPrefs;
+  label: string;
+  description: string;
+}[] = [
+  {
+    key: "cost_milestone_enabled",
+    label: "Expensive experiment",
+    description: "An experiment's spend passes a milestone within 24 hours.",
+  },
+  {
+    key: "expensive_trial_enabled",
+    label: "Expensive trial",
+    description: "A trial finished within 24 hours costs more than your cutoff.",
+  },
+  {
+    key: "experiment_failed_enabled",
+    label: "Experiment failed",
+    description: "Most of an experiment's trials failed.",
+  },
+  {
+    key: "trial_failed_enabled",
+    label: "Trial failed",
+    description: "One of your trials crashed or errored.",
+  },
+  {
+    key: "qa_failed_enabled",
+    label: "QA failed",
+    description: "A task's QA verdict came back bad.",
+  },
+];
+
+function NotificationsPanel() {
+  const { data, mutate: mutatePrefs } = useSWR<AlertPrefs>(
+    "/api/settings/notifications",
+    fetcher,
+  );
+  const [draft, setDraft] = useState<Partial<AlertPrefs> | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!data) {
+    return (
+      <Panel>
+        <PanelHeader icon={Bell} title="Notifications" />
+        <p className="text-muted-foreground pt-4 text-sm">Loading…</p>
+      </Panel>
+    );
+  }
+
+  const value: AlertPrefs = { ...data, ...draft };
+  const set = <K extends keyof AlertPrefs>(key: K, v: AlertPrefs[K]) => {
+    setError(null);
+    setDraft((d) => ({ ...d, [key]: v }));
+  };
+
+  // Empty cutoff field means "inherit the deploy-time default" — stored as null.
+  const cutoffField = (
+    key: "experiment_milestone_usd" | "trial_ping_usd",
+    inherited: number,
+    label: string,
+  ) => (
+    <div className="space-y-1">
+      <Label htmlFor={key} className="text-sm">
+        {label}
+      </Label>
+      <Input
+        id={key}
+        type="number"
+        min={1}
+        step={50}
+        className="h-9 w-40"
+        value={value[key] ?? ""}
+        placeholder={`Inherits $${inherited.toLocaleString()}`}
+        onChange={(e) =>
+          set(key, e.target.value === "" ? null : Number(e.target.value))
+        }
+      />
+    </div>
+  );
+
+  async function save() {
+    for (const key of ["experiment_milestone_usd", "trial_ping_usd"] as const) {
+      const v = value[key];
+      if (v !== null && (!Number.isFinite(v) || v <= 0)) {
+        setError("Cutoffs must be greater than $0, or left blank to inherit.");
+        return;
+      }
+    }
+    setSaving(true);
+    setError(null);
+    const res = await fetch("/api/settings/notifications", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    }).catch(() => null);
+    setSaving(false);
+    if (!res || !res.ok) {
+      setError("Could not save notification settings. Try again.");
+      return;
+    }
+    setDraft(null);
+    void mutatePrefs();
+  }
+
+  return (
+    <Panel>
+      <PanelHeader icon={Bell} title="Notifications" />
+      <div className="space-y-5 pt-4">
+        {error ? (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <div className="space-y-3">
+          {ALERT_TOGGLES.map((t) => (
+            <label
+              key={t.key}
+              htmlFor={t.key}
+              className="flex cursor-pointer items-start gap-3"
+            >
+              <Checkbox
+                id={t.key}
+                checked={value[t.key] as boolean}
+                onCheckedChange={(c) => set(t.key, c === true)}
+                className="mt-0.5"
+              />
+              <span className="space-y-0.5">
+                <span className="text-foreground block text-sm font-medium">
+                  {t.label}
+                </span>
+                <span className="text-muted-foreground block text-xs">
+                  {t.description}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        <div className="border-border/70 space-y-3 border-t pt-4">
+          <p className="text-muted-foreground text-xs">
+            Your own cost cutoffs. Leave blank to inherit the workspace default.
+          </p>
+          <div className="flex flex-wrap gap-4">
+            {cutoffField(
+              "experiment_milestone_usd",
+              value.inherited_experiment_milestone_usd,
+              "Experiment milestone ($)",
+            )}
+            {cutoffField(
+              "trial_ping_usd",
+              value.inherited_trial_ping_usd,
+              "Expensive-trial cutoff ($)",
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Button size="sm" disabled={saving || draft === null} onClick={save}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+// =============================================================================
 // Profile
 // =============================================================================
 
@@ -1290,6 +1488,9 @@ export default function SettingsPage() {
             </SectionContainer>
             <SectionContainer active={section === "byok"}>
               <ByokPanel />
+            </SectionContainer>
+            <SectionContainer active={section === "notifications"}>
+              <NotificationsPanel />
             </SectionContainer>
           </div>
         </section>

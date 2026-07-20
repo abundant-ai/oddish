@@ -108,9 +108,9 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-# The Abundant AI main branch includes the Daytona network-policy lifecycle fix.
+# Upstream-based fork branch: laude-institute/harbor main + Oddish-needed hooks.
 # uv.lock records the exact commit used by the worker image.
-harbor = { git = "https://github.com/abundant-ai/harbor", branch = "main" }
+harbor = { git = "https://github.com/abundant-ai/harbor", branch = "cursor/upstream-rebase-oddish-b81e" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

@@ -20,7 +20,7 @@ from sqlalchemy import (
     tuple_,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, load_only, selectinload
+from sqlalchemy.orm import aliased, lazyload, load_only, noload, selectinload
 
 from oddish.core.experiment_membership import (
     gathered_trial_ids_select,
@@ -444,6 +444,22 @@ async def list_tasks_core(
     return response
 
 
+async def _experiment_member_task_ids(session: AsyncSession, experiment_id: str):
+    """Task ids in ``experiment_id``, mirroring ``TaskModel.experiments`` membership.
+
+    Materialized up front so the task fetch filters by primary key instead of an
+    ``EXISTS`` probe per row: under ``ORDER BY created_at DESC LIMIT`` that probe
+    made Postgres walk the org's whole task set, since members are a small
+    fraction and the limit never fills.
+    """
+    result = await session.execute(
+        select(task_experiments.c.task_id)
+        .where(task_experiments.c.experiment_id == experiment_id)
+        .where(task_experiments.c.deleted_at.is_(None))
+    )
+    return result.scalars().all()
+
+
 async def list_experiment_task_shells_core(
     session: AsyncSession,
     *,
@@ -455,17 +471,33 @@ async def list_experiment_task_shells_core(
     record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
     """List task shells for the experiment detail first paint."""
+    query_started_at = now()
+    member_task_ids = await _experiment_member_task_ids(session, experiment_id)
     query = (
         select(TaskModel)
+        .where(TaskModel.id.in_(member_task_ids))
         .order_by(TaskModel.created_at.desc())
-        .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
-        .options(load_only(*TASK_STATUS_RESPONSE_COLUMNS))
+        .options(
+            load_only(*TASK_STATUS_RESPONSE_COLUMNS),
+            # ``TaskModel.trials`` and ``TaskModel.experiments`` default to
+            # select-in eager loading.  A task-shell response deliberately
+            # contains neither relationship: scoped counts and the effective
+            # version are fetched by the aggregate queries below, and the one
+            # context experiment is attached explicitly after this query.
+            # Suppress both default loaders here so a large collection does
+            # not hydrate every historical trial/experiment for its tasks
+            # before returning the lightweight shell.
+            # Keep trials unloaded (rather than committing an empty
+            # collection) so another explicit selectinload in the same
+            # request/session can still enrich these task identities.
+            lazyload(TaskModel.trials),
+            noload(TaskModel.experiments),
+        )
     )
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
     query = query.limit(limit).offset(offset)
 
-    query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
         record_timing("tasks_query", elapsed_ms(query_started_at), "Task shells query")
@@ -522,10 +554,12 @@ async def list_experiment_slim_tasks(
         trial_in_experiment(experiment_id),
         TrialModel.is_probe.is_(False),
     )
+    query_started_at = now()
+    member_task_ids = await _experiment_member_task_ids(session, experiment_id)
     query = (
         select(TaskModel)
+        .where(TaskModel.id.in_(member_task_ids))
         .order_by(TaskModel.created_at.desc())
-        .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
         .options(
             load_only(*TASK_STATUS_RESPONSE_COLUMNS),
             selectinload(trials_relationship).load_only(*SLIM_TRIAL_RESPONSE_COLUMNS),
@@ -535,7 +569,6 @@ async def list_experiment_slim_tasks(
         query = query.where(TaskModel.org_id == org_id)
     query = query.limit(limit).offset(offset)
 
-    query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
         record_timing("tasks_query", elapsed_ms(query_started_at), "Slim tasks query")

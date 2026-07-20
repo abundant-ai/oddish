@@ -34,6 +34,16 @@ TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "4"
 
+# Output cap for the summary call. The Anthropic API requires max_tokens, so
+# some value must be set; this one is a ceiling, not a target -- billing is on
+# tokens actually generated. Was 2048 (inherited from the pre-migration cap),
+# which truncated the model mid-JSON on long trajectories: a dump of 30 trials
+# from experiment c02666c5 produced 13 parse failures whose raw output ended
+# mid-token at ~5.3k chars, and those trials silently got no summary at all.
+# Well under the model's own limit, so the binding constraint is the prompt's
+# schema, not this number.
+SUMMARY_MAX_TOKENS = 16384
+
 
 def _truncate(text: str) -> str:
     if len(text) <= MAX_TEXT_CHARS:
@@ -123,43 +133,44 @@ class SummaryGenerationError(RuntimeError):
     """Raised when the LLM returned content we could not turn into a summary."""
 
 
-async def generate(
-    trajectory: dict,
-    task_context: "TaskContext",
-    *,
-    analyzer_id: str | None = None,
-    client=None,
-) -> dict:
-    """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
+def resolve_summary_model() -> str:
+    """The shared analysis model for trajectory summaries.
 
-    Builds the prompt + parser from a ``TrajectoryBlock``, streams through an
-    ``AnalyzerBlock`` (which self-persists to ``analyzer_blocks`` + S3), and
-    returns the parsed ``schema_version=4`` summary. Raises
-    ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
-    injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
+    Bedrock inference-profile ids are normalized back to the plain API id
+    because the summary runs on the direct Anthropic API; plain ids pass
+    through unchanged.
     """
     from oddish.config import settings, to_anthropic_api_model_id
 
+    return (
+        to_anthropic_api_model_id(settings.analysis_model)
+        or settings.analysis_model
+    )
+
+
+def build_summary_block(
+    trajectory: dict,
+    task_context: "TaskContext",
+    *,
+    analyzer_id: str | None,
+    model: str,
+    client,
+):
+    """Build the trajectory-summary ``AnalyzerBlock``.
+
+    Single construction site shared by ``generate()`` (the production path)
+    and the offline dump harness, so the two cannot drift in prompt, parser,
+    or block metadata.
+    """
     from api.services.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
         AnalyzerInput,
         AnalyzerType,
     )
-    from api.services.blocks.analyzer.analyzer_llm_client import (
-        ApiAnalyzerLLMClient,
-        LLMClientType,
-    )
+    from api.services.blocks.analyzer.analyzer_llm_client import LLMClientType
     from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
         TrajectoryBlock,
         TrajectoryInput,
-    )
-
-    # The summary runs on the shared analysis model (the same
-    # ODDISH_ANALYSIS_MODEL knob as the trajectory graph). Normalize Bedrock
-    # inference-profile ids back to the plain API id; plain ids pass through.
-    model = (
-        to_anthropic_api_model_id(settings.analysis_model)
-        or settings.analysis_model
     )
 
     tb = TrajectoryBlock(TrajectoryInput(
@@ -170,11 +181,7 @@ async def generate(
         verifier_output=task_context.verifier_output,
         trajectory=trajectory,
     ))
-
-    owned = client is None
-    # max_tokens=2048 preserves the pre-migration token cap.
-    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
-    block = AnalyzerBlock(
+    return AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
         llm_client_type=LLMClientType.API,
         input=AnalyzerInput(
@@ -184,7 +191,32 @@ async def generate(
         analyzer_id=analyzer_id,
         block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
         output_transform=lambda raw: tb.to_summary(raw, model=model),
-        client=llm,
+        client=client,
+    )
+
+
+async def generate(
+    trajectory: dict,
+    task_context: "TaskContext",
+    *,
+    analyzer_id: str | None = None,
+    client=None,
+) -> dict:
+    """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
+
+    Builds the block via ``build_summary_block`` (shared with the offline dump
+    harness), streams it -- the block self-persists to ``analyzer_blocks`` +
+    S3 -- and returns the parsed ``schema_version=4`` summary. Raises
+    ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
+    injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
+    """
+    from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+
+    model = resolve_summary_model()
+    owned = client is None
+    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
+    block = build_summary_block(
+        trajectory, task_context, analyzer_id=analyzer_id, model=model, client=llm,
     )
     try:
         out = await block.run()

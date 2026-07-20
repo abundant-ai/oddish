@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   fetchFreshExperimentTaskPage,
+  hasFatalExperimentTaskLoadError,
   mergeExperimentTaskPages,
 } from "../src/lib/experiment-task-pages";
 import type { Task, Trial } from "../src/lib/types";
@@ -156,4 +157,16 @@ test("revalidation bypasses stale browser-cache entries", async () => {
 
   expect(requestInput).toBe("/api/experiments/exp-1/task-shells");
   expect(requestInit).toEqual({ credentials: "include", cache: "no-store" });
+});
+
+test("a refresh error does not replace already-loaded experiment tasks", () => {
+  const loadedTasks = [task({ id: "task-loaded" })];
+
+  expect(
+    hasFatalExperimentTaskLoadError(new Error("upstream failed"), loadedTasks)
+  ).toBe(false);
+  expect(
+    hasFatalExperimentTaskLoadError(new Error("upstream failed"), [])
+  ).toBe(true);
+  expect(hasFatalExperimentTaskLoadError(undefined, loadedTasks)).toBe(false);
 });

@@ -13,6 +13,14 @@ export function fetchFreshExperimentTaskPage(
   return request(url, { credentials: "include", cache: "no-store" });
 }
 
+/** Only replace the experiment grid when a failed request left no usable rows. */
+export function hasFatalExperimentTaskLoadError(
+  error: unknown,
+  tasks: Task[] | undefined
+): boolean {
+  return Boolean(error) && (tasks?.length ?? 0) === 0;
+}
+
 function hasSameVersion(shell: Task, enriched: Task): boolean {
   return (
     shell.current_version_id === enriched.current_version_id &&
