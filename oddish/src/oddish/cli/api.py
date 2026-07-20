@@ -60,6 +60,10 @@ from oddish.core.harbor_artifacts import (
     extract_trial_result_fields,
     extract_verifier_metrics,
 )
+from oddish import __version__
+from oddish.core.task_metadata import project_task_config
+from oddish.core.task_provenance import detect_provenance
+from oddish.schemas import TaskMetadata
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -335,12 +339,30 @@ _TASK_TOML_RUNTIME_FIELDS = (
 )
 
 
+def _parse_task_config(config_path: Path) -> dict:
+    """Parse task.toml once; used for both hashing and metadata projection."""
+    config = TaskConfig.model_validate_toml(config_path.read_text())
+    return config.model_dump(mode="json", exclude_none=True)
+
+
 def _canonical_task_config_bytes(config_path: Path) -> bytes:
     """Serialize only the task config fields that affect Harbor execution."""
-    config = TaskConfig.model_validate_toml(config_path.read_text())
-    data = config.model_dump(mode="json", exclude_none=True)
+    data = _parse_task_config(config_path)
     runtime_data = {key: data[key] for key in _TASK_TOML_RUNTIME_FIELDS if key in data}
     return json.dumps(runtime_data, sort_keys=True, separators=(",", ":")).encode()
+
+
+def load_task_metadata(task_path: Path) -> TaskMetadata | None:
+    """Project task.toml into upload metadata, or None if unreadable."""
+    config_path = task_path / "task.toml"
+    if not config_path.exists():
+        return None
+    try:
+        return project_task_config(_parse_task_config(config_path))
+    except Exception:
+        # Metadata is a nice-to-have; a malformed toml is already caught and
+        # reported by validate_task_timeout_config earlier in upload_task.
+        return None
 
 
 def compute_task_content_hash(task_path: Path) -> str:
@@ -644,14 +666,22 @@ def upload_task(
     content_hash = compute_task_content_hash(task_path)
     tarball_path: Path | None = None
 
+    task_metadata = load_task_metadata(task_path)
+    provenance = detect_provenance(task_path, env=os.environ, cli_version=__version__)
+
     init_body: dict[str, object] = {
         "name": task_path.name,
         "content_hash": content_hash,
+        "provenance": provenance.model_dump(mode="json", exclude_none=True),
     }
     if message:
         init_body["message"] = message
     if force_new_version:
         init_body["force_new_version"] = True
+    if task_metadata is not None:
+        init_body["task_metadata"] = task_metadata.model_dump(
+            mode="json", exclude_none=True
+        )
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
