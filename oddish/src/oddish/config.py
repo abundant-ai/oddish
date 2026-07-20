@@ -1510,10 +1510,13 @@ class Settings(BaseSettings):
     def get_qa_queue_key(self) -> str:
         """Concurrency bucket for the task-level QA job.
 
-        Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
-        existing per-model concurrency overrides keep applying.
+        Keyed off ``analysis_model``: the bulk of a QA job's LLM work is the
+        per-trial classification pass, which runs on the analysis model, so the
+        job leases slots from that model's concurrency bucket (and existing
+        per-model concurrency overrides keep applying). The single
+        verdict-synthesis call on ``verdict_model`` rides along.
         """
-        return self.normalize_queue_key(self.verdict_model)
+        return self.normalize_queue_key(self.analysis_model)
 
     def get_task_expand_queue_key(self) -> str:
         """Dedicated queue key for task-expansion jobs.
