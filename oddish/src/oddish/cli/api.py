@@ -63,7 +63,7 @@ from oddish.core.harbor_artifacts import (
 from oddish import __version__
 from oddish.core.task_metadata import project_task_config
 from oddish.core.task_provenance import detect_provenance
-from oddish.schemas import TaskMetadata
+from oddish.schemas import TaskMetadata, TaskProvenance
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -726,6 +726,7 @@ def upload_task(
                 "name": init_payload["name"],
                 "version": init_payload["version"],
                 "content_hash": content_hash,
+                "provenance": provenance.model_dump(mode="json", exclude_none=True),
             }
             if message:
                 complete_body["message"] = message
@@ -735,6 +736,10 @@ def upload_task(
                 complete_body["user"] = user
             if priority:
                 complete_body["priority"] = priority
+            if task_metadata is not None:
+                complete_body["task_metadata"] = task_metadata.model_dump(
+                    mode="json", exclude_none=True
+                )
             # complete is keyed on (task_id, version, content_hash); replaying
             # it after a transient failure resolves to the same version.
             response = _retry_request(
@@ -1017,6 +1022,8 @@ def build_sweep_payload(
     evaluation_metric: str | None = None,
     link: str | None = None,
     registry_auth: list[dict] | None = None,
+    task_metadata: TaskMetadata | None = None,
+    provenance: TaskProvenance | None = None,
 ) -> dict:
     env_value = environment.value if environment else None
 
@@ -1101,6 +1108,12 @@ def build_sweep_payload(
         payload["link"] = link
     if registry_auth:
         payload["registry_auth"] = registry_auth
+    if task_metadata is not None:
+        payload["task_metadata"] = task_metadata.model_dump(
+            mode="json", exclude_none=True
+        )
+    if provenance is not None:
+        payload["provenance"] = provenance.model_dump(mode="json", exclude_none=True)
 
     return payload
 
@@ -1206,6 +1219,8 @@ def submit_sweep(
     evaluation_metric: str | None = None,
     link: str | None = None,
     registry_auth: list[dict] | None = None,
+    task_metadata: TaskMetadata | None = None,
+    provenance: TaskProvenance | None = None,
 ) -> dict:
     payload = build_sweep_payload(
         task_id=task_id,
@@ -1240,6 +1255,8 @@ def submit_sweep(
         evaluation_metric=evaluation_metric,
         link=link,
         registry_auth=registry_auth,
+        task_metadata=task_metadata,
+        provenance=provenance,
     )
     return post_sweep_payload(api_url, payload)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -31,6 +32,7 @@ from oddish.cli.api import (
     get_task_summary,
     github_id_is_unlinked,
     load_sweep_config,
+    load_task_metadata,
     post_sweep_payload,
     print_final_results,
     resolve_local_task_paths,
@@ -45,7 +47,9 @@ from oddish.cli.config import (
     is_modal_api_url,
     require_api_key,
 )
+from oddish.core.task_provenance import detect_provenance
 from oddish.experiment import generate_experiment_name
+from oddish import __version__
 
 console = Console()
 
@@ -867,6 +871,14 @@ def run(
                 task_path,
                 override_gpus=override_gpus,
             )
+        # Compute once per task directory (parses task.toml, shells out to git);
+        # None for --task submissions, which have no local directory to read.
+        task_metadata = load_task_metadata(task_path) if task_path is not None else None
+        provenance = (
+            detect_provenance(task_path, env=os.environ, cli_version=__version__)
+            if task_path is not None
+            else None
+        )
         return build_sweep_payload(
             task_id=task_id,
             configs=task_configs,
@@ -897,6 +909,8 @@ def run(
             content_hash=task_content_hash,
             link=link,
             registry_auth=registry_auth,
+            task_metadata=task_metadata,
+            provenance=provenance,
         )
 
     def submit_task(

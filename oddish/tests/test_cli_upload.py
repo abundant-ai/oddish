@@ -229,3 +229,116 @@ def test_git_lfs_pointer_detection_ignores_real_asset(tmp_path: Path) -> None:
     asset_path.write_bytes(b"\x8c\r\x04\t\x03\n\xadU\x99\x81\xb7L")
 
     assert cli_api.find_git_lfs_pointer_files(task_path) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: metadata/provenance must reach the row-creating request bodies
+# ---------------------------------------------------------------------------
+#
+# initialize_task_upload creates no DB rows -- only complete_task_upload
+# (register=True) and the sweep payload's create_task do. A task_metadata /
+# provenance value attached only to the init body is silently dropped for
+# every real upload.
+
+
+class _FakeUploadResponse:
+    def __init__(self, status_code: int, json_data: dict | None = None) -> None:
+        self.status_code = status_code
+        self._json = json_data or {}
+        self.text = ""
+
+    def json(self) -> dict:
+        return self._json
+
+
+class _RecordingUploadClient:
+    """Fake httpx.Client capturing the JSON body posted to each upload endpoint."""
+
+    def __init__(self) -> None:
+        self.bodies: dict[str, dict] = {}
+
+    def __enter__(self) -> "_RecordingUploadClient":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def post(self, url: str, *, json: dict | None = None, **_kwargs: object):
+        for suffix in ("/tasks/upload/init", "/tasks/upload/complete"):
+            if url.endswith(suffix):
+                self.bodies[suffix] = json
+                if suffix == "/tasks/upload/init":
+                    return _FakeUploadResponse(
+                        200,
+                        {
+                            "task_id": "T1",
+                            "name": "task",
+                            "version": 1,
+                            "upload_url": "https://s3/put",
+                            "upload_headers": {},
+                        },
+                    )
+                return _FakeUploadResponse(200, {"task_id": "T1"})
+        raise AssertionError(f"unexpected POST {url}")
+
+
+_TASK_TOML_WITH_BUILD_TIMEOUT = """\
+version = "1.0"
+
+[metadata]
+difficulty = "easy"
+description = "first description"
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+build_timeout_sec = 600.0
+"""
+
+
+def test_upload_task_complete_body_carries_metadata_and_provenance(
+    monkeypatch, tmp_path: Path
+) -> None:
+    task_path = tmp_path / "task"
+    _write_minimal_task(task_path, task_toml=_TASK_TOML_WITH_BUILD_TIMEOUT)
+
+    monkeypatch.setattr(cli_api, "get_auth_headers", lambda: {})
+    monkeypatch.setattr(cli_api, "_upload_to_presigned_url", lambda *_a, **_k: None)
+    fake_client = _RecordingUploadClient()
+    monkeypatch.setattr(cli_api.httpx, "Client", lambda *_a, **_k: fake_client)
+
+    cli_api.upload_task("http://api", task_path)
+
+    complete_body = fake_client.bodies["/tasks/upload/complete"]
+    assert complete_body["task_metadata"]["description"] == "first description"
+    assert complete_body["task_metadata"]["cpus"] == 1
+    assert "provenance" in complete_body
+
+
+def test_build_sweep_payload_carries_metadata_and_provenance(tmp_path: Path) -> None:
+    task_path = tmp_path / "task"
+    _write_minimal_task(task_path)
+
+    task_metadata = cli_api.load_task_metadata(task_path)
+    provenance = cli_api.detect_provenance(task_path, env={})
+
+    payload = cli_api.build_sweep_payload(
+        task_id="T1",
+        configs=[{"agent": "claude-code", "model": "m", "n_trials": 1}],
+        environment=None,
+        user=None,
+        priority="low",
+        experiment_id=None,
+        task_metadata=task_metadata,
+        provenance=provenance,
+    )
+
+    assert payload["task_metadata"]["description"] == "first description"
+    assert payload["task_metadata"]["cpus"] == 1
+    assert "provenance" in payload

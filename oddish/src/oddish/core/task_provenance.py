@@ -7,12 +7,15 @@ Upload must never fail because provenance could not be determined.
 
 from __future__ import annotations
 
+import re
 import socket
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
 from oddish.schemas import TaskProvenance
+
+_PR_REF_PATTERN = re.compile(r"^refs/pull/(\d+)/")
 
 
 def _git(task_path: Path, *args: str) -> str | None:
@@ -24,7 +27,9 @@ def _git(task_path: Path, *args: str) -> str | None:
             timeout=10,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        # UnicodeDecodeError subclasses ValueError, not OSError/SubprocessError,
+        # so it needs its own catch to preserve the never-raises contract.
         return None
     if result.returncode != 0:
         return None
@@ -45,6 +50,21 @@ def _normalize_remote(url: str | None) -> str | None:
     return None
 
 
+def _parse_pr_number(ref: str | None) -> int | None:
+    """Extract the PR number from a GitHub Actions pull_request ``GITHUB_REF``.
+
+    ``GITHUB_REF`` is ``refs/pull/<N>/merge`` (or ``/head``) on pull_request
+    events; any other ref (branch, tag, malformed) yields None rather than
+    raising.
+    """
+    if not ref:
+        return None
+    match = _PR_REF_PATTERN.match(ref)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 def detect_ci_context(env: Mapping[str, str]) -> TaskProvenance:
     """Derive CI fields from environment variables."""
     is_ci = env.get("CI", "").lower() in {"true", "1", "yes"}
@@ -59,6 +79,7 @@ def detect_ci_context(env: Mapping[str, str]) -> TaskProvenance:
         ci_provider="github_actions",
         ci_run_id=run_id,
         ci_run_url=run_url,
+        ci_pr_number=_parse_pr_number(env.get("GITHUB_REF")),
         uploader_is_ci=True,
         source_repo=repo,
         source_ref=env.get("GITHUB_REF_NAME"),
