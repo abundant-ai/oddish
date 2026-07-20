@@ -1,9 +1,13 @@
+import warnings
+
 import pytest
 
 from api.services.blocks.analyzer.analyzer_llm_client import (
     LLMClientType,
     FakeAnalyzerLLMClient,
     ApiAnalyzerLLMClient,
+    OpenAIAnalyzerLLMClient,
+    _build_openai_client,
 )
 
 
@@ -34,15 +38,19 @@ async def test_api_client_streams_text_deltas(monkeypatch):
     class _AStream:
         def __init__(self, parts):
             self._parts = parts
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return False
+
         @property
         def text_stream(self):
             async def gen():
                 for p in self._parts:
                     yield p
+
             return gen()
 
     class _FakeMessages:
@@ -59,7 +67,8 @@ async def test_api_client_streams_text_deltas(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _FakeAnthropic,
     )
     client = ApiAnalyzerLLMClient()
     assert await _collect(client, "hi") == ["Hel", "lo"]
@@ -78,7 +87,8 @@ async def test_api_client_aclose_closes_inner(monkeypatch):
             closed["n"] += 1
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic", _FakeAnthropic
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _FakeAnthropic,
     )
     client = ApiAnalyzerLLMClient()
     await client.aclose()
@@ -124,10 +134,10 @@ def _patch_anthropic(monkeypatch):
 def test_resolve_analyzer_api_key_order(monkeypatch):
     monkeypatch.setattr(_settings, "analyzer_anthropic_api_key", "sk-analyzer")
     monkeypatch.setattr(_settings, "anthropic_api_key", "sk-global")
-    assert resolve_analyzer_api_key("sk-explicit") == "sk-explicit"   # explicit wins
-    assert resolve_analyzer_api_key(None) == "sk-analyzer"            # then analyzer key
+    assert resolve_analyzer_api_key("sk-explicit") == "sk-explicit"  # explicit wins
+    assert resolve_analyzer_api_key(None) == "sk-analyzer"  # then analyzer key
     monkeypatch.setattr(_settings, "analyzer_anthropic_api_key", None)
-    assert resolve_analyzer_api_key(None) == "sk-global"             # then global
+    assert resolve_analyzer_api_key(None) == "sk-global"  # then global
 
 
 def test_api_client_passes_explicit_api_key(monkeypatch):
@@ -163,8 +173,16 @@ async def test_sandbox_client_streams_json_lines_and_closes():
         id = "sbx-1"
 
     class _FakeRuntime:
-        async def stream_chat(self, client, sandbox, *, content, claude_session_id,
-                              daytona_session_id="cc", system_prompt=None):
+        async def stream_chat(
+            self,
+            client,
+            sandbox,
+            *,
+            content,
+            claude_session_id,
+            daytona_session_id="cc",
+            system_prompt=None,
+        ):
             sent["content"] = content
             for d in [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]:
                 yield d
@@ -172,6 +190,7 @@ async def test_sandbox_client_streams_json_lines_and_closes():
     class _FakeDaytona:
         def __init__(self):
             self.deleted = False
+
         async def delete_sandbox(self, sandbox):
             self.deleted = True
 
@@ -219,3 +238,208 @@ async def test_fake_client_download_file():
     assert await c._download_file("out/reduce.json") == b"{}"
     with pytest.raises(KeyError):
         await c._download_file("out/missing.jsonl")
+
+
+# --- OpenAI/Azure backend ---------------------------------------------------
+
+
+class _FakeStreamEvent:
+    def __init__(self, type_, delta=None):
+        self.type = type_
+        self.delta = delta
+
+
+class _FakeOpenAIStream:
+    def __init__(self, events):
+        self._events = events
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def __aiter__(self):
+        for event in self._events:
+            yield event
+
+
+class _FakeOpenAICompletions:
+    def __init__(self, events, sent):
+        self._events = events
+        self._sent = sent
+
+    def stream(self, **kwargs):
+        self._sent.update(kwargs)
+        return _FakeOpenAIStream(self._events)
+
+
+class _FakeOpenAIChat:
+    def __init__(self, completions):
+        self.completions = completions
+
+
+class _FakeAsyncOpenAI:
+    def __init__(self, events, sent):
+        self.chat = _FakeOpenAIChat(_FakeOpenAICompletions(events, sent))
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+def _patch_openai_builder(monkeypatch, events, *, runtime_model="gpt-5.4"):
+    """Bypass ``_build_openai_client`` so constructing the client never needs
+    live OpenAI/Azure credentials."""
+    sent: dict = {}
+    fake = _FakeAsyncOpenAI(events, sent)
+
+    def _builder(*, model, api_key=None):
+        return fake, runtime_model
+
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client._build_openai_client",
+        _builder,
+    )
+    return fake, sent
+
+
+@pytest.mark.asyncio
+async def test_openai_client_yields_only_content_deltas(monkeypatch):
+    events = [
+        _FakeStreamEvent("chunk"),
+        _FakeStreamEvent("content.delta", delta="Hel"),
+        _FakeStreamEvent("logprobs.content.delta", delta="ignored"),
+        _FakeStreamEvent("content.delta", delta="lo"),
+    ]
+    fake, _sent = _patch_openai_builder(monkeypatch, events)
+    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    assert await _collect(client, "hi") == ["Hel", "lo"]
+    await client.aclose()
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_openai_client_forwards_response_format_when_set(monkeypatch):
+    events = [_FakeStreamEvent("content.delta", delta="x")]
+    fake, sent = _patch_openai_builder(monkeypatch, events)
+
+    class _Fmt:
+        pass
+
+    client = OpenAIAnalyzerLLMClient(model="gpt-5.4", response_format=_Fmt)
+    await _collect(client, "hi")
+    assert sent["response_format"] is _Fmt
+
+
+@pytest.mark.asyncio
+async def test_openai_client_omits_response_format_when_unset(monkeypatch):
+    events = [_FakeStreamEvent("content.delta", delta="x")]
+    fake, sent = _patch_openai_builder(monkeypatch, events)
+    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    await _collect(client, "hi")
+    assert "response_format" not in sent
+
+
+@pytest.mark.asyncio
+async def test_openai_client_forwards_max_tokens_when_set(monkeypatch):
+    events = [_FakeStreamEvent("content.delta", delta="x")]
+    fake, sent = _patch_openai_builder(monkeypatch, events)
+    client = OpenAIAnalyzerLLMClient(model="gpt-5.4", max_tokens=4096)
+    await _collect(client, "hi")
+    assert sent["max_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_openai_client_omits_max_tokens_when_unset(monkeypatch):
+    events = [_FakeStreamEvent("content.delta", delta="x")]
+    fake, sent = _patch_openai_builder(monkeypatch, events)
+    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    await _collect(client, "hi")
+    assert "max_tokens" not in sent
+
+
+@pytest.mark.asyncio
+async def test_openai_client_sends_system_prompt_as_system_message(monkeypatch):
+    events = [_FakeStreamEvent("content.delta", delta="x")]
+    fake, sent = _patch_openai_builder(monkeypatch, events)
+    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    [chunk async for chunk in client.stream("hi", system_prompt="be terse")]
+    assert sent["messages"][0] == {"role": "system", "content": "be terse"}
+    assert sent["messages"][-1] == {"role": "user", "content": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_openai_client_omits_system_message_when_unset(monkeypatch):
+    events = [_FakeStreamEvent("content.delta", delta="x")]
+    fake, sent = _patch_openai_builder(monkeypatch, events)
+    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    await _collect(client, "hi")
+    assert sent["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_build_openai_client_warns_and_uses_public_key(monkeypatch):
+    monkeypatch.setattr(_settings, "openai_provider", "openai")
+    monkeypatch.setattr(_settings, "openai_api_key", "sk-public")
+    captured = {}
+
+    class _FakeAsyncOpenAI:
+        def __init__(self, *, api_key=None, base_url=None):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
+        _FakeAsyncOpenAI,
+    )
+    with pytest.warns(UserWarning, match="public OpenAI API"):
+        client, runtime_model = _build_openai_client(model="gpt-5.4")
+    assert captured["api_key"] == "sk-public"
+    assert captured["base_url"] is None
+    assert runtime_model == "gpt-5.4"
+
+
+def test_build_openai_client_azure_resolves_deployment_and_does_not_warn(
+    monkeypatch,
+):
+    monkeypatch.setattr(_settings, "openai_provider", "azure")
+    monkeypatch.setattr(_settings, "azure_openai_api_key", "sk-azure")
+    monkeypatch.setattr(
+        _settings, "azure_openai_endpoint", "https://example.openai.azure.com/openai/v1"
+    )
+    monkeypatch.setattr(_settings, "azure_openai_api_version", "2024-05-01")
+    monkeypatch.setattr(
+        _settings, "azure_openai_deployments", {"gpt-5.4": "prod-gpt-5-4"}
+    )
+    captured = {}
+
+    class _FakeAsyncOpenAI:
+        def __init__(self, *, api_key=None, base_url=None):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
+        _FakeAsyncOpenAI,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        client, runtime_model = _build_openai_client(model="gpt-5.4")
+    assert runtime_model == "prod-gpt-5-4"
+    assert captured["api_key"] == "sk-azure"
+    assert captured["base_url"] == "https://example.openai.azure.com/openai/v1"
+
+
+@pytest.mark.asyncio
+async def test_create_llm_client_openai_branch(monkeypatch):
+    events = [_FakeStreamEvent("content.delta", delta="x")]
+    fake, _sent = _patch_openai_builder(monkeypatch, events)
+    client = await create_llm_client(LLMClientType.OPENAI, model="gpt-5.4")
+    assert isinstance(client, OpenAIAnalyzerLLMClient)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_create_llm_client_openai_requires_explicit_model():
+    with pytest.raises(ValueError, match="model"):
+        await create_llm_client(LLMClientType.OPENAI)

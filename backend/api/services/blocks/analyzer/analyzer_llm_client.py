@@ -3,11 +3,13 @@ from __future__ import annotations
 import enum
 import json
 import os
-from typing import AsyncIterator, Protocol, runtime_checkable
+import warnings
+from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
 from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 
-from oddish.config import settings
+from oddish.config import OPENAI_PROVIDER_OPENAI, settings
 from oddish.db import generate_id
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
 from api.services.cc_chat.daytona_client import (
@@ -31,6 +33,7 @@ def resolve_analyzer_api_key(explicit: str | None = None) -> str | None:
 class LLMClientType(str, enum.Enum):
     SANDBOX = "Sandbox"
     API = "Api"
+    OPENAI = "OpenAi"
 
 
 @runtime_checkable
@@ -105,6 +108,70 @@ class ApiAnalyzerLLMClient:
         await self._inner.close()
 
 
+def _build_openai_client(
+    *, model: str, api_key: str | None = None
+) -> tuple[AsyncOpenAI, str]:
+    """Resolve public-OpenAI vs Azure exactly as the sync
+    ``_build_verdict_openai_client`` in ``oddish.analyze.classifier`` does, so
+    both verdict paths reach the identical deployment. A module-level seam:
+    tests patch this instead of the class, so construction never needs live
+    credentials."""
+    provider = settings.get_openai_provider()
+    if provider == OPENAI_PROVIDER_OPENAI:
+        warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
+        public = settings.require_public_openai_config(api_key=api_key)
+        return AsyncOpenAI(api_key=public["api_key"]), model
+
+    azure = settings.require_azure_openai_config()
+    deployment = settings.resolve_azure_openai_deployment(model)
+    return (
+        AsyncOpenAI(
+            api_key=azure["api_key"],
+            base_url=settings.get_azure_openai_base_url(),
+        ),
+        deployment,
+    )
+
+
+class OpenAIAnalyzerLLMClient:
+    """OpenAI/Azure backend: streams content deltas for a single prompt via
+    ``chat.completions.stream``."""
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        max_tokens: int | None = None,
+        response_format: Any | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self._max_tokens = max_tokens
+        self._response_format = response_format
+        self._client, self._model = _build_openai_client(model=model, api_key=api_key)
+
+    async def stream(
+        self, prompt: str, *, system_prompt: str | None = None
+    ) -> AsyncIterator[str]:
+        messages: list[dict] = []
+        if system_prompt is not None:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        kwargs: dict = dict(model=self._model, messages=messages)
+        if self._response_format is not None:
+            kwargs["response_format"] = self._response_format
+        if self._max_tokens is not None:
+            kwargs["max_tokens"] = self._max_tokens
+
+        async with self._client.chat.completions.stream(**kwargs) as stream:
+            async for event in stream:
+                if event.type == "content.delta":
+                    yield event.delta
+
+    async def aclose(self) -> None:
+        await self._client.close()
+
+
 _DAYTONA_SESSION_ID = "analyzer"
 _AUTO_STOP_MINUTES = 15
 _AUTO_DELETE_MINUTES = 30
@@ -156,6 +223,14 @@ async def create_llm_client(
 ) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
         return ApiAnalyzerLLMClient(model=model or _DEFAULT_MODEL, api_key=api_key)
+
+    if llm_client_type == LLMClientType.OPENAI:
+        if not model:
+            raise ValueError(
+                "OPENAI llm_client_type requires an explicit model= "
+                "(no verdict-specific default is applied here)"
+            )
+        return OpenAIAnalyzerLLMClient(model=model, api_key=api_key)
 
     if llm_client_type == LLMClientType.SANDBOX:
         daytona_client = RealDaytonaClient(api_key=os.environ["DAYTONA_API_KEY"])
