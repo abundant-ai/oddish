@@ -13,6 +13,7 @@ from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
 from oddish.cli.pull import pull
+from oddish.cli.preflight import preflight
 from oddish.cli.report import report_app
 from oddish.cli.run import run
 from oddish.cli.status import status
@@ -27,6 +28,7 @@ app.command()(run)
 app.add_typer(probe_app, name="probe")
 app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
+app.command()(preflight)
 app.command(name="ls")(ls)
 app.command()(status)
 app.command(help="Stream a running trial's live transcript and running cost.")(logs)
