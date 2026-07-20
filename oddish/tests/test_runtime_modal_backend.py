@@ -22,7 +22,7 @@ def test_modal_capabilities_advertise_gpu_and_private_registry() -> None:
 
 
 def test_modal_harbor_env_kwargs_passes_caller_keys_through() -> None:
-    base = {"agent_tools_image": "ghcr.io/org/tools:tag", "keep": "value"}
+    base = {"region": "us-east", "keep": "value"}
     merged = ModalBackend().harbor_env_kwargs(dict(base))
     for key, value in base.items():
         assert merged[key] == value

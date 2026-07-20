@@ -13,12 +13,6 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
-from harbor.environments.modal_network import (
-    bedrock_domains_for_model,
-    looks_like_bedrock_model,
-    normalize_domain_or_url,
-)
-
 from oddish.config import (
     FIREWORKS_DEFAULT_BASE_URL,
     META_DEFAULT_BASE_URL,
@@ -32,8 +26,10 @@ from oddish.config import (
     is_moonshot_model,
     is_xai_model,
     is_zai_model,
+    looks_like_bedrock_model_id,
     settings,
 )
+from oddish.workers.agents.network import normalize_domain_or_url
 
 _BASE_URL_ENV_KEYS = (
     "ANTHROPIC_BASE_URL",
@@ -50,6 +46,52 @@ _BASE_URL_ENV_KEYS = (
 _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")
 _GEMINI_HOSTS = ("generativelanguage.googleapis.com",)
+
+_DEFAULT_BEDROCK_REGION = "us-east-1"
+_BEDROCK_STS_DOMAINS = ("sts.amazonaws.com",)
+
+
+def _looks_like_bedrock_model(model_name: str | None) -> bool:
+    if looks_like_bedrock_model_id(model_name):
+        return True
+    if not model_name:
+        return False
+    head, _, tail = model_name.strip().lower().partition("/")
+    return head == "bedrock" and bool(tail)
+
+
+def bedrock_domains_for_model(
+    *,
+    model_name: str | None,
+    region: str | None = None,
+    small_model_region: str | None = None,
+) -> list[str]:
+    region = (region or _DEFAULT_BEDROCK_REGION).strip().lower()
+    domains = [
+        f"bedrock-runtime.{region}.amazonaws.com",
+        f"bedrock.{region}.amazonaws.com",
+        *_BEDROCK_STS_DOMAINS,
+    ]
+    if small_model_region and small_model_region.lower() != region:
+        small = small_model_region.strip().lower()
+        domains.extend(
+            [f"bedrock-runtime.{small}.amazonaws.com", f"bedrock.{small}.amazonaws.com"]
+        )
+
+    tail = (model_name or "").split("/", 1)[-1].lower()
+    extras: set[str] = set()
+    if tail.startswith(("us.", "global.")):
+        regions = ("us-east-1", "us-west-2")
+    elif tail.startswith("eu."):
+        regions = ("eu-central-1", "eu-west-1")
+    elif tail.startswith(("apac.", "apn.")):
+        regions = ("ap-northeast-1", "ap-southeast-2")
+    else:
+        regions = ()
+    for extra_region in regions:
+        extras.add(f"bedrock-runtime.{extra_region}.amazonaws.com")
+        extras.add(f"bedrock.{extra_region}.amazonaws.com")
+    return sorted(set(domains) | extras)
 
 
 def _host_from_url(value: str | None) -> str | None:
@@ -120,7 +162,7 @@ def outbound_hosts_for_model(
         host = _default_host(settings.meta_base_url or META_DEFAULT_BASE_URL)
         if host:
             hosts.append(host)
-    elif looks_like_bedrock_model(model_name):
+    elif _looks_like_bedrock_model(model_name):
         hosts.extend(bedrock_domains_for_model(model_name=model_name))
     elif model_name:
         raw = model_name.strip().lower()

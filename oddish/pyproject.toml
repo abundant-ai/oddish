@@ -108,9 +108,8 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-# Upstream-based fork branch: laude-institute/harbor main + Oddish-needed hooks.
-# uv.lock records the exact commit used by the worker image.
-harbor = { git = "https://github.com/abundant-ai/harbor", branch = "cursor/upstream-rebase-oddish-b81e" }
+# abundant-ai/harbor main. uv.lock records the exact commit used by the worker image.
+harbor = { git = "https://github.com/abundant-ai/harbor", branch = "main" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

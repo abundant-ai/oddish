@@ -1771,7 +1771,7 @@ def load_sweep_config(config_path: Path) -> dict:
         harbor:
           environment:
             kwargs:
-              agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+              region: us-east
         priority: low
         experiment_id: exp_123
         max_trial_attempts: 3           # optional total Oddish attempts per trial
