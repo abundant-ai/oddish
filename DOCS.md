@@ -174,7 +174,7 @@ max_trial_attempts: 3
 harbor:
   environment:
     kwargs:
-      agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+      region: us-east
 ```
 
 `max_trial_attempts` is optional. It is the total Oddish worker attempt budget

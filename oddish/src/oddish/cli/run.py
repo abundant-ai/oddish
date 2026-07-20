@@ -686,7 +686,7 @@ def run(
             harbor:
               environment:
                 kwargs:
-                  agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+                  region: us-east
 
     OTHER OPTIONS:
 

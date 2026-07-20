@@ -48,7 +48,7 @@ def test_capabilities_self_consistent(backend: ExecutionBackend) -> None:
 
 @pytest.mark.parametrize("backend", CONFORMANCE_BACKENDS, ids=lambda b: b.name)
 def test_harbor_env_kwargs_preserves_caller_values(backend: ExecutionBackend) -> None:
-    base = {"agent_tools_image": "ghcr.io/org/tools:tag", "keep": "value"}
+    base = {"region": "us-east", "keep": "value"}
     merged = backend.harbor_env_kwargs(dict(base))
     assert isinstance(merged, dict)
     # Caller-supplied kwargs always survive the merge (caller wins).
