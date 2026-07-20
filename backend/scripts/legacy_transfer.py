@@ -377,6 +377,10 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         # timings["patch"]   -- our post-import UPDATEs (trials + ledger)
         timings = {"s3": 0.0, "import": 0.0, "patch": 0.0, "n": 0}
         total = len(rows)
+        # Set provisionally; RESET below once the experiment pre-create is
+        # done. Starting the clock here made the reported rate average in
+        # ~40 minutes of pre-create during which zero trials import, which
+        # understated harbor-forge's real throughput by roughly 2.5x.
         t0 = now()
 
         # Report ~10 times per run, capped at every 100 trials for big chunks.
@@ -395,9 +399,17 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                 n = max(timings["n"], 1)
                 # Per-trial averages. These are summed across all concurrent
                 # slots, so divide by concurrency to compare against wall clock.
+                # accounted = summed per-trial work / concurrency, i.e. the wall
+                # clock these timers can explain if every slot were always busy.
+                # If it is well under 100%, slots are idling somewhere we are not
+                # measuring -- that gap is the next thing worth chasing.
+                acct = ((timings["s3"] + timings["import"] + timings["patch"]
+                         + _t_group_setup) / max(1, concurrency))
                 print(f"    timing/trial: s3={timings['s3']/n*1000:.0f}ms "
                       f"import={timings['import']/n*1000:.0f}ms "
-                      f"patch={timings['patch']/n*1000:.0f}ms  (n={n})")
+                      f"patch={timings['patch']/n*1000:.0f}ms "
+                      f"group_setup={_t_group_setup/n*1000:.0f}ms  (n={n}, "
+                      f"accounts for {100.0*acct/secs:.0f}% of wall)")
 
         # 3a. Pre-create ALL experiments up-front, sequentially. Two task-groups
         # can share a run-root experiment, so creating them here once avoids
@@ -497,6 +509,11 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         print(f"pre-created experiments in {time.perf_counter() - _t_exp:.1f}s "
               f"(+{created['experiments']} new, {exp_retries} retries)")
 
+        # Trial work starts HERE. Reset the clock so rate/eta describe
+        # importing, not startup.
+        t0 = now()
+        _t_group_setup = 0.0
+
         # 3b. Task-groups run CONCURRENTLY up to --concurrency; each group's
         # trials import SEQUENTIALLY (run-order index only matters within a
         # task, and the importer's row lock is per-task -> cross-task
@@ -506,6 +523,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         async def _process_group(task_id: str, grp: list[dict]) -> None:
           async with sem:
             # task get-or-create (this group owns its name; no cross-group race)
+            _t_grp = time.perf_counter()
             try:
                 async with get_session() as sess:
                     task = (await sess.execute(
@@ -533,6 +551,8 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                         created["tasks"] += 1
                     task_pk = task.id
                     await sess.commit()
+                nonlocal _t_group_setup
+                _t_group_setup += time.perf_counter() - _t_grp
             except Exception as e:
                 created["errors"] += len(grp)
                 # Mirror the per-trial failure path: mark this group's trials
