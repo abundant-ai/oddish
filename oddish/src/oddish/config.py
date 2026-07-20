@@ -142,9 +142,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Pin of abundant-ai/harbor@cursor/upstream-rebase-oddish-b81e (upstream-based
-# fork with Oddish hooks; no legacy Modal CIDR closed-internet stack).
-HARBOR_DEFAULT_SHA = "4bcdfec8bb17097a7a03935b94c77aed330735d3"
+# Pin of abundant-ai/harbor@main (model-first restricted-network host inference).
+HARBOR_DEFAULT_SHA = "be5a3478b5771479f888cad6117ec026cd14d946"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1051,7 +1050,7 @@ class Settings(BaseSettings):
     harbor_source_repo: str = "abundant-ai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "cursor/upstream-rebase-oddish-b81e"
+    harbor_source_ref: str = "main"
 
     registry_auth_key: str | None = None
 
