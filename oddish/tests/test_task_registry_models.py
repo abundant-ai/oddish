@@ -5,6 +5,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.types import Text
+
 from oddish.db.models import MetadataSource, TaskModel, TaskVersionModel
 
 
@@ -51,3 +54,18 @@ def test_task_version_model_has_runtime_and_snapshot_columns():
     for name in runtime + snapshot:
         assert name in columns, f"TaskVersionModel missing column {name}"
         assert columns[name].nullable, f"{name} must be nullable"
+
+    assert isinstance(columns["gpu_types"].type, ARRAY)
+    assert isinstance(columns["topic_tags_snapshot"].type, ARRAY)
+
+    task_columns = TaskModel.__table__.columns
+
+    snapshot_numeric = columns["expert_time_hours_snapshot"].type
+    task_numeric = task_columns["expert_time_hours"].type
+    assert snapshot_numeric.precision == task_numeric.precision
+    assert snapshot_numeric.scale == task_numeric.scale
+
+    assert columns["category_snapshot"].type.length == task_columns["category"].type.length
+
+    assert isinstance(columns["description_snapshot"].type, Text)
+    assert isinstance(task_columns["description"].type, Text)

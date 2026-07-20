@@ -907,6 +907,13 @@ class TaskVersionModel(TimestampedMixin, Base):
     expanded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    expanded_manifest_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective_tag_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(Text),
+        nullable=False,
+        default=list,
+        server_default=text("'{}'::text[]"),
+    )
 
     # Runtime fields from task.toml at ingest time.
     allow_internet: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
@@ -928,13 +935,6 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
     expert_time_hours_snapshot: Mapped[float | None] = mapped_column(
         Numeric(6, 2), nullable=True
-    )
-    expanded_manifest_key: Mapped[str | None] = mapped_column(Text, nullable=True)
-    effective_tag_ids: Mapped[list[str]] = mapped_column(
-        ARRAY(Text),
-        nullable=False,
-        default=list,
-        server_default=text("'{}'::text[]"),
     )
 
     # Relationships
