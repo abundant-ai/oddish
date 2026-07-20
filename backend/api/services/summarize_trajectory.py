@@ -34,12 +34,15 @@ TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "4"
 
-# Output cap for the summary call. Was 2048 (inherited from the pre-migration
-# cap), which truncated the model mid-JSON on long trajectories: a dump of 30
-# trials from experiment c02666c5 produced 13 parse failures whose raw output
-# ended mid-token at ~5.3k chars. Those trials silently got no summary at all,
-# and they skewed to the longest, most complex runs.
-SUMMARY_MAX_TOKENS = 8192
+# Output cap for the summary call. The Anthropic API requires max_tokens, so
+# some value must be set; this one is a ceiling, not a target -- billing is on
+# tokens actually generated. Was 2048 (inherited from the pre-migration cap),
+# which truncated the model mid-JSON on long trajectories: a dump of 30 trials
+# from experiment c02666c5 produced 13 parse failures whose raw output ended
+# mid-token at ~5.3k chars, and those trials silently got no summary at all.
+# Well under the model's own limit, so the binding constraint is the prompt's
+# schema, not this number.
+SUMMARY_MAX_TOKENS = 16384
 
 
 def _truncate(text: str) -> str:
