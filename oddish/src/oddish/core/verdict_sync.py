@@ -25,7 +25,9 @@ def build_verdict_payload(
         "recommendations": list(verdict.recommendations),
         "task_problem_count": sum(1 for c in classifications if c.is_task_problem),
         "agent_problem_count": sum(
-            1 for c in classifications if c.classification == Classification.GOOD_FAILURE
+            1
+            for c in classifications
+            if c.classification == Classification.GOOD_FAILURE
         ),
         "success_count": sum(
             1
@@ -34,7 +36,9 @@ def build_verdict_payload(
             in (Classification.GOOD_SUCCESS, Classification.BAD_SUCCESS)
         ),
         "harness_error_count": sum(
-            1 for c in classifications if c.classification == Classification.HARNESS_ERROR
+            1
+            for c in classifications
+            if c.classification == Classification.HARNESS_ERROR
         ),
     }
 
@@ -46,8 +50,10 @@ async def sync_verdict_to_task(
     error: str | None,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
-    """Write verdict state and complete the task. The only writer of these
-    columns, so the legacy and block paths cannot diverge.
+    """Write verdict state and complete the task. The only writer of a
+    *synthesized* verdict, so the legacy and block paths cannot diverge.
+    Cleanup and gate-failure paths elsewhere still set ``verdict_status``
+    directly; they never produce a payload.
 
     Returns the terminal ``VerdictStatus`` value written, or ``None`` when the
     write was skipped (task gone, or the job was cancelled).
