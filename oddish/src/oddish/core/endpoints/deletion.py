@@ -8,6 +8,7 @@ from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from oddish.core.cost_basis import COMBINE_IDEMPOTENCY_PREFIX
 from oddish.core.endpoints._common import (
     get_trial_for_org_core,
     _reset_task_verdict,
@@ -770,11 +771,12 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
 
 def _combine_idempotency_key(result_id: str, source_id: str) -> str:
     """Return an always-marked, bounded key for a materialized trial copy."""
-    readable = f"combine:{result_id}:{source_id}"
+    prefix = COMBINE_IDEMPOTENCY_PREFIX
+    readable = f"{prefix}{result_id}:{source_id}"
     if len(readable) <= 64:
         return readable
     digest = hashlib.sha256(f"{result_id}\0{source_id}".encode()).hexdigest()
-    return f"combine:{digest[:56]}"
+    return f"{prefix}{digest[: 64 - len(prefix)]}"
 
 
 async def combine_experiments_core(

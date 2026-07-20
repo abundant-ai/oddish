@@ -192,3 +192,30 @@ async def test_sandbox_client_streams_json_lines_and_closes():
     ]
     await client.aclose()
     assert daytona.deleted is True
+
+
+@pytest.mark.asyncio
+async def test_fake_client_records_system_prompt():
+    c = FakeAnalyzerLLMClient(chunks=["a"])
+    chunks = [x async for x in c.stream("hi", system_prompt="be terse")]
+    assert chunks == ["a"]
+    assert c.last_system_prompt == "be terse"
+
+
+from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+
+
+@pytest.mark.asyncio
+async def test_create_llm_client_api_honors_model():
+    c = await create_llm_client(LLMClientType.API, model="claude-haiku-4-5-20251001")
+    assert isinstance(c, ApiAnalyzerLLMClient)
+    assert c._model == "claude-haiku-4-5-20251001"
+    await c.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fake_client_download_file():
+    c = FakeAnalyzerLLMClient(files={"out/reduce.json": b"{}"})
+    assert await c._download_file("out/reduce.json") == b"{}"
+    with pytest.raises(KeyError):
+        await c._download_file("out/missing.jsonl")

@@ -28,11 +28,13 @@ class AnalyzerType(str, enum.Enum):
 @dataclass
 class AnalyzerInput:
     input: Any
+    files_to_download: list[str] | None = None
 
 
 @dataclass
 class AnalyzerOutput:
     output: Any
+    files_written: list[str] | None = None
 
 
 def block_key_prefix(analyzer_type: AnalyzerType) -> str:
@@ -48,7 +50,9 @@ class _PrefixAdapter(logging.LoggerAdapter):
 def block_logger(key_prefix: str) -> logging.LoggerAdapter:
     """A logger whose every record (including exceptions) is tagged with the
     block's key_prefix, so all of one block's output is greppable by type."""
-    return _PrefixAdapter(logging.getLogger("oddish.analyzer_block"), {"prefix": key_prefix})
+    return _PrefixAdapter(
+        logging.getLogger("oddish.analyzer_block"), {"prefix": key_prefix}
+    )
 
 
 class AnalyzerBlock(Block):
@@ -65,6 +69,8 @@ class AnalyzerBlock(Block):
         analyzer_id: str | None = None,
         block_metadata: dict | None = None,
         client: AnalyzerLLMClient | None = None,
+        system_prompt: str | None = None,
+        model: str | None = None,
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
     ) -> None:
@@ -74,8 +80,23 @@ class AnalyzerBlock(Block):
         self.input = input
         self.prompt = prompt
         self.analyzer_id = analyzer_id
-        self.block_metadata = block_metadata
         self._client = client
+        if input.files_to_download:
+            if llm_client_type == LLMClientType.API:
+                raise ValueError(
+                    "files_to_download is sandbox-only; the API backend has no filesystem"
+                )
+            if client is None:
+                raise ValueError(
+                    "files_to_download requires an injected client (a self-provisioned "
+                    "block deletes its sandbox before run() can download)"
+                )
+        self._downloaded_files: dict[str, bytes] = {}
+        self.system_prompt = system_prompt
+        self.model = model
+        if model:
+            block_metadata = {**(block_metadata or {}), "model": model}
+        self.block_metadata = block_metadata
         self._output_transform = output_transform
         # Only used when self-provisioning (client is None): which Anthropic key
         # the backend gets. None -> the analyzer key / global default.
@@ -141,7 +162,9 @@ class AnalyzerBlock(Block):
             self.llm_client_type, api_key=self._api_key
         )
         try:
-            async for chunk in client.stream(self.prompt):
+            async for chunk in client.stream(
+                self.prompt, system_prompt=self.system_prompt
+            ):
                 self._chunks.append(chunk)
                 self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
                 yield chunk
@@ -149,6 +172,22 @@ class AnalyzerBlock(Block):
             # Only close a client we created; an injected one is the caller's.
             if self._client is None:
                 await client.aclose()
+
+    async def _download_requested_files(self) -> dict[str, str]:
+        """Pull each requested path off the sandbox. A file the agent never
+        wrote decodes to "" so one missing batch costs only its own batch
+        instead of failing the whole cohort."""
+        files: dict[str, str] = {}
+        for path in self.input.files_to_download or []:
+            try:
+                raw = await self._client._download_file(path)
+            except Exception:
+                self.log.warning("download failed for %s", path, exc_info=True)
+                files[path] = ""
+                continue
+            self._downloaded_files[path] = raw
+            files[path] = raw.decode("utf-8", errors="replace")
+        return files
 
     async def run(self) -> AnalyzerOutput:
         """Drive the stream to completion, persisting on every exit path."""
@@ -158,10 +197,17 @@ class AnalyzerBlock(Block):
         try:
             async for _ in self.stream_output():
                 pass
-            raw = "".join(self._chunks)
-            self.output = AnalyzerOutput(
-                output=self._output_transform(raw) if self._output_transform else raw
-            )
+            if self.input.files_to_download:
+                self.output = AnalyzerOutput(
+                    output=await self._download_requested_files()
+                )
+            else:
+                raw = "".join(self._chunks)
+                self.output = AnalyzerOutput(
+                    output=self._output_transform(raw)
+                    if self._output_transform
+                    else raw
+                )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))
             return self.output

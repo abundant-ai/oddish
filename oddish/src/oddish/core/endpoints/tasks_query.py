@@ -20,7 +20,7 @@ from sqlalchemy import (
     tuple_,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, load_only, selectinload
+from sqlalchemy.orm import aliased, lazyload, load_only, noload, selectinload
 
 from oddish.core.experiment_membership import (
     gathered_trial_ids_select,
@@ -477,7 +477,22 @@ async def list_experiment_task_shells_core(
         select(TaskModel)
         .where(TaskModel.id.in_(member_task_ids))
         .order_by(TaskModel.created_at.desc())
-        .options(load_only(*TASK_STATUS_RESPONSE_COLUMNS))
+        .options(
+            load_only(*TASK_STATUS_RESPONSE_COLUMNS),
+            # ``TaskModel.trials`` and ``TaskModel.experiments`` default to
+            # select-in eager loading.  A task-shell response deliberately
+            # contains neither relationship: scoped counts and the effective
+            # version are fetched by the aggregate queries below, and the one
+            # context experiment is attached explicitly after this query.
+            # Suppress both default loaders here so a large collection does
+            # not hydrate every historical trial/experiment for its tasks
+            # before returning the lightweight shell.
+            # Keep trials unloaded (rather than committing an empty
+            # collection) so another explicit selectinload in the same
+            # request/session can still enrich these task identities.
+            lazyload(TaskModel.trials),
+            noload(TaskModel.experiments),
+        )
     )
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
