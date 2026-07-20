@@ -13,7 +13,6 @@ from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
 from harbor.environments.kube_ops import kube_chart_present
-from harbor.environments.modal_network import infer_agent_domains
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.config import (
     EnvironmentConfig,
@@ -40,6 +39,7 @@ from .agent_config import (
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
+from .model_hosts import outbound_hosts_for_model
 from .modal_debug import (
     _capture_modal_output,
     _format_exception_message,
@@ -239,14 +239,17 @@ def _inject_restricted_agent_model_hosts(
     ):
         return
 
+    # Model/provider decides the API host — not the agent harness. Oddish routes
+    # many providers through claude-code; use the normalized model + the base
+    # URLs already stamped onto agent env by provider routing.
     agent_kwargs = dict(agent_config.kwargs or {})
-    if agent_config.env:
-        agent_kwargs["extra_env"] = resolve_env_vars(agent_config.env)
+    resolved_env = resolve_env_vars(agent_config.env) if agent_config.env else {}
+    if resolved_env:
+        agent_kwargs["extra_env"] = resolved_env
     inferred_hosts = normalize_allowed_hosts(
-        infer_agent_domains(
-            name=agent_config.name,
-            import_path=agent_config.import_path,
-            model_name=agent_config.model_name,
+        outbound_hosts_for_model(
+            agent_config.model_name,
+            agent_env=resolved_env,
             agent_kwargs=agent_kwargs,
         )
     )

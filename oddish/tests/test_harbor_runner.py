@@ -75,11 +75,13 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     )
     captured: dict[str, object] = {}
 
-    def _infer(**kwargs):
-        captured.update(kwargs)
+    def _hosts(model_name, *, agent_env=None, agent_kwargs=None):
+        captured["model_name"] = model_name
+        captured["agent_env"] = agent_env
+        captured["agent_kwargs"] = agent_kwargs
         return ["model.test", "existing.test"]
 
-    monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
+    monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
 
     harbor_runner._inject_restricted_agent_model_hosts(
         task_path=task_path,
@@ -88,6 +90,8 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     )
 
     assert agent_config.extra_allowed_hosts == ["existing.test", "model.test"]
+    assert captured["model_name"] == "example-model"
+    assert captured["agent_env"] == {"MODEL_BASE_URL": "https://model.test/v1"}
     assert captured["agent_kwargs"] == {
         "extra_env": {"MODEL_BASE_URL": "https://model.test/v1"}
     }
@@ -104,7 +108,9 @@ def test_apply_restricted_agent_network_defaults_disables_web_tools(
         kwargs={"effort": "max"},
     )
     monkeypatch.setattr(
-        harbor_runner, "infer_agent_domains", lambda **kwargs: ["api.anthropic.com"]
+        harbor_runner,
+        "outbound_hosts_for_model",
+        lambda *args, **kwargs: ["api.anthropic.com"],
     )
 
     harbor_runner._apply_restricted_agent_network_defaults(
@@ -144,14 +150,14 @@ def test_inject_restricted_agent_model_hosts_skips_unsupported_shapes(
     )
     environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(name="codex", model_name="example-model")
-    infer_calls = 0
+    host_calls = 0
 
-    def _infer(**kwargs):
-        nonlocal infer_calls
-        infer_calls += 1
+    def _hosts(*args, **kwargs):
+        nonlocal host_calls
+        host_calls += 1
         return ["model.test"]
 
-    monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
+    monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
 
     harbor_runner._inject_restricted_agent_model_hosts(
         task_path=task_path,
@@ -159,7 +165,7 @@ def test_inject_restricted_agent_model_hosts_skips_unsupported_shapes(
         agent_config=agent_config,
     )
 
-    assert infer_calls == 0
+    assert host_calls == 0
     assert agent_config.extra_allowed_hosts == []
 
 

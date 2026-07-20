@@ -144,7 +144,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # Pin of abundant-ai/harbor@cursor/upstream-rebase-oddish-b81e (upstream-based
 # fork with Oddish hooks; no legacy Modal CIDR closed-internet stack).
-HARBOR_DEFAULT_SHA = "e6d59b9b1ed9f05e8d40cc12a0dfc3c85bbf9355"
+HARBOR_DEFAULT_SHA = "4bcdfec8bb17097a7a03935b94c77aed330735d3"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 

@@ -911,7 +911,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?branch=cursor%2Fupstream-rebase-oddish-b81e#e6d59b9b1ed9f05e8d40cc12a0dfc3c85bbf9355" }
+source = { git = "https://github.com/abundant-ai/harbor?branch=cursor%2Fupstream-rebase-oddish-b81e#4bcdfec8bb17097a7a03935b94c77aed330735d3" }
 dependencies = [
     { name = "dirhash" },
     { name = "fastapi" },
