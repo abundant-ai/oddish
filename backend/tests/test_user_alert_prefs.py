@@ -70,8 +70,8 @@ def test_cost_milestone_toggle_off_drops_only_the_milestone():
     )
     on = _build(candidates)
     off = _build(candidates, UserAlertPrefs(cost_milestone_enabled=False))
-    assert "experiment:e1:1000" in _keys(on)
-    assert "experiment:e1:1000" not in _keys(off)
+    assert "experiment-24h:e1:1000" in _keys(on)
+    assert "experiment-24h:e1:1000" not in _keys(off)
     # The expensive-trial DM for the same spend is a different toggle, untouched.
     assert "trial:t" in _keys(off)
 
@@ -163,12 +163,14 @@ def test_personal_milestone_cutoff_overrides_both_first_and_repeat():
         experiments=[_experiment()],
         trials=[_trial("t", 600)],
     )
-    assert [k for k in _keys(_build(candidates)) if k.startswith("experiment:")] == []
+    assert [
+        k for k in _keys(_build(candidates)) if k.startswith("experiment-24h:")
+    ] == []
     lowered = _build(candidates, UserAlertPrefs(experiment_milestone_usd=200))
-    assert [k for k in _keys(lowered) if k.startswith("experiment:")] == [
-        "experiment:e1:200",
-        "experiment:e1:400",
-        "experiment:e1:600",
+    assert [k for k in _keys(lowered) if k.startswith("experiment-24h:")] == [
+        "experiment-24h:e1:200",
+        "experiment-24h:e1:400",
+        "experiment-24h:e1:600",
     ]
 
 

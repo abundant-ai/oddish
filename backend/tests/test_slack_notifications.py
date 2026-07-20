@@ -196,8 +196,8 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
     )
 
     assert [alert.key for alert in alerts] == [
-        "experiment:experiment/1:1000",
-        "experiment:experiment/1:2000",
+        "experiment-24h:experiment/1:1000",
+        "experiment-24h:experiment/1:2000",
     ]
     experiment_alert = alerts[1]
     assert experiment_alert.text.splitlines() == [
@@ -280,8 +280,8 @@ def test_build_alerts_calculates_milestones_from_24_hour_spend() -> None:
         dashboard_url="https://www.oddish.app",
     )
 
-    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
-    assert [a.key for a in milestone_alerts] == ["experiment:experiment-1:1000"]
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment-24h:")]
+    assert [a.key for a in milestone_alerts] == ["experiment-24h:experiment-1:1000"]
     assert "Cost in past 24 hours: *$1,600.00*" in milestone_alerts[0].text
 
 
@@ -297,10 +297,10 @@ def test_build_alerts_new_experiment_fires_every_milestone() -> None:
         dashboard_url="https://www.oddish.app",
     )
 
-    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment-24h:")]
     assert [a.key for a in milestone_alerts] == [
-        "experiment:experiment-1:1000",
-        "experiment:experiment-1:2000",
+        "experiment-24h:experiment-1:1000",
+        "experiment-24h:experiment-1:2000",
     ]
     assert not any(a.silent for a in milestone_alerts)
 
@@ -1566,7 +1566,7 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
         # so it produces a token estimate and never appears as unpriceable --
         # the token estimate does not falsely trigger the alert.
         assert [alert.key for alert in alerts] == [
-            f"experiment:{experiment_id}:1000",
+            f"experiment-24h:{experiment_id}:1000",
             f"trial:{task_id}-outlier",
             "unpriced-model:made-up/no-such-model-9000",
         ]
@@ -1703,7 +1703,7 @@ async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> N
 
         # Handle resolves to a single connected user -> notify that user.
         assert (
-            by_key[f"experiment:{exp_handle_id}:1000"].recipient_email
+            by_key[f"experiment-24h:{exp_handle_id}:1000"].recipient_email
             == "august@example.com"
         )
         assert (
@@ -1711,16 +1711,18 @@ async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> N
             == "august@example.com"
         )
         # Unmatched label -> named in the text, notified to no one.
-        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_email is None
+        assert by_key[f"experiment-24h:{exp_ots_id}:1000"].recipient_email is None
         assert by_key[f"trial:{exp_ots_id}-recent"].recipient_email is None
 
         # The Clerk id resolves from the same handle, so a Clerk-linked Slack DM
         # reaches the named owner; the unmatched label carries no Clerk id.
         assert (
-            by_key[f"experiment:{exp_handle_id}:1000"].recipient_clerk_user_id
+            by_key[f"experiment-24h:{exp_handle_id}:1000"].recipient_clerk_user_id
             == "clerk_august"
         )
-        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_clerk_user_id is None
+        assert (
+            by_key[f"experiment-24h:{exp_ots_id}:1000"].recipient_clerk_user_id is None
+        )
 
         # The billing user is never a recipient or a mention on any alert.
         for alert in by_key.values():

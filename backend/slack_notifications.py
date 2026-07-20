@@ -272,7 +272,9 @@ def build_alerts(
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
             for milestone in milestones:
-                key = f"experiment:{experiment.id}:{milestone:g}"
+                # Legacy keys represented lifetime spend; keep rolling-window
+                # claims separate so those rows cannot suppress this alert.
+                key = f"experiment-24h:{experiment.id}:{milestone:g}"
                 alerts.append(
                     SlackAlert(
                         key=key,
