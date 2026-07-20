@@ -16,10 +16,25 @@ class _EmptyInput(BaseModel):
     pass
 
 
+_VERDICT_SECTION_NAME = "verdict"
+_FALLBACK_SENTINEL = f"<{_VERDICT_SECTION_NAME}>[unavailable]</{_VERDICT_SECTION_NAME}>"
+
+
 class VerdictBlock(Block):
-    """Verdict-synthesis block: build_prompt/parse are inherited from Block;
-    this supplies the single prompt section (the shared verdict prompt) and
-    the output schema."""
+    """Verdict-synthesis block: parse is inherited from Block; this supplies
+    the single prompt section (the shared verdict prompt) and the output
+    schema.
+
+    Unlike trajectory/, where a degraded section is one of many, this
+    section *is* the entire prompt. Block.render_section swallows any
+    formatter exception into a `<verdict>[unavailable]</verdict>` fallback
+    sentinel so one bad section can't sink an otherwise-fine multi-section
+    prompt -- but here that fallback would silently become the whole judge
+    prompt, and the judge would return a confident-looking verdict about
+    nothing, persisted as SUCCESS. build_prompt() is overridden to detect
+    that sentinel and raise instead, so a raising build_verdict_prompt fails
+    this path exactly as loudly as it fails the legacy path (which calls it
+    outside any try/except)."""
 
     output_schema = TaskVerdictModel
 
@@ -34,11 +49,11 @@ class VerdictBlock(Block):
         self.baseline = baseline
         self.quality_check_passed = quality_check_passed
 
-    # ---- prompt sections (build_prompt is inherited) ----
+    # ---- prompt sections ----
     def sections(self) -> list[dict]:
         return [
             {
-                "name": "verdict",
+                "name": _VERDICT_SECTION_NAME,
                 "raw_input": {},
                 "schema": _EmptyInput,
                 "formatter": lambda _d: vp.verdict_section(
@@ -46,6 +61,16 @@ class VerdictBlock(Block):
                 ),
             },
         ]
+
+    def build_prompt(self) -> str:
+        prompt = super().build_prompt()
+        if prompt == _FALLBACK_SENTINEL:
+            raise RuntimeError(
+                "VerdictBlock's verdict section failed to render; refusing "
+                "to send the placeholder fallback to the judge as if it "
+                "were the real prompt"
+            )
+        return prompt
 
     # ---- parsing (parse is inherited) ----
     def to_verdict(self, raw: str) -> dict:

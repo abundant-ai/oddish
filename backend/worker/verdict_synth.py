@@ -18,7 +18,7 @@ from oddish.analyze.models import (
     TaskVerdictModel,
     TrialClassification,
 )
-from oddish.config import VERDICT_MODEL, settings
+from oddish.config import settings
 from oddish.workers.jobs.handlers import QaJobHandler
 
 from api.services.blocks.analyzer.analyzer_block import (
@@ -41,32 +41,38 @@ async def verdict_block_synth(
 ) -> TaskVerdictModel:
     """VerdictSynthFn implementation backed by VerdictBlock/AnalyzerBlock.
 
-    Self-provisions an OpenAIAnalyzerLLMClient for VERDICT_MODEL with
-    TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the
-    token cap -- the same model and token cap the legacy path reaches.
-    AnalyzerBlock never closes an injected client, so it is closed here in a
-    finally. ``timeout`` bounds the whole block run (the OpenAI client itself
-    has no per-request timeout knob yet), mirroring the legacy path's
-    ``timeout or VERDICT_TIMEOUT`` fallback.
+    Self-provisions an OpenAIAnalyzerLLMClient for ``settings.verdict_model``
+    with TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the
+    token cap -- the same model and token cap the legacy path reaches (legacy
+    resolves the model the same way, via ``settings.verdict_model`` in
+    ``qa_handler.default_verdict_synth``, so an env override can't split the
+    two paths). AnalyzerBlock never closes an injected client, so it is
+    closed here in a finally. ``timeout`` bounds the whole block run (the
+    OpenAI client itself has no per-request timeout knob yet), mirroring the
+    legacy path's ``timeout or VERDICT_TIMEOUT`` fallback.
     """
+    model = settings.verdict_model
     vb = VerdictBlock(
         classifications, baseline=baseline, quality_check_passed=quality_check_passed
     )
     client = OpenAIAnalyzerLLMClient(
-        model=VERDICT_MODEL,
+        model=model,
         max_tokens=VERDICT_MAX_TOKENS,
         response_format=TaskVerdictModel,
     )
-    block = AnalyzerBlock(
-        analyzer_type=AnalyzerType.TASK_VERDICT,
-        llm_client_type=LLMClientType.OPENAI,
-        input=AnalyzerInput(input={"num_trials": len(classifications)}),
-        prompt=vb.build_prompt(),
-        model=VERDICT_MODEL,
-        output_transform=vb.to_verdict,
-        client=client,
-    )
     try:
+        # vb.build_prompt() can now raise (see VerdictBlock.build_prompt) if
+        # its section degraded to the fallback sentinel -- keep it inside
+        # this try so the already-constructed client still gets closed.
+        block = AnalyzerBlock(
+            analyzer_type=AnalyzerType.TASK_VERDICT,
+            llm_client_type=LLMClientType.OPENAI,
+            input=AnalyzerInput(input={"num_trials": len(classifications)}),
+            prompt=vb.build_prompt(),
+            model=model,
+            output_transform=vb.to_verdict,
+            client=client,
+        )
         out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
     finally:
         await client.aclose()

@@ -342,20 +342,25 @@ async def test_openai_client_omits_response_format_when_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_openai_client_forwards_max_tokens_when_set(monkeypatch):
+async def test_openai_client_forwards_max_tokens_as_max_completion_tokens(monkeypatch):
+    """gpt-5.x-class models reject the legacy `max_tokens` wire param; the
+    constructor keeps the `max_tokens` name, but it must be sent as
+    `max_completion_tokens`, matching classifier.py's OpenAI verdict call."""
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, sent = _patch_openai_builder(monkeypatch, events)
     client = OpenAIAnalyzerLLMClient(model="gpt-5.4", max_tokens=4096)
     await _collect(client, "hi")
-    assert sent["max_tokens"] == 4096
+    assert sent["max_completion_tokens"] == 4096
+    assert "max_tokens" not in sent
 
 
 @pytest.mark.asyncio
-async def test_openai_client_omits_max_tokens_when_unset(monkeypatch):
+async def test_openai_client_omits_max_completion_tokens_when_unset(monkeypatch):
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, sent = _patch_openai_builder(monkeypatch, events)
     client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
     await _collect(client, "hi")
+    assert "max_completion_tokens" not in sent
     assert "max_tokens" not in sent
 
 

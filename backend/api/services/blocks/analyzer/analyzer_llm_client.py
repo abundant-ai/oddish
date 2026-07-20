@@ -161,7 +161,11 @@ class OpenAIAnalyzerLLMClient:
         if self._response_format is not None:
             kwargs["response_format"] = self._response_format
         if self._max_tokens is not None:
-            kwargs["max_tokens"] = self._max_tokens
+            # gpt-5.x-class models reject the legacy `max_tokens` param at the
+            # API; `_max_tokens` stays the constructor's name (uniform with
+            # ApiAnalyzerLLMClient) but maps to the wire param OpenAI actually
+            # accepts, matching classifier.py's `_compute_task_verdict_openai`.
+            kwargs["max_completion_tokens"] = self._max_tokens
 
         async with self._client.chat.completions.stream(**kwargs) as stream:
             async for event in stream:
