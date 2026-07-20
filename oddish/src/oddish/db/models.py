@@ -907,6 +907,28 @@ class TaskVersionModel(TimestampedMixin, Base):
     expanded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    # Runtime fields from task.toml at ingest time.
+    allow_internet: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    cpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    memory_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    storage_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gpu_types: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    agent_timeout_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verifier_timeout_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    build_timeout_sec: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Immutable copy of the task's descriptive metadata as of this version,
+    # so history isn't rewritten when the task's current metadata changes.
+    description_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category_snapshot: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    topic_tags_snapshot: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True
+    )
+    expert_time_hours_snapshot: Mapped[float | None] = mapped_column(
+        Numeric(6, 2), nullable=True
+    )
     expanded_manifest_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     effective_tag_ids: Mapped[list[str]] = mapped_column(
         ARRAY(Text),

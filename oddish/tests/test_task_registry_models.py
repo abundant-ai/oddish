@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.db.models import MetadataSource, TaskModel
+from oddish.db.models import MetadataSource, TaskModel, TaskVersionModel
 
 
 def test_task_model_has_descriptive_metadata_columns():
@@ -27,3 +27,27 @@ def test_task_model_has_descriptive_metadata_columns():
 
 def test_metadata_source_enum_values():
     assert [m.value for m in MetadataSource] == ["CLIENT", "BACKFILL"]
+
+
+def test_task_version_model_has_runtime_and_snapshot_columns():
+    columns = TaskVersionModel.__table__.columns
+    runtime = (
+        "allow_internet",
+        "cpus",
+        "memory_mb",
+        "storage_mb",
+        "gpus",
+        "gpu_types",
+        "agent_timeout_sec",
+        "verifier_timeout_sec",
+        "build_timeout_sec",
+    )
+    snapshot = (
+        "description_snapshot",
+        "category_snapshot",
+        "topic_tags_snapshot",
+        "expert_time_hours_snapshot",
+    )
+    for name in runtime + snapshot:
+        assert name in columns, f"TaskVersionModel missing column {name}"
+        assert columns[name].nullable, f"{name} must be nullable"
