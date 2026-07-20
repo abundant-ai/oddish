@@ -86,10 +86,12 @@ def _run_env(monkeypatch):
 
 
 def _stub_task_resolution(monkeypatch, task_path: Path):
-    # Keep the pre-flight the only thing under test: skip real task IO.
+    # Keep the linkage pre-flight the only thing under test: skip real task IO
+    # and neutralize the content pre-flight gate (exercised in its own tests).
     monkeypatch.setattr(
         run_mod, "resolve_local_task_paths", lambda **kwargs: [task_path]
     )
+    monkeypatch.setattr(run_mod, "run_checks", lambda task_paths: [])
 
 
 def test_run_aborts_before_upload_when_unlinked(monkeypatch, tmp_path, capsys):
