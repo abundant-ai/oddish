@@ -233,6 +233,52 @@ source, and missing `harbor.environments.kube_ops`, which kills the job on
 **One operator per scope.** Concurrent runs on the same shard won't corrupt
 anything, but they duplicate work and add pooler pressure.
 
+**Trust the ledger, not the `DONE` lines.** Summing `trials+=` across shard logs
+will sometimes come up short, and it does NOT mean rows were lost. Modal preempts
+containers and restarts them with the same input; the restarted attempt prints a
+fresh `scope:` line and its `DONE` reports only that attempt. On
+gemini-code-rl-export the `DONE` lines summed to 112,554 against 117,877 in the
+base — shard0 had been preempted after 5,323 trials and restarted. The ledger
+showed all 117,877 `transferred` and the validator agreed. To check whether a
+shard restarted:
+
+```bash
+grep -c "^scope:" gem_shard0.log      # more than 1 = it was preempted and resumed
+```
+
+Preemption is normal and needs no intervention. Expect several on a multi-hour
+base. It is also the strongest evidence the resume design works: the shard picked
+up from the ledger with zero duplicates and zero losses, unattended.
+
+**Total in-flight is the thing that matters, not shard count.** Measured on prod:
+
+| config | in-flight | result |
+|---|---|---|
+| 1 x 8   | 8  | 9.25/s |
+| 1 x 16  | 16 | 8.0/s |
+| 4 x 8   | 32 | best measured -- 23.5/s (nov-5), 17.6/s (experiments) |
+| 8 x 4   | 32 | 12.8/s -- same in-flight, worse shape |
+| 4 x 16  | 64 | 19.4/s AND killed 25% of shards |
+
+Use **4 shards x --concurrency 8**. Above ~32 in-flight the pooler starts
+returning `TimeoutError` and throughput drops -- more concurrency is actively
+worse, not just riskier.
+
+**Per-trial cost varies a lot by base.** Same config gave 23.5/s on
+nov-5-export, 17.6/s on experiments, 9.6/s on gemini-code-rl-export. Estimate
+from the first ten minutes of the base you are actually running, not from a
+previous one.
+
+**Do not restart to chase a decaying rate unless shards are imbalanced.** Rate
+decay near the end has two different causes. If most shards show `DONE` and one
+grinds on, that is genuine imbalance and a restart redistributes the remainder.
+If all shards are still running and the rate is just falling, that is the
+small-group tail -- LPT dispatches big groups first, so runs end on thousands of
+tiny groups where per-group overhead dominates. A restart cannot make small
+groups cheaper. Check with `grep -l "^DONE" *_shard*.log` before deciding; on
+abundant-ai/experiments a restart in the second case finished *slower* than
+leaving it alone.
+
 ---
 
 ## 8. Rollback

@@ -72,7 +72,6 @@ RENDER_CRITICAL = ["experiment_id", "task_id", "status", "provider", "queue_key"
 async def validate(scope_base: str | None, scope_run: str | None,
                    scope_pr: int | None, sample: int) -> bool:
     import json
-    import random
 
     import aioboto3
     import asyncpg
@@ -204,12 +203,16 @@ async def validate(scope_base: str | None, scope_run: str | None,
 
     # ---------------------------------------------------------------- Layer 3
     print("\n== Layer 3: faithfulness to S3 source (sampled) ==")
-    rows = await conn.fetch(
+    # Sample in SQL, not in Python. This used to fetch EVERY matching row and
+    # then shuffle and keep `sample` of them -- invisible at 70 trials, but it
+    # hauled all 117,877 gemini-code-rl-export rows over the wire to look at 50,
+    # and harbor-forge (680k) or a full-scope run (~1.07M) would be far worse.
+    # The scan still happens (harbor_config->>'...' is unindexed JSONB), but the
+    # transfer and memory cost drop to the sample size.
+    rows = list(await conn.fetch(
         f"SELECT id, reward, agent, model, orig_s3_src AS prefix "
-        f"FROM trials WHERE {where} AND orig_s3_src IS NOT NULL", *args)
-    rows = list(rows)
-    random.shuffle(rows)
-    rows = rows[: max(0, sample)]
+        f"FROM trials WHERE {where} AND orig_s3_src IS NOT NULL "
+        f"ORDER BY random() LIMIT {max(0, int(sample))}", *args))
     reward_mismatch = missing_prefix = missing_result = model_suspect = 0
     missing_log = 0
     session = aioboto3.Session()
