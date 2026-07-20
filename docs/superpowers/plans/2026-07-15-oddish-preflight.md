@@ -1898,6 +1898,29 @@ def test_run_force_proceeds_and_still_prints_findings(make_task, monkeypatch):
     # Getting past the gate is proved by the sentinel firing.
     assert "reached upload" in str(result.exception)
     assert "provenance" in result.output
+
+
+def test_run_json_gate_emits_no_json_blob_of_its_own(make_task, monkeypatch):
+    # `run --json` owns its single stdout JSON document. The preflight gate must
+    # NOT print its own {"ok":...} blob, or the two would concatenate on stdout
+    # and break json.loads. A clean task passes the gate silently; we stop at the
+    # upload sentinel, before run() emits its own JSON, and assert the gate wrote
+    # no JSON at all.
+    task_dir = make_task(extra_files={"environment/.dockerignore": "**/.git\n"})
+    _stub_run_preamble(monkeypatch)
+
+    def _sentinel(*a, **k):
+        raise RuntimeError("reached upload")
+
+    monkeypatch.setattr(run_module, "upload_tasks_with_progress", _sentinel)
+
+    result = runner.invoke(
+        app, ["run", str(task_dir), "--agent", "claude-code", "--json"]
+    )
+    assert "reached upload" in str(result.exception)  # passed the gate
+    # The gate contributed no JSON document to stdout.
+    assert '"ok"' not in result.output
+    assert '"findings"' not in result.output
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1937,10 +1960,14 @@ In `run()`, immediately after the `resolve_local_task_paths(...)` call in the `e
     # Gate before upload: a task that leaks its own answer should never cost a
     # trial. Unlike validate_tasks(), one bad task fails the whole run — a
     # pre-commit hook does not let 19 of 20 files through.
+    #
+    # Do NOT pass json_output here. `run --json` owns its single stdout JSON
+    # document; letting the gate emit its own `{"ok":...}` blob would concatenate
+    # two JSON documents on stdout and break `json.loads`. The gate instead
+    # renders findings to stderr (human) and aborts via typer.Exit on failure —
+    # consistent with run()'s other pre-upload aborts (the linkage gate).
     if task_paths:
-        gate_preflight(
-            run_checks(task_paths), force=force, json_output=json_output
-        )
+        gate_preflight(run_checks(task_paths), force=force)
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
