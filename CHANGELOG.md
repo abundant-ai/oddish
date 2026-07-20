@@ -10,7 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- QA verdict synthesis now defaults to the shared analysis model (`claude-sonnet-5`) instead of a dedicated OpenAI verdict model, deprecating the `VERDICT_MODEL = "gpt-5.4"` constant. Claude ids route the verdict call through the Claude CLI with a `--json-schema` structured output — the same binary, auth routing, and JSON contract the trial classifier uses — while a non-Claude `ODDISH_VERDICT_MODEL` override keeps the OpenAI / Azure OpenAI client path. `get_qa_queue_key()` stays keyed off `verdict_model`, so the QA/analyzer concurrency bucket now coincides with the analysis queue key `anthropic/claude-sonnet-5` and its raised 128 lease by default (#806).
+- The task-level QA worker job now leases concurrency from the **analysis model's** queue key (`get_qa_queue_key()` returns `normalize_queue_key(analysis_model)`, currently `anthropic/claude-sonnet-5`) instead of the verdict model's. The bulk of a QA job's LLM work is the per-trial classification pass on the analysis model; keying the lease off the verdict model capped QA throughput at the verdict bucket's default (48) while the analysis bucket sat idle. ANALYZER jobs share the QA queue key and move with it (#802).
+- Raise the baked `anthropic/claude-sonnet-5` queue-key concurrency override in the Modal deploy from 128 to 256, giving the relocated QA jobs and the analysis model's trials more headroom; operators can still override the whole JSON via the env var / `oddish-prod` secret (#802).
+- QA verdict synthesis now defaults to the shared analysis model (`claude-sonnet-5`) instead of a dedicated OpenAI verdict model, deprecating the `VERDICT_MODEL = "gpt-5.4"` constant. Claude ids route the verdict call through the Claude CLI with a `--json-schema` structured output — the same binary, auth routing, and JSON contract the trial classifier uses — while a non-Claude `ODDISH_VERDICT_MODEL` override keeps the OpenAI / Azure OpenAI client path. The QA queue key is unaffected: it already leases from the analysis model's bucket (#802), which the verdict call now simply shares (#806).
 
 ---
 

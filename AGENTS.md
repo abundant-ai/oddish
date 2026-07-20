@@ -525,9 +525,7 @@ pipeline state into a real model's bucket — an incident rendered 4k+ trials
 mid-classification as "running workers" under one model's queue while that
 model's actual trials were routed into the "analyses" pipeline. These are
 presentation buckets only; the task-level QA worker job still enqueues under
-`get_qa_queue_key()` (the verdict-synthesis model's concurrency bucket; the
-verdict model defaults to the shared analysis model, so this coincides with
-`get_analysis_queue_key()` unless `ODDISH_VERDICT_MODEL` is overridden).
+`get_qa_queue_key()` (the analysis model's concurrency bucket).
 
 Related invariant: a QA job that dies or is cancelled mid-classification must
 not strand its trials in a non-terminal `analysis_status`. The stale-heartbeat

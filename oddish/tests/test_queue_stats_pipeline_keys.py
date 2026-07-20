@@ -8,9 +8,10 @@ under one model), and that model's real trial counts were routed into the
 ``analysis`` / ``verdict`` buckets regardless of which models the pipelines
 run on.
 
-``verdict_model`` now defaults to the shared analysis model, so the two model
-queue keys coincide out of the box; the fixture pins two distinct models to
-preserve the original incident shape (each pipeline on its own model).
+``verdict_model`` now defaults to the shared analysis model, so its queue key
+coincides with the analysis model's out of the box; the fixture pins a
+distinct verdict model to preserve the original incident shape (trials
+running ON a second model exercising their own bucket).
 """
 
 from __future__ import annotations
@@ -36,14 +37,21 @@ from oddish.queue import (  # noqa: E402
 
 
 @pytest.fixture
-def model_keys(monkeypatch) -> tuple[str, str]:
-    """Pin distinct analysis/verdict models; return their queue keys."""
-    monkeypatch.setattr(settings, "analysis_model", "claude-haiku-4-5")
+def model_keys(monkeypatch) -> tuple[str, str, str]:
+    """Pin a distinct verdict model; return (analysis, verdict, QA-job) keys.
+
+    The QA job leases from the analysis model's bucket, so the QA-job key
+    coincides with the analysis key regardless of the verdict model; the
+    verdict model's own key stays a distinct bucket for trials running ON
+    that model.
+    """
     monkeypatch.setattr(settings, "verdict_model", "claude-sonnet-4-6")
     analysis_key = settings.get_analysis_queue_key()
-    verdict_key = settings.get_qa_queue_key()
+    verdict_key = settings.normalize_queue_key(settings.verdict_model)
+    qa_job_key = settings.get_qa_queue_key()
     assert analysis_key != verdict_key
-    return analysis_key, verdict_key
+    assert qa_job_key == analysis_key
+    return analysis_key, verdict_key, qa_job_key
 
 
 class _Result:
@@ -93,7 +101,7 @@ class _FakeSession:
 
 @pytest.mark.asyncio
 async def test_pipeline_counts_use_reserved_buckets(model_keys) -> None:
-    analysis_key, verdict_key = model_keys
+    analysis_key, verdict_key, _ = model_keys
     stats = await get_queue_stats(_FakeSession(analysis_key, verdict_key))
 
     # Analysis/verdict pipeline counts land in the reserved buckets ...
@@ -119,11 +127,11 @@ async def test_pipeline_counts_use_reserved_buckets(model_keys) -> None:
 async def test_assemble_routes_model_trials_to_trial_pipeline(
     model_keys, monkeypatch
 ) -> None:
-    analysis_key, verdict_key = model_keys
+    analysis_key, verdict_key, qa_job_key = model_keys
     # Give the QA job bucket a concurrency override distinct from every
     # default so the reserved-bucket assertion below cannot pass vacuously
     # (default == default).
-    monkeypatch.setitem(settings.model_concurrency_overrides, verdict_key, 999)
+    monkeypatch.setitem(settings.model_concurrency_overrides, qa_job_key, 999)
 
     stats = await get_queue_stats(_FakeSession(analysis_key, verdict_key))
     queue_stats, pipeline = _assemble_queue_and_pipeline(stats)
@@ -167,7 +175,7 @@ class _FakeOrgSession:
 async def test_by_org_stats_use_reserved_buckets(model_keys) -> None:
     from oddish.queue import get_queue_stats_by_org
 
-    analysis_key, _ = model_keys
+    analysis_key, _, _ = model_keys
     stats_by_org = await get_queue_stats_by_org(_FakeOrgSession(analysis_key))
 
     org_stats = stats_by_org["org-a"]

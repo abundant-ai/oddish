@@ -1178,7 +1178,8 @@ class Settings(BaseSettings):
     # Verdict-synthesis model for the QA job's final stage. Defaults to the
     # shared analysis model (a Claude id served via the Claude CLI). A
     # non-Claude ODDISH_VERDICT_MODEL override still routes through the
-    # OpenAI / Azure OpenAI client.
+    # OpenAI / Azure OpenAI client. Does not affect the QA queue key, which
+    # is leased from the analysis model's bucket (see get_qa_queue_key).
     verdict_model: str = ANALYSIS_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
@@ -1515,13 +1516,14 @@ class Settings(BaseSettings):
     def get_qa_queue_key(self) -> str:
         """Concurrency bucket for the task-level QA job.
 
-        Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
-        existing per-model concurrency overrides keep applying. Since
-        ``verdict_model`` defaults to the shared analysis model, this
-        coincides with ``get_analysis_queue_key()`` unless an operator
-        overrides ``ODDISH_VERDICT_MODEL``.
+        Keyed off ``analysis_model``: the bulk of a QA job's LLM work is the
+        per-trial classification pass, which runs on the analysis model, so the
+        job leases slots from that model's concurrency bucket (and existing
+        per-model concurrency overrides keep applying). The single
+        verdict-synthesis call on ``verdict_model`` (which now defaults to
+        the analysis model itself) rides along.
         """
-        return self.normalize_queue_key(self.verdict_model)
+        return self.normalize_queue_key(self.analysis_model)
 
     def get_task_expand_queue_key(self) -> str:
         """Dedicated queue key for task-expansion jobs.
