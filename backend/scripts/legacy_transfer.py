@@ -121,6 +121,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
     import asyncio
     import json
     import random
+    import time
     from datetime import datetime, timezone
     from itertools import groupby
     from uuid import uuid4
@@ -269,6 +270,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
 
         # ---- helpers --------------------------------------------------------
         async def build_spec(r: dict) -> ImportedTrialSpec:
+            _t_s3 = time.perf_counter()
             prefix = r["s3_prefix"]
             # reward: plain-number files first, then reward.json fallback. Most
             # has_reward=false trials genuinely have none (harness errors) and
@@ -315,6 +317,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                     model = cfg.get("model") or cfg.get("model_name") or model
                 except Exception:
                     pass
+            timings["s3"] += time.perf_counter() - _t_s3
             status = "success" if reward is not None else "failed"
             lm = r["last_modified"]
             return ImportedTrialSpec(
@@ -349,6 +352,12 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         # ---- 3. per-task: create task + experiments, then import its trials --
         created = {"tasks": 0, "experiments": 0, "trials": 0, "skipped": 0,
                    "errors": 0}
+        # Where does per-trial wall clock actually go? We are round-trip bound,
+        # so before optimising anything, measure the split rather than guess.
+        # timings["s3"]      -- all S3 reads inside build_spec
+        # timings["import"]  -- initialize_trial_import (the shared importer)
+        # timings["patch"]   -- our post-import UPDATEs (trials + ledger)
+        timings = {"s3": 0.0, "import": 0.0, "patch": 0.0, "n": 0}
         total = len(rows)
         t0 = now()
 
@@ -365,6 +374,12 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                 print(f"  progress {done}/{total}  rate={rate:.2f}/s  "
                       f"eta={eta_min:.0f}min  (+{created['trials']} new, "
                       f"{created['skipped']} skipped, {created['errors']} errors)")
+                n = max(timings["n"], 1)
+                # Per-trial averages. These are summed across all concurrent
+                # slots, so divide by concurrency to compare against wall clock.
+                print(f"    timing/trial: s3={timings['s3']/n*1000:.0f}ms "
+                      f"import={timings['import']/n*1000:.0f}ms "
+                      f"patch={timings['patch']/n*1000:.0f}ms  (n={n})")
 
         # 3a. Pre-create ALL experiments up-front, sequentially. Two task-groups
         # can share a run-root experiment, so creating them here once avoids
@@ -511,6 +526,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                 fresh = False
                 try:
                     spec = await build_spec(r)
+                    _t_imp = time.perf_counter()
                     resp = await initialize_trial_import(
                         task_id=task_pk,
                         experiment_id_or_name=eid,
@@ -518,6 +534,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                         upload_artifacts=False,   # point at Sauron, do not copy blobs
                         org_id=ORG_ID,
                     )
+                    timings["import"] += time.perf_counter() - _t_imp
                     trial_id = resp.trial_id
                     fresh = True
                 except Exception as e:
@@ -559,6 +576,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                 # legacy trials until a follow-up copies artifacts or teaches the
                 # read path about the legacy bucket. Runs for BOTH a fresh import
                 # and a resume-collision, so state always converges.
+                _t_patch = time.perf_counter()
                 async with get_session() as sess:
                     if trial_id is not None:
                         await sess.execute(text(
@@ -581,6 +599,8 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                             "WHERE s3_prefix=:p"),
                             {"p": r["s3_prefix"]})
                     await sess.commit()
+                timings["patch"] += time.perf_counter() - _t_patch
+                timings["n"] += 1
                 if fresh:
                     created["trials"] += 1
                 tick()
