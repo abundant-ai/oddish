@@ -185,7 +185,7 @@ class Finding:
 | --- | --- |
 | Finding | Check | Severity |
 | --- | --- | --- |
-| Unsuppressed repo fetch in Dockerfile / solve.sh / test.sh | `provenance` | error |
+| Unsuppressed repo fetch in `environment/` (Dockerfile or `*.sh`) | `provenance` | error |
 | `.git` inside `environment/` (the build context) | `provenance` | error |
 | No `.git` in `environment/`, but no `.dockerignore` excluding it | `provenance` | warn |
 | Any phase resolves to public with no justification | `closed_internet` | error |
@@ -203,11 +203,21 @@ Two rules.
 
 ### Fetch rule
 
-Scan `environment/Dockerfile`, `solution/solve.sh`, and `tests/test.sh` for:
+Scoped to the Docker build context (`environment/`), the only place a fetch can
+bake into the agent's image. Scan `environment/Dockerfile` and every `*.sh`
+under `environment/` for:
 
 - `git clone`, `git fetch`
 - `pip install git+…`
 - archive URLs: `*/archive/*.tar.gz`, `codeload.github.com`, release tarballs
+
+It deliberately does **not** scan `solution/solve.sh` or `tests/test.sh`. Harbor
+runs those in the oracle and verify phases, which execute after and outside the
+agent phase (`_run_agent()` completes before `_run_verifier()` in
+`trial/single_step.py`), so a fetch there never reaches the agent. A fetch in an
+`environment/` build script (e.g. `RUN ./setup.sh` where `setup.sh` clones the
+upstream) *does* reach the agent and is caught — the direct `RUN git clone` and
+the indirect script both live in the build context.
 
 Every hit is an error **unless** its line carries a suppression comment:
 

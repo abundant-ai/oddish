@@ -1165,7 +1165,18 @@ git commit -m "feat(preflight): port harbor-lh anti-cheat soundness scan"
 
 ### Task 6: `provenance` check — the net-new one
 
-Two rules: repo fetches, and `.git` in the image.
+Two rules: repo fetches, and `.git` in the image. Both are scoped to the Docker
+build context (`environment/`), because only what is in the build context reaches
+the agent.
+
+**The fetch rule scans the build context, not the whole task.** It reads
+`environment/Dockerfile` and every `*.sh` under `environment/` — the files that
+can run at image-build time and bake a fetched repo into the agent's image. It
+deliberately does *not* scan `solution/solve.sh` or `tests/test.sh`: Harbor runs
+those in the oracle and verify phases (verified against `trial/single_step.py`:
+`_run_agent()` completes before `_run_verifier()`), which execute after and
+outside the agent phase, so a fetch there never reaches the agent. Flagging them
+would repeat the purpose-vs-mechanism error that removed `dockerfile_leaks`.
 
 **Files:**
 - Create: `oddish/src/oddish/preflight/checks/provenance.py`
@@ -1211,16 +1222,30 @@ def test_provenance_flags_repo_fetches_in_dockerfile(make_task, line):
     assert findings[0].line == 2
 
 
-def test_provenance_flags_fetch_in_solve_sh(make_task):
-    task_dir = make_task(solve_sh="#!/bin/sh\ngit clone https://github.com/foo/bar\n")
+def test_provenance_flags_fetch_in_an_environment_build_script(make_task):
+    # A git clone in a script under environment/ runs at build time (the
+    # Dockerfile invokes it) and bakes into the agent's image, exactly like a
+    # direct RUN git clone.
+    task_dir = make_task(
+        extra_files={"environment/setup.sh": "#!/bin/sh\ngit clone https://github.com/foo/bar\n"}
+    )
     findings = [f for f in provenance.check(task_dir, _config(task_dir)) if f.line == 2]
     assert len(findings) == 1
+    assert findings[0].severity is Severity.ERROR
 
 
-def test_provenance_flags_fetch_in_test_sh(make_task):
-    task_dir = make_task(test_sh="#!/bin/sh\ngit fetch origin\n")
-    findings = [f for f in provenance.check(task_dir, _config(task_dir)) if f.line == 2]
-    assert len(findings) == 1
+@pytest.mark.parametrize("rel", ["solution/solve.sh", "tests/test.sh"])
+def test_provenance_ignores_fetch_outside_the_build_context(make_task, rel):
+    # solve.sh (oracle) and test.sh (verifier) run in phases the agent never
+    # sees, so a fetch there cannot leak branch history to the agent.
+    task_dir = make_task(
+        extra_files={rel: "#!/bin/sh\ngit clone https://github.com/foo/bar\n", ".dockerignore": "**/.git\n"}
+    )
+    fetch_findings = [
+        f for f in provenance.check(task_dir, _config(task_dir))
+        if "fetch" in f.message or "clone" in f.message.lower()
+    ]
+    assert fetch_findings == []
 
 
 def test_provenance_accepts_a_valid_suppression(make_task):
@@ -1347,13 +1372,6 @@ _FETCH_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"https?://codeload\.[^\s\"']+"), "codeload URL"),
 )
 
-# Relative to the task dir. These are the files that build or drive the image.
-_SCAN_TARGETS = (
-    Path("environment") / "Dockerfile",
-    Path("solution") / "solve.sh",
-    Path("tests") / "test.sh",
-)
-
 _DOCKERIGNORE_GIT_ENTRIES = frozenset({".git", ".git/", "**/.git", "**/.git/", "*/.git"})
 
 
@@ -1363,13 +1381,33 @@ def _suppression_reason(line: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _build_context_files(task_dir: Path) -> list[Path]:
+    """Files that can run at image-build time and reach the agent.
+
+    Harbor's Docker build context is environment/ (docker.py:240): the
+    Dockerfile, plus any shell script it might invoke at build time. A fetch in
+    any of these bakes into the image the agent works in.
+
+    Deliberately excludes solution/solve.sh and tests/test.sh: Harbor runs those
+    in the oracle and verify phases, which execute after (and outside) the agent
+    phase, so a fetch there never reaches the agent. Flagging them would repeat
+    the purpose-vs-mechanism error that removed dockerfile_leaks.
+    """
+    env_dir = task_dir / "environment"
+    if not env_dir.is_dir():
+        return []
+    files: list[Path] = []
+    dockerfile = env_dir / "Dockerfile"
+    if dockerfile.is_file():
+        files.append(dockerfile)
+    files.extend(sorted(p for p in env_dir.rglob("*.sh") if p.is_file()))
+    return files
+
+
 def _fetch_findings(task_dir: Path) -> list[Finding]:
     findings: list[Finding] = []
 
-    for rel in _SCAN_TARGETS:
-        path = task_dir / rel
-        if not path.is_file():
-            continue
+    for path in _build_context_files(task_dir):
         text = path.read_text(encoding="utf-8", errors="ignore")
         for lineno, line in enumerate(text.splitlines(), start=1):
             if line.lstrip().startswith("#"):
