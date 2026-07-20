@@ -59,15 +59,53 @@ function Show-Status {
         $suffix = ""
         if ($restarts -gt 1) { $suffix = "  (restarted x$($restarts - 1))" }
 
+        # Take this shard's workload from its scope: line even if it has not
+        # started importing. Otherwise a shard still in pre-create contributes
+        # nothing to the denominator and the ETA describes only the shards that
+        # happen to be running -- wildly optimistic while others start up.
+        $shardTotal = 0
+        $scopeLine = $lines | Select-String -Pattern "^scope:" | Select-Object -Last 1
+        if ($scopeLine) {
+            $sm = [regex]::Match($scopeLine.Line, "trials=(\d+)")
+            if ($sm.Success) { $shardTotal = [int]$sm.Groups[1].Value }
+        }
+
         if ($prog) {
+            # Take the last TWO progress lines and difference them.
+            #
+            # The rate printed in the log is CUMULATIVE from the shard's t0,
+            # which starts before the experiment pre-create -- so on harbor-forge
+            # it averages in ~40 minutes of zero progress and badly understates
+            # the truth. Each line gives done and cumulative rate, so elapsed is
+            # done/rate. Differencing two points cancels the t0 offset entirely
+            # and yields the real current rate, from logs already on disk.
+            $last2 = $lines | Select-String -Pattern "^\s+progress" | Select-Object -Last 2
             $m = [regex]::Match($prog.Line, "progress (\d+)/(\d+)\s+rate=([\d.]+).*?(\d+) errors")
             if ($m.Success) {
                 $d = [int]$m.Groups[1].Value
                 $t = [int]$m.Groups[2].Value
-                $r = [double]$m.Groups[3].Value
+                $rCum = [double]$m.Groups[3].Value
                 $e = [int]$m.Groups[4].Value
-                $done += $d; $total += $t; $errors += $e
+
+                $r = $rCum          # fall back to cumulative if we only have one point
+                $inst = $false
+                if ($last2.Count -eq 2) {
+                    $m1 = [regex]::Match($last2[0].Line, "progress (\d+)/\d+\s+rate=([\d.]+)")
+                    if ($m1.Success) {
+                        $d1 = [double]$m1.Groups[1].Value; $r1 = [double]$m1.Groups[2].Value
+                        $d2 = [double]$d;                  $r2 = $rCum
+                        if ($r1 -gt 0 -and $r2 -gt 0) {
+                            $t1 = $d1 / $r1
+                            $t2 = $d2 / $r2
+                            if ($t2 -gt $t1) { $r = ($d2 - $d1) / ($t2 - $t1); $inst = $true }
+                        }
+                    }
+                }
+
+                $done += $d; $errors += $e
+                if ($shardTotal -gt 0) { $total += $shardTotal } else { $total += $t }
                 $state = "running"
+                if (-not $inst) { $state = "running (cumulative rate)" }
                 if ($doneLine) { $state = "DONE"; $finished++ } else { $rate += $r; $running++ }
                 Write-Host ("{0,-22} {1,10} {2,10} {3,9:N2} {4,8}  {5}{6}" -f `
                             $log.Name, $d, $t, $r, $e, $state, $suffix)
@@ -81,8 +119,9 @@ function Show-Status {
         elseif ($lines | Select-String -Pattern "prefetched") { $phase = "experiment pre-create" }
         elseif ($lines | Select-String -Pattern "^scope:")    { $phase = "manifest prefetch" }
         $starting++
+        $total += $shardTotal
         Write-Host ("{0,-22} {1,10} {2,10} {3,9} {4,8}  {5}{6}" -f `
-                    $log.Name, "-", "-", "-", "-", $phase, $suffix)
+                    $log.Name, "-", $(if ($shardTotal) { $shardTotal } else { "-" }), "-", "-", $phase, $suffix)
     }
 
     Write-Host ("-" * 78)
@@ -92,6 +131,10 @@ function Show-Status {
         Write-Host ("TOTAL {0:N0}/{1:N0} ({2:N1}%)   {3:N2}/s   eta {4:N1}h   errors {5}" -f `
                     $done, $total, (100.0 * $done / $total), $rate, $eta, $errors) `
                    -ForegroundColor Cyan
+        if ($starting -gt 0) {
+            Write-Host ("  (eta assumes only the {0} running shard(s); it drops as the other {1} start)" -f `
+                        $running, $starting) -ForegroundColor DarkGray
+        }
     }
     else {
         Write-Host "All shards still in startup -- no rate yet." -ForegroundColor Yellow
