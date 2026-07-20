@@ -276,12 +276,23 @@ function ConcurrencyLimitEditor({
       );
       return;
     }
-    void update(limit);
+    void update(limit === stat.deploy_limit ? null : limit);
   }
 
+  const reset =
+    stat.override_limit !== null && Number(draft) === stat.deploy_limit;
+
   return (
-    <div className="flex min-w-40 flex-col items-end gap-1">
-      <div className="flex items-center gap-1">
+    <div className="flex min-w-56 flex-col items-end gap-1">
+      <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+        {stat.override_limit !== null && (
+          <span
+            className="text-muted-foreground text-[10px]"
+            title="Save this value to use the deploy default"
+          >
+            Default {stat.deploy_limit}
+          </span>
+        )}
         <Input
           type="number"
           min={0}
@@ -290,7 +301,7 @@ function ConcurrencyLimitEditor({
           value={draft}
           disabled={saving}
           aria-label={`Concurrency limit for ${stat.queue_key}`}
-          className="h-7 w-20 text-right font-mono text-[11px]"
+          className="h-7 w-16 text-right font-mono text-[11px]"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") save();
@@ -302,32 +313,14 @@ function ConcurrencyLimitEditor({
         />
         <Button
           size="sm"
-          className="h-7 px-2 text-[11px]"
-          disabled={saving || Number(draft) === stat.limit}
+          className="h-7 min-w-12 px-2 text-[11px]"
+          disabled={saving || (Number(draft) === stat.limit && !reset)}
           onClick={save}
         >
-          Save
+          {saving ? "Saving" : "Save"}
         </Button>
-        {stat.override_limit !== null ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-[11px]"
-            disabled={saving}
-            onClick={() => void update(null)}
-          >
-            Reset
-          </Button>
-        ) : null}
       </div>
-      {stat.override_limit !== null ? (
-        <span className="text-muted-foreground text-[10px]">
-          Deploy default: {stat.deploy_limit}
-        </span>
-      ) : null}
-      {error ? (
-        <span className="text-destructive text-[10px]">{error}</span>
-      ) : null}
+      {error && <span className="text-destructive text-[10px]">{error}</span>}
     </div>
   );
 }
@@ -347,16 +340,16 @@ function CapacityTable({
     );
   }
   return (
-    <Table>
+    <Table className="min-w-[980px]">
       <TableHeader>
-        <TableRow>
-          <TableHead>Queue Key</TableHead>
-          <TableHead className="text-right">Queued</TableHead>
-          <TableHead>Capacity (running / limit)</TableHead>
-          <TableHead className="text-right">Configured limit</TableHead>
-          <TableHead className="text-right">Oldest wait</TableHead>
-          <TableHead className="text-right">Queue p50</TableHead>
-          <TableHead className="text-right">Queue p95</TableHead>
+        <TableRow className="whitespace-nowrap">
+          <TableHead className="min-w-72">Queue key</TableHead>
+          <TableHead className="w-20 text-right">Queued</TableHead>
+          <TableHead className="min-w-44">Running / limit</TableHead>
+          <TableHead className="min-w-64 text-right">Limit</TableHead>
+          <TableHead className="w-24 text-right">Oldest</TableHead>
+          <TableHead className="w-20 text-right">p50</TableHead>
+          <TableHead className="w-20 text-right">p95</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -366,7 +359,7 @@ function CapacityTable({
           return (
             <TableRow key={row.queue_key}>
               <TableCell>
-                <span className="inline-flex items-center gap-1.5">
+                <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                   <QueueKeyIcon queueKey={row.queue_key} size={12} />
                   <span className="font-mono text-[11px]">{row.queue_key}</span>
                 </span>
