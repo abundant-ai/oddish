@@ -293,3 +293,57 @@ async def test_finding_exposes_step_ids():
 
     assert out.findings[0].step_ids == [1]
     assert not hasattr(out.findings[0], "step_indices")
+
+
+_OPUS_DENOMS = {"opus": {"trials": 2, "scored": 2, "solved": 0, "mean_reward": 0.0,
+                          "analyzed": 2, "bad": 1, "good": 1}}
+
+
+class _ByModelNotListClient(FakeClient):
+    """Reduce response has by_model, but it's not a list — must degrade, not raise."""
+
+    async def complete(self, prompt, *, model, temperature, max_tokens):
+        if "lead analyst synthesizing" in prompt:  # reduce prompt
+            return json.dumps({
+                "bad_failure_content": "bad",
+                "good_failure_content": "good",
+                "universal_capabilities_content": "caps",
+                "headroom_analysis": "headroom",
+                "by_model": "not a list",
+                "cross_model_comparison": "cmp",
+            })
+        return await super().complete(
+            prompt, model=model, temperature=temperature, max_tokens=max_tokens
+        )
+
+
+@pytest.mark.asyncio
+async def test_missing_by_model_degrades_to_empty_payload_not_raise():
+    """FakeClient's reduce response has no by_model/cross_model_comparison keys
+    at all (older prompt, or truncated output) — must still produce a payload."""
+    out = await run_analyzer_eval(
+        _failure_inputs(), AnalyzerEvalConfig(), client=FakeClient(),
+        denominators=_OPUS_DENOMS,
+    )
+    assert out.by_model == {
+        "version": 1, "comparison": "", "denominators": _OPUS_DENOMS, "models": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_non_list_by_model_degrades_to_empty_payload_not_raise():
+    out = await run_analyzer_eval(
+        _failure_inputs(), AnalyzerEvalConfig(), client=_ByModelNotListClient(),
+        denominators=_OPUS_DENOMS,
+    )
+    assert out.by_model["models"] == []
+    assert out.by_model["comparison"] == "cmp"
+
+
+@pytest.mark.asyncio
+async def test_by_model_is_none_without_denominators():
+    """No denominators supplied → by_model stays None, the legacy render signal."""
+    out = await run_analyzer_eval(
+        _failure_inputs(), AnalyzerEvalConfig(), client=FakeClient(),
+    )
+    assert out.by_model is None

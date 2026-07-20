@@ -99,7 +99,7 @@ async def repro(analyzer_id: str, bucket: str, limit: int) -> None:
     client, runtime, cli_src = _daytona_client(), _runtime(), _read_cli_source()
     key_id, api_base, api_key = await _resolve_api_creds(rows, analyzer_id)
     try:
-        findings, sections = await run_cohort(
+        findings, sections, _by_model = await run_cohort(
             client, runtime, bucket=bucket, cohort=cohort, roster=roster,
             counts=counts, oracle_by_trial=oracle_by_trial,
             host_by_trial=host_by_trial,

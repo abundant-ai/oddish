@@ -21,7 +21,11 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import or_, select
 
 from oddish.config import settings, to_anthropic_api_model_id
-from oddish.core.analyzer_inputs import build_analyzer_inputs, models_by_task_from_rows
+from oddish.core.analyzer_inputs import (
+    build_analyzer_inputs,
+    models_by_task_from_rows,
+    trial_model_rewards,
+)
 from oddish.core.analyzer_trial_export import build_trial_analyses_payload
 from oddish.core.analyzers import experiment_ids_for_analyzer
 from oddish.core.experiment_membership import trial_in_experiment
@@ -39,6 +43,7 @@ from oddish.db.models import (
     WorkerJobStatus,
     utcnow,
 )
+from oddish.evals.analyzer.by_model import build_denominators
 from oddish.evals.analyzer.core import run_analyzer_eval
 from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, AnalyzerEvalOutput
 from oddish.workers.queue.analysis_handler import classify_trial_and_store
@@ -59,7 +64,10 @@ async def default_eval_rows(
     rows: list[tuple[Any, str]], config: AnalyzerEvalConfig, analyzer_id: str
 ) -> AnalyzerEvalOutput:
     inputs = await build_analyzer_inputs(rows)
-    return await run_analyzer_eval(inputs, config)
+    # Empty findings: this runs before the map step, so counts start at zero
+    # and are re-derived with real findings after the eval returns.
+    denominators = build_denominators(trial_model_rewards(rows), [])
+    return await run_analyzer_eval(inputs, config, denominators=denominators)
 
 
 def _trial_analyses_s3_key(analyzer_id: str) -> str:
@@ -300,6 +308,11 @@ async def run_analyzer_generation_job(
             # Derived host-side from rows, so it holds for every eval strategy --
             # including ones that never build AnalyzerEvalInputs.
             output.models_by_task = _models_by_task(rows)
+            if output.by_model is not None:
+                # Re-derive with real findings; the pre-eval call above had none.
+                output.by_model["denominators"] = build_denominators(
+                    trial_model_rewards(rows), output.findings
+                )
         if save_trial_analyses and output is not None:
             await _maybe_save_trial_analyses(
                 analyzer_id=analyzer_id,
@@ -351,6 +364,7 @@ async def run_analyzer_generation_job(
                 analyzer.reduce_prompt = output.reduce_prompt
                 analyzer.findings = [asdict(f) for f in output.findings]
                 analyzer.models_by_task = output.models_by_task
+                analyzer.by_model = output.by_model
                 analyzer.status = JobStatus.SUCCESS
                 analyzer.error = None
             else:

@@ -563,6 +563,10 @@ class AnalyzerModel(TimestampedMixin, Base):
     universal_capabilities_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Per-model insights payload. NULL = pre-analyzers_008 report; the report UI
+    # falls back to the four-section render on NULL, so do not default this to {}.
+    by_model: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # The reduce-stage prompt that produced the section bodies above; persisted
     # for debugging/reproducibility. NULL for zero-failure analyzers (no reduce).
     reduce_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)

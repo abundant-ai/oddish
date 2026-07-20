@@ -14,6 +14,7 @@ from typing import Protocol
 
 from oddish.evals.primitives import SubAnalysis, TrajectoryBundle
 from oddish.evals.analyzer.bucketing import BUCKET_OF, bucket_subanalyses
+from oddish.evals.analyzer.by_model import build_by_model_payload, normalize_entries
 from oddish.evals.analyzer.prompt_builder import build_map_prompt, build_reduce_prompt
 from oddish.evals.analyzer.schemas import (
     Finding,
@@ -170,6 +171,7 @@ async def run_analyzer_eval(
     config: AnalyzerEvalConfig,
     *,
     client: LLMClient | None = None,
+    denominators: dict[str, dict] | None = None,
 ) -> AnalyzerEvalOutput:
     p = f"[{config.job_kind}] "
     logger.info(
@@ -272,7 +274,8 @@ async def run_analyzer_eval(
 
     # Step 5 — reduce the per-trial findings into the four narrative sections.
     reduce_prompt = build_reduce_prompt(
-        findings, counts, _models_by_task_from_bundles(inputs.bundles)
+        findings, counts, _models_by_task_from_bundles(inputs.bundles),
+        denominators=denominators,
     )
     try:
         raw = await client.complete(
@@ -300,8 +303,28 @@ async def run_analyzer_eval(
         "capabilities": sec.get("universal_capabilities_content", ""),
         "headroom": sec.get("headroom_analysis", ""),
     }
+
+    # by_model is additive: a reduce that omits it (older prompt, truncated
+    # output) still yields a valid report, it just renders in the legacy shape.
+    by_model = None
+    if denominators:
+        raw_entries = sec.get("by_model")
+        entries = normalize_entries(
+            raw_entries if isinstance(raw_entries, list) else [],
+            denominators,
+            bucket="all",
+        )
+        by_model = build_by_model_payload(
+            entries, str(sec.get("cross_model_comparison") or ""), denominators
+        )
+        logger.info(
+            p + "analyzer-eval reduce: %d/%d models described",
+            len(entries), len(denominators),
+        )
+
     logger.info(p + "analyzer-eval complete: %d findings, sections rendered", len(findings))
     return AnalyzerEvalOutput(
         sections=sections, findings=findings, counts=counts, breakdown=breakdown,
         reduce_prompt=reduce_prompt, subanalyses=inputs.subanalyses,
+        by_model=by_model,
     )

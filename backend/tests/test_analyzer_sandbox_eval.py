@@ -48,12 +48,12 @@ def patched(monkeypatch):
     async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
         calls.append({"bucket": bucket, "cohort": [sa.trial_id for sa in cohort]})
         if bucket == "bad":
-            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}
+            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}, ([], "")
         return [_finding("good-1", "good")], {
             "good_failure_content": "# Good",
             "universal_capabilities_content": "# Caps",
             "headroom_analysis": "# Head",
-        }
+        }, ([], "")
 
     monkeypatch.setattr(m, "run_cohort", fake_run_cohort)
     monkeypatch.setattr(m, "_read_cli_source", lambda: b"cli")
@@ -111,6 +111,52 @@ async def test_both_cohorts_empty_provisions_nothing(patched, monkeypatch):
     assert out.findings == []
 
 
+async def test_two_cohort_comparisons_get_bucket_headings(patched, monkeypatch):
+    m, _, _ = patched
+    monkeypatch.setattr(
+        m, "_gather",
+        lambda rows: (
+            [_sa("bad-1", "BAD_FAILURE"), _sa("good-1", "GOOD_FAILURE")],
+            {"bad-1": "oracle"}, _hosts("bad-1", "good-1"),
+        ),
+    )
+
+    async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
+        if bucket == "bad":
+            return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}, (
+                [], "model A hacks more",
+            )
+        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}, (
+            [], "model A is stronger",
+        )
+
+    monkeypatch.setattr(m, "run_cohort", fake_run_cohort)
+    out = await m.sandbox_eval_rows([("r1", "t"), ("r2", "t")], AnalyzerEvalConfig(), "a1")
+
+    assert out.by_model["comparison"] == (
+        "### Reward hacking\n\nmodel A hacks more\n\n"
+        "### Capability\n\nmodel A is stronger"
+    )
+
+
+async def test_single_cohort_comparison_is_unprefixed(patched, monkeypatch):
+    m, _, _ = patched
+    monkeypatch.setattr(
+        m, "_gather",
+        lambda rows: ([_sa("bad-1", "BAD_FAILURE")], {"bad-1": "o"}, _hosts("bad-1")),
+    )
+
+    async def fake_run_cohort(client, runtime, *, bucket, cohort, **kw):
+        return [_finding("bad-1", "bad")], {"bad_failure_content": "# Bad"}, (
+            [], "model A hacks more",
+        )
+
+    monkeypatch.setattr(m, "run_cohort", fake_run_cohort)
+    out = await m.sandbox_eval_rows([("r1", "t")], AnalyzerEvalConfig(), "a1")
+
+    assert out.by_model["comparison"] == "model A hacks more"
+
+
 async def test_cohort_failure_fails_the_job(patched, monkeypatch):
     """No fallback to the API path: it would silently re-introduce the S3 load
     and the context overflow this exists to avoid."""
@@ -149,7 +195,7 @@ async def test_failure_waits_for_siblings_to_tear_down(patched, monkeypatch):
             raise RuntimeError("sandbox exploded")
         await asyncio.sleep(0.05)
         good_finished = True
-        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}
+        return [_finding("good-1", "good")], {"good_failure_content": "# Good"}, ([], "")
 
     monkeypatch.setattr(m, "run_cohort", flaky)
     with pytest.raises(RuntimeError, match="sandbox exploded"):
@@ -188,7 +234,7 @@ async def test_non_empty_cohort_with_zero_findings_is_fatal(patched, monkeypatch
     )
 
     async def empty(client, runtime, *, bucket, cohort, **kw):
-        return [], {"bad_failure_content": ""}
+        return [], {"bad_failure_content": ""}, ([], "")
 
     monkeypatch.setattr(m, "run_cohort", empty)
     with pytest.raises(RuntimeError, match="no findings"):

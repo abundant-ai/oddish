@@ -55,6 +55,35 @@ def map_output_shape() -> str:
     return (_FRAGMENTS_DIR / "map_output.txt").read_text().rstrip("\n")
 
 
+def by_model_output_shape() -> str:
+    """The per-model output keys, still str.format-escaped ({{ }}). Shared by
+    both reduce paths so the API and sandbox schemas cannot drift."""
+    return (_FRAGMENTS_DIR / "by_model_output.txt").read_text().rstrip("\n")
+
+
+def denominators_block(denominators: dict[str, dict] | None) -> str:
+    """Per-model trial counts. Findings record only failures, so without these
+    denominators a model that simply ran more trials reads as the worse model.
+
+    ``scored`` is the denominator for ``solved`` and mean reward: reward is
+    nullable (no test result) and supports partial credit, so trials is wrong
+    for both.
+    """
+    if not denominators:
+        return "(no per-model denominators available)"
+    lines = []
+    for model, d in sorted(denominators.items()):
+        mean = d.get("mean_reward")
+        mean_txt = "mean reward n/a" if mean is None else f"mean reward {mean:.2f}"
+        lines.append(
+            f"- {model}: {d.get('trials', 0)} trials, "
+            f"{d.get('solved', 0)} solved of {d.get('scored', 0)} scored, "
+            f"{mean_txt}; {d.get('analyzed', 0)} analyzed "
+            f"({d.get('bad', 0)} bad, {d.get('good', 0)} good)"
+        )
+    return "\n".join(lines)
+
+
 def _trajectory_block(bundle: TrajectoryBundle) -> str:
     summary = json.dumps(bundle.trajectory_summary or {}, indent=2)
     steps = json.dumps(bundle.trajectory, indent=2)
@@ -120,10 +149,16 @@ def build_reduce_prompt(
     findings: list[Finding],
     counts: dict,
     models_by_task: dict[str, list[str]] | None = None,
+    denominators: dict[str, dict] | None = None,
 ) -> str:
     return REDUCE_PROMPT_TEMPLATE.format(
         counts_block=json.dumps(counts, indent=2),
         roster_block=task_roster_block(models_by_task),
+        denominators_block=denominators_block(denominators),
         findings_block=_reduce_findings_block(findings),
         sections_block=sections_block(SECTION_KEYS),
+        # by_model_output_shape() is escaped ({{ }}) for reuse by the sandbox
+        # path too; unescape here since this call's output goes straight to
+        # the LLM as the final prompt, not through another .format() pass.
+        by_model_block=by_model_output_shape().format(),
     )

@@ -149,6 +149,7 @@ async def list_analyzers_core(
                 AnalyzerModel.good_failure_content,
                 AnalyzerModel.universal_capabilities_content,
                 AnalyzerModel.headroom_analysis,
+                AnalyzerModel.by_model,
                 AnalyzerModel.reduce_prompt,
                 AnalyzerModel.num_trials,
                 AnalyzerModel.num_bad_failures,
