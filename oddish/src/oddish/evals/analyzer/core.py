@@ -14,6 +14,7 @@ from typing import Protocol
 
 from oddish.evals.primitives import SubAnalysis, TrajectoryBundle
 from oddish.evals.analyzer.bucketing import BUCKET_OF, bucket_subanalyses
+from oddish.evals.analyzer.by_model import build_by_model_payload, normalize_entries
 from oddish.evals.analyzer.prompt_builder import build_map_prompt, build_reduce_prompt
 from oddish.evals.analyzer.schemas import (
     Finding,
@@ -98,6 +99,22 @@ def build_roster(bad: list[SubAnalysis], good: list[SubAnalysis]) -> list[dict]:
     return rows
 
 
+def _models_by_task_from_bundles(bundles: list[TrajectoryBundle]) -> dict[str, list[str]]:
+    """task_id -> distinct models that ran it, including trials that PASSED.
+
+    Every trial gets a bundle (failures in full, the rest as stubs) and bundles
+    carry model, so this needs nothing the pure core doesn't already have.
+    analyzer_handler._models_by_task derives the same thing from rows for
+    persistence, and must keep doing so for eval strategies that never build
+    AnalyzerEvalInputs. Same semantics, different input; keep them in step.
+    """
+    by_task: dict[str, set[str]] = {}
+    for b in bundles:
+        if b.model:
+            by_task.setdefault(b.task_id, set()).add(b.model)
+    return {k: sorted(v) for k, v in by_task.items()}
+
+
 async def _map_one(
     client: LLMClient, config: AnalyzerEvalConfig,
     bundle: TrajectoryBundle, sa: SubAnalysis, roster: list[dict],
@@ -156,6 +173,7 @@ async def run_analyzer_eval(
     *,
     client: LLMClient | None = None,
     taxonomy: Taxonomy | None = None,
+    denominators: dict[str, dict] | None = None,
 ) -> AnalyzerEvalOutput:
     p = f"[{config.job_kind}] "
     logger.info(
@@ -281,7 +299,11 @@ async def run_analyzer_eval(
         )
 
     # Step 5 — reduce the per-trial findings into the four narrative sections.
-    reduce_prompt = build_reduce_prompt(findings, counts, taxonomy)
+    reduce_prompt = build_reduce_prompt(
+        findings, counts, taxonomy,
+        _models_by_task_from_bundles(inputs.bundles),
+        denominators=denominators,
+    )
     try:
         raw = await client.complete(
             reduce_prompt, model=config.analysis_model,
@@ -308,9 +330,29 @@ async def run_analyzer_eval(
         "capabilities": sec.get("universal_capabilities_content", ""),
         "headroom": sec.get("headroom_analysis", ""),
     }
+
+    # by_model is additive: a reduce that omits it (older prompt, truncated
+    # output) still yields a valid report, it just renders in the legacy shape.
+    by_model = None
+    if denominators:
+        raw_entries = sec.get("by_model")
+        entries = normalize_entries(
+            raw_entries if isinstance(raw_entries, list) else [],
+            denominators,
+            bucket="all",
+        )
+        by_model = build_by_model_payload(
+            entries, str(sec.get("cross_model_comparison") or ""), denominators
+        )
+        logger.info(
+            p + "analyzer-eval reduce: %d/%d models described",
+            len(entries), len(denominators),
+        )
+
     logger.info(p + "analyzer-eval complete: %d findings, sections rendered", len(findings))
     return AnalyzerEvalOutput(
         sections=sections, findings=findings, counts=counts, breakdown=breakdown,
         reduce_prompt=reduce_prompt, subanalyses=inputs.subanalyses,
         taxonomy_version=tax_version, taxonomy_snapshot=tax_snapshot,
+        by_model=by_model,
     )

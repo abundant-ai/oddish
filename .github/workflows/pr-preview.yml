@@ -72,10 +72,13 @@ jobs:
     name: Prepare preview database
     needs:
       - detect-changes
+    # Backend-scoped PRs keep their Supabase preview branch smoke-tested on
+    # later frontend-only pushes, so the required preview stays end-to-end.
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
       (
+        needs.detect-changes.outputs.preview_backend_live == 'true' ||
         needs.detect-changes.outputs.deploy_backend == 'true' ||
         needs.detect-changes.outputs.run_migrations == 'true'
       )
@@ -185,10 +188,11 @@ jobs:
       - detect-changes
       - prepare-preview-database
       - deploy-preview-backend
+    # Run for every open same-repository PR, not only frontend changes: the
+    # branch ruleset requires a working Preview deployment before merge.
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
-      needs.detect-changes.outputs.deploy_frontend == 'true' &&
       (
         needs.prepare-preview-database.result == 'success' ||
         needs.prepare-preview-database.result == 'skipped'
@@ -238,6 +242,141 @@ jobs:
       - name: Update Vercel preview
         id: vercel
         run: "$GITHUB_WORKSPACE/.github/scripts/preview/update_vercel_preview.sh"
+
+  require-working-preview:
+    name: Require working preview
+    needs:
+      - detect-changes
+      - prepare-preview-database
+      - deploy-preview-backend
+      - update-vercel-preview
+    if: always() && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment:
+      name: Preview
+      url: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
+    steps:
+      - name: Verify preview deployment
+        env:
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          DETECT_RESULT: ${{ needs.detect-changes.result }}
+          PREPARE_RESULT: ${{ needs.prepare-preview-database.result }}
+          BACKEND_RESULT: ${{ needs.deploy-preview-backend.result }}
+          VERCEL_RESULT: ${{ needs.update-vercel-preview.result }}
+          DEPLOY_BACKEND: ${{ needs.detect-changes.outputs.deploy_backend }}
+          RUN_MIGRATIONS: ${{ needs.detect-changes.outputs.run_migrations }}
+          PREVIEW_BACKEND_LIVE: ${{ needs.detect-changes.outputs.preview_backend_live }}
+          BRANCH_WAS_CREATED: ${{ needs.prepare-preview-database.outputs.branch_was_created }}
+          DB_BRANCH_ID: ${{ needs.prepare-preview-database.outputs.branch_id }}
+          DB_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
+          PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
+          PREVIEW_ALIAS_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url }}
+          BACKEND_API_URL: ${{ needs.update-vercel-preview.outputs.backend_api_url }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Required preview gate"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          fail() {
+            echo "::error::$1"
+            echo "- $1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          preview_url="${PREVIEW_ALIAS_URL:-${PREVIEW_URL:-}}"
+          backend_required=false
+          db_required=false
+          if [ "$PREVIEW_BACKEND_LIVE" = "true" ]; then
+            backend_required=true
+            db_required=true
+          fi
+          if [ "$DEPLOY_BACKEND" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ]; then
+            backend_required=true
+            db_required=true
+          fi
+
+          if [ "$SAME_REPO" != "true" ]; then
+            fail "PR preview deployments require a same-repository branch with access to preview secrets."
+          fi
+
+          if [ "$DETECT_RESULT" != "success" ]; then
+            fail "Preview change detection did not succeed."
+          fi
+
+          if [ "$db_required" = "true" ]; then
+            if [ "$PREPARE_RESULT" != "success" ]; then
+              fail "Preview database preparation did not succeed."
+            fi
+            if [ -z "$DB_BRANCH_ID" ] || [ -z "$DB_BRANCH_REF" ]; then
+              fail "Preview database branch was not produced."
+            fi
+          elif [ "$PREPARE_RESULT" != "success" ] && [ "$PREPARE_RESULT" != "skipped" ]; then
+            fail "Preview database preparation did not succeed."
+          fi
+
+          if [ "$backend_required" = "true" ]; then
+            if { [ "$DEPLOY_BACKEND" = "true" ] || [ "$BRANCH_WAS_CREATED" = "true" ]; } &&
+              [ "$BACKEND_RESULT" != "success" ]; then
+              fail "Preview backend deployment did not succeed."
+            fi
+            if [ "$BACKEND_RESULT" != "success" ] && [ "$BACKEND_RESULT" != "skipped" ]; then
+              fail "Preview backend deployment did not succeed."
+            fi
+            if [ -z "$BACKEND_API_URL" ]; then
+              fail "Preview backend URL was not produced."
+            fi
+          fi
+
+          if [ "$VERCEL_RESULT" != "success" ]; then
+            fail "Vercel preview update did not succeed."
+          fi
+
+          if [ -z "$preview_url" ]; then
+            fail "Vercel preview URL was not produced."
+          fi
+
+          for attempt in $(seq 1 36); do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 10 "$preview_url" || true)"
+            case "$status" in
+              2*|3*|401|403)
+                echo "- Frontend preview is ready: $preview_url" >> "$GITHUB_STEP_SUMMARY"
+                break
+                ;;
+            esac
+            if [ "$attempt" = "36" ]; then
+              fail "Frontend preview never became reachable at $preview_url."
+            fi
+            sleep 5
+          done
+
+          if [ "$backend_required" = "true" ]; then
+            readiness_url="${BACKEND_API_URL%/}/openapi.json"
+            for attempt in $(seq 1 36); do
+              body_file="$(mktemp)"
+              status="$(curl --silent --output "$body_file" --write-out '%{http_code}' --max-time 10 "$readiness_url" || true)"
+              if [ "$status" = "200" ] && [ -s "$body_file" ]; then
+                rm -f "$body_file"
+                echo "- Backend preview is ready: $readiness_url" >> "$GITHUB_STEP_SUMMARY"
+                break
+              fi
+              rm -f "$body_file"
+              if [ "$attempt" = "36" ]; then
+                fail "Preview backend never became ready at $readiness_url."
+              fi
+              sleep 5
+            done
+          fi
+
+          {
+            echo "- Backend required: \`$backend_required\`"
+            echo "- Database required: \`$db_required\`"
+            if [ "$db_required" = "true" ]; then
+              echo "- Database preview branch: \`$DB_BRANCH_REF\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   post-preview-links:
     name: Post preview links

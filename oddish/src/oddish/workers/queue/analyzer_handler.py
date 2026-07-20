@@ -22,7 +22,11 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from oddish.config import settings, to_anthropic_api_model_id
-from oddish.core.analyzer_inputs import build_analyzer_inputs
+from oddish.core.analyzer_inputs import (
+    build_analyzer_inputs,
+    models_by_task_from_rows,
+    trial_model_rewards,
+)
 from oddish.core.analyzer_trial_export import build_trial_analyses_payload
 from oddish.core.analyzers import experiment_ids_for_analyzer
 from oddish.core.experiment_membership import trial_in_experiment
@@ -43,6 +47,7 @@ from oddish.db.models import (
     generate_id,
     utcnow,
 )
+from oddish.evals.analyzer.by_model import build_denominators
 from oddish.evals.analyzer.core import run_analyzer_eval
 from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, AnalyzerEvalOutput
 from oddish.workers.queue.analysis_handler import classify_trial_and_store
@@ -65,7 +70,12 @@ async def default_eval_rows(
     inputs = await build_analyzer_inputs(rows)
     async with get_session() as session:
         taxonomy = await load_taxonomy(session)
-    return await run_analyzer_eval(inputs, config, taxonomy=taxonomy)
+    # Empty findings: this runs before the map step, so counts start at zero
+    # and are re-derived with real findings after the eval returns.
+    denominators = build_denominators(trial_model_rewards(rows), [])
+    return await run_analyzer_eval(
+        inputs, config, taxonomy=taxonomy, denominators=denominators
+    )
 
 
 def _trial_analyses_s3_key(analyzer_id: str) -> str:
@@ -190,13 +200,12 @@ async def _worker_job_is_running(
 
 def _models_by_task(rows) -> dict[str, list[str]]:
     """task_id -> the distinct models that ran it. Includes trials that passed,
-    which is exactly what findings cannot tell us."""
-    by_task: dict[str, set[str]] = {}
-    for trial, _task_path in rows:
-        model = getattr(trial, "model", None)
-        if model:
-            by_task.setdefault(trial.task_id, set()).add(model)
-    return {k: sorted(v) for k, v in by_task.items()}
+    which is exactly what findings cannot tell us.
+
+    Shared with the sandbox path, which renders the same roster into its reduce
+    prompt; the two must not drift.
+    """
+    return models_by_task_from_rows(rows)
 
 
 async def _gather_trial_rows(session, analyzer_id: str, org_id: str | None):
@@ -307,6 +316,11 @@ async def run_analyzer_generation_job(
             # Derived host-side from rows, so it holds for every eval strategy --
             # including ones that never build AnalyzerEvalInputs.
             output.models_by_task = _models_by_task(rows)
+            if output.by_model is not None:
+                # Re-derive with real findings; the pre-eval call above had none.
+                output.by_model["denominators"] = build_denominators(
+                    trial_model_rewards(rows), output.findings
+                )
         if save_trial_analyses and output is not None:
             await _maybe_save_trial_analyses(
                 analyzer_id=analyzer_id,
@@ -360,6 +374,7 @@ async def run_analyzer_generation_job(
                 analyzer.models_by_task = output.models_by_task
                 analyzer.taxonomy_version = output.taxonomy_version
                 analyzer.taxonomy_snapshot = output.taxonomy_snapshot
+                analyzer.by_model = output.by_model
                 for p in output.proposals:
                     # Idempotent on (analyzer_id, slug_suggestion): _store runs
                     # under asyncio.shield and a retried job re-enters here.

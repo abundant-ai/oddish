@@ -24,10 +24,11 @@ async def test_default_eval_rows_builds_inputs_then_runs_core(monkeypatch):
         seen["rows"] = rows
         return "INPUTS"
 
-    async def fake_run(inputs, config, *, taxonomy=None):
+    async def fake_run(inputs, config, *, taxonomy=None, denominators=None):
         seen["inputs"] = inputs
         seen["config"] = config
         seen["taxonomy"] = taxonomy
+        seen["denominators"] = denominators
         return AnalyzerEvalOutput(sections={})
 
     monkeypatch.setattr(ah, "build_analyzer_inputs", fake_build)
@@ -53,6 +54,7 @@ async def test_default_eval_rows_builds_inputs_then_runs_core(monkeypatch):
     assert seen["inputs"] == "INPUTS"
     assert seen["config"] is config
     assert seen["taxonomy"] is tax
+    assert seen["denominators"] is not None
     assert isinstance(out, AnalyzerEvalOutput)
 
 

@@ -1,0 +1,26 @@
+{
+    "python.languageServer": "None",
+    "python-envs.pythonProjects": [],
+  
+    "python.analysis.diagnosticSeverityOverrides": {
+      "reportUndefinedVariable": "none"
+    },
+  
+    "basedpyright.analysis.typeCheckingMode": "off",
+    "basedpyright.analysis.diagnosticMode": "openFilesOnly",
+    "basedpyright.analysis.diagnosticSeverityOverrides": {
+      "reportMissingTypeStubs": "none",
+      "reportUnknownMemberType": "none",
+      "reportUnknownArgumentType": "none",
+      "reportUnknownVariableType": "none",
+      "reportUnknownParameterType": "none",
+      "reportUnknownLambdaType": "none",
+      "reportAny": "none",
+      "reportExplicitAny": "none",
+      "reportImplicitOverride": "none",
+      "reportImplicitStringConcatenation": "none",
+      "reportPrivateUsage": "none",
+      "reportUnusedCallResult": "none"
+    }
+  }
+  

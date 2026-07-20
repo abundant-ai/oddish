@@ -164,10 +164,11 @@ async def test_run_analyzer_generation_job_skips_persist_when_reaped(monkeypatch
 
     class _Output:
         sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        by_model = None
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
 
-    async def fake_run_eval(inputs, config, *, taxonomy=None):
+    async def fake_run_eval(inputs, config, **kwargs):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -365,6 +366,7 @@ def _fake_output_with_findings():
 
     class _Output:
         sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        by_model = None
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {}
         reduce_prompt = "rp"
@@ -416,7 +418,7 @@ def _wire_eval_paths(monkeypatch, rh, *, output, inputs):
 
     monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
 
-    async def fake_run_eval(inp, config, *, taxonomy=None):
+    async def fake_run_eval(inp, config, **kwargs):
         # Mirrors core: the real run_analyzer_eval carries the inputs'
         # subanalyses through onto the output, which is where the trial-analyses
         # export reads them from.
@@ -564,6 +566,7 @@ async def test_persist_writes_reduce_prompt_on_success(monkeypatch):
 
     class _Output:
         sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        by_model = None
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {"1b": 1}
         reduce_prompt = "the reduce prompt text"
@@ -572,7 +575,7 @@ async def test_persist_writes_reduce_prompt_on_success(monkeypatch):
         taxonomy_snapshot = None
         findings = []
 
-    async def fake_run_eval(inputs, config, *, taxonomy=None):
+    async def fake_run_eval(inputs, config, **kwargs):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -604,6 +607,7 @@ async def test_store_persists_findings(monkeypatch):
 
     class _Output:
         sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        by_model = None
         counts = {"trials": 1, "bad": 1, "good": 0}
         breakdown = {"1b": 1}
         reduce_prompt = "rp"
@@ -619,7 +623,7 @@ async def test_store_persists_findings(monkeypatch):
             )
         ]
 
-    async def fake_run_eval(inputs, config, *, taxonomy=None):
+    async def fake_run_eval(inputs, config, **kwargs):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -688,6 +692,7 @@ async def test_store_persists_models_by_task(monkeypatch):
 
     class _Output:
         sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        by_model = None
         counts = {"trials": 2, "bad": 1, "good": 1}
         breakdown = {"1b": 1}
         reduce_prompt = "rp"
@@ -703,7 +708,7 @@ async def test_store_persists_models_by_task(monkeypatch):
             )
         ]
 
-    async def fake_run_eval(inputs, config, *, taxonomy=None):
+    async def fake_run_eval(inputs, config, **kwargs):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -734,6 +739,7 @@ async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
 
     class _Output:
         sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        by_model = None
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
         reduce_prompt = None
@@ -742,7 +748,7 @@ async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
         taxonomy_snapshot = None
         findings = []
 
-    async def fake_run_eval(inputs, config, *, taxonomy=None):
+    async def fake_run_eval(inputs, config, **kwargs):
         return _Output()
 
     monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
@@ -814,6 +820,7 @@ async def test_store_persists_a_capability_proposal_row_per_output_proposal():
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
         reduce_prompt = None
+        by_model = None
         proposals = [prop]
         taxonomy_version = None
         taxonomy_snapshot = None
@@ -872,6 +879,7 @@ async def test_store_is_idempotent_on_a_retried_proposal_insert():
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
         reduce_prompt = None
+        by_model = None
         proposals = [prop]
         taxonomy_version = None
         taxonomy_snapshot = None
@@ -934,6 +942,7 @@ async def test_store_persists_taxonomy_version_and_snapshot_distinct_from_defaul
         counts = {"trials": 0, "bad": 0, "good": 0}
         breakdown = {}
         reduce_prompt = None
+        by_model = None
         proposals = []
         taxonomy_version = version
         taxonomy_snapshot = snapshot

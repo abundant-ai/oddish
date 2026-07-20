@@ -7,3 +7,5 @@
   inline ("also: long-horizon") rather than repeating the capability under a
   second heading. Group findings whose capability_slug was newly proposed
   (not in the rubric) under a final `## Proposed capabilities` heading.
+  Cover only what holds across models; put single-model observations in that
+  model's by_model entry.

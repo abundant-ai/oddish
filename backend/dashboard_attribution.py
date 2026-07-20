@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.types import AuthContext
 from models import APIKeyModel, UserModel
+from oddish.core.admin import GithubIdentity
 from oddish.core.dashboard import UNRESOLVED_EXPERIMENTS_OWNER
 from oddish.db import TaskModel, get_session
 
@@ -22,9 +23,20 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AttributionProfile",
     "resolve_experiments_author",
+    "resolve_github_users",
     "resolve_search_authors",
     "invalidate_attribution_cache",
 ]
+
+
+def _handle_key(value: str | None) -> str | None:
+    """Normalize a GitHub handle for comparison, from a task tag or a users row.
+
+    Handles reach us typed by a human (``oddish run --github-user @octocat``),
+    so match them the way the rest of the dashboard does -- see
+    ``_normalize_github_handle`` -- or a leading ``@`` costs us the match.
+    """
+    return (value or "").strip().lstrip("@").lower() or None
 
 _MEMORY_TTL_SECONDS = 15 * 60
 _DB_TTL_SECONDS = 24 * 60 * 60
@@ -592,3 +604,67 @@ async def resolve_search_authors(
                 _add_email(email)
 
     return tuple(user_ids), tuple(handles), tuple(emails)
+
+
+async def resolve_github_users(
+    session: AsyncSession, identities: set[GithubIdentity]
+) -> dict[GithubIdentity, str]:
+    """Find the registered user behind each task-tagged GitHub identity.
+
+    Backs the admin cost breakdown's payer resolution: unbilled spend carries
+    only the GitHub identity tagged on its task, and without this it keys on the
+    raw handle and splits off into a row beside the same person's billed one.
+
+    ``github_id`` (Clerk's provider_user_id) wins over the handle: it survives
+    renames, and ``uq_users_org_github_id`` makes it unique per org. Handles are
+    the fallback because Clerk has not always reported an id, so older rows
+    carry only ``github_username``.
+
+    Offboarded users still resolve (hence ``include_deleted``), matching the
+    submitter rung, which keeps linking a tombstoned author. Withholding them
+    would only spawn the ghost ``@handle`` row this exists to prevent.
+    """
+    org_ids = {org_id for org_id, _, _ in identities if org_id}
+    github_ids = {github_id for _, github_id, _ in identities if github_id}
+    handles = {
+        handle for _, _, raw in identities if (handle := _handle_key(raw)) is not None
+    }
+    if not org_ids or not (github_ids or handles):
+        return {}
+
+    match_clauses = []
+    if github_ids:
+        match_clauses.append(UserModel.github_id.in_(github_ids))
+    if handles:
+        match_clauses.append(func.lower(UserModel.github_username).in_(handles))
+
+    rows = await session.execute(
+        select(
+            UserModel.id,
+            UserModel.org_id,
+            UserModel.github_id,
+            UserModel.github_username,
+        )
+        .where(UserModel.org_id.in_(org_ids), or_(*match_clauses))
+        # A handle is only indexed, not unique, so a rename that freed it for
+        # someone else can match twice; lowest id wins so the row is stable.
+        .order_by(UserModel.id)
+        .execution_options(include_deleted=True)
+    )
+    by_github_id: dict[tuple[str, str], str] = {}
+    by_handle: dict[tuple[str, str], str] = {}
+    for user_id, org_id, github_id, github_username in rows.all():
+        if github_id:
+            by_github_id.setdefault((org_id, github_id), user_id)
+        if handle := _handle_key(github_username):
+            by_handle.setdefault((org_id, handle), user_id)
+
+    resolved: dict[GithubIdentity, str] = {}
+    for identity in identities:
+        org_id, github_id, raw_handle = identity
+        user_id = by_github_id.get((org_id, github_id))
+        if user_id is None and (handle := _handle_key(raw_handle)):
+            user_id = by_handle.get((org_id, handle))
+        if user_id:
+            resolved[identity] = user_id
+    return resolved

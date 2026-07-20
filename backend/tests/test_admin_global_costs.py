@@ -9,9 +9,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 
+from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, OrgQuotaModel, QuotaModel, UserModel
 from oddish.config import settings
-from oddish.core.admin import get_cost_breakdown_core
+from oddish.core.admin import get_cost_breakdown_core, get_cost_leaderboard_core
 from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -185,6 +186,174 @@ async def test_window_costs_by_user(global_costs_fixture):
     row = _user_row(result, f.target.id)
     assert row.cost_usd == pytest.approx(1.50)
     assert row.trial_count == 3
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_leaderboard_uses_same_settled_spend(global_costs_fixture):
+    f = global_costs_fixture
+    async with get_session() as session:
+        leaders = await get_cost_leaderboard_core(
+            session, org_id=f.org_id, window_days=7
+        )
+    by_user = {leader.user_id: leader.cost_usd for leader in leaders}
+    assert by_user[f.target.id] == pytest.approx(1.50)
+    assert by_user[f.other.id] == pytest.approx(2.00)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_leaderboard_is_scoped_to_org(global_costs_fixture):
+    f = global_costs_fixture
+    foreign_org_id = f"org_lb_{uuid.uuid4().hex[:8]}"
+    foreign_user = _member(foreign_org_id, "foreign")
+    foreign_task_id = f"task_lb_{uuid.uuid4().hex[:8]}"
+    recent = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(
+                id=foreign_org_id, name=foreign_org_id, slug=foreign_org_id
+            )
+        )
+        await session.flush()
+        session.add(foreign_user)
+        session.add(
+            ExperimentModel(
+                id=f"exp_{foreign_task_id}", name="foreign", org_id=foreign_org_id
+            )
+        )
+        session.add(
+            TaskModel(
+                id=foreign_task_id,
+                name="foreign",
+                org_id=foreign_org_id,
+                user="x",
+                task_path="s3://test-bucket/foreign",
+            )
+        )
+        await session.flush()
+        session.add(
+            _trial(
+                foreign_task_id,
+                0,
+                org_id=foreign_org_id,
+                billed_user_id=foreign_user.id,
+                created_at=recent,
+                finished_at=recent,
+                cost_usd=999.0,
+            )
+        )
+
+    try:
+        async with get_session() as session:
+            leaders = await get_cost_leaderboard_core(
+                session, org_id=f.org_id, window_days=7
+            )
+        assert foreign_user.id not in {leader.user_id for leader in leaders}
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(
+                    TrialModel.task_id == foreign_task_id
+                )
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == foreign_task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id == f"exp_{foreign_task_id}"
+                )
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == foreign_user.id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == foreign_org_id
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_leaderboard_keeps_github_buckets_drops_unattributed(
+    global_costs_fixture,
+):
+    f = global_costs_fixture
+    gh_task_id = f"task_gh_{uuid.uuid4().hex[:8]}"
+    plain_task_id = f"task_uh_{uuid.uuid4().hex[:8]}"
+    recent = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    async with get_session() as session:
+        session.add(
+            ExperimentModel(id=f"exp_{gh_task_id}", name="gh", org_id=f.org_id)
+        )
+        session.add(
+            ExperimentModel(id=f"exp_{plain_task_id}", name="uh", org_id=f.org_id)
+        )
+        session.add(
+            TaskModel(
+                id=gh_task_id, name="gh-task", org_id=f.org_id, user="x",
+                task_path="s3://test-bucket/gh",
+                tags={"github_username": "ghosty"},
+            )
+        )
+        session.add(
+            TaskModel(
+                id=plain_task_id, name="uh-task", org_id=f.org_id, user="x",
+                task_path="s3://test-bucket/uh",
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                # GitHub-identity spend with no registered payer.
+                _trial(
+                    gh_task_id, 0, org_id=f.org_id, billed_user_id=None,
+                    created_at=recent, finished_at=recent, cost_usd=3.00,
+                ),
+                # Fully unattributed spend: no payer, no GitHub identity,
+                # no submitting credential.
+                _trial(
+                    plain_task_id, 0, org_id=f.org_id, billed_user_id=None,
+                    created_at=recent, finished_at=recent, cost_usd=5.00,
+                ),
+            ]
+        )
+
+    try:
+        async with get_session() as session:
+            leaders = await get_cost_leaderboard_core(
+                session, org_id=f.org_id, window_days=7
+            )
+        by_label = {leader.label: leader for leader in leaders if leader.label}
+        assert "@ghosty" in by_label
+        assert by_label["@ghosty"].user_id is None
+        assert by_label["@ghosty"].cost_usd == pytest.approx(3.00)
+        assert "Unattributed" not in by_label
+        registered = {leader.user_id for leader in leaders if leader.user_id}
+        assert {f.target.id, f.other.id} <= registered
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(
+                    TrialModel.task_id.in_([gh_task_id, plain_task_id])
+                )
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(
+                    TaskModel.id.in_([gh_task_id, plain_task_id])
+                )
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id.in_(
+                        [f"exp_{gh_task_id}", f"exp_{plain_task_id}"]
+                    )
+                )
+            )
 
 
 @requires_db
@@ -378,3 +547,180 @@ async def test_quota_limit_uses_same_org_as_enforcement(global_costs_fixture):
                     OrganizationModel.id == foreign_org_id
                 )
             )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_github_tagged_spend_merges_into_the_handle_owner():
+    """One person's CI spend and billed spend land on one row, not two.
+
+    Unbilled trials fall back to the GitHub identity tagged on the task. Without
+    resolution that identity keys its own ``@handle`` row, so someone who has
+    both shows up twice -- once as themselves and once as a stranger.
+    """
+    org_id = f"org_gh_{uuid.uuid4().hex[:8]}"
+    owner = _member(org_id, "octocat")
+    owner.github_id = "gh-id-4242"
+    task_id = f"task_gh_{uuid.uuid4().hex[:8]}"
+    stranger_task_id = f"task_ghx_{uuid.uuid4().hex[:8]}"
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            await session.flush()
+            session.add(owner)
+            await session.flush()
+            for tid, tags in (
+                # Cased differently and @-prefixed on purpose: this is what
+                # `oddish run --github-user @OctoCat` writes, and it still has to
+                # find the plain "octocat" on the users row.
+                (task_id, {"github_username": "@OctoCat"}),
+                (stranger_task_id, {"github_username": "nobody-here"}),
+            ):
+                session.add(
+                    ExperimentModel(id=f"exp_{tid}", name=f"exp_{tid}", org_id=org_id)
+                )
+                session.add(
+                    TaskModel(
+                        id=tid,
+                        name=tid,
+                        org_id=org_id,
+                        user="x",
+                        task_path="s3://test-bucket/t",
+                        tags=tags,
+                    )
+                )
+            await session.flush()
+            session.add_all(
+                [
+                    # Billed to the owner directly.
+                    _trial(
+                        task_id, 0, org_id=org_id, billed_user_id=owner.id,
+                        created_at=recent, finished_at=recent, cost_usd=1.00,
+                    ),
+                    # Unbilled: only the task's GitHub handle identifies the payer.
+                    _trial(
+                        task_id, 1, org_id=org_id, billed_user_id=None,
+                        created_at=recent, finished_at=recent, cost_usd=2.00,
+                    ),
+                    # Unbilled under a handle belonging to nobody registered.
+                    _trial(
+                        stranger_task_id, 0, org_id=org_id, billed_user_id=None,
+                        created_at=recent, finished_at=recent, cost_usd=4.00,
+                    ),
+                ]
+            )
+            await session.flush()
+
+        async with get_session() as session:
+            result = await get_cost_breakdown_core(
+                session,
+                window_days=7,
+                user_limit=500,
+                resolve_github_users=resolve_github_users,
+            )
+
+        by_user = {u.key: u for u in result.by_user}
+
+        # Both trials on one row, and it still links to the real user.
+        assert "ghuser:octocat" not in by_user
+        assert by_user[owner.id].cost_usd == pytest.approx(3.00)
+        assert by_user[owner.id].owner_user_id == owner.id
+        # Part of it was never billed, so the row keeps saying so.
+        assert by_user[owner.id].has_unbilled_spend is True
+
+        # ...but the quota bar must survive that flag: quota is the person's,
+        # measured on billed spend, so absorbing unbilled spend cannot blank it.
+        assert by_user[owner.id].quota_spent_usd == pytest.approx(1.00)
+        assert by_user[owner.id].quota_limit_usd is not None
+
+        # An unknown handle is still a label-only row, exactly as before.
+        assert by_user["ghuser:nobody-here"].cost_usd == pytest.approx(4.00)
+        assert by_user["ghuser:nobody-here"].owner_user_id is None
+        assert by_user["ghuser:nobody-here"].label == "@nobody-here"
+        assert by_user["ghuser:nobody-here"].quota_spent_usd is None
+
+        # The leaderboard agrees with the breakdown: the owner is credited the
+        # handle's spend rather than ranking beside it, while a handle owned by
+        # nobody registered still ranks under its own label.
+        async with get_session() as session:
+            leaders = await get_cost_leaderboard_core(
+                session,
+                org_id=org_id,
+                window_days=7,
+                resolve_github_users=resolve_github_users,
+            )
+        assert {
+            (leader.user_id or leader.label): leader.cost_usd for leader in leaders
+        } == {
+            owner.id: pytest.approx(3.00),
+            "@nobody-here": pytest.approx(4.00),
+        }
+    finally:
+        async with get_session() as session:
+            for tid in (task_id, stranger_task_id):
+                await session.execute(
+                    TrialModel.__table__.delete().where(TrialModel.task_id == tid)
+                )
+                await session.execute(
+                    TaskModel.__table__.delete().where(TaskModel.id == tid)
+                )
+                await session.execute(
+                    ExperimentModel.__table__.delete().where(
+                        ExperimentModel.id == f"exp_{tid}"
+                    )
+                )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.org_id == org_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+def test_utc_window_start_snaps_to_bucket_boundary():
+    """Trailing windows floor to their bucket's UTC boundary, not a mid-bucket
+    instant, so the earliest chart bar is always a complete period."""
+    from oddish.core.admin import _utc_window_start
+
+    now = datetime(2026, 7, 17, 14, 37, 12, tzinfo=timezone.utc)  # a Friday
+    # <=2 days uses hourly bars -> floor to the UTC hour.
+    assert _utc_window_start(now, 1) == datetime(2026, 7, 16, 14, tzinfo=timezone.utc)
+    # Daily bars -> floor to UTC midnight, window_days whole days back.
+    assert _utc_window_start(now, 7) == datetime(2026, 7, 10, tzinfo=timezone.utc)
+    assert _utc_window_start(now, 30) == datetime(2026, 6, 17, tzinfo=timezone.utc)
+    # >120 days uses weekly bars -> floor to Monday 00:00 UTC (Postgres' anchor).
+    assert _utc_window_start(now, 200) == datetime(2025, 12, 29, tzinfo=timezone.utc)
+    # All-time stays unbounded.
+    assert _utc_window_start(now, None) is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_cost_series_buckets_are_utc_aligned(global_costs_fixture):
+    """Daily bars must sit on UTC midnight so they line up with the frontend's
+    ``timeZone: "UTC"`` axis, whatever timezone the DB session runs in."""
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(session, window_days=7)
+    assert result.bucket == "day"
+    starts = [
+        b.bucket_start
+        for series in (
+            result.series_by_agent,
+            result.series_by_model,
+            result.series_by_user,
+        )
+        for b in series.buckets
+    ]
+    assert starts, "expected at least one daily bucket"
+    for start in starts:
+        assert start.utcoffset() == timedelta(0), start
+        assert (start.hour, start.minute, start.second, start.microsecond) == (
+            0,
+            0,
+            0,
+            0,
+        ), start

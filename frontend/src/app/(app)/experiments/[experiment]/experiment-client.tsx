@@ -30,10 +30,12 @@ import type {
   ExperimentCostTotals,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import {
   fetchFreshExperimentTaskPage,
+  hasFatalExperimentTaskLoadError,
   mergeExperimentTaskPages,
 } from "@/lib/experiment-task-pages";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
@@ -253,6 +255,10 @@ function ExperimentContent({
     }
     return merged;
   }, [lightweightTasks, trialPages]);
+  const hasFatalTaskLoadError = hasFatalExperimentTaskLoadError(
+    lightweightError,
+    tasksForExperiment
+  );
 
   const probeHostTask = useMemo(
     () => resolveProbeHostTask(tasksForExperiment),
@@ -298,8 +304,7 @@ function ExperimentContent({
   const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
   const displayName = experimentName || experimentId || "Experiment";
   const initialName = experimentName || experimentId || "";
-  const canManageExperimentShare =
-    orgRole === "org:admin" || orgRole === "org:owner";
+  const canManageExperimentShare = isOrgAdminRole(orgRole);
 
   // Deletes below write the grid optimistically, so for one round trip the row
   // is gone while the cost tiles still show the pre-delete rollup. Do NOT
@@ -540,7 +545,10 @@ function ExperimentContent({
           costTotalsPending={costTotalsPending}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
-          hasError={Boolean(lightweightError)}
+          // SWR retains successful fallback/revalidation data when a later
+          // request fails. Keep that usable grid visible instead of replacing
+          // it with the fatal error state during a transient backend failure.
+          hasError={hasFatalTaskLoadError}
           loadFullTrialOnOpen
           headerLeft={
             isEditingName ? (
@@ -668,6 +676,13 @@ function ExperimentContent({
               <Alert variant="destructive">
                 <AlertTitle>Rename failed</AlertTitle>
                 <AlertDescription>{nameError}</AlertDescription>
+              </Alert>
+            ) : lightweightError && tasksForExperiment.length > 0 ? (
+              <Alert>
+                <AlertTitle>Could not refresh experiment</AlertTitle>
+                <AlertDescription>
+                  Showing the most recently loaded task data.
+                </AlertDescription>
               </Alert>
             ) : null
           }

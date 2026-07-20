@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-20]
+
+### Changed
+
+- The task-level QA worker job now leases concurrency from the **analysis model's** queue key (`get_qa_queue_key()` returns `normalize_queue_key(analysis_model)`, currently `anthropic/claude-sonnet-5`) instead of the verdict model's. The bulk of a QA job's LLM work is the per-trial classification pass on the analysis model; keying the lease off the verdict model capped QA throughput at the verdict bucket's default (48) while the analysis bucket sat idle. ANALYZER jobs share the QA queue key and move with it (#802).
+- Raise the baked `anthropic/claude-sonnet-5` queue-key concurrency override in the Modal deploy from 128 to 256, giving the relocated QA jobs and the analysis model's trials more headroom; operators can still override the whole JSON via the env var / `oddish-prod` secret (#802).
+
+---
+
+## [2026-07-18]
+
+### Changed
+
+- The shared analysis model (`ODDISH_ANALYSIS_MODEL` — trajectory graph, trajectory summary, trial classifier, probe analysis) now defaults to Claude Sonnet 5 as the plain Anthropic-style id `claude-sonnet-5`, replacing the Bedrock inference-profile id `global.anthropic.claude-sonnet-4-6`. Plain Claude ids route analysis calls to the direct Anthropic API, and the analysis queue key changes accordingly to `anthropic/claude-sonnet-5` (#794).
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `anthropic/claude-sonnet-5` queue-key concurrency lease to 128 (up from the 48 default), giving the relocated analysis model the same headroom its predecessor queue key had; operators can still override the whole JSON via the env var / `oddish-prod` secret (#795).
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `global.anthropic.claude-sonnet-4-6` queue-key concurrency lease to 128 (up from the 48 default) — the queue key every Sonnet 4.6 trial id spelling normalizes to; operators can still override the whole JSON via the env var / `oddish-prod` secret (#796).
+
+### Fixed
+
+- Dashboard queue stats no longer fold the trajectory-analysis and verdict pipeline counts into the analysis/verdict *model*'s queue bucket. They now live under reserved `analysis` / `verdict` queue keys, so trials awaiting or undergoing classification can no longer masquerade as that model's queued/running trial workers (an incident showed 4k+ phantom "running" rows under one model's queue while the model's real trials were misrouted into the "analyses" pipeline). The reserved buckets report the QA job bucket's concurrency instead of a meaningless per-model default.
+- A QA job that dies or is cancelled mid-classification no longer strands trials in a non-terminal `analysis_status`. The stale-heartbeat reap now resets the dead job's task trials inline (RETRYING → `QUEUED`, exhausted → `FAILED`), the append-supersede cancel requeues in-flight rows, and a new `_reset_orphaned_trial_analysis` cleanup phase heals any remaining orphans: never-classifiable rows (superseded / skipped / gate-skipped / bulk-imported trials, soft-deleted tasks, or terminal tasks with no active QA job) are finalized `FAILED`, while rows a future QA attempt will re-classify are moved back to `QUEUED`. Previously these accumulated forever as phantom in-flight analyses. Orphan-finalized rows carry an `Analysis orphaned:` sentinel prefix on `analysis_error`, and resurrecting a task by appending trials reopens them so the fresh QA pass classifies them instead of inheriting a permanent verdict gap. Every reset selects its trial rows `FOR UPDATE SKIP LOCKED` so the sweep can never deadlock against the trials-then-task lock order the cancel path takes.
+
+---
+
+## [2026-07-16]
+
+### Fixed
+
+- A grok trial killed by an xAI rate limit (`You've hit your team's API rate limit`) is no longer thrown away mid-run: the resume loop that already rescues idle-timeout deaths now also resumes rate-limited ones, sleeping first with a doubling backoff (60s, 120s, 240s) before each replay. The case was previously excluded on purpose, since an immediate `grok -c` re-hits the same wall — the throttle is on the account, not on one replica — but xAI's limits are refilling token buckets, so a resume that waits often lands, and a limit that never clears just fails as it did before. Idle timeouts still resume with no delay. Observed on a trial that spent 19 minutes and 437k tokens, announced its next step, and died to the limit; the truncated trajectory was then graded as a model failure rather than an infra one (#758).
+
+---
+
+## [2026-07-15]
+
+### Added
+
+- Analyzers: a new cross-experiment trajectory-analysis feature that gathers finished trials from one or more experiments and synthesizes four evidence-backed narrative sections (bad failures, good failures, universal capabilities, headroom) via a Haiku agent-team map/reduce pipeline, with inline `[trajectory](...)` deep links, new `analyzers` REST endpoints, an `oddish analyzer create` CLI, and a dashboard Analyzers tab with list/create/detail pages (#706). Analyzer pipeline logs are now prefixed with the driving job's kind (e.g. `[ANALYZER]`) for easier attribution in mixed worker logs (#710), and the reduce-stage prompt that produced an analyzer's sections is now persisted on the row for debugging/reproducibility, though not exposed via the API (#711).
+- Task pages can now promote any stored task version to be the default: a new `PUT /tasks/{task_id}/versions/{version}/default` endpoint updates the task's current-version pointer (and legacy storage mirrors), and the task page gained a "Make default" action with an optimistic update and inline error handling (#713).
+- Owner-directed expense alerts (expensive experiment/trial) and a new failed-experiment alert (fires when a finished experiment has no active trials and at least half — configurable — of its current trials are FAILED) can now be DMed to the owner on Slack via `SLACK_ALERT_BOT_TOKEN`, matched to their Slack account by account email, alongside the existing webhook and email channels (#703).
+- Oddish task, experiment, and public-share links posted in a configured Slack workspace now unfurl with outcome glyphs, run details, and a compact task-by-agent result matrix for smaller experiments, via a new signed `POST /webhooks/slack/events` endpoint bound to one workspace/org (#700).
+- Trial drawer gained an adaptive Verifier Results card: test-based tasks report Common Test Report Format (CTRF) passed/failed/skipped/pending counts, benchmark-style tasks show scalar metrics, and other tasks fall back to the reward score; historical trials without a persisted summary lazily discover and parse their `verifier/ctrf.json` artifact (#699).
+
+### Changed
+
+- Markdown-rendered hyperlinks (analyzer reports, probe summaries, and other markdown content) now render in a theme-aware blue instead of a hard-to-recognize brown/off-white, so they read as clickable links (#712).
+- The trial Live tab now shares its step, tool-call, and observation rendering with the Trajectory tab, grouping streamed events into collapsible per-turn steps where the newest step auto-expands as the previous one collapses; Claude live-tail events now carry a `turn_id`/`block_index`/`text_mode` so streamed text deltas merge into one step instead of duplicating (#675).
+
+### Fixed
+
+- Analyzer reports no longer wait behind the QA backlog they share a queue with: `ANALYZER` and `QA` jobs both land on the QA queue key, and the claim orders by `priority DESC, running_count ASC, created_at ASC` — but every enqueue site left `priority` at 0, so the first two keys tied and claims fell through to pure FIFO, stranding an analyzer behind whatever QA burst a sweep had just produced (one report waited ~59 minutes to start). Analyzer jobs now enqueue at `priority=1`, so a draining worker picks them up ahead of that backlog (#744).
+- Non-Meta `mini-swe-agent` trials (e.g. Claude, GPT models) no longer crash deterministically on their first model call with `ModuleNotFoundError: orjson` — the `litellm[proxy]` reinstall that previously only applied to Meta-model trials now applies to all mini-swe-agent trials via a shared `OddishMiniSweAgent` base class (#714).
+- Experiment cost rollups now attribute spend only to a trial's home experiment (`trials.experiment_id`), so collection/rollup views that render trials gathered from other experiments no longer double-count that spend on both the collection and the trial's owning experiment (#702).
+- Pricing lookups now walk a specificity-ordered, case-insensitive chain of model-id candidates (exact id, path suffixes, provider vocabulary aliases, spelling variants, then generic provider prefixes) instead of one-off guesses, resolving previously-unpriced production model ids while preserving provider-specific rates; token-bearing trials that still settle to an unpriced `NULL` cost now emit a structured `trial_cost_unpriced` warning to logs and Logfire (#660).
+
+---
+
 ## [2026-07-07]
 
 ### Changed

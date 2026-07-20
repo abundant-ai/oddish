@@ -58,6 +58,7 @@ from oddish.evals.analyzer.prompt_builder import (
     map_output_shape,
     map_rubric,
     sections_block,
+    task_roster_block,
 )
 from oddish.evals.analyzer.taxonomy import Taxonomy
 
@@ -194,6 +195,7 @@ def _build_prompt(bad, taxonomy: Taxonomy) -> str:
         (prompts_dir / "reduce.txt")
         .read_text()
         .replace("{sections_block}", sections_block(SECTION_KEYS))
+        .replace("{roster_block}", task_roster_block(None))
         .replace("{{", "{")
         .replace("}}", "}")
     )

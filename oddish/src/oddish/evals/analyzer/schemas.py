@@ -90,3 +90,7 @@ class AnalyzerEvalOutput:
     # silently rewrites the meaning of every historical breakdown.
     taxonomy_version: str | None = None
     taxonomy_snapshot: dict | None = None
+    # Per-model insights payload (see evals/analyzer/by_model.py). None when the
+    # strategy produced no per-model data — that is the legacy render signal and
+    # must stay distinguishable from an empty payload.
+    by_model: dict | None = None

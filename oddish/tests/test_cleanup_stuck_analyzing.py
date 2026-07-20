@@ -131,7 +131,12 @@ async def test_cleanup_noop_when_no_stuck_tasks(monkeypatch):
     assert result["stuck_analyzing_advanced"] == 0
     assert result["stuck_analyzing_finalized"] == 0
     assert result["stuck_analysis_nulls_failed"] == 0
+    # The stuck-ANALYZING pass (step 5a, marked by its reason string) must not
+    # fire when nothing is stuck. The orphaned-analysis sweep issues its own
+    # (zero-row-matching) UPDATE unconditionally, so scope the check to 5a.
     assert not any(
-        "UPDATE trials" in sql and "analysis_status = 'FAILED'" in sql
-        for sql, _ in session.executed
+        "UPDATE trials" in sql
+        and "analysis_status = 'FAILED'" in sql
+        and params.get("reason") == cleanup.STUCK_ANALYZING_REASON
+        for sql, params in session.executed
     )

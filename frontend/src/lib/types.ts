@@ -329,22 +329,40 @@ interface TaskCostTotals {
   total_trials: number;
 }
 
-/** `GET /api/experiments/{id}/cost-totals` — what the experiment SPENT.
+/** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.
  *
- * Covers every trial that ran under it, so it is wider than the grid in two
- * ways: it isn't limited to the trial pages loaded so far, and it counts
- * trials the table filters out (earlier task versions, superseded retries,
- * probes). Those still burned tokens and were still billed. Expect this to
- * exceed the sum of the visible rows; the Cost tooltip says as much. */
+ * `cost_*` prices every member trial — homed here or gathered into this
+ * experiment — i.e. what the work this page renders cost. `owned_*` prices
+ * only trials homed in the experiment (the "New spend" tile); it is the
+ * number that stays additive across experiments. `billed_*` is the subset of
+ * owned spend attributed to a user's quota. Token totals mirror those scopes:
+ * `token_*` member-wide, `owned_token_*` home-only, `billed_token_*` the
+ * billed subset of owned.
+ *
+ * All scopes are wider than the grid in two ways: not limited to the trial
+ * pages loaded so far, and counting trials the table filters out (earlier
+ * task versions, superseded retries, probes). Those still burned tokens and
+ * were still billed. Expect this to exceed the sum of the visible rows; the
+ * Cost tooltip says as much. */
 export interface ExperimentCostTotals {
   cost_usd: number;
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  token_count: number;
+  token_trial_count: number;
+  owned_cost_usd: number;
+  owned_trial_count: number;
+  owned_has_estimated: boolean;
+  owned_has_native: boolean;
+  owned_token_count: number;
+  owned_token_trial_count: number;
   billed_cost_usd: number;
   billed_trial_count: number;
   billed_has_estimated: boolean;
   billed_has_native: boolean;
+  billed_token_count: number;
+  billed_token_trial_count: number;
   total_trials: number;
 }
 
@@ -933,6 +951,16 @@ export interface CostBreakdownResponse {
   timestamp: string;
 }
 
+export interface CostLeaderboardEntry {
+  rank: number;
+  name: string;
+  cost_usd: number;
+}
+
+export interface CostLeaderboardResponse {
+  leaders: CostLeaderboardEntry[];
+}
+
 // ---------------------------------------------------------------------------
 // Admin per-user cost drilldown (GET /api/admin/users/{userId}/costs)
 // ---------------------------------------------------------------------------
@@ -1002,6 +1030,32 @@ export type ReportStatus =
   | "success"
   | "failed";
 
+export interface ModelDenominators {
+  trials: number;
+  scored: number;
+  solved: number;
+  mean_reward: number | null;
+  analyzed: number;
+  bad: number;
+  good: number;
+}
+
+export interface ByModelEntry {
+  model: string;
+  bucket: "bad" | "good" | "all";
+  narrative: string;
+  relative_strengths: string;
+  relative_weaknesses: string;
+  distinctive_failures: string[];
+}
+
+export interface ByModel {
+  version: number;
+  comparison: string;
+  denominators: Record<string, ModelDenominators>;
+  models: ByModelEntry[];
+}
+
 export interface Report {
   id: string;
   name: string;
@@ -1015,6 +1069,7 @@ export interface Report {
   num_bad_failures?: number | null;
   num_good_failures?: number | null;
   breakdown?: Record<string, number> | null;
+  by_model?: ByModel | null;
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;

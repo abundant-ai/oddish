@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import { useAuth } from "@clerk/nextjs";
+import { isOrgAdminRole } from "@/lib/org-roles";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -183,6 +185,16 @@ function inferProviderFromQueueKey(queueKey: string): string {
   return provider || "unknown";
 }
 
+// Reserved presentation buckets in the queues payload for the
+// trajectory-analysis / verdict pipelines (mirrors ANALYSIS_PIPELINE_QUEUE_KEY
+// / VERDICT_PIPELINE_QUEUE_KEY in oddish.config). They carry ALL-TIME
+// trials.analysis_status / tasks.verdict_status counts, not windowed model
+// usage, so rendering them as model rows would pin a pseudo-model with
+// hundreds of thousands of "jobs" to the top of the Usage table and inflate
+// the running/queued totals with pipeline state. Pipeline counts surface via
+// the per-kind breakdown instead; keep them out of the model rows.
+const PIPELINE_QUEUE_KEYS = new Set(["analysis", "verdict"]);
+
 function getQueueQueuedJobs(stats?: QueueStats[string]): number {
   if (!stats) return 0;
   return (Number(stats.pending) || 0) + (Number(stats.queued) || 0);
@@ -323,6 +335,7 @@ function buildUsageRows(
   }
 
   for (const [queueKey, queueStats] of Object.entries(queues ?? {})) {
+    if (PIPELINE_QUEUE_KEYS.has(queueKey)) continue;
     const totalJobs = getQueueTotalJobs(queueStats);
     if (mergedRows.has(queueKey) || totalJobs === 0) continue;
 
@@ -548,6 +561,10 @@ export function UsageSummaryCard({
 }) {
   const { queues, modelUsage, jobUsage, isLoading, isRefreshing } =
     useDashboardUsage(DASHBOARD_DEFAULT_USAGE_MINUTES, initialUsageData);
+  // The full usage view lives in the admin dashboard; only admins can
+  // navigate there, so hide the link from everyone else.
+  const { orgRole } = useAuth();
+  const isOrgAdmin = isOrgAdminRole(orgRole);
 
   const usageRows = useMemo(
     () => buildUsageRows(jobUsage, modelUsage, queues),
@@ -592,17 +609,19 @@ export function UsageSummaryCard({
               pipeline={pipelineByKind}
             />
           </div>
-          <Button
-            asChild
-            variant="ghost"
-            size="sm"
-            className="text-muted-foreground ml-auto h-7 shrink-0 px-2 text-[11px]"
-          >
-            <Link href="/usage">
-              View usage
-              <ArrowRight className="ml-1 h-3.5 w-3.5" />
-            </Link>
-          </Button>
+          {isOrgAdmin && (
+            <Button
+              asChild
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground ml-auto h-7 shrink-0 px-2 text-[11px]"
+            >
+              <Link href="/admin?tab=usage">
+                View usage
+                <ArrowRight className="ml-1 h-3.5 w-3.5" />
+              </Link>
+            </Button>
+          )}
         </div>
       </CardHeader>
     </Card>

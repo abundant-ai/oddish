@@ -63,6 +63,35 @@ def map_output_shape() -> str:
     return (_FRAGMENTS_DIR / "map_output.txt").read_text().rstrip("\n")
 
 
+def by_model_output_shape() -> str:
+    """The per-model output keys, still str.format-escaped ({{ }}). Shared by
+    both reduce paths so the API and sandbox schemas cannot drift."""
+    return (_FRAGMENTS_DIR / "by_model_output.txt").read_text().rstrip("\n")
+
+
+def denominators_block(denominators: dict[str, dict] | None) -> str:
+    """Per-model trial counts. Findings record only failures, so without these
+    denominators a model that simply ran more trials reads as the worse model.
+
+    ``scored`` is the denominator for ``solved`` and mean reward: reward is
+    nullable (no test result) and supports partial credit, so trials is wrong
+    for both.
+    """
+    if not denominators:
+        return "(no per-model denominators available)"
+    lines = []
+    for model, d in sorted(denominators.items()):
+        mean = d.get("mean_reward")
+        mean_txt = "mean reward n/a" if mean is None else f"mean reward {mean:.2f}"
+        lines.append(
+            f"- {model}: {d.get('trials', 0)} trials, "
+            f"{d.get('solved', 0)} solved of {d.get('scored', 0)} scored, "
+            f"{mean_txt}; {d.get('analyzed', 0)} analyzed "
+            f"({d.get('bad', 0)} bad, {d.get('good', 0)} good)"
+        )
+    return "\n".join(lines)
+
+
 def _trajectory_block(bundle: TrajectoryBundle) -> str:
     summary = json.dumps(bundle.trajectory_summary or {}, indent=2)
     steps = json.dumps(bundle.trajectory, indent=2)
@@ -97,18 +126,51 @@ def build_map_prompt(
     )
 
 
-def build_reduce_prompt(findings: list[Finding], counts: dict, taxonomy: Taxonomy) -> str:
-    findings_block = "\n".join(
+def _reduce_findings_block(findings: list[Finding]) -> str:
+    return "\n".join(
         f"- [{f.bucket}/{f.subcategory}] trial={f.trial_id} "
         f"capability_slug={f.capability_slug or '(none)'} link={f.trajectory_link}\n"
+        f"  task: {f.task_path or f.task_id or 'unknown'}\n"
+        f"  model: {f.model or 'unknown'}\n"
         f"  quote: {f.evidence_quote}\n  root_cause: {f.root_cause}\n"
         f"  headroom_signal: {f.headroom_signal}"
         for f in findings
     )
-    counts_block = json.dumps(counts, indent=2)
+
+
+def task_roster_block(models_by_task: dict[str, list[str]] | None) -> str:
+    """Which models RAN each task, including the ones that PASSED. Findings
+    record only failures, so this is the sole source for "every model passed" --
+    without it, saturated and too-hard are indistinguishable to the synthesizer.
+
+    None means no roster was persisted (pre-analyzers_006); it must not collapse
+    into the empty case, which is the real answer "no trials"."""
+    if models_by_task is None:
+        return "(no roster persisted for this run — pass/fail coverage unknown)"
+    if not models_by_task:
+        return "(no trials)"
+    return "\n".join(
+        f"- {task}: {', '.join(sorted(models)) or '(none)'}"
+        for task, models in sorted(models_by_task.items())
+    )
+
+
+def build_reduce_prompt(
+    findings: list[Finding],
+    counts: dict,
+    taxonomy: Taxonomy,
+    models_by_task: dict[str, list[str]] | None = None,
+    denominators: dict[str, dict] | None = None,
+) -> str:
     return REDUCE_PROMPT_TEMPLATE.format(
-        counts_block=counts_block,
+        counts_block=json.dumps(counts, indent=2),
         taxonomy_block=render_capabilities(taxonomy) or "(no live capabilities)",
-        findings_block=findings_block,
+        roster_block=task_roster_block(models_by_task),
+        denominators_block=denominators_block(denominators),
+        findings_block=_reduce_findings_block(findings),
         sections_block=sections_block(SECTION_KEYS),
+        # by_model_output_shape() is escaped ({{ }}) for reuse by the sandbox
+        # path too; unescape here since this call's output goes straight to
+        # the LLM as the final prompt, not through another .format() pass.
+        by_model_block=by_model_output_shape().format(),
     )

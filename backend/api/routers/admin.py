@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import re
+from dataclasses import asdict
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, func, select
+from sqlalchemy.exc import ProgrammingError
 
 from auth import AuthContext, require_admin
+from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, UserModel
+from pg_errors import is_undefined_table_error
+from slack_alert_settings import (
+    AlertSettings,
+    clear_alert_settings,
+    get_alert_settings,
+    set_alert_settings,
+)
 from oddish.core.admin import (
     CostBreakdownResponse,
     QueueHealthResponse,
@@ -28,6 +39,8 @@ from oddish.core.admin import (
 )
 from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
+
+_EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -178,6 +191,7 @@ async def get_costs(
             window_days=effective_window,
             experiment_limit=experiment_limit,
             user_limit=user_limit,
+            resolve_github_users=resolve_github_users,
         )
         await _enrich_cost_breakdown(session, result)
     return result
@@ -305,3 +319,83 @@ async def backfill_task_expansions(
         enqueued=enqueued,
         pending_total=pending_total,
     )
+
+
+class SlackAlertSettingsResponse(BaseModel):
+    trial_escalation_usd: float
+    always_ping_emails: list[str]
+    # False means nobody has overridden anything and these are the values baked
+    # into the deploy, which the UI labels rather than presenting as a choice.
+    is_override: bool
+
+
+class SlackAlertSettingsRequest(BaseModel):
+    trial_escalation_usd: float = Field(gt=0)
+    always_ping_emails: list[str] = Field(max_length=50)
+
+    @field_validator("always_ping_emails")
+    @classmethod
+    def _plausible_addresses(cls, emails: list[str]) -> list[str]:
+        # Shape only -- Slack decides whether an address resolves to an account,
+        # and a typo there costs one dropped mention rather than a bad write.
+        # Full RFC validation would mean taking on email-validator for this.
+        for email in emails:
+            if not _EMAIL_RE.fullmatch(email.strip()):
+                raise ValueError(f"not an email address: {email!r}")
+        return [email.strip() for email in emails]
+
+
+def _settings_response(settings: AlertSettings) -> SlackAlertSettingsResponse:
+    return SlackAlertSettingsResponse(**asdict(settings))
+
+
+def _unavailable(exc: ProgrammingError) -> HTTPException:
+    if not is_undefined_table_error(exc):
+        raise exc
+    return HTTPException(
+        status_code=503,
+        detail=(
+            "Slack alert settings are not available yet (schema is still "
+            "migrating). Try again shortly."
+        ),
+    )
+
+
+@router.get("/slack-alert-settings", response_model=SlackAlertSettingsResponse)
+async def get_slack_alert_settings(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> SlackAlertSettingsResponse:
+    """Effective Slack cost-alert thresholds and escalation list."""
+    try:
+        async with get_session() as session:
+            return _settings_response(await get_alert_settings(session))
+    except ProgrammingError as exc:
+        raise _unavailable(exc) from exc
+
+
+@router.put("/slack-alert-settings", response_model=SlackAlertSettingsResponse)
+async def update_slack_alert_settings(
+    payload: SlackAlertSettingsRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> SlackAlertSettingsResponse:
+    """Override the thresholds and escalation list for every org."""
+    try:
+        async with get_session() as session:
+            settings = await set_alert_settings(
+                session, **payload.model_dump(), updated_by_user_id=auth.user_id
+            )
+            return _settings_response(settings)
+    except ProgrammingError as exc:
+        raise _unavailable(exc) from exc
+
+
+@router.delete("/slack-alert-settings", response_model=SlackAlertSettingsResponse)
+async def reset_slack_alert_settings(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> SlackAlertSettingsResponse:
+    """Drop the override; the deploy-time defaults take over again."""
+    try:
+        async with get_session() as session:
+            return _settings_response(await clear_alert_settings(session))
+    except ProgrammingError as exc:
+        raise _unavailable(exc) from exc

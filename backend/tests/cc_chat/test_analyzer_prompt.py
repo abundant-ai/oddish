@@ -1,7 +1,9 @@
 from api.services.cc_chat.analyzer_prompt import (
+    FINDINGS_GLOB,
     FINDINGS_PATH,
     REDUCE_PATH,
     build_cohort_prompt,
+    build_reduce_only_prompt,
 )
 from oddish.evals.analyzer.prompt_builder import section_brief
 from oddish.evals.analyzer.taxonomy import Capability, Category, Taxonomy
@@ -151,3 +153,29 @@ def test_map_instructions_are_self_consistent():
     p = build_cohort_prompt("bad", [_bad_sa("bad-1")], _roster(), COUNTS, {"bad-1": "o"}, _taxonomy())
     assert "MAP FINDING:" in p
     assert FINDINGS_PATH in p
+
+
+def test_reduce_tolerates_missing_batches_like_the_host_does():
+    # analyzer_cohort skips an empty batch file with a warning and keeps going, so
+    # the prompt must not tell the agent to bail when a batch file is absent.
+    p = build_reduce_only_prompt("bad", COUNTS, 4)
+    assert "up to 4" in p
+    assert "Synthesize from whatever" in p
+    assert "every one matters" not in p
+    # The one sanctioned stop is nothing-at-all, never a merely-absent batch.
+    assert "prints nothing at all" in p
+    assert "If they are missing" not in p
+
+
+def test_reduce_cat_survives_an_unmatched_glob():
+    # No nullglob in the sandbox's bash: with every batch file absent the glob
+    # reaches cat literally and it errors, so the read must swallow stderr or
+    # the empty case looks like a failure to the agent.
+    p = build_reduce_only_prompt("bad", COUNTS, 4)
+    assert f"cat {FINDINGS_GLOB} 2>/dev/null" in p
+
+
+def test_reduce_still_requires_the_reduce_file_and_forbids_refetching():
+    p = build_reduce_only_prompt("bad", COUNTS, 4)
+    assert REDUCE_PATH in p
+    assert "do NOT re-fetch" in p

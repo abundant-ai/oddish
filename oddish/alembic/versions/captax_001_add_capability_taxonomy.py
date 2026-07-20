@@ -11,7 +11,12 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "captax_001"
-down_revision = "analyzers_006"
+# Re-parented from analyzers_006 onto the main head (analyzers_008) at merge
+# time: main extended the analyzers chain (007 blocks, 008 by_model) off the
+# same 006 base, so keeping 006 as the parent would fork the graph into two
+# heads. captax's tables are independent of those columns, so ordering after
+# them is safe.
+down_revision = "analyzers_008"
 branch_labels = None
 depends_on = None
 

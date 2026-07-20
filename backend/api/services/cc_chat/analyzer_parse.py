@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _MAP_MARKER = "MAP FINDING:"
 _REDUCE_MARKER = "REDUCE RESULT:"
 _DECODER = json.JSONDecoder()
+_SECTION_LOG_LIMIT = 200
 
 
 class CohortParseError(RuntimeError):
@@ -63,27 +64,55 @@ def _section_value(raw: dict, key: str) -> str:
     return v
 
 
+def _render_sections(sections: dict[str, str]) -> str:
+    """Compact key -> value dump for error text; values are elided so a runaway
+    reduce output can't turn one exception into a megabyte of log."""
+    return ", ".join(
+        f"{k}={_elide(v)!r}" for k, v in sections.items()
+    ) or "<none>"
+
+
+def _elide(v: str, limit: int = _SECTION_LOG_LIMIT) -> str:
+    return v if len(v) <= limit else f"{v[:limit]}...(+{len(v) - limit}B)"
+
+
+def _by_model_from(raw: dict) -> list[dict]:
+    """Raw per-model entries, unvalidated. Normalization and the drop of
+    unknown models happen host-side in by_model.normalize_entries -- this
+    layer only extracts."""
+    entries = raw.get("by_model")
+    return entries if isinstance(entries, list) else []
+
+
+def _comparison_from(raw: dict) -> str:
+    return str(raw.get("cross_model_comparison") or "")
+
+
 def _sections_from(raw: dict, bucket: str) -> dict[str, str]:
     keys = SECTION_KEYS_BY_BUCKET[bucket]
     sections = {k: _section_value(raw, k) for k in keys}
     if not any(v.strip() for v in sections.values()):
         raise CohortParseError(
             f"reduce output for bucket {bucket!r} has no non-blank content for "
-            f"any of {keys}: {sorted(raw)[:6]}"
+            f"any of {keys}: sections={_render_sections(sections)}; "
+            f"raw keys={sorted(raw)[:6]}"
         )
     return sections
 
 
 def _findings_from_jsonl(text: str, bucket, links) -> list[Finding]:
     out = []
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines(), 1):
         line = line.strip()
         if not line:
             continue
         try:
             d = json.loads(line)
         except ValueError:
-            logger.warning("analyzer-sandbox: skipping unparseable finding line")
+            logger.warning(
+                "analyzer-sandbox: skipping unparseable finding line %d: %r",
+                lineno, _elide(line),
+            )
             continue
         f = _finding_from(d, bucket, links)
         if f is not None:
@@ -167,36 +196,68 @@ def parse_cohort_result(
     findings_bytes: bytes,
     stream_text: str,
     host_by_trial: dict[str, dict],
-) -> tuple[list[Finding], dict[str, str], list[CapabilityProposal]]:
+) -> tuple[list[Finding], dict[str, str], tuple[list[dict], str], list[CapabilityProposal]]:
+    logger.info(
+        "analyzer-sandbox: parsing %s cohort: reduce file=%dB, findings file=%dB, "
+        "stream=%dB, %d trials in cohort",
+        bucket, len(reduce_bytes), len(findings_bytes), len(stream_text),
+        len(host_by_trial),
+    )
+
     findings_text = findings_bytes.decode("utf-8", "replace")
     findings = _findings_from_jsonl(findings_text, bucket, host_by_trial)
     proposals = _proposals_from(findings_text, bucket, host_by_trial)
+    logger.info(
+        "analyzer-sandbox: %s findings file yielded %d finding(s)", bucket, len(findings)
+    )
 
     sections: dict[str, str] | None = None
+    raw: dict | None = None
     if reduce_bytes.strip():
         try:
-            sections = _sections_from(
-                parse_json(reduce_bytes.decode("utf-8", "replace")), bucket
+            raw = parse_json(reduce_bytes.decode("utf-8", "replace"))
+            sections = _sections_from(raw, bucket)
+            logger.info(
+                "analyzer-sandbox: %s reduce file parsed: sections=%s",
+                bucket, _render_sections(sections),
             )
         except (CohortParseError, ValueError) as exc:
             # Unreadable JSON and well-formed-but-empty JSON are the same situation
             # to the caller: the file yielded nothing. Both fall back to the stream,
             # which may still hold a good result. If it doesn't, the check below
             # raises with both channels accounted for.
+            raw = None
             logger.warning(
                 "analyzer-sandbox: %s reduce file unusable (%s); "
                 "falling back to the stream", bucket, exc,
             )
+    else:
+        logger.info(
+            "analyzer-sandbox: %s reduce file is blank; falling back to the stream",
+            bucket,
+        )
 
     if sections is None:
         blocks = _marked(stream_text, _REDUCE_MARKER)
+        logger.info(
+            "analyzer-sandbox: %s stream had %d %r block(s)",
+            bucket, len(blocks), _REDUCE_MARKER,
+        )
         if not blocks:
             raise CohortParseError(
                 f"no usable reduce result for bucket {bucket!r}: "
                 f"file was {len(reduce_bytes)}B and the stream had no "
-                f"{_REDUCE_MARKER!r} marker"
+                f"{_REDUCE_MARKER!r} marker; expected sections "
+                f"{SECTION_KEYS_BY_BUCKET[bucket]}; "
+                f"file head={_elide(reduce_bytes.decode('utf-8', 'replace'))!r}; "
+                f"stream tail={_elide(stream_text[-_SECTION_LOG_LIMIT:])!r}"
             )
-        sections = _sections_from(blocks[-1], bucket)
+        raw = blocks[-1]
+        sections = _sections_from(raw, bucket)
+        logger.info(
+            "analyzer-sandbox: %s reduce recovered from the stream: sections=%s",
+            bucket, _render_sections(sections),
+        )
 
     if not findings:
         map_dicts = _marked(stream_text, _MAP_MARKER)
@@ -204,5 +265,17 @@ def parse_cohort_result(
             f for d in map_dicts
             if (f := _finding_from(d, bucket, host_by_trial)) is not None
         ]
+        logger.info(
+            "analyzer-sandbox: %s findings recovered from the stream: %d of %d "
+            "%r block(s) kept", bucket, len(findings), len(map_dicts), _MAP_MARKER,
+        )
+        # A blank findings file means proposals must be recovered from the stream too.
         proposals = _merge_proposals(map_dicts, bucket, host_by_trial)
-    return findings, sections, proposals
+
+    by_model = (_by_model_from(raw), _comparison_from(raw)) if raw is not None else ([], "")
+
+    logger.info(
+        "analyzer-sandbox: %s parsed: %d finding(s), %d section(s)",
+        bucket, len(findings), len(sections),
+    )
+    return findings, sections, by_model, proposals

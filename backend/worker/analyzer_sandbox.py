@@ -21,10 +21,19 @@ from api.services.cc_chat.analyzer_cohort import run_cohort
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
 from api.services.cc_chat.daytona_client import RealDaytonaClient
 from oddish.config import settings
-from oddish.core.analyzer_inputs import subanalysis_from_trial
+from oddish.core.analyzer_inputs import (
+    models_by_task_from_rows,
+    subanalysis_from_trial,
+    trial_model_rewards,
+)
 from oddish.db.connection import get_session
 from oddish.db.taxonomy_query import load_taxonomy
 from oddish.evals.analyzer.bucketing import bucket_subanalyses
+from oddish.evals.analyzer.by_model import (
+    build_by_model_payload,
+    build_denominators,
+    normalize_entries,
+)
 from oddish.evals.analyzer.core import build_roster
 from oddish.evals.analyzer.schemas import (
     AnalyzerEvalConfig,
@@ -48,6 +57,9 @@ _SECTION_COLUMN = {
     "universal_capabilities_content": "capabilities",
     "headroom_analysis": "headroom",
 }
+
+# Mirrors by-model-view.tsx's BUCKET_LABELS for the bucket badges.
+_COMPARISON_HEADING = {"bad": "Reward hacking", "good": "Capability"}
 
 
 def _read_cli_source() -> bytes:
@@ -157,6 +169,8 @@ async def sandbox_eval_rows(
             analyzer_id=analyzer_id, anthropic_key=anthropic_key,
             api_base=api_base, api_key=api_key, cli_src=cli_src,
             taxonomy=taxonomy,
+            models_by_task=models_by_task_from_rows(rows),
+            denominators=build_denominators(trial_model_rewards(rows), []),
         )
 
     jobs = [(b, c) for b, c in (("bad", bad), ("good", good)) if c]
@@ -183,7 +197,13 @@ async def sandbox_eval_rows(
     findings: list[Finding] = []
     proposals: list[CapabilityProposal] = []
     sections = dict(_EMPTY_SECTIONS)
-    for (bucket, cohort), (cohort_findings, cohort_sections, cohort_proposals) in zip(
+    by_model_entries: list[dict] = []
+    comparisons: list[tuple[str, str]] = []
+    denominators = build_denominators(trial_model_rewards(rows), [])
+
+    for (bucket, cohort), (
+        cohort_findings, cohort_sections, cohort_by_model, cohort_proposals
+    ) in zip(
         jobs, results
     ):
         if not cohort_findings:
@@ -195,6 +215,30 @@ async def sandbox_eval_rows(
         proposals.extend(cohort_proposals)
         for key, text in cohort_sections.items():
             sections[_SECTION_COLUMN[key]] = text
+        raw_entries, comparison = cohort_by_model
+        # bucket= tags each entry, so one model appearing in both cohorts yields
+        # two entries rather than one silently overwriting the other.
+        by_model_entries.extend(
+            normalize_entries(raw_entries, denominators, bucket=bucket)
+        )
+        if comparison.strip():
+            comparisons.append((bucket, comparison.strip()))
+
+    if len(comparisons) > 1:
+        # Two cohorts read the same trajectories through different lenses;
+        # unlabeled, their comparisons can look like they contradict each
+        # other. Headings match the bucket badges in by-model-view.tsx.
+        combined_comparison = "\n\n".join(
+            f"### {_COMPARISON_HEADING[b]}\n\n{c}" for b, c in comparisons
+        )
+    else:
+        combined_comparison = comparisons[0][1] if comparisons else ""
+
+    by_model = build_by_model_payload(
+        by_model_entries,
+        combined_comparison,
+        build_denominators(trial_model_rewards(rows), findings),
+    )
 
     logger.info(
         "analyzer-sandbox: complete, %d findings, %d proposals",
@@ -202,7 +246,7 @@ async def sandbox_eval_rows(
     )
     return AnalyzerEvalOutput(
         sections=sections, findings=findings, counts=counts, breakdown=breakdown,
-        subanalyses=subs, proposals=proposals,
+        subanalyses=subs, by_model=by_model, proposals=proposals,
         taxonomy_version=tax_version, taxonomy_snapshot=tax_snapshot,
     )
 
