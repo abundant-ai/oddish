@@ -655,5 +655,86 @@ async def test_run_task_qa_job_blocks_inflight_classification_store(monkeypatch)
     assert task.verdict is None
 
 
+@pytest.mark.asyncio
+async def test_run_task_qa_job_uses_injected_verdict_synth_fn(monkeypatch):
+    """A stub ``verdict_synth_fn`` replaces ``default_verdict_synth`` entirely,
+    with ``baseline``/``quality_check_passed``/``timeout`` threaded through
+    (not re-derived by the stub) -- the seam Task B exists to create. The
+    stub's output must reach the stored payload via ``build_verdict_payload``.
+    """
+    task = SimpleNamespace(
+        id="task-20",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="task-20-0",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    def fail_compute_verdict(**_kwargs):
+        raise AssertionError(
+            "default_verdict_synth must not run when a verdict_synth_fn is injected"
+        )
+
+    captured: dict = {}
+
+    async def stub_verdict_synth(
+        classifications, baseline, quality_check_passed, timeout
+    ):
+        captured["classifications"] = classifications
+        captured["baseline"] = baseline
+        captured["quality_check_passed"] = quality_check_passed
+        captured["timeout"] = timeout
+        return SimpleNamespace(
+            is_good=True,
+            confidence="stub-confidence",
+            primary_issue="stub issue",
+            reasoning="stub reasoning",
+            recommendations=["stub rec"],
+        )
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fail_compute_verdict)
+
+    await qa_handler.run_task_qa_job(
+        "task-20", queue_key="qa", verdict_synth_fn=stub_verdict_synth
+    )
+
+    assert len(captured["classifications"]) == 1
+    # Threaded through from run_task_qa_job, not re-derived by the stub.
+    assert captured["baseline"] is None
+    assert captured["quality_check_passed"] is True
+    assert captured["timeout"] == 180
+
+    # The stub's output reaches the stored payload -- proves both synthesis
+    # paths converge on build_verdict_payload / sync_verdict_to_task.
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict["is_good"] is True
+    assert task.verdict["primary_issue"] == "stub issue"
+    assert task.verdict["reasoning"] == "stub reasoning"
+    assert task.verdict["recommendations"] == ["stub rec"]
+
+
 def test_verdict_job_uses_verdict_kind():
     assert WorkerJobKind.QA.value == "QA"

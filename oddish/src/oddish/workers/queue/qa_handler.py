@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any, Awaitable, Callable
 
 from sqlalchemy import func, select
 
+from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
@@ -23,6 +25,36 @@ from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 QA_HEARTBEAT_INTERVAL_SECONDS = 30
+
+# The verdict-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
+# can be injected here without oddish importing backend/. baseline,
+# quality_check_passed, and timeout are passed in rather than re-derived, so
+# the legacy and injected paths can't silently diverge if either default
+# changes later.
+VerdictSynthFn = Callable[
+    [list[TrialClassification], BaselineValidation | None, bool, float],
+    Awaitable[Any],
+]
+
+
+async def default_verdict_synth(
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None,
+    quality_check_passed: bool,
+    timeout: float,
+) -> Any:
+    """Wraps today's ``compute_task_verdict`` call, unchanged."""
+    from oddish.analyze import compute_task_verdict
+
+    return compute_task_verdict(
+        classifications=classifications,
+        baseline=baseline,
+        quality_check_passed=quality_check_passed,
+        model=settings.verdict_model,
+        console=console,
+        verbose=True,
+        timeout=timeout,
+    )
 
 
 async def _heartbeat_qa_worker_job(
@@ -158,10 +190,9 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
+    verdict_synth_fn: VerdictSynthFn = default_verdict_synth,
 ) -> None:
     """Classify a task's live trials and store one verdict."""
-    from oddish.analyze import TrialClassification, compute_task_verdict
-
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
     async with get_session() as session:
@@ -285,14 +316,11 @@ async def run_task_qa_job(
             raise ValueError("No successful classifications to synthesize verdict from")
 
         console.print("[dim]Starting verdict synthesis...[/dim]")
-        verdict = compute_task_verdict(
-            classifications=classifications,
-            baseline=None,
-            quality_check_passed=True,
-            model=settings.verdict_model,
-            console=console,
-            verbose=True,
-            timeout=180,
+        baseline = None
+        quality_check_passed = True
+        timeout = 180
+        verdict = await verdict_synth_fn(
+            classifications, baseline, quality_check_passed, timeout
         )
 
         verdict_result = build_verdict_payload(verdict, classifications)
