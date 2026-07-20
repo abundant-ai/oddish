@@ -1,5 +1,14 @@
 """Self-tuning per-model concurrency controller (advisory, default-off).
 
+DEPRECATED. This controller predates database-backed admin overrides, which
+are now the supported way to change a per-model concurrency limit at runtime:
+set it in the Queue Health admin card (``PUT /admin/concurrency``) and both the
+dispatcher plan and the worker slot lease honor it immediately. The
+``dynamic_model_concurrency`` flag stays OFF by default; enabling it logs a
+deprecation warning (see ``config.Settings``). This module is retained only so
+existing deployments that opted in keep working, and may be removed once no
+deployment relies on it. New per-model tuning should use the admin override.
+
 Each reconcile cycle the controller derives a per-``queue_key`` advisory
 concurrency limit and writes it to ``model_concurrency_advisory``; the dispatcher
 reads the advisory limit when it is fresh and otherwise falls back to the static

@@ -146,6 +146,10 @@ async def _effective_model_concurrency_limits(
                 )
                 for key in queue_keys
             }
+            # DEPRECATED path: the self-tuning advisory controller. Off by
+            # default and superseded by the admin overrides read just above;
+            # kept only for deployments that still opt in via
+            # ODDISH_DYNAMIC_MODEL_CONCURRENCY (which logs a deprecation warning).
             if settings.dynamic_model_concurrency:
                 hard_caps = {
                     key: overrides[settings.normalize_queue_key(key)]
@@ -452,9 +456,11 @@ async def reconcile_queue_state():
             console.print(f"[yellow]github_id backfill skipped: {e}[/yellow]")
 
         # Recompute the self-tuning per-model concurrency advisory (default off).
-        # A defensive phase like the others: a failure logs and is swallowed so
-        # the rest of the reconcile sweep still runs, and the static limits stay
-        # the fallback.
+        # DEPRECATED: superseded by database-backed admin overrides; retained
+        # only for deployments that still opt in via
+        # ODDISH_DYNAMIC_MODEL_CONCURRENCY. A defensive phase like the others: a
+        # failure logs and is swallowed so the rest of the reconcile sweep still
+        # runs, and the static limits stay the fallback.
         if settings.dynamic_model_concurrency:
             try:
                 async with get_session() as session:
