@@ -130,3 +130,38 @@ def test_run_json_gate_emits_no_json_blob_of_its_own(make_task, monkeypatch):
     # The gate contributed no JSON document to stdout.
     assert '"ok"' not in result.output
     assert '"findings"' not in result.output
+
+
+def test_upload_aborts_when_preflight_fails(make_task, monkeypatch):
+    task_dir = make_task(
+        dockerfile=_FETCH_DOCKERFILE, extra_files={"environment/.dockerignore": "**/.git\n"}
+    )
+    upload_module = importlib.import_module("oddish.cli.upload")
+    monkeypatch.setattr(upload_module, "get_api_url", lambda *a, **k: "http://x")
+    monkeypatch.setattr(upload_module, "require_api_key", lambda *a, **k: "key")
+
+    uploaded: list[object] = []
+    monkeypatch.setattr(
+        upload_module, "upload_tasks_with_progress",
+        lambda *a, **k: uploaded.append(a) or [],
+    )
+    result = runner.invoke(app, ["upload", str(task_dir)])
+    assert result.exit_code == 1
+    assert uploaded == [], "preflight must abort before upload persists the task"
+    assert "provenance" in result.output
+
+
+def test_upload_force_proceeds_past_preflight(make_task, monkeypatch):
+    task_dir = make_task(
+        dockerfile=_FETCH_DOCKERFILE, extra_files={"environment/.dockerignore": "**/.git\n"}
+    )
+    upload_module = importlib.import_module("oddish.cli.upload")
+    monkeypatch.setattr(upload_module, "get_api_url", lambda *a, **k: "http://x")
+    monkeypatch.setattr(upload_module, "require_api_key", lambda *a, **k: "key")
+
+    def _sentinel(*a, **k):
+        raise RuntimeError("reached upload")
+
+    monkeypatch.setattr(upload_module, "upload_tasks_with_progress", _sentinel)
+    result = runner.invoke(app, ["upload", str(task_dir), "--force"])
+    assert "reached upload" in str(result.exception)

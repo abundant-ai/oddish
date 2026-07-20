@@ -72,7 +72,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   patch-file solutions, and brittle source-scanning anti-cheat. `--json` emits
   findings for CI.
 - `oddish run` now runs preflight before upload. `--force` submits anyway and
-  still prints the findings.
+  still prints the findings. `oddish upload` is gated the same way (same
+  `--force` override) — closing a two-step bypass where uploading a leaky task
+  directly, then running it by ID, skipped preflight entirely.
 
 ### Changed
 

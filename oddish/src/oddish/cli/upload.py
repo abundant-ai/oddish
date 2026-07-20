@@ -57,6 +57,8 @@ from oddish.cli.config import (
     get_dashboard_url,
     require_api_key,
 )
+from oddish.cli.preflight import gate_preflight
+from oddish.preflight.runner import run_checks
 
 console = Console()
 
@@ -180,6 +182,13 @@ def upload(
                 "Trial-import only: register trial metadata (reward, "
                 "tokens, timing) without uploading logs/trajectory."
             ),
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Upload even if preflight checks fail. Findings are still printed.",
         ),
     ] = False,
     api_url: Annotated[
@@ -307,6 +316,7 @@ def upload(
         user=user,
         priority=priority,
         message=message,
+        force=force,
         quiet=quiet,
         json_output=json_output,
     )
@@ -329,6 +339,7 @@ def _run_task_upload(
     user: str | None,
     priority: str,
     message: str | None,
+    force: bool,
     quiet: bool,
     json_output: bool,
 ) -> None:
@@ -343,6 +354,12 @@ def _run_task_upload(
         n_tasks=n_tasks,
         quiet=quiet,
     )
+
+    # Gate before the upload persists a runnable task version: a task that leaks
+    # its own answer must not become runnable via `oddish run --task <id>`.
+    # No json_output -- upload owns its single stdout JSON document; the gate
+    # renders findings to stderr and aborts via typer.Exit on failure.
+    gate_preflight(run_checks(task_paths), force=force)
 
     # Step 2 (shared with ``oddish run``): upload each archive and
     # register the TaskModel. ``oddish upload`` always uses
