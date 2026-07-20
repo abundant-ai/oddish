@@ -10,7 +10,11 @@ from anthropic import AsyncAnthropic
 from oddish.config import settings
 from oddish.db import generate_id
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
-from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient, RealDaytonaClient
+from api.services.cc_chat.daytona_client import (
+    CreatedSandbox,
+    DaytonaClient,
+    RealDaytonaClient,
+)
 from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 
 _DEFAULT_MODEL = "claude-opus-4-8"
@@ -31,7 +35,9 @@ class LLMClientType(str, enum.Enum):
 
 @runtime_checkable
 class AnalyzerLLMClient(Protocol):
-    def stream(self, prompt: str) -> AsyncIterator[str]: ...
+    def stream(
+        self, prompt: str, *, system_prompt: str | None = None
+    ) -> AsyncIterator[str]: ...
     async def aclose(self) -> None: ...
 
 
@@ -43,15 +49,24 @@ class FakeAnalyzerLLMClient:
         *,
         chunks: list[str] | None = None,
         exc: BaseException | None = None,
+        files: dict[str, bytes] | None = None,
     ) -> None:
         self._chunks = chunks or []
         self._exc = exc
+        self._files = files or {}
+        self.last_system_prompt: str | None = None
 
-    async def stream(self, prompt: str) -> AsyncIterator[str]:
+    async def stream(
+        self, prompt: str, *, system_prompt: str | None = None
+    ) -> AsyncIterator[str]:
+        self.last_system_prompt = system_prompt
         for chunk in self._chunks:
             yield chunk
         if self._exc is not None:
             raise self._exc
+
+    async def _download_file(self, path: str) -> bytes:
+        return self._files[path]
 
     async def aclose(self) -> None:
         return None
@@ -72,12 +87,17 @@ class ApiAnalyzerLLMClient:
         key = resolve_analyzer_api_key(api_key)
         self._inner = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
 
-    async def stream(self, prompt: str) -> AsyncIterator[str]:
-        async with self._inner.messages.stream(
+    async def stream(
+        self, prompt: str, *, system_prompt: str | None = None
+    ) -> AsyncIterator[str]:
+        kwargs: dict = dict(
             model=self._model,
             max_tokens=self._max_tokens,
             messages=[{"role": "user", "content": prompt}],
-        ) as stream:
+        )
+        if system_prompt is not None:
+            kwargs["system"] = system_prompt
+        async with self._inner.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
 
@@ -108,30 +128,42 @@ class SandboxAnalyzerLLMClient:
         self._runtime = runtime
         self._session_id = daytona_session_id
 
-    async def stream(self, prompt: str) -> AsyncIterator[str]:
+    async def stream(
+        self, prompt: str, *, system_prompt: str | None = None
+    ) -> AsyncIterator[str]:
         async for event in self._runtime.stream_chat(
             self._client,
             self._sandbox,
             content=prompt,
             claude_session_id=None,
             daytona_session_id=self._session_id,
+            system_prompt=system_prompt,
         ):
             yield json.dumps(event)
+
+    async def _download_file(self, path: str) -> bytes:
+        return await self._client.download_file(self._sandbox, src_path=path)
 
     async def aclose(self) -> None:
         await delete_sandbox_quietly(self._client, self._sandbox)
 
 
 async def create_llm_client(
-    llm_client_type: LLMClientType, *, api_key: str | None = None
+    llm_client_type: LLMClientType,
+    *,
+    model: str | None = None,
+    api_key: str | None = None,
 ) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
-        return ApiAnalyzerLLMClient(api_key=api_key)
+        return ApiAnalyzerLLMClient(model=model or _DEFAULT_MODEL, api_key=api_key)
 
     if llm_client_type == LLMClientType.SANDBOX:
         daytona_client = RealDaytonaClient(api_key=os.environ["DAYTONA_API_KEY"])
+        env_vars = {"ANTHROPIC_API_KEY": resolve_analyzer_api_key(api_key) or ""}
+        if model:
+            env_vars["ANTHROPIC_MODEL"] = model
         sandbox = await Provisioner(client=daytona_client).create(
-            env_vars={"ANTHROPIC_API_KEY": resolve_analyzer_api_key(api_key) or ""},
+            env_vars=env_vars,
             auto_stop_minutes=_AUTO_STOP_MINUTES,
             auto_delete_minutes=_AUTO_DELETE_MINUTES,
             labels={"app": "analyzer", "session_id": generate_id()},
