@@ -34,6 +34,16 @@ TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "4"
 
+# Output cap for the summary call. The Anthropic API requires max_tokens, so
+# some value must be set; this one is a ceiling, not a target -- billing is on
+# tokens actually generated. Was 2048 (inherited from the pre-migration cap),
+# which truncated the model mid-JSON on long trajectories: a dump of 30 trials
+# from experiment c02666c5 produced 13 parse failures whose raw output ended
+# mid-token at ~5.3k chars, and those trials silently got no summary at all.
+# Well under the model's own limit, so the binding constraint is the prompt's
+# schema, not this number.
+SUMMARY_MAX_TOKENS = 16384
+
 
 def _truncate(text: str) -> str:
     if len(text) <= MAX_TEXT_CHARS:
@@ -204,9 +214,7 @@ async def generate(
 
     model = resolve_summary_model()
     owned = client is None
-    # 2048 is the pre-migration cap, and it only holds because the client pins
-    # thinking off -- thinking shares this ceiling with the JSON body.
-    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
+    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
     block = build_summary_block(
         trajectory, task_context, analyzer_id=analyzer_id, model=model, client=llm,
     )
