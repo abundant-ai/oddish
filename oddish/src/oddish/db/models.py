@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Table,
@@ -247,6 +248,13 @@ class TagAssignmentSource(str, Enum):
     DIRECT = "DIRECT"
     EXPERIMENT_SNAPSHOT = "EXPERIMENT_SNAPSHOT"
     EXPERIMENT_LIVING = "EXPERIMENT_LIVING"
+
+
+class MetadataSource(str, Enum):
+    """How a task's descriptive metadata was populated."""
+
+    CLIENT = "CLIENT"
+    BACKFILL = "BACKFILL"
 
 
 class TagGrantPrincipal(str, Enum):
@@ -741,6 +749,28 @@ class TaskModel(TimestampedMixin, Base):
         Text, nullable=True
     )  # S3 prefix for task files (mirrors latest version)
     tags: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # Descriptive metadata: what the task IS, not trial results.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    category_raw: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    author_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    author_organization: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expert_time_hours: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    metadata_source: Mapped[MetadataSource | None] = mapped_column(
+        SQLEnum(
+            MetadataSource,
+            name="task_metadata_source",
+            native_enum=True,
+            values_callable=lambda enum_cls: [m.value for m in enum_cls],
+        ),
+        nullable=True,
+    )
+    metadata_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Materialized read projection — see `oddish.core.tags_projection`.
     effective_tag_ids: Mapped[list[str]] = mapped_column(
         ARRAY(Text),
