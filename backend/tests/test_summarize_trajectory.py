@@ -449,3 +449,62 @@ async def test_build_task_context_falls_back_to_harbor_config_model():
 
 def test_schema_version_is_four():
     assert SCHEMA_VERSION == "4"
+
+
+# ---------------------------------------------------------------------------
+# build_summary_block (shared construction site)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLLM:
+    """Fake client that records the prompt it was handed."""
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+        self.prompt: str | None = None
+
+    async def stream(self, prompt: str):
+        self.prompt = prompt
+        yield self._payload
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _summary_payload() -> str:
+    return json.dumps({
+        "summary": "Agent fixed the bug.",
+        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
+        "components": [{"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}],
+    })
+
+
+@pytest.mark.asyncio
+async def test_generate_and_build_summary_block_agree(monkeypatch):
+    """generate() must build its block through build_summary_block(), so the
+    harness and production cannot drift in prompt, model, or metadata."""
+    from api.services.summarize_trajectory import (
+        build_summary_block,
+        generate,
+        resolve_summary_model,
+    )
+
+    _patch_block_persistence(monkeypatch)
+    trajectory = _trajectory_with_steps([1, 2])
+    ctx = _minimal_ctx()
+
+    recorder = _RecordingLLM(_summary_payload())
+    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x", client=recorder)
+
+    block = build_summary_block(
+        deepcopy(trajectory),
+        ctx,
+        analyzer_id="tr_x",
+        model=resolve_summary_model(),
+        client=_fake_llm(_summary_payload()),
+    )
+
+    assert recorder.prompt == block.prompt
+    assert block.block_metadata["schema_version"] == SCHEMA_VERSION
+    assert block.block_metadata["model"] == resolve_summary_model()
+    assert block.analyzer_id == "tr_x"
