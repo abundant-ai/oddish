@@ -191,7 +191,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
             trials=trials,
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
@@ -203,11 +203,11 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
     assert experiment_alert.text.splitlines() == [
         ":money_with_wings: *Expensive experiment*",
         "Title: *Exp &lt;One&gt;*",
-        "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
-        "New spend (last 2h): *$2,001.00*",
+        "24-hour spend milestone: *$2,000.00*",
+        "Cost in past 24 hours: *$2,001.00*",
         "Trials still running: 2",
         "Owner: *Pat &amp; Sam*",
-        "Top agent costs:",
+        "Top agent costs in past 24 hours:",
         "• `model-1`: *$2,001.00*",
         "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
     ]
@@ -227,22 +227,23 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
                 _trial("b", 800, model="azure/fable", finished_at=now),
                 _trial("c", 400, model="anthropic/sonnet", finished_at=now),
                 _trial("d", 200, model="openai/gpt", finished_at=now),
+                _trial("old", 5000, model="old", finished_at=now - timedelta(hours=25)),
             ],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
     assert alerts[0].text.splitlines()[6:10] == [
-        "Top agent costs:",
+        "Top agent costs in past 24 hours:",
         "• `openrouter/opus`: *$1,000.00*",
         "• `azure/fable`: *$800.00*",
         "• `anthropic/sonnet`: *$400.00*",
     ]
 
 
-def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> None:
+def test_build_alerts_excludes_spend_before_the_24_hour_window() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
         AlertCandidates(
@@ -252,50 +253,36 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
                 )
             ],
             trials=[
-                _trial("old", 2000, finished_at=now - timedelta(hours=3)),
+                _trial("old", 2000, finished_at=now - timedelta(hours=25)),
                 _trial("recent", 50, finished_at=now),
             ],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
-    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
-    assert [a.key for a in milestone_alerts] == [
-        "experiment:experiment-1:1000",
-        "experiment:experiment-1:2000",
-    ]
-    assert all(a.silent for a in milestone_alerts)
-    assert all(a.text for a in milestone_alerts)
-    assert all(a.recipient_email == "a@e.com" for a in milestone_alerts)
-    assert all(a.dm_only for a in milestone_alerts)
+    assert alerts == []
 
 
-def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
+def test_build_alerts_calculates_milestones_from_24_hour_spend() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
         AlertCandidates(
             experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 1)],
             trials=[
-                _trial("old", 1500, finished_at=now - timedelta(hours=3)),
+                _trial("old", 1500, finished_at=now - timedelta(hours=25)),
                 _trial("recent", 1600, finished_at=now),
             ],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
     milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
-    silent = [a.key for a in milestone_alerts if a.silent]
-    firing = [a for a in milestone_alerts if not a.silent]
-    assert silent == ["experiment:experiment-1:1000"]
-    assert [a.key for a in firing] == [
-        "experiment:experiment-1:2000",
-        "experiment:experiment-1:3000",
-    ]
-    assert "New spend (last 2h): *$1,600.00*" in firing[0].text
+    assert [a.key for a in milestone_alerts] == ["experiment:experiment-1:1000"]
+    assert "Cost in past 24 hours: *$1,600.00*" in milestone_alerts[0].text
 
 
 def test_build_alerts_new_experiment_fires_every_milestone() -> None:
@@ -306,7 +293,7 @@ def test_build_alerts_new_experiment_fires_every_milestone() -> None:
             trials=[_trial("burst", 2400, finished_at=now)],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
@@ -334,7 +321,7 @@ def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
             trials=[_trial("lonely", 201, finished_at=now)],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
@@ -344,7 +331,7 @@ def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
         ":warning: *Expensive trial*",
         "Title: `lonely title`",
         "Experiment: *Experiment*",
-        "Cost: *$201.00*",
+        "Cost in past 24 hours: *$201.00*",
         "Model: `model-1`",
         "Author: *Unknown*",
         "<https://www.oddish.app/tasks/task%2F1|open task>",
@@ -481,7 +468,7 @@ def test_build_alerts_reports_unpriceable_models_once_each() -> None:
     text = alerts[0].text
     assert "*Unpriceable model:*" in text
     assert "`mystery/model-x`" in text
-    assert "3 recent trials recorded" in text
+    assert "3 trials in the past 24 hours recorded" in text
     assert "/tasks/task%2F9|open task>" in text
 
 
@@ -499,19 +486,19 @@ def test_build_alerts_unpriceable_model_uses_singular_for_one_trial() -> None:
         dashboard_url="https://www.oddish.app",
     )
 
-    assert "1 recent trial recorded" in alerts[0].text
+    assert "1 trial in the past 24 hours recorded" in alerts[0].text
 
 
 def test_build_alerts_ignores_old_trials() -> None:
     now = datetime.now(timezone.utc)
-    # Over the $100 trial floor but stale, and under the $500 milestone.
+    # Over the $100 trial floor but outside the cost window.
     alerts = build_alerts(
         AlertCandidates(
             experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
-            trials=[_trial("old", 150, finished_at=now - timedelta(hours=3))],
+            trials=[_trial("old", 150, finished_at=now - timedelta(hours=25))],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
@@ -795,9 +782,8 @@ async def test_deliver_retries_a_failed_post_with_its_stored_payload(
     assert _sent_keys(rows) == {"ok-key"}
     assert _pending_keys(rows) == {"flaky-key"}
 
-    # Next run the milestone's spend has aged out of the recent window, so
-    # build_alerts recomputes it as silent with different text. The pending
-    # row keeps its original payload and keeps retrying regardless.
+    # A later run tries to rewrite the alert as silent with different text. The
+    # pending row keeps its original payload and keeps retrying regardless.
     healthy = True
     await _record_and_deliver(
         [SlackAlert("flaky-key", "recomputed", silent=True)],
@@ -1503,7 +1489,22 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
                     origin=TrialOrigin.ODDISH,
                     is_probe=False,
                     cost_usd=500,
-                    finished_at=now - timedelta(days=1),
+                    finished_at=now - timedelta(hours=23),
+                ),
+                TrialModel(
+                    id=f"{task_id}-before-cost-window",
+                    name="before cost window",
+                    task_id=task_id,
+                    experiment_id=experiment_id,
+                    agent="claude-code",
+                    provider="openai",
+                    model="gpt-5.3",
+                    queue_key="test",
+                    status=TrialStatus.SUCCESS,
+                    origin=TrialOrigin.ODDISH,
+                    is_probe=False,
+                    cost_usd=5000,
+                    finished_at=now - timedelta(hours=25),
                 ),
                 # 40M output tokens of a priced model settles to ~$560 via the
                 # token estimate: over the trial floor, and enough on top of the
@@ -1570,10 +1571,10 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
-        assert "New spend (last 2h):" in alerts[0].text
+        assert "Cost in past 24 hours:" in alerts[0].text
         assert alerts[0].recipient_email == "expense-owner@example.com"
         assert alerts[0].dm_only
-        assert "Top agent costs:" in alerts[0].text
+        assert "Top agent costs in past 24 hours:" in alerts[0].text
         assert alerts[1].text.splitlines()[0] == ":warning: *Expensive trial*"
         assert "Title: `outlier`" in alerts[1].text
         assert "Experiment: *Slack expense test*" in alerts[1].text
