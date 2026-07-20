@@ -315,6 +315,7 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/admin/slots` | `queue_slots` lease state |
+| PUT | `/admin/concurrency` | Set or clear a database-backed queue-key concurrency override |
 | GET | `/admin/queue-status` | Per-kind queue counts sourced from `trials`/`tasks` |
 | GET | `/admin/orphaned-state` | Stale/orphaned queue state diagnostics |
 | GET | `/admin/worker-jobs` | Unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, and duration percentiles |

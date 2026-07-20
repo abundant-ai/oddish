@@ -67,9 +67,10 @@ def test_run_once_invokes_cycle_with_built_dispatcher(monkeypatch) -> None:
 
     seen = {}
 
-    async def _fake_cycle(dispatcher, *, max_workers, concurrency_for, **kwargs):
+    async def _fake_cycle(dispatcher, *, max_workers, concurrency_limits_for, **kwargs):
         seen["dispatcher"] = dispatcher
         seen["max_workers"] = max_workers
+        seen["concurrency_limits_for"] = concurrency_limits_for
         return "cycle-result"
 
     monkeypatch.setattr(runner, "run_dispatch_cycle", _fake_cycle)
@@ -77,3 +78,6 @@ def test_run_once_invokes_cycle_with_built_dispatcher(monkeypatch) -> None:
     assert result == "cycle-result"
     assert isinstance(seen["dispatcher"], InProcessDispatcher)
     assert seen["max_workers"] == 7
+    assert (
+        seen["concurrency_limits_for"] is runner.load_effective_model_concurrency_limits
+    )
