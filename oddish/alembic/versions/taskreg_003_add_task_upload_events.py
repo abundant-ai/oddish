@@ -2,6 +2,14 @@
 
 Revision ID: taskreg_003
 Revises: taskreg_002
+
+Each FK is added NOT VALID and validated in its own autocommit statement, one
+referenced table at a time. Doing both in one transaction (the original form)
+holds a ShareRowExclusiveLock on tasks and one on task_versions
+simultaneously -- the same shape that deadlocked exp_trials_join_001 against
+concurrent app traffic touching those tables in the opposite order.
+lock_timeout makes a contended step fail fast instead of queueing ahead of
+worker DML on tasks/task_versions.
 """
 
 from __future__ import annotations
@@ -12,6 +20,30 @@ revision = "taskreg_003"
 down_revision = "taskreg_002"
 branch_labels = None
 depends_on = None
+
+
+def _autocommit(sql: str) -> None:
+    with op.get_context().autocommit_block():
+        op.execute(sql)
+
+
+def _add_fk_not_valid(name: str, column: str, ref_table: str, on_delete: str) -> None:
+    _autocommit(
+        f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = '{name}'
+            ) THEN
+                ALTER TABLE task_upload_events
+                    ADD CONSTRAINT {name}
+                    FOREIGN KEY ({column}) REFERENCES {ref_table}(id)
+                    ON DELETE {on_delete}
+                    NOT VALID;
+            END IF;
+        END$$;
+        """
+    )
 
 
 def upgrade() -> None:
@@ -39,43 +71,33 @@ def upgrade() -> None:
         )
         """
     )
-    # FKs added separately as NOT VALID then validated, so this migration never
-    # takes a long lock on tasks/task_versions during deploy.
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint WHERE conname = 'fk_task_upload_events_task'
-            ) THEN
-                ALTER TABLE task_upload_events
-                    ADD CONSTRAINT fk_task_upload_events_task
-                    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
-                    NOT VALID;
-            END IF;
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint WHERE conname = 'fk_task_upload_events_version'
-            ) THEN
-                ALTER TABLE task_upload_events
-                    ADD CONSTRAINT fk_task_upload_events_version
-                    FOREIGN KEY (task_version_id) REFERENCES task_versions(id)
-                    ON DELETE SET NULL
-                    NOT VALID;
-            END IF;
-        END$$;
-        """
+
+    # Session-level; persists across the autocommit steps on this connection.
+    _autocommit("SET lock_timeout = '3s'")
+
+    # One referenced table's lock per statement/transaction, never both at once.
+    _add_fk_not_valid(
+        name="fk_task_upload_events_task",
+        column="task_id",
+        ref_table="tasks",
+        on_delete="CASCADE",
     )
-    with op.get_context().autocommit_block():
-        op.execute(
-            "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_task"
-        )
-        op.execute(
-            "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_version"
-        )
-        op.execute(
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_upload_events_task_created "
-            "ON task_upload_events (task_id, created_at DESC)"
-        )
+    _autocommit(
+        "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_task"
+    )
+    _add_fk_not_valid(
+        name="fk_task_upload_events_version",
+        column="task_version_id",
+        ref_table="task_versions",
+        on_delete="SET NULL",
+    )
+    _autocommit(
+        "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_version"
+    )
+    _autocommit(
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_upload_events_task_created "
+        "ON task_upload_events (task_id, created_at DESC)"
+    )
 
 
 def downgrade() -> None:
