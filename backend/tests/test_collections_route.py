@@ -370,3 +370,103 @@ async def test_create_collection_from_task_ids(client, seed_org_with_task_trials
     created_experiment_ids.append(body["id"])  # register for teardown before asserts
     assert body["trials_linked"] == trial_count
     assert body["trials_from_tasks"] == trial_count
+
+
+@pytest.mark.asyncio
+async def test_add_route_appends_to_collection(client, seed_org_with_trials):
+    org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    created = await client.post(
+        "/experiments/collections",
+        json={"name": "route-add", "trial_ids": [trial_1]},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    coll_id = created.json()["id"]
+
+    try:
+        resp = await client.post(
+            f"/experiments/{coll_id}/collection/trials",
+            json={"trial_ids": [trial_2]},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["trials_added"] == 1
+        assert body["trials_total"] == 2
+    finally:
+        await _cleanup(experiment_ids=[coll_id])
+
+
+@pytest.mark.asyncio
+async def test_remove_route_requires_full_scope(client, seed_org_with_trials):
+    """A TASKS-scoped key may append but must not remove."""
+    org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    created = await client.post(
+        "/experiments/collections",
+        json={"name": "route-scope", "trial_ids": [trial_1, trial_2]},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    coll_id = created.json()["id"]
+
+    try:
+        resp = await client.request(
+            "DELETE",
+            f"/experiments/{coll_id}/collection/trials",
+            json={"trial_ids": [trial_2]},
+            headers=headers,
+        )
+        assert resp.status_code == 403, resp.text
+    finally:
+        await _cleanup(experiment_ids=[coll_id])
+
+
+@pytest.mark.asyncio
+async def test_add_route_rejects_non_collection_with_409(
+    client, seed_org_with_trials
+):
+    org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    async with get_session() as session:
+        real = ExperimentModel(name="route-real-experiment", org_id=org_id)
+        session.add(real)
+        await session.flush()
+        real_id = real.id
+        await session.commit()
+
+    try:
+        resp = await client.post(
+            f"/experiments/{real_id}/collection/trials",
+            json={"trial_ids": [trial_1]},
+            headers=headers,
+        )
+        assert resp.status_code == 409, resp.text
+        assert "not a collection" in resp.json()["detail"]
+    finally:
+        await _cleanup(experiment_ids=[real_id])
+
+
+@pytest.mark.asyncio
+async def test_add_route_rejects_empty_body_with_422(client, seed_org_with_trials):
+    org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    created = await client.post(
+        "/experiments/collections",
+        json={"name": "route-empty", "trial_ids": [trial_1]},
+        headers=headers,
+    )
+    coll_id = created.json()["id"]
+
+    try:
+        resp = await client.post(
+            f"/experiments/{coll_id}/collection/trials", json={}, headers=headers
+        )
+        assert resp.status_code == 422, resp.text
+    finally:
+        await _cleanup(experiment_ids=[coll_id])

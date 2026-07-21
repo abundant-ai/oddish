@@ -106,9 +106,18 @@ from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, 
 from oddish.queue import (
     cancel_tasks_runs,
 )
-from oddish.core.endpoints.collections import create_trial_collection_core
+from oddish.core.endpoints.collections import (
+    add_to_collection_core,
+    create_trial_collection_core,
+    remove_from_collection_core,
+    rename_collection_core,
+)
 from oddish.schemas import (
     BackfillQARequest,
+    CollectionAddRequest,
+    CollectionMutationResponse,
+    CollectionRemoveRequest,
+    CollectionRenameRequest,
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentCostTotals,
@@ -996,6 +1005,92 @@ async def create_trial_collection(
             name=payload.name,
             trial_ids=payload.trial_ids,
             task_ids=payload.task_ids,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.post(
+    "/experiments/{experiment_id}/collection/trials",
+    response_model=CollectionMutationResponse,
+)
+async def add_trials_to_collection(
+    experiment_id: str,
+    payload: CollectionAddRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> CollectionMutationResponse:
+    """Link more trials into an existing read-only collection.
+
+    Append-only and idempotent, so ``tasks`` scope suffices -- same reasoning
+    as the create route.
+    """
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+    async with get_session() as session:
+        result = await add_to_collection_core(
+            session,
+            experiment_id=experiment_id,
+            trial_ids=payload.trial_ids,
+            task_ids=payload.task_ids,
+            from_experiment_ids=payload.from_experiment_ids,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.delete(
+    "/experiments/{experiment_id}/collection/trials",
+    response_model=CollectionMutationResponse,
+)
+async def remove_trials_from_collection(
+    experiment_id: str,
+    payload: CollectionRemoveRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> CollectionMutationResponse:
+    """Drop trials from a collection.
+
+    Requires FULL scope: this changes what an already-published share link
+    shows. The trials themselves are untouched.
+    """
+    auth.require_scope(APIKeyScope.FULL)
+
+    async with get_session() as session:
+        result = await remove_from_collection_core(
+            session,
+            experiment_id=experiment_id,
+            trial_ids=payload.trial_ids,
+            task_ids=payload.task_ids,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.patch(
+    "/experiments/{experiment_id}/collection",
+    response_model=CollectionMutationResponse,
+)
+async def rename_collection(
+    experiment_id: str,
+    payload: CollectionRenameRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> CollectionMutationResponse:
+    """Rename a collection. The share token is unaffected."""
+    auth.require_scope(APIKeyScope.FULL)
+
+    async with get_session() as session:
+        result = await rename_collection_core(
+            session,
+            experiment_id=experiment_id,
+            name=payload.name,
             org_id=auth.org_id,
         )
         await session.commit()

@@ -637,6 +637,66 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
+class CollectionAddRequest(BaseModel):
+    """Request to link more trials into an existing collection."""
+
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+    from_experiment_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "CollectionAddRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        self.from_experiment_ids = list(
+            dict.fromkeys(
+                s.strip() for s in self.from_experiment_ids if s and s.strip()
+            )
+        )
+        if not self.trial_ids and not self.task_ids and not self.from_experiment_ids:
+            raise ValueError(
+                "provide at least one trial id, task id, or source experiment id"
+            )
+        return self
+
+
+class CollectionRemoveRequest(BaseModel):
+    """Request to drop trials from an existing collection."""
+
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "CollectionRemoveRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        if not self.trial_ids and not self.task_ids:
+            raise ValueError("provide at least one trial id or task id")
+        return self
+
+
+class CollectionRenameRequest(BaseModel):
+    """Request to rename an existing collection."""
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be empty")
+        return stripped
+
+
 # =============================================================================
 # Response Schemas
 # =============================================================================
