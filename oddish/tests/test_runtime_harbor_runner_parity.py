@@ -74,9 +74,9 @@ def _run_and_capture_env_kwargs(environment: EnvironmentType, tmp_path: Path) ->
 
 
 def test_modal_env_kwargs_unchanged_passthrough(tmp_path: Path) -> None:
-    # On Modal the kwargs are passed through untouched (behavior-preserving).
+    # Modal keeps caller kwargs and adds the attributable sandbox app default.
     kwargs = _run_and_capture_env_kwargs(EnvironmentType.MODAL, tmp_path)
-    assert kwargs == {"keep": "value"}
+    assert kwargs == {"keep": "value", "app_name": "oddish-trials"}
 
 
 def test_daytona_env_kwargs_get_autostop_defaults(tmp_path: Path) -> None:
