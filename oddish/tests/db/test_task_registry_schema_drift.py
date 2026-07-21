@@ -64,15 +64,81 @@ _SCOPED_TABLES = {"tasks", "task_versions", "task_upload_events"}
 #   expression with an explicit ``::text`` cast that the declared
 #   ``postgresql_where``/``text()`` clause doesn't have. Same index, same
 #   predicate.
-_KNOWN_PRE_EXISTING_DRIFT: set[tuple[str, str, str]] = {
-    ("remove_index", "task_upload_events", "idx_task_upload_events_task_created"),
-    ("remove_index", "tasks", "idx_tasks_category"),
-    ("remove_index", "task_versions", "idx_task_versions_effective_tag_ids_gin"),
-    ("remove_index", "tasks", "idx_tasks_effective_tag_ids_gin"),
-    ("remove_index", "tasks", "idx_tasks_imported_at"),
-    ("remove_index", "tasks", "idx_tasks_org_id"),
-    ("remove_index", "tasks", "idx_tasks_org_lower_github_tag_live"),
-    ("add_index", "tasks", "idx_tasks_org_lower_github_tag_live"),
+
+# Keyed on the index's actual definition (expressions + partial-index WHERE),
+# not just its name -- a same-named index whose definition changed (columns
+# swapped, predicate altered, uniqueness flipped) must NOT match one of
+# these entries silently. That's also why idx_tasks_org_lower_github_tag_live
+# needs both directions listed with their differing expression text: the
+# remove_index (reflected) and add_index (declared) sides are the SAME index
+# but Postgres echoes the compiled expression with an explicit ``::text``
+# cast the declared ``text()`` clause lacks, so they don't share a
+# signature. Get real signatures by printing ``_diff_key(d)`` for each diff.
+_KNOWN_PRE_EXISTING_DRIFT: set[tuple] = {
+    (
+        "remove_index",
+        "task_upload_events",
+        "idx_task_upload_events_task_created",
+        False,
+        ("task_upload_events.task_id", "task_upload_events.created_at DESC"),
+        None,
+    ),
+    (
+        "remove_index",
+        "tasks",
+        "idx_tasks_category",
+        False,
+        ("tasks.category",),
+        "(category IS NOT NULL)",
+    ),
+    (
+        "remove_index",
+        "task_versions",
+        "idx_task_versions_effective_tag_ids_gin",
+        False,
+        ("task_versions.effective_tag_ids",),
+        None,
+    ),
+    (
+        "remove_index",
+        "tasks",
+        "idx_tasks_effective_tag_ids_gin",
+        False,
+        ("tasks.effective_tag_ids",),
+        None,
+    ),
+    (
+        "remove_index",
+        "tasks",
+        "idx_tasks_imported_at",
+        False,
+        ("tasks.imported_at",),
+        "(imported_at IS NOT NULL)",
+    ),
+    (
+        "remove_index",
+        "tasks",
+        "idx_tasks_org_id",
+        False,
+        ("tasks.org_id",),
+        None,
+    ),
+    (
+        "remove_index",
+        "tasks",
+        "idx_tasks_org_lower_github_tag_live",
+        False,
+        ("tasks.org_id", "lower(tags ->> 'github_username'::text)"),
+        "(deleted_at IS NULL)",
+    ),
+    (
+        "add_index",
+        "tasks",
+        "idx_tasks_org_lower_github_tag_live",
+        False,
+        ("tasks.org_id", "lower((tags ->> 'github_username'))"),
+        "deleted_at IS NULL",
+    ),
 }
 
 
@@ -83,12 +149,20 @@ def _include_object(object_, name, type_, reflected, compare_to):
     return table is not None and table.name in _SCOPED_TABLES
 
 
-def _diff_key(diff) -> tuple[str, str, str] | None:
+def _diff_key(diff) -> tuple | None:
     kind = diff[0]
-    if kind in ("add_index", "remove_index"):
-        idx = diff[1]
-        return (kind, idx.table.name, idx.name)
-    return None
+    if kind not in ("add_index", "remove_index"):
+        return None
+    idx = diff[1]
+    where = idx.dialect_options.get("postgresql", {}).get("where")
+    return (
+        kind,
+        idx.table.name,
+        idx.name,
+        idx.unique,
+        tuple(str(e) for e in idx.expressions),
+        str(where) if where is not None else None,
+    )
 
 
 def _compare(connection):
