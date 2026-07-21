@@ -1,13 +1,6 @@
 name: Supabase DB Migrations
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "backend/**"
-      - "oddish/**"
-      - ".github/workflows/supabase-db-migrations.yml"
   workflow_dispatch:
 
 concurrency:

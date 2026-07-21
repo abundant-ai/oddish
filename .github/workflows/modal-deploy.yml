@@ -10,7 +10,78 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    # Python 3.13, uv, and a warm uv cache live in the base image —
+    # refreshed weekly by .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      ODDISH_DATABASE_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Validate production Supabase URL is configured
+        run: |
+          if [ -z "${ODDISH_DATABASE_URL}" ]; then
+            echo "Missing GitHub secret: ODDISH_DATABASE_URL" >&2
+            exit 1
+          fi
+
+      # UV_PROJECT_ENVIRONMENT points uv at the per-project .venv that was
+      # pre-built into the base image; `uv sync --frozen` then only needs
+      # to patch the editable install paths against the CI checkout.
+      - name: Sync oddish dependencies
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+        run: uv sync --frozen --extra server
+
+      - name: Run oddish migrations
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+        run: uv run alembic upgrade head
+
+      - name: Sync backend dependencies
+        working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+        run: uv sync --frozen
+
+      - name: Run backend migrations
+        working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+        run: uv run alembic upgrade head
+
+      - name: Summarize migration run
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Supabase DB migrations"
+            echo
+            echo "- Database: production Supabase via \`ODDISH_DATABASE_URL\`"
+            echo "- Core migrations: \`oddish/alembic\`"
+            echo "- Cloud migrations: \`backend/alembic\`"
+            echo "- Trigger: \`${{ github.event_name }}\`"
+            echo "- Commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
+    needs: [migrate]
+    # Migrations must land before code: taskreg_004 adds a value to a native
+    # Postgres enum, so old schema + new code 500s. Rolling code back instead
+    # keeps the schema, but old code reading a `DERIVED` row raises LookupError
+    # -- migrations must strictly precede deploy in both directions.
     runs-on: ubuntu-latest
     permissions:
       contents: read
