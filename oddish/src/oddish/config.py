@@ -1101,11 +1101,6 @@ class Settings(BaseSettings):
     # branching in either.
     analyzer_sandbox_enabled: bool = True
 
-    # Switch for the AnalyzerBlock-backed verdict-synthesis path. Gates
-    # registration, not handler internals, so unsetting it reverts task QA to
-    # the legacy compute_task_verdict path with no branching in either.
-    verdict_via_analyzer_block: bool = False
-
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``

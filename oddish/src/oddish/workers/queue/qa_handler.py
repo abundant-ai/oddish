@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
 
 from sqlalchemy import func, select
 
 from oddish.analyze import BaselineValidation, TrialClassification
+from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
@@ -27,35 +27,47 @@ from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 QA_HEARTBEAT_INTERVAL_SECONDS = 30
 
-# The verdict-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
-# can be injected here without oddish importing backend/. baseline,
-# quality_check_passed, and timeout are passed in rather than re-derived, so
-# the legacy and injected paths can't silently diverge if either default
-# changes later.
-VerdictSynthFn = Callable[
-    [list[TrialClassification], BaselineValidation | None, bool, float],
-    Awaitable[Any],
-]
 
-
-async def default_verdict_synth(
+async def synthesize_task_verdict(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None,
     quality_check_passed: bool,
     timeout: float,
-) -> Any:
-    """Wraps today's ``compute_task_verdict`` call, unchanged."""
-    from oddish.analyze import compute_task_verdict
+) -> TaskVerdictModel:
+    """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
-    return compute_task_verdict(
-        classifications=classifications,
-        baseline=baseline,
-        quality_check_passed=quality_check_passed,
-        model=settings.verdict_model,
-        console=console,
-        verbose=True,
-        timeout=timeout,
+    The block self-provisions its OpenAI client for ``settings.verdict_model``
+    (with TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the
+    cap) and closes it on every exit path. ``timeout`` bounds the whole block
+    run -- the OpenAI client has no per-request timeout knob -- falling back to
+    VERDICT_TIMEOUT, and the block persists itself to ``analyzer_blocks`` + S3.
+    """
+    from oddish.analyze.classifier import VERDICT_MAX_TOKENS, VERDICT_TIMEOUT
+    from oddish.blocks.analyzer.analyzer_block import (
+        AnalyzerBlock,
+        AnalyzerInput,
+        AnalyzerType,
     )
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
+
+    vb = VerdictBlock(
+        classifications, baseline=baseline, quality_check_passed=quality_check_passed
+    )
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.TASK_VERDICT,
+        llm_client_type=LLMClientType.OPENAI,
+        input=AnalyzerInput(input={"num_trials": len(classifications)}),
+        # build_prompt() raises rather than sending the degraded placeholder
+        # (see VerdictBlock.build_prompt).
+        prompt=vb.build_prompt(),
+        model=settings.verdict_model,
+        max_tokens=VERDICT_MAX_TOKENS,
+        response_format=TaskVerdictModel,
+        output_transform=vb.to_verdict,
+    )
+    out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+    return TaskVerdictModel(**out.output)
 
 
 async def _heartbeat_qa_worker_job(
@@ -191,7 +203,6 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
-    verdict_synth_fn: VerdictSynthFn = default_verdict_synth,
 ) -> None:
     """Classify a task's live trials and store one verdict."""
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
@@ -320,7 +331,7 @@ async def run_task_qa_job(
         baseline = None
         quality_check_passed = True
         timeout = 180
-        verdict = await verdict_synth_fn(
+        verdict = await synthesize_task_verdict(
             classifications, baseline, quality_check_passed, timeout
         )
 

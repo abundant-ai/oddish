@@ -152,12 +152,12 @@ def build_summary_block(
     and the offline dump harness, so the two cannot drift in prompt, parser,
     or block metadata.
     """
-    from api.services.blocks.analyzer.analyzer_block import (
+    from oddish.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
         AnalyzerInput,
         AnalyzerType,
     )
-    from api.services.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
     from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
         TrajectoryBlock,
         TrajectoryInput,
@@ -200,7 +200,7 @@ async def generate(
     ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
     injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
     """
-    from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
 
     model = resolve_summary_model()
     owned = client is None
@@ -287,7 +287,7 @@ async def _load_fresh_summary_block(
     Source of truth for the summary: an ``analyzer_blocks`` row of type
     ``trajectory_summary`` whose output carries the current ``schema_version``.
     """
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerType
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerType
     from oddish.db.models import AnalyzerBlockModel, JobStatus
 
     return (

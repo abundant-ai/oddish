@@ -3,19 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import warnings
 from pathlib import Path
 from typing import Any
 import logging
 from harbor.models.trial.result import TrialResult
-from openai import OpenAI
-from rich.console import Console
 
 from oddish.config import (
     ANALYSIS_MODEL,
     BEDROCK_ENV_VARS,
-    OPENAI_PROVIDER_OPENAI,
-    VERDICT_MODEL,
     looks_like_bedrock_model_id,
     settings,
     to_anthropic_api_model_id,
@@ -26,8 +21,6 @@ from oddish.analyze.analysis_cost import AnalysisUsage, parse_cli_usage
 from .models import (
     BaselineValidation,
     Classification,
-    TaskVerdict,
-    TaskVerdictModel,
     TrialClassification,
     TrialClassificationModel,
 )
@@ -464,11 +457,7 @@ def build_verdict_prompt(
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
 ) -> str:
-    """Render the verdict-synthesis prompt.
-
-    Extracted so the legacy path and the AnalyzerBlock path send byte-identical
-    prompts; the parity test asserts nothing useful otherwise.
-    """
+    """Render the verdict-synthesis prompt, sent by ``VerdictBlock``."""
     if baseline:
         if baseline.is_valid:
             baseline_summary = (
@@ -502,148 +491,4 @@ def build_verdict_prompt(
         baseline_summary=baseline_summary,
         quality_check_summary=quality_check_summary,
         trial_classifications=trial_classifications,
-    )
-
-
-def _compute_task_verdict_openai(
-    classifications: list[TrialClassification],
-    baseline: BaselineValidation | None = None,
-    quality_check_passed: bool = True,
-    model: str = VERDICT_MODEL,
-    console: "Console | None" = None,
-    verbose: bool = False,
-    api_key: str | None = None,
-    timeout: float | None = None,
-) -> TaskVerdict:
-    """Compute task verdict using OpenAI to synthesize trial analyses."""
-    if not classifications:
-        return TaskVerdict(
-            is_good=False,
-            confidence="low",
-            primary_issue="No trials to analyze",
-            reasoning="No verdict could be computed because the task has no analyzed trials yet.",
-            recommendations=["Run agent trials first"],
-        )
-
-    prompt = build_verdict_prompt(classifications, baseline, quality_check_passed)
-
-    client, runtime_model, provider_label = _build_verdict_openai_client(
-        model=model,
-        api_key=api_key,
-        timeout=timeout or VERDICT_TIMEOUT,
-    )
-
-    if console:
-        console.print(f"  [dim]Synthesizing verdict with {provider_label}...[/dim]")
-
-    if verbose:
-        print(
-            f"\n{Colors.YELLOW}[Verdict] Synthesizing task verdict with {provider_label} ({runtime_model})...{Colors.RESET}",
-            flush=True,
-        )
-
-    try:
-        completion = client.beta.chat.completions.parse(
-            model=runtime_model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format=TaskVerdictModel,
-            max_completion_tokens=VERDICT_MAX_TOKENS,
-        )
-
-        verdict_model = completion.choices[0].message.parsed
-        if verdict_model is None:
-            raise RuntimeError("OpenAI returned no parsed result for verdict synthesis")
-
-        if verbose:
-            print(
-                f"{Colors.GREEN}[Verdict] Verdict synthesis complete{Colors.RESET}\n",
-                flush=True,
-            )
-
-    except Exception as exc:
-        exc_type = type(exc).__name__
-        if verbose:
-            print(
-                f"{Colors.RED}[Verdict] Failed ({exc_type}): {exc}{Colors.RESET}\n",
-                flush=True,
-            )
-        raise RuntimeError(f"Verdict synthesis failed: {exc}") from exc
-
-    task_problem_count = sum(1 for c in classifications if c.is_task_problem)
-    agent_problem_count = sum(
-        1 for c in classifications if c.classification == Classification.GOOD_FAILURE
-    )
-    success_count = sum(
-        1
-        for c in classifications
-        if c.classification in (Classification.GOOD_SUCCESS, Classification.BAD_SUCCESS)
-    )
-    harness_error_count = sum(
-        1 for c in classifications if c.classification == Classification.HARNESS_ERROR
-    )
-
-    return TaskVerdict(
-        is_good=verdict_model.is_good,
-        confidence=verdict_model.confidence,
-        primary_issue=verdict_model.primary_issue,
-        reasoning=verdict_model.reasoning,
-        recommendations=verdict_model.recommendations,
-        task_problem_count=task_problem_count,
-        agent_problem_count=agent_problem_count,
-        success_count=success_count,
-        harness_error_count=harness_error_count,
-        classifications=classifications,
-        baseline=baseline,
-    )
-
-
-def _build_verdict_openai_client(
-    *,
-    model: str,
-    api_key: str | None,
-    timeout: float,
-) -> tuple[Any, str, str]:
-    provider = settings.get_openai_provider()
-    if provider == OPENAI_PROVIDER_OPENAI:
-        warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
-        public = settings.require_public_openai_config(api_key=api_key)
-        return (
-            OpenAI(api_key=public["api_key"], timeout=timeout),
-            model,
-            "public OpenAI",
-        )
-
-    azure = settings.require_azure_openai_config()
-    deployment = settings.resolve_azure_openai_deployment(model)
-    return (
-        OpenAI(
-            api_key=azure["api_key"],
-            base_url=settings.get_azure_openai_base_url(),
-            timeout=timeout,
-        ),
-        deployment,
-        "Azure OpenAI",
-    )
-
-
-def compute_task_verdict(
-    classifications: list[TrialClassification],
-    baseline: BaselineValidation | None = None,
-    quality_check_passed: bool = True,
-    model: str = VERDICT_MODEL,
-    console: "Console | None" = None,
-    verbose: bool = False,
-    api_key: str | None = None,
-    timeout: float | None = None,
-) -> TaskVerdict:
-    """Compute overall task verdict from trial classifications."""
-    return _compute_task_verdict_openai(
-        classifications,
-        baseline,
-        quality_check_passed,
-        model,
-        console,
-        verbose,
-        api_key,
-        timeout,
     )

@@ -1,5 +1,5 @@
-"""Tests for the VerdictBlock prompt/parse block and the backend
-verdict-synth wiring (worker.verdict_synth.verdict_block_synth)."""
+"""Tests for the VerdictBlock prompt/parse block and the verdict-synth
+wiring (qa_handler.synthesize_task_verdict)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from api.services.blocks.analyzer.verdict.verdict_block import VerdictBlock
+from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
 from oddish.analyze import build_verdict_prompt
 from oddish.analyze.models import (
     BaselineResult,
@@ -108,7 +108,7 @@ def test_to_verdict_strips_code_fences():
 
 
 def test_parse_raises_block_parse_error_on_bad_json():
-    from api.services.blocks.block import BlockParseError
+    from oddish.blocks.block import BlockParseError
 
     vb = VerdictBlock(_classifications())
     with pytest.raises(BlockParseError):
@@ -121,7 +121,7 @@ def test_build_prompt_raises_instead_of_returning_placeholder(monkeypatch):
     would otherwise turn a raising build_verdict_prompt into the *entire*
     judge prompt silently degrading to `<verdict>[unavailable]</verdict>`.
     build_prompt() must detect that and raise instead."""
-    import api.services.blocks.analyzer.verdict.verdict_prompts as vp_module
+    import oddish.blocks.analyzer.verdict.verdict_prompts as vp_module
 
     def _boom(*a, **k):
         raise RuntimeError("boom")
@@ -134,11 +134,11 @@ def test_build_prompt_raises_instead_of_returning_placeholder(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# worker.verdict_synth.verdict_block_synth: production construction wiring
+# qa_handler.synthesize_task_verdict: production construction wiring
 #
 # These patch only _build_openai_client (analyzer_llm_client's module-level
 # seam), not OpenAIAnalyzerLLMClient itself or AnalyzerBlock -- so the real
-# construction path in verdict_block_synth is exercised, not a test double
+# construction path in synthesize_task_verdict is exercised, not a test double
 # injected in its place. That is what catches a dropped response_format /
 # max_tokens / output_transform that an all-injected-client test suite would
 # miss (see the plan's "Prove your guards" note).
@@ -196,10 +196,9 @@ def _patch_openai_builder(monkeypatch, payload: dict, *, runtime_model="gpt-5.4"
     content.delta chunk.
 
     Records the requested ``model`` into ``sent["requested_model"]`` instead
-    of ignoring it: verdict_block_synth must request whatever
+    of ignoring it: synthesize_task_verdict must request whatever
     ``settings.verdict_model`` resolves to, not a hardcoded constant, or a
-    future env override would silently split the block path from legacy
-    again (see qa_handler.default_verdict_synth)."""
+    future env override would silently stop reaching the judge."""
     body = json.dumps(payload)
     events = [_FakeStreamEvent("content.delta", delta=body)]
     sent: dict = {}
@@ -207,10 +206,11 @@ def _patch_openai_builder(monkeypatch, payload: dict, *, runtime_model="gpt-5.4"
 
     def _builder(*, model, api_key=None):
         sent["requested_model"] = model
+        sent["builds"] = sent.get("builds", 0) + 1
         return fake, runtime_model
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client._build_openai_client",
+        "oddish.blocks.analyzer.analyzer_llm_client._build_openai_client",
         _builder,
     )
     return fake, sent
@@ -219,20 +219,20 @@ def _patch_openai_builder(monkeypatch, payload: dict, *, runtime_model="gpt-5.4"
 def _patch_block_persistence(monkeypatch):
     from unittest.mock import AsyncMock
 
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
 
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
 
 
 @pytest.mark.asyncio
-async def test_verdict_block_synth_default_construction_wires_response_format_and_max_tokens(
+async def test_synthesize_task_verdict_default_construction_wires_response_format_and_max_tokens(
     monkeypatch,
 ):
     from oddish.analyze.classifier import VERDICT_MAX_TOKENS
     from oddish.analyze.models import TaskVerdictModel
     from oddish.config import settings
-    from worker.verdict_synth import verdict_block_synth
+    from oddish.workers.queue.qa_handler import synthesize_task_verdict
 
     _patch_block_persistence(monkeypatch)
     payload = {
@@ -244,7 +244,7 @@ async def test_verdict_block_synth_default_construction_wires_response_format_an
     }
     fake, sent = _patch_openai_builder(monkeypatch, payload)
 
-    result = await verdict_block_synth(_classifications(), None, True, 180)
+    result = await synthesize_task_verdict(_classifications(), None, True, 180)
 
     assert sent["response_format"] is TaskVerdictModel
     # gpt-5.x-class models reject `max_tokens`; the wire param must be
@@ -260,13 +260,12 @@ async def test_verdict_block_synth_default_construction_wires_response_format_an
 
 
 @pytest.mark.asyncio
-async def test_verdict_block_synth_honors_verdict_model_override(monkeypatch):
+async def test_synthesize_task_verdict_honors_verdict_model_override(monkeypatch):
     """settings.verdict_model overridden away from the VERDICT_MODEL default
     must reach the OpenAI client construction -- a hardcoded constant here
-    would silently diverge from the legacy path's
-    qa_handler.default_verdict_synth, which also reads settings.verdict_model."""
+    would ignore the operator's override."""
     from oddish.config import settings
-    from worker.verdict_synth import verdict_block_synth
+    from oddish.workers.queue.qa_handler import synthesize_task_verdict
 
     _patch_block_persistence(monkeypatch)
     monkeypatch.setattr(settings, "verdict_model", "gpt-5.4-custom-override")
@@ -275,17 +274,17 @@ async def test_verdict_block_synth_honors_verdict_model_override(monkeypatch):
         monkeypatch, payload, runtime_model="gpt-5.4-custom-override"
     )
 
-    await verdict_block_synth(_classifications(), None, True, 180)
+    await synthesize_task_verdict(_classifications(), None, True, 180)
 
     assert sent["requested_model"] == "gpt-5.4-custom-override"
 
 
 @pytest.mark.asyncio
-async def test_verdict_block_synth_uses_task_verdict_analyzer_type_and_real_output_transform(
+async def test_synthesize_task_verdict_uses_task_verdict_analyzer_type_and_real_output_transform(
     monkeypatch,
 ):
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerType
-    from worker.verdict_synth import verdict_block_synth
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerType
+    from oddish.workers.queue.qa_handler import synthesize_task_verdict
 
     _patch_block_persistence(monkeypatch)
     payload = {"is_good": True, "confidence": "high", "recommendations": []}
@@ -300,7 +299,7 @@ async def test_verdict_block_synth_uses_task_verdict_analyzer_type_and_real_outp
 
     monkeypatch.setattr(AnalyzerBlock, "__init__", _spy_init)
 
-    await verdict_block_synth(_classifications(), None, True, 180)
+    await synthesize_task_verdict(_classifications(), None, True, 180)
 
     assert captured["analyzer_type"] is AnalyzerType.TASK_VERDICT
 
@@ -320,32 +319,31 @@ async def test_verdict_block_synth_uses_task_verdict_analyzer_type_and_real_outp
 
 
 @pytest.mark.asyncio
-async def test_verdict_block_synth_closes_the_client_it_creates(monkeypatch):
-    from worker.verdict_synth import verdict_block_synth
+async def test_synthesize_task_verdict_closes_the_client_it_creates(monkeypatch):
+    from oddish.workers.queue.qa_handler import synthesize_task_verdict
 
     _patch_block_persistence(monkeypatch)
     payload = {"is_good": False, "confidence": "low", "recommendations": []}
     fake, _sent = _patch_openai_builder(monkeypatch, payload)
 
-    await verdict_block_synth(_classifications(), None, True, 180)
+    await synthesize_task_verdict(_classifications(), None, True, 180)
 
     assert fake.closed is True
 
 
 @pytest.mark.asyncio
-async def test_verdict_block_synth_raises_and_never_persists_when_prompt_degrades(
+async def test_synthesize_task_verdict_raises_and_never_persists_when_prompt_degrades(
     monkeypatch,
 ):
     """Finding 3 guard, end to end: a raising build_verdict_prompt must
-    propagate out of verdict_block_synth rather than silently completing a
-    run against the `<verdict>[unavailable]</verdict>` placeholder and
-    persisting it as SUCCESS. The already-constructed OpenAI client must
-    still be closed (no leak on this new failure path), and AnalyzerBlock
-    must never even reach a save (the block is never constructed, since
-    vb.build_prompt() raises before AnalyzerBlock.__init__ is called)."""
-    import api.services.blocks.analyzer.verdict.verdict_prompts as vp_module
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
-    from worker.verdict_synth import verdict_block_synth
+    propagate out of synthesize_task_verdict rather than silently completing
+    a run against the `<verdict>[unavailable]</verdict>` placeholder and
+    persisting it as SUCCESS. No OpenAI client may be built (the block
+    self-provisions inside run(), which is never reached), and AnalyzerBlock
+    must never reach a save."""
+    import oddish.blocks.analyzer.verdict.verdict_prompts as vp_module
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.workers.queue.qa_handler import synthesize_task_verdict
 
     _patch_block_persistence(monkeypatch)
 
@@ -355,11 +353,12 @@ async def test_verdict_block_synth_raises_and_never_persists_when_prompt_degrade
     monkeypatch.setattr(vp_module, "build_verdict_prompt", _boom)
 
     payload = {"is_good": True, "confidence": "high", "recommendations": []}
-    fake, _sent = _patch_openai_builder(monkeypatch, payload)
+    fake, sent = _patch_openai_builder(monkeypatch, payload)
 
     with pytest.raises(RuntimeError, match="failed to render"):
-        await verdict_block_synth(_classifications(), None, True, 180)
+        await synthesize_task_verdict(_classifications(), None, True, 180)
 
-    assert fake.closed is True
+    assert "builds" not in sent
+    assert fake.closed is False
     AnalyzerBlock.save_to_db.assert_not_called()
     AnalyzerBlock.save_to_s3.assert_not_called()

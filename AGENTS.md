@@ -29,6 +29,7 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
 │   ├── analyze/                # QA prompts and analysis helpers
+│   ├── blocks/                 # Block/AnalyzerBlock primitive + LLM backends
 │   ├── cli/                    # oddish run/upload/ls/status/cancel/pull/collect/...
 │   ├── core/                   # shared endpoint/service logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
@@ -184,6 +185,13 @@ High-level flow:
   stage reconciliation in one cleanup sweep
 - soft-delete semantics on domain rows via the `deleted_at` column and
   a session-level filter (`oddish.db.soft_delete`)
+
+`oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
+building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
+backends, so verdict synthesis runs in a backend-free worker. The Daytona
+sandbox backend needs cc_chat and stays in
+`backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
+itself into core's client factory on import.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.

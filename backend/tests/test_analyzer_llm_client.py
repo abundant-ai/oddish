@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.services.blocks.analyzer.analyzer_llm_client import (
+from oddish.blocks.analyzer.analyzer_llm_client import (
     LLMClientType,
     FakeAnalyzerLLMClient,
     ApiAnalyzerLLMClient,
@@ -113,7 +113,7 @@ async def test_api_client_streams_text_deltas(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _FakeAnthropic,
     )
     client = ApiAnalyzerLLMClient()
@@ -128,7 +128,7 @@ async def test_api_client_pins_thinking_off_by_default(monkeypatch):
     think by default (sonnet-5+). The request must say so explicitly."""
     sent: dict = {}
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(lambda: _AStream(["{}"]), recorder=sent),
     )
     client = ApiAnalyzerLLMClient(model="claude-sonnet-5", max_tokens=2048)
@@ -142,7 +142,7 @@ async def test_api_client_pins_thinking_off_by_default(monkeypatch):
 async def test_api_client_thinking_override_is_forwarded(monkeypatch):
     sent: dict = {}
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(lambda: _AStream(["{}"]), recorder=sent),
     )
     client = ApiAnalyzerLLMClient(thinking={"type": "adaptive"})
@@ -158,7 +158,7 @@ async def test_api_client_raises_when_output_budget_exhausted(monkeypatch):
     the stop_reason check the half-written JSON reaches the block parser and
     surfaces only as an unexplained 'non-JSON output' error."""
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(
             lambda: _AStream(['{"summary": "abc'], stop_reason="max_tokens")
         ),
@@ -172,7 +172,7 @@ async def test_api_client_raises_when_output_budget_exhausted(monkeypatch):
 @pytest.mark.asyncio
 async def test_api_client_does_not_raise_on_normal_stop(monkeypatch):
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(lambda: _AStream(["{}"], stop_reason="end_turn")),
     )
     client = ApiAnalyzerLLMClient()
@@ -192,7 +192,7 @@ async def test_api_client_aclose_closes_inner(monkeypatch):
             closed["n"] += 1
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _FakeAnthropic,
     )
     client = ApiAnalyzerLLMClient()
@@ -200,10 +200,8 @@ async def test_api_client_aclose_closes_inner(monkeypatch):
     assert closed["n"] == 1
 
 
-from api.services.blocks.analyzer.analyzer_llm_client import (
-    SandboxAnalyzerLLMClient,
-    create_llm_client,
-)
+from api.services.blocks.analyzer.sandbox_llm_client import SandboxAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import create_llm_client
 
 
 @pytest.mark.asyncio
@@ -213,7 +211,7 @@ async def test_create_llm_client_api_branch():
     await client.aclose()
 
 
-from api.services.blocks.analyzer.analyzer_llm_client import resolve_analyzer_api_key
+from oddish.blocks.analyzer.analyzer_llm_client import resolve_analyzer_api_key
 from oddish.config import settings as _settings
 
 
@@ -231,7 +229,7 @@ class _RecordingAnthropic:
 def _patch_anthropic(monkeypatch):
     _RecordingAnthropic.last_api_key = "UNSET"
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _RecordingAnthropic,
     )
 
@@ -326,7 +324,7 @@ async def test_fake_client_records_system_prompt():
     assert c.last_system_prompt == "be terse"
 
 
-from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
 
 
 @pytest.mark.asyncio
@@ -403,7 +401,7 @@ def _patch_openai_builder(monkeypatch, events, *, runtime_model="gpt-5.4"):
         return fake, runtime_model
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client._build_openai_client",
+        "oddish.blocks.analyzer.analyzer_llm_client._build_openai_client",
         _builder,
     )
     return fake, sent
@@ -499,7 +497,7 @@ def test_build_openai_client_warns_and_uses_public_key(monkeypatch):
             captured["base_url"] = base_url
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
         _FakeAsyncOpenAI,
     )
     with pytest.warns(UserWarning, match="public OpenAI API"):
@@ -529,7 +527,7 @@ def test_build_openai_client_azure_resolves_deployment_and_does_not_warn(
             captured["base_url"] = base_url
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
         _FakeAsyncOpenAI,
     )
     with warnings.catch_warnings():
