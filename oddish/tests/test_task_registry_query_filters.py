@@ -230,14 +230,22 @@ async def test_browse_filters_by_ci_pr_number_and_uploader_is_ci(session):
 
 
 @pytest.mark.asyncio
-async def test_browse_item_exposes_description_and_category(session):
+async def test_browse_item_exposes_category_and_allow_internet(session):
+    """``description`` is deliberately NOT part of TaskBrowseItem: it's an
+    8192-char Text column and the browse query already sorts/materializes
+    every task in the org before pagination (see ``ranked_tasks`` in
+    tasks_query.py) -- carrying it there is pure cost with no consumer.
+    ``category``/``allow_internet`` are cheap and rendered on the task card.
+    """
     org_id = _org()
-    task = await _make_task(session, org_id=org_id, name=f"meta-{org_id}")
-    task.description = "Port CBACT01C."
+    task = await _make_task(
+        session, org_id=org_id, name=f"meta-{org_id}", allow_internet=True
+    )
     task.category = "ml-training"
     await session.flush()
 
     resp = await browse_tasks_core(session, org_id=org_id)
     item = next(i for i in resp.items if i.id == task.id)
-    assert item.description == "Port CBACT01C."
+    assert not hasattr(item, "description")
     assert item.category == "ml-training"
+    assert item.allow_internet is True

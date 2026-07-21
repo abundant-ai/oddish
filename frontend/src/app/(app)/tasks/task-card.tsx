@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ExternalLink, GitPullRequest } from "lucide-react";
+import { ExternalLink, GitPullRequest, Wifi, WifiOff } from "lucide-react";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -233,6 +233,27 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
+              {task.category ? (
+                <Badge variant="outline" className="w-fit text-[11px]">
+                  {task.category}
+                </Badge>
+              ) : null}
+              {task.allow_internet != null ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="text-muted-foreground inline-flex">
+                      {task.allow_internet ? (
+                        <Wifi className="h-3.5 w-3.5" aria-label="Allows internet" />
+                      ) : (
+                        <WifiOff className="h-3.5 w-3.5" aria-label="Offline" />
+                      )}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {task.allow_internet ? "Allows internet" : "Offline"}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
               {(() => {
                 const meta = task.github_meta;
                 const prUrl = taskPrUrl(task.link, meta);

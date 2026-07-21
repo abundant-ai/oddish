@@ -1294,7 +1294,6 @@ async def browse_tasks_core(
             TaskModel.created_at.label("created_at"),
             TaskModel.link.label("link"),
             TaskModel.tags.label("tags"),
-            TaskModel.description.label("description"),
             TaskModel.category.label("category"),
             current_version.allow_internet.label("allow_internet"),
             func.row_number()
@@ -2030,7 +2029,6 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.current_version_id,
             ranked_tasks_subquery.c.link,
             ranked_tasks_subquery.c.tags,
-            ranked_tasks_subquery.c.description,
             ranked_tasks_subquery.c.category,
             ranked_tasks_subquery.c.allow_internet,
             func.coalesce(version_counts.c.version_count, 0).label("version_count"),
@@ -2342,7 +2340,6 @@ async def browse_tasks_core(
                 last_run_at=row["last_run_at"],
                 link=row["link"],
                 github_meta=_parse_github_meta(row["tags"]),
-                description=row["description"],
                 category=row["category"],
                 allow_internet=row["allow_internet"],
                 cost_usd=float(

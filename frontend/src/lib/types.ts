@@ -257,6 +257,8 @@ export interface TaskBrowseItem {
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
+  category?: string | null;
+  allow_internet?: boolean | null;
   cost_usd: number;
   cost_trial_count: number;
   cost_has_estimated: boolean;
