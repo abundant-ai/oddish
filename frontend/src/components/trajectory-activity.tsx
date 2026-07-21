@@ -6,10 +6,23 @@ import { Activity, Star } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import type { TrajectoryStep, TrajectorySummary } from "@/lib/types";
 import {
+  componentLabel,
   phaseColorVars,
   stepDurationsMs,
   stepTokens,
 } from "@/lib/trajectory-metrics";
+
+/**
+ * Normalized segment of the run. Sourced from the summary's `components`
+ * (taxonomy-valued, schema v4+) or its legacy free-text `phases`. `key` is what
+ * colors are assigned by, so repeats of the same taxonomy value share a color.
+ */
+interface Segment {
+  key: string;
+  label: string;
+  gist: string;
+  stepIds: number[];
+}
 
 interface TrajectoryActivityProps {
   trialId: string;
@@ -36,12 +49,13 @@ export function TrajectoryActivity({
     { revalidateOnFocus: false },
   );
 
-  const phases = data?.phases ?? [];
-  if (!steps.length || phases.length === 0) return null;
+  const segments = toSegments(data);
+  if (!steps.length || segments.length === 0) return null;
 
-  const colorFor = phaseColorVars(phases.map((p) => p.label));
-  const labelByStep = new Map<number, string>();
-  phases.forEach((p) => p.step_ids.forEach((id) => labelByStep.set(id, p.label)));
+  const colorFor = phaseColorVars(segments.map((s) => s.key));
+  const labelFor = new Map(segments.map((s) => [s.key, s.label]));
+  const keyByStep = new Map<number, string>();
+  segments.forEach((s) => s.stepIds.forEach((id) => keyByStep.set(id, s.key)));
   const highlightIds = new Set((data?.highlights ?? []).map((h) => h.step_id));
 
   const durations = stepDurationsMs(steps);
@@ -69,16 +83,16 @@ export function TrajectoryActivity({
       <CardContent className="space-y-4">
         {/* legend */}
         <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {[...colorFor.entries()].map(([label, color]) => (
+          {[...colorFor.entries()].map(([key, color]) => (
             <span
-              key={label}
+              key={key}
               className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground"
             >
               <span
                 className="h-2.5 w-2.5 rounded-sm"
                 style={{ background: color }}
               />
-              {label}
+              {labelFor.get(key) ?? key}
             </span>
           ))}
         </div>
@@ -91,11 +105,11 @@ export function TrajectoryActivity({
                 <button
                   key={s.step_id}
                   type="button"
-                  title={`Step ${s.step_id} · ${labelByStep.get(s.step_id) ?? ""} · ${fmtMs(durations[i])}`}
+                  title={`Step ${s.step_id} · ${labelFor.get(keyByStep.get(s.step_id) ?? "") ?? ""} · ${fmtMs(durations[i])}`}
                   onClick={() => select(s.step_id)}
                   style={{
                     flex: `${widthPct(i)} 1 0`,
-                    background: colorFor.get(labelByStep.get(s.step_id) ?? "") ?? "var(--phase-other)",
+                    background: colorFor.get(keyByStep.get(s.step_id) ?? "") ?? "var(--phase-other)",
                   }}
                   className="relative min-w-[6px] rounded-sm outline-offset-2 transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
                 >
@@ -135,29 +149,29 @@ export function TrajectoryActivity({
           </div>
         </div>
 
-        {/* steps by phase */}
+        {/* steps by component */}
         <div className="space-y-4 pt-1">
-          {phases.map((phase, pi) => {
-            const color = colorFor.get(phase.label) ?? "var(--phase-other)";
-            const ids = phase.step_ids;
+          {segments.map((segment, pi) => {
+            const color = colorFor.get(segment.key) ?? "var(--phase-other)";
+            const ids = segment.stepIds;
             const range =
               ids.length === 1
                 ? `step ${ids[0]}`
                 : `steps ${ids[0]}–${ids[ids.length - 1]}`;
             return (
-              <div key={`${phase.label}-${pi}`}>
+              <div key={`${segment.key}-${pi}`}>
                 <div className="flex items-center gap-2 border-b pb-1.5">
                   <span
                     className="h-4 w-1 rounded-sm"
                     style={{ background: color }}
                   />
-                  <span className="text-sm font-semibold">{phase.label}</span>
+                  <span className="text-sm font-semibold">{segment.label}</span>
                   <span className="ml-auto font-mono text-xs text-muted-foreground">
                     {range}
                   </span>
                 </div>
-                {phase.gist && (
-                  <p className="pt-1.5 text-xs text-muted-foreground">{phase.gist}</p>
+                {segment.gist && (
+                  <p className="pt-1.5 text-xs text-muted-foreground">{segment.gist}</p>
                 )}
                 <div className="grid gap-0.5 pt-1">
                   {ids.map((id) => {
@@ -194,7 +208,31 @@ export function TrajectoryActivity({
   );
 }
 
-/** One-line label for a step in the phase list. */
+function toSegments(summary: TrajectorySummary | null | undefined): Segment[] {
+  if (!summary) return [];
+  // step_ids arrive in LLM order; the header renders a first–last range.
+  const sorted = (ids: number[]) => [...ids].sort((a, b) => a - b);
+  if (summary.components?.length) {
+    return summary.components
+      .filter((c) => c.step_ids.length > 0)
+      .map((c) => ({
+        key: c.trajectory_component,
+        label: componentLabel(c.trajectory_component),
+        gist: c.summary ?? "",
+        stepIds: sorted(c.step_ids),
+      }));
+  }
+  return (summary.phases ?? [])
+    .filter((p) => p.step_ids.length > 0)
+    .map((p) => ({
+      key: p.label,
+      label: p.label,
+      gist: p.gist,
+      stepIds: sorted(p.step_ids),
+    }));
+}
+
+/** One-line label for a step in the component list. */
 function summarizeStep(step: TrajectoryStep): string {
   if (step.tool_calls && step.tool_calls.length > 0) {
     const names = step.tool_calls
