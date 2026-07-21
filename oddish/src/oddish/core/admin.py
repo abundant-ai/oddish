@@ -1372,6 +1372,7 @@ class CostBreakdownResponse(BaseModel):
     series_by_agent: CostSeries
     series_by_model: CostSeries
     series_by_user: CostSeries
+    series_qa_by_model: CostSeries
     totals: CostTotals
     by_user: list[CostUserBreakdown]
     by_model: list[CostModelBreakdown]
@@ -1626,6 +1627,53 @@ async def _cost_time_series(
     return by_agent, by_model, by_user
 
 
+async def _qa_cost_time_series(
+    session: AsyncSession,
+    *,
+    since: datetime | None,
+    bucket: str,
+) -> CostSeries:
+    """QA/analysis spend over time, stacked by model.
+
+    Recorded as a direct native ``cost_usd`` on ``analysis_costs`` (no settled
+    decomposition), on the job's ``created_at`` axis.
+    """
+    bucket_col = _utc_date_trunc(bucket, AnalysisCostModel.created_at)
+    query = (
+        select(
+            bucket_col.label("bucket"),
+            AnalysisCostModel.model.label("model"),
+            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0).label("cost_usd"),
+            func.count(AnalysisCostModel.id).label("job_count"),
+        )
+        .where(AnalysisCostModel.deleted_at.is_(None))
+        .group_by(bucket_col, AnalysisCostModel.model)
+    )
+    if since is not None:
+        query = query.where(AnalysisCostModel.created_at >= since)
+
+    per_bucket: dict[datetime, dict[str, float]] = {}
+    totals: dict[str, float] = {}
+    jobs_per_bucket: dict[datetime, int] = {}
+    for row in (await session.execute(query)).all():
+        bstart = row.bucket
+        key = _model_label(row.model)
+        cost = float(row.cost_usd)
+        slot = per_bucket.setdefault(bstart, {})
+        slot[key] = slot.get(key, 0.0) + cost
+        totals[key] = totals.get(key, 0.0) + cost
+        jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(row.job_count or 0)
+
+    return _build_dimension_series(
+        "model",
+        bucket_starts=sorted(jobs_per_bucket.keys()),
+        per_bucket=per_bucket,
+        totals=totals,
+        trials_per_bucket=jobs_per_bucket,
+        labels={},
+    )
+
+
 def _clean_author(value: str | None) -> str | None:
     """Ignore blank and placeholder 'unknown' author strings."""
     cleaned = (value or "").strip()
@@ -1793,6 +1841,9 @@ async def get_cost_breakdown_core(
     bucket = _series_bucket(window_days)
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
         session, since=since, bucket=bucket, resolve_github_users=resolve_github_users
+    )
+    series_qa_by_model = await _qa_cost_time_series(
+        session, since=since, bucket=bucket
     )
 
     # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
@@ -2189,6 +2240,7 @@ async def get_cost_breakdown_core(
         series_by_agent=series_by_agent,
         series_by_model=series_by_model,
         series_by_user=series_by_user,
+        series_qa_by_model=series_qa_by_model,
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),

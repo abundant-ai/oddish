@@ -647,6 +647,17 @@ export function CostBreakdownCard() {
               <ModelTable models={data.by_model} windowDays={windowDays} />
             </section>
 
+            {data.series_qa_by_model &&
+              data.series_qa_by_model.buckets.length > 0 && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-medium">QA cost over time</h3>
+                  <CostChart
+                    series={data.series_qa_by_model}
+                    bucket={data.bucket}
+                  />
+                </section>
+              )}
+
             {data.qa_by_model && data.qa_by_model.length > 0 && (
               <section className="space-y-2">
                 <h3 className="text-sm font-medium">QA cost by model</h3>
@@ -692,19 +703,18 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         ? "bg-amber-500"
         : "bg-blue-500";
   const qaCost = totals.qa_cost_usd ?? 0;
+  const grandTotal = totals.cost_usd + qaCost;
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
-          {formatCostUsd(totals.cost_usd)}
+          {formatCostUsd(grandTotal)}
         </div>
         <div className="text-muted-foreground text-[10px]">Total cost</div>
-      </div>
-      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
-        <div className="text-base font-bold tabular-nums">
+        <div className="text-muted-foreground mt-0.5 text-[10px] tabular-nums">
+          Model inference {formatCostUsd(totals.cost_usd)} · QA{" "}
           {formatCostUsd(qaCost)}
         </div>
-        <div className="text-muted-foreground text-[10px]">QA cost</div>
       </div>
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">

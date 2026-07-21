@@ -974,6 +974,7 @@ export interface CostBreakdownResponse {
   series_by_agent: CostSeries;
   series_by_model: CostSeries;
   series_by_user: CostSeries;
+  series_qa_by_model?: CostSeries;
   totals: CostTotals;
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
