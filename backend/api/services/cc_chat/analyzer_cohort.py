@@ -12,7 +12,6 @@ import logging
 from api.services.cc_chat.analyzer_parse import parse_cohort_result
 from api.services.cc_chat.analyzer_prompt import (
     CLI_DEST,
-    FINDINGS_GLOB,
     OUT_DIR,
     REDUCE_PATH,
     build_map_batch_prompt,
@@ -242,7 +241,7 @@ async def run_cohort(
             # files_to_download makes the block return {path: decoded str} for
             # reduce.json + every batch's findings file (a missing one decodes to
             # "" so one blank batch costs only itself, not the cohort).
-            logger.info("%s reduce over %s", tag, FINDINGS_GLOB)
+            logger.info("%s reduce over %d batches", tag, len(plan))
             reduce_block = AnalyzerBlock(
                 analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
                 llm_client_type=LLMClientType.SANDBOX,

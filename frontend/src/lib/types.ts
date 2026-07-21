@@ -652,10 +652,31 @@ export interface TrajectoryGraph {
   generated_at?: string;
 }
 
+/** Pre-v4 segmentation. Still present on summaries generated before #790. */
 export interface TrajectoryPhase {
   label: string;
   gist: string;
   step_ids: number[];
+}
+
+/** Flat vocabulary of `TrajectoryBlockTaxonomy` (backend trajectory_component_block.py). */
+export type TrajectoryComponentKind =
+  | "reading_files"
+  | "thinking_recall"
+  | "thinking_understand"
+  | "thinking_hypothesize"
+  | "thinking_diagnose"
+  | "implementing"
+  | "writing_tests"
+  | "testing_public"
+  | "testing_custom"
+  | "testing_custom_edge_cases"
+  | "debugging";
+
+export interface TrajectoryComponent {
+  step_ids: number[];
+  trajectory_component: TrajectoryComponentKind;
+  summary: string | null;
 }
 
 export interface TrajectorySummary {
@@ -664,7 +685,8 @@ export interface TrajectorySummary {
   generated_at: string;
   summary: string;
   highlights: TrajectoryHighlight[];
-  phases: TrajectoryPhase[];
+  components?: TrajectoryComponent[];
+  phases?: TrajectoryPhase[];
 }
 
 interface QueueSlot {
@@ -815,6 +837,8 @@ export interface QueueCapacityStat {
   queued_scheduled: number;
   running: number;
   limit: number;
+  deploy_limit: number;
+  override_limit: number | null;
   fill: number | null;
   oldest_queued_age_seconds: number | null;
   wait_p50_seconds: number | null;

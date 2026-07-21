@@ -23,7 +23,23 @@ export async function GET(
     });
 
     const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
+
+    // Parse defensively: a crashing backend answers with a plain-text body
+    // ("Internal Server Error"), and letting JSON.parse throw here would jump
+    // to the catch below, discarding the real status and reporting the parse
+    // error instead of the upstream failure.
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      return NextResponse.json(
+        {
+          error: `Backend returned ${res.status} ${res.statusText}`,
+          detail: text.slice(0, 500),
+        },
+        { status: res.ok ? 502 : res.status },
+      );
+    }
 
     if (!res.ok) {
       return NextResponse.json(data ?? { error: "Upstream error" }, {

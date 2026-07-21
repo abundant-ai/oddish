@@ -1,9 +1,12 @@
+from types import SimpleNamespace
+
 import pytest
 
 from api.services.blocks.analyzer.analyzer_llm_client import (
     LLMClientType,
     FakeAnalyzerLLMClient,
     ApiAnalyzerLLMClient,
+    OutputBudgetExceeded,
 )
 
 
@@ -12,6 +15,50 @@ async def _collect(client, prompt):
     async for chunk in client.stream(prompt):
         out.append(chunk)
     return out
+
+
+class _AStream:
+    """Stands in for the SDK's streaming context manager."""
+
+    def __init__(self, parts, stop_reason="end_turn"):
+        self._parts = parts
+        self._stop_reason = stop_reason
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    @property
+    def text_stream(self):
+        async def gen():
+            for p in self._parts:
+                yield p
+
+        return gen()
+
+    async def get_final_message(self):
+        return SimpleNamespace(stop_reason=self._stop_reason, usage=None)
+
+
+def _fake_anthropic(stream_factory, recorder=None):
+    """Build a fake AsyncAnthropic whose .messages.stream records its kwargs."""
+
+    class _FakeMessages:
+        def stream(self, **kwargs):
+            if recorder is not None:
+                recorder.update(kwargs)
+            return stream_factory()
+
+    class _FakeAnthropic:
+        def __init__(self, *a, **k):
+            self.messages = _FakeMessages()
+
+        async def close(self):
+            pass
+
+    return _FakeAnthropic
 
 
 @pytest.mark.asyncio
@@ -31,20 +78,6 @@ async def test_fake_client_raises_when_configured():
 @pytest.mark.asyncio
 async def test_api_client_streams_text_deltas(monkeypatch):
     # Fake the AsyncAnthropic streaming context manager.
-    class _AStream:
-        def __init__(self, parts):
-            self._parts = parts
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
-        @property
-        def text_stream(self):
-            async def gen():
-                for p in self._parts:
-                    yield p
-            return gen()
-
     class _FakeMessages:
         def stream(self, **kwargs):
             assert kwargs["model"] == "claude-opus-4-8"
@@ -63,6 +96,65 @@ async def test_api_client_streams_text_deltas(monkeypatch):
     )
     client = ApiAnalyzerLLMClient()
     assert await _collect(client, "hi") == ["Hel", "lo"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_api_client_pins_thinking_off_by_default(monkeypatch):
+    """Thinking shares the max_tokens ceiling with the JSON body, so leaving it
+    to the model default silently truncates analyzer output on models that
+    think by default (sonnet-5+). The request must say so explicitly."""
+    sent: dict = {}
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _AStream(["{}"]), recorder=sent),
+    )
+    client = ApiAnalyzerLLMClient(model="claude-sonnet-5", max_tokens=2048)
+    await _collect(client, "hi")
+    await client.aclose()
+
+    assert sent["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_api_client_thinking_override_is_forwarded(monkeypatch):
+    sent: dict = {}
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _AStream(["{}"]), recorder=sent),
+    )
+    client = ApiAnalyzerLLMClient(thinking={"type": "adaptive"})
+    await _collect(client, "hi")
+    await client.aclose()
+
+    assert sent["thinking"] == {"type": "adaptive"}
+
+
+@pytest.mark.asyncio
+async def test_api_client_raises_when_output_budget_exhausted(monkeypatch):
+    """A truncated reply ends text_stream exactly like a complete one. Without
+    the stop_reason check the half-written JSON reaches the block parser and
+    surfaces only as an unexplained 'non-JSON output' error."""
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(
+            lambda: _AStream(['{"summary": "abc'], stop_reason="max_tokens")
+        ),
+    )
+    client = ApiAnalyzerLLMClient(model="claude-sonnet-5", max_tokens=2048)
+    with pytest.raises(OutputBudgetExceeded, match="max_tokens=2048"):
+        await _collect(client, "hi")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_api_client_does_not_raise_on_normal_stop(monkeypatch):
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _AStream(["{}"], stop_reason="end_turn")),
+    )
+    client = ApiAnalyzerLLMClient()
+    assert await _collect(client, "hi") == ["{}"]
     await client.aclose()
 
 
@@ -219,3 +311,28 @@ async def test_fake_client_download_file():
     assert await c._download_file("out/reduce.json") == b"{}"
     with pytest.raises(KeyError):
         await c._download_file("out/missing.jsonl")
+
+
+def test_init_signature_has_no_duplicate_parameters():
+    """Guards against a merge reintroducing a module-level SyntaxError.
+
+    #810 and #812 each added ``thinking`` to this constructor in parallel. The
+    parameter lists did not overlap textually, so git merged both cleanly into
+    a duplicate argument -- a SyntaxError that made the whole module
+    unimportable, taking every analyzer and report path down with it. Nothing
+    in the suite caught it because an unimportable module fails at collection,
+    which reads as an errored test file rather than a broken product.
+    """
+    import inspect
+
+    names = list(inspect.signature(ApiAnalyzerLLMClient.__init__).parameters)
+    assert len(names) == len(set(names)), f"duplicate parameter in {names}"
+
+
+def test_thinking_defaults_to_disabled_and_is_overridable():
+    # The dedupe had to pick one of two assignments; this pins the surviving
+    # behaviour so a future cleanup cannot silently re-enable thinking, which
+    # would spend the output budget on reasoning and truncate block JSON.
+    assert ApiAnalyzerLLMClient(api_key="k")._thinking == {"type": "disabled"}
+    explicit = {"type": "enabled", "budget_tokens": 1024}
+    assert ApiAnalyzerLLMClient(api_key="k", thinking=explicit)._thinking == explicit

@@ -20,7 +20,7 @@ from oddish.schemas import TaskSweepSubmission
 from oddish.workers.harbor import runner as harbor_runner
 
 
-AGENT_TOOLS_IMAGE = "ghcr.io/org/harbor-agent-tools:tag"
+SAMPLE_REGION = "us-east"
 
 
 class _SubmittingClient:
@@ -60,13 +60,13 @@ def test_submit_sweep_includes_harbor_environment_kwargs(monkeypatch) -> None:
         harbor_config={
             "environment": {
                 "kwargs": {
-                    "agent_tools_image": "ghcr.io/org/old-tools:tag",
+                    "region": "us-west",
                     "keep": "value",
                 }
             }
         },
         environment_kwargs=[
-            f"agent_tools_image={AGENT_TOOLS_IMAGE}",
+            f"region={SAMPLE_REGION}",
             "extra=value",
         ],
         override_cpus=4,
@@ -74,7 +74,7 @@ def test_submit_sweep_includes_harbor_environment_kwargs(monkeypatch) -> None:
 
     assert payloads[0]["harbor"]["environment"] == {
         "kwargs": {
-            "agent_tools_image": AGENT_TOOLS_IMAGE,
+            "region": SAMPLE_REGION,
             "keep": "value",
             "extra": "value",
         },
@@ -92,14 +92,14 @@ agents:
 harbor:
   environment:
     kwargs:
-      agent_tools_image: {AGENT_TOOLS_IMAGE}
+      region: {SAMPLE_REGION}
 """.strip()
     )
 
     config = cli_api.load_sweep_config(config_path)
 
-    assert config["harbor"]["environment"]["kwargs"]["agent_tools_image"] == (
-        AGENT_TOOLS_IMAGE
+    assert config["harbor"]["environment"]["kwargs"]["region"] == (
+        SAMPLE_REGION
     )
 
 
@@ -115,7 +115,7 @@ agents:
 harbor:
   environment:
     kwargs:
-      agent_tools_image: {AGENT_TOOLS_IMAGE}
+      region: {SAMPLE_REGION}
 """.strip()
     )
 
@@ -128,8 +128,8 @@ harbor:
             "n_trials": 1,
         }
     ]
-    assert config["harbor"]["environment"]["kwargs"]["agent_tools_image"] == (
-        AGENT_TOOLS_IMAGE
+    assert config["harbor"]["environment"]["kwargs"]["region"] == (
+        SAMPLE_REGION
     )
 
 
@@ -140,7 +140,7 @@ def test_harbor_environment_kwargs_survive_trial_config_round_trip() -> None:
         harbor={
             "environment": {
                 "kwargs": {
-                    "agent_tools_image": AGENT_TOOLS_IMAGE,
+                    "region": SAMPLE_REGION,
                 }
             }
         },
@@ -155,8 +155,8 @@ def test_harbor_environment_kwargs_survive_trial_config_round_trip() -> None:
     harbor_config = _build_harbor_config_for_trial(task_submission, trials[0])
 
     assert harbor_config is not None
-    assert harbor_config["environment"]["kwargs"]["agent_tools_image"] == (
-        AGENT_TOOLS_IMAGE
+    assert harbor_config["environment"]["kwargs"]["region"] == (
+        SAMPLE_REGION
     )
 
 
@@ -596,7 +596,7 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
             harbor_config={
                 "environment": {
                     "kwargs": {
-                        "agent_tools_image": AGENT_TOOLS_IMAGE,
+                        "region": SAMPLE_REGION,
                     }
                 }
             },
@@ -604,4 +604,4 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
     )
 
     assert outcome.error is None
-    assert seen["environment_kwargs"]["agent_tools_image"] == AGENT_TOOLS_IMAGE
+    assert seen["environment_kwargs"]["region"] == SAMPLE_REGION

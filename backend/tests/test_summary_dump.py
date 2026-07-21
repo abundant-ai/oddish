@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,7 @@ from oddish.db.models import (
     TrialModel,
     TrialOrigin,
     TrialStatus,
+    experiment_trials,
 )
 
 
@@ -222,6 +224,104 @@ async def test_resolve_cohort_limit_applies_after_fetchable_filter():
     assert [t.id for t in result] == ["trial-2-good"]
 
 
+async def _link_collection(session, *, experiment_id, trial_id, deleted_at=None):
+    await session.execute(
+        experiment_trials.insert().values(
+            experiment_id=experiment_id, trial_id=trial_id, deleted_at=deleted_at
+        )
+    )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_resolve_cohort_experiment_scope_includes_collection_linked_trial():
+    """Regression test for the reported bug: a collection experiment gathers
+    an existing trial via `experiment_trials` WITHOUT moving it, so the
+    trial's home `experiment_id` still points elsewhere."""
+    async with _fresh_db() as maker:
+        async with maker() as session:
+            await _seed_org_experiment_task(session)
+            session.add(ExperimentModel(id="exp2-collection", name="Collection", org_id="org1"))
+            session.add(_trial("tr-collected", task_id="task1", experiment_id="exp1"))
+            await session.flush()
+            await _link_collection(session, experiment_id="exp2-collection", trial_id="tr-collected")
+            await session.commit()
+
+        async with maker() as session:
+            result = await resolve_cohort(session, experiment="exp2-collection")
+
+    assert [t.id for t in result] == ["tr-collected"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_resolve_cohort_experiment_scope_excludes_soft_deleted_collection_link():
+    async with _fresh_db() as maker:
+        async with maker() as session:
+            await _seed_org_experiment_task(session)
+            session.add(ExperimentModel(id="exp2-collection", name="Collection", org_id="org1"))
+            session.add(_trial("tr-collected", task_id="task1", experiment_id="exp1"))
+            await session.flush()
+            await _link_collection(
+                session,
+                experiment_id="exp2-collection",
+                trial_id="tr-collected",
+                deleted_at=datetime.now(timezone.utc),
+            )
+            await session.commit()
+
+        async with maker() as session:
+            result = await resolve_cohort(session, experiment="exp2-collection")
+
+    assert result == []
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_resolve_cohort_experiment_scope_dedupes_trial_reachable_both_ways():
+    async with _fresh_db() as maker:
+        async with maker() as session:
+            await _seed_org_experiment_task(session)
+            # Home experiment_id AND a redundant experiment_trials row both
+            # point at exp1 -- the union must not double-return the trial.
+            session.add(_trial("tr-both", task_id="task1", experiment_id="exp1"))
+            await session.flush()
+            await _link_collection(session, experiment_id="exp1", trial_id="tr-both")
+            await session.commit()
+
+        async with maker() as session:
+            result = await resolve_cohort(session, experiment="exp1")
+
+    assert [t.id for t in result] == ["tr-both"]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_resolve_cohort_experiment_scope_collection_links_still_honor_guarantees():
+    """Probe exclusion, id ordering, and filter-before-limit must hold for
+    trials reached only through `experiment_trials`, not just home trials."""
+    async with _fresh_db() as maker:
+        async with maker() as session:
+            await _seed_org_experiment_task(session)
+            session.add(ExperimentModel(id="exp2-collection", name="Collection", org_id="org1"))
+            # "aaa" sorts first but isn't fetchable -- a SQL LIMIT applied
+            # before the Python filter would return zero rows here.
+            session.add(
+                _trial("aaa-unfetchable", task_id="task1", experiment_id="exp1", has_trajectory=False)
+            )
+            session.add(_trial("bbb-probe", task_id="task1", experiment_id="exp1", is_probe=True))
+            session.add(_trial("ccc-real", task_id="task1", experiment_id="exp1"))
+            await session.flush()
+            for tid in ("aaa-unfetchable", "bbb-probe", "ccc-real"):
+                await _link_collection(session, experiment_id="exp2-collection", trial_id=tid)
+            await session.commit()
+
+        async with maker() as session:
+            result = await resolve_cohort(session, experiment="exp2-collection", limit=5)
+
+    assert [t.id for t in result] == ["ccc-real"]
+
+
 def _ctx() -> TaskContext:
     return TaskContext(
         task_name="my-task", instruction=None, final_reward=1.0,
@@ -406,7 +506,7 @@ class _RaisingAcloseClient:
     def __init__(self, *, model=None, max_tokens=None):
         pass
 
-    async def stream(self, prompt):
+    async def stream(self, prompt, *, system_prompt: str | None = None):
         yield _payload()
 
     async def aclose(self):
@@ -447,7 +547,7 @@ class _FakePromptClient:
     def __init__(self, *, model=None, max_tokens=None):
         pass
 
-    async def stream(self, prompt):
+    async def stream(self, prompt, *, system_prompt: str | None = None):
         yield "not json at all" if "task-bad" in prompt else _payload()
 
     async def aclose(self):
@@ -631,3 +731,61 @@ async def test_run_cohort_skips_do_not_abort_and_other_records_still_return(monk
     assert len(result.skipped) == 2
     assert {"trial_id": "tr-missing", "reason": "no such trial"} in result.skipped
     assert {"trial_id": "tr-2", "reason": "no fetchable trajectory"} in result.skipped
+
+
+# ---------------------------------------------------------------------------
+# Output-token cap (shared by prod + harness)
+# ---------------------------------------------------------------------------
+
+
+class _CapturingClient:
+    """Stands in for ApiAnalyzerLLMClient to record its construction kwargs."""
+
+    last_kwargs: dict = {}
+
+    def __init__(self, **kwargs):
+        type(self).last_kwargs = kwargs
+
+    async def stream(self, prompt, *, system_prompt=None):
+        yield _payload()
+
+    async def aclose(self):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
+    """A dump is only trustworthy if it sends what prod sends. The 2048 cap
+    truncated long trajectories mid-JSON, so both sides must move together."""
+    import api.services.blocks.analyzer.analyzer_llm_client as llm_mod
+    from api.services.summarize_trajectory import (
+        SUMMARY_MAX_TOKENS,
+        TaskContext,
+        generate,
+    )
+    from api.services.summary_dump import summarize_trial
+
+    from unittest.mock import AsyncMock
+
+    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+
+    monkeypatch.setattr(llm_mod, "ApiAnalyzerLLMClient", _CapturingClient)
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
+
+    ctx = TaskContext(
+        task_name="t", instruction=None, final_reward=None,
+        model_used=None, verifier_output=None,
+    )
+
+    await generate(_traj(), ctx, analyzer_id="tr_x")
+    prod_kwargs = _CapturingClient.last_kwargs
+
+    await summarize_trial(
+        _summary_trial(), _traj(), ctx, model="claude-sonnet-5", persist=False,
+    )
+    harness_kwargs = _CapturingClient.last_kwargs
+
+    assert prod_kwargs["max_tokens"] == SUMMARY_MAX_TOKENS
+    assert harness_kwargs["max_tokens"] == SUMMARY_MAX_TOKENS
+    assert SUMMARY_MAX_TOKENS > 2048

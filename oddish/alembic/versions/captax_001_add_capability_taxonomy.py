@@ -16,7 +16,7 @@ revision = "captax_001"
 # same 006 base, so keeping 006 as the parent would fork the graph into two
 # heads. captax's tables are independent of those columns, so ordering after
 # them is safe.
-down_revision = "analyzers_008"
+down_revision = "concurrency_override_001"
 branch_labels = None
 depends_on = None
 

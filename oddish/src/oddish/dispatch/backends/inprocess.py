@@ -93,11 +93,11 @@ class InProcessDispatcher:
         return handles
 
     async def _safe_run(self, queue_key: str, worker_id: str) -> None:
-        from oddish.config import settings
+        from oddish.core.model_concurrency import load_effective_model_concurrency_limit
         from oddish.workers.queue.queue_manager import DEFAULT_SLOT_LEASE_SECONDS
 
         try:
-            limit = settings.get_model_concurrency(queue_key)
+            limit = await load_effective_model_concurrency_limit(queue_key)
             if limit <= 0:
                 return
             # Hold a queue_slots lease for the run, mirroring the Modal /
