@@ -871,6 +871,12 @@ async def test_cost_breakdown_includes_qa_analysis_cost():
         assert _approx(result.totals.qa_cost_usd - baseline, 1.0)
         by_model = {m.model: m.cost_usd for m in result.qa_by_model}
         assert _approx(by_model.get(label), 1.0)
+        # The QA time series buckets the same spend, stacked by model.
+        qa_series = result.series_qa_by_model
+        assert qa_series.dimension == "model"
+        assert label in {k.key for k in qa_series.keys}
+        series_model_total = sum(b.costs.get(label, 0.0) for b in qa_series.buckets)
+        assert _approx(series_model_total, 1.0)
     finally:
         async with get_session() as session:
             await session.execute(
