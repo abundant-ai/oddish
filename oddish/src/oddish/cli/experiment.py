@@ -221,3 +221,94 @@ def add(
         console.print_json(data={**data, "url": url})
         return
     _print_mutation(data, url)
+
+
+@experiment_app.command("remove")
+def remove(
+    experiment_id: Annotated[
+        str, typer.Argument(help="Collection experiment id to remove from.")
+    ],
+    trial_ids: Annotated[
+        Optional[list[str]],
+        typer.Argument(help="Trial IDs to remove (optional; combine with --task)."),
+    ] = None,
+    tasks: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--task",
+            "-t",
+            help=(
+                "Task id/name; removes ALL of its trials from the collection, "
+                "every version. Append @<version> to remove just that version. "
+                "Repeatable."
+            ),
+        ),
+    ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")
+    ] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print raw JSON.")
+    ] = False,
+    api_url: Annotated[
+        Optional[str],
+        typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
+    ] = None,
+):
+    """Remove trials from a read-only collection, keeping its share link.
+
+    The trials themselves are untouched -- they stay in their home experiment
+    with their artifacts. Only the collection's view of them changes.
+
+        oddish experiment remove bd43dc73 --task cobol-batch-java-parity-9019af79
+        oddish experiment remove bd43dc73 trial_a trial_b --yes
+    """
+    trial_ids = _dedupe(trial_ids or [])
+    tasks = tasks or []
+    if not trial_ids and not tasks:
+        console.print("[red]Provide at least one trial id or --task.[/red]")
+        raise typer.Exit(1)
+
+    if not yes:
+        target = ", ".join([*trial_ids, *(f"task {t}" for t in tasks)])
+        # --json never implies consent; scripted use needs --yes --json.
+        if not typer.confirm(f"Remove {target} from collection {experiment_id}?"):
+            console.print("Aborted.")
+            raise typer.Exit(1)
+
+    if not api_url:
+        api_url = get_api_url()
+    require_api_key(api_url)
+
+    with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
+        plain_tasks, pinned_trial_ids = expand_task_refs(client, api_url, tasks)
+        payload = {
+            "trial_ids": [*trial_ids, *pinned_trial_ids],
+            "task_ids": plain_tasks,
+        }
+        if not any(payload.values()):
+            console.print(
+                "[red]Nothing to remove: every --task pin resolved to zero "
+                "trials.[/red]"
+            )
+            raise typer.Exit(1)
+
+        try:
+            resp = client.request(
+                "DELETE",
+                f"{api_url}/experiments/{experiment_id}/collection/trials",
+                json=payload,
+            )
+        except httpx.RequestError as e:
+            console.print(f"[red]Failed to connect to API:[/red] {e}")
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _explain_failure(resp)
+            raise typer.Exit(1)
+        data = resp.json()
+        url = _share_or_dashboard_url(client, api_url, experiment_id)
+
+    if json_output:
+        console.print_json(data={**data, "url": url})
+        return
+    _print_mutation(data, url)

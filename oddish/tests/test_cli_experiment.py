@@ -162,3 +162,140 @@ def test_add_requires_a_source(monkeypatch):
 
     assert result.exit_code == 1, result.output
     assert "at least one" in result.output
+
+
+_REMOVE_JSON = {
+    "id": "coll123",
+    "name": "my collection",
+    "trials_added": 0,
+    "trials_removed": 3,
+    "trials_total": 2,
+    "tasks_linked": 0,
+    "tasks_unlinked": 1,
+}
+
+
+class _RemoveClient:
+    requested: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/share"):
+            return httpx.Response(200, json={"name": "c", "is_public": False,
+                                             "public_token": None})
+        raise AssertionError(f"unexpected get {url}")
+
+    def request(self, method, url, json=None):
+        type(self).requested = {"method": method, "url": url, "json": json}
+        return httpx.Response(200, json=_REMOVE_JSON)
+
+
+def test_remove_with_yes_issues_delete(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _RemoveClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "remove", "coll123", "--task", "mytask", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _RemoveClient.requested["method"] == "DELETE"
+    assert _RemoveClient.requested["url"].endswith(
+        "/experiments/coll123/collection/trials"
+    )
+    assert _RemoveClient.requested["json"] == {
+        "trial_ids": [],
+        "task_ids": ["mytask"],
+    }
+    assert "Trials removed: 3" in result.output
+
+
+class _MustNotRequestClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def request(self, method, url, json=None):
+        raise AssertionError("must not issue a request when the user declines")
+
+    def get(self, url, params=None):
+        raise AssertionError("must not issue a request when the user declines")
+
+
+def test_remove_aborts_without_confirmation(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _MustNotRequestClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "remove", "coll123", "t1"], input="n\n"
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Aborted" in result.output
+
+
+class _EmptyingClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def request(self, method, url, json=None):
+        return httpx.Response(
+            409, json={"detail": "removing these trials would empty the collection"}
+        )
+
+
+def test_remove_explains_emptying_409(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _EmptyingClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "remove", "coll123", "t1", "--yes"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "would empty the collection" in result.output
+
+
+class _ForbiddenRemoveClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def request(self, method, url, json=None):
+        return httpx.Response(403, json={"detail": "insufficient scope"})
+
+
+def test_remove_explains_403_scope(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _ForbiddenRemoveClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "remove", "coll123", "t1", "--yes"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "FULL-scope" in result.output
