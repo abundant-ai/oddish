@@ -37,7 +37,7 @@ def _config() -> dict:
             "expert_time_estimate_hours": 12.5,
         },
         "environment": {
-            "allow_internet": False,
+            "network_mode": "no-network",
             "cpus": 4,
             "memory_mb": 16384,
             "storage_mb": 16384,
@@ -59,6 +59,7 @@ def test_project_task_config_extracts_all_fields():
     assert meta.author_name == "Ada"
     assert meta.author_organization == "Abundant AI"
     assert meta.expert_time_hours == 12.5
+    assert meta.network_mode == "no-network"
     assert meta.allow_internet is False
     assert meta.cpus == 4
     assert meta.memory_mb == 16384
@@ -73,6 +74,7 @@ def test_project_task_config_tolerates_missing_stanzas():
     meta = project_task_config({})
     assert meta.category is None
     assert meta.topic_tags == []
+    assert meta.network_mode is None
     assert meta.allow_internet is None
 
 
@@ -148,6 +150,55 @@ def test_oversized_topic_tag_element_is_rejected():
 
     with pytest.raises(ValidationError):
         TaskMetadata(topic_tags=["x" * 200])
+
+
+def _harbor_parsed_environment(environment_body: str) -> dict:
+    """Parse a task.toml [environment] stanza through Harbor's real TaskConfig,
+    exactly like ``cli/api.py``'s ``_parse_task_config`` and the backfill
+    script do -- NOT a hand-built dict. This is the only way to reproduce the
+    legacy-``allow_internet``-dropped-on-normalization defect; a hand-built
+    dict with an ``allow_internet`` key bypasses Harbor entirely and can't
+    catch it."""
+    from harbor.models.task.config import TaskConfig as HarborTaskConfig
+
+    toml = f"""\
+version = "1.0"
+[environment]
+docker_image = "python:3.11"
+{environment_body}
+"""
+    config = HarborTaskConfig.model_validate_toml(toml)
+    return config.model_dump(mode="json", exclude_none=True)
+
+
+def test_legacy_allow_internet_false_normalizes_to_no_network():
+    """Regression guard for the whole finding: Harbor drops the legacy
+    ``allow_internet`` key during parsing and normalizes it into
+    ``network_mode`` instead -- project_task_config must read the field
+    Harbor actually keeps, not the one it silently discards."""
+    config = _harbor_parsed_environment("allow_internet = false")
+    meta = project_task_config(config)
+    assert meta.network_mode == "no-network"
+    assert meta.allow_internet is False
+
+
+def test_legacy_allow_internet_true_normalizes_to_public():
+    config = _harbor_parsed_environment("allow_internet = true")
+    meta = project_task_config(config)
+    assert meta.network_mode == "public"
+    assert meta.allow_internet is True
+
+
+def test_explicit_allowlist_network_mode_derives_allow_internet_true():
+    """``allowlist`` is partial egress, a genuine third state -- but for the
+    "does this task have any egress" question allow_internet answers, it's
+    True same as ``public``."""
+    config = _harbor_parsed_environment(
+        'network_mode = "allowlist"\nallowed_hosts = ["api.anthropic.com"]'
+    )
+    meta = project_task_config(config)
+    assert meta.network_mode == "allowlist"
+    assert meta.allow_internet is True
 
 
 def test_all_zero_category_slugifies_to_none():

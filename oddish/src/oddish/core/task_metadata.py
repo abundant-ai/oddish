@@ -45,6 +45,16 @@ def project_task_config(config: dict) -> TaskMetadata:
         if slug
     ]
 
+    # ``allow_internet`` is a legacy field Harbor normalizes into
+    # ``network_mode`` and then drops -- a parsed TaskConfig dict never has
+    # it, so reading it here was a silent always-None no-op. network_mode is
+    # the real, three-valued field ("no-network" / "public" / "allowlist");
+    # allow_internet is kept only as a derived convenience boolean for the
+    # "does this task have any egress" question (allowlist is partial egress
+    # but still True for that purpose).
+    network_mode = environment.get("network_mode")
+    allow_internet = None if network_mode is None else network_mode != "no-network"
+
     return TaskMetadata(
         description=metadata.get("description"),
         # category can slugify to "" (e.g. "---"); category_raw keeps the
@@ -56,7 +66,8 @@ def project_task_config(config: dict) -> TaskMetadata:
         author_email=metadata.get("author_email"),
         author_organization=metadata.get("author_organization"),
         expert_time_hours=metadata.get("expert_time_estimate_hours"),
-        allow_internet=environment.get("allow_internet"),
+        network_mode=network_mode,
+        allow_internet=allow_internet,
         cpus=environment.get("cpus"),
         memory_mb=environment.get("memory_mb"),
         storage_mb=environment.get("storage_mb"),

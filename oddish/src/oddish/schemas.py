@@ -663,6 +663,11 @@ class TaskMetadata(BaseModel):
     # tasks.expert_time_hours) -- 10000 would pass here but overflow at INSERT.
     expert_time_hours: float | None = Field(default=None, ge=0, le=9999.99)
 
+    # network_mode is the field Harbor actually persists (``no-network`` /
+    # ``public`` / ``allowlist``); the legacy ``allow_internet`` boolean is
+    # normalized away by Harbor's TaskConfig parsing, so it's never present
+    # on a parsed config -- see project_task_config for the derivation.
+    network_mode: str | None = Field(default=None, max_length=32)
     allow_internet: bool | None = None
     cpus: int | None = Field(default=None, ge=0, le=1024)
     memory_mb: int | None = Field(default=None, ge=0, le=8_388_608)

@@ -917,6 +917,11 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
     # Runtime fields from task.toml at ingest time.
+    # network_mode is the real Harbor field ("no-network"/"public"/"allowlist");
+    # allow_internet is a derived convenience boolean computed by
+    # project_task_config (see its docstring) -- not read directly off
+    # task.toml, since Harbor drops that legacy key during parsing.
+    network_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
     allow_internet: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     cpus: Mapped[int | None] = mapped_column(Integer, nullable=True)
     memory_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -257,6 +257,7 @@ async def _backfill_one_task(
 
     # Runtime + immutable snapshot columns on the current task_versions row
     # -- mirrors tasks.py's _apply_version_metadata.
+    version.network_mode = metadata.network_mode
     version.allow_internet = metadata.allow_internet
     version.cpus = metadata.cpus
     version.memory_mb = metadata.memory_mb

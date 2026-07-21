@@ -194,12 +194,12 @@ async def test_execute_populates_columns_and_stamps_backfill_source():
             )
             assert refreshed_version.cpus == 2
             assert refreshed_version.memory_mb == 4096
-            # NOT asserting allow_internet: harbor's TaskConfig clears this
-            # deprecated field to None after mapping it into network_mode
-            # (config.py's handle_deprecated_environment_allow_internet), so
-            # project_task_config's environment.get("allow_internet") is None
-            # for every task.toml now -- identically for fresh uploads and
-            # backfills, since both go through the same pure function.
+            # harbor's TaskConfig clears the deprecated allow_internet field
+            # after mapping it into network_mode (config.py's
+            # handle_deprecated_environment_allow_internet); project_task_config
+            # reads network_mode and derives allow_internet from it.
+            assert refreshed_version.network_mode == "no-network"
+            assert refreshed_version.allow_internet is False
             assert refreshed_version.category_snapshot == "ml-training"
             assert refreshed_version.description_snapshot == "Backfilled task."
     finally:

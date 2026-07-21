@@ -22,6 +22,7 @@ def _metadata() -> TaskMetadata:
         category_raw="ml_training",
         topic_tags=["compilers"],
         author_name="Ada",
+        network_mode="no-network",
         allow_internet=False,
         cpus=4,
         memory_mb=16384,
@@ -116,6 +117,14 @@ async def test_first_upload_persists_metadata_and_event(session):
     assert task.category == "ml-training"
     assert task.category_raw == "ml_training"
     assert task.metadata_source == MetadataSource.CLIENT
+
+    version = (
+        await session.execute(
+            select(TaskVersionModel).where(TaskVersionModel.id == response.version_id)
+        )
+    ).scalar_one()
+    assert version.network_mode == "no-network"
+    assert version.allow_internet is False
 
     events = (
         await session.execute(
@@ -319,6 +328,7 @@ async def test_reupload_existing_task_changed_content_cuts_new_version(session):
         )
     ).scalar_one()
     assert v2.description_snapshot == "Rewritten for v2."
+    assert v2.network_mode == changed.network_mode
     assert v2.allow_internet == changed.allow_internet
     assert v2.cpus == 8
 

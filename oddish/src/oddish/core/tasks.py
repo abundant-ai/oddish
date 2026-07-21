@@ -135,6 +135,7 @@ def _descriptive_metadata_unchanged(
 
 def _apply_version_metadata(version: TaskVersionModel, metadata: TaskMetadata) -> None:
     """Write hash-backed runtime fields plus the immutable descriptive snapshot."""
+    version.network_mode = metadata.network_mode
     version.allow_internet = metadata.allow_internet
     version.cpus = metadata.cpus
     version.memory_mb = metadata.memory_mb

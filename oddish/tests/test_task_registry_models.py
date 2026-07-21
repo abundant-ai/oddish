@@ -35,6 +35,7 @@ def test_metadata_source_enum_values():
 def test_task_version_model_has_runtime_and_snapshot_columns():
     columns = TaskVersionModel.__table__.columns
     runtime = (
+        "network_mode",
         "allow_internet",
         "cpus",
         "memory_mb",
