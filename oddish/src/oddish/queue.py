@@ -23,6 +23,7 @@ from oddish.core.baseline_gate import (
     GateOutcome,
     evaluate_baseline_gate,
 )
+from oddish.core.tags.derived import rebuild_derived_tags
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.core.tasks import (
@@ -879,6 +880,12 @@ async def create_task(
         # was cut, matching complete_task_upload's existing-task branch.
         if submission.task_metadata is not None:
             _apply_descriptive_metadata(task, submission.task_metadata)
+            await rebuild_derived_tags(
+                session,
+                task_id=task_id,
+                org_id=org_id,
+                metadata=submission.task_metadata,
+            )
         record_upload_event(
             session,
             task_id=task_id,
@@ -905,6 +912,12 @@ async def create_task(
         if submission.task_metadata is not None:
             _apply_descriptive_metadata(task, submission.task_metadata)
             _apply_version_metadata(version_row, submission.task_metadata)
+            await rebuild_derived_tags(
+                session,
+                task_id=task_id,
+                org_id=org_id,
+                metadata=submission.task_metadata,
+            )
         record_upload_event(
             session,
             task_id=task_id,

@@ -243,11 +243,12 @@ class TagAssignmentState(str, Enum):
 
 
 class TagAssignmentSource(str, Enum):
-    """Where an assignment came from (direct vs experiment-derived)."""
+    """Where an assignment came from (direct vs experiment- or toml-derived)."""
 
     DIRECT = "DIRECT"
     EXPERIMENT_SNAPSHOT = "EXPERIMENT_SNAPSHOT"
     EXPERIMENT_LIVING = "EXPERIMENT_LIVING"
+    DERIVED = "DERIVED"
 
 
 class MetadataSource(str, Enum):

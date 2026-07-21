@@ -43,6 +43,7 @@ def test_tag_assignment_source_members():
         "DIRECT",
         "EXPERIMENT_SNAPSHOT",
         "EXPERIMENT_LIVING",
+        "DERIVED",
     }
 
 
