@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_experiment_tag_predicates_buckets():
+    import re
+
     from oddish.core.dashboard import _experiment_tag_predicates
     from oddish.core.tags.filter_ast import ResolvedTagFilter
 
@@ -25,18 +27,21 @@ def test_experiment_tag_predicates_buckets():
         all_groups=[["a"], ["b"]],
     )
     clauses = _experiment_tag_predicates(resolved)
-    # AND bucket: one EXISTS per group; ANY: one over the set; NONE: one NOT EXISTS.
+    # AND bucket: one (EXPERIMENT-scope OR member-task TASK-scope) match per
+    # group -- each is two EXISTS ORed together; ANY: one over the set; NONE:
+    # the negation of that same two-EXISTS match.
     assert len(clauses) == 4
     sql = " ".join(str(c) for c in clauses)
-    assert sql.count("EXISTS") == 4
-    assert "NOT EXISTS" in sql
+    assert sql.count("EXISTS") == 8
+    assert re.search(r"NOT\s*\(", sql)
+    assert "task_experiments" in sql
     assert "tag_assignments" in sql
     assert "merged_into_id" in sql
-    # Bind names must be unique across clauses or they collide when ANDed.
-    import re
-
+    # Bind names must be unique ACROSS clauses or they collide when ANDed.
+    # Each clause's own name legitimately repeats within it now (used by
+    # both the EXPERIMENT-scope and member-task TASK-scope EXISTS arms).
     names = re.findall(r":(\w+)", sql)
-    assert len(names) == len(set(names))
+    assert len(set(names)) == len(clauses)
 
 
 def test_experiment_tag_predicates_ors_within_a_bare_key_group():
@@ -55,7 +60,7 @@ def test_experiment_tag_predicates_ors_within_a_bare_key_group():
     clauses = _experiment_tag_predicates(resolved)
     assert len(clauses) == 1
     sql = str(clauses[0])
-    assert "NOT EXISTS" not in sql
+    assert "NOT (" not in sql
     assert "= ANY(" in sql
 
 
@@ -368,4 +373,95 @@ async def test_dashboard_experiments_value_less_tag_regression(session):
     )
     ids = {row["id"] for row in rows}
     assert ids == {flaky_exp.id}
+
+
+# ---------------------------------------------------------------------------
+# Finding 1: derived tags (category:*/topic:*/org:*) live only at TASK scope
+# (see core/tags/derived.py) but the shared /tags dropdown offers them on the
+# experiments page too. Filtering an experiment by such a tag must reach
+# through task_experiments to the member task's TASK-scope assignment,
+# instead of silently returning zero rows for a tag the dropdown just
+# offered as real.
+# ---------------------------------------------------------------------------
+
+
+async def _make_task(session, *, org_id: str, name: str):
+    from oddish.db.models import TaskModel
+
+    task = TaskModel(name=name, org_id=org_id, user="tester", task_path=f"s3://tasks/{name}")
+    session.add(task)
+    await session.flush()
+    return task
+
+
+async def _link_task_to_experiment(session, *, task_id: str, experiment_id: str):
+    from oddish.db.models import task_experiments
+
+    await session.execute(
+        task_experiments.insert().values(task_id=task_id, experiment_id=experiment_id)
+    )
+    await session.flush()
+
+
+async def _tag_task_derived(session, *, tag_id: str, task_id: str, org_id: str):
+    from oddish.core.tags.service import assign_tag_core
+
+    await assign_tag_core(
+        session,
+        tag_id=tag_id,
+        scope="TASK",
+        target_id=task_id,
+        task_id=task_id,
+        org_id=org_id,
+        actor_user_id=None,
+        source="DERIVED",
+        sync_projection=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_experiments_match_via_member_task_derived_tag(session):
+    """THE MOTIVATING BUG: a derived tag (e.g. ``category:reverse-engineering``)
+    is only ever assigned at TASK scope, never EXPERIMENT scope, yet the
+    shared tag dropdown offers it on the experiments page too. Filtering
+    experiments by it must find experiments whose member tasks carry it --
+    not silently return zero rows for a tag the dropdown just offered as
+    real and resolvable."""
+    from oddish.core.dashboard import load_dashboard_experiments
+    from oddish.core.tags.service import create_tag_core
+
+    org_id = _org()
+    category_id = await create_tag_core(
+        session,
+        key="category",
+        value="reverse-engineering",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    await session.flush()
+
+    task = await _make_task(session, org_id=org_id, name=f"re-task-{org_id}")
+    await _tag_task_derived(session, tag_id=category_id, task_id=task.id, org_id=org_id)
+
+    matching_exp = await _make_experiment(session, org_id=org_id, name=f"re-exp-{org_id}")
+    other_exp = await _make_experiment(session, org_id=org_id, name=f"other-exp-{org_id}")
+    await _link_task_to_experiment(
+        session, task_id=task.id, experiment_id=matching_exp.id
+    )
+    await session.flush()
+
+    rows, _ = await load_dashboard_experiments(
+        session,
+        org_id=org_id,
+        experiments_limit=50,
+        experiments_offset=0,
+        experiments_query=None,
+        experiments_status="",
+        experiments_tags="category:reverse-engineering",
+    )
+    ids = {row["id"] for row in rows}
+    assert matching_exp.id in ids
+    assert other_exp.id not in ids
     assert other_exp.id not in ids

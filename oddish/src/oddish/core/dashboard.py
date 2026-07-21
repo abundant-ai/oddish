@@ -918,39 +918,76 @@ async def _org_has_unowned_live_experiments(
 def _experiment_tag_assignment_exists(
     tag_ids: list[str], *, param_key: str, negate: bool = False
 ):
-    """(NOT) EXISTS over ACTIVE EXPERIMENT-scope assignments whose
-    merge-resolved tag is one of ``tag_ids`` and whose owning tag is alive.
-    ``param_key`` must be unique per clause — the clauses are ANDed into one
-    statement and identical bind names would collide."""
-    prefix = "NOT EXISTS" if negate else "EXISTS"
-    return text(
-        f"""
-        {prefix} (
-            SELECT 1
-            FROM tag_assignments ta
-            JOIN tags t0 ON t0.id = ta.tag_id
-            JOIN tags t ON t.id = COALESCE(t0.merged_into_id, t0.id)
-            WHERE ta.scope = CAST('EXPERIMENT' AS tag_assignment_scope)
-              AND ta.state = 'ACTIVE'
-              AND ta.deleted_at IS NULL
-              AND ta.target_id = experiments.id
-              AND t.deleted_at IS NULL
-              AND t.state <> 'DELETED'
-              AND t.id = ANY(:{param_key})
+    """(NOT) match ``tag_ids`` against an experiment two ways: an ACTIVE
+    EXPERIMENT-scope assignment directly on the experiment, OR an ACTIVE
+    TASK-scope assignment on any live task still linked to it via
+    ``task_experiments``.
+
+    The second arm exists because derived tags (``category:*``, ``topic:*``,
+    ``org:*``) are assigned only at TASK scope by design (see
+    ``core/tags/derived.py``) — they never get an EXPERIMENT-scope row. The
+    shared ``/tags`` dropdown lists them regardless of which page it's
+    rendered on, so without this arm a user could select a real, offered tag
+    on the experiments page and always get zero results with no explanation.
+    Reaching into member tasks makes the filter do the useful thing (find
+    experiments touching that category/topic/org) instead of the merely
+    honest thing (hide those tags from the experiments-page picker); it
+    mirrors the existing ``task_experiments`` join in
+    ``_experiment_freetext_match``'s author match above.
+
+    Merge-resolution and DELETED-dropping happened in
+    ``resolve_names_to_ids``; both arms re-check liveness so a tag deleted
+    between resolution and execution can't match. ``param_key`` must be
+    unique per clause — the clauses are ANDed into one statement and
+    identical bind names would collide."""
+    condition = f"""
+        (
+            EXISTS (
+                SELECT 1
+                FROM tag_assignments ta
+                JOIN tags t0 ON t0.id = ta.tag_id
+                JOIN tags t ON t.id = COALESCE(t0.merged_into_id, t0.id)
+                WHERE ta.scope = CAST('EXPERIMENT' AS tag_assignment_scope)
+                  AND ta.state = 'ACTIVE'
+                  AND ta.deleted_at IS NULL
+                  AND ta.target_id = experiments.id
+                  AND t.deleted_at IS NULL
+                  AND t.state <> 'DELETED'
+                  AND t.id = ANY(:{param_key})
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM task_experiments te
+                JOIN tasks tk ON tk.id = te.task_id
+                JOIN tag_assignments ta
+                    ON ta.target_id = tk.id
+                   AND ta.scope = CAST('TASK' AS tag_assignment_scope)
+                JOIN tags t0 ON t0.id = ta.tag_id
+                JOIN tags t ON t.id = COALESCE(t0.merged_into_id, t0.id)
+                WHERE te.experiment_id = experiments.id
+                  AND te.deleted_at IS NULL
+                  AND tk.deleted_at IS NULL
+                  AND ta.state = 'ACTIVE'
+                  AND ta.deleted_at IS NULL
+                  AND t.deleted_at IS NULL
+                  AND t.state <> 'DELETED'
+                  AND t.id = ANY(:{param_key})
+            )
         )
         """
-    ).bindparams(**{param_key: list(tag_ids)})
+    if negate:
+        condition = f"NOT {condition}"
+    return text(condition).bindparams(**{param_key: list(tag_ids)})
 
 
 def _experiment_tag_predicates(resolved: ResolvedTagFilter) -> list:
     """WHERE clauses for the experiments page query: ``all`` AND-chains one
-    EXISTS per token *group* (mirrors ``build_filter_predicates`` in
-    ``filter_ast.py`` — a bare-key token's ids share a group so the EXISTS
-    ORs within it, while distinct tokens still AND against each other),
-    ``any`` is one EXISTS over the set, ``none`` one NOT EXISTS. Resolution
-    (merge-following, DELETED-dropping) happened in ``resolve_names_to_ids``;
-    the EXISTS re-checks liveness so a tag deleted between resolution and
-    execution can't match."""
+    (EXPERIMENT-scope OR member-task TASK-scope) match per token *group*
+    (mirrors ``build_filter_predicates`` in ``filter_ast.py`` — a bare-key
+    token's ids share a group so the match ORs within it, while distinct
+    tokens still AND against each other), ``any`` is one match over the set,
+    ``none`` is the negation of that same match. See
+    ``_experiment_tag_assignment_exists`` for why TASK-scope is included."""
     clauses = []
     for n, group in enumerate(resolved.all_groups):
         if not group:
