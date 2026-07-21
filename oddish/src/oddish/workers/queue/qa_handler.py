@@ -36,10 +36,11 @@ async def synthesize_task_verdict(
 ) -> TaskVerdictModel:
     """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
-    The block self-provisions its OpenAI client for ``settings.verdict_model``
-    (with TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the
-    cap) and closes it on every exit path. ``timeout`` bounds the whole block
-    run -- the OpenAI client has no per-request timeout knob -- falling back to
+    The block self-provisions the direct API client for ``settings.verdict_model``
+    (an OpenAI/Azure model, so the API client uses the OpenAI SDK) with
+    TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the cap,
+    and closes it on every exit path. ``timeout`` bounds the whole block run --
+    the client has no per-request timeout knob -- falling back to
     VERDICT_TIMEOUT, and the block persists itself to ``analyzer_blocks`` + S3.
     """
     from oddish.analyze.classifier import VERDICT_MAX_TOKENS, VERDICT_TIMEOUT
@@ -56,7 +57,7 @@ async def synthesize_task_verdict(
     )
     block = AnalyzerBlock(
         analyzer_type=AnalyzerType.TASK_VERDICT,
-        llm_client_type=LLMClientType.OPENAI,
+        llm_client_type=LLMClientType.API,
         input=AnalyzerInput(input={"num_trials": len(classifications)}),
         # build_prompt() raises rather than sending the degraded placeholder
         # (see VerdictBlock.build_prompt).

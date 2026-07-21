@@ -137,10 +137,11 @@ def test_build_prompt_raises_instead_of_returning_placeholder(monkeypatch):
 # qa_handler.synthesize_task_verdict: production construction wiring
 #
 # These patch only _build_openai_client (analyzer_llm_client's module-level
-# seam), not OpenAIAnalyzerLLMClient itself or AnalyzerBlock -- so the real
+# seam), not ApiAnalyzerLLMClient itself or AnalyzerBlock -- so the real
 # construction path in synthesize_task_verdict is exercised, not a test double
-# injected in its place. That is what catches a dropped response_format /
-# max_tokens / output_transform that an all-injected-client test suite would
+# injected in its place. The verdict model is a gpt id, so the API client
+# routes through the OpenAI SDK. That is what catches a dropped response_format
+# / max_tokens / output_transform that an all-injected-client test suite would
 # miss (see the plan's "Prove your guards" note).
 # ---------------------------------------------------------------------------
 
