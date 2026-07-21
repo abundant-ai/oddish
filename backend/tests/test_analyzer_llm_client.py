@@ -336,3 +336,68 @@ def test_thinking_defaults_to_disabled_and_is_overridable():
     assert ApiAnalyzerLLMClient(api_key="k")._thinking == {"type": "disabled"}
     explicit = {"type": "enabled", "budget_tokens": 1024}
     assert ApiAnalyzerLLMClient(api_key="k", thinking=explicit)._thinking == explicit
+
+
+# --- usage capture -------------------------------------------------------
+
+
+class _UsageStream(_AStream):
+    """A stream whose final message carries real token counts."""
+
+    def __init__(self, parts, stop_reason="end_turn", usage=None):
+        super().__init__(parts, stop_reason)
+        self._usage = usage
+
+    async def get_final_message(self):
+        return SimpleNamespace(stop_reason=self._stop_reason, usage=self._usage)
+
+
+_USAGE = SimpleNamespace(
+    input_tokens=1000,
+    output_tokens=200,
+    cache_read_input_tokens=500,
+    cache_creation_input_tokens=100,
+)
+
+
+@pytest.mark.asyncio
+async def test_stream_captures_usage(monkeypatch):
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _UsageStream(["hi"], usage=_USAGE)),
+    )
+    c = ApiAnalyzerLLMClient(model="claude-opus-4-8", api_key="k")
+    await _collect(c, "p")
+    assert c.last_usage is not None
+    assert c.last_usage.input_tokens == 1600
+    assert c.last_usage.output_tokens == 200
+    assert c.last_usage.source == "estimated"
+    assert c.last_usage.cost_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_usage_is_none_when_api_reports_none(monkeypatch):
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _UsageStream(["hi"], usage=None)),
+    )
+    c = ApiAnalyzerLLMClient(api_key="k")
+    await _collect(c, "p")
+    assert c.last_usage is None
+
+
+@pytest.mark.asyncio
+async def test_truncated_run_still_reports_its_spend(monkeypatch):
+    """A block that blew max_tokens burned those tokens; the raise must not
+    discard the usage."""
+    monkeypatch.setattr(
+        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(
+            lambda: _UsageStream(["hi"], stop_reason="max_tokens", usage=_USAGE)
+        ),
+    )
+    c = ApiAnalyzerLLMClient(model="claude-opus-4-8", api_key="k")
+    with pytest.raises(OutputBudgetExceeded):
+        await _collect(c, "p")
+    assert c.last_usage is not None
+    assert c.last_usage.input_tokens == 1600
