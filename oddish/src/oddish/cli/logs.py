@@ -55,12 +55,12 @@ def _render_event(event: dict) -> str | None:
         )
     if kind == "tool_result":
         content = _safe_text(payload.get("content"))
-        display_text = content.text.strip().replace("\n", " ")[:160]
-        if not display_text:
+        snippet = content.text.strip().replace("\n", " ")[:160]
+        if not snippet:
             return None
         style = "red" if payload.get("is_error") else "dim"
         return (
-            f"[{style}]  ↳ {escape(display_text)}[/{style}]"
+            f"[{style}]  ↳ {escape(snippet)}[/{style}]"
             f"{_tail(payload, changed=content.changed)}"
         )
     if kind == "summary":

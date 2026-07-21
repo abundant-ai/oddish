@@ -338,6 +338,7 @@ def test_claude_code_moonshot_agent_config_sets_moonshot_skin_env(monkeypatch) -
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MOONSHOT_API_KEY}"
     assert agent_config.env["ANTHROPIC_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "kimi-k2.7-code"
+    assert agent_config.env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
     assert agent_config.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "262144"
@@ -348,6 +349,59 @@ def test_claude_code_moonshot_agent_config_sets_moonshot_skin_env(monkeypatch) -
     # K2.7 locks sampling params / thinking is always on -- no kwargs set.
     assert "thinking" not in agent_config.kwargs
     assert "reasoning_effort" not in agent_config.kwargs
+
+
+def test_kimi_claude_code_hardcodes_vendor_defaults_for_caller_model(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MOONSHOT_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="kimi-claude-code",
+        model="vendor-model[1m]",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "moonshot/vendor-model[1m]"
+    assert (
+        agent_config.import_path == "oddish.workers.agents.claude_code:OddishClaudeCode"
+    )
+    assert agent_config.kwargs["version"] == "2.1.181"
+    assert agent_config.kwargs["disallowed_tools"] == (
+        "WebSearch WebFetch EnterPlanMode EnterWorktree "
+        "ExitPlanMode ExitWorktree AskUserQuestion"
+    )
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.moonshot.ai/anthropic"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MOONSHOT_API_KEY}"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert agent_config.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1048576"
+    assert agent_config.env["CLAUDE_CODE_EFFORT_LEVEL"] == "max"
+    assert agent_config.env["FORCE_AUTO_BACKGROUND_TASKS"] == "1"
+    assert agent_config.env["ENABLE_BACKGROUND_TASKS"] == "1"
+    assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
+    assert agent_config.env["IS_SANDBOX"] == "1"
+    assert agent_config.env["API_TIMEOUT_MS"] == "12000000"
+    assert agent_config.env["BUN_CONFIG_HTTP_IDLE_TIMEOUT"] == "2000"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+
+
+def test_kimi_claude_code_moonshot_prefixes_caller_model(monkeypatch) -> None:
+    monkeypatch.delenv("MOONSHOT_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="kimi-claude-code",
+        model="moonshot/kimi-k2.7-code",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "moonshot/kimi-k2.7-code"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "kimi-k2.7-code"
+    assert agent_config.kwargs["version"] == "2.1.181"
 
 
 def test_claude_code_fireworks_agent_config_sets_fireworks_skin_env(
