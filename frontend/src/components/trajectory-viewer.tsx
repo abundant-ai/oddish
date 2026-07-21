@@ -36,6 +36,13 @@ import type {
   ObservationContent,
   ContentPart,
 } from "@/lib/types";
+import { phaseColorVars } from "@/lib/trajectory-metrics";
+import {
+  groupStepsBySegment,
+  stepRangeLabel,
+  toSegments,
+} from "@/lib/trajectory-segments";
+import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 import { formatMs } from "@/lib/utils";
 
@@ -747,6 +754,19 @@ export function TrajectoryViewer({
     return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
   }, [trajectory, lowerQuery]);
 
+  const { data: summary } = useTrajectorySummary(trialId, apiBaseUrl);
+  const segments = useMemo(() => toSegments(summary), [summary]);
+  const colorFor = useMemo(
+    () => phaseColorVars(segments.map((s) => s.key)),
+    [segments],
+  );
+  // Grouping runs over the *filtered* list, so a group whose steps all filtered
+  // out is simply never emitted.
+  const groups = useMemo(
+    () => groupStepsBySegment(visibleSteps, segments),
+    [visibleSteps, segments],
+  );
+
   const handleStepClick = useCallback(
     (index: number) => {
       const stepKey = `step-${index}`;
@@ -942,33 +962,57 @@ export function TrajectoryViewer({
               value={expandedSteps}
               onValueChange={setExpandedSteps}
             >
-              {visibleSteps.map(({ step, idx }) => (
-                <AccordionItem
-                  key={step.step_id}
-                  value={`step-${idx}`}
-                  ref={(el: HTMLDivElement | null) => {
-                    stepRefs.current[idx] = el;
-                  }}
-                >
-                  <AccordionTrigger className="py-3 hover:no-underline">
-                    <StepTrigger
-                      step={step}
-                      prevTimestamp={
-                        idx > 0
-                          ? (trajectory.steps[idx - 1]?.timestamp ?? null)
-                          : null
-                      }
-                      startTimestamp={trajectory.steps[0]?.timestamp ?? null}
-                    />
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <StepContent
-                      step={step}
-                      trialId={trialId}
-                      apiBaseUrl={apiBaseUrl}
-                    />
-                  </AccordionContent>
-                </AccordionItem>
+              {groups.map((group, gi) => (
+                <div key={`${group.key ?? "unclaimed"}-${gi}`}>
+                  {group.label && (
+                    <div className="mt-5 flex items-center gap-2 border-b pb-1.5 first:mt-0">
+                      <span
+                        className="h-4 w-1 rounded-sm"
+                        style={{
+                          background:
+                            colorFor.get(group.key ?? "") ?? "var(--phase-other)",
+                        }}
+                      />
+                      <span className="text-sm font-semibold">{group.label}</span>
+                      <span className="ml-auto font-mono text-xs text-muted-foreground">
+                        {stepRangeLabel(group)}
+                      </span>
+                    </div>
+                  )}
+                  {group.gist && (
+                    <p className="pb-1 pt-1.5 text-xs text-muted-foreground">
+                      {group.gist}
+                    </p>
+                  )}
+                  {group.steps.map(({ step, idx }) => (
+                    <AccordionItem
+                      key={step.step_id}
+                      value={`step-${idx}`}
+                      ref={(el: HTMLDivElement | null) => {
+                        stepRefs.current[idx] = el;
+                      }}
+                    >
+                      <AccordionTrigger className="py-3 hover:no-underline">
+                        <StepTrigger
+                          step={step}
+                          prevTimestamp={
+                            idx > 0
+                              ? (trajectory.steps[idx - 1]?.timestamp ?? null)
+                              : null
+                          }
+                          startTimestamp={trajectory.steps[0]?.timestamp ?? null}
+                        />
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        <StepContent
+                          step={step}
+                          trialId={trialId}
+                          apiBaseUrl={apiBaseUrl}
+                        />
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </div>
               ))}
             </Accordion>
           )}
