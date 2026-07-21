@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Optional
+from typing import Annotated, Callable, Optional
 
 import httpx
 import typer
@@ -97,7 +97,13 @@ def _share_or_dashboard_url(client, api_url: str, experiment_id: str) -> str:
     return f"{get_dashboard_url(api_url)}/share/{token}" if token else dashboard
 
 
-def _explain_failure(resp) -> None:
+_TASKS_SCOPE_HINT = "This action requires a TASKS-scoped API key."
+_ADMIN_SCOPE_HINT = (
+    "This action requires an admin API key, the same gate `oddish delete` uses."
+)
+
+
+def _explain_failure(resp, permission_hint: str) -> None:
     """Turn the API's error codes into something actionable."""
     try:
         detail = resp.json().get("detail", resp.text)
@@ -113,7 +119,7 @@ def _explain_failure(resp) -> None:
         console.print(f"[red]{detail}[/red]")
     elif resp.status_code == 403:
         console.print(f"[red]Not permitted:[/red] {detail}")
-        console.print("  This action requires a FULL-scope API key.")
+        console.print(f"  {permission_hint}")
     elif resp.status_code == 404:
         console.print(f"[red]Not found:[/red] {detail}")
     else:
@@ -134,6 +140,43 @@ def _print_mutation(data: dict, url: str) -> None:
         console.print(f"  Tasks unlinked: {data['tasks_unlinked']}")
     console.print(f"  Now contains:   {data.get('trials_total', 0)} trials")
     console.print(f"  View:           {url}")
+
+
+def _run_collection_mutation(
+    client: httpx.Client,
+    issue_request: Callable[[], httpx.Response],
+    *,
+    payload: dict,
+    empty_payload_message: Optional[str],
+    permission_hint: str,
+    api_url: str,
+    experiment_id: str,
+    json_output: bool,
+) -> None:
+    """Shared plumbing for add/remove/rename: empty-payload guard, the
+    request itself, error handling, and the success summary. `issue_request`
+    captures the command-specific HTTP verb/URL (e.g. `client.post(...)`)
+    so test doubles that only implement one verb keep working.
+    """
+    if empty_payload_message is not None and not any(payload.values()):
+        console.print(f"[red]{empty_payload_message}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        resp = issue_request()
+    except httpx.RequestError as e:
+        console.print(f"[red]Failed to connect to API:[/red] {e}")
+        raise typer.Exit(1)
+    if resp.status_code != 200:
+        _explain_failure(resp, permission_hint)
+        raise typer.Exit(1)
+    data = resp.json()
+    url = _share_or_dashboard_url(client, api_url, experiment_id)
+
+    if json_output:
+        console.print_json(data={**data, "url": url})
+        return
+    _print_mutation(data, url)
 
 
 @experiment_app.command("add")
@@ -196,31 +239,20 @@ def add(
             "task_ids": plain_tasks,
             "from_experiment_ids": from_experiments,
         }
-        if not any(payload.values()):
-            console.print(
-                "[red]Nothing to add: every --task pin resolved to zero "
-                "linkable trials.[/red]"
-            )
-            raise typer.Exit(1)
-
-        try:
-            resp = client.post(
-                f"{api_url}/experiments/{experiment_id}/collection/trials",
-                json=payload,
-            )
-        except httpx.RequestError as e:
-            console.print(f"[red]Failed to connect to API:[/red] {e}")
-            raise typer.Exit(1)
-        if resp.status_code != 200:
-            _explain_failure(resp)
-            raise typer.Exit(1)
-        data = resp.json()
-        url = _share_or_dashboard_url(client, api_url, experiment_id)
-
-    if json_output:
-        console.print_json(data={**data, "url": url})
-        return
-    _print_mutation(data, url)
+        url_path = f"{api_url}/experiments/{experiment_id}/collection/trials"
+        _run_collection_mutation(
+            client,
+            lambda: client.post(url_path, json=payload),
+            payload=payload,
+            empty_payload_message=(
+                "Nothing to add: every --task pin resolved to zero "
+                "linkable trials."
+            ),
+            permission_hint=_TASKS_SCOPE_HINT,
+            api_url=api_url,
+            experiment_id=experiment_id,
+            json_output=json_output,
+        )
 
 
 @experiment_app.command("remove")
@@ -286,32 +318,19 @@ def remove(
             "trial_ids": _dedupe([*trial_ids, *pinned_trial_ids]),
             "task_ids": plain_tasks,
         }
-        if not any(payload.values()):
-            console.print(
-                "[red]Nothing to remove: every --task pin resolved to zero "
-                "trials.[/red]"
-            )
-            raise typer.Exit(1)
-
-        try:
-            resp = client.request(
-                "DELETE",
-                f"{api_url}/experiments/{experiment_id}/collection/trials",
-                json=payload,
-            )
-        except httpx.RequestError as e:
-            console.print(f"[red]Failed to connect to API:[/red] {e}")
-            raise typer.Exit(1)
-        if resp.status_code != 200:
-            _explain_failure(resp)
-            raise typer.Exit(1)
-        data = resp.json()
-        url = _share_or_dashboard_url(client, api_url, experiment_id)
-
-    if json_output:
-        console.print_json(data={**data, "url": url})
-        return
-    _print_mutation(data, url)
+        url_path = f"{api_url}/experiments/{experiment_id}/collection/trials"
+        _run_collection_mutation(
+            client,
+            lambda: client.request("DELETE", url_path, json=payload),
+            payload=payload,
+            empty_payload_message=(
+                "Nothing to remove: every --task pin resolved to zero trials."
+            ),
+            permission_hint=_ADMIN_SCOPE_HINT,
+            api_url=api_url,
+            experiment_id=experiment_id,
+            json_output=json_output,
+        )
 
 
 @experiment_app.command("rename")
@@ -344,21 +363,15 @@ def rename(
     require_api_key(api_url)
 
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
-        try:
-            resp = client.patch(
-                f"{api_url}/experiments/{experiment_id}/collection",
-                json={"name": stripped},
-            )
-        except httpx.RequestError as e:
-            console.print(f"[red]Failed to connect to API:[/red] {e}")
-            raise typer.Exit(1)
-        if resp.status_code != 200:
-            _explain_failure(resp)
-            raise typer.Exit(1)
-        data = resp.json()
-        url = _share_or_dashboard_url(client, api_url, experiment_id)
-
-    if json_output:
-        console.print_json(data={**data, "url": url})
-        return
-    _print_mutation(data, url)
+        url_path = f"{api_url}/experiments/{experiment_id}/collection"
+        payload = {"name": stripped}
+        _run_collection_mutation(
+            client,
+            lambda: client.patch(url_path, json=payload),
+            payload=payload,
+            empty_payload_message=None,
+            permission_hint=_ADMIN_SCOPE_HINT,
+            api_url=api_url,
+            experiment_id=experiment_id,
+            json_output=json_output,
+        )

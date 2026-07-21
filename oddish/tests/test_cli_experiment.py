@@ -185,7 +185,7 @@ def test_add_explains_403_scope(monkeypatch):
     result = CliRunner().invoke(app, ["experiment", "add", "coll123", "t1"])
 
     assert result.exit_code == 1, result.output
-    assert "FULL-scope" in result.output
+    assert "TASKS-scoped" in result.output
     assert "insufficient scope" in result.output
 
 
@@ -393,7 +393,7 @@ def test_remove_explains_403_scope(monkeypatch):
     )
 
     assert result.exit_code == 1, result.output
-    assert "FULL-scope" in result.output
+    assert "admin API key" in result.output
 
 
 class _ZeroTrialPinRemoveClient:
