@@ -99,6 +99,13 @@ def upgrade() -> None:
         "ON task_upload_events (task_id, created_at DESC)"
     )
 
+    # SET LOCAL has no effect between separate autocommit statements (each is
+    # its own implicit transaction), so the session-scoped SET above was
+    # required to span them -- but that means it otherwise leaks onto every
+    # later migration sharing this connection. Reset it now that this
+    # migration's autocommit steps are done.
+    _autocommit("RESET lock_timeout")
+
 
 def downgrade() -> None:
     with op.get_context().autocommit_block():

@@ -27,8 +27,10 @@ def upgrade() -> None:
     )
     # AccessExclusiveLock is only held briefly (nullable columns, no
     # defaults -- no table rewrite), but a long-running reader on tasks could
-    # otherwise queue every writer behind this DDL. Fail fast instead.
-    op.execute("SET lock_timeout = '3s'")
+    # otherwise queue every writer behind this DDL. Fail fast instead. LOCAL
+    # so it resets at this migration's transaction commit rather than leaking
+    # (session-scoped) onto every later migration sharing this connection.
+    op.execute("SET LOCAL lock_timeout = '3s'")
     op.execute(
         """
         ALTER TABLE tasks
