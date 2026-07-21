@@ -88,6 +88,8 @@ const NUMRANGE_FIELD: Record<string, [keyof FilterValues, keyof FilterValues]> =
     runtime: ["runtimeTotalMin", "runtimeTotalMax"],
     runtimeAvg: ["runtimeAvgMin", "runtimeAvgMax"],
     passRate: ["passRateMin", "passRateMax"],
+    gpus: ["gpusMin", "gpusMax"],
+    expertHours: ["expertHoursMin", "expertHoursMax"],
   };
 
 // "num" (≥ N) filter key -> the single min field it writes.
@@ -100,6 +102,14 @@ const NUM_FIELD: Record<string, keyof FilterValues> = {
   partialCount: "partialCountMin",
   failCount: "failCountMin",
   harnessCount: "harnessCountMin",
+  cpusMin: "cpusMin",
+  memoryMbMin: "memoryMbMin",
+  ciPrNumber: "ciPrNumber",
+};
+
+// "text" filter key -> the single string field it writes.
+const TEXT_FIELD: Record<string, keyof FilterValues> = {
+  sourceRepo: "sourceRepo",
 };
 
 function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
@@ -282,6 +292,15 @@ export function TasksFilterSidebar() {
       case "passRate":
         set({ passRateMin: null, passRateMax: null });
         break;
+      case "gpus":
+        set({ gpusMin: null, gpusMax: null });
+        break;
+      case "expertHours":
+        set({ expertHoursMin: null, expertHoursMax: null });
+        break;
+      case "sourceRepo":
+        set({ sourceRepo: null });
+        break;
       case "topPerformer":
         set({ topBy: null, topValue: null, topMetric: null });
         break;
@@ -289,6 +308,8 @@ export function TasksFilterSidebar() {
       case "hasError":
       case "hasTrajectory":
       case "trialIsProbe":
+      case "allowInternet":
+      case "uploaderIsCi":
         set({ [key]: null } as Partial<FilterValues>);
         break;
       case "sort":
@@ -316,6 +337,9 @@ export function TasksFilterSidebar() {
       case "partialCount":
       case "failCount":
       case "harnessCount":
+      case "cpusMin":
+      case "memoryMbMin":
+      case "ciPrNumber":
         set({ [NUM_FIELD[key]]: null } as Partial<FilterValues>);
         break;
       default:
@@ -420,7 +444,9 @@ export function TasksFilterSidebar() {
               align="start"
               className="z-30 max-h-80 overflow-auto"
             >
-              {(["Task", "Trial"] as const).map((group) => {
+              {(
+                ["Task", "Trial", "Task shape", "Provenance"] as const
+              ).map((group) => {
                 const groupDefs = inactiveDefs.filter((d) => d.group === group);
                 if (!groupDefs.length) return null;
                 return (
@@ -604,6 +630,8 @@ function FilterControl({
       return <MatchAnyControl values={values} set={set} facets={facets} />;
     case "num":
       return <NumControl fieldKey={def.key} values={values} set={set} />;
+    case "text":
+      return <TextControl fieldKey={def.key} values={values} set={set} />;
     case "tags":
       return <TagsControl values={values} set={set} />;
     case "agentmodel":
@@ -2020,6 +2048,37 @@ function NumControl({
         onChange={(e) =>
           setDraft({ v: e.target.value === "" ? null : Number(e.target.value) })
         }
+        onKeyDown={(e) => {
+          if (e.key === "Enter") apply();
+        }}
+      />
+      <ApplyBar dirty={dirty} error={error} onApply={apply} />
+    </div>
+  );
+}
+
+function TextControl({
+  fieldKey,
+  values,
+  set,
+}: {
+  fieldKey: string;
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+}) {
+  const field = TEXT_FIELD[fieldKey] ?? "sourceRepo";
+  const applied = { v: (values[field] as string | null) ?? "" };
+  const commit = (d: { v: string }) =>
+    set({ [field]: d.v.trim() || null } as Partial<FilterValues>);
+  const { draft, setDraft, dirty, error, apply } = useDraft(applied, commit);
+  return (
+    <div>
+      <Input
+        type="text"
+        className="h-8 text-xs"
+        placeholder="org/repo"
+        value={draft.v}
+        onChange={(e) => setDraft({ v: e.target.value })}
         onKeyDown={(e) => {
           if (e.key === "Enter") apply();
         }}

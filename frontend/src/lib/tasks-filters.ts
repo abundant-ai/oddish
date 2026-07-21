@@ -60,6 +60,17 @@ export interface FilterValues {
   maxSteps: number | null;
   rewardMin: number | null;
   rewardMax: number | null;
+  // Task-registry metadata (parsed from task.toml + upload provenance).
+  allowInternet: boolean | null;
+  gpusMin: number | null;
+  gpusMax: number | null;
+  cpusMin: number | null;
+  memoryMbMin: number | null;
+  expertHoursMin: number | null;
+  expertHoursMax: number | null;
+  sourceRepo: string | null;
+  ciPrNumber: number | null;
+  uploaderIsCi: boolean | null;
   // Phase 1.2-lite task AGGREGATES (computed on the fly, no migration). Distinct
   // from the per-trial ranges above: these match a task's aggregate over its
   // scoped current-version trials, not a single trial's value.
@@ -153,6 +164,7 @@ type ControlKind =
   | "numrange"
   | "rewardthreshold"
   | "num"
+  | "text"
   | "tags"
   | "agentmodel"
   | "sort"
@@ -226,7 +238,7 @@ export const SORT_OPTIONS: Option[] = [
 export interface FilterDef {
   key: string;
   label: string;
-  group: "Task" | "Trial";
+  group: "Task" | "Trial" | "Task shape" | "Provenance";
   control: ControlKind;
   options?: Option[];
   facet?: keyof TaskBrowseFacets;
@@ -476,6 +488,55 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Match any of…",
     group: "Task",
     control: "matchany",
+  },
+  // Task-registry metadata (parsed from task.toml + upload provenance).
+  {
+    key: "allowInternet",
+    label: "Allow internet",
+    group: "Task shape",
+    control: "boolean",
+  },
+  {
+    key: "gpus",
+    label: "GPUs",
+    group: "Task shape",
+    control: "numrange",
+  },
+  {
+    key: "cpusMin",
+    label: "CPUs ≥",
+    group: "Task shape",
+    control: "num",
+  },
+  {
+    key: "memoryMbMin",
+    label: "Memory MB ≥",
+    group: "Task shape",
+    control: "num",
+  },
+  {
+    key: "expertHours",
+    label: "Expert hours",
+    group: "Task shape",
+    control: "numrange",
+  },
+  {
+    key: "sourceRepo",
+    label: "Source repo",
+    group: "Provenance",
+    control: "text",
+  },
+  {
+    key: "ciPrNumber",
+    label: "CI PR #",
+    group: "Provenance",
+    control: "num",
+  },
+  {
+    key: "uploaderIsCi",
+    label: "Uploaded by CI",
+    group: "Provenance",
+    control: "boolean",
   },
 ];
 
@@ -734,6 +795,22 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.topValue !== null;
     case "matchAny":
       return f.orGroups !== null && cleanOrGroups(f.orGroups).length > 0;
+    case "allowInternet":
+      return f.allowInternet !== null;
+    case "gpus":
+      return f.gpusMin !== null || f.gpusMax !== null;
+    case "cpusMin":
+      return f.cpusMin !== null;
+    case "memoryMbMin":
+      return f.memoryMbMin !== null;
+    case "expertHours":
+      return f.expertHoursMin !== null || f.expertHoursMax !== null;
+    case "sourceRepo":
+      return f.sourceRepo !== null && f.sourceRepo !== "";
+    case "ciPrNumber":
+      return f.ciPrNumber !== null;
+    case "uploaderIsCi":
+      return f.uploaderIsCi !== null;
     default:
       return false;
   }
@@ -832,6 +909,16 @@ export function filterParams(f: FilterValues): [string, string][] {
     const cleaned = cleanOrGroups(f.orGroups);
     if (cleaned.length) out.push(["or_groups", JSON.stringify(cleaned)]);
   }
+  bool("allow_internet", f.allowInternet);
+  num("gpus_min", f.gpusMin);
+  num("gpus_max", f.gpusMax);
+  num("cpus_min", f.cpusMin);
+  num("memory_mb_min", f.memoryMbMin);
+  num("expert_hours_min", f.expertHoursMin);
+  num("expert_hours_max", f.expertHoursMax);
+  if (f.sourceRepo) out.push(["source_repo", f.sourceRepo]);
+  num("ci_pr_number", f.ciPrNumber);
+  bool("uploader_is_ci", f.uploaderIsCi);
   return out;
 }
 
@@ -902,6 +989,16 @@ export const FILTER_PARAM_KEYS = [
   "top_value",
   "top_metric",
   "or_groups",
+  "allow_internet",
+  "gpus_min",
+  "gpus_max",
+  "cpus_min",
+  "memory_mb_min",
+  "expert_hours_min",
+  "expert_hours_max",
+  "source_repo",
+  "ci_pr_number",
+  "uploader_is_ci",
 ] as const;
 
 // Backend filter params that have no sidebar control yet but are still valid on
@@ -915,16 +1012,6 @@ const EXTRA_BROWSE_PARAM_KEYS = [
   "run_probe",
   "harbor_shas",
   "harbor_stages",
-  "allow_internet",
-  "gpus_min",
-  "gpus_max",
-  "cpus_min",
-  "memory_mb_min",
-  "expert_hours_min",
-  "expert_hours_max",
-  "source_repo",
-  "ci_pr_number",
-  "uploader_is_ci",
 ] as const;
 
 // Everything the browse fetch should forward / saved filters should capture.
@@ -1028,5 +1115,15 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
         return null;
       }
     })(),
+    allowInternet: bool("allow_internet"),
+    gpusMin: num("gpus_min"),
+    gpusMax: num("gpus_max"),
+    cpusMin: num("cpus_min"),
+    memoryMbMin: num("memory_mb_min"),
+    expertHoursMin: num("expert_hours_min"),
+    expertHoursMax: num("expert_hours_max"),
+    sourceRepo: sp.get("source_repo"),
+    ciPrNumber: num("ci_pr_number"),
+    uploaderIsCi: bool("uploader_is_ci"),
   };
 }
