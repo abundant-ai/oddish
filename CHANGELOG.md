@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-21]
+
+### Added
+
+- New `--allow-agent-host` / `--disable-web-tools` CLI flags plus automatic model-API host injection and web-tool disabling for restricted ("closed-internet") agent phases: `model_hosts.py` resolves allowed hosts from the model/provider being routed to (Anthropic, Bedrock, Fireworks GLM, Moonshot/Kimi, MiniMax, z.ai, etc.) rather than from the agent harness, so `claude-code`, `codex`, and others get the correct allowlist automatically; `claude-code` disables `WebSearch`/`WebFetch` and `codex` disables `web_search` on those phases (#818).
+- `oddish preflight` gained four new integrity checks: `closed_internet` (a phase whose effective network resolves public without a ≥20-char justification), `provenance` (a baked repo fetch or `.git` under `environment/` that could leak upstream branch history, suppressible with `# provenance-ok: <reason>`), `solution_format` (patch/diff-based solutions), and `anti_cheat_soundness` (brittle source-scanning anti-cheat regexes) (#816).
+- New offline trajectory-summary dump tooling (`backend/ops_summary_dump.py` plus a Modal-free `summary_dump.py` core) that replays the production summary path over a trial, task, or experiment and writes prompt/raw output/parsed summary/status/duration/error to local disk for offline taxonomy work, gated behind `--persist`; `build_summary_block()`/`resolve_summary_model()` were extracted so the harness and production share one construction site and can't drift (#805).
+- Analyzer reports now compute an explicit per-model breakdown (`by_model` + `cross_model_comparison`, backed by a new `analyzers.by_model` column), with per-model trial/scored/solved/reward counts derived from actual trial rows rather than LLM-reported findings so a model with fewer trials isn't penalized; older reports without the field render exactly as before (#803).
+- Admins can now edit per-model/queue-key concurrency limits at runtime from the Queue Health card via a new `PUT /admin/concurrency` endpoint, which takes precedence over the static `ODDISH_MODEL_CONCURRENCY_OVERRIDES`/deploy defaults for both dispatch planning and worker slot acquisition; a failure to read override state now fails closed to zero concurrency rather than risking a disabled queue silently reopening (#759).
+
+### Changed
+
+- Every Slack cost notification (experiment spend-milestone DMs, trial-cost DMs, unpriceable-model alerts) now reports spend over the trailing 24 hours instead of an unbounded lifetime total, with dedupe keys moved to an `experiment-24h:` prefix so legacy lifetime-spend rows can't suppress the new rolling alerts (#817).
+- `oddish run`/`oddish upload` now abort the whole run when any task in a multi-task run fails preflight, instead of silently proceeding with only the valid subset; `--force` restores the old lenient behavior (#816).
+- QA worker jobs now lease concurrency from the **analysis model's** queue key instead of the verdict model's, and the baked `anthropic/claude-sonnet-5` concurrency override was raised from 128 to 256 — QA throughput had been capped at the verdict bucket's default (48) while up to 240 jobs queued behind it, with the analysis bucket sitting idle (#802).
+- The sandbox analyzer cohort path is migrated onto the `AnalyzerBlock` primitive: each MAP/REDUCE turn now runs as a self-persisting block with S3 archival, replacing the hand-rolled turn loop and unifying it with the API analyzer path's client protocol (#783).
+- Dropped the Harbor fork's Modal closed-internet coupling: Oddish now pins `abundant-ai/harbor@main` and resolves Bedrock/model outbound hosts itself (`outbound_hosts_for_model`) instead of importing from `harbor.environments.modal_network`, following upstream's removal of the fork-only Modal CIDR / agent-tools stack (supersedes the same-day fork pin from #818) (#821).
+- Simplified the admin concurrency editor: one Save action per queue row (saving back to the deploy default now acts as a reset) instead of separate Save/Reset buttons, with layout cleanup so configured overrides and deploy defaults stay readable when they differ (#819).
+- Removed the Agents and Analyzers links from the primary header navigation; both routes remain directly accessible, and the old nav code is kept behind an explicit off flag (#823).
+
+### Fixed
+
+- Offline tasks (`allow_internet = false` or a non-public `network_mode`) now route to a backend with configurable egress (Modal) instead of the cheap-first default (Daytona), whose egress is all-or-nothing. This fixes an incident where 63 of 72 trials across 8 offline tasks died in agent bootstrap (apt `403`, DNS failures) before the agent ever ran; `task_is_offline` also now recognizes `network_mode`, not just the legacy `allow_internet` flag (#831).
+- Worker dependencies now include `dockerfile-parse`, fixing Modal trial startup crashing with `ModuleNotFoundError` before the agent ran, since the current Harbor fork's Modal environment parses task Dockerfiles with it (#829).
+- Fixed a duplicate `thinking` constructor parameter in `ApiAnalyzerLLMClient` that made the module fail to import, taking down `GET /trials/{id}/trajectory/summary` for every trial in production. Also hardened the frontend's summary proxy route to parse the upstream response body defensively, so a plain-text backend error surfaces its real status instead of being masked as a 503 JSON-parse error (#824).
+- The offline trajectory-summary dump harness's `resolve_cohort` was missing every trial in collection experiments — it checked only `trials.experiment_id`, not the `experiment_trials` association table collections use to gather trials without moving them — so a 187-trial collection resolved to 0 trials and the harness exited "successfully" with a silent wrong answer. Also raised `SUMMARY_MAX_TOKENS` from 2048 to 16384 after a 30-trial dump produced 13 mid-token parse failures on trials with thousands of steps (#814).
+- `ApiAnalyzerLLMClient` now explicitly disables thinking (`{"type": "disabled"}`) instead of relying on the model default. Moving the analysis model to `claude-sonnet-5` had silently enabled adaptive thinking, which ate into the shared `max_tokens` budget and caused `GET /trials/{id}/trajectory/summary` to 502 with `BlockParseError: non-JSON output`; a new `OutputBudgetExceeded` error is now raised when `stop_reason == "max_tokens"` instead of feeding a truncated body to `json.loads` (#812).
+- `ApiAnalyzerLLMClient` now constrains generation to a JSON schema via `output_schema`, closing the last of three causes of unparseable trajectory summaries (alongside the thinking-off pin and the raised token cap); verified against 37 real trajectories, going from 0/6 to 37/37 parsed (#810).
+- The experiment page no longer replaces an already-loaded task grid with a fatal error when a later background refresh fails; a refresh error is now only treated as fatal when zero task rows have loaded, otherwise a non-destructive "Could not refresh experiment" notice is shown. Root cause was Modal's rolling deploy still routing some requests to draining pre-fix containers that still failed the expensive task-shell query (#808).
+- CI's preview-deploy readiness poll now uses a 120s per-request timeout inside a 360s overall window (previously a flat 10s request timeout inside a 180s window), since a cold-starting preview API's first response measured ~26-30s and every poll attempt was being abandoned mid-boot — this had failed the "Deploy preview backend" check on four unrelated PRs in the same hour (#807).
+- Task detail pages no longer inflate trial counts from experiment-combine copies: each combine created new peer trial rows including copies of prior copies, compounding geometrically (5 → 10 → 20 → ...) until one task showed 545 trials that had only ever run 5 per experiment. A new `exclude_combine_copies` flag filters these out of task-detail trial lists and header counts (#804).
+- The experiment page's lightweight task-shell query no longer eagerly hydrates every historical trial and experiment on a member task, which had been timing out large rollup experiments despite the endpoint only needing aggregate-computed counts (#800).
+
+### Deprecated
+
+- The self-tuning per-model concurrency controller (`ODDISH_DYNAMIC_MODEL_CONCURRENCY`) is now deprecated in favor of the database-backed admin overrides (`PUT /admin/concurrency`, Queue Health card, #759): enabling the flag now logs a one-time deprecation warning. No behavior change — the flag stays off by default (#828).
+
+---
+
 ## [2026-07-20]
 
 ### Changed
