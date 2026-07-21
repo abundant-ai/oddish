@@ -1868,6 +1868,34 @@ async def _billed_cost_since(
     return round(total, 4)
 
 
+async def _qa_cost_since(
+    session: AsyncSession,
+    *,
+    since: datetime,
+    org_ids: set[str | None] | None = None,
+) -> float:
+    """QA/analysis spend from ``since`` to now, org-scoped like ``_billed_cost_since``.
+
+    Creation-time axis: analysis jobs are billed when they run. ``cost_usd`` is a
+    direct native cost, so a plain SUM -- no settled_cost decomposition.
+    """
+    query = select(func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0)).where(
+        AnalysisCostModel.deleted_at.is_(None),
+        AnalysisCostModel.created_at >= since,
+    )
+    if org_ids is not None:
+        if not org_ids:
+            return 0.0
+        non_null = [org_id for org_id in org_ids if org_id is not None]
+        predicates = []
+        if non_null:
+            predicates.append(AnalysisCostModel.org_id.in_(non_null))
+        if None in org_ids:
+            predicates.append(AnalysisCostModel.org_id.is_(None))
+        query = query.where(or_(*predicates))
+    return round(float((await session.execute(query)).scalar() or 0.0), 4)
+
+
 async def get_cost_breakdown_core(
     session: AsyncSession,
     *,
@@ -2137,10 +2165,19 @@ async def get_cost_breakdown_core(
         limit for limit in month_limits_by_org.values() if limit is not None
     ]
     month_budget = float(sum(month_limits)) if month_limits else None
+    # month_cost is shown against month_budget (the budgeted orgs' summed
+    # limits), so fold in month-to-date QA scoped to those same orgs -- keeping
+    # the figure consistent with the budget it is measured against.
+    month_org_scope = budgeted_month_org_ids if month_budget is not None else None
     month_cost = await _billed_cost_since(
         session,
         since=month_start,
-        org_ids=budgeted_month_org_ids if month_budget is not None else None,
+        org_ids=month_org_scope,
+    )
+    month_cost = round(
+        month_cost
+        + await _qa_cost_since(session, since=month_start, org_ids=month_org_scope),
+        4,
     )
 
     quota_start = quota_window_start(now)

@@ -492,6 +492,24 @@ async def test_monthly_quota_cost_uses_budgeted_orgs_only(
                 "exp_8": E8,
             },
         )
+        # Month-to-date QA spend: only the budgeted org's (ORG_1) row folds into
+        # month_cost; the non-budgeted org and org-less rows are scoped out.
+        session.add_all(
+            [
+                AnalysisCostModel(
+                    id=f"qamonth-{_RUN}-{i}",
+                    job_kind="trial_classifier",
+                    model=f"gpt-5.5-qa-{_RUN}",
+                    org_id=org_id,
+                    cost_usd=cost,
+                    cost_source="native",
+                    created_at=utcnow(),
+                )
+                for i, (org_id, cost) in enumerate(
+                    ((ORG_1, 3.0), (ORG_2, 7.0), (None, 5.0))
+                )
+            ]
+        )
         await session.flush()
 
     try:
@@ -500,9 +518,15 @@ async def test_monthly_quota_cost_uses_budgeted_orgs_only(
                 session, window_days=7, experiment_limit=500, user_limit=500
             )
         assert result.totals.month_budget_usd == 10.0
-        assert _approx(result.totals.month_cost_usd, 55.0 + _EXPECTED_EST)
+        # Trial spend for the budgeted org plus only its month-to-date QA (3.0).
+        assert _approx(result.totals.month_cost_usd, 55.0 + _EXPECTED_EST + 3.0)
     finally:
         async with get_session() as session:
+            await session.execute(
+                AnalysisCostModel.__table__.delete().where(
+                    AnalysisCostModel.id.like(f"qamonth-{_RUN}-%")
+                )
+            )
             await session.execute(
                 text("DELETE FROM org_quotas WHERE org_id = :org_id"),
                 {"org_id": ORG_1},
