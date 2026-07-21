@@ -8,9 +8,13 @@ import type { TrajectorySummary } from "@/lib/types";
  * The one SWR handle for a trial's trajectory summary. Three components on the
  * Summary tab need it; a single key means a single request.
  */
-export function useTrajectorySummary(trialId: string, apiBaseUrl = "/api") {
+export function useTrajectorySummary(
+  trialId: string,
+  apiBaseUrl = "/api",
+  enabled = true,
+) {
   return useSWR<TrajectorySummary | null>(
-    `${apiBaseUrl}/trials/${trialId}/trajectory/summary`,
+    enabled ? `${apiBaseUrl}/trials/${trialId}/trajectory/summary` : null,
     fetcher,
     { revalidateOnFocus: false },
   );

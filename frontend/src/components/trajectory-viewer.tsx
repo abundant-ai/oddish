@@ -754,7 +754,13 @@ export function TrajectoryViewer({
     return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
   }, [trajectory, lowerQuery]);
 
-  const { data: summary } = useTrajectorySummary(trialId, apiBaseUrl);
+  // A summary request can trigger paid on-demand generation server-side, so it
+  // must not fire for a trial we already know (via shouldFetch) has no trajectory.
+  const { data: summary } = useTrajectorySummary(
+    trialId,
+    apiBaseUrl,
+    shouldFetch,
+  );
   const segments = useMemo(() => toSegments(summary), [summary]);
   const colorFor = useMemo(
     () => phaseColorVars(segments.map((s) => s.key)),
