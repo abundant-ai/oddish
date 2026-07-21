@@ -312,3 +312,53 @@ def remove(
         console.print_json(data={**data, "url": url})
         return
     _print_mutation(data, url)
+
+
+@experiment_app.command("rename")
+def rename(
+    experiment_id: Annotated[
+        str, typer.Argument(help="Collection experiment id to rename.")
+    ],
+    name: Annotated[
+        str, typer.Option("--name", "-n", help="New name for the collection.")
+    ],
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print raw JSON.")
+    ] = False,
+    api_url: Annotated[
+        Optional[str],
+        typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
+    ] = None,
+):
+    """Rename a read-only collection. The share link is unaffected.
+
+        oddish experiment rename bd43dc73 -n "21-task rollup"
+    """
+    stripped = (name or "").strip()
+    if not stripped:
+        console.print("[red]Name must not be empty.[/red]")
+        raise typer.Exit(1)
+
+    if not api_url:
+        api_url = get_api_url()
+    require_api_key(api_url)
+
+    with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
+        try:
+            resp = client.patch(
+                f"{api_url}/experiments/{experiment_id}/collection",
+                json={"name": stripped},
+            )
+        except httpx.RequestError as e:
+            console.print(f"[red]Failed to connect to API:[/red] {e}")
+            raise typer.Exit(1)
+        if resp.status_code != 200:
+            _explain_failure(resp)
+            raise typer.Exit(1)
+        data = resp.json()
+        url = _share_or_dashboard_url(client, api_url, experiment_id)
+
+    if json_output:
+        console.print_json(data={**data, "url": url})
+        return
+    _print_mutation(data, url)

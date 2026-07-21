@@ -430,3 +430,54 @@ def test_remove_nothing_to_remove_does_not_hit_network(monkeypatch):
 
     assert result.exit_code != 0, result.output
     assert "Nothing to remove" in result.output
+
+
+class _RenameClient:
+    patched: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/share"):
+            return httpx.Response(
+                200, json={"name": "after", "is_public": True,
+                           "public_token": "tok123"}
+            )
+        raise AssertionError(f"unexpected get {url}")
+
+    def patch(self, url, json=None):
+        type(self).patched = {"url": url, "json": json}
+        return httpx.Response(
+            200,
+            json={
+                "id": "coll123",
+                "name": "after",
+                "trials_added": 0,
+                "trials_removed": 0,
+                "trials_total": 5,
+                "tasks_linked": 0,
+                "tasks_unlinked": 0,
+            },
+        )
+
+
+def test_rename_patches_and_reports_share_url(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _RenameClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "rename", "coll123", "--name", "after"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _RenameClient.patched["url"].endswith("/experiments/coll123/collection")
+    assert _RenameClient.patched["json"] == {"name": "after"}
+    assert "after" in result.output
+    assert "tok123" in result.output
