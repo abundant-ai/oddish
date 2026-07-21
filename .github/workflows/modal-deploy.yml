@@ -7,7 +7,11 @@ on:
 
 concurrency:
   group: modal-deploy-main
-  cancel-in-progress: true
+  # Not cancel-in-progress: this workflow now owns migrations, and cancelling
+  # mid-run can interrupt an autocommit_block statement (CREATE INDEX
+  # CONCURRENTLY, ALTER TYPE ... ADD VALUE) that sits outside alembic's
+  # transaction, leaving the schema half-applied. Queue instead.
+  cancel-in-progress: false
 
 jobs:
   migrate:
