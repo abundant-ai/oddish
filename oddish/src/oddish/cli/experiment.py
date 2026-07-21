@@ -18,10 +18,6 @@ console = Console()
 experiment_app = typer.Typer(help="Manage experiments.", no_args_is_help=True)
 
 
-def _normalize_trial_ids(raw: list[str]) -> list[str]:
-    return list(dict.fromkeys(s.strip() for s in raw if s and s.strip()))
-
-
 def _format_collection_summary(data: dict) -> list[str]:
     return [
         f"[green]Created collection {data.get('id')}[/green] ({data.get('name')})",
@@ -55,7 +51,7 @@ def create(
 
         oddish experiment create --name "my collection" trial_a trial_b trial_c
     """
-    ids = _normalize_trial_ids(trial_ids)
+    ids = _dedupe(trial_ids)
     if not ids:
         console.print("[red]Provide at least one trial id.[/red]")
         raise typer.Exit(1)
@@ -117,19 +113,36 @@ def _explain_failure(resp, permission_hint: str) -> None:
         )
     elif resp.status_code == 409:
         console.print(f"[red]{detail}[/red]")
+    elif resp.status_code == 400:
+        console.print(f"[red]{detail}[/red]")
     elif resp.status_code == 403:
         console.print(f"[red]Not permitted:[/red] {detail}")
         console.print(f"  {permission_hint}")
+    elif resp.status_code == 404 and str(detail).strip() == "Not Found":
+        # FastAPI's router-level 404: the path itself is unknown, which on a
+        # correct URL means the backend predates these routes.
+        console.print("[red]This API server does not have the collection-editing routes.[/red]")
+        console.print("  The backend may need upgrading to a version that supports")
+        console.print("  `oddish experiment add/remove/rename`.")
     elif resp.status_code == 404:
         console.print(f"[red]Not found:[/red] {detail}")
     else:
         console.print(f"[red]Failed:[/red] {resp.status_code} - {resp.text}")
 
 
-def _print_mutation(data: dict, url: str) -> None:
+def _print_mutation(data: dict, url: str, *, verb: str = "update") -> None:
     console.print(
         f"[green]Updated collection {data.get('id')}[/green] ({data.get('name')})"
     )
+    # A removal that matched nothing still returns 200; without this the banner
+    # would claim success for a command that changed nothing.
+    if verb == "remove" and not data.get("trials_removed"):
+        console.print(
+            "  [yellow]No trials removed[/yellow] - none of the given ids or "
+            "tasks were in this collection."
+        )
+    if data.get("trials_skipped"):
+        console.print(f"  Ignored (not members): {data['trials_skipped']}")
     if data.get("trials_added"):
         console.print(f"  Trials added:   {data['trials_added']}")
     if data.get("trials_removed"):
@@ -152,6 +165,7 @@ def _run_collection_mutation(
     api_url: str,
     experiment_id: str,
     json_output: bool,
+    verb: str = "update",
 ) -> None:
     """Shared plumbing for add/remove/rename: empty-payload guard, the
     request itself, error handling, and the success summary. `issue_request`
@@ -176,7 +190,7 @@ def _run_collection_mutation(
     if json_output:
         console.print_json(data={**data, "url": url})
         return
-    _print_mutation(data, url)
+    _print_mutation(data, url, verb=verb)
 
 
 @experiment_app.command("add")
@@ -330,6 +344,7 @@ def remove(
             api_url=api_url,
             experiment_id=experiment_id,
             json_output=json_output,
+            verb="remove",
         )
 
 

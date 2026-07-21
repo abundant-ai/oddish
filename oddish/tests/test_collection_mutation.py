@@ -529,7 +529,35 @@ async def test_remove_ignores_ids_that_are_not_members(session):
     await session.flush()
 
     assert resp.trials_removed == 1
+    assert resp.trials_skipped == 2
     assert await _live_ids(session, coll_id) == {t1.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_reports_skipped_when_nothing_matches(session):
+    """Every id a non-member: still a 200, but the caller must be able to tell
+    that nothing happened."""
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    task = _task("rm-allskipped")
+    session.add(task)
+    await session.flush()
+    home = _experiment("rm-allskipped-home")
+    session.add(home)
+    await session.flush()
+    t1 = _trial(task, home)
+    session.add(t1)
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1])
+
+    resp = await remove_from_collection_core(
+        session, experiment_id=coll_id, trial_ids=["nope-a", "nope-b"], org_id="org1"
+    )
+
+    assert resp.trials_removed == 0
+    assert resp.trials_skipped == 2
+    assert resp.trials_total == 1
 
 
 @pytest.mark.asyncio

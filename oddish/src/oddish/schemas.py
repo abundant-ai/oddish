@@ -1278,6 +1278,8 @@ class CollectionMutationResponse(BaseModel):
     trials_total: int = 0
     tasks_linked: int = 0
     tasks_unlinked: int = 0
+    # Ids the caller named that were not members; ignored, not an error.
+    trials_skipped: int = 0
 
 
 class TaskBrowseExperiment(BaseModel):

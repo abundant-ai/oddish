@@ -474,6 +474,124 @@ async def test_remove_route_requires_admin_role_for_jwt_sessions(
         await _cleanup(experiment_ids=[coll_id])
 
 
+def _admin_override(org_id: str):
+    return lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT,
+        org_id=org_id,
+        user_role=UserRole.ADMIN,
+    )
+
+
+@pytest.mark.asyncio
+async def test_remove_route_succeeds_for_admin(client, app, seed_org_with_trials):
+    """The only other remove tests assert 403, which `require_admin` returns
+    before the body is ever parsed -- so nothing here proved a DELETE body
+    reaches the handler at all."""
+    org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    created = await client.post(
+        "/experiments/collections",
+        json={"name": "route-remove-ok", "trial_ids": [trial_1, trial_2]},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    coll_id = created.json()["id"]
+
+    app.dependency_overrides[require_auth] = _admin_override(org_id)
+    try:
+        resp = await client.request(
+            "DELETE",
+            f"/experiments/{coll_id}/collection/trials",
+            json={"trial_ids": [trial_2]},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["trials_removed"] == 1
+        assert body["trials_total"] == 1
+    finally:
+        app.dependency_overrides.clear()
+        await _cleanup(experiment_ids=[coll_id])
+
+
+@pytest.mark.asyncio
+async def test_rename_route_succeeds_for_admin(client, app, seed_org_with_trials):
+    org_id, trial_1, _trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    created = await client.post(
+        "/experiments/collections",
+        json={"name": "route-rename-before", "trial_ids": [trial_1]},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    coll_id = created.json()["id"]
+
+    app.dependency_overrides[require_auth] = _admin_override(org_id)
+    try:
+        resp = await client.patch(
+            f"/experiments/{coll_id}/collection",
+            json={"name": "route-rename-after"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["name"] == "route-rename-after"
+    finally:
+        app.dependency_overrides.clear()
+        await _cleanup(experiment_ids=[coll_id])
+
+
+@pytest.mark.asyncio
+async def test_mutation_routes_invalidate_dashboard_cache(
+    client, app, seed_org_with_trials, monkeypatch
+):
+    """A stale dashboard cache would keep serving the pre-edit membership."""
+    import api.routers.tasks as tasks_router
+
+    org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    calls: list[str | None] = []
+    monkeypatch.setattr(
+        tasks_router,
+        "invalidate_dashboard_cache",
+        lambda org_id=None, **kw: calls.append(org_id),
+    )
+
+    created = await client.post(
+        "/experiments/collections",
+        json={"name": "route-cache", "trial_ids": [trial_1, trial_2]},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    coll_id = created.json()["id"]
+    assert calls == [org_id]  # create
+
+    try:
+        add = await client.post(
+            f"/experiments/{coll_id}/collection/trials",
+            json={"trial_ids": [trial_1]},
+            headers=headers,
+        )
+        assert add.status_code == 200, add.text
+
+        app.dependency_overrides[require_auth] = _admin_override(org_id)
+        removed = await client.request(
+            "DELETE",
+            f"/experiments/{coll_id}/collection/trials",
+            json={"trial_ids": [trial_2]},
+        )
+        assert removed.status_code == 200, removed.text
+        renamed = await client.patch(
+            f"/experiments/{coll_id}/collection", json={"name": "route-cache-2"}
+        )
+        assert renamed.status_code == 200, renamed.text
+
+        assert calls == [org_id] * 4
+    finally:
+        app.dependency_overrides.clear()
+        await _cleanup(experiment_ids=[coll_id])
+
+
 @pytest.mark.asyncio
 async def test_add_route_rejects_non_collection_with_409(
     client, seed_org_with_trials

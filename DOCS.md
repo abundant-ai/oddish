@@ -558,8 +558,12 @@ oddish experiment rename <collection_id> --name "21-task rollup"
 
 `remove` only unlinks — the trials stay in their home experiment with their
 artifacts intact. `add` needs a `TASKS`-scoped key; `remove` and `rename`
-require an admin API key, the same gate `oddish delete` uses. A collection
-can't be emptied out this way; use `oddish delete` to remove it entirely.
+require an admin API key, the same gate `oddish delete` uses. `remove` refuses
+to take out the last of a collection's trials — if you want the collection
+gone, use `oddish delete` to remove it entirely. (This is a guard on the
+`remove` command, not a guarantee about collections in general: deleting the
+underlying trials with `oddish delete --trial` can still leave a collection
+with nothing to show.)
 
 ## Delete Data
 

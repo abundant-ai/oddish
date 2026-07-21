@@ -432,6 +432,132 @@ def test_remove_nothing_to_remove_does_not_hit_network(monkeypatch):
     assert "Nothing to remove" in result.output
 
 
+class _NoOpRemoveClient:
+    """A 200 that removed nothing -- every id was a non-member."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/share"):
+            return httpx.Response(200, json={"public_token": None})
+        raise AssertionError(f"unexpected get {url}")
+
+    def request(self, method, url, json=None):
+        return httpx.Response(
+            200,
+            json={
+                "id": "coll123",
+                "name": "my collection",
+                "trials_added": 0,
+                "trials_removed": 0,
+                "trials_total": 5,
+                "tasks_linked": 0,
+                "tasks_unlinked": 0,
+                "trials_skipped": 2,
+            },
+        )
+
+
+def test_remove_reports_when_nothing_was_removed(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _NoOpRemoveClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "remove", "coll123", "t-bogus", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "No trials removed" in result.output
+    assert "Ignored (not members): 2" in result.output
+
+
+class _BadRequestClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def post(self, url, json=None):
+        return httpx.Response(400, json={"detail": "nothing to add"})
+
+
+def test_add_explains_400(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _BadRequestClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["experiment", "add", "coll123", "t1"])
+
+    assert result.exit_code == 1, result.output
+    assert "nothing to add" in result.output
+    # Not the raw dump the generic branch would have produced.
+    assert "400 - " not in result.output
+
+
+class _RouteMissingClient:
+    """An older backend without the collection routes: FastAPI's own 404."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def post(self, url, json=None):
+        return httpx.Response(404, json={"detail": "Not Found"})
+
+
+def test_add_explains_router_level_404_as_stale_backend(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _RouteMissingClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["experiment", "add", "coll123", "t1"])
+
+    assert result.exit_code == 1, result.output
+    assert "upgrading" in result.output
+    assert "Not found: Not Found" not in result.output
+
+
+class _MissingCollectionClient:
+    """A real resource 404 must keep its own message."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def post(self, url, json=None):
+        return httpx.Response(404, json={"detail": "Experiment coll123 not found"})
+
+
+def test_add_keeps_resource_404_message(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _MissingCollectionClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["experiment", "add", "coll123", "t1"])
+
+    assert result.exit_code == 1, result.output
+    assert "Experiment coll123 not found" in result.output
+    assert "upgrading" not in result.output
+
+
 class _RenameClient:
     patched: dict = {}
 

@@ -244,14 +244,23 @@ async def _load_collection(
     org's experiment exists. 409 on a real experiment: ``remove`` would
     silently no-op for trials owned via ``trials.experiment_id``, and mutating
     a running experiment's membership races the dispatcher.
+
+    ``FOR UPDATE`` on the experiment row serializes concurrent mutations: the
+    remove path reads the member set, evaluates the would-this-empty-it guard,
+    and only then issues its UPDATE, so under READ COMMITTED two sessions
+    removing disjoint halves would both pass the guard and empty the
+    collection. Every caller here is a mutation and collections are
+    low-traffic, so the lock costs nothing in practice.
     """
     experiment = (
         (
             await session.execute(
-                select(ExperimentModel).where(
+                select(ExperimentModel)
+                .where(
                     ExperimentModel.id == experiment_id,
                     ExperimentModel.org_id == org_id,
                 )
+                .with_for_update()
             )
         )
         .scalars()
@@ -359,13 +368,16 @@ async def add_to_collection_core(
     # on_conflict_do_update rather than do_nothing: a trial removed earlier has
     # a tombstoned row, and do_nothing would leave it invisible forever. Mirrors
     # queue._link_task_to_experiment's restore-on-conflict.
+    #
+    # The rows go as executemany parameters rather than inline ``.values([...])``
+    # so SQLAlchemy batches them; one statement with ~3 binds per row would blow
+    # Postgres' 65535 bind-parameter ceiling on a large ``--from``.
     await session.execute(
-        pg_insert(experiment_trials)
-        .values([{"experiment_id": experiment_id, "trial_id": t.id} for t in trials])
-        .on_conflict_do_update(
+        pg_insert(experiment_trials).on_conflict_do_update(
             index_elements=["experiment_id", "trial_id"],
             set_={"deleted_at": None},
-        )
+        ),
+        [{"experiment_id": experiment_id, "trial_id": t.id} for t in trials],
     )
 
     after_tasks = await _live_member_task_ids(session, experiment_id)
@@ -449,6 +461,9 @@ async def remove_from_collection_core(
     # from a collection must take ALL of it, including trials from older
     # versions that were pinned in. Per-version removal goes through explicit
     # trial ids (the CLI's `--task name@N` expands to them client-side).
+    #
+    # One query per ref: `--task` counts are CLI-scale (a handful), so the
+    # round-trips are not worth batching.
     for ident in task_idents:
         task = (
             (
@@ -482,11 +497,14 @@ async def remove_from_collection_core(
         )
         targets |= {i for i in task_trial_ids if i in before_trials}
 
+    skipped = len([i for i in explicit_ids if i not in before_trials])
+
     if not targets:
         return CollectionMutationResponse(
             id=experiment.id,
             name=experiment.name,
             trials_total=len(before_trials),
+            trials_skipped=skipped,
         )
 
     if not (before_trials - targets):
@@ -523,6 +541,7 @@ async def remove_from_collection_core(
         trials_removed=len(targets),
         trials_total=len(before_trials - targets),
         tasks_unlinked=len(orphaned),
+        trials_skipped=skipped,
     )
 
 
