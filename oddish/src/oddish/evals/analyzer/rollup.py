@@ -56,7 +56,7 @@ def _gaps(findings: list[dict]) -> list[dict]:
     for f in findings:
         by_gap[f.get("subtype") or "unknown"].append(f)
 
-    gaps = [
+    gaps: list[dict[str, Any]] = [
         {
             "gap": gap,
             "subcategory": SUBCATEGORY_OF.get(gap, "emergent"),
@@ -74,7 +74,7 @@ def _by_model(findings: list[dict]) -> dict[str, Any]:
     for f in findings:
         by_model[_model_key(f.get("model"))].append(f)
 
-    groups = [
+    groups: list[dict[str, Any]] = [
         {"key": key, "gaps": _gaps(items)} for key, items in by_model.items()
     ]
     groups.sort(key=lambda g: (-sum(x["count"] for x in g["gaps"]), g["key"]))
@@ -88,7 +88,7 @@ def _by_task(
     for f in findings:
         by_task[f.get("task_id") or "unknown"].append(f)
 
-    groups = []
+    groups: list[dict[str, Any]] = []
     for task_id, items in by_task.items():
         # Both sides normalized, and both drop unattributable trials, or
         # models_hit could contain a key absent from the roster and the ratio
@@ -123,7 +123,9 @@ def build_rollup(
     """``models_by_task=None`` means no roster was persisted; task_construction
     then reports ``models_total: None`` (unknown) rather than 0."""
     lanes: dict[str, list[dict]] = {
-        "good_failures": [], "task_construction": [], "reward_hacking": []
+        "good_failures": [],
+        "task_construction": [],
+        "reward_hacking": [],
     }
     for f in findings:
         lane = _lane_of(f)

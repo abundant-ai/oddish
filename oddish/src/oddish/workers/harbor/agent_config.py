@@ -15,8 +15,10 @@ from oddish.config import (
     OPENAI_PROVIDER_AZURE,
     OPENAI_PROVIDER_OPENAI,
     ZAI_DEFAULT_BASE_URL,
+    anthropic_hdo_bare_model_id,
     fireworks_api_model_id,
     fireworks_bare_model_id,
+    is_anthropic_hdo_model,
     is_fireworks_model,
     is_meta_model,
     is_minimax_model,
@@ -29,6 +31,7 @@ from oddish.config import (
     moonshot_bare_model_id,
     settings,
     to_anthropic_api_model_id,
+    to_anthropic_hdo_model_id,
     to_bedrock_model_id,
     to_fireworks_model_id,
     to_minimax_model_id,
@@ -46,9 +49,7 @@ _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH = (
     "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
 )
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
-_ODDISH_MINI_SWE_IMPORT_PATH = (
-    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
-)
+_ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
 )
@@ -240,6 +241,38 @@ def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
         model=bare_model,
         recommended_env=_MOONSHOT_RECOMMENDED_ENV,
     )
+
+
+def _resolve_anthropic_hdo_api_key() -> str:
+    """Return the HDO Anthropic key from settings or the process environment."""
+    configured = (settings.anthropic_hdo_api_key or "").strip()
+    if configured:
+        return configured
+    return (os.environ.get("ANTHROPIC_HDO_API_KEY") or "").strip()
+
+
+def _inject_anthropic_hdo_api_key(
+    agent_config: AgentConfig, *, model_name: str | None
+) -> None:
+    """Overwrite ``ANTHROPIC_API_KEY`` with the HDO key for an HDO-prefixed trial.
+
+    Call while the model still carries the ``anthropic-hdo/`` prefix (or pass
+    that original id as *model_name*). Always overwrites: an empty HDO key must
+    not fall through to the platform Anthropic / Bedrock credentials.
+    """
+    if not is_anthropic_hdo_model(model_name):
+        return
+    bare_model = anthropic_hdo_bare_model_id(model_name or "")
+    api_model = to_anthropic_api_model_id(bare_model) or bare_model
+    env = dict(agent_config.env or {})
+    env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    if _is_claude_code_agent(agent_config) and api_model:
+        env["ANTHROPIC_MODEL"] = api_model
+        for alias in _ANTHROPIC_MODEL_ALIAS_KEYS:
+            env.setdefault(alias, api_model)
+    agent_config.env = env
 
 
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
@@ -461,6 +494,21 @@ def _build_agent_config(
         agent_config.model_name = to_minimax_model_id(agent_config.model_name)
     elif is_moonshot_model(agent_config.model_name):
         agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
+    elif is_anthropic_hdo_model(agent_config.model_name):
+        # Inject the HDO key before rewriting the model id so non-claude-code
+        # agents (which become anthropic/<id>) still authenticate with it.
+        hdo_model = agent_config.model_name
+        _inject_anthropic_hdo_api_key(agent_config, model_name=hdo_model)
+        canonical = to_anthropic_hdo_model_id(hdo_model)
+        if _is_claude_code_agent(agent_config):
+            # Keep the anthropic-hdo/ prefix for provider/queue/allowlist; the
+            # injector pins ANTHROPIC_MODEL to the bare Anthropic API id.
+            agent_config.model_name = canonical
+        else:
+            # litellm agents need anthropic/<api-id> plus ANTHROPIC_API_KEY.
+            bare = anthropic_hdo_bare_model_id(canonical or "")
+            api_id = to_anthropic_api_model_id(bare) or bare
+            agent_config.model_name = f"anthropic/{api_id}" if api_id else canonical
     elif not _is_claude_code_agent(agent_config):
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
@@ -494,6 +542,11 @@ def _build_agent_config(
     _apply_mini_swe_agent(agent_config)
     _apply_claude_code_oddish_wrapper(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
+    # HDO key must win over probe/BYOK/platform ANTHROPIC_API_KEY merges above.
+    # Use the original *model* arg: non-claude-code agents rewrite model_name to
+    # anthropic/<id> and would otherwise lose the HDO signal.
+    if is_anthropic_hdo_model(model):
+        _inject_anthropic_hdo_api_key(agent_config, model_name=model)
 
     return agent_config
 

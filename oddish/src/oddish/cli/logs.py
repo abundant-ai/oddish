@@ -15,6 +15,7 @@ console = Console()
 
 POLL_INTERVAL_SEC = 2.0
 
+
 class _TransientError(Exception):
     pass
 
@@ -38,7 +39,11 @@ def _render_event(event: dict) -> str | None:
     if kind == "message":
         text = _safe_text(payload.get("text"))
         stripped = text.text.strip()
-        return f"{escape(stripped)}{_tail(payload, changed=text.changed)}" if stripped else None
+        return (
+            f"{escape(stripped)}{_tail(payload, changed=text.changed)}"
+            if stripped
+            else None
+        )
     if kind == "tool_use":
         name = _safe_text(payload.get("name") or "tool")
         arg = _safe_text(payload.get("input"))
@@ -50,15 +55,22 @@ def _render_event(event: dict) -> str | None:
         )
     if kind == "tool_result":
         content = _safe_text(payload.get("content"))
-        text = content.text.strip().replace("\n", " ")[:160]
-        if not text:
+        display_text = content.text.strip().replace("\n", " ")[:160]
+        if not display_text:
             return None
         style = "red" if payload.get("is_error") else "dim"
-        return f"[{style}]  ↳ {escape(text)}[/{style}]{_tail(payload, changed=content.changed)}"
+        return (
+            f"[{style}]  ↳ {escape(display_text)}[/{style}]"
+            f"{_tail(payload, changed=content.changed)}"
+        )
     if kind == "summary":
         text = _safe_text(payload.get("text"))
         stripped = text.text.strip()
-        return f"[green]{escape(stripped)}[/green]{_tail(payload, changed=text.changed)}" if stripped else None
+        return (
+            f"[green]{escape(stripped)}[/green]{_tail(payload, changed=text.changed)}"
+            if stripped
+            else None
+        )
     return None
 
 
@@ -107,7 +119,9 @@ def stream_logs(
         usage = data["usage"]
         cost = usage.get("cost_usd")
         if cost is not None and cost != last_cost:
-            tokens = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+            tokens = (usage.get("input_tokens") or 0) + (
+                usage.get("output_tokens") or 0
+            )
             emit(f"[dim]${cost:.4f} · {tokens:,} tokens[/dim]")
             last_cost = cost
 
