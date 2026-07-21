@@ -13,12 +13,17 @@ from oddish.schemas import TaskMetadata
 _SLUG_SEPARATORS = re.compile(r"[^a-z0-9]+")
 
 
-def slugify(value: str) -> str:
+def slugify(value: str, *, max_len: int | None = None) -> str:
     """Normalize a vocabulary value so separator drift collapses.
 
     'ml_training' and 'ml-training' and 'ML Training' all become 'ml-training'.
+    ``max_len`` truncates (rather than rejects) values wider than a tag
+    policy's name_max_len -- see derived_tag_pairs.
     """
-    return _SLUG_SEPARATORS.sub("-", value.strip().lower()).strip("-")
+    slug = _SLUG_SEPARATORS.sub("-", value.strip().lower()).strip("-")
+    if max_len is not None and len(slug) > max_len:
+        slug = slug[:max_len].rstrip("-")
+    return slug
 
 
 def project_task_config(config: dict) -> TaskMetadata:
@@ -42,6 +47,8 @@ def project_task_config(config: dict) -> TaskMetadata:
 
     return TaskMetadata(
         description=metadata.get("description"),
+        # category can slugify to "" (e.g. "---"); category_raw keeps the
+        # original string regardless, since it's drift-forensics evidence.
         category=category_slug or None,
         category_raw=str(category_raw) if category_raw else None,
         topic_tags=topic_tags,

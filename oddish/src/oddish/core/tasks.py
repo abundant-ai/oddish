@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.core.tags.derived import rebuild_derived_tags
+from oddish.core.tags.derived import DERIVED_TAG_ERRORS, rebuild_derived_tags
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
 from oddish.db.models import MetadataSource, TaskUploadEventModel, utcnow
@@ -19,6 +20,8 @@ from oddish.schemas import (
     TaskUploadInitResponse,
     UploadResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 
 async def _next_version_number(session: AsyncSession, task_id: str) -> int:
@@ -195,12 +198,19 @@ async def initialize_task_upload(
         ):
             if task_metadata is not None:
                 _apply_descriptive_metadata(existing_task, task_metadata)
-                await rebuild_derived_tags(
-                    session,
-                    task_id=existing_task.id,
-                    org_id=existing_task.org_id,
-                    metadata=task_metadata,
-                )
+                try:
+                    await rebuild_derived_tags(
+                        session,
+                        task_id=existing_task.id,
+                        org_id=existing_task.org_id,
+                        metadata=task_metadata,
+                    )
+                except DERIVED_TAG_ERRORS as exc:
+                    logger.warning(
+                        "rebuild_derived_tags failed for task %s: %s",
+                        existing_task.id,
+                        exc,
+                    )
             record_upload_event(
                 session,
                 task_id=existing_task.id,
@@ -352,12 +362,17 @@ async def complete_task_upload(
             if task_metadata is not None:
                 _apply_descriptive_metadata(new_task, task_metadata)
                 _apply_version_metadata(version_row, task_metadata)
-                await rebuild_derived_tags(
-                    session,
-                    task_id=task_id,
-                    org_id=new_task.org_id,
-                    metadata=task_metadata,
-                )
+                try:
+                    await rebuild_derived_tags(
+                        session,
+                        task_id=task_id,
+                        org_id=new_task.org_id,
+                        metadata=task_metadata,
+                    )
+                except DERIVED_TAG_ERRORS as exc:
+                    logger.warning(
+                        "rebuild_derived_tags failed for task %s: %s", task_id, exc
+                    )
             record_upload_event(
                 session,
                 task_id=task_id,
@@ -455,12 +470,17 @@ async def complete_task_upload(
             _apply_descriptive_metadata(existing_task, task_metadata)
             if new_version_created:
                 _apply_version_metadata(version_row, task_metadata)
-            await rebuild_derived_tags(
-                session,
-                task_id=task_id,
-                org_id=existing_task.org_id,
-                metadata=task_metadata,
-            )
+            try:
+                await rebuild_derived_tags(
+                    session,
+                    task_id=task_id,
+                    org_id=existing_task.org_id,
+                    metadata=task_metadata,
+                )
+            except DERIVED_TAG_ERRORS as exc:
+                logger.warning(
+                    "rebuild_derived_tags failed for task %s: %s", task_id, exc
+                )
         record_upload_event(
             session,
             task_id=task_id,

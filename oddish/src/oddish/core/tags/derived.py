@@ -20,24 +20,48 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
+from oddish.core.tags.naming import TagNameError
 from oddish.core.tags.policies import get_or_create_tag_policy
 from oddish.core.tags.projection import recompute_task_browse_projection
-from oddish.core.tags.service import assign_tag_core, create_tag_core
+from oddish.core.tags.service import (
+    TagPolicyError,
+    TagProfanityError,
+    assign_tag_core,
+    create_tag_core,
+)
 from oddish.core.task_metadata import slugify
 from oddish.schemas import TaskMetadata
 
+# Metadata is best-effort: it must never fail an upload. Callers wrap the
+# rebuild_derived_tags call in try/except DERIVED_TAG_ERRORS rather than
+# letting a malformed vocabulary value (bad charset, profanity) 500 the
+# whole request.
+DERIVED_TAG_ERRORS = (TagNameError, TagPolicyError, TagProfanityError)
 
-def derived_tag_pairs(metadata: TaskMetadata) -> list[tuple[str, str]]:
-    """Map metadata onto (tag_key, tag_value) pairs, in stable order."""
+_DEFAULT_TAG_NAME_MAX_LEN = 64
+
+
+def derived_tag_pairs(
+    metadata: TaskMetadata, *, max_len: int = _DEFAULT_TAG_NAME_MAX_LEN
+) -> list[tuple[str, str]]:
+    """Map metadata onto (tag_key, tag_value) pairs, in stable order.
+
+    Values are slugified AND truncated to the tag policy's ``max_len`` here
+    (not just charset-normalized) because TaskMetadata's Pydantic bounds
+    (128 chars) are wider than the default tag policy's name_max_len (64):
+    an ordinary long value must be clamped to fit, not rejected downstream.
+    """
     pairs: list[tuple[str, str]] = []
     if metadata.category:
-        pairs.append(("category", metadata.category))
+        slug = slugify(metadata.category, max_len=max_len)
+        if slug:
+            pairs.append(("category", slug))
     for topic in metadata.topic_tags:
-        slug = slugify(topic)
+        slug = slugify(topic, max_len=max_len)
         if slug:
             pairs.append(("topic", slug))
     if metadata.author_organization:
-        slug = slugify(metadata.author_organization)
+        slug = slugify(metadata.author_organization, max_len=max_len)
         if slug:
             pairs.append(("org", slug))
     return pairs
@@ -57,11 +81,16 @@ _NO_ORG_POLICY = {
     "profanity_denylist": [],
 }
 
+
+# No state = 'ACTIVE' filter: a REMOVED DIRECT row is still human-owned. If
+# excluded here, assign_tag_core's upsert CASE would resurrect it as ACTIVE
+# with source='DIRECT' on the next rebuild, and _RETRACT_STALE_DERIVED (which
+# only touches source='DERIVED') could never retract it again -- the DIRECT
+# assignment would be stuck ACTIVE forever.
 _EXISTING_NON_DERIVED = text(
     """
     SELECT tag_id FROM tag_assignments
     WHERE deleted_at IS NULL
-      AND state = 'ACTIVE'
       AND source <> 'DERIVED'
       AND scope = 'TASK'
       AND target_id = :task_id
@@ -101,11 +130,13 @@ async def rebuild_derived_tags(
     absent. A desired pair is skipped entirely when the tag already has an
     ACTIVE non-DERIVED (human) assignment on this task: DIRECT wins.
     """
-    pairs = derived_tag_pairs(metadata)
     policy = (
         await get_or_create_tag_policy(session, org_id=org_id)
         if org_id is not None
         else _NO_ORG_POLICY
+    )
+    pairs = derived_tag_pairs(
+        metadata, max_len=int(policy.get("name_max_len", _DEFAULT_TAG_NAME_MAX_LEN))
     )
 
     tag_ids: list[str] = []

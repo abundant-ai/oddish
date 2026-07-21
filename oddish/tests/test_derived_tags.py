@@ -112,3 +112,58 @@ async def test_rebuild_does_not_steal_a_direct_assignment(session):
     # DIRECT), so a rebuild that skips this guard silently reassigns a
     # human's row to the system actor even though source looks untouched.
     assert row.assigned_by_user_id == "u1"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_does_not_resurrect_a_removed_direct_assignment(session):
+    """A REMOVED DIRECT assignment must stay retractable forever.
+
+    If a human previously removed their DIRECT category tag, a rebuild that
+    only excludes ACTIVE non-DERIVED rows would upsert it back to ACTIVE with
+    source='DIRECT' (assign_tag_core's CASE). _RETRACT_STALE_DERIVED only
+    touches source='DERIVED' rows, so that resurrected row could then never
+    be retracted again -- the exact failure TASK scope was chosen to prevent.
+    """
+    from oddish.core.tags.derived import rebuild_derived_tags
+    from oddish.core.tags.service import assign_tag_core, create_tag_core
+    from oddish.db.models import TagAssignmentModel, TagAssignmentState
+
+    tag_id = await create_tag_core(
+        session,
+        key="category",
+        value="ml-training",
+        org_id=None,
+        actor_user_id="u1",
+        policy={},
+        is_admin=True,
+    )
+    await assign_tag_core(
+        session, tag_id=tag_id, scope="TASK", target_id="t-4", task_id="t-4",
+        org_id=None, actor_user_id="u1", source="DIRECT",
+    )
+    # Human removes the DIRECT assignment; the row stays, marked REMOVED.
+    await session.execute(
+        TagAssignmentModel.__table__.update()
+        .where(
+            TagAssignmentModel.tag_id == tag_id,
+            TagAssignmentModel.target_id == "t-4",
+        )
+        .values(state=TagAssignmentState.REMOVED)
+    )
+
+    await rebuild_derived_tags(
+        session, task_id="t-4", org_id=None,
+        metadata=TaskMetadata(category="ml-training"),
+    )
+
+    row = (
+        await session.execute(
+            select(TagAssignmentModel).where(
+                TagAssignmentModel.target_id == "t-4",
+                TagAssignmentModel.tag_id == tag_id,
+            )
+        )
+    ).scalar_one()
+    # Still REMOVED and still DIRECT -- DERIVED must not have touched it.
+    assert row.state == TagAssignmentState.REMOVED
+    assert row.source == TagAssignmentSource.DIRECT

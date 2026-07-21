@@ -255,6 +255,9 @@ async def init_task_upload(
         content_hash=payload.content_hash,
         message=payload.message,
         force_new_version=payload.force_new_version,
+        task_metadata=payload.task_metadata,
+        provenance=payload.provenance,
+        uploader_user_id=auth.user_id,
     )
 
 
@@ -287,6 +290,8 @@ async def finalize_task_upload(
         register=payload.register_task,
         user=resolved_user,
         priority=payload.priority,
+        task_metadata=payload.task_metadata,
+        provenance=payload.provenance,
     )
 
 
