@@ -143,6 +143,15 @@ class QaFailure:
 
 
 @dataclass(frozen=True)
+class TaskFinished:
+    task_id: str
+    task_name: str
+    task_version_id: str | None
+    owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
+
+
+@dataclass(frozen=True)
 class AlertCandidates:
     experiments: list[ExperimentCandidate] = field(default_factory=list)
     trials: list[TrialSpend] = field(default_factory=list)
@@ -152,6 +161,7 @@ class AlertCandidates:
     finished_experiments: list[FinishedExperiment] = field(default_factory=list)
     finished_trials: list[FinishedTrial] = field(default_factory=list)
     qa_failures: list[QaFailure] = field(default_factory=list)
+    tasks_finished: list[TaskFinished] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -459,6 +469,24 @@ def build_alerts(
             f"Reason: {_escape(qa_failure.reason)}\n"
             f"<{task_url}|open task>",
             qa_failure.owner_clerk_user_id,
+        )
+
+    for task_finished in candidates.tasks_finished:
+        if not prefs_for(task_finished.owner_email).task_finished_enabled:
+            continue
+        bucket = _version_bucket(
+            task_finished.task_id, task_finished.task_version_id
+        )
+        task_url = _task_url(
+            dashboard_url, task_finished.task_id, task_finished.task_version_id
+        )
+        add_failure_dm(
+            f"task-finished:{bucket}",
+            task_finished.owner_email,
+            ":tada: *Task finished*\n"
+            f"Task: *{_escape(task_finished.task_name)}*\n"
+            f"<{task_url}|open task>",
+            task_finished.owner_clerk_user_id,
         )
 
     for unpriced in candidates.unpriced_models:
@@ -825,6 +853,40 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             )
         ).all()
 
+        # Task-finished is the good-verdict mirror of qa_failed: the QA verdict
+        # reached SUCCESS and judged the task good. Dedup to one DM per task
+        # version happens in build_alerts, exactly as for QA failures.
+        task_finished = and_(
+            TaskModel.verdict_status == VerdictStatus.SUCCESS,
+            TaskModel.verdict["is_good"].astext == "true",
+        )
+        task_finished_rows = (
+            await session.execute(
+                select(
+                    TaskModel.id,
+                    TaskModel.name,
+                    TaskModel.current_version_id,
+                    UserModel.email.label("owner_email"),
+                    UserModel.clerk_user_id.label("owner_clerk_user_id"),
+                )
+                .outerjoin(
+                    UserModel,
+                    and_(
+                        UserModel.id == TaskModel.created_by_user_id,
+                        UserModel.org_id == TaskModel.org_id,
+                        UserModel.is_active.is_(True),
+                        UserModel.deleted_at.is_(None),
+                    ),
+                )
+                .where(
+                    TaskModel.deleted_at.is_(None),
+                    TaskModel.verdict_finished_at >= failure_cutoff,
+                    task_finished,
+                )
+                .execution_options(include_deleted=True)
+            )
+        ).all()
+
     trials = [
         TrialSpend(
             id=str(row.id),
@@ -907,6 +969,16 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         )
         for row in qa_rows
     ]
+    tasks_finished = [
+        TaskFinished(
+            task_id=str(row.id),
+            task_name=str(row.name),
+            task_version_id=row.current_version_id,
+            owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
+        )
+        for row in task_finished_rows
+    ]
     dashboard_url = os.environ.get(
         "ODDISH_DASHBOARD_URL", "https://www.oddish.app"
     ).rstrip("/")
@@ -920,6 +992,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             finished_experiments=finished_experiments,
             finished_trials=finished_trial_records,
             qa_failures=qa_failures,
+            tasks_finished=tasks_finished,
         ),
         settings=settings,
         recent_cutoff=cost_cutoff,
