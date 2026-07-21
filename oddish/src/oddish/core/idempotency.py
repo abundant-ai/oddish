@@ -74,8 +74,22 @@ def _payload_with_registry_auth_fingerprint(payload: dict[str, Any]) -> dict[str
     return payload
 
 
+# ``provenance`` (ci_run_id, source_commit, uploader_host, uploader_cli_version,
+# ...) and ``task_metadata`` are descriptive, not identity: two CI runs of an
+# identical sweep, or the same sweep after a CLI upgrade, must still share a
+# key. Dropped rather than fingerprinted (unlike registry_auth above) since
+# there is nothing sensitive in them worth preserving a presence/absence
+# signal for -- they're just excluded from what defines "the same submission".
+_IDEMPOTENCY_EXCLUDED_KEYS = ("provenance", "task_metadata")
+
+
+def _payload_for_idempotency(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = _payload_with_registry_auth_fingerprint(payload)
+    return {k: v for k, v in payload.items() if k not in _IDEMPOTENCY_EXCLUDED_KEYS}
+
+
 def compute_sweep_idempotency_key(payload: Mapping[str, Any]) -> str:
-    return _canonical_digest(_payload_with_registry_auth_fingerprint(dict(payload)))
+    return _canonical_digest(_payload_for_idempotency(dict(payload)))
 
 
 def hash_idempotency_key(raw_key: str) -> str:

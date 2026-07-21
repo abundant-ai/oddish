@@ -52,6 +52,51 @@ def test_different_spec_produces_different_key() -> None:
     )
 
 
+def test_provenance_and_task_metadata_excluded_from_key() -> None:
+    """M-6: provenance/task_metadata are descriptive, not identity.
+
+    Two CI runs of an identical sweep (different ci_run_id/source_commit) --
+    or the same sweep after a CLI upgrade (different uploader_cli_version) --
+    must share a key so the dedupe doesn't quietly stop working."""
+    base = _payload()
+    with_provenance = {
+        **base,
+        "provenance": {
+            "ci_run_id": "run-1",
+            "source_commit": "a" * 40,
+            "uploader_host": "runner-1",
+            "uploader_cli_version": "1.2.3",
+        },
+    }
+    different_provenance = {
+        **base,
+        "provenance": {
+            "ci_run_id": "run-2",
+            "source_commit": "b" * 40,
+            "uploader_host": "runner-2",
+            "uploader_cli_version": "1.2.4",
+        },
+    }
+    with_task_metadata = {
+        **base,
+        "task_metadata": {"description": "Port CBACT01C.", "category": "ml-training"},
+    }
+    different_task_metadata = {
+        **base,
+        "task_metadata": {"description": "Rewritten.", "category": "systems"},
+    }
+
+    base_key = compute_sweep_idempotency_key(base)
+    assert compute_sweep_idempotency_key(with_provenance) == base_key
+    assert compute_sweep_idempotency_key(different_provenance) == base_key
+    assert compute_sweep_idempotency_key(with_task_metadata) == base_key
+    assert compute_sweep_idempotency_key(different_task_metadata) == base_key
+
+    # Sanity: an identity field still flips the key, so this isn't a digest
+    # that ignores everything.
+    assert compute_sweep_idempotency_key(_payload(task_id="task-2")) != base_key
+
+
 def test_submit_sweep_sends_idempotency_key_header(monkeypatch) -> None:
     captured: list[dict] = []
 
