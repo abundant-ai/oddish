@@ -84,10 +84,8 @@ export function toSegments(
  * `filter_output` drops invalid ids but never dedupes). First claim wins, ordered
  * by lowest step_id, so every step renders exactly once and in true order.
  */
-export function groupStepsBySegment(
-  steps: IndexedStep[],
-  segments: Segment[],
-): StepGroup[] {
+/** step_id -> owning segment. First claim wins; see groupStepsBySegment. */
+export function segmentOwners(segments: Segment[]): Map<number, Segment> {
   const ordered = segments
     .filter((s) => s.stepIds.length > 0)
     .sort((a, b) => Math.min(...a.stepIds) - Math.min(...b.stepIds));
@@ -98,6 +96,14 @@ export function groupStepsBySegment(
       if (!owner.has(id)) owner.set(id, segment);
     }
   }
+  return owner;
+}
+
+export function groupStepsBySegment(
+  steps: IndexedStep[],
+  segments: Segment[],
+): StepGroup[] {
+  const owner = segmentOwners(segments);
 
   const groups: StepGroup[] = [];
   let current: StepGroup | null = null;

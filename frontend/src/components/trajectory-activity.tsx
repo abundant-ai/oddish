@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Activity, Star } from "lucide-react";
 import type { TrajectoryStep } from "@/lib/types";
 import { phaseColorVars, stepDurationsMs, stepTokens } from "@/lib/trajectory-metrics";
-import { toSegments } from "@/lib/trajectory-segments";
+import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectoryActivityProps {
@@ -32,8 +32,9 @@ export function TrajectoryActivity({
 
   const colorFor = phaseColorVars(segments.map((s) => s.key));
   const labelFor = new Map(segments.map((s) => [s.key, s.label]));
-  const keyByStep = new Map<number, string>();
-  segments.forEach((s) => s.stepIds.forEach((id) => keyByStep.set(id, s.key)));
+  const owner = segmentOwners(segments);
+  // step_id is typed number but arrives as a string from some producers.
+  const keyByStep = (stepId: number) => owner.get(Number(stepId))?.key;
   const highlightIds = new Set((data?.highlights ?? []).map((h) => h.step_id));
 
   const durations = stepDurationsMs(steps);
@@ -83,11 +84,11 @@ export function TrajectoryActivity({
                 <button
                   key={s.step_id}
                   type="button"
-                  title={`Step ${s.step_id} · ${labelFor.get(keyByStep.get(s.step_id) ?? "") ?? ""} · ${fmtMs(durations[i])}`}
+                  title={`Step ${s.step_id} · ${labelFor.get(keyByStep(s.step_id) ?? "") ?? ""} · ${fmtMs(durations[i])}`}
                   onClick={() => select(s.step_id)}
                   style={{
                     flex: `${widthPct(i)} 1 0`,
-                    background: colorFor.get(keyByStep.get(s.step_id) ?? "") ?? "var(--phase-other)",
+                    background: colorFor.get(keyByStep(s.step_id) ?? "") ?? "var(--phase-other)",
                   }}
                   className="relative min-w-[6px] rounded-sm outline-offset-2 transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
                 >
