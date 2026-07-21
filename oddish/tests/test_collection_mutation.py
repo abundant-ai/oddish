@@ -335,3 +335,213 @@ async def test_add_with_no_sources_is_400(session):
     with pytest.raises(HTTPException) as exc:
         await add_to_collection_core(session, experiment_id=coll_id, org_id="org1")
     assert exc.value.status_code == 400
+
+
+async def _live_task_links(session, experiment_id: str) -> set[str]:
+    rows = (
+        (
+            await session.execute(
+                select(task_experiments.c.task_id).where(
+                    task_experiments.c.experiment_id == experiment_id,
+                    task_experiments.c.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return set(rows)
+
+
+@pytest.mark.asyncio
+async def test_remove_tombstones_membership_not_the_trial(session):
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    task = _task("rm-task")
+    session.add(task)
+    await session.flush()
+    home = _experiment("rm-home")
+    session.add(home)
+    await session.flush()
+    t1, t2 = _trial(task, home), _trial(task, home)
+    session.add_all([t1, t2])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1, t2])
+
+    resp = await remove_from_collection_core(
+        session, experiment_id=coll_id, trial_ids=[t2.id], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.trials_removed == 1
+    assert resp.trials_total == 1
+    assert await _live_ids(session, coll_id) == {t1.id}
+
+    # The trial itself is untouched and still lives in its home experiment.
+    still_there = (
+        await session.execute(select(TrialModel).where(TrialModel.id == t2.id))
+    ).scalar_one()
+    assert still_there.experiment_id == home.id
+    assert still_there.deleted_at is None
+
+
+@pytest.mark.asyncio
+async def test_remove_unlinks_task_when_its_last_trial_leaves(session):
+    """PROVE-RED: dropping the unlink step leaves a stale task_experiments row,
+    which the grid reaches gathered trials through and the cost rollup prices."""
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    task_a, task_b = _task("rm-unlink-a"), _task("rm-unlink-b")
+    session.add_all([task_a, task_b])
+    await session.flush()
+    home = _experiment("rm-unlink-home")
+    session.add(home)
+    await session.flush()
+    ta, tb = _trial(task_a, home), _trial(task_b, home)
+    session.add_all([ta, tb])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[ta, tb])
+    assert await _live_task_links(session, coll_id) == {task_a.id, task_b.id}
+
+    resp = await remove_from_collection_core(
+        session, experiment_id=coll_id, trial_ids=[tb.id], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.tasks_unlinked == 1
+    assert await _live_task_links(session, coll_id) == {task_a.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_keeps_task_link_while_other_trials_remain(session):
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    task = _task("rm-keep-link")
+    session.add(task)
+    await session.flush()
+    home = _experiment("rm-keep-home")
+    session.add(home)
+    await session.flush()
+    t1, t2 = _trial(task, home), _trial(task, home)
+    session.add_all([t1, t2])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1, t2])
+
+    resp = await remove_from_collection_core(
+        session, experiment_id=coll_id, trial_ids=[t2.id], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.tasks_unlinked == 0
+    assert await _live_task_links(session, coll_id) == {task.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_by_task_drops_every_version(session):
+    """PROVE-RED: reusing the current-version filter would strand the v1 trial."""
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    task = _task("rm-versions")
+    session.add(task)
+    await session.flush()
+    v1 = TaskVersionModel(
+        id=f"{task.id}-v1", task_id=task.id, version=1, task_path=f"s3://t/{task.id}/v1"
+    )
+    v2 = TaskVersionModel(
+        id=f"{task.id}-v2", task_id=task.id, version=2, task_path=f"s3://t/{task.id}/v2"
+    )
+    session.add_all([v1, v2])
+    await session.flush()
+    task.current_version_id = v2.id
+    keeper_task = _task("rm-versions-keeper")
+    session.add(keeper_task)
+    await session.flush()
+
+    home = _experiment("rm-versions-home")
+    session.add(home)
+    await session.flush()
+    old = _trial(task, home, task_version_id=v1.id)
+    new = _trial(task, home, task_version_id=v2.id)
+    keeper = _trial(keeper_task, home)
+    session.add_all([old, new, keeper])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[old, new, keeper])
+
+    resp = await remove_from_collection_core(
+        session, experiment_id=coll_id, task_ids=[task.name], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.trials_removed == 2
+    assert await _live_ids(session, coll_id) == {keeper.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_refuses_to_empty_the_collection(session):
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    task = _task("rm-empty")
+    session.add(task)
+    await session.flush()
+    home = _experiment("rm-empty-home")
+    session.add(home)
+    await session.flush()
+    t1 = _trial(task, home)
+    session.add(t1)
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1])
+
+    with pytest.raises(HTTPException) as exc:
+        await remove_from_collection_core(
+            session, experiment_id=coll_id, trial_ids=[t1.id], org_id="org1"
+        )
+    assert exc.value.status_code == 409
+    assert await _live_ids(session, coll_id) == {t1.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_ignores_ids_that_are_not_members(session):
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    task = _task("rm-nonmember")
+    session.add(task)
+    await session.flush()
+    home = _experiment("rm-nonmember-home")
+    session.add(home)
+    await session.flush()
+    t1, t2, outsider = _trial(task, home), _trial(task, home), _trial(task, home)
+    session.add_all([t1, t2, outsider])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1, t2])
+
+    resp = await remove_from_collection_core(
+        session,
+        experiment_id=coll_id,
+        trial_ids=[t2.id, outsider.id, "does-not-exist"],
+        org_id="org1",
+    )
+    await session.flush()
+
+    assert resp.trials_removed == 1
+    assert await _live_ids(session, coll_id) == {t1.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_rejects_non_collection_experiment(session):
+    from oddish.core.endpoints.collections import remove_from_collection_core
+
+    real = _experiment("rm-real-experiment")
+    session.add(real)
+    await session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await remove_from_collection_core(
+            session, experiment_id=real.id, trial_ids=["x"], org_id="org1"
+        )
+    assert exc.value.status_code == 409

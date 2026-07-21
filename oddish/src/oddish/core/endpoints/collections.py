@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import insert, or_, select, tuple_
+from sqlalchemy import insert, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.experiment_membership import trial_in_experiment
-from oddish.db import ExperimentModel, TrialModel, experiment_trials, utcnow
+from oddish.db import (
+    ExperimentModel,
+    TrialModel,
+    experiment_trials,
+    task_experiments,
+    utcnow,
+)
 from oddish.db.models import TaskModel, TrialStatus
 from oddish.schemas import CollectionMutationResponse, TrialCollectionResponse
 
@@ -368,4 +374,136 @@ async def add_to_collection_core(
         trials_added=len(added),
         trials_total=len(before_trials | {t.id for t in trials}),
         tasks_linked=len(newly_linked),
+    )
+
+
+async def _unlink_task_from_collection(
+    session: AsyncSession, *, task_id: str, experiment_id: str
+) -> None:
+    """Tombstone a ``task_experiments`` link and invalidate its tag projection.
+
+    Mirrors ``_link_task_to_experiment``'s restore path in reverse. Required,
+    not cosmetic: the grid reaches gathered trials THROUGH the task row and the
+    cost rollup counts live ``experiment_trials`` rows, so a stale link would
+    price trials the page no longer shows (see endpoints/deletion.py).
+    """
+    from oddish.queue import _recompute_tag_projection_on_membership_removed
+
+    await session.execute(
+        update(task_experiments)
+        .where(
+            task_experiments.c.task_id == task_id,
+            task_experiments.c.experiment_id == experiment_id,
+            task_experiments.c.deleted_at.is_(None),
+        )
+        .values(deleted_at=utcnow())
+    )
+    org_id = await session.scalar(
+        text("SELECT org_id FROM tasks WHERE id = :task_id"), {"task_id": task_id}
+    )
+    await _recompute_tag_projection_on_membership_removed(
+        session, task_id=task_id, experiment_id=experiment_id, org_id=org_id
+    )
+
+
+async def remove_from_collection_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    trial_ids: list[str] | None = None,
+    task_ids: list[str] | None = None,
+    org_id: str | None,
+) -> CollectionMutationResponse:
+    """Drop trials from a collection by tombstoning their membership rows.
+
+    The trials themselves are untouched -- no artifact deletion, no change to
+    ``trials.experiment_id``. Every reader filters ``deleted_at IS NULL``, so
+    the dashboard and the public share link both update immediately.
+    """
+    from oddish.queue import bump_experiment_last_activity
+
+    experiment = await _load_collection(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    explicit_ids = _dedupe(trial_ids)
+    task_idents = _dedupe(task_ids)
+    if not explicit_ids and not task_idents:
+        raise HTTPException(status_code=400, detail="nothing to remove")
+
+    before_trials = await _live_member_ids(session, experiment_id)
+    before_tasks = await _live_member_task_ids(session, experiment_id)
+
+    targets: set[str] = {i for i in explicit_ids if i in before_trials}
+
+    # Unlike add, task removal is version-agnostic on purpose: removing a task
+    # from a collection must take ALL of it, including trials from older
+    # versions that were pinned in. Per-version removal goes through explicit
+    # trial ids (the CLI's `--task name@N` expands to them client-side).
+    for ident in task_idents:
+        task = (
+            (
+                await session.execute(
+                    select(TaskModel).where(
+                        or_(TaskModel.id == ident, TaskModel.name == ident),
+                        TaskModel.org_id == org_id,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"Task {ident} not found")
+        task_trial_ids = (
+            (
+                await session.execute(
+                    select(TrialModel.id).where(TrialModel.task_id == task.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        targets |= {i for i in task_trial_ids if i in before_trials}
+
+    if not targets:
+        return CollectionMutationResponse(
+            id=experiment.id,
+            name=experiment.name,
+            trials_total=len(before_trials),
+        )
+
+    if not (before_trials - targets):
+        raise HTTPException(
+            status_code=409,
+            detail="removing these trials would empty the collection",
+        )
+
+    # include_deleted: a soft-deleted TRIAL's membership row must still be
+    # tombstoned, and the listener would otherwise filter the row out.
+    await session.execute(
+        update(experiment_trials)
+        .where(
+            experiment_trials.c.experiment_id == experiment_id,
+            experiment_trials.c.deleted_at.is_(None),
+            experiment_trials.c.trial_id.in_(sorted(targets)),
+        )
+        .values(deleted_at=utcnow())
+        .execution_options(include_deleted=True)
+    )
+
+    after_tasks = await _live_member_task_ids(session, experiment_id)
+    orphaned = before_tasks - after_tasks
+    for task_id in sorted(orphaned):
+        await _unlink_task_from_collection(
+            session, task_id=task_id, experiment_id=experiment_id
+        )
+
+    await bump_experiment_last_activity(session, experiment_ids=experiment_id)
+
+    return CollectionMutationResponse(
+        id=experiment.id,
+        name=experiment.name,
+        trials_removed=len(targets),
+        trials_total=len(before_trials - targets),
+        tasks_unlinked=len(orphaned),
     )
