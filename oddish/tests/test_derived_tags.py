@@ -167,3 +167,71 @@ async def test_rebuild_does_not_resurrect_a_removed_direct_assignment(session):
     # Still REMOVED and still DIRECT -- DERIVED must not have touched it.
     assert row.state == TagAssignmentState.REMOVED
     assert row.source == TagAssignmentSource.DIRECT
+
+
+@pytest.mark.asyncio
+async def test_rebuild_recomputes_projection_exactly_once(session):
+    """assign_tag_core's per-assignment recompute must be suppressed for the
+    derived batch -- only rebuild_derived_tags' trailing recompute should run,
+    or an N-tag rebuild pays an O(tags x versions) CTE per assignment.
+    """
+    import oddish.core.tags.derived as derived_module
+    import oddish.core.tags.service as service_module
+    from oddish.core.tags.derived import rebuild_derived_tags
+    from oddish.db.models import TagAssignmentModel, TagAssignmentState, TaskModel, TaskVersionModel
+
+    task = TaskModel(
+        name="derived-recompute-once", org_id=None, user="tester",
+        task_path="s3://tasks/derived-recompute-once",
+    )
+    session.add(task)
+    await session.flush()
+    version = TaskVersionModel(
+        id=f"{task.id}-v1", task_id=task.id, version=1, task_path=task.task_path
+    )
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+    await session.flush()
+
+    # assign_tag_core (service.py) and rebuild_derived_tags (derived.py) each
+    # hold their own `from .projection import recompute_task_browse_projection`
+    # binding, so both must be patched to count every call site.
+    calls = []
+    real_recompute = derived_module.recompute_task_browse_projection
+
+    async def _spy(session, *, task_id):
+        calls.append(task_id)
+        return await real_recompute(session, task_id=task_id)
+
+    derived_module.recompute_task_browse_projection = _spy
+    service_module.recompute_task_browse_projection = _spy
+    try:
+        await rebuild_derived_tags(
+            session,
+            task_id=task.id,
+            org_id=None,
+            metadata=TaskMetadata(
+                category="ml-training",
+                topic_tags=["compilers", "rust"],
+            ),
+        )
+    finally:
+        derived_module.recompute_task_browse_projection = real_recompute
+        service_module.recompute_task_browse_projection = real_recompute
+
+    assert len(calls) == 1
+
+    active = (
+        await session.execute(
+            select(TagAssignmentModel).where(
+                TagAssignmentModel.task_id == task.id,
+                TagAssignmentModel.source == TagAssignmentSource.DERIVED,
+                TagAssignmentModel.state == TagAssignmentState.ACTIVE,
+            )
+        )
+    ).scalars().all()
+    assert len(active) == 3
+
+    await session.refresh(task)
+    assert set(task.effective_tag_ids or []) == {row.tag_id for row in active}

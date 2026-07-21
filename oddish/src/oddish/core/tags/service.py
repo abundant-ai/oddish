@@ -107,10 +107,16 @@ async def assign_tag_core(
     source: str = "DIRECT",
     source_experiment_id: str | None = None,
     source_assignment_id: str | None = None,
+    sync_projection: bool = True,
 ) -> str:
     """Idempotent apply with resurrection.
 
     Returns the assignment id (existing if already present, else new).
+
+    ``sync_projection=False`` skips the per-call browse-projection recompute
+    for callers that batch many assignments and recompute once at the end
+    themselves (e.g. ``rebuild_derived_tags``) -- each recompute is an O(versions)
+    CTE, so doing it per-assignment inside a batch is quadratic for no benefit.
     """
     task_id = await _resolve_projection_task_id(
         session, scope=scope, target_id=target_id, task_id=task_id
@@ -177,7 +183,7 @@ async def assign_tag_core(
     )
 
     # Sync-direct: directly-affected task's browse projection.
-    if task_id:
+    if task_id and sync_projection:
         await recompute_task_browse_projection(session, task_id=task_id)
 
     # Async fan-out for the rest.

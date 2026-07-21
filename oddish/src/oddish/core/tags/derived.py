@@ -178,6 +178,7 @@ async def rebuild_derived_tags(
             org_id=org_id,
             actor_user_id=None,
             source="DERIVED",
+            sync_projection=False,
         )
 
     await recompute_task_browse_projection(session, task_id=task_id)
