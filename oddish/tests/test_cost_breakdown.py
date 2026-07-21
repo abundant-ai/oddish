@@ -877,6 +877,15 @@ async def test_cost_breakdown_includes_qa_analysis_cost():
         assert label in {k.key for k in qa_series.keys}
         series_model_total = sum(b.costs.get(label, 0.0) for b in qa_series.buckets)
         assert _approx(series_model_total, 1.0)
+        # The two-stack "type" series folds that same QA spend under one "qa"
+        # stack next to inference; its qa total matches the QA series' grand
+        # total (both derive from the same analysis rows).
+        type_series = result.series_by_type
+        assert type_series.dimension == "type"
+        assert {k.key for k in type_series.keys} == {"inference", "qa"}
+        type_qa_total = sum(b.costs.get("qa", 0.0) for b in type_series.buckets)
+        qa_series_grand_total = sum(b.cost_usd for b in qa_series.buckets)
+        assert _approx(type_qa_total, qa_series_grand_total)
     finally:
         async with get_session() as session:
             await session.execute(
