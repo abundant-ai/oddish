@@ -874,8 +874,11 @@ async def create_task(
         version_id = latest_version_row.id
 
         # Reusing the latest existing version, not cutting a new one: no
-        # version metadata write (immutable snapshot), but still record that
-        # this submission touched the task.
+        # version metadata write (immutable snapshot), but descriptive
+        # metadata is still last-write-wins regardless of whether a version
+        # was cut, matching complete_task_upload's existing-task branch.
+        if submission.task_metadata is not None:
+            _apply_descriptive_metadata(task, submission.task_metadata)
         record_upload_event(
             session,
             task_id=task_id,

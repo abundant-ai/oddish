@@ -62,6 +62,7 @@ _TEST_TASK_NAMES = (
     "registry-noop",
     "registry-legacy",
     "registry-immutable",
+    "registry-reupload",
 )
 
 
@@ -69,13 +70,17 @@ _TEST_TASK_NAMES = (
 async def _clean_registry_tasks(session):
     """``initialize_task_upload``/``complete_task_upload`` commit through their
     own internal session, independent of the ``session`` fixture's rollback --
-    clear residue from a prior run before each test so the hardcoded task
-    names below stay safe to re-run."""
+    clear residue from a prior run both before AND after each test so the
+    hardcoded task names below stay safe to re-run and don't leak permanently."""
     await session.execute(
         TaskModel.__table__.delete().where(TaskModel.name.in_(_TEST_TASK_NAMES))
     )
     await session.commit()
     yield
+    await session.execute(
+        TaskModel.__table__.delete().where(TaskModel.name.in_(_TEST_TASK_NAMES))
+    )
+    await session.commit()
 
 
 @pytest.mark.asyncio
@@ -232,3 +237,95 @@ async def test_metadata_only_edit_does_not_mutate_existing_version(session):
 
     await session.refresh(version)
     assert version.description_snapshot == original_snapshot
+
+
+@pytest.mark.asyncio
+async def test_reupload_existing_task_changed_content_cuts_new_version(session):
+    """``complete_task_upload``'s ``existing_task is not None`` branch
+    (core/tasks.py:390-455) had zero coverage. A changed-content re-upload
+    must cut v2, update the task's descriptive columns, snapshot the new
+    version, leave v1 untouched, and record a created_version=True event.
+    """
+    init1 = await initialize_task_upload(
+        "registry-reupload",
+        content_hash="hash-v1",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    first = await complete_task_upload(
+        task_id=init1.task_id,
+        task_name="registry-reupload",
+        version=init1.version,
+        content_hash="hash-v1",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    v1 = (
+        await session.execute(
+            select(TaskVersionModel).where(TaskVersionModel.id == first.version_id)
+        )
+    ).scalar_one()
+    original_snapshot = v1.description_snapshot
+
+    changed = _metadata()
+    changed.description = "Rewritten for v2."
+    changed.category = "systems"
+    changed.cpus = 8
+
+    init2 = await initialize_task_upload(
+        "registry-reupload",
+        content_hash="hash-v2",
+        task_metadata=changed,
+        provenance=_provenance(),
+    )
+    assert init2.content_unchanged is False
+    assert init2.version == 2
+
+    second = await complete_task_upload(
+        task_id=init2.task_id,
+        task_name="registry-reupload",
+        version=init2.version,
+        content_hash="hash-v2",
+        register=True,
+        task_metadata=changed,
+        provenance=_provenance(),
+    )
+    assert second.version == 2
+    assert second.version_id != first.version_id
+
+    # ``TaskVersionModel.task`` is ``lazy="selectin"``, so the ``v1`` fetch
+    # above already cached a (now stale) ``TaskModel`` in this session's
+    # identity map -- force a refresh rather than reading the cached copy.
+    task = (
+        await session.execute(
+            select(TaskModel)
+            .where(TaskModel.id == first.task_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    assert task.description == "Rewritten for v2."
+    assert task.category == "systems"
+
+    v2 = (
+        await session.execute(
+            select(TaskVersionModel).where(TaskVersionModel.id == second.version_id)
+        )
+    ).scalar_one()
+    assert v2.description_snapshot == "Rewritten for v2."
+    assert v2.allow_internet == changed.allow_internet
+    assert v2.cpus == 8
+
+    await session.refresh(v1)
+    assert v1.description_snapshot == original_snapshot
+
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    assert len(events) == 2
+    assert events[1].created_version is True
+    assert events[1].task_version_id == second.version_id

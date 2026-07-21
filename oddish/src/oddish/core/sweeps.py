@@ -106,4 +106,6 @@ def build_task_submission_from_sweep(
         evaluation_metric=submission.evaluation_metric,
         link=submission.link,
         registry_auth=submission.registry_auth,
+        task_metadata=submission.task_metadata,
+        provenance=submission.provenance,
     )
