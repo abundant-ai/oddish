@@ -1051,15 +1051,13 @@ async def add_trials_to_collection(
 async def remove_trials_from_collection(
     experiment_id: str,
     payload: CollectionRemoveRequest,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> CollectionMutationResponse:
     """Drop trials from a collection.
 
-    Requires FULL scope: this changes what an already-published share link
+    Requires admin: this changes what an already-published share link
     shows. The trials themselves are untouched.
     """
-    auth.require_scope(APIKeyScope.FULL)
-
     async with get_session() as session:
         result = await remove_from_collection_core(
             session,
@@ -1081,11 +1079,9 @@ async def remove_trials_from_collection(
 async def rename_collection(
     experiment_id: str,
     payload: CollectionRenameRequest,
-    auth: Annotated[AuthContext, Depends(require_auth)],
+    auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> CollectionMutationResponse:
-    """Rename a collection. The share token is unaffected."""
-    auth.require_scope(APIKeyScope.FULL)
-
+    """Rename a collection. The share token is unaffected. Requires admin."""
     async with get_session() as session:
         result = await rename_collection_core(
             session,

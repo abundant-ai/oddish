@@ -15,7 +15,9 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from models import APIKeyScope, OrganizationModel
+from auth import require_auth
+from auth.types import AuthContext, AuthMethod
+from models import APIKeyScope, OrganizationModel, UserRole
 from oddish.core.api_keys import create_api_key
 from oddish.db import (
     ExperimentModel,
@@ -400,8 +402,14 @@ async def test_add_route_appends_to_collection(client, seed_org_with_trials):
 
 
 @pytest.mark.asyncio
-async def test_remove_route_requires_full_scope(client, seed_org_with_trials):
-    """A TASKS-scoped key may append but must not remove."""
+async def test_remove_route_requires_admin_scope_for_api_keys(
+    client, seed_org_with_trials
+):
+    """A TASKS-scoped key may append but must not remove.
+
+    The route is gated by `require_admin`, which for API-key auth still means
+    FULL scope, so a TASKS-scoped key must still be rejected.
+    """
     org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
     headers = {"Authorization": f"Bearer {raw_key}"}
 
@@ -422,6 +430,47 @@ async def test_remove_route_requires_full_scope(client, seed_org_with_trials):
         )
         assert resp.status_code == 403, resp.text
     finally:
+        await _cleanup(experiment_ids=[coll_id])
+
+
+@pytest.mark.asyncio
+async def test_remove_route_requires_admin_role_for_jwt_sessions(
+    client, app, seed_org_with_trials
+):
+    """A non-admin org member's browser (Clerk-JWT) session must not remove
+    trials from a collection.
+
+    `AuthContext.scope` is hardcoded to FULL for every JWT session regardless
+    of the member's actual role (auth/types.py), so the old bare
+    `require_scope(FULL)` gate let any org member through. `require_admin`
+    additionally checks `user_role`, which this override sets to MEMBER --
+    the same shape that used to pass the old gate.
+    """
+    org_id, trial_1, trial_2, raw_key, _created_experiment_ids = seed_org_with_trials
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    created = await client.post(
+        "/experiments/collections",
+        json={"name": "route-admin-gate", "trial_ids": [trial_1, trial_2]},
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    coll_id = created.json()["id"]
+
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT,
+        org_id=org_id,
+        user_role=UserRole.MEMBER,
+    )
+    try:
+        resp = await client.request(
+            "DELETE",
+            f"/experiments/{coll_id}/collection/trials",
+            json={"trial_ids": [trial_2]},
+        )
+        assert resp.status_code == 403, resp.text
+    finally:
+        app.dependency_overrides.clear()
         await _cleanup(experiment_ids=[coll_id])
 
 
