@@ -27,6 +27,7 @@ def select_backend(
     requires_gpu: bool = False,
     requires_private_registry: bool = False,
     requires_tpu: bool = False,
+    requires_configurable_egress: bool = False,
 ) -> ExecutionBackend:
     for backend in ordered_backends():
         caps = backend.capabilities()
@@ -36,19 +37,32 @@ def select_backend(
             continue
         if requires_tpu and caps.tpu is None:
             continue
+        # An offline task needs egress narrowed to the model API, not severed:
+        # a backend whose egress is all-or-nothing ("allow"/"deny") starves the
+        # agent install of apt/github and the trial dies before the agent runs.
+        if requires_configurable_egress and caps.network_egress != "configurable":
+            continue
         return backend
     raise NoEligibleBackendError(
         f"No backend supports requires_gpu={requires_gpu}, "
         f"requires_private_registry={requires_private_registry}, "
-        f"requires_tpu={requires_tpu}"
+        f"requires_tpu={requires_tpu}, "
+        f"requires_configurable_egress={requires_configurable_egress}"
     )
 
 
 def default_cloud_environment(
-    *, requires_gpu: bool = False, requires_tpu: bool = False
+    *,
+    requires_gpu: bool = False,
+    requires_tpu: bool = False,
+    requires_configurable_egress: bool = False,
 ) -> EnvironmentType:
     """The cloud default via capability negotiation: TPU → GKE, GPU → Modal,
-    else Daytona."""
+    offline → Modal, else Daytona."""
     return EnvironmentType(
-        select_backend(requires_gpu=requires_gpu, requires_tpu=requires_tpu).name
+        select_backend(
+            requires_gpu=requires_gpu,
+            requires_tpu=requires_tpu,
+            requires_configurable_egress=requires_configurable_egress,
+        ).name
     )
