@@ -72,39 +72,38 @@ def upgrade() -> None:
         """
     )
 
-    # Session-level; persists across the autocommit steps on this connection.
+    # Session-level; persists across the autocommit steps on this connection
+    # (SET LOCAL has no effect here since each autocommit statement is its
+    # own implicit transaction). That also means a mid-block exception would
+    # otherwise leave this set for whatever runs next on the connection, so
+    # the reset is in a finally.
     _autocommit("SET lock_timeout = '3s'")
-
-    # One referenced table's lock per statement/transaction, never both at once.
-    _add_fk_not_valid(
-        name="fk_task_upload_events_task",
-        column="task_id",
-        ref_table="tasks",
-        on_delete="CASCADE",
-    )
-    _autocommit(
-        "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_task"
-    )
-    _add_fk_not_valid(
-        name="fk_task_upload_events_version",
-        column="task_version_id",
-        ref_table="task_versions",
-        on_delete="SET NULL",
-    )
-    _autocommit(
-        "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_version"
-    )
-    _autocommit(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_upload_events_task_created "
-        "ON task_upload_events (task_id, created_at DESC)"
-    )
-
-    # SET LOCAL has no effect between separate autocommit statements (each is
-    # its own implicit transaction), so the session-scoped SET above was
-    # required to span them -- but that means it otherwise leaks onto every
-    # later migration sharing this connection. Reset it now that this
-    # migration's autocommit steps are done.
-    _autocommit("RESET lock_timeout")
+    try:
+        # One referenced table's lock per statement/transaction, never both at once.
+        _add_fk_not_valid(
+            name="fk_task_upload_events_task",
+            column="task_id",
+            ref_table="tasks",
+            on_delete="CASCADE",
+        )
+        _autocommit(
+            "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_task"
+        )
+        _add_fk_not_valid(
+            name="fk_task_upload_events_version",
+            column="task_version_id",
+            ref_table="task_versions",
+            on_delete="SET NULL",
+        )
+        _autocommit(
+            "ALTER TABLE task_upload_events VALIDATE CONSTRAINT fk_task_upload_events_version"
+        )
+        _autocommit(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_upload_events_task_created "
+            "ON task_upload_events (task_id, created_at DESC)"
+        )
+    finally:
+        _autocommit("RESET lock_timeout")
 
 
 def downgrade() -> None:

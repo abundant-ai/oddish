@@ -74,6 +74,16 @@ def do_run_migrations(connection: Connection) -> None:
         compare_type=True,
         include_schemas=False,
         version_table="alembic_version_oddish",
+        # Each migration commits in its own transaction rather than the
+        # whole run sharing one. Session-scoped state set inside a
+        # migration (e.g. ``SET LOCAL lock_timeout``) then really does
+        # reset at that migration's boundary, matching what several
+        # migrations' comments already assume. Safe here: many existing
+        # migrations already break whole-run atomicity via
+        # ``autocommit_block`` (required for CREATE INDEX CONCURRENTLY /
+        # ALTER TYPE ... ADD VALUE), so partial application on a mid-run
+        # failure is already a reality this repo tolerates, not a new risk.
+        transaction_per_migration=True,
     )
 
     with context.begin_transaction():
