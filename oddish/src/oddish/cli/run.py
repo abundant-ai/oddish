@@ -148,8 +148,9 @@ def _default_cloud_environment_for_task(
     else:
         requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
 
-    # Offline tasks are unrunnable on a backend with all-or-nothing egress: the
-    # agent install loses apt and github outright and the trial dies at setup.
+    # Agent install runs under the environment baseline, so a backend that pins
+    # a no-network baseline at sandbox creation kills the trial before the agent
+    # starts. Offline tasks need one that can vary egress per phase.
     requires_configurable_egress = task_path is not None and task_is_offline(task_path)
 
     if requires_gpu and requires_tpu:

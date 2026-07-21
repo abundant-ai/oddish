@@ -3,12 +3,29 @@
 Regression coverage for experiment 086f6140, where 63/72 trials of 8
 ``allow_internet = false`` tasks died in agent bootstrap. Routing negotiated on
 GPU/TPU/private-registry only, so plain-CPU offline tasks took the cheap-first
-default (Daytona). Daytona's egress is all-or-nothing: under an offline policy
-the agent install loses apt and github.com outright (apt 403 via the sandbox
-proxy, ``Could not resolve host: raw.githubusercontent.com``) and the trial dies
-before the agent runs. Modal's egress is ``configurable`` -- a CIDR allowlist
-keeps the model API reachable while the rest stays blocked -- which is why every
-earlier experiment on these same tasks passed on Modal.
+default (Daytona), which cannot run them.
+
+The asymmetry is *when* the restrictive policy applies, not whether the backend
+can express one. Agent setup runs outside any phase-policy context
+(harbor ``trial.py:_setup_agent``), so installs execute under the environment
+baseline:
+
+  * Daytona pins the baseline at sandbox creation -- ``no-network`` becomes
+    ``network_block_all=True`` for the whole install window, and phase policies
+    are only applied later at agent-run time. The install therefore dies:
+    ``Could not resolve host: raw.githubusercontent.com`` (codex/gemini nvm), or
+    a 403 through the sandbox proxy when oddish's env-level extras have promoted
+    the baseline to allowlist mode (claude-code ``apt-get update``).
+  * Modal takes its dynamic-network path whenever a phase policy differs from
+    the baseline -- which oddish guarantees by injecting the model-API host as an
+    agent-level extra -- and creates the sandbox with ``block_network=False``.
+    Install runs with egress, and the restrictive policy lands before the agent
+    does.
+
+``network_egress: configurable`` is the capability that already distinguishes
+the two, so routing keys off it. Note it is a proxy for "can vary egress per
+phase" rather than a literal claim about allowlists: under ``no-network``
+neither backend applies a CIDR allowlist.
 """
 
 from __future__ import annotations

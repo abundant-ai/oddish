@@ -37,9 +37,10 @@ def select_backend(
             continue
         if requires_tpu and caps.tpu is None:
             continue
-        # An offline task needs egress narrowed to the model API, not severed:
-        # a backend whose egress is all-or-nothing ("allow"/"deny") starves the
-        # agent install of apt/github and the trial dies before the agent runs.
+        # Proxy for "can vary egress per phase". Agent setup runs under the
+        # environment baseline, so a backend that pins a no-network baseline at
+        # sandbox creation starves the agent install of apt/github and the trial
+        # dies before the agent ever runs.
         if requires_configurable_egress and caps.network_egress != "configurable":
             continue
         return backend
