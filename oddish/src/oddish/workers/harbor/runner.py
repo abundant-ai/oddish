@@ -27,7 +27,7 @@ from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
-from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.config import BEDROCK_ENV_VARS, is_anthropic_hdo_model, settings
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -35,6 +35,7 @@ from oddish.worker.probe_staging import stage_org_skills
 from .agent_config import (
     _build_agent_config,
     _claude_code_forces_direct_api,
+    _resolve_anthropic_hdo_api_key,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -177,7 +178,9 @@ def _task_has_dynamic_restricted_agent_phase(task_path: Path) -> bool:
     for step in task_config.steps or [None]:
         step_policy = step.agent.explicit_phase_policy() if step is not None else None
         effective_policies.append(step_policy or task_policy or baseline)
-    return any(policy.network_mode != NetworkMode.PUBLIC for policy in effective_policies)
+    return any(
+        policy.network_mode != NetworkMode.PUBLIC for policy in effective_policies
+    )
 
 
 def _supports_auto_restricted_agent_network(
@@ -545,8 +548,15 @@ async def run_harbor_trial_async(
         # the user key as ambient for the build + run so the trial routes to the
         # direct Anthropic API even on a worker with no platform key; the agent
         # then authenticates with the user's key.
+        #
+        # ``anthropic-hdo/<model>`` is the same idea with the platform
+        # ANTHROPIC_HDO_API_KEY: overwrite ambient ANTHROPIC_API_KEY so routing
+        # and auth both use the HDO credential instead of Bedrock / the default
+        # Anthropic key. HDO wins over BYOK when the model prefix opts in.
         byok_anthropic_env: dict[str, str] = {}
-        if "claude-code" in (agent or "").strip().lower():
+        if is_anthropic_hdo_model(model):
+            byok_anthropic_env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
+        elif "claude-code" in (agent or "").strip().lower():
             _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
             if _byok_key:
                 byok_anthropic_env["ANTHROPIC_API_KEY"] = _byok_key

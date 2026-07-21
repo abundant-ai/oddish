@@ -37,6 +37,7 @@ class AlertPreferences(BaseModel):
     qa_failed_enabled: bool = True
     experiment_finished_enabled: bool = True
     trial_finished_enabled: bool = True
+    task_finished_enabled: bool = True
     # null means "inherit the admin/global cutoff"; a value pins it for this user.
     # gt=0 also rejects NaN (NaN > 0 is false).
     experiment_milestone_usd: float | None = Field(default=None, gt=0)

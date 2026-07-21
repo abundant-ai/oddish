@@ -957,9 +957,15 @@ interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
+  qa_cost_usd?: number;
   prev_cost_usd?: number | null;
   month_cost_usd?: number;
   month_budget_usd?: number | null;
+}
+
+export interface CostQaModelBreakdown {
+  model: string;
+  cost_usd: number;
 }
 
 export interface CostBreakdownResponse {
@@ -971,6 +977,7 @@ export interface CostBreakdownResponse {
   totals: CostTotals;
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
+  qa_by_model?: CostQaModelBreakdown[];
   experiments: CostExperimentBreakdown[];
   timestamp: string;
 }

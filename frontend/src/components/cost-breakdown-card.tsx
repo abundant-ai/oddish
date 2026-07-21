@@ -47,6 +47,7 @@ import type {
   CostBreakdownResponse,
   CostExperimentBreakdown,
   CostModelBreakdown,
+  CostQaModelBreakdown,
   CostSeries,
   CostUserBreakdown,
 } from "@/lib/types";
@@ -646,6 +647,13 @@ export function CostBreakdownCard() {
               <ModelTable models={data.by_model} windowDays={windowDays} />
             </section>
 
+            {data.qa_by_model && data.qa_by_model.length > 0 && (
+              <section className="space-y-2">
+                <h3 className="text-sm font-medium">QA cost by model</h3>
+                <QaModelTable models={data.qa_by_model} />
+              </section>
+            )}
+
             <section className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">Top experiments by cost</h3>
@@ -683,13 +691,20 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
       : monthPct != null && monthPct >= 60
         ? "bg-amber-500"
         : "bg-blue-500";
+  const qaCost = totals.qa_cost_usd ?? 0;
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
           {formatCostUsd(totals.cost_usd)}
         </div>
         <div className="text-muted-foreground text-[10px]">Total cost</div>
+      </div>
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
+          {formatCostUsd(qaCost)}
+        </div>
+        <div className="text-muted-foreground text-[10px]">QA cost</div>
       </div>
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
@@ -968,6 +983,29 @@ function ModelTable({
             </TableCell>
             <TableCell className="text-right font-mono text-xs">
               {formatTokens(model.output_tokens)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function QaModelTable({ models }: { models: CostQaModelBreakdown[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Model</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {models.map((model) => (
+          <TableRow key={model.model}>
+            <TableCell className="font-mono text-xs">{model.model}</TableCell>
+            <TableCell className="text-right font-mono text-xs">
+              {formatCostUsd(model.cost_usd)}
             </TableCell>
           </TableRow>
         ))}

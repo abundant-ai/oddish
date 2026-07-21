@@ -21,7 +21,9 @@ from oddish.core.admin import (  # noqa: E402
     get_cost_breakdown_core,
 )
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER  # noqa: E402
+from oddish.config import normalize_model_id  # noqa: E402
 from oddish.db import (  # noqa: E402
+    AnalysisCostModel,
     ExperimentModel,
     TaskModel,
     TrialModel,
@@ -834,3 +836,45 @@ async def test_cost_breakdown_merges_resolved_github_identity(seeded_fallback_da
     # One person, one row: merging must not double-count them in "N users".
     assert result.totals.user_count == sum(1 for u in result.by_user if u.label is None)
     assert sum(1 for u in result.by_user if u.key == MERGED) == 1
+
+
+@pytest.mark.asyncio
+async def test_cost_breakdown_includes_qa_analysis_cost():
+    """Analysis-job spend surfaces as qa_cost_usd plus a qa_by_model row."""
+    recent = utcnow() - timedelta(hours=1)
+    qa_model = f"gpt-5.5-qa-{_RUN}"
+    label = normalize_model_id(qa_model)
+
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(session, window_days=7)
+        baseline = result.totals.qa_cost_usd
+
+    async with get_session() as session:
+        session.add_all(
+            [
+                AnalysisCostModel(
+                    id=f"qacost-{_RUN}-{i}",
+                    job_kind="trial_classifier",
+                    model=qa_model,
+                    cost_usd=cost,
+                    cost_source="native",
+                    created_at=recent,
+                )
+                for i, cost in enumerate((0.25, 0.75))
+            ]
+        )
+
+    try:
+        async with get_session() as session:
+            result = await get_cost_breakdown_core(session, window_days=7)
+        # Robust to other analysis rows already in the shared DB: check the delta.
+        assert _approx(result.totals.qa_cost_usd - baseline, 1.0)
+        by_model = {m.model: m.cost_usd for m in result.qa_by_model}
+        assert _approx(by_model.get(label), 1.0)
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                AnalysisCostModel.__table__.delete().where(
+                    AnalysisCostModel.id.like(f"qacost-{_RUN}-%")
+                )
+            )

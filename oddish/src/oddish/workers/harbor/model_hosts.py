@@ -20,6 +20,7 @@ from oddish.config import (
     MOONSHOT_DEFAULT_BASE_URL,
     OPENAI_PROVIDER_AZURE,
     ZAI_DEFAULT_BASE_URL,
+    is_anthropic_hdo_model,
     is_fireworks_model,
     is_meta_model,
     is_minimax_model,
@@ -80,6 +81,7 @@ def bedrock_domains_for_model(
 
     tail = (model_name or "").split("/", 1)[-1].lower()
     extras: set[str] = set()
+    regions: tuple[str, ...]
     if tail.startswith(("us.", "global.")):
         regions = ("us-east-1", "us-west-2")
     elif tail.startswith("eu."):
@@ -162,6 +164,9 @@ def outbound_hosts_for_model(
         host = _default_host(settings.meta_base_url or META_DEFAULT_BASE_URL)
         if host:
             hosts.append(host)
+    elif is_anthropic_hdo_model(model_name):
+        # Direct Anthropic API with the HDO key — same hosts as anthropic/.
+        hosts.extend(_ANTHROPIC_HOSTS)
     elif _looks_like_bedrock_model(model_name):
         hosts.extend(bedrock_domains_for_model(model_name=model_name))
     elif model_name:
@@ -170,8 +175,7 @@ def outbound_hosts_for_model(
         if head == "openrouter":
             hosts.append(
                 _default_host(
-                    os.environ.get("OPENROUTER_BASE_URL")
-                    or "https://openrouter.ai/api"
+                    os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api"
                 )
                 or "openrouter.ai"
             )

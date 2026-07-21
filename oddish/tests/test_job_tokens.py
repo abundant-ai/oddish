@@ -30,6 +30,7 @@ def test_mint_returns_raw_token_and_hash() -> None:
 def _fake_settings(**keys) -> types.SimpleNamespace:
     base = dict(
         anthropic_api_key=None,
+        anthropic_hdo_api_key=None,
         openai_api_key=None,
         gemini_api_key=None,
         meta_api_key=None,
@@ -43,6 +44,8 @@ def _fake_settings(**keys) -> types.SimpleNamespace:
 
 def _provider_of(model: str) -> str:
     m = (model or "").lower()
+    if m.startswith("anthropic-hdo/"):
+        return "anthropic-hdo"
     if "claude" in m or "anthropic" in m:
         return "anthropic"
     if "gpt" in m or "openai" in m:
@@ -65,6 +68,20 @@ def test_scoped_model_env_anthropic_excludes_other_providers() -> None:
     # Least privilege: no OpenAI / Gemini keys leak into a Claude job's bundle.
     assert "OPENAI_API_KEY" not in env
     assert "GEMINI_API_KEY" not in env
+
+
+def test_scoped_model_env_anthropic_hdo_uses_hdo_key_not_platform() -> None:
+    settings = _fake_settings(
+        anthropic_api_key="sk-platform",
+        anthropic_hdo_api_key="sk-hdo",
+        openai_api_key="sk-oai",
+    )
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="anthropic-hdo/claude-sonnet-4-5",
+        settings=settings,
+    )
+    assert env == {"ANTHROPIC_API_KEY": "sk-hdo"}
 
 
 def test_scoped_model_env_openai_only_carries_openai() -> None:

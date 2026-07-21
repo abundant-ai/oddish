@@ -33,6 +33,7 @@ from slack_notifications import (
     FinishedTrial,
     QaFailure,
     SlackAlert,
+    TaskFinished,
     TrialSpend,
     UnpricedModel,
     build_alerts,
@@ -834,6 +835,67 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
         "Task: *Task &lt;One&gt;*",
         "Reason: verdict judged this task not good",
         "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
+    ]
+
+
+def test_build_alerts_reports_finished_tasks_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            tasks_finished=[
+                TaskFinished(
+                    task_id="task/1",
+                    task_name="Task <One>",
+                    task_version_id="task/1@v2",
+                    owner_email="author@example.com",
+                )
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == ["task-finished:task/1@v2"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "author@example.com"
+    assert alert.text.splitlines() == [
+        ":tada: *Task finished*",
+        "Task: *Task &lt;One&gt;*",
+        "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
+    ]
+
+
+def test_build_alerts_collapses_finished_tasks_per_task_version() -> None:
+    now = datetime.now(timezone.utc)
+
+    def finished(task_version_id: str | None) -> TaskFinished:
+        return TaskFinished(
+            task_id="task/1",
+            task_name="Task",
+            task_version_id=task_version_id,
+            owner_email="author@example.com",
+        )
+
+    alerts = build_alerts(
+        AlertCandidates(
+            tasks_finished=[
+                finished("task/1@v2"),
+                finished("task/1@v2"),
+                finished("task/1@v3"),
+                finished(None),
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == [
+        "task-finished:task/1@v2",
+        "task-finished:task/1@v3",
+        "task-finished:task/1",
     ]
 
 
