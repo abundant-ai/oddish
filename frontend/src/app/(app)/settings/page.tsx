@@ -945,6 +945,8 @@ interface AlertPrefs {
   experiment_failed_enabled: boolean;
   trial_failed_enabled: boolean;
   qa_failed_enabled: boolean;
+  experiment_finished_enabled: boolean;
+  trial_finished_enabled: boolean;
   experiment_milestone_usd: number | null;
   trial_ping_usd: number | null;
   inherited_experiment_milestone_usd: number;
@@ -980,6 +982,16 @@ const ALERT_TOGGLES: {
     key: "qa_failed_enabled",
     label: "QA failed",
     description: "A task's QA verdict came back bad.",
+  },
+  {
+    key: "experiment_finished_enabled",
+    label: "Experiment finished",
+    description: "All of an experiment's trials have finished running.",
+  },
+  {
+    key: "trial_finished_enabled",
+    label: "Trial finished",
+    description: "One of your trials finished running.",
   },
 ];
 

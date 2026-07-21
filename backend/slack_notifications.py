@@ -112,6 +112,27 @@ class FailedTrial:
 
 
 @dataclass(frozen=True)
+class FinishedExperiment:
+    id: str
+    name: str
+    owner: str | None
+    total_trials: int
+    owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
+
+
+@dataclass(frozen=True)
+class FinishedTrial:
+    name: str
+    task_id: str
+    task_version_id: str | None
+    experiment_name: str
+    owner: str | None
+    owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
+
+
+@dataclass(frozen=True)
 class QaFailure:
     task_id: str
     task_name: str
@@ -128,6 +149,8 @@ class AlertCandidates:
     unpriced_models: list[UnpricedModel] = field(default_factory=list)
     failed_experiments: list[FailedExperiment] = field(default_factory=list)
     failed_trials: list[FailedTrial] = field(default_factory=list)
+    finished_experiments: list[FinishedExperiment] = field(default_factory=list)
+    finished_trials: list[FinishedTrial] = field(default_factory=list)
     qa_failures: list[QaFailure] = field(default_factory=list)
 
 
@@ -370,6 +393,21 @@ def build_alerts(
             failed.owner_clerk_user_id,
         )
 
+    for finished in candidates.finished_experiments:
+        if not prefs_for(finished.owner_email).experiment_finished_enabled:
+            continue
+        add_failure_dm(
+            f"experiment-finished:{finished.id}",
+            finished.owner_email,
+            ":checkered_flag: *Experiment finished*\n"
+            f"Title: *{_escape(finished.name)}*\n"
+            f"Trials: *{finished.total_trials}*\n"
+            f"Owner: *{_escape(finished.owner or 'Unknown')}*\n"
+            f"<{dashboard_url}/experiments/"
+            f"{quote(quote(finished.id, safe=''), safe='')}|open experiment>",
+            finished.owner_clerk_user_id,
+        )
+
     for failed_trial in candidates.failed_trials:
         if not prefs_for(failed_trial.owner_email).trial_failed_enabled:
             continue
@@ -386,6 +424,24 @@ def build_alerts(
             f"Owner: *{_escape(failed_trial.owner or 'Unknown')}*\n"
             f"<{task_url}|open task>",
             failed_trial.owner_clerk_user_id,
+        )
+
+    for finished_trial in candidates.finished_trials:
+        if not prefs_for(finished_trial.owner_email).trial_finished_enabled:
+            continue
+        bucket = _version_bucket(finished_trial.task_id, finished_trial.task_version_id)
+        task_url = _task_url(
+            dashboard_url, finished_trial.task_id, finished_trial.task_version_id
+        )
+        add_failure_dm(
+            f"trial-finished:{bucket}",
+            finished_trial.owner_email,
+            ":white_check_mark: *Trial finished*\n"
+            f"Title: `{_escape(finished_trial.name)}`\n"
+            f"Experiment: *{_escape(finished_trial.experiment_name)}*\n"
+            f"Owner: *{_escape(finished_trial.owner or 'Unknown')}*\n"
+            f"<{task_url}|open task>",
+            finished_trial.owner_clerk_user_id,
         )
 
     for qa_failure in candidates.qa_failures:
@@ -693,6 +749,40 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             )
         ).all()
 
+        # Trial-finished mirrors the failed-trial scan but fires on any terminal
+        # outcome, not just breakages: a trial that reached SUCCESS/FAILED/SKIPPED
+        # within the window. Dedup to one DM per task version happens in
+        # build_alerts, exactly as for failures.
+        terminal_statuses = [
+            TrialStatus.SUCCESS,
+            TrialStatus.FAILED,
+            TrialStatus.SKIPPED,
+        ]
+        finished_trial_rows = (
+            await session.execute(
+                select(
+                    TrialModel.id,
+                    TrialModel.name,
+                    TrialModel.task_id,
+                    TrialModel.task_version_id,
+                    ExperimentModel.name.label("experiment_name"),
+                    ExperimentModel.owner,
+                    _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
+                )
+                .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+                .where(
+                    ExperimentModel.is_collection.is_(False),
+                    ExperimentModel.deleted_at.is_(None),
+                    current_trial,
+                    TrialModel.finished_at >= failure_cutoff,
+                    TrialModel.status.in_(terminal_statuses),
+                    _real_spend_filter(),
+                )
+                .execution_options(include_deleted=True)
+            )
+        ).all()
+
         # verdict_status FAILED also covers user-cancelled verdicts, which are
         # not QA verdicts at all -- excluding them here keeps cancellations from
         # DMing owners a bogus "QA failed".
@@ -768,6 +858,20 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         )
         for row in failed_rows
     ]
+    # failed_rows is every recently-finished experiment with no active trials
+    # left (the failure-ratio cut is applied in build_alerts, not the query), so
+    # the same rows drive the experiment-finished alert.
+    finished_experiments = [
+        FinishedExperiment(
+            id=str(row.id),
+            name=str(row.name),
+            owner=row.owner,
+            total_trials=int(row.total_trials or 0),
+            owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
+        )
+        for row in failed_rows
+    ]
     failed_trial_records = [
         FailedTrial(
             name=str(row.name),
@@ -779,6 +883,18 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             owner_clerk_user_id=row.owner_clerk_user_id,
         )
         for row in failed_trial_rows
+    ]
+    finished_trial_records = [
+        FinishedTrial(
+            name=str(row.name),
+            task_id=str(row.task_id),
+            task_version_id=row.task_version_id,
+            experiment_name=str(row.experiment_name),
+            owner=row.owner,
+            owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
+        )
+        for row in finished_trial_rows
     ]
     qa_failures = [
         QaFailure(
@@ -801,6 +917,8 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             unpriced_models=unpriced_models,
             failed_experiments=failed_experiments,
             failed_trials=failed_trial_records,
+            finished_experiments=finished_experiments,
+            finished_trials=finished_trial_records,
             qa_failures=qa_failures,
         ),
         settings=settings,

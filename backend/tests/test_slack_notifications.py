@@ -29,6 +29,8 @@ from slack_notifications import (
     ExperimentCandidate,
     FailedExperiment,
     FailedTrial,
+    FinishedExperiment,
+    FinishedTrial,
     QaFailure,
     SlackAlert,
     TrialSpend,
@@ -694,6 +696,106 @@ def test_build_alerts_keeps_one_failed_trial_dm_per_owner_of_a_task_version() ->
 
     assert [(a.key, a.recipient_email) for a in same_owner] == [
         ("trial-failed:task/1@v2", "ada@example.com")
+    ]
+
+
+def test_build_alerts_reports_finished_experiments_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            finished_experiments=[
+                FinishedExperiment(
+                    id="experiment/1",
+                    name="Exp <One>",
+                    owner="Pat & Sam",
+                    total_trials=4,
+                    owner_email="owner@example.com",
+                )
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == ["experiment-finished:experiment/1"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "owner@example.com"
+    assert alert.mention_emails == ()
+    assert alert.text.splitlines() == [
+        ":checkered_flag: *Experiment finished*",
+        "Title: *Exp &lt;One&gt;*",
+        "Trials: *4*",
+        "Owner: *Pat &amp; Sam*",
+        "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
+    ]
+
+
+def test_build_alerts_reports_finished_trials_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            finished_trials=[
+                FinishedTrial(
+                    name="Trial <One>",
+                    task_id="task/1",
+                    task_version_id="task/1@v2",
+                    experiment_name="Exp & Co",
+                    owner="Ada",
+                    owner_email="owner@example.com",
+                )
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == ["trial-finished:task/1@v2"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "owner@example.com"
+    assert alert.text.splitlines() == [
+        ":white_check_mark: *Trial finished*",
+        "Title: `Trial &lt;One&gt;`",
+        "Experiment: *Exp &amp; Co*",
+        "Owner: *Ada*",
+        "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
+    ]
+
+
+def test_build_alerts_collapses_finished_trials_per_task_version() -> None:
+    now = datetime.now(timezone.utc)
+
+    def finished(name: str, task_version_id: str | None) -> FinishedTrial:
+        return FinishedTrial(
+            name=name,
+            task_id="task/1",
+            task_version_id=task_version_id,
+            experiment_name="Exp",
+            owner="Ada",
+            owner_email="owner@example.com",
+        )
+
+    alerts = build_alerts(
+        AlertCandidates(
+            finished_trials=[
+                finished("trial-1", "task/1@v2"),
+                finished("trial-2", "task/1@v2"),
+                finished("trial-3", "task/1@v3"),
+                finished("legacy", None),
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == [
+        "trial-finished:task/1@v2",
+        "trial-finished:task/1@v3",
+        "trial-finished:task/1",
     ]
 
 
@@ -1568,6 +1670,8 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
         assert [alert.key for alert in alerts] == [
             f"experiment-24h:{experiment_id}:1000",
             f"trial:{task_id}-outlier",
+            f"experiment-finished:{experiment_id}",
+            f"trial-finished:{task_id}",
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
@@ -1581,7 +1685,7 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
         assert "Author: *Expense Owner*" in alerts[1].text
         assert alerts[1].recipient_email == "expense-owner@example.com"
         assert alerts[1].dm_only
-        assert "*Unpriceable model:*" in alerts[2].text
+        assert "*Unpriceable model:*" in alerts[-1].text
     finally:
         async with get_session() as session:
             await session.execute(
@@ -1956,15 +2060,19 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
         alerts = await load_alerts(now)
         assert [alert.key for alert in alerts] == [
             f"experiment-failed:{finished_id}",
+            f"experiment-finished:{finished_id}",
             f"trial-failed:{task_id}",
+            f"trial-finished:{task_id}",
         ]
         alert = alerts[0]
         assert alert.dm_only
         assert alert.recipient_email == "failed-owner@example.com"
         assert "Failed trials: *3/4*" in alert.text
         assert "Title: *Failed experiment*" in alert.text
-        assert alerts[1].dm_only
-        assert alerts[1].recipient_email == "failed-owner@example.com"
+        by_key = {alert.key: alert for alert in alerts}
+        trial_failed = by_key[f"trial-failed:{task_id}"]
+        assert trial_failed.dm_only
+        assert trial_failed.recipient_email == "failed-owner@example.com"
     finally:
         async with get_session() as session:
             await session.execute(
