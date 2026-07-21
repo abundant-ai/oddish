@@ -939,7 +939,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?branch=main#c9dc02d6ed402cfc08ef53263978a68be402dea6" }
+source = { git = "https://github.com/abundant-ai/harbor?branch=main#7f512048d213dfd50f181b4a4f19f88eee88e4bd" }
 dependencies = [
     { name = "dirhash" },
     { name = "fastapi" },

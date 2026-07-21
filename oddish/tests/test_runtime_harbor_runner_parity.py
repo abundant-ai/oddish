@@ -74,9 +74,13 @@ def _run_and_capture_env_kwargs(environment: EnvironmentType, tmp_path: Path) ->
 
 
 def test_modal_env_kwargs_unchanged_passthrough(tmp_path: Path) -> None:
-    # Modal keeps caller kwargs and adds the attributable sandbox app default.
+    # Modal keeps caller kwargs and adds Oddish's hosted sandbox invariants.
     kwargs = _run_and_capture_env_kwargs(EnvironmentType.MODAL, tmp_path)
-    assert kwargs == {"keep": "value", "app_name": "oddish-trials"}
+    assert kwargs == {
+        "keep": "value",
+        "app_name": "oddish-trials",
+        "modal_exact_gpu_type": True,
+    }
 
 
 def test_daytona_env_kwargs_get_autostop_defaults(tmp_path: Path) -> None:
