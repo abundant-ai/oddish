@@ -127,76 +127,7 @@ export function TrajectoryActivity({
           </div>
         </div>
 
-        {/* steps by component */}
-        <div className="space-y-4 pt-1">
-          {segments.map((segment, pi) => {
-            const color = colorFor.get(segment.key) ?? "var(--phase-other)";
-            const ids = segment.stepIds;
-            const range =
-              ids.length === 1
-                ? `step ${ids[0]}`
-                : `steps ${ids[0]}–${ids[ids.length - 1]}`;
-            return (
-              <div key={`${segment.key}-${pi}`}>
-                <div className="flex items-center gap-2 border-b pb-1.5">
-                  <span
-                    className="h-4 w-1 rounded-sm"
-                    style={{ background: color }}
-                  />
-                  <span className="text-sm font-semibold">{segment.label}</span>
-                  <span className="ml-auto font-mono text-xs text-muted-foreground">
-                    {range}
-                  </span>
-                </div>
-                {segment.gist && (
-                  <p className="pt-1.5 text-xs text-muted-foreground">{segment.gist}</p>
-                )}
-                <div className="grid gap-0.5 pt-1">
-                  {ids.map((id) => {
-                    const idx = stepIdToIndex(id);
-                    const step = idx >= 0 ? steps[idx] : undefined;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        disabled={idx < 0}
-                        onClick={() => select(id)}
-                        style={{ borderColor: color }}
-                        className="flex items-center gap-2 rounded-md border-l-2 border-transparent px-2 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50"
-                      >
-                        <span className="font-mono text-xs text-muted-foreground">
-                          {String(id).padStart(2, "0")}
-                        </span>
-                        <span className="flex-1 truncate">
-                          {step ? summarizeStep(step) : `Step ${id}`}
-                        </span>
-                        {highlightIds.has(id) && (
-                          <Star className="h-3 w-3 shrink-0 fill-current text-yellow-500" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
       </CardContent>
     </Card>
   );
-}
-
-/** One-line label for a step in the component list. */
-function summarizeStep(step: TrajectoryStep): string {
-  if (step.tool_calls && step.tool_calls.length > 0) {
-    const names = step.tool_calls
-      .map((c) => c.function_name)
-      .filter(Boolean)
-      .join(", ");
-    if (names) return names;
-  }
-  if (typeof step.message === "string" && step.message.trim()) {
-    return step.message.trim().slice(0, 80);
-  }
-  return step.source;
 }
