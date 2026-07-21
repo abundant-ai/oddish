@@ -140,12 +140,17 @@ def _default_cloud_environment_for_task(
     override_gpus: int | None,
 ) -> EnvironmentType:
     from oddish.runtime.routing import default_cloud_environment
+    from oddish.worker.local_offline_policy import task_is_offline
 
     requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
     if override_gpus is not None:
         requires_gpu = override_gpus > 0
     else:
         requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
+
+    # Offline tasks are unrunnable on a backend with all-or-nothing egress: the
+    # agent install loses apt and github outright and the trial dies at setup.
+    requires_configurable_egress = task_path is not None and task_is_offline(task_path)
 
     if requires_gpu and requires_tpu:
         raise typer.BadParameter(
@@ -159,7 +164,10 @@ def _default_cloud_environment_for_task(
         # never registered it (a laptop without ODDISH_GKE_CLUSTER_NAME); the
         # hosted deployment validates the choice against its own cloud policy.
         return EnvironmentType.GKE
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    return default_cloud_environment(
+        requires_gpu=requires_gpu,
+        requires_configurable_egress=requires_configurable_egress,
+    )
 
 
 def _map_batch_sweep_results(
