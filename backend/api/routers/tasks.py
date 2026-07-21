@@ -364,6 +364,12 @@ async def create_task_sweep(
         billed_user_id = await resolve_billed_user_id(
             session, submission, auth, owner_user_id=owner_user_id
         )
+        # Resolved once, reused both for the task_upload_events row (below,
+        # inside create_task_sweep_core -- the actual submitter, not the
+        # billed owner) and for task.created_by_user_id (after the call).
+        submitter_user_id = await resolve_created_by_user_id(
+            session, submission, auth, connected_user
+        )
 
         try:
             task, new_trials, is_append, experiment = await create_task_sweep_core(
@@ -371,6 +377,7 @@ async def create_task_sweep(
                 submission=submission,
                 org_id=auth.org_id,
                 billed_user_id=billed_user_id,
+                submitter_user_id=submitter_user_id,
                 default_environment=get_default_cloud_environment(submission),
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
@@ -393,11 +400,8 @@ async def create_task_sweep(
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
+            if submitter_user_id:
+                task.created_by_user_id = submitter_user_id
             task.api_key_id = auth.api_key_id
 
             await maybe_publish_experiment(session, task, submission, auth)
@@ -470,6 +474,20 @@ async def create_task_sweep_batch(
             session, submission, auth, owner_user_id=owner_user_id
         )
 
+    # Submitter resolved once in the pre-loop (inside _resolve_submitter) and
+    # reused by _finalize, same shape as owners/_resolve_billed above.
+    submitters: dict[int, str | None] = {}
+
+    async def _resolve_submitter(
+        session: AsyncSession, submission: TaskSweepSubmission
+    ) -> str | None:
+        connected_user = connected_users.get(id(submission))
+        submitter_user_id = await resolve_created_by_user_id(
+            session, submission, auth, connected_user
+        )
+        submitters[id(submission)] = submitter_user_id
+        return submitter_user_id
+
     async def _finalize(
         session: AsyncSession,
         submission: TaskSweepSubmission,
@@ -478,17 +496,13 @@ async def create_task_sweep_batch(
         experiment: ExperimentModel | None,
     ) -> None:
         # Post-create stamping, inside the savepoint (mirrors the single route).
-        # Owner was resolved once in _resolve_billed; connected_user (linkage
-        # gate) is reused for created_by resolution below.
-        connected_user = connected_users.get(id(submission))
+        # Owner/submitter were resolved once in _resolve_billed/_resolve_submitter.
         owner_user_id = owners.get(id(submission))
+        submitter_user_id = submitters.get(id(submission))
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
-            created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth, connected_user
-            )
-            if created_by_user_id:
-                task.created_by_user_id = created_by_user_id
+            if submitter_user_id:
+                task.created_by_user_id = submitter_user_id
             task.api_key_id = auth.api_key_id
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
@@ -503,6 +517,7 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
+            resolve_submitter_user_id=_resolve_submitter,
             resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
@@ -744,6 +759,19 @@ async def browse_tasks(
     max_steps: int | None = Query(None, ge=0),
     reward_min: float | None = Query(None, ge=0.0, le=1.0),
     reward_max: float | None = Query(None, ge=0.0, le=1.0),
+    # --- Task-registry metadata filters (schema-backed) ---
+    allow_internet: bool | None = Query(None),
+    gpus_min: int | None = Query(None, ge=0),
+    gpus_max: int | None = Query(None, ge=0),
+    cpus_min: int | None = Query(None, ge=0),
+    memory_mb_min: int | None = Query(None, ge=0),
+    expert_hours_min: float | None = Query(None, ge=0.0),
+    expert_hours_max: float | None = Query(None, ge=0.0),
+    source_repo: str | None = Query(None, description="Exact upload-event source repo"),
+    ci_pr_number: int | None = Query(None, description="Upload-event CI PR number"),
+    uploader_is_ci: bool | None = Query(
+        None, description="Task ever uploaded by a CI-flagged uploader"
+    ),
     # --- Phase 1.2-lite aggregate filters / sort (computed on the fly) ---
     avg_score_min: float | None = Query(
         None, ge=0.0, le=100.0, description="Task avg score percent (0-100), min"
@@ -910,6 +938,16 @@ async def browse_tasks(
             max_steps=max_steps,
             reward_min=reward_min,
             reward_max=reward_max,
+            allow_internet=allow_internet,
+            gpus_min=gpus_min,
+            gpus_max=gpus_max,
+            cpus_min=cpus_min,
+            memory_mb_min=memory_mb_min,
+            expert_hours_min=expert_hours_min,
+            expert_hours_max=expert_hours_max,
+            source_repo=source_repo,
+            ci_pr_number=ci_pr_number,
+            uploader_is_ci=uploader_is_ci,
             avg_score_min=avg_score_min,
             avg_score_max=avg_score_max,
             total_tokens_min=total_tokens_min,

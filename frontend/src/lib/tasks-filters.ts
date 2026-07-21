@@ -915,6 +915,16 @@ const EXTRA_BROWSE_PARAM_KEYS = [
   "run_probe",
   "harbor_shas",
   "harbor_stages",
+  "allow_internet",
+  "gpus_min",
+  "gpus_max",
+  "cpus_min",
+  "memory_mb_min",
+  "expert_hours_min",
+  "expert_hours_max",
+  "source_repo",
+  "ci_pr_number",
+  "uploader_is_ci",
 ] as const;
 
 // Everything the browse fetch should forward / saved filters should capture.
