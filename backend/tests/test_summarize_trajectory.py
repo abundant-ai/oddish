@@ -463,7 +463,7 @@ class _RecordingLLM:
         self._payload = payload
         self.prompt: str | None = None
 
-    async def stream(self, prompt: str):
+    async def stream(self, prompt: str, *, system_prompt: str | None = None):
         self.prompt = prompt
         yield self._payload
 

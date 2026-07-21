@@ -6,9 +6,9 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,11 @@ from oddish.core.cost_basis import (
     settled_cost_parts,
 )
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
+from oddish.core.model_concurrency import (
+    MAX_MODEL_CONCURRENCY,
+    get_model_concurrency_overrides,
+    set_model_concurrency_override,
+)
 from oddish.core.quotas import (
     effective_limits_by_org_user_all_orgs,
     get_effective_org_limit,
@@ -690,10 +695,13 @@ class QueueThroughputStat(BaseModel):
 
 class QueueCapacityStat(BaseModel):
     queue_key: str
+    active: bool = True
     queued: int
     queued_scheduled: int
     running: int
     limit: int
+    deploy_limit: int
+    override_limit: int | None
     # Fraction running / limit in [0, 1+] (can exceed 1 if a limit was lowered
     # below the current running count). None when limit is 0.
     fill: float | None
@@ -717,6 +725,38 @@ class QueueHealthResponse(BaseModel):
     dispatcher: QueueRuntimeComponentStatus | None
     reconciler: QueueRuntimeComponentStatus | None
     timestamp: str
+
+
+class ModelConcurrencyUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queue_key: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ] = Field(max_length=512)
+    limit: int | None = Field(ge=0, le=MAX_MODEL_CONCURRENCY)
+
+
+class ModelConcurrencySetting(BaseModel):
+    queue_key: str
+    limit: int
+    deploy_limit: int
+    override_limit: int | None
+
+
+async def update_model_concurrency_core(
+    session: AsyncSession,
+    request: ModelConcurrencyUpdateRequest,
+) -> ModelConcurrencySetting:
+    queue_key = await set_model_concurrency_override(
+        session, request.queue_key, request.limit
+    )
+    deploy_limit = settings.get_model_concurrency(queue_key)
+    return ModelConcurrencySetting(
+        queue_key=queue_key,
+        limit=deploy_limit if request.limit is None else request.limit,
+        deploy_limit=deploy_limit,
+        override_limit=request.limit,
+    )
 
 
 async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
@@ -836,18 +876,30 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
             current = bucket["oldest"]
             bucket["oldest"] = age if current is None else max(current, age)
 
+    overrides = await get_model_concurrency_overrides(session)
+    for key in settings.get_known_queue_keys() | overrides.keys():
+        merged.setdefault(
+            key,
+            {"queued": 0, "queued_scheduled": 0, "running": 0, "oldest": None},
+        )
+
     capacity: list[QueueCapacityStat] = []
     for key, bucket in merged.items():
-        limit = settings.get_model_concurrency(key)
+        deploy_limit = settings.get_model_concurrency(key)
+        override_limit = overrides.get(key)
+        limit = override_limit if override_limit is not None else deploy_limit
         running = int(bucket["running"] or 0)
         wait_p50, wait_p95 = wait_by_key.get(key, (None, None))
         capacity.append(
             QueueCapacityStat(
                 queue_key=key,
+                active=bool(bucket["queued"] or bucket["running"]),
                 queued=int(bucket["queued"] or 0),
                 queued_scheduled=int(bucket["queued_scheduled"] or 0),
                 running=running,
                 limit=limit,
+                deploy_limit=deploy_limit,
+                override_limit=override_limit,
                 fill=(running / limit) if limit > 0 else None,
                 oldest_queued_age_seconds=bucket["oldest"],
                 wait_p50_seconds=wait_p50,
@@ -856,7 +908,7 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
         )
 
     # Most-pressured first: deepest backlog, then highest fill.
-    capacity.sort(key=lambda c: (c.queued, c.running), reverse=True)
+    capacity.sort(key=lambda c: (-c.queued, -c.running, c.queue_key))
 
     totals_queued = sum(c.queued for c in capacity)
     totals_running = sum(c.running for c in capacity)
@@ -977,8 +1029,11 @@ async def build_load_snapshot(session: AsyncSession) -> LoadSnapshot:
     submit_row = statuses.get(SUBMIT_LATENCY_COMPONENT) or {}
     sweep_rtt = (submit_row.get("payload") or {}).get("sweep_rtt_p95_ewma")
 
+    # Idle keys exist only so admins can edit their limits; exclude their stale waits.
     wait_values = [
-        c.wait_p95_seconds for c in health.capacity if c.wait_p95_seconds is not None
+        c.wait_p95_seconds
+        for c in health.capacity
+        if c.active and c.wait_p95_seconds is not None
     ]
     wait_p95_max = max(wait_values) if wait_values else None
 

@@ -105,9 +105,9 @@ export function SlackAlertSettingsForm() {
           }}
         />
         <p className="text-xs text-muted-foreground">
-          Any single trial costing more than this posts to the shared channel and
-          pings the list below. Owner DMs are tuned per person in their own
-          notification settings, not here.
+          Any single trial finished within the past 24 hours that costs more than
+          this posts to the shared channel and pings the list below. Owner DMs are
+          tuned per person in their own notification settings, not here.
         </p>
       </div>
       <div className="space-y-1">

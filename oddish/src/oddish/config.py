@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from decimal import Decimal
@@ -12,6 +13,8 @@ from harbor.agents.utils import PROVIDER_KEYS
 from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
+logger = logging.getLogger(__name__)
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
@@ -142,7 +145,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-HARBOR_DEFAULT_SHA = "555fc203d51ef97d937703654e7d03b29cba4a02"
+# Pin of abundant-ai/harbor@main (upstream-style NetworkPolicy; no fork Modal CIDR stack).
+HARBOR_DEFAULT_SHA = "d070837196905505cd1944099fb93e1b9ad80fd2"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1160,12 +1164,15 @@ class Settings(BaseSettings):
     # ODDISH_GATE_LLM_ON_BASELINES; default off leaves every path unchanged.
     gate_llm_on_baselines: bool = False
 
-    # Dynamic per-model concurrency controller (default OFF; see
-    # workers.queue.concurrency_controller). When enabled, the reconciler
-    # recomputes a per-queue advisory limit each cycle and the dispatcher reads
-    # it (decaying to the static limit when stale). Off => today's behavior.
+    # DEPRECATED (default OFF; see workers.queue.concurrency_controller). The
+    # self-tuning advisory controller predates database-backed admin overrides,
+    # which are now the supported way to change a per-model limit at runtime:
+    # set it in the Queue Health admin card (PUT /admin/concurrency), which both
+    # the dispatcher plan and the worker slot lease honor immediately. Leave this
+    # OFF; enabling it logs a deprecation warning and the path may be removed.
     dynamic_model_concurrency: bool = False
-    # Feed-forward provider rate-limit config: a quota-BUCKET table keyed by
+    # DEPRECATED: feed-forward provider rate-limit config consumed only by the
+    # deprecated dynamic controller above. A quota-BUCKET table keyed by
     # bucket_id (rpm / tpm / headroom — the published provider limits) plus a
     # MANY-to-one queue_key -> bucket_id map. Operator-owned JSON via
     # ODDISH_PROVIDER_RATE_LIMITS / ODDISH_QUEUE_KEY_BUCKETS; the controller
@@ -1374,6 +1381,20 @@ class Settings(BaseSettings):
         self.azure_openai_deployments = self._normalize_azure_openai_deployments(
             self.azure_openai_deployments
         )
+        return self
+
+    @model_validator(mode="after")
+    def _warn_deprecated_dynamic_concurrency(self) -> "Settings":
+        # Soft-deprecation: fires once per process (settings are a singleton) so
+        # operators still running the self-tuning controller are steered to the
+        # database-backed admin override that replaced it.
+        if self.dynamic_model_concurrency:
+            logger.warning(
+                "ODDISH_DYNAMIC_MODEL_CONCURRENCY is deprecated: the self-tuning "
+                "concurrency controller has been superseded by database-backed "
+                "admin overrides (PUT /admin/concurrency, Queue Health card). "
+                "Set per-model limits there instead; this flag may be removed."
+            )
         return self
 
     @staticmethod

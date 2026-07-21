@@ -13,6 +13,7 @@ import json
 import os
 from typing import AsyncIterator
 
+from oddish.analyze.analysis_cost import AnalysisUsage
 from oddish.blocks.analyzer.analyzer_llm_client import (
     AnalyzerLLMClient,
     register_sandbox_client_factory,
@@ -50,6 +51,11 @@ class SandboxAnalyzerLLMClient:
         self._client = daytona_client
         self._runtime = runtime
         self._session_id = daytona_session_id
+        # Always None for now: claude-code reports native cost in its
+        # stream-json ``result`` event, which this client passes through as an
+        # opaque chunk. Parsing it is what will light up cost rows for the
+        # sandbox-backed cohort blocks.
+        self.last_usage: AnalysisUsage | None = None
 
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None

@@ -977,6 +977,8 @@ def build_sweep_payload(
     force_build: bool | None = None,
     agent_env: list[str] | None = None,
     agent_kwargs: list[str] | None = None,
+    allow_agent_hosts: list[str] | None = None,
+    disable_web_tools: bool = False,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
     content_hash: str | None = None,
@@ -988,6 +990,8 @@ def build_sweep_payload(
     link: str | None = None,
     registry_auth: list[dict] | None = None,
 ) -> dict:
+    from oddish.cli.closed_internet import apply_closed_internet_overrides
+
     env_value = environment.value if environment else None
 
     if env_value is not None:
@@ -1030,6 +1034,12 @@ def build_sweep_payload(
             if parsed_kwargs:
                 existing.setdefault("kwargs", {}).update(parsed_kwargs)
             config["agent_config"] = existing
+
+    apply_closed_internet_overrides(
+        configs,
+        allow_agent_hosts=allow_agent_hosts,
+        disable_web_tools=disable_web_tools,
+    )
 
     payload: dict = {
         "task_id": task_id,
@@ -1166,6 +1176,8 @@ def submit_sweep(
     force_build: bool | None = None,
     agent_env: list[str] | None = None,
     agent_kwargs: list[str] | None = None,
+    allow_agent_hosts: list[str] | None = None,
+    disable_web_tools: bool = False,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
     content_hash: str | None = None,
@@ -1200,6 +1212,8 @@ def submit_sweep(
         force_build=force_build,
         agent_env=agent_env,
         agent_kwargs=agent_kwargs,
+        allow_agent_hosts=allow_agent_hosts,
+        disable_web_tools=disable_web_tools,
         artifact_paths=artifact_paths,
         append_to_task=append_to_task,
         content_hash=content_hash,
@@ -1757,7 +1771,7 @@ def load_sweep_config(config_path: Path) -> dict:
         harbor:
           environment:
             kwargs:
-              agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+              region: us-east
         priority: low
         experiment_id: exp_123
         max_trial_attempts: 3           # optional total Oddish attempts per trial
@@ -1861,6 +1875,10 @@ def load_sweep_config(config_path: Path) -> dict:
             agent_config_overrides["env"] = agent_entry["env"]
         if agent_entry.get("kwargs"):
             agent_config_overrides["kwargs"] = agent_entry["kwargs"]
+        if agent_entry.get("extra_allowed_hosts"):
+            agent_config_overrides["extra_allowed_hosts"] = agent_entry[
+                "extra_allowed_hosts"
+            ]
         if agent_config_overrides:
             entry["agent_config"] = agent_config_overrides
 

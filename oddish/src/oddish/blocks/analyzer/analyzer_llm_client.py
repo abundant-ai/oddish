@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, runtime_ch
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
+from oddish.analyze.analysis_cost import AnalysisUsage, usage_from_api_message
 from oddish.config import OPENAI_PROVIDER_OPENAI, settings
 
 _DEFAULT_MODEL = "claude-opus-4-8"
@@ -43,6 +44,10 @@ class LLMClientType(str, enum.Enum):
 
 @runtime_checkable
 class AnalyzerLLMClient(Protocol):
+    # Usage for the most recent stream(), or None when the backend reports none.
+    # Read by AnalyzerBlock after the stream drains, so it must survive the call.
+    last_usage: AnalysisUsage | None
+
     def stream(
         self, prompt: str, *, system_prompt: str | None = None
     ) -> AsyncIterator[str]: ...
@@ -58,11 +63,13 @@ class FakeAnalyzerLLMClient:
         chunks: list[str] | None = None,
         exc: BaseException | None = None,
         files: dict[str, bytes] | None = None,
+        last_usage: AnalysisUsage | None = None,
     ) -> None:
         self._chunks = chunks or []
         self._exc = exc
         self._files = files or {}
         self.last_system_prompt: str | None = None
+        self.last_usage = last_usage
 
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None
@@ -90,16 +97,29 @@ class ApiAnalyzerLLMClient:
         max_tokens: int | None = None,
         thinking: dict | None = None,
         api_key: str | None = None,
+        output_schema: dict | None = None,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens if max_tokens is not None else 4096
+        # Thinking is set EXPLICITLY, never left to the model default. Sonnet 5
+        # runs adaptive thinking when the field is omitted (Sonnet 4.6 ran
+        # without it), and max_tokens caps thinking + response *together* -- so
+        # moving analysis_model to sonnet-5 silently spent the output budget on
+        # reasoning and truncated block output mid-JSON. Analyzer blocks parse
+        # their output, so a truncated response is a hard failure, not a
+        # degraded one. Pass thinking= to opt back in per call site.
         self._thinking = thinking if thinking is not None else _THINKING_DISABLED
+        # When set, the response is constrained to this JSON schema during
+        # generation instead of being hand-written into free text.
+        self._output_schema = output_schema
+        self.last_usage: AnalysisUsage | None = None
         key = resolve_analyzer_api_key(api_key)
         self._inner = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
 
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None
     ) -> AsyncIterator[str]:
+        self.last_usage = None
         kwargs: dict = dict(
             model=self._model,
             max_tokens=self._max_tokens,
@@ -108,10 +128,23 @@ class ApiAnalyzerLLMClient:
         )
         if system_prompt is not None:
             kwargs["system"] = system_prompt
+        if self._output_schema is not None:
+            # output_config is not a named kwarg on anthropic 0.76.0 (the break
+            # behind #493), so it goes through extra_body.
+            kwargs["extra_body"] = {
+                "output_config": {
+                    "format": {"type": "json_schema", "schema": self._output_schema}
+                }
+            }
         async with self._inner.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 yield text
             final = await stream.get_final_message()
+        # Stashed before the truncation check below: a run that blew its budget
+        # still spent the tokens, and dropping it would under-report that spend.
+        self.last_usage = usage_from_api_message(
+            getattr(final, "usage", None), self._model
+        )
         # text_stream ends identically on a complete reply and on a truncated
         # one, so without this the caller parses a half-written object.
         if getattr(final, "stop_reason", None) == "max_tokens":
@@ -162,6 +195,10 @@ class OpenAIAnalyzerLLMClient:
     ) -> None:
         self._max_tokens = max_tokens
         self._response_format = response_format
+        # Always None for now: the streaming chunks carry no usage, so OpenAI
+        # spend does not reach analysis_costs the way the Anthropic backend's
+        # usage_from_api_message does.
+        self.last_usage: AnalysisUsage | None = None
         self._client, self._model = _build_openai_client(model=model, api_key=api_key)
 
     async def stream(

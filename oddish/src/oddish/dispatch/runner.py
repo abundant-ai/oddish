@@ -20,7 +20,7 @@ import logging
 import os
 from typing import Mapping
 
-from oddish.config import settings
+from oddish.core.model_concurrency import load_effective_model_concurrency_limits
 from oddish.observability import configure_observability
 from oddish.dispatch.backends.docker import DockerPoolDispatcher
 from oddish.dispatch.backends.inprocess import InProcessDispatcher
@@ -96,7 +96,7 @@ async def run_once(env: Mapping[str, str] = os.environ):
     return await run_dispatch_cycle(
         dispatcher,
         max_workers=_max_workers(env),
-        concurrency_for=settings.get_model_concurrency,
+        concurrency_limits_for=load_effective_model_concurrency_limits,
         on_stage=stamp_dispatch_stage,
     )
 
@@ -107,7 +107,7 @@ async def run_forever(env: Mapping[str, str] = os.environ) -> None:
     await run_dispatch_loop(
         dispatcher,
         max_workers=_max_workers(env),
-        concurrency_for=settings.get_model_concurrency,
+        concurrency_limits_for=load_effective_model_concurrency_limits,
         on_stage=stamp_dispatch_stage,
         fallback_interval=float(env.get("ODDISH_DISPATCH_FALLBACK_SECONDS", "20")),
     )

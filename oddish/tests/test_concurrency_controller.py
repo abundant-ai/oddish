@@ -280,11 +280,28 @@ def _health(capacity):
     return SimpleNamespace(capacity=capacity)
 
 
-def _cap(queue_key, *, running, queued, wait_p95):
-    from types import SimpleNamespace
+def _cap(queue_key, *, running, queued, wait_p95, limit=None, override_limit=None):
+    """A real ``QueueCapacityStat``, so this double can't drift from what
+    ``get_queue_health_core`` actually hands the controller. ``limit`` is the
+    effective limit and defaults to the deploy-time one.
+    """
+    from oddish.config import settings
+    from oddish.core.admin import QueueCapacityStat
 
-    return SimpleNamespace(
-        queue_key=queue_key, running=running, queued=queued, wait_p95_seconds=wait_p95
+    deploy_limit = settings.get_model_concurrency(queue_key)
+    effective = deploy_limit if limit is None else limit
+    return QueueCapacityStat(
+        queue_key=queue_key,
+        queued=queued,
+        queued_scheduled=0,
+        running=running,
+        limit=effective,
+        deploy_limit=deploy_limit,
+        override_limit=override_limit,
+        fill=(running / effective) if effective > 0 else None,
+        oldest_queued_age_seconds=None,
+        wait_p50_seconds=None,
+        wait_p95_seconds=wait_p95,
     )
 
 
@@ -346,6 +363,59 @@ async def test_recompute_upserts_shrink_for_idle_queue(monkeypatch):
     assert session.upserts[0]["queue_key"] == "openai/gpt-5.2"
     assert session.upserts[0]["advisory_limit"] == 5
     assert recorded and recorded[0][0] == cc.CONCURRENCY_CONTROLLER_COMPONENT
+
+
+@pytest.mark.asyncio
+async def test_recompute_tunes_from_the_admin_override(monkeypatch):
+    """An admin override replaces the deploy limit as the controller's base, so
+    the advisory it computes is relative to what the admin set."""
+    monkeypatch.setattr(
+        cc,
+        "get_queue_health_core",
+        _make_async(
+            _health(
+                [
+                    _cap(
+                        "openai/gpt-5.2",
+                        running=0,
+                        queued=0,
+                        wait_p95=0.0,
+                        limit=100,
+                        override_limit=100,
+                    )
+                ]
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        cc, "calibrate_model_concurrency", _make_async([_cal("openai/gpt-5.2")])
+    )
+    monkeypatch.setattr(cc, "record_queue_runtime_status", _make_async(None))
+    session = _FakeSession(state_rows=[])
+
+    updated = await cc.recompute_advisory_limits(session)
+
+    # Idle -> shrink to floor(base * 0.70) off the 100 override, not the deploy 8.
+    assert updated == {"openai/gpt-5.2": 70}
+
+
+@pytest.mark.asyncio
+async def test_recompute_skips_queues_with_no_work_this_cycle(monkeypatch):
+    """Inactive queues are reported only so the admin editor can list them; they
+    carry no signal, so the controller must not tune (or clear) them."""
+    cap = _cap("openai/gpt-5.2", running=0, queued=0, wait_p95=0.0)
+    cap.active = False
+    monkeypatch.setattr(cc, "get_queue_health_core", _make_async(_health([cap])))
+    monkeypatch.setattr(
+        cc, "calibrate_model_concurrency", _make_async([_cal("openai/gpt-5.2")])
+    )
+    monkeypatch.setattr(cc, "record_queue_runtime_status", _make_async(None))
+    session = _FakeSession(state_rows=[])
+
+    updated = await cc.recompute_advisory_limits(session)
+
+    assert updated == {}
+    assert session.upserts == []
 
 
 @pytest.mark.asyncio
@@ -418,7 +488,9 @@ async def test_recompute_skips_statically_disabled_queue(monkeypatch):
         cc,
         "get_queue_health_core",
         _make_async(
-            _health([_cap("disabled/model", running=0, queued=0, wait_p95=0.0)])
+            _health(
+                [_cap("disabled/model", running=0, queued=0, wait_p95=0.0, limit=0)]
+            )
         ),
     )
     monkeypatch.setattr(
@@ -494,6 +566,16 @@ def test_merge_never_overrides_a_statically_disabled_queue():
     static = {"openai/gpt-5.2": 0}
     advisory = {"openai/gpt-5.2": 40}
     assert cc.merge_advisory_over_static(static, advisory) == {"openai/gpt-5.2": 0}
+
+
+def test_merge_never_exceeds_an_admin_override():
+    static = {"openai/gpt-5.2": 10}
+    advisory = {"openai/gpt-5.2": 100}
+    hard_caps = {"openai/gpt-5.2": 10}
+
+    assert cc.merge_advisory_over_static(
+        static, advisory, hard_caps=hard_caps
+    ) == {"openai/gpt-5.2": 10}
 
 
 def test_merge_empty_advisory_is_static():

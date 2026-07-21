@@ -81,24 +81,6 @@ async def test_fake_client_raises_when_configured():
 @pytest.mark.asyncio
 async def test_api_client_streams_text_deltas(monkeypatch):
     # Fake the AsyncAnthropic streaming context manager.
-    class _AStream:
-        def __init__(self, parts):
-            self._parts = parts
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        @property
-        def text_stream(self):
-            async def gen():
-                for p in self._parts:
-                    yield p
-
-            return gen()
-
     class _FakeMessages:
         def stream(self, **kwargs):
             assert kwargs["model"] == "claude-opus-4-8"
@@ -561,3 +543,91 @@ def test_llm_client_type_values_are_pinned():
     assert LLMClientType.OPENAI.value == "OpenAi"
     assert LLMClientType.API.value == "Api"
     assert LLMClientType.SANDBOX.value == "Sandbox"
+def test_init_signature_has_no_duplicate_parameters():
+    """Guards against a merge reintroducing a module-level SyntaxError.
+
+    #810 and #812 each added ``thinking`` to this constructor in parallel. The
+    parameter lists did not overlap textually, so git merged both cleanly into
+    a duplicate argument -- a SyntaxError that made the whole module
+    unimportable, taking every analyzer and report path down with it. Nothing
+    in the suite caught it because an unimportable module fails at collection,
+    which reads as an errored test file rather than a broken product.
+    """
+    import inspect
+
+    names = list(inspect.signature(ApiAnalyzerLLMClient.__init__).parameters)
+    assert len(names) == len(set(names)), f"duplicate parameter in {names}"
+
+
+def test_thinking_defaults_to_disabled_and_is_overridable():
+    # The dedupe had to pick one of two assignments; this pins the surviving
+    # behaviour so a future cleanup cannot silently re-enable thinking, which
+    # would spend the output budget on reasoning and truncate block JSON.
+    assert ApiAnalyzerLLMClient(api_key="k")._thinking == {"type": "disabled"}
+    explicit = {"type": "enabled", "budget_tokens": 1024}
+    assert ApiAnalyzerLLMClient(api_key="k", thinking=explicit)._thinking == explicit
+
+
+# --- usage capture -------------------------------------------------------
+
+
+class _UsageStream(_AStream):
+    """A stream whose final message carries real token counts."""
+
+    def __init__(self, parts, stop_reason="end_turn", usage=None):
+        super().__init__(parts, stop_reason)
+        self._usage = usage
+
+    async def get_final_message(self):
+        return SimpleNamespace(stop_reason=self._stop_reason, usage=self._usage)
+
+
+_USAGE = SimpleNamespace(
+    input_tokens=1000,
+    output_tokens=200,
+    cache_read_input_tokens=500,
+    cache_creation_input_tokens=100,
+)
+
+
+@pytest.mark.asyncio
+async def test_stream_captures_usage(monkeypatch):
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _UsageStream(["hi"], usage=_USAGE)),
+    )
+    c = ApiAnalyzerLLMClient(model="claude-opus-4-8", api_key="k")
+    await _collect(c, "p")
+    assert c.last_usage is not None
+    assert c.last_usage.input_tokens == 1600
+    assert c.last_usage.output_tokens == 200
+    assert c.last_usage.source == "estimated"
+    assert c.last_usage.cost_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_usage_is_none_when_api_reports_none(monkeypatch):
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _UsageStream(["hi"], usage=None)),
+    )
+    c = ApiAnalyzerLLMClient(api_key="k")
+    await _collect(c, "p")
+    assert c.last_usage is None
+
+
+@pytest.mark.asyncio
+async def test_truncated_run_still_reports_its_spend(monkeypatch):
+    """A block that blew max_tokens burned those tokens; the raise must not
+    discard the usage."""
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(
+            lambda: _UsageStream(["hi"], stop_reason="max_tokens", usage=_USAGE)
+        ),
+    )
+    c = ApiAnalyzerLLMClient(model="claude-opus-4-8", api_key="k")
+    with pytest.raises(OutputBudgetExceeded):
+        await _collect(c, "p")
+    assert c.last_usage is not None
+    assert c.last_usage.input_tokens == 1600
