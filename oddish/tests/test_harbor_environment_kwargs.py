@@ -474,6 +474,49 @@ def test_claude_code_fireworks_does_not_trigger_zai_route(monkeypatch) -> None:
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}"
 
 
+def test_claude_code_anthropic_hdo_overwrites_anthropic_api_key(monkeypatch) -> None:
+    monkeypatch.setattr(
+        harbor_runner.settings, "anthropic_hdo_api_key", "sk-ant-hdo-test"
+    )
+    monkeypatch.setattr(harbor_runner.settings, "anthropic_api_key", "sk-ant-platform")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-platform")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="anthropic-hdo/claude-sonnet-4-6",
+        raw_harbor_config={},
+    )
+
+    # Prefix stays for provider/queue/allowlist; Claude Code gets the bare API id.
+    assert agent_config.model_name == "anthropic-hdo/claude-sonnet-4-6"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == "sk-ant-hdo-test"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "claude-sonnet-4-6"
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    # Direct Anthropic API — no custom base URL / auth-token skin.
+    assert "ANTHROPIC_BASE_URL" not in (agent_config.env or {})
+    assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
+
+
+def test_claude_code_anthropic_hdo_wins_over_probe_env_platform_key(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        harbor_runner.settings, "anthropic_hdo_api_key", "sk-ant-hdo-test"
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="anthropic-hdo/claude-sonnet-4-6",
+        raw_harbor_config={},
+        probe_oddish_env={"ANTHROPIC_API_KEY": "sk-ant-platform-or-byok"},
+    )
+
+    assert agent_config.env["ANTHROPIC_API_KEY"] == "sk-ant-hdo-test"
+
+
 def test_claude_code_fireworks_agent_config_preserves_explicit_env(monkeypatch) -> None:
     monkeypatch.delenv("FIREWORKS_BASE_URL", raising=False)
 
