@@ -963,9 +963,9 @@ export function TrajectoryViewer({
               onValueChange={setExpandedSteps}
             >
               {groups.map((group, gi) => (
-                <div key={`${group.key ?? "unclaimed"}-${gi}`}>
+                <div key={`${group.key ?? "unclaimed"}-${gi}`} className="mt-5 first:mt-0">
                   {group.label && (
-                    <div className="mt-5 flex items-center gap-2 border-b pb-1.5 first:mt-0">
+                    <div className="flex items-center gap-2 border-b pb-1.5">
                       <span
                         className="h-4 w-1 rounded-sm"
                         style={{
