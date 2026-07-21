@@ -127,7 +127,6 @@ export function TrajectoryActivity({
             )}
           </div>
         </div>
-
       </CardContent>
     </Card>
   );

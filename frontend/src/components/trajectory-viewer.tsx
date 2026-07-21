@@ -969,17 +969,32 @@ export function TrajectoryViewer({
               onValueChange={setExpandedSteps}
             >
               {groups.map((group, gi) => (
-                <div key={`${group.key ?? "unclaimed"}-${gi}`} className="mt-5 first:mt-0">
+                // Keyed on the group's first step index, not gi: the summary
+                // resolves after the trajectory, so group count (and every
+                // index-derived key) changes when it arrives. A positional key
+                // would remount every AccordionItem/StepContent below it.
+                <div
+                  key={`${group.key ?? "unclaimed"}-${group.steps[0]?.idx ?? gi}`}
+                  className="mt-5 first:mt-0"
+                >
                   {group.label && (
                     <div className="flex items-center gap-2 border-b pb-1.5">
                       <span
                         className="h-4 w-1 rounded-sm"
+                        aria-hidden="true"
                         style={{
                           background:
-                            colorFor.get(group.key ?? "") ?? "var(--phase-other)",
+                            (group.key && colorFor.get(group.key)) ??
+                            "var(--phase-other)",
                         }}
                       />
-                      <span className="text-sm font-semibold">{group.label}</span>
+                      <span
+                        role="heading"
+                        aria-level={4}
+                        className="text-sm font-semibold"
+                      >
+                        {group.label}
+                      </span>
                       <span className="ml-auto font-mono text-xs text-muted-foreground">
                         {stepRangeLabel(group)}
                       </span>
