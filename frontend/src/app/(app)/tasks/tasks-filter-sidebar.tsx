@@ -107,6 +107,15 @@ const NUM_FIELD: Record<string, keyof FilterValues> = {
   ciPrNumber: "ciPrNumber",
 };
 
+// "num" filter key -> HTML min attribute for its input. Defaults to 1
+// (existing behavior) except where the backend's own bound is 0 -- those
+// fields must allow 0 or the UI silently refuses a value the API accepts.
+const NUM_MIN: Partial<Record<string, number>> = {
+  cpusMin: 0,
+  memoryMbMin: 0,
+  ciPrNumber: 0,
+};
+
 // "text" filter key -> the single string field it writes.
 const TEXT_FIELD: Record<string, keyof FilterValues> = {
   sourceRepo: "sourceRepo",
@@ -2033,6 +2042,7 @@ function NumControl({
   set: (patch: Partial<FilterValues>) => void;
 }) {
   const field = NUM_FIELD[fieldKey] ?? "minAttempts";
+  const min = NUM_MIN[fieldKey] ?? 1;
   const applied = { v: (values[field] as number | null) ?? null };
   const commit = (d: { v: number | null }) =>
     set({ [field]: d.v } as Partial<FilterValues>);
@@ -2041,7 +2051,7 @@ function NumControl({
     <div>
       <Input
         type="number"
-        min={1}
+        min={min}
         className="h-8 text-xs"
         placeholder="2"
         value={draft.v ?? ""}
