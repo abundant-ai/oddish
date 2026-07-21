@@ -31,17 +31,31 @@ TRIAL_ROW = SimpleNamespace(
 )
 
 
-def _session(monkeypatch, added: list, trial_row=TRIAL_ROW):
+ANALYZER_ROW = SimpleNamespace(org_id="org-9", owner_user_id="user-9")
+
+
+def _session(monkeypatch, added: list, trial_row=TRIAL_ROW, analyzer_row=None):
+    """Fake session whose SELECTs answer by target table, so the trial lookup
+    and the analyzers fallback can be distinguished."""
+
     class _Result:
+        def __init__(self, row):
+            self._row = row
+
         def first(self):
-            return trial_row
+            return self._row
 
     class _FakeSession:
         def add(self, obj):
             added.append(obj)
 
-        async def execute(self, *a, **k):
-            return _Result()
+        async def execute(self, stmt, *a, **k):
+            tables = {t.name for t in stmt.get_final_froms()}
+            if "trials" in tables:
+                return _Result(trial_row)
+            if "analyzers" in tables:
+                return _Result(analyzer_row)
+            raise AssertionError(f"unexpected select against {tables}")
 
         async def __aenter__(self):
             return self
@@ -117,11 +131,12 @@ async def test_no_usage_writes_nothing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_trial_analyzer_id_leaves_attribution_null(monkeypatch):
-    """Cohort blocks carry a report id, not a trial id -- the lookup misses and
-    must not invent a trial_id."""
+async def test_cohort_block_is_attributed_via_the_analyzers_table(monkeypatch):
+    """Cohort blocks carry an analyzers-row id, not a trial id. Spend must be
+    charged to the org/user who triggered the report, not left unattributed --
+    but no trial_id may be invented, since the block spans many trials."""
     added: list = []
-    _session(monkeypatch, added, trial_row=None)
+    _session(monkeypatch, added, trial_row=None, analyzer_row=ANALYZER_ROW)
     b = _make_block(
         analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
         analyzer_id="report-9",
@@ -130,8 +145,37 @@ async def test_non_trial_analyzer_id_leaves_attribution_null(monkeypatch):
     await b.record_cost()
     row = added[0]
     assert row.job_kind == "trajectory_failure_analysis"
+    assert row.org_id == "org-9"
+    assert row.billed_user_id == "user-9"
+    assert row.trial_id is None
+    assert row.experiment_id is None
+    assert row.cost_usd == 0.42
+
+
+@pytest.mark.asyncio
+async def test_trial_lookup_wins_and_skips_the_analyzers_fallback(monkeypatch):
+    added: list = []
+    _session(monkeypatch, added, analyzer_row=ANALYZER_ROW)
+    b = _make_block()
+    b.usage = USAGE
+    await b.record_cost()
+    row = added[0]
+    assert (row.org_id, row.billed_user_id) == ("org-1", "user-1")
+    assert row.trial_id == "trial-1"
+
+
+@pytest.mark.asyncio
+async def test_unknown_id_leaves_attribution_null(monkeypatch):
+    """An id in neither table records the spend rather than dropping it."""
+    added: list = []
+    _session(monkeypatch, added, trial_row=None, analyzer_row=None)
+    b = _make_block(analyzer_id="ghost-1")
+    b.usage = USAGE
+    await b.record_cost()
+    row = added[0]
     assert row.trial_id is None
     assert row.org_id is None
+    assert row.billed_user_id is None
     assert row.cost_usd == 0.42
 
 

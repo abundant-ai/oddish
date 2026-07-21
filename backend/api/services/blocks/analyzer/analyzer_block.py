@@ -10,7 +10,13 @@ from sqlalchemy import select
 
 from oddish.analyze.analysis_cost import AnalysisUsage, build_analysis_cost_row
 from oddish.db import generate_id, get_session
-from oddish.db.models import AnalyzerBlockModel, JobStatus, TrialModel, utcnow
+from oddish.db.models import (
+    AnalyzerBlockModel,
+    AnalyzerModel,
+    JobStatus,
+    TrialModel,
+    utcnow,
+)
 from oddish.db.storage import get_storage_client
 
 from api.services.blocks.analyzer.analyzer_llm_client import (
@@ -162,10 +168,16 @@ class AnalyzerBlock(Block):
     async def _cost_attribution(self, session) -> dict[str, str | None]:
         """Attribution columns for the cost row, resolved from ``analyzer_id``.
 
-        ``analyzer_id`` is polymorphic -- a trial id on per-trial blocks
-        (trajectory_summary), a report/analyzer id on cohort blocks -- so a
-        lookup miss is normal and leaves every field None rather than inventing
-        a ``trial_id`` that points at nothing.
+        ``analyzer_id`` is polymorphic: a trial id on per-trial blocks
+        (trajectory_summary), an ``analyzers`` row id on cohort blocks (the
+        failure-analysis map/reduce, whose N blocks all share one). Try both,
+        so cohort spend is attributed to the org and user who triggered the
+        report instead of landing unattributed.
+
+        ``trial_id`` is left None on the analyzer path rather than pointed at a
+        row in a different table; a cohort block spans many trials, so there is
+        no single one to charge. Same for ``experiment_id`` -- an analyzer
+        references N experiments via ``analyzer_experiments``.
         """
         blank: dict[str, str | None] = {
             "trial_id": None,
@@ -175,7 +187,8 @@ class AnalyzerBlock(Block):
         }
         if not self.analyzer_id:
             return blank
-        row = (
+
+        trial = (
             await session.execute(
                 select(
                     TrialModel.id,
@@ -185,13 +198,27 @@ class AnalyzerBlock(Block):
                 ).where(TrialModel.id == self.analyzer_id)
             )
         ).first()
-        if row is None:
+        if trial is not None:
+            return {
+                "trial_id": trial.id,
+                "org_id": trial.org_id,
+                "experiment_id": trial.experiment_id,
+                "billed_user_id": trial.billed_user_id,
+            }
+
+        analyzer = (
+            await session.execute(
+                select(AnalyzerModel.org_id, AnalyzerModel.owner_user_id).where(
+                    AnalyzerModel.id == self.analyzer_id
+                )
+            )
+        ).first()
+        if analyzer is None:
             return blank
         return {
-            "trial_id": row.id,
-            "org_id": row.org_id,
-            "experiment_id": row.experiment_id,
-            "billed_user_id": row.billed_user_id,
+            **blank,
+            "org_id": analyzer.org_id,
+            "billed_user_id": analyzer.owner_user_id,
         }
 
     async def record_cost(self) -> None:
