@@ -34,6 +34,10 @@ TRIAL_ROW = SimpleNamespace(
 ANALYZER_ROW = SimpleNamespace(org_id="org-9", owner_user_id="user-9")
 
 
+class _StopBeforeRun(Exception):
+    """Aborts generate() at the construction site, before any real IO."""
+
+
 def _session(monkeypatch, added: list, trial_row=TRIAL_ROW, analyzer_row=None):
     """Fake session whose SELECTs answer by target table, so the trial lookup
     and the analyzers fallback can be distinguished."""
@@ -165,6 +169,58 @@ async def test_trial_lookup_wins_and_skips_the_analyzers_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_triggering_user_outranks_the_trial_owner(monkeypatch):
+    """A summary generates lazily on view, so the viewer caused the spend --
+    billing the trial's runner would charge the wrong person."""
+    added: list = []
+    _session(monkeypatch, added)
+    b = _make_block(triggered_by_user_id="viewer-7")
+    b.usage = USAGE
+    await b.record_cost()
+    row = added[0]
+    assert row.billed_user_id == "viewer-7"
+    # Everything else still comes off the trial.
+    assert (row.trial_id, row.org_id, row.experiment_id) == (
+        "trial-1",
+        "org-1",
+        "exp-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_trial_owner_used_when_no_triggering_user(monkeypatch):
+    """Internally-driven runs (workers, graph builder) have no request user."""
+    added: list = []
+    _session(monkeypatch, added)
+    b = _make_block(triggered_by_user_id=None)
+    b.usage = USAGE
+    await b.record_cost()
+    assert added[0].billed_user_id == "user-1"
+
+
+@pytest.mark.asyncio
+async def test_triggering_user_outranks_the_analyzer_owner(monkeypatch):
+    added: list = []
+    _session(monkeypatch, added, trial_row=None, analyzer_row=ANALYZER_ROW)
+    b = _make_block(analyzer_id="report-9", triggered_by_user_id="viewer-7")
+    b.usage = USAGE
+    await b.record_cost()
+    row = added[0]
+    assert row.billed_user_id == "viewer-7"
+    assert row.org_id == "org-9"
+
+
+@pytest.mark.asyncio
+async def test_triggering_user_recorded_even_when_id_matches_nothing(monkeypatch):
+    added: list = []
+    _session(monkeypatch, added, trial_row=None, analyzer_row=None)
+    b = _make_block(analyzer_id="ghost-1", triggered_by_user_id="viewer-7")
+    b.usage = USAGE
+    await b.record_cost()
+    assert added[0].billed_user_id == "viewer-7"
+
+
+@pytest.mark.asyncio
 async def test_unknown_id_leaves_attribution_null(monkeypatch):
     """An id in neither table records the spend rather than dropping it."""
     added: list = []
@@ -232,3 +288,76 @@ async def test_failed_block_still_records_spend(monkeypatch):
 
 async def _noop():
     return None
+
+
+def test_summary_block_carries_the_triggering_user():
+    """build_summary_block is the shared construction site; if it accepts the
+    param but drops it on the floor, every summary silently reverts to billing
+    the trial's runner. Assert it reaches the block, not just the signature."""
+    from api.services.summarize_trajectory import TaskContext, build_summary_block
+
+    block = build_summary_block(
+        {"steps": []},
+        TaskContext(
+            task_name="my-task",
+            instruction=None,
+            final_reward=1.0,
+            model_used="claude-opus-4-8",
+            verifier_output=None,
+        ),
+        analyzer_id="trial-1",
+        model="claude-opus-4-8",
+        client=FakeAnalyzerLLMClient(chunks=["{}"]),
+        triggered_by_user_id="viewer-7",
+    )
+    assert block.triggered_by_user_id == "viewer-7"
+
+
+@pytest.mark.asyncio
+async def test_generate_forwards_the_triggering_user_to_the_block():
+    """generate() is the production entry point; it must not swallow the param
+    between get_or_generate_summary and build_summary_block."""
+    from api.services import summarize_trajectory
+
+    seen = {}
+    real = summarize_trajectory.build_summary_block
+
+    def _spy(*a, **kw):
+        seen.update(kw)
+        # Stop here: running the block would reach real S3/DB.
+        raise _StopBeforeRun
+
+    summarize_trajectory.build_summary_block = _spy
+    try:
+        await summarize_trajectory.generate(
+            {"steps": []},
+            summarize_trajectory.TaskContext(
+                task_name="my-task",
+                instruction=None,
+                final_reward=1.0,
+                model_used="claude-opus-4-8",
+                verifier_output=None,
+            ),
+            analyzer_id="trial-1",
+            client=FakeAnalyzerLLMClient(chunks=["{}"]),
+            triggered_by_user_id="viewer-7",
+        )
+    except _StopBeforeRun:
+        pass
+    finally:
+        summarize_trajectory.build_summary_block = real
+    assert seen.get("triggered_by_user_id") == "viewer-7"
+
+
+def test_summary_routes_pass_the_requesting_user():
+    """The user is only knowable at the route; the whole chain is pointless if
+    the handlers don't hand it over."""
+    from api.routers import trials
+
+    src = open(trials.__file__).read()
+    assert src.count("triggered_by_user_id=auth.user_id") == 2, (
+        "both the summary and graph routes must attribute spend to the caller"
+    )
+    assert "get_or_generate_summary(session, attached_trial)" not in src, (
+        "a bare call site is left, billing the trial owner instead of the viewer"
+    )

@@ -82,6 +82,7 @@ class AnalyzerBlock(Block):
         model: str | None = None,
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
+        triggered_by_user_id: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -89,6 +90,10 @@ class AnalyzerBlock(Block):
         self.input = input
         self.prompt = prompt
         self.analyzer_id = analyzer_id
+        # Who caused this spend, when that differs from who owns the subject.
+        # A trajectory summary generates lazily on view, so the requesting user
+        # -- not the trial's runner -- is the one who triggered the LLM call.
+        self.triggered_by_user_id = triggered_by_user_id
         self._client = client
         if input.files_to_download:
             if llm_client_type == LLMClientType.API:
@@ -183,7 +188,7 @@ class AnalyzerBlock(Block):
             "trial_id": None,
             "org_id": None,
             "experiment_id": None,
-            "billed_user_id": None,
+            "billed_user_id": self.triggered_by_user_id,
         }
         if not self.analyzer_id:
             return blank
@@ -203,7 +208,10 @@ class AnalyzerBlock(Block):
                 "trial_id": trial.id,
                 "org_id": trial.org_id,
                 "experiment_id": trial.experiment_id,
-                "billed_user_id": trial.billed_user_id,
+                # The triggering user wins: they caused the call. Falls back to
+                # the trial's owner for internally-driven runs with no request
+                # behind them (workers, the graph builder).
+                "billed_user_id": self.triggered_by_user_id or trial.billed_user_id,
             }
 
         analyzer = (
@@ -218,7 +226,7 @@ class AnalyzerBlock(Block):
         return {
             **blank,
             "org_id": analyzer.org_id,
-            "billed_user_id": analyzer.owner_user_id,
+            "billed_user_id": self.triggered_by_user_id or analyzer.owner_user_id,
         }
 
     async def record_cost(self) -> None:
