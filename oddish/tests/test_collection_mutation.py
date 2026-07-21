@@ -545,3 +545,81 @@ async def test_remove_rejects_non_collection_experiment(session):
             session, experiment_id=real.id, trial_ids=["x"], org_id="org1"
         )
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_rename_changes_name_and_keeps_share_token(session):
+    from oddish.core.endpoints.collections import rename_collection_core
+
+    task = _task("rename-task")
+    session.add(task)
+    await session.flush()
+    home = _experiment("rename-home")
+    session.add(home)
+    await session.flush()
+    t1 = _trial(task, home)
+    session.add(t1)
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1], name="before")
+    exp = (
+        await session.execute(
+            select(ExperimentModel).where(ExperimentModel.id == coll_id)
+        )
+    ).scalar_one()
+    exp.public_token = "tok-rename-test"
+    exp.is_public = True
+    await session.flush()
+
+    resp = await rename_collection_core(
+        session, experiment_id=coll_id, name="  after  ", org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.name == "after"
+    reloaded = (
+        await session.execute(
+            select(ExperimentModel).where(ExperimentModel.id == coll_id)
+        )
+    ).scalar_one()
+    assert reloaded.name == "after"
+    assert reloaded.public_token == "tok-rename-test"
+    assert reloaded.is_public is True
+
+
+@pytest.mark.asyncio
+async def test_rename_rejects_blank_name(session):
+    from oddish.core.endpoints.collections import rename_collection_core
+
+    task = _task("rename-blank-task")
+    session.add(task)
+    await session.flush()
+    home = _experiment("rename-blank-home")
+    session.add(home)
+    await session.flush()
+    t1 = _trial(task, home)
+    session.add(t1)
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1], name="before")
+
+    with pytest.raises(HTTPException) as exc:
+        await rename_collection_core(
+            session, experiment_id=coll_id, name="   ", org_id="org1"
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_rename_rejects_non_collection_experiment(session):
+    from oddish.core.endpoints.collections import rename_collection_core
+
+    real = _experiment("rename-real")
+    session.add(real)
+    await session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await rename_collection_core(
+            session, experiment_id=real.id, name="nope", org_id="org1"
+        )
+    assert exc.value.status_code == 409

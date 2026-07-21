@@ -507,3 +507,31 @@ async def remove_from_collection_core(
         trials_total=len(before_trials - targets),
         tasks_unlinked=len(orphaned),
     )
+
+
+async def rename_collection_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    name: str,
+    org_id: str | None,
+) -> CollectionMutationResponse:
+    """Rename a collection. The share token is untouched, so a published link
+    keeps working under the new title."""
+    from oddish.queue import bump_experiment_last_activity
+
+    experiment = await _load_collection(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    stripped = (name or "").strip()
+    if not stripped:
+        raise HTTPException(status_code=400, detail="name must not be empty")
+
+    experiment.name = stripped
+    await bump_experiment_last_activity(session, experiment_ids=experiment_id)
+
+    return CollectionMutationResponse(
+        id=experiment.id,
+        name=stripped,
+        trials_total=len(await _live_member_ids(session, experiment_id)),
+    )
