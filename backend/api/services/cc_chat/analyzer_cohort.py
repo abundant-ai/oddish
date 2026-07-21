@@ -218,12 +218,24 @@ async def run_cohort(
             # the findings files, and telling it to pull trajectories would both
             # contradict its user prompt and let it refetch the entire cohort --
             # recreating the context blowup this batching exists to prevent.
-            logger.info("%s reduce over %s", tag, FINDINGS_GLOB)
-            await _turn(
-                build_reduce_only_prompt(
+            logger.info("%s reduce over %d batches", tag, len(plan))
+            reduce_block = AnalyzerBlock(
+                analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
+                llm_client_type=LLMClientType.SANDBOX,
+                input=AnalyzerInput(
+                    input={"bucket": bucket, "phase": "reduce"},
+                    files_to_download=[
+                        REDUCE_PATH,
+                        *(findings_path(i) for i in range(1, len(plan) + 1)),
+                    ],
+                ),
+                prompt=build_reduce_only_prompt(
                     bucket, counts, len(plan), models_by_task, denominators
                 ),
-                "reduce",
+                system_prompt=None,
+                model=HAIKU_MODEL,
+                analyzer_id=analyzer_id,
+                client=llm,
             )
             reduce_out = await reduce_block.run()
             raw_stream.extend(reduce_block._chunks)
@@ -253,7 +265,7 @@ async def run_cohort(
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
     findings, sections, by_model = parse_cohort_result(
-        bucket, reduce_b, findings_b, "\n".join(stream_lines),
+        bucket, reduce_b, findings_b, _render_stream(raw_stream),
         # Scoped to this cohort, so a finding for someone else's trial is dropped.
         {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},
     )

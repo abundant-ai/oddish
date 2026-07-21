@@ -13,6 +13,8 @@ from slack_notifications import (
     ExperimentCandidate,
     FailedExperiment,
     FailedTrial,
+    FinishedExperiment,
+    FinishedTrial,
     QaFailure,
     TrialSpend,
     build_alerts,
@@ -70,8 +72,8 @@ def test_cost_milestone_toggle_off_drops_only_the_milestone():
     )
     on = _build(candidates)
     off = _build(candidates, UserAlertPrefs(cost_milestone_enabled=False))
-    assert "experiment:e1:1000" in _keys(on)
-    assert "experiment:e1:1000" not in _keys(off)
+    assert "experiment-24h:e1:1000" in _keys(on)
+    assert "experiment-24h:e1:1000" not in _keys(off)
     # The expensive-trial DM for the same spend is a different toggle, untouched.
     assert "trial:t" in _keys(off)
 
@@ -111,6 +113,24 @@ def test_each_failure_toggle_off_drops_its_own_dm():
     )
     assert _keys(_build(qa_failed)) == ["qa-failed:task/1"]
     assert _build(qa_failed, UserAlertPrefs(qa_failed_enabled=False)) == []
+
+
+def test_each_finish_toggle_off_drops_its_own_dm():
+    exp_finished = AlertCandidates(
+        finished_experiments=[
+            FinishedExperiment("e1", "Exp", "Ada", 5, owner_email=OWNER)
+        ]
+    )
+    assert _keys(_build(exp_finished)) == ["experiment-finished:e1"]
+    assert _build(exp_finished, UserAlertPrefs(experiment_finished_enabled=False)) == []
+
+    trial_finished = AlertCandidates(
+        finished_trials=[
+            FinishedTrial("t", "task/1", None, "Exp", "Ada", owner_email=OWNER)
+        ]
+    )
+    assert _keys(_build(trial_finished)) == ["trial-finished:task/1"]
+    assert _build(trial_finished, UserAlertPrefs(trial_finished_enabled=False)) == []
 
 
 def test_one_owners_mute_does_not_touch_another_owner():
@@ -163,12 +183,14 @@ def test_personal_milestone_cutoff_overrides_both_first_and_repeat():
         experiments=[_experiment()],
         trials=[_trial("t", 600)],
     )
-    assert [k for k in _keys(_build(candidates)) if k.startswith("experiment:")] == []
+    assert [
+        k for k in _keys(_build(candidates)) if k.startswith("experiment-24h:")
+    ] == []
     lowered = _build(candidates, UserAlertPrefs(experiment_milestone_usd=200))
-    assert [k for k in _keys(lowered) if k.startswith("experiment:")] == [
-        "experiment:e1:200",
-        "experiment:e1:400",
-        "experiment:e1:600",
+    assert [k for k in _keys(lowered) if k.startswith("experiment-24h:")] == [
+        "experiment-24h:e1:200",
+        "experiment-24h:e1:400",
+        "experiment-24h:e1:600",
     ]
 
 
@@ -236,6 +258,8 @@ def _row(**kw):
         experiment_failed_enabled=kw.get("experiment_failed_enabled", True),
         trial_failed_enabled=kw.get("trial_failed_enabled", True),
         qa_failed_enabled=kw.get("qa_failed_enabled", True),
+        experiment_finished_enabled=kw.get("experiment_finished_enabled", True),
+        trial_finished_enabled=kw.get("trial_finished_enabled", True),
         experiment_milestone_usd=kw.get("experiment_milestone_usd"),
         trial_ping_usd=kw.get("trial_ping_usd"),
     )

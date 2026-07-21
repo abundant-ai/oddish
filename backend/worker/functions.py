@@ -61,6 +61,7 @@ from modal_app import (
 from backfill_github_id import backfill_github_id
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
+from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
@@ -139,28 +140,41 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 }
 
 
-async def _effective_model_concurrency(queue_key: str) -> int:
-    """The concurrency limit to enforce for one ``queue_key``: the static limit,
-    overlaid with the fresh advisory when dynamic concurrency is on.
-
-    This is the SAME number ``poll_queue`` uses to size the spawn plan, so the
-    worker's ``queue_slots`` lease can't cap the advisory below what the dispatcher
-    planned (nor let the dispatcher over-spawn above the slot pool). Best-effort:
-    a stale/missing/errored advisory decays to the static value, and with the flag
-    off it IS the static value -- so default behavior is unchanged.
-    """
-    static = settings.get_model_concurrency(queue_key)
-    if static <= 0 or not settings.dynamic_model_concurrency:
-        return static
+async def _effective_model_concurrency_limits(
+    queue_keys: tuple[str, ...],
+) -> dict[str, int]:
+    """Load override and advisory limits, failing closed on override errors."""
     try:
         async with get_session() as session:
-            advisory_limits = await get_advisory_limits(session)
-        return merge_advisory_over_static({queue_key: static}, advisory_limits).get(
-            queue_key, static
-        )
-    except Exception as e:  # noqa: BLE001 - advisory read is best-effort
-        console.print(f"[yellow]Advisory limit unavailable ({queue_key}): {e}[/yellow]")
-        return static
+            overrides = await get_model_concurrency_overrides(session, queue_keys)
+            limits = {
+                key: overrides.get(
+                    settings.normalize_queue_key(key),
+                    settings.get_model_concurrency(key),
+                )
+                for key in queue_keys
+            }
+            # DEPRECATED path: the self-tuning advisory controller. Off by
+            # default and superseded by the admin overrides read just above;
+            # kept only for deployments that still opt in via
+            # ODDISH_DYNAMIC_MODEL_CONCURRENCY (which logs a deprecation warning).
+            if settings.dynamic_model_concurrency:
+                hard_caps = {
+                    key: overrides[settings.normalize_queue_key(key)]
+                    for key in queue_keys
+                    if settings.normalize_queue_key(key) in overrides
+                }
+                limits = merge_advisory_over_static(
+                    limits, await get_advisory_limits(session), hard_caps=hard_caps
+                )
+        return limits
+    except Exception as e:  # noqa: BLE001 - an unknown override must stop dispatch
+        console.print(f"[yellow]Concurrency limits unavailable: {e}[/yellow]")
+        return dict.fromkeys(queue_keys, 0)
+
+
+async def _effective_model_concurrency(queue_key: str) -> int:
+    return (await _effective_model_concurrency_limits((queue_key,)))[queue_key]
 
 
 async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
@@ -450,9 +464,11 @@ async def reconcile_queue_state():
             console.print(f"[yellow]github_id backfill skipped: {e}[/yellow]")
 
         # Recompute the self-tuning per-model concurrency advisory (default off).
-        # A defensive phase like the others: a failure logs and is swallowed so
-        # the rest of the reconcile sweep still runs, and the static limits stay
-        # the fallback.
+        # DEPRECATED: superseded by database-backed admin overrides; retained
+        # only for deployments that still opt in via
+        # ODDISH_DYNAMIC_MODEL_CONCURRENCY. A defensive phase like the others: a
+        # failure logs and is swallowed so the rest of the reconcile sweep still
+        # runs, and the static limits stay the fallback.
         if settings.dynamic_model_concurrency:
             try:
                 async with get_session() as session:
@@ -654,29 +670,9 @@ async def poll_queue():
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
 
-        async def _modal_concurrency_limits(
-            queue_keys: tuple[str, ...],
-        ) -> dict[str, int]:
-            limits = {
-                queue_key: settings.get_model_concurrency(queue_key)
-                for queue_key in queue_keys
-            }
-            # Single injection point for the self-tuning controller: when enabled,
-            # overlay the fresh per-queue advisory limit on the static one (a stale,
-            # missing, or errored advisory decays to the static value). Best-effort:
-            # a read failure must never block dispatch.
-            if settings.dynamic_model_concurrency:
-                try:
-                    async with get_session() as session:
-                        advisory_limits = await get_advisory_limits(session)
-                    limits = merge_advisory_over_static(limits, advisory_limits)
-                except Exception as e:  # noqa: BLE001 - advisory read is best-effort
-                    console.print(f"[yellow]Advisory limits unavailable: {e}[/yellow]")
-            return limits
-
         plan = await build_dispatch_plan(
             max_workers=MAX_WORKERS_PER_POLL,
-            concurrency_limits_for=_modal_concurrency_limits,
+            concurrency_limits_for=_effective_model_concurrency_limits,
         )
 
         for queue_key in plan.queue_keys:

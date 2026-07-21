@@ -1,11 +1,9 @@
 "use client";
 
-import useSWR from "swr";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Sparkles, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
-import { fetcher } from "@/lib/api";
-import type { TrajectorySummary as TrajectorySummaryT } from "@/lib/types";
+import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectorySummaryProps {
   trialId: string;
@@ -25,11 +23,7 @@ export function TrajectorySummary({
   onStepSelect,
   apiBaseUrl = "/api",
 }: TrajectorySummaryProps) {
-  const { data, error, isLoading, mutate } = useSWR<TrajectorySummaryT | null>(
-    `${apiBaseUrl}/trials/${trialId}/trajectory/summary`,
-    fetcher,
-    { revalidateOnFocus: false },
-  );
+  const { data, error, isLoading, mutate } = useTrajectorySummary(trialId, apiBaseUrl);
 
   if (isLoading) {
     return (

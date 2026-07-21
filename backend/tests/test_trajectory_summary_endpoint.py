@@ -96,7 +96,7 @@ def test_endpoint_returns_404_when_no_trajectory(client, fake_trial):
 
 
 def test_endpoint_returns_502_on_generation_error(client, fake_trial):
-    async def _raise(_session, _trial):
+    async def _raise(_session, _trial, triggered_by_user_id=None):
         raise SummaryGenerationError("model returned garbage")
 
     with patch(

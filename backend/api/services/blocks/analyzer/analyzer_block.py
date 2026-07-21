@@ -6,8 +6,17 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from sqlalchemy import select
+
+from oddish.analyze.analysis_cost import AnalysisUsage, build_analysis_cost_row
 from oddish.db import generate_id, get_session
-from oddish.db.models import AnalyzerBlockModel, JobStatus, utcnow
+from oddish.db.models import (
+    AnalyzerBlockModel,
+    AnalyzerModel,
+    JobStatus,
+    TrialModel,
+    utcnow,
+)
 from oddish.db.storage import get_storage_client
 
 from api.services.blocks.analyzer.analyzer_llm_client import (
@@ -74,6 +83,7 @@ class AnalyzerBlock(Block):
         model: str | None = None,
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
+        triggered_by_user_id: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -81,6 +91,10 @@ class AnalyzerBlock(Block):
         self.input = input
         self.prompt = prompt
         self.analyzer_id = analyzer_id
+        # Who caused this spend, when that differs from who owns the subject.
+        # A trajectory summary generates lazily on view, so the requesting user
+        # -- not the trial's runner -- is the one who triggered the LLM call.
+        self.triggered_by_user_id = triggered_by_user_id
         self._client = client
         if input.files_to_download:
             if llm_client_type == LLMClientType.API:
@@ -113,6 +127,7 @@ class AnalyzerBlock(Block):
         self.job_ended_at = None
         self.job_duration_seconds: float | None = None
         self._chunks: list[str] = []
+        self.usage: AnalysisUsage | None = None
 
     @property
     def s3_key(self) -> str:
@@ -156,6 +171,96 @@ class AnalyzerBlock(Block):
         except Exception:
             self.log.exception("save_to_db failed for id=%s", self.id)
 
+    async def _cost_attribution(self, session) -> dict[str, str | None]:
+        """Attribution columns for the cost row, resolved from ``analyzer_id``.
+
+        ``analyzer_id`` is polymorphic: a trial id on per-trial blocks
+        (trajectory_summary), an ``analyzers`` row id on cohort blocks (the
+        failure-analysis map/reduce, whose N blocks all share one). Try both,
+        so cohort spend is attributed to the org and user who triggered the
+        report instead of landing unattributed.
+
+        ``trial_id`` is left None on the analyzer path rather than pointed at a
+        row in a different table; a cohort block spans many trials, so there is
+        no single one to charge. Same for ``experiment_id`` -- an analyzer
+        references N experiments via ``analyzer_experiments``.
+        """
+        blank: dict[str, str | None] = {
+            "trial_id": None,
+            "org_id": None,
+            "experiment_id": None,
+            "billed_user_id": self.triggered_by_user_id,
+        }
+        if not self.analyzer_id:
+            return blank
+
+        trial = (
+            await session.execute(
+                select(
+                    TrialModel.id,
+                    TrialModel.org_id,
+                    TrialModel.experiment_id,
+                    TrialModel.billed_user_id,
+                ).where(TrialModel.id == self.analyzer_id)
+            )
+        ).first()
+        if trial is not None:
+            return {
+                "trial_id": trial.id,
+                "org_id": trial.org_id,
+                "experiment_id": trial.experiment_id,
+                # The triggering user wins: they caused the call. Falls back to
+                # the trial's owner for internally-driven runs with no request
+                # behind them (workers, the graph builder).
+                "billed_user_id": self.triggered_by_user_id or trial.billed_user_id,
+            }
+
+        analyzer = (
+            await session.execute(
+                select(AnalyzerModel.org_id, AnalyzerModel.owner_user_id).where(
+                    AnalyzerModel.id == self.analyzer_id
+                )
+            )
+        ).first()
+        if analyzer is None:
+            return blank
+        return {
+            **blank,
+            "org_id": analyzer.org_id,
+            "billed_user_id": self.triggered_by_user_id or analyzer.owner_user_id,
+        }
+
+    async def record_cost(self) -> None:
+        """Append this block's LLM spend to ``analysis_costs``.
+
+        ``job_kind`` is the block's own ``analyzer_type`` -- the kind decides
+        what the row is labelled, so every current and future analyzer kind is
+        accounted for by construction instead of at each call site. Recorded on
+        failure too: a block that errored still burned the tokens.
+
+        Never raises -- accounting must not take down a block that already
+        produced its output.
+        """
+        if self.usage is None:
+            return
+        try:
+            async with get_session() as session:
+                session.add(
+                    build_analysis_cost_row(
+                        job_kind=self.analyzer_type.value,
+                        usage=self.usage,
+                        **await self._cost_attribution(session),
+                    )
+                )
+            self.log.info(
+                "recorded cost job_kind=%s cost_usd=%s source=%s",
+                self.analyzer_type.value,
+                self.usage.cost_usd,
+                self.usage.source,
+            )
+        except Exception:
+            self.log.exception("record_cost failed for id=%s", self.id)
+
     async def stream_output(self):
         """Yield each output chunk to the caller and accumulate it. Lazily
         provisions the backend client (or uses the injected one)."""
@@ -170,6 +275,9 @@ class AnalyzerBlock(Block):
                 self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
                 yield chunk
         finally:
+            # Read before any aclose(): the tokens are spent whether the stream
+            # finished or blew up, and a closed client need not retain them.
+            self.usage = getattr(client, "last_usage", None)
             # Only close a client we created; an injected one is the caller's.
             if self._client is None:
                 await client.aclose()
@@ -241,3 +349,4 @@ class AnalyzerBlock(Block):
         raw = "".join(self._chunks).encode("utf-8")
         await self.save_to_s3(raw)
         await self.save_to_db()
+        await self.record_cost()

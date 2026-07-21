@@ -122,25 +122,19 @@ def test_azure_compat_codex_allowlists_azure_endpoint(monkeypatch):
     assert _AZURE_HOST in domains
 
 
-def test_harbor_infer_agent_domains_uses_azure_codex_hook(monkeypatch):
-    """End-to-end: Harbor's egress-allowlist resolver picks up the Azure host
-    via the AzureCompatibleCodex import path. Without the hook it falls back to
-    the static codex map (api.openai.com / ab.chatgpt.com) and the real Azure
-    endpoint is firewalled."""
-    from harbor.environments.modal_network import infer_agent_domains
-
+def test_outbound_hosts_for_model_includes_azure_when_configured(monkeypatch):
+    """Oddish host injection must allowlist the Azure OpenAI endpoint for
+    openai/* models when the Azure provider is configured."""
+    from oddish.config import OPENAI_PROVIDER_AZURE
     from oddish.config import settings as oddish_settings
+    from oddish.workers.harbor.model_hosts import outbound_hosts_for_model
 
     monkeypatch.setattr(oddish_settings, "azure_openai_endpoint", _AZURE_ENDPOINT)
+    monkeypatch.setattr(oddish_settings, "openai_provider", OPENAI_PROVIDER_AZURE)
 
-    domains = infer_agent_domains(
-        name=None,
-        import_path="oddish.workers.agents.codex:AzureCompatibleCodex",
-        model_name="openai/gpt-5.5",
-        agent_kwargs={},
-    )
+    hosts = outbound_hosts_for_model("openai/gpt-5.5")
 
-    assert _AZURE_HOST in domains
+    assert _AZURE_HOST in hosts
 
 
 def test_azure_compat_codex_allowlists_per_trial_openai_base_url():
