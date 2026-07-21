@@ -164,6 +164,101 @@ def test_add_requires_a_source(monkeypatch):
     assert "at least one" in result.output
 
 
+class _ForbiddenAddClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def post(self, url, json=None):
+        return httpx.Response(403, json={"detail": "insufficient scope"})
+
+
+def test_add_explains_403_scope(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _ForbiddenAddClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["experiment", "add", "coll123", "t1"])
+
+    assert result.exit_code == 1, result.output
+    assert "FULL-scope" in result.output
+    assert "insufficient scope" in result.output
+
+
+class _ZeroTrialPinAddClient:
+    """`--task mytask@16` resolves to a real task with no linkable trials for
+    that version -- payload ends up empty and the CLI must not hit /collection/trials."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/mytask"):
+            return httpx.Response(200, json={"id": "mytask-abc12345"})
+        if url.endswith("/trials"):
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"unexpected get {url}")
+
+    def post(self, url, json=None):
+        raise AssertionError("must not post when there is nothing to add")
+
+
+def test_add_nothing_to_add_does_not_hit_network(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _ZeroTrialPinAddClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "add", "coll123", "--task", "mytask@16"]
+    )
+
+    assert result.exit_code != 0, result.output
+    assert "Nothing to add" in result.output
+
+
+class _BadShareBodyClient:
+    """The mutation succeeds (200), but the share-status GET returns a 200
+    with a body that is not valid JSON. This must not crash the command --
+    the mutation already committed server-side."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/share"):
+            return httpx.Response(200, text="not json")
+        raise AssertionError(f"unexpected get {url}")
+
+    def post(self, url, json=None):
+        return httpx.Response(200, json=_MUTATION_JSON)
+
+
+def test_add_survives_non_json_share_response(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _BadShareBodyClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["experiment", "add", "coll123", "t1"])
+
+    assert result.exit_code == 0, result.output
+    assert "Trials added:" in result.output
+    assert "/experiments/coll123" in result.output  # falls back to dashboard URL
+
+
 _REMOVE_JSON = {
     "id": "coll123",
     "name": "my collection",
@@ -299,3 +394,39 @@ def test_remove_explains_403_scope(monkeypatch):
 
     assert result.exit_code == 1, result.output
     assert "FULL-scope" in result.output
+
+
+class _ZeroTrialPinRemoveClient:
+    """`--task mytask@16` resolves to a real task with no linkable trials for
+    that version -- payload ends up empty and the CLI must not issue the DELETE."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/tasks/mytask"):
+            return httpx.Response(200, json={"id": "mytask-abc12345"})
+        if url.endswith("/trials"):
+            return httpx.Response(200, json=[])
+        raise AssertionError(f"unexpected get {url}")
+
+    def request(self, method, url, json=None):
+        raise AssertionError("must not issue a request when there is nothing to remove")
+
+
+def test_remove_nothing_to_remove_does_not_hit_network(monkeypatch):
+    monkeypatch.setattr(httpx, "Client", _ZeroTrialPinRemoveClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["experiment", "remove", "coll123", "--task", "mytask@16", "--yes"]
+    )
+
+    assert result.exit_code != 0, result.output
+    assert "Nothing to remove" in result.output

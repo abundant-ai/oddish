@@ -89,11 +89,11 @@ def _share_or_dashboard_url(client, api_url: str, experiment_id: str) -> str:
     dashboard = f"{get_dashboard_url(api_url)}/experiments/{experiment_id}"
     try:
         resp = client.get(f"{api_url}/experiments/{experiment_id}/share")
+        if resp.status_code != 200:
+            return dashboard
+        token = resp.json().get("public_token")
     except Exception:
         return dashboard
-    if resp.status_code != 200:
-        return dashboard
-    token = resp.json().get("public_token")
     return f"{get_dashboard_url(api_url)}/share/{token}" if token else dashboard
 
 
@@ -192,7 +192,7 @@ def add(
     with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
         plain_tasks, pinned_trial_ids = expand_task_refs(client, api_url, tasks)
         payload = {
-            "trial_ids": [*trial_ids, *pinned_trial_ids],
+            "trial_ids": _dedupe([*trial_ids, *pinned_trial_ids]),
             "task_ids": plain_tasks,
             "from_experiment_ids": from_experiments,
         }
@@ -283,7 +283,7 @@ def remove(
     with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
         plain_tasks, pinned_trial_ids = expand_task_refs(client, api_url, tasks)
         payload = {
-            "trial_ids": [*trial_ids, *pinned_trial_ids],
+            "trial_ids": _dedupe([*trial_ids, *pinned_trial_ids]),
             "task_ids": plain_tasks,
         }
         if not any(payload.values()):
