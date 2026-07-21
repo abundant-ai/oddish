@@ -113,6 +113,29 @@ async def test_browse_filters_by_allow_internet(session):
 
 
 @pytest.mark.asyncio
+async def test_browse_filters_by_allow_internet_false(session):
+    # A predicate written as truthiness (``if allow_internet:``) rather than
+    # an identity check (``if allow_internet is not None:``) would pass the
+    # True-only test above but silently ignore this case.
+    org_id = _org()
+    online = await _make_task(
+        session, org_id=org_id, name=f"online-{org_id}", allow_internet=True
+    )
+    offline = await _make_task(
+        session, org_id=org_id, name=f"offline-{org_id}", allow_internet=False
+    )
+    await session.flush()
+
+    resp = await browse_tasks_core(session, org_id=org_id, allow_internet=False)
+    ids = {item.id for item in resp.items}
+    assert offline.id in ids
+    assert online.id not in ids
+
+    item = next(i for i in resp.items if i.id == offline.id)
+    assert item.allow_internet is False
+
+
+@pytest.mark.asyncio
 async def test_browse_filters_by_gpus_and_cpus_and_memory(session):
     org_id = _org()
     beefy = await _make_task(

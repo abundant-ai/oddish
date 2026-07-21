@@ -148,6 +148,86 @@ async def test_allow_internet_filter_end_to_end(client, org_id):
 
 
 @pytest.mark.asyncio
+async def test_gpus_cpus_memory_filter_end_to_end(client, org_id):
+    async with get_session() as session:
+        beefy = TaskModel(
+            name=f"beefy-{org_id}", org_id=org_id, user="tester", task_path="s3://t/5"
+        )
+        tiny = TaskModel(
+            name=f"tiny-{org_id}", org_id=org_id, user="tester", task_path="s3://t/6"
+        )
+        session.add_all([beefy, tiny])
+        await session.flush()
+        for task, gpus, cpus, memory_mb in (
+            (beefy, 4, 16, 65536),
+            (tiny, 0, 1, 512),
+        ):
+            version = TaskVersionModel(
+                id=f"{task.id}-v1",
+                task_id=task.id,
+                version=1,
+                task_path=task.task_path,
+                gpus=gpus,
+                cpus=cpus,
+                memory_mb=memory_mb,
+            )
+            session.add(version)
+            await session.flush()
+            task.current_version_id = version.id
+        await session.commit()
+        beefy_id, tiny_id = beefy.id, tiny.id
+
+    resp = await client.get(
+        "/tasks/browse", params={"gpus_min": "2", "gpus_max": "8"}
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    assert beefy_id in ids
+    assert tiny_id not in ids
+
+    resp = await client.get("/tasks/browse", params={"cpus_min": "8"})
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    assert beefy_id in ids
+    assert tiny_id not in ids
+
+    resp = await client.get("/tasks/browse", params={"memory_mb_min": "32768"})
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    assert beefy_id in ids
+    assert tiny_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_ci_pr_number_and_uploader_is_ci_filter_end_to_end(client, org_id):
+    matching_id, other_id = await _seed_two_tasks(org_id)
+    async with get_session() as session:
+        await session.execute(
+            TaskUploadEventModel.__table__.update()
+            .where(TaskUploadEventModel.task_id == matching_id)
+            .values(ci_pr_number=482, uploader_is_ci=True)
+        )
+        await session.execute(
+            TaskUploadEventModel.__table__.update()
+            .where(TaskUploadEventModel.task_id == other_id)
+            .values(ci_pr_number=None, uploader_is_ci=False)
+        )
+        await session.commit()
+
+    resp = await client.get("/tasks/browse", params={"ci_pr_number": "482"})
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    assert matching_id in ids
+    assert other_id not in ids
+
+    resp = await client.get("/tasks/browse", params={"uploader_is_ci": "true"})
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    assert matching_id in ids
+    assert other_id not in ids
+
+
+@pytest.mark.asyncio
 async def test_expert_hours_filter_end_to_end(client, org_id):
     async with get_session() as session:
         easy = TaskModel(
