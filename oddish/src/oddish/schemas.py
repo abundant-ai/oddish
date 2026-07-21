@@ -1295,6 +1295,9 @@ class TaskBrowseItem(BaseModel):
     last_run_at: datetime | None = None
     link: str | None = None
     github_meta: dict[str, str] | None = None
+    description: str | None = None
+    category: str | None = None
+    allow_internet: bool | None = None
     cost_usd: float = 0.0
     cost_trial_count: int = 0
     cost_has_estimated: bool = False

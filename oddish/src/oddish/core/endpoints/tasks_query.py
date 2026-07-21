@@ -61,6 +61,7 @@ from oddish.db import (
     TrialStatus,
     task_experiments,
 )
+from oddish.db.models import TaskUploadEventModel
 from oddish.schemas import (
     AgentModelFacet,
     TaskBrowseExperiment,
@@ -1192,6 +1193,18 @@ async def browse_tasks_core(
     max_steps: int | None = None,
     reward_min: float | None = None,
     reward_max: float | None = None,
+    # --- Task-registry metadata filters (schema-backed, current-version-scoped
+    # unless noted) ---
+    allow_internet: bool | None = None,
+    gpus_min: int | None = None,
+    gpus_max: int | None = None,
+    cpus_min: int | None = None,
+    memory_mb_min: int | None = None,
+    expert_hours_min: float | None = None,
+    expert_hours_max: float | None = None,
+    source_repo: str | None = None,
+    ci_pr_number: int | None = None,
+    uploader_is_ci: bool | None = None,
     # --- Phase 1.2-lite aggregate filters / sort (no migration) ---
     avg_score_min: float | None = None,
     avg_score_max: float | None = None,
@@ -1252,6 +1265,21 @@ async def browse_tasks_core(
       predicates before pagination. There is NO supporting index or roll-up; this
       is the deliberately-slow path that full Phase 1.2 will denormalize. Cost sort
       uses persisted costs plus the same token estimates shown on task cards.
+    * Task-registry metadata filters (persisted from ``task.toml`` at ingest):
+      ``allow_internet``/``gpus_min``/``gpus_max``/``cpus_min``/``memory_mb_min``
+      are plain WHERE predicates on the task's CURRENT ``task_versions`` row
+      (joined the same way ``current_version.version`` already is above); a task
+      whose current version never recorded the field (NULL) drops out of a
+      min/max bound, same as the aggregate ranges. ``expert_hours_min``/
+      ``expert_hours_max`` are task-scoped (``tasks.expert_time_hours`` directly,
+      not version-scoped). ``source_repo``/``ci_pr_number``/``uploader_is_ci``
+      match provenance from ``task_upload_events`` — deliberately ANY matching
+      upload event for the task, not just the most recent one, via a single
+      correlated EXISTS combining all three conditions (mirrors
+      ``_trial_exists`` below). This is intentional: "which tasks ever came
+      from harbor-lh" or "which tasks came from PR 412" are the useful
+      questions, and restricting to the latest event would silently miss a
+      task re-uploaded from a different source after the matching upload.
     """
 
     current_version = aliased(TaskVersionModel)
@@ -1266,6 +1294,9 @@ async def browse_tasks_core(
             TaskModel.created_at.label("created_at"),
             TaskModel.link.label("link"),
             TaskModel.tags.label("tags"),
+            TaskModel.description.label("description"),
+            TaskModel.category.label("category"),
+            current_version.allow_internet.label("allow_internet"),
             func.row_number()
             .over(
                 partition_by=TaskModel.name,
@@ -1509,6 +1540,54 @@ async def browse_tasks_core(
         if reward_max is not None:
             reward_preds.append(TrialModel.reward <= reward_max)
         ranked_tasks = ranked_tasks.where(_trial_exists(*reward_preds))
+
+    # --- Task-registry metadata filters ------------------------------------
+    # Version-scoped: plain WHERE on the ``current_version`` alias already
+    # outer-joined above (same join ``current_version.version`` uses).
+    if allow_internet is not None:
+        ranked_tasks = ranked_tasks.where(
+            current_version.allow_internet.is_(allow_internet)
+        )
+    if gpus_min is not None:
+        ranked_tasks = ranked_tasks.where(current_version.gpus >= gpus_min)
+    if gpus_max is not None:
+        ranked_tasks = ranked_tasks.where(current_version.gpus <= gpus_max)
+    if cpus_min is not None:
+        ranked_tasks = ranked_tasks.where(current_version.cpus >= cpus_min)
+    if memory_mb_min is not None:
+        ranked_tasks = ranked_tasks.where(current_version.memory_mb >= memory_mb_min)
+
+    # Task-scoped: direct column on ``tasks``, not version-scoped.
+    if expert_hours_min is not None:
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.expert_time_hours >= expert_hours_min
+        )
+    if expert_hours_max is not None:
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.expert_time_hours <= expert_hours_max
+        )
+
+    # Provenance-scoped: "task has >=1 upload event matching X" — see docstring
+    # for why this is ANY event, not just the latest.
+    def _upload_event_exists(*predicates: Any) -> Any:
+        return exists(
+            select(TaskUploadEventModel.id).where(
+                TaskUploadEventModel.task_id == TaskModel.id,
+                *predicates,
+            )
+        )
+
+    upload_event_preds: list[Any] = []
+    if source_repo is not None:
+        upload_event_preds.append(TaskUploadEventModel.source_repo == source_repo)
+    if ci_pr_number is not None:
+        upload_event_preds.append(TaskUploadEventModel.ci_pr_number == ci_pr_number)
+    if uploader_is_ci is not None:
+        upload_event_preds.append(
+            TaskUploadEventModel.uploader_is_ci.is_(uploader_is_ci)
+        )
+    if upload_event_preds:
+        ranked_tasks = ranked_tasks.where(_upload_event_exists(*upload_event_preds))
 
     # --- Phase 1.2-lite aggregate filters / sort (no migration) -----------
     # Unlike the ``_trial_exists`` filters above (which match a SINGLE trial),
@@ -1951,6 +2030,9 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.current_version_id,
             ranked_tasks_subquery.c.link,
             ranked_tasks_subquery.c.tags,
+            ranked_tasks_subquery.c.description,
+            ranked_tasks_subquery.c.category,
+            ranked_tasks_subquery.c.allow_internet,
             func.coalesce(version_counts.c.version_count, 0).label("version_count"),
             trial_aggregates.c.last_run_at.label("last_run_at"),
         )
@@ -2260,6 +2342,9 @@ async def browse_tasks_core(
                 last_run_at=row["last_run_at"],
                 link=row["link"],
                 github_meta=_parse_github_meta(row["tags"]),
+                description=row["description"],
+                category=row["category"],
+                allow_internet=row["allow_internet"],
                 cost_usd=float(
                     cost_by_task.get(str(row["task_id"]), {}).get("cost_usd") or 0.0
                 ),
