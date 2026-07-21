@@ -1208,6 +1208,18 @@ class TrialCollectionResponse(BaseModel):
     tasks_skipped_empty: int = 0
 
 
+class CollectionMutationResponse(BaseModel):
+    """Result of editing an existing read-only collection in place."""
+
+    id: str
+    name: str
+    trials_added: int = 0
+    trials_removed: int = 0
+    trials_total: int = 0
+    tasks_linked: int = 0
+    tasks_unlinked: int = 0
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str

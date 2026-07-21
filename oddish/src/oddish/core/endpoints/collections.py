@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 from sqlalchemy import insert, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db import ExperimentModel, TrialModel, experiment_trials, utcnow
 from oddish.db.models import TaskModel, TrialStatus
-from oddish.schemas import TrialCollectionResponse
+from oddish.schemas import CollectionMutationResponse, TrialCollectionResponse
 
 # Terminal statuses gathered into a collection. Includes SKIPPED so gate-skipped
 # trials are preserved in the collection (like failed/errored trials), not
@@ -225,4 +226,146 @@ async def create_trial_collection_core(
         tasks_linked=len(linked_task_ids),
         trials_from_tasks=trials_from_tasks,
         tasks_skipped_empty=tasks_skipped_empty,
+    )
+
+
+async def _load_collection(
+    session: AsyncSession, *, experiment_id: str, org_id: str | None
+) -> ExperimentModel:
+    """Fetch a collection experiment, or raise.
+
+    404 (not 403) on a cross-org id so the route never confirms that another
+    org's experiment exists. 409 on a real experiment: ``remove`` would
+    silently no-op for trials owned via ``trials.experiment_id``, and mutating
+    a running experiment's membership races the dispatcher.
+    """
+    experiment = (
+        (
+            await session.execute(
+                select(ExperimentModel).where(
+                    ExperimentModel.id == experiment_id,
+                    ExperimentModel.org_id == org_id,
+                )
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if experiment is None:
+        raise HTTPException(
+            status_code=404, detail=f"Experiment {experiment_id} not found"
+        )
+    if not experiment.is_collection:
+        raise HTTPException(
+            status_code=409, detail=f"experiment {experiment_id} is not a collection"
+        )
+    return experiment
+
+
+async def _live_member_ids(session: AsyncSession, experiment_id: str) -> set[str]:
+    """Trial ids with a living ``experiment_trials`` row.
+
+    ``experiment_trials`` is a Core Table, so the soft-delete listener does not
+    cover it -- the ``deleted_at`` filter has to be spelled out.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == experiment_id,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return set(rows)
+
+
+async def _live_member_task_ids(
+    session: AsyncSession, experiment_id: str
+) -> set[str]:
+    rows = (
+        (
+            await session.execute(
+                select(TrialModel.task_id)
+                .join(
+                    experiment_trials,
+                    experiment_trials.c.trial_id == TrialModel.id,
+                )
+                .where(
+                    experiment_trials.c.experiment_id == experiment_id,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return set(rows)
+
+
+async def add_to_collection_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    trial_ids: list[str] | None = None,
+    task_ids: list[str] | None = None,
+    from_experiment_ids: list[str] | None = None,
+    org_id: str | None,
+) -> CollectionMutationResponse:
+    """Link more trials into an existing collection. Append-only, idempotent."""
+    from oddish.queue import _link_task_to_experiment, bump_experiment_last_activity
+
+    experiment = await _load_collection(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    if not (
+        _dedupe(trial_ids) or _dedupe(task_ids) or _dedupe(from_experiment_ids)
+    ):
+        raise HTTPException(status_code=400, detail="nothing to add")
+
+    trials, _ = await resolve_collection_sources(
+        session,
+        trial_ids=trial_ids,
+        task_ids=task_ids,
+        from_experiment_ids=from_experiment_ids,
+        org_id=org_id,
+    )
+    if not trials:
+        raise HTTPException(status_code=400, detail="nothing to add")
+
+    before_trials = await _live_member_ids(session, experiment_id)
+    before_tasks = await _live_member_task_ids(session, experiment_id)
+
+    # on_conflict_do_update rather than do_nothing: a trial removed earlier has
+    # a tombstoned row, and do_nothing would leave it invisible forever. Mirrors
+    # queue._link_task_to_experiment's restore-on-conflict.
+    await session.execute(
+        pg_insert(experiment_trials)
+        .values([{"experiment_id": experiment_id, "trial_id": t.id} for t in trials])
+        .on_conflict_do_update(
+            index_elements=["experiment_id", "trial_id"],
+            set_={"deleted_at": None},
+        )
+    )
+
+    after_tasks = await _live_member_task_ids(session, experiment_id)
+    newly_linked = after_tasks - before_tasks
+    for task_id in sorted(newly_linked):
+        await _link_task_to_experiment(
+            session, task_id=task_id, experiment_id=experiment_id
+        )
+
+    await bump_experiment_last_activity(session, experiment_ids=experiment_id)
+
+    added = {t.id for t in trials} - before_trials
+    return CollectionMutationResponse(
+        id=experiment.id,
+        name=experiment.name,
+        trials_added=len(added),
+        trials_total=len(before_trials | {t.id for t in trials}),
+        tasks_linked=len(newly_linked),
     )

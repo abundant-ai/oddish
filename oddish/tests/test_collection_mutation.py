@@ -130,3 +130,208 @@ async def test_from_experiment_id_cross_org_is_404(session):
             session, from_experiment_ids=[other.id], org_id="org1"
         )
     assert exc.value.status_code == 404
+
+
+async def _make_collection(session, *, trials, name="coll") -> str:
+    resp = await create_trial_collection_core(
+        session, name=name, trial_ids=[t.id for t in trials], org_id="org1"
+    )
+    await session.flush()
+    return resp.id
+
+
+async def _live_ids(session, experiment_id: str) -> set[str]:
+    rows = (
+        (
+            await session.execute(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == experiment_id,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return set(rows)
+
+
+@pytest.mark.asyncio
+async def test_add_links_new_trial(session):
+    from oddish.core.endpoints.collections import add_to_collection_core
+
+    task = _task("add-task")
+    session.add(task)
+    await session.flush()
+    home = _experiment("add-home")
+    session.add(home)
+    await session.flush()
+    t1, t2 = _trial(task, home), _trial(task, home)
+    session.add_all([t1, t2])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1])
+
+    resp = await add_to_collection_core(
+        session, experiment_id=coll_id, trial_ids=[t2.id], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.trials_added == 1
+    assert resp.trials_total == 2
+    assert await _live_ids(session, coll_id) == {t1.id, t2.id}
+
+
+@pytest.mark.asyncio
+async def test_add_resurrects_soft_deleted_membership(session):
+    """PROVE-RED: a plain on_conflict_do_nothing leaves the row tombstoned."""
+    from oddish.core.endpoints.collections import add_to_collection_core
+
+    task = _task("resurrect-task")
+    session.add(task)
+    await session.flush()
+    home = _experiment("resurrect-home")
+    session.add(home)
+    await session.flush()
+    t1, t2 = _trial(task, home), _trial(task, home)
+    session.add_all([t1, t2])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1, t2])
+    await session.execute(
+        update(experiment_trials)
+        .where(
+            experiment_trials.c.experiment_id == coll_id,
+            experiment_trials.c.trial_id == t2.id,
+        )
+        .values(deleted_at=utcnow())
+    )
+    assert await _live_ids(session, coll_id) == {t1.id}
+
+    resp = await add_to_collection_core(
+        session, experiment_id=coll_id, trial_ids=[t2.id], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.trials_added == 1
+    assert await _live_ids(session, coll_id) == {t1.id, t2.id}
+
+
+@pytest.mark.asyncio
+async def test_add_is_idempotent(session):
+    from oddish.core.endpoints.collections import add_to_collection_core
+
+    task = _task("idempotent-task")
+    session.add(task)
+    await session.flush()
+    home = _experiment("idempotent-home")
+    session.add(home)
+    await session.flush()
+    t1 = _trial(task, home)
+    session.add(t1)
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1])
+
+    resp = await add_to_collection_core(
+        session, experiment_id=coll_id, trial_ids=[t1.id], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.trials_added == 0
+    assert resp.trials_total == 1
+    assert await _live_ids(session, coll_id) == {t1.id}
+
+
+@pytest.mark.asyncio
+async def test_add_links_a_newly_represented_task(session):
+    from oddish.core.endpoints.collections import add_to_collection_core
+
+    task_a, task_b = _task("add-link-a"), _task("add-link-b")
+    session.add_all([task_a, task_b])
+    await session.flush()
+    home = _experiment("add-link-home")
+    session.add(home)
+    await session.flush()
+    ta, tb = _trial(task_a, home), _trial(task_b, home)
+    session.add_all([ta, tb])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[ta])
+
+    resp = await add_to_collection_core(
+        session, experiment_id=coll_id, trial_ids=[tb.id], org_id="org1"
+    )
+    await session.flush()
+
+    linked = (
+        (
+            await session.execute(
+                select(task_experiments.c.task_id).where(
+                    task_experiments.c.experiment_id == coll_id,
+                    task_experiments.c.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert set(linked) == {task_a.id, task_b.id}
+    assert resp.tasks_linked == 1
+
+
+@pytest.mark.asyncio
+async def test_add_rejects_non_collection_experiment(session):
+    from oddish.core.endpoints.collections import add_to_collection_core
+
+    task = _task("non-coll-task")
+    session.add(task)
+    await session.flush()
+    real = _experiment("a-real-experiment")
+    session.add(real)
+    await session.flush()
+    t1 = _trial(task, real)
+    session.add(t1)
+    await session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await add_to_collection_core(
+            session, experiment_id=real.id, trial_ids=[t1.id], org_id="org1"
+        )
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_add_to_cross_org_collection_is_404(session):
+    from oddish.core.endpoints.collections import add_to_collection_core
+
+    other = _experiment("cross-org-coll", org_id="org2", is_collection=True)
+    session.add(other)
+    await session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await add_to_collection_core(
+            session, experiment_id=other.id, trial_ids=["whatever"], org_id="org1"
+        )
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_add_with_no_sources_is_400(session):
+    from oddish.core.endpoints.collections import add_to_collection_core
+
+    task = _task("no-sources-task")
+    session.add(task)
+    await session.flush()
+    home = _experiment("no-sources-home")
+    session.add(home)
+    await session.flush()
+    t1 = _trial(task, home)
+    session.add(t1)
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[t1])
+
+    with pytest.raises(HTTPException) as exc:
+        await add_to_collection_core(session, experiment_id=coll_id, org_id="org1")
+    assert exc.value.status_code == 400
