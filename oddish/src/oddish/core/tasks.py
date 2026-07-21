@@ -101,6 +101,38 @@ def _apply_descriptive_metadata(task: TaskModel, metadata: TaskMetadata) -> None
     task.metadata_updated_at = utcnow()
 
 
+def _descriptive_metadata_unchanged(
+    task: TaskModel, latest: TaskVersionModel, metadata: TaskMetadata
+) -> bool:
+    """True when *metadata* already matches everything a rebuild would write.
+
+    Used only by the content-unchanged branch of ``initialize_task_upload``
+    to short-circuit the UPDATE + tag rebuild + projection recompute on the
+    common case (an untouched task re-uploaded as-is). Compares every field
+    ``_apply_descriptive_metadata`` writes to ``task``, plus ``topic_tags``:
+    that field isn't stored on ``TaskModel`` at all (only snapshotted onto a
+    version at creation time), but ``rebuild_derived_tags`` reads it straight
+    off ``metadata``, so a topic-only edit must not be mistaken for a no-op.
+    Comparing against ``latest.topic_tags_snapshot`` is an approximation --
+    it reflects the metadata at the current version's creation, not
+    necessarily the last content-unchanged call's metadata -- but that only
+    ever causes an extra (harmless) rebuild, never a missed one.
+    """
+    stored_hours = (
+        float(task.expert_time_hours) if task.expert_time_hours is not None else None
+    )
+    return (
+        task.description == metadata.description
+        and task.category == metadata.category
+        and task.category_raw == metadata.category_raw
+        and task.author_name == metadata.author_name
+        and task.author_email == metadata.author_email
+        and task.author_organization == metadata.author_organization
+        and stored_hours == metadata.expert_time_hours
+        and (latest.topic_tags_snapshot or []) == list(metadata.topic_tags)
+    )
+
+
 def _apply_version_metadata(version: TaskVersionModel, metadata: TaskMetadata) -> None:
     """Write hash-backed runtime fields plus the immutable descriptive snapshot."""
     version.allow_internet = metadata.allow_internet
@@ -243,7 +275,9 @@ async def initialize_task_upload(
             and latest.content_hash
             and latest.content_hash == content_hash
         ):
-            if task_metadata is not None:
+            if task_metadata is not None and not _descriptive_metadata_unchanged(
+                existing_task, latest, task_metadata
+            ):
                 _apply_descriptive_metadata(existing_task, task_metadata)
                 try:
                     # Savepoint: a DBAPIError poisons the session, so the

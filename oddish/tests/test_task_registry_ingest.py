@@ -68,6 +68,7 @@ _TEST_TASK_NAMES = (
     "registry-complete-retry-newtask",
     "registry-complete-retry-newversion",
     "registry-dbapierror",
+    "registry-noop-skip",
 )
 
 
@@ -675,3 +676,79 @@ async def test_content_unchanged_survives_derived_tag_db_error(session, monkeypa
     # The rebuild never ran -- the OLD category tag (ml-training) is still
     # the only active DERIVED category tag; "systems" was never assigned.
     assert active == ["ml-training"]
+
+
+@pytest.mark.asyncio
+async def test_content_unchanged_unchanged_metadata_skips_tag_rebuild(session, monkeypatch):
+    """I-2: the content-unchanged branch must not pay for an UPDATE + tag
+    rebuild + projection recompute it doesn't need. Metadata identical to
+    what's already stored skips all of that (but still records the upload
+    event, which is the audit trail and is retry-deduped separately).
+    Metadata that actually changed still rebuilds.
+    """
+    init = await initialize_task_upload(
+        "registry-noop-skip",
+        content_hash="hash-same",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    first = await complete_task_upload(
+        task_id=init.task_id,
+        task_name="registry-noop-skip",
+        version=init.version,
+        content_hash="hash-same",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    calls = []
+    real_rebuild = tasks_api.rebuild_derived_tags
+
+    async def _spy(*args, **kwargs):
+        calls.append(1)
+        return await real_rebuild(*args, **kwargs)
+
+    monkeypatch.setattr(tasks_api, "rebuild_derived_tags", _spy)
+
+    # Identical metadata, distinct provenance (a genuinely separate
+    # re-upload, not a retry -- different source_repo keeps it outside the
+    # event dedupe window).
+    unchanged = await initialize_task_upload(
+        "registry-noop-skip",
+        content_hash="hash-same",
+        task_metadata=_metadata(),
+        provenance=TaskProvenance(source_repo="someone/laptop-copy"),
+    )
+    assert unchanged.content_unchanged is True
+    assert len(calls) == 0
+
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    assert len(events) == 2
+    assert events[1].source_repo == "someone/laptop-copy"
+
+    # Metadata that actually changed must still rebuild.
+    changed = _metadata()
+    changed.category = "systems"
+    await initialize_task_upload(
+        "registry-noop-skip",
+        content_hash="hash-same",
+        task_metadata=changed,
+        provenance=TaskProvenance(source_repo="someone-else/laptop-copy"),
+    )
+    assert len(calls) == 1
+
+    task = (
+        await session.execute(
+            select(TaskModel)
+            .where(TaskModel.id == first.task_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    assert task.category == "systems"
