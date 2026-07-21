@@ -46,9 +46,7 @@ _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH = (
     "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
 )
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
-_ODDISH_MINI_SWE_IMPORT_PATH = (
-    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
-)
+_ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
 )
@@ -56,6 +54,7 @@ _ANTHROPIC_MODEL_ALIAS_KEYS = (
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
 )
 _AMBIENT_ANTHROPIC_CREDENTIAL_KEYS = (
@@ -64,9 +63,55 @@ _AMBIENT_ANTHROPIC_CREDENTIAL_KEYS = (
     "AWS_BEARER_TOKEN_BEDROCK",
 )
 
+# Oddish agent alias for Moonshot's Claude Code eval harness. Hardcodes the
+# vendor-required version / disallowed tools / long-context env; callers still
+# pass ``--model``.
+_KIMI_CLAUDE_CODE_AGENT = "kimi-claude-code"
+_KIMI_CLAUDE_CODE_VERSION = "2.1.181"
+_KIMI_CLAUDE_CODE_DISALLOWED_TOOLS = (
+    "WebSearch WebFetch EnterPlanMode EnterWorktree "
+    "ExitPlanMode ExitWorktree AskUserQuestion"
+)
+_KIMI_CLAUDE_CODE_RECOMMENDED_ENV: dict[str, str] = {
+    "ENABLE_TOOL_SEARCH": "false",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1048576",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "FORCE_AUTO_BACKGROUND_TASKS": "1",
+    "ENABLE_BACKGROUND_TASKS": "1",
+    "IS_SANDBOX": "1",
+    "API_TIMEOUT_MS": "12000000",
+    "BUN_CONFIG_HTTP_IDLE_TIMEOUT": "2000",
+}
+
 
 def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
     return "claude-code" in (agent_config.name or "").strip().lower()
+
+
+def _is_kimi_claude_code_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() == _KIMI_CLAUDE_CODE_AGENT
+
+
+def _prepare_kimi_claude_code_agent(agent_config: AgentConfig) -> None:
+    """Apply vendor kwargs and moonshot-prefix the caller-supplied model."""
+    if not _is_kimi_claude_code_agent(agent_config):
+        return
+
+    model = (agent_config.model_name or "").strip()
+    if model:
+        bare = (
+            moonshot_bare_model_id(model)
+            if is_moonshot_model(model)
+            else model.split("/")[-1].strip()
+        )
+        if bare:
+            agent_config.model_name = f"moonshot/{bare}"
+
+    kwargs = dict(agent_config.kwargs or {})
+    kwargs.setdefault("version", _KIMI_CLAUDE_CODE_VERSION)
+    kwargs.setdefault("disallowed_tools", _KIMI_CLAUDE_CODE_DISALLOWED_TOOLS)
+    agent_config.kwargs = kwargs
 
 
 def _is_mini_swe_agent(agent_config: AgentConfig) -> bool:
@@ -233,12 +278,17 @@ def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
         return
 
     bare_model = moonshot_bare_model_id(agent_config.model_name or "")
+    recommended = (
+        _KIMI_CLAUDE_CODE_RECOMMENDED_ENV
+        if _is_kimi_claude_code_agent(agent_config)
+        else _MOONSHOT_RECOMMENDED_ENV
+    )
     _apply_anthropic_compat_env(
         agent_config,
         base_url=os.environ.get("MOONSHOT_BASE_URL") or MOONSHOT_DEFAULT_BASE_URL,
         auth_token="${MOONSHOT_API_KEY}",
         model=bare_model,
-        recommended_env=_MOONSHOT_RECOMMENDED_ENV,
+        recommended_env=recommended,
     )
 
 
@@ -322,7 +372,7 @@ def _apply_claude_code_oddish_wrapper(
     if agent_config.import_path is not None:
         return
     agent_name = (agent_config.name or "").strip().lower()
-    if agent_name != "claude-code":
+    if agent_name not in {"claude-code", _KIMI_CLAUDE_CODE_AGENT}:
         return
 
     agent_config.name = None
@@ -350,7 +400,7 @@ def _apply_claude_code_probe_subagent_model(
     if not is_probe or not agent_config.model_name:
         return
     agent_name = (agent_config.name or "").strip().lower()
-    if agent_name != "claude-code":
+    if agent_name not in {"claude-code", _KIMI_CLAUDE_CODE_AGENT}:
         return
     env = dict(agent_config.env or {})
     env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", agent_config.model_name)
@@ -448,6 +498,9 @@ def _build_agent_config(
         agent_config.name = agent
     if model is not None:
         agent_config.model_name = model
+
+    # Before provider canonicalization: moonshot-prefix the model + vendor kwargs.
+    _prepare_kimi_claude_code_agent(agent_config)
 
     if is_fireworks_model(agent_config.model_name):
         agent_config.model_name = to_fireworks_model_id(agent_config.model_name)

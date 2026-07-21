@@ -80,6 +80,7 @@ def bedrock_domains_for_model(
 
     tail = (model_name or "").split("/", 1)[-1].lower()
     extras: set[str] = set()
+    regions: tuple[str, ...]
     if tail.startswith(("us.", "global.")):
         regions = ("us-east-1", "us-west-2")
     elif tail.startswith("eu."):
@@ -170,8 +171,7 @@ def outbound_hosts_for_model(
         if head == "openrouter":
             hosts.append(
                 _default_host(
-                    os.environ.get("OPENROUTER_BASE_URL")
-                    or "https://openrouter.ai/api"
+                    os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api"
                 )
                 or "openrouter.ai"
             )
