@@ -1,12 +1,11 @@
 "use client";
 
-import useSWR from "swr";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Activity, Star } from "lucide-react";
-import { fetcher } from "@/lib/api";
-import type { TrajectoryStep, TrajectorySummary } from "@/lib/types";
+import type { TrajectoryStep } from "@/lib/types";
 import { phaseColorVars, stepDurationsMs, stepTokens } from "@/lib/trajectory-metrics";
 import { toSegments } from "@/lib/trajectory-segments";
+import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectoryActivityProps {
   trialId: string;
@@ -26,12 +25,7 @@ export function TrajectoryActivity({
   stepIdToIndex,
   onStepSelect,
 }: TrajectoryActivityProps) {
-  // Same SWR key as TrajectorySummary — deduped, no second request.
-  const { data } = useSWR<TrajectorySummary | null>(
-    `${apiBaseUrl}/trials/${trialId}/trajectory/summary`,
-    fetcher,
-    { revalidateOnFocus: false },
-  );
+  const { data } = useTrajectorySummary(trialId, apiBaseUrl);
 
   const segments = toSegments(data);
   if (!steps.length || segments.length === 0) return null;
