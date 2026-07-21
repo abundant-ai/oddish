@@ -61,6 +61,17 @@ class ResolvedTagFilter:
     all_ids: list[str]
     any_ids: list[str]
     none_ids: list[str]
+    all_groups: list[list[str]] = field(default_factory=list)
+    """Per-``all``-token id groups, in token order.
+
+    A bare-key token resolves to every id under that key; keeping those
+    together (rather than flattening into ``all_ids``) lets
+    ``build_filter_predicates`` OR them within the group while still
+    AND-ing across distinct ``all`` tokens/keys. ``all_ids`` stays the
+    flattened/deduped view for callers that only need containment or
+    emptiness checks, not per-token grouping (e.g. the experiments-page
+    predicate builder in ``dashboard.py``).
+    """
 
     def is_empty(self) -> bool:
         return not (self.all_ids or self.any_ids or self.none_ids)
@@ -102,7 +113,17 @@ async def resolve_names_to_ids(
         before; for a key that now fans out into several values (every
         derived category), "match everything under this key" is the only
         reading that doesn't silently pick one arbitrary row (the old
-        flat-dict lookup did, last-row-wins).
+        flat-dict lookup did, last-row-wins). In the ``all`` set this means
+        OR *within* the key ("has ANY tag under this key"), while distinct
+        tokens/keys in ``all`` still AND against each other — see
+        ``ResolvedTagFilter.all_groups`` and ``build_filter_predicates``.
+        A pure-AND "must have every value under this key" reading would
+        make a bare key in ``all`` match nothing for any multi-value key,
+        which is the silent-empty-page bug this docstring used to describe.
+      * a ``(key, value)`` pair whose split guessed wrong, i.e. the KEY
+        itself contains ':' (e.g. a value-less ``sys:managed`` tag) — the
+        exact-pair lookup misses, so we fall back to resolving the whole
+        token as a bare key.
 
     Follows ``merged_into_id`` so aliases resolve to the survivor. Drops
     DELETED tag rows. Returns (resolved, unknown_tokens) — a token is
@@ -111,7 +132,18 @@ async def resolve_names_to_ids(
     raw_tokens = {t for t in (*ast.all, *ast.any_, *ast.none) if t}
     if not raw_tokens:
         return ResolvedTagFilter(all_ids=[], any_ids=[], none_ids=[]), set()
-    wanted_names = {_split_token(t)[0] for t in raw_tokens if _split_token(t)[0]}
+    wanted_names: set[str] = set()
+    for t in raw_tokens:
+        key, value = _split_token(t)
+        if key:
+            wanted_names.add(key)
+        if value is not None:
+            # M-1: also fetch under the whole token as a bare key, in case
+            # the ':' split is wrong (the key itself contains ':') and the
+            # (key, value) pair lookup below has to fall back to it.
+            whole_key = normalize_tag_key(t)
+            if whole_key:
+                wanted_names.add(whole_key)
 
     rows = (
         await session.execute(
@@ -152,7 +184,13 @@ async def resolve_names_to_ids(
         key, value = _split_token(token)
         if value is not None:
             rid = by_key_value.get((key, value))
-            return [rid] if rid is not None else []
+            if rid is not None:
+                return [rid]
+            # M-1: the ':' split guessed wrong (the KEY contains ':', e.g.
+            # a value-less ``sys:managed`` tag) -- fall back to resolving
+            # the whole token as a bare key rather than reporting unknown.
+            whole_key = normalize_tag_key(token)
+            return list(by_key.get(whole_key, ()))
         return list(by_key.get(key, ()))
 
     def _convert(tokens: list[str]) -> list[str]:
@@ -167,10 +205,27 @@ async def resolve_names_to_ids(
                     out.append(rid)
         return out
 
+    def _convert_groups(tokens: list[str]) -> list[list[str]]:
+        """Per-token id groups, dropping tokens that resolved to nothing.
+
+        Unlike ``_convert``, this keeps each token's ids together instead
+        of flattening -- ``build_filter_predicates`` needs the grouping to
+        OR a bare key's ids while still AND-ing across distinct tokens.
+        """
+        groups: list[list[str]] = []
+        for t in tokens:
+            if not t:
+                continue
+            ids = _lookup_all(t)
+            if ids:
+                groups.append(ids)
+        return groups
+
     resolved = ResolvedTagFilter(
         all_ids=_convert(ast.all),
         any_ids=_convert(ast.any_),
         none_ids=_convert(ast.none),
+        all_groups=_convert_groups(ast.all),
     )
     unknown = {t for t in raw_tokens if not _lookup_all(t)}
     return resolved, unknown
@@ -180,7 +235,12 @@ def build_filter_predicates(resolved: ResolvedTagFilter):
     """Return a list of SQLAlchemy text predicates the caller appends to
     a ``WHERE`` clause that already references ``tasks.effective_tag_ids``.
 
-    * AND  -> ``effective_tag_ids @> ARRAY['a','b']``
+    * AND  -> one ``effective_tag_ids && ARRAY[...]`` per ``all`` token,
+      ANDed together by the caller (one ``.where()`` per predicate). A
+      bare-key token's ids all land in the same group, so ``&&`` (overlap)
+      makes that group OR "has ANY tag under this key" while distinct
+      tokens/keys still AND against each other. A single-id group behaves
+      identically to the old ``@>`` containment check.
     * OR   -> ``effective_tag_ids && ARRAY['c','d']``
     * NOT  -> ``NOT (effective_tag_ids && ARRAY['e','f'])``
 
@@ -188,11 +248,14 @@ def build_filter_predicates(resolved: ResolvedTagFilter):
     for binding parameters via ``.params(...)``.
     """
     predicates: list[TextClause] = []
-    if resolved.all_ids:
+    for n, group in enumerate(resolved.all_groups):
+        if not group:
+            continue
+        param = f"tags_all_group_{n}"
         predicates.append(
-            text("tasks.effective_tag_ids @> CAST(:tags_all_ids AS TEXT[])").bindparams(
-                tags_all_ids=list(resolved.all_ids)
-            )
+            text(
+                f"tasks.effective_tag_ids && CAST(:{param} AS TEXT[])"
+            ).bindparams(**{param: list(group)})
         )
     if resolved.any_ids:
         predicates.append(

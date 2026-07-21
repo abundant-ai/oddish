@@ -121,21 +121,49 @@ def test_resolve_accepts_tag_ids_as_tokens():
     assert unknown == set()
 
 
-def test_apply_filter_returns_three_text_predicates():
+def test_apply_filter_returns_predicates_for_all_groups_any_and_none():
+    """AND (``all``) now emits one ``&&`` predicate per all-group -- OR
+    within a group (e.g. a bare key's fanned-out ids), ANDed against the
+    caller's other ``.where()`` calls -- instead of a single flat ``@>``
+    predicate over every all-id (see I-1: that used to AND ids that
+    should have been OR'd within a key).
+    """
     from oddish.core.tags.filter_ast import (
         ResolvedTagFilter,
         build_filter_predicates,
     )
 
-    res = ResolvedTagFilter(all_ids=["a", "b"], any_ids=["c", "d"], none_ids=["e"])
+    res = ResolvedTagFilter(
+        all_ids=["a", "b"],
+        any_ids=["c", "d"],
+        none_ids=["e"],
+        all_groups=[["a"], ["b"]],
+    )
     predicates = build_filter_predicates(res)
+    assert len(predicates) == 4  # 2 all-groups + 1 any + 1 none
     sql_strs = [str(p) for p in predicates]
-    # AND => @>
-    assert any("@>" in s for s in sql_strs)
-    # OR => &&
-    assert any("&&" in s for s in sql_strs)
-    # NOT => NOT (.. && ..)
-    assert any("NOT (" in s and "&&" in s for s in sql_strs)
+    assert all("@>" not in s for s in sql_strs)
+    assert sum("&&" in s for s in sql_strs) == 4
+    assert sum("NOT (" in s for s in sql_strs) == 1
+
+
+def test_apply_filter_ors_within_a_bare_key_group():
+    """A bare key's fanned-out ids land in ONE all-group -- the predicate
+    must be a single overlap check over that whole group, not one
+    predicate per id (which would silently AND them together again).
+    """
+    from oddish.core.tags.filter_ast import (
+        ResolvedTagFilter,
+        build_filter_predicates,
+    )
+
+    res = ResolvedTagFilter(
+        all_ids=["re", "opt"], any_ids=[], none_ids=[], all_groups=[["re", "opt"]]
+    )
+    predicates = build_filter_predicates(res)
+    assert len(predicates) == 1
+    sql = str(predicates[0])
+    assert "&&" in sql and "@>" not in sql
 
 
 def test_apply_filter_returns_empty_predicates_for_empty_filter():
@@ -630,6 +658,160 @@ async def test_resolve_bare_token_matches_every_tag_sharing_the_key(session):
         session, org_id=org_id, ast=TagFilterAST(any_=["category"])
     )
     assert set(resolved.any_ids) == {re_id, opt_id}
+    assert unknown == set()
+
+
+@pytest.mark.asyncio
+async def test_resolve_bare_token_in_all_set_groups_rather_than_flattens(session):
+    """I-1: a bare key token in the ``all`` set must fan out into ONE
+    group (OR within the key) instead of flattening into ``all_ids``
+    the way a flat-list-only reading would AND them together.
+    """
+    from oddish.core.tags.filter_ast import TagFilterAST, resolve_names_to_ids
+    from oddish.core.tags.service import create_tag_core
+
+    org_id = _org()
+    re_id = await create_tag_core(
+        session,
+        key="category",
+        value="reverse-engineering",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    opt_id = await create_tag_core(
+        session,
+        key="category",
+        value="optimization",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    await session.flush()
+
+    resolved, unknown = await resolve_names_to_ids(
+        session, org_id=org_id, ast=TagFilterAST(all=["category"])
+    )
+    assert set(resolved.all_ids) == {re_id, opt_id}
+    assert len(resolved.all_groups) == 1
+    assert set(resolved.all_groups[0]) == {re_id, opt_id}
+    assert unknown == set()
+
+
+@pytest.mark.asyncio
+async def test_browse_tags_all_bare_key_matches_any_task_under_that_key(session):
+    """I-1 end-to-end, THE MOTIVATING BUG: ``tags_all=["category"]`` (what
+    the dashboard search bar sends for a bare ``tag:category`` query) must
+    return every categorized task, not zero -- the old AND-of-all-ids
+    reading required a task to hold every category simultaneously, which
+    is never true, so this always silently emptied the page.
+    """
+    from oddish.core.endpoints import browse_tasks_core
+    from oddish.core.tags.derived import rebuild_derived_tags
+    from oddish.schemas import TaskMetadata
+
+    org_id = _org()
+    re_task = await _make_task_with_version(session, org_id=org_id, name=f"re-{org_id}")
+    opt_task = await _make_task_with_version(session, org_id=org_id, name=f"opt-{org_id}")
+
+    await rebuild_derived_tags(
+        session,
+        task_id=re_task.id,
+        org_id=org_id,
+        metadata=TaskMetadata(category="reverse-engineering"),
+    )
+    await rebuild_derived_tags(
+        session,
+        task_id=opt_task.id,
+        org_id=org_id,
+        metadata=TaskMetadata(category="optimization"),
+    )
+    await session.flush()
+
+    resp = await browse_tasks_core(session, org_id=org_id, tags_all=["category"])
+    ids = {item.id for item in resp.items}
+    assert ids == {re_task.id, opt_task.id}
+
+
+@pytest.mark.asyncio
+async def test_browse_tags_all_across_different_keys_still_ands(session):
+    """I-1's OR-within-a-key must not weaken cross-key AND: a task must
+    have SOME category AND SOME topic to match ``tags_all=["category",
+    "topic"]``, even though either key alone is now an OR across its
+    fanned-out values.
+    """
+    from oddish.core.endpoints import browse_tasks_core
+    from oddish.core.tags.derived import rebuild_derived_tags
+    from oddish.schemas import TaskMetadata
+
+    org_id = _org()
+    both = await _make_task_with_version(session, org_id=org_id, name=f"both-{org_id}")
+    category_only = await _make_task_with_version(
+        session, org_id=org_id, name=f"cat-only-{org_id}"
+    )
+    topic_only = await _make_task_with_version(
+        session, org_id=org_id, name=f"topic-only-{org_id}"
+    )
+
+    await rebuild_derived_tags(
+        session,
+        task_id=both.id,
+        org_id=org_id,
+        metadata=TaskMetadata(
+            category="reverse-engineering", topic_tags=["compilers"]
+        ),
+    )
+    await rebuild_derived_tags(
+        session,
+        task_id=category_only.id,
+        org_id=org_id,
+        metadata=TaskMetadata(category="optimization"),
+    )
+    await rebuild_derived_tags(
+        session,
+        task_id=topic_only.id,
+        org_id=org_id,
+        metadata=TaskMetadata(topic_tags=["compilers"]),
+    )
+    await session.flush()
+
+    resp = await browse_tasks_core(
+        session, org_id=org_id, tags_all=["category", "topic"]
+    )
+    ids = {item.id for item in resp.items}
+    assert ids == {both.id}
+
+
+@pytest.mark.asyncio
+async def test_resolve_colon_bearing_bare_key_falls_back_after_pair_miss(session):
+    """M-1: a value-less tag whose KEY itself contains ':' (the reserved-
+    namespace convention core/tags/service.py anticipates, e.g.
+    ``sys:managed``) must still resolve. The unconditional split first
+    tries it as a (key, value) pair ("sys", "managed"), which misses --
+    the resolver must then fall back to the whole token as a bare key
+    rather than reporting it unknown.
+    """
+    from oddish.core.tags.filter_ast import TagFilterAST, resolve_names_to_ids
+    from oddish.core.tags.service import create_tag_core
+
+    org_id = _org()
+    tag_id = await create_tag_core(
+        session,
+        key="sys:managed",
+        value=None,
+        org_id=org_id,
+        actor_user_id=None,
+        policy={"name_charset": "[a-z0-9._:-]"},
+        is_admin=True,
+    )
+    await session.flush()
+
+    resolved, unknown = await resolve_names_to_ids(
+        session, org_id=org_id, ast=TagFilterAST(all=["sys:managed"])
+    )
+    assert resolved.all_ids == [tag_id]
     assert unknown == set()
 
 
