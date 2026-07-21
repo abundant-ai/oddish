@@ -53,5 +53,6 @@ frontend/playwright/.cache/
 
 # Brainstorming visual companion
 .superpowers/
+docs/superpowers/
 /ABI-69-notes.md
 /.junie/
