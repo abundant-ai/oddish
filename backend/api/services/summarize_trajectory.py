@@ -155,6 +155,7 @@ def build_summary_block(
     analyzer_id: str | None,
     model: str,
     client,
+    triggered_by_user_id: str | None = None,
 ):
     """Build the trajectory-summary ``AnalyzerBlock``.
 
@@ -192,6 +193,7 @@ def build_summary_block(
         block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         client=client,
+        triggered_by_user_id=triggered_by_user_id,
     )
 
 
@@ -201,6 +203,7 @@ async def generate(
     *,
     analyzer_id: str | None = None,
     client=None,
+    triggered_by_user_id: str | None = None,
 ) -> dict:
     """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
 
@@ -216,7 +219,12 @@ async def generate(
     owned = client is None
     llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
     block = build_summary_block(
-        trajectory, task_context, analyzer_id=analyzer_id, model=model, client=llm,
+        trajectory,
+        task_context,
+        analyzer_id=analyzer_id,
+        model=model,
+        client=llm,
+        triggered_by_user_id=triggered_by_user_id,
     )
     try:
         out = await block.run()
@@ -314,7 +322,7 @@ async def _load_fresh_summary_block(
 
 
 async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel
+    session: AsyncSession, trial: TrialModel, triggered_by_user_id: str | None = None
 ) -> dict | None:
     """Return the trajectory summary, generating on miss.
 
@@ -350,7 +358,12 @@ async def get_or_generate_summary(
         if trajectory is None:
             return None
 
-        summary = await generate(trajectory, task_context, analyzer_id=trial.id)
+        summary = await generate(
+            trajectory,
+            task_context,
+            analyzer_id=trial.id,
+            triggered_by_user_id=triggered_by_user_id,
+        )
 
         # Mirror into the trials column for the graph builder + analyzer-input
         # bundles, which read it synchronously via getattr.

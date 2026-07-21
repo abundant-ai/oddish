@@ -7,6 +7,7 @@ from typing import AsyncIterator, Protocol, runtime_checkable
 
 from anthropic import AsyncAnthropic
 
+from oddish.analyze.analysis_cost import AnalysisUsage, usage_from_api_message
 from oddish.config import settings
 from oddish.db import generate_id
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
@@ -50,6 +51,10 @@ class LLMClientType(str, enum.Enum):
 
 @runtime_checkable
 class AnalyzerLLMClient(Protocol):
+    # Usage for the most recent stream(), or None when the backend reports none.
+    # Read by AnalyzerBlock after the stream drains, so it must survive the call.
+    last_usage: AnalysisUsage | None
+
     def stream(
         self, prompt: str, *, system_prompt: str | None = None
     ) -> AsyncIterator[str]: ...
@@ -65,11 +70,13 @@ class FakeAnalyzerLLMClient:
         chunks: list[str] | None = None,
         exc: BaseException | None = None,
         files: dict[str, bytes] | None = None,
+        last_usage: AnalysisUsage | None = None,
     ) -> None:
         self._chunks = chunks or []
         self._exc = exc
         self._files = files or {}
         self.last_system_prompt: str | None = None
+        self.last_usage = last_usage
 
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None
@@ -112,12 +119,14 @@ class ApiAnalyzerLLMClient:
         # When set, the response is constrained to this JSON schema during
         # generation instead of being hand-written into free text.
         self._output_schema = output_schema
+        self.last_usage: AnalysisUsage | None = None
         key = resolve_analyzer_api_key(api_key)
         self._inner = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
 
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None
     ) -> AsyncIterator[str]:
+        self.last_usage = None
         kwargs: dict = dict(
             model=self._model,
             max_tokens=self._max_tokens,
@@ -138,6 +147,11 @@ class ApiAnalyzerLLMClient:
             async for text in stream.text_stream:
                 yield text
             final = await stream.get_final_message()
+        # Stashed before the truncation check below: a run that blew its budget
+        # still spent the tokens, and dropping it would under-report that spend.
+        self.last_usage = usage_from_api_message(
+            getattr(final, "usage", None), self._model
+        )
         # text_stream ends identically on a complete reply and on a truncated
         # one, so without this the caller parses a half-written object.
         if getattr(final, "stop_reason", None) == "max_tokens":
@@ -173,6 +187,11 @@ class SandboxAnalyzerLLMClient:
         self._client = daytona_client
         self._runtime = runtime
         self._session_id = daytona_session_id
+        # Always None for now: claude-code reports native cost in its
+        # stream-json ``result`` event, which this client passes through as an
+        # opaque chunk. Parsing it is what will light up cost rows for the
+        # sandbox-backed cohort blocks.
+        self.last_usage: AnalysisUsage | None = None
 
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None

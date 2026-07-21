@@ -16,6 +16,8 @@ production line, not by assumption).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
@@ -35,6 +37,9 @@ class _RecordingStream:
     async def text_stream(self):  # pragma: no cover - not consumed here
         return
         yield ""
+
+    async def get_final_message(self):
+        return SimpleNamespace(stop_reason="end_turn", usage=None)
 
 
 class _RecordingMessages:
