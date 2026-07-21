@@ -53,6 +53,7 @@ from oddish.cli.api import (
     is_harbor_jobs_dir,
     is_task_dir,
     load_harbor_trial_result,
+    load_task_metadata,
     trial_result_to_import_spec,
 )
 from oddish.core.harbor_artifacts import detect_trajectory
@@ -451,11 +452,15 @@ async def _upload_task_dir(
     message: str | None,
 ) -> ZipImportTaskResult:
     content_hash = compute_task_content_hash(task_dir)
+    # Best-effort like the CLI: a missing/malformed task.toml leaves this
+    # None and the import still succeeds, just without descriptive metadata.
+    task_metadata = load_task_metadata(task_dir)
     init = await initialize_task_upload(
         task_dir.name,
         org_id=org_id,
         content_hash=content_hash,
         message=message,
+        task_metadata=task_metadata,
     )
 
     # Server returns the existing version row when the content hash
@@ -494,6 +499,7 @@ async def _upload_task_dir(
         register=True,
         user=user_name,
         priority=priority,
+        task_metadata=task_metadata,
     )
 
     return ZipImportTaskResult(
