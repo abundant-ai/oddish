@@ -17,6 +17,8 @@ flip -- or delete -- a human's DIRECT assignment of the same tag.
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import text
 
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
@@ -32,10 +34,13 @@ from oddish.core.tags.service import (
 from oddish.core.task_metadata import slugify
 from oddish.schemas import TaskMetadata
 
+logger = logging.getLogger(__name__)
+
 # Metadata is best-effort: it must never fail an upload. Callers wrap the
 # rebuild_derived_tags call in try/except DERIVED_TAG_ERRORS rather than
 # letting a malformed vocabulary value (bad charset, profanity) 500 the
-# whole request.
+# whole request. rebuild_derived_tags itself also catches these per-pair
+# (see below) so one bad pair can't abort retraction of the rest.
 DERIVED_TAG_ERRORS = (TagNameError, TagPolicyError, TagProfanityError)
 
 _DEFAULT_TAG_NAME_MAX_LEN = 64
@@ -124,8 +129,15 @@ async def rebuild_derived_tags(
 ) -> None:
     """Replace this task's DERIVED tags with the set implied by *metadata*.
 
-    Resolve desired pairs to tag ids first, retract every stale ACTIVE
-    DERIVED assignment not in that set, then upsert the desired ones --
+    Resolve desired pairs to tag ids first -- skipping (and logging) any pair
+    whose tag creation fails DERIVED_TAG_ERRORS validation (e.g. a profane
+    topic) rather than aborting, so retraction below still runs for the
+    pairs that DID resolve. Creating all tags before retracting stale ones
+    would otherwise leave a partial failure with the PREVIOUS upload's
+    categories still active (retraction never reached) and an orphan tag
+    from an earlier pair in this same call with no assignment (the assign
+    loop never reached either). Then retract every stale ACTIVE DERIVED
+    assignment not in the resolved set, then upsert the resolved ones --
     retract-then-assign so a tag that stays in the set is never briefly
     absent. A desired pair is skipped entirely when the tag already has an
     ACTIVE non-DERIVED (human) assignment on this task: DIRECT wins.
@@ -141,15 +153,27 @@ async def rebuild_derived_tags(
 
     tag_ids: list[str] = []
     for key, value in pairs:
-        tag_id = await create_tag_core(
-            session,
-            key=key,
-            value=value,
-            org_id=org_id,
-            actor_user_id=None,
-            policy=policy,
-            is_admin=True,
-        )
+        try:
+            # is_admin=True: the deriver is not a human actor, so ADMIN_ONLY
+            # policies and reserved prefixes don't apply, and
+            # max_tags_per_entity is not enforced -- deliberate (see the
+            # derived-tags section of docs/superpowers/specs/
+            # 2026-07-20-task-registry-foundation-design.md), not a bypass
+            # to close.
+            tag_id = await create_tag_core(
+                session,
+                key=key,
+                value=value,
+                org_id=org_id,
+                actor_user_id=None,
+                policy=policy,
+                is_admin=True,
+            )
+        except DERIVED_TAG_ERRORS as exc:
+            logger.warning(
+                "Skipping derived tag %s:%s for task %s: %s", key, value, task_id, exc
+            )
+            continue
         tag_ids.append(tag_id)
 
     existing_non_derived = {

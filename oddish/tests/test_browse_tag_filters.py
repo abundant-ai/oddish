@@ -597,6 +597,60 @@ async def test_resolve_key_value_token_matches_exact_pair(session):
 
 
 @pytest.mark.asyncio
+async def test_resolve_key_value_token_follows_merge_to_survivor(session):
+    """Spec Testing #2 (b): a ``key:value`` token naming a MERGED (aliased)
+    tag must resolve to the SURVIVING tag id, not the tombstoned source's own
+    id -- logically covered by the ``COALESCE(t.merged_into_id, t.id)``
+    projection in resolve_names_to_ids' query, but never exercised for the
+    key:value token form (only the plain-id/bare-key forms had merge
+    coverage elsewhere). Does not touch filter_ast.py.
+    """
+    from oddish.core.tags.filter_ast import TagFilterAST, resolve_names_to_ids
+    from oddish.core.tags.service import create_tag_core, merge_tag_core
+
+    org_id = _org()
+    source_id = await create_tag_core(
+        session,
+        key="category",
+        value="ml-training",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    survivor_id = await create_tag_core(
+        session,
+        key="category",
+        value="machine-learning",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    await session.flush()
+
+    await merge_tag_core(
+        session,
+        source_tag_id=source_id,
+        target_tag_id=survivor_id,
+        org_id=org_id,
+        actor_user_id=None,
+    )
+    await session.flush()
+
+    # The token still names the merged-away tag's own (key, value) pair --
+    # resolution must land on the survivor.
+    resolved, unknown = await resolve_names_to_ids(
+        session,
+        org_id=org_id,
+        ast=TagFilterAST(all=["category:ml-training"]),
+    )
+    assert resolved.all_ids == [survivor_id]
+    assert source_id not in resolved.all_ids
+    assert unknown == set()
+
+
+@pytest.mark.asyncio
 async def test_resolve_bare_token_still_matches_value_less_tag(session):
     """Regression guard: a bare token with no ':' must keep resolving a
     plain (value-less) tag exactly as it did before key:value support.

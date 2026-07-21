@@ -170,6 +170,68 @@ async def test_rebuild_does_not_resurrect_a_removed_direct_assignment(session):
 
 
 @pytest.mark.asyncio
+async def test_rebuild_retracts_stale_and_keeps_good_pairs_when_one_pair_fails(session):
+    """M-4: a partial failure mid-rebuild must not leave stale assignments.
+
+    Same scenario as test_task_upload_routes.py's C3 (a profane topic tag),
+    but at the rebuild_derived_tags unit level: the old category must still
+    be retracted and the new, valid category applied, even though the
+    profane topic pair is skipped. Before this fix, create_tag_core raising
+    on the profane pair aborted the whole function before retraction ever
+    ran, so the OLD category stayed ACTIVE forever and the new category tag
+    (already created before the failing pair) was committed with no
+    assignment.
+    """
+    from oddish.core.tags.derived import rebuild_derived_tags
+    from oddish.db.models import TagAssignmentModel, TagAssignmentState
+    from oddish.db.models import TagModel
+
+    await rebuild_derived_tags(
+        session,
+        task_id="t-5",
+        org_id=None,
+        metadata=TaskMetadata(category="ml-training"),
+    )
+
+    # Second rebuild: a good category swap plus a profane topic tag that
+    # must fail create_tag_core's real profanity check.
+    await rebuild_derived_tags(
+        session,
+        task_id="t-5",
+        org_id=None,
+        metadata=TaskMetadata(category="optimization", topic_tags=["fuck"]),
+    )
+
+    active = (
+        await session.execute(
+            select(TagAssignmentModel)
+            .join(TagModel, TagModel.id == TagAssignmentModel.tag_id)
+            .where(
+                TagAssignmentModel.task_id == "t-5",
+                TagAssignmentModel.source == TagAssignmentSource.DERIVED,
+                TagAssignmentModel.state == TagAssignmentState.ACTIVE,
+            )
+            .add_columns(TagModel.normalized_key, TagModel.normalized_value)
+        )
+    ).all()
+    active_pairs = {(row.normalized_key, row.normalized_value) for row in active}
+    # The old category is retracted, the new one is applied, and the profane
+    # topic never made it into the ACTIVE set at all.
+    assert active_pairs == {("category", "optimization")}
+
+    # No orphan tags row exists for the skipped profane pair.
+    profane_tags = (
+        await session.execute(
+            select(TagModel).where(
+                TagModel.normalized_key == "topic",
+                TagModel.normalized_value == "fuck",
+            )
+        )
+    ).scalars().all()
+    assert profane_tags == []
+
+
+@pytest.mark.asyncio
 async def test_rebuild_recomputes_projection_exactly_once(session):
     """assign_tag_core's per-assignment recompute must be suppressed for the
     derived batch -- only rebuild_derived_tags' trailing recompute should run,
