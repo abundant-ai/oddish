@@ -190,6 +190,24 @@ async def record_upload_event(
     exists). ``created_version`` is deliberately excluded from the match for
     this reason. A genuinely distinct upload of identical content (e.g. two CI
     runs of an unchanged task, much later) is never deduped past the window.
+
+    This is SELECT-then-INSERT, not enforced by a unique constraint, so it
+    has real gaps on both sides:
+    - Two truly concurrent uploads (same task/version/hash/commit, racing
+      within the window) can both see no duplicate and both insert -- there's
+      no locking between the SELECT and the INSERT. Rare in practice (it
+      needs two callers uploading the identical content at the identical
+      moment) and the cost of missing it is a harmless extra append-only row,
+      not a correctness bug, so it isn't worth a unique index: the window is
+      time-relative ("within the last 60s"), which a static unique constraint
+      can't express without either dropping the sliding-window behavior
+      (rejecting the same content forever) or approximating it with
+      fixed-size time buckets (which just trades this race for an edge case
+      at the bucket boundary).
+    - Conversely, a genuinely distinct re-upload of identical content from
+      the same commit inside the 60s window (e.g. two near-simultaneous CI
+      runs) is silently dropped from this append-only audit log, since it
+      looks identical to a client retry.
     """
     prov = provenance or TaskProvenance()
 
