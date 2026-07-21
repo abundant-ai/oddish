@@ -292,6 +292,15 @@ async def _live_member_ids(session: AsyncSession, experiment_id: str) -> set[str
 async def _live_member_task_ids(
     session: AsyncSession, experiment_id: str
 ) -> set[str]:
+    """Tasks represented by a living ``experiment_trials`` row.
+
+    ``include_deleted``: membership is the join row, not the trial's own
+    ``deleted_at`` -- ``delete_trial_core`` soft-deletes a trial without
+    tombstoning its membership, and the cost rollup still prices those rows
+    (``experiment_cost.py`` opts into ``include_deleted`` too). Letting the
+    listener filter them here would disagree with ``_live_member_ids`` and
+    tear down a ``task_experiments`` link the rollup still charges for.
+    """
     rows = (
         (
             await session.execute(
@@ -305,6 +314,7 @@ async def _live_member_task_ids(
                     experiment_trials.c.deleted_at.is_(None),
                 )
                 .distinct()
+                .execution_options(include_deleted=True)
             )
         )
         .scalars()
@@ -454,10 +464,17 @@ async def remove_from_collection_core(
         )
         if task is None:
             raise HTTPException(status_code=404, detail=f"Task {ident} not found")
+        # include_deleted: membership is the ``experiment_trials`` row, and a
+        # trial soft-deleted by ``delete_trial_core`` keeps a live one. Without
+        # this the listener hides those ids and the removal silently no-ops,
+        # stranding the membership row and its task link. Same reason
+        # ``deletion.py`` wraps its own trial-id subquery this way.
         task_trial_ids = (
             (
                 await session.execute(
-                    select(TrialModel.id).where(TrialModel.task_id == task.id)
+                    select(TrialModel.id)
+                    .where(TrialModel.task_id == task.id)
+                    .execution_options(include_deleted=True)
                 )
             )
             .scalars()
@@ -478,8 +495,9 @@ async def remove_from_collection_core(
             detail="removing these trials would empty the collection",
         )
 
-    # include_deleted: a soft-deleted TRIAL's membership row must still be
-    # tombstoned, and the listener would otherwise filter the row out.
+    # ``targets`` is already a set of literal ids, so this statement references
+    # no mapped entity and the listener has nothing to attach to -- the
+    # include_deleted opt-out belongs on the SELECTs above, which do.
     await session.execute(
         update(experiment_trials)
         .where(
@@ -488,7 +506,6 @@ async def remove_from_collection_core(
             experiment_trials.c.trial_id.in_(sorted(targets)),
         )
         .values(deleted_at=utcnow())
-        .execution_options(include_deleted=True)
     )
 
     after_tasks = await _live_member_task_ids(session, experiment_id)

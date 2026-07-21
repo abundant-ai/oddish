@@ -533,6 +533,83 @@ async def test_remove_ignores_ids_that_are_not_members(session):
 
 
 @pytest.mark.asyncio
+async def test_remove_by_task_covers_soft_deleted_trials(session):
+    """PROVE-RED: `delete_trial_core` leaves a LIVE experiment_trials row behind,
+    so a later `remove --task` must still tombstone it and unlink the task.
+
+    `_live_member_ids` reads the Core join table (unfiltered, so it counts the
+    deleted trial's row) while the per-task trial-id select goes through
+    `TrialModel` (filtered). Without `include_deleted` the two disagree and the
+    removal silently no-ops.
+    """
+    from oddish.core.endpoints.collections import remove_from_collection_core
+    from oddish.core.endpoints.deletion import delete_trial_core
+
+    task_a, task_b = _task("rm-sd-a"), _task("rm-sd-b")
+    session.add_all([task_a, task_b])
+    await session.flush()
+    home = _experiment("rm-sd-home")
+    session.add(home)
+    await session.flush()
+    ta, tb = _trial(task_a, home), _trial(task_b, home)
+    session.add_all([ta, tb])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[ta, tb])
+
+    await delete_trial_core(session, trial_id=ta.id, org_id="org1")
+    await session.flush()
+
+    resp = await remove_from_collection_core(
+        session, experiment_id=coll_id, task_ids=[task_a.name], org_id="org1"
+    )
+    await session.flush()
+
+    assert resp.trials_removed == 1
+    assert resp.tasks_unlinked == 1
+    assert await _live_ids(session, coll_id) == {tb.id}
+    assert await _live_task_links(session, coll_id) == {task_b.id}
+
+
+@pytest.mark.asyncio
+async def test_remove_keeps_task_link_for_soft_deleted_member(session):
+    """PROVE-RED: a live membership row must always have a live task link.
+
+    Removing the last VISIBLE trial of a task leaves the soft-deleted trial's
+    membership row live -- and the cost rollup (which opts into
+    ``include_deleted``) still prices it. Tearing down the task_experiments
+    link there would orphan a row the rollup still charges for.
+    """
+    from oddish.core.endpoints.collections import remove_from_collection_core
+    from oddish.core.endpoints.deletion import delete_trial_core
+
+    task_a, task_b = _task("rm-orphan-a"), _task("rm-orphan-b")
+    session.add_all([task_a, task_b])
+    await session.flush()
+    home = _experiment("rm-orphan-home")
+    session.add(home)
+    await session.flush()
+    visible, deleted = _trial(task_a, home), _trial(task_a, home)
+    keeper = _trial(task_b, home)
+    session.add_all([visible, deleted, keeper])
+    await session.flush()
+
+    coll_id = await _make_collection(session, trials=[visible, deleted, keeper])
+
+    await delete_trial_core(session, trial_id=deleted.id, org_id="org1")
+    await session.flush()
+
+    await remove_from_collection_core(
+        session, experiment_id=coll_id, trial_ids=[visible.id], org_id="org1"
+    )
+    await session.flush()
+
+    # The deleted trial is still a member, so its task must stay linked.
+    assert await _live_ids(session, coll_id) == {deleted.id, keeper.id}
+    assert await _live_task_links(session, coll_id) == {task_a.id, task_b.id}
+
+
+@pytest.mark.asyncio
 async def test_remove_rejects_non_collection_experiment(session):
     from oddish.core.endpoints.collections import remove_from_collection_core
 
