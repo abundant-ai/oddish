@@ -33,6 +33,7 @@ from oddish.core.quotas import (
     sum_cost_usd_by_org_user_all_orgs,
 )
 from oddish.db import (
+    AnalysisCostModel,
     ExperimentModel,
     TaskModel,
     TrialModel,
@@ -1260,6 +1261,13 @@ class CostModelBreakdown(BaseModel):
     cost_estimated_usd: float
 
 
+class CostQaModelBreakdown(BaseModel):
+    """QA/analysis (trial-classifier) spend for one model."""
+
+    model: str
+    cost_usd: float
+
+
 class CostUserBreakdown(BaseModel):
     # Stable grouping key: a user id for billed/submitter rows, else a synthetic
     # ``ghid:``/``ghuser:``/``__unattributed__`` key for label-only fallback rows.
@@ -1352,6 +1360,7 @@ class CostTotals(BaseModel):
     cost_usd: float
     cost_native_usd: float
     cost_estimated_usd: float
+    qa_cost_usd: float = 0.0
     prev_cost_usd: float | None = None
     month_cost_usd: float = 0.0
     month_budget_usd: float | None = None
@@ -1366,6 +1375,7 @@ class CostBreakdownResponse(BaseModel):
     totals: CostTotals
     by_user: list[CostUserBreakdown]
     by_model: list[CostModelBreakdown]
+    qa_by_model: list[CostQaModelBreakdown] = []
     experiments: list[CostExperimentBreakdown]
     timestamp: str
 
@@ -2125,6 +2135,32 @@ async def get_cost_breakdown_core(
         for e in experiment_rows
     ]
 
+    # QA/analysis spend (trial-classifier LLM cost). Recorded as a direct native
+    # cost_usd, so a plain SUM -- no settled_cost decomposition like trials need.
+    qa_query = (
+        select(
+            AnalysisCostModel.model.label("model"),
+            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0).label("cost_usd"),
+        )
+        .where(AnalysisCostModel.deleted_at.is_(None))
+        .group_by(AnalysisCostModel.model)
+    )
+    if since is not None:
+        qa_query = qa_query.where(AnalysisCostModel.created_at >= since)
+    qa_by_model_totals: dict[str, float] = {}
+    for row in (await session.execute(qa_query)).all():
+        label = _model_label(row.model)
+        qa_by_model_totals[label] = qa_by_model_totals.get(label, 0.0) + float(
+            row.cost_usd
+        )
+    qa_by_model = [
+        CostQaModelBreakdown(model=model, cost_usd=round(cost, 4))
+        for model, cost in sorted(
+            qa_by_model_totals.items(), key=lambda kv: kv[1], reverse=True
+        )
+    ]
+    qa_cost_total = round(sum(qa_by_model_totals.values()), 4)
+
     totals = CostTotals(
         window_days=window_days,
         trial_count=total_trials,
@@ -2141,6 +2177,7 @@ async def get_cost_breakdown_core(
         cost_usd=round(total_native + total_estimated, 4),
         cost_native_usd=round(total_native, 4),
         cost_estimated_usd=round(total_estimated, 4),
+        qa_cost_usd=qa_cost_total,
         prev_cost_usd=prev_window_cost,
         month_cost_usd=month_cost,
         month_budget_usd=month_budget,
@@ -2155,6 +2192,7 @@ async def get_cost_breakdown_core(
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),
+        qa_by_model=qa_by_model,
         experiments=experiments_out,
         timestamp=now.isoformat(),
     )

@@ -12,6 +12,10 @@ def test_outbound_hosts_follow_model_not_agent_env_shape():
         "api.anthropic.com",
         "mcp-proxy.anthropic.com",
     ]
+    assert outbound_hosts_for_model("anthropic-hdo/claude-opus-4-8") == [
+        "api.anthropic.com",
+        "mcp-proxy.anthropic.com",
+    ]
 
 
 def test_outbound_hosts_prefer_routed_base_url_env():
@@ -23,8 +27,6 @@ def test_outbound_hosts_prefer_routed_base_url_env():
 
 
 def test_outbound_hosts_bedrock_model_ids():
-    hosts = outbound_hosts_for_model(
-        "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    )
+    hosts = outbound_hosts_for_model("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
     assert "bedrock-runtime.us-east-1.amazonaws.com" in hosts
     assert "sts.amazonaws.com" in hosts
