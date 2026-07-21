@@ -28,6 +28,11 @@ def test_modal_harbor_env_kwargs_passes_caller_keys_through() -> None:
         assert merged[key] == value
 
 
+def test_modal_env_kwargs_always_require_exact_gpu_type() -> None:
+    merged = ModalBackend().harbor_env_kwargs({"modal_exact_gpu_type": False})
+    assert merged["modal_exact_gpu_type"] is True
+
+
 def test_modal_env_kwargs_default_indicative_app_name(monkeypatch):
     # Sandboxes otherwise land in harbor's default app "__harbor__" — useless
     # in the Modal dashboard. Group them under <deployed-app>-trials instead.
