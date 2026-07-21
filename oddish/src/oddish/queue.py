@@ -25,6 +25,11 @@ from oddish.core.baseline_gate import (
 )
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
+from oddish.core.tasks import (
+    _apply_descriptive_metadata,
+    _apply_version_metadata,
+    record_upload_event,
+)
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -867,6 +872,19 @@ async def create_task(
             )
         ).scalar_one()
         version_id = latest_version_row.id
+
+        # Reusing the latest existing version, not cutting a new one: no
+        # version metadata write (immutable snapshot), but still record that
+        # this submission touched the task.
+        record_upload_event(
+            session,
+            task_id=task_id,
+            task_version_id=version_id,
+            created_version=False,
+            content_hash=submission.content_hash,
+            provenance=submission.provenance,
+            uploader_user_id=billed_user_id,
+        )
     else:
         version_number = 1
         version_id = f"{task_id}-v{version_number}"
@@ -880,6 +898,19 @@ async def create_task(
         )
         session.add(version_row)
         await session.flush()
+
+        if submission.task_metadata is not None:
+            _apply_descriptive_metadata(task, submission.task_metadata)
+            _apply_version_metadata(version_row, submission.task_metadata)
+        record_upload_event(
+            session,
+            task_id=task_id,
+            task_version_id=version_id,
+            created_version=True,
+            content_hash=submission.content_hash,
+            provenance=submission.provenance,
+            uploader_user_id=billed_user_id,
+        )
 
         if settings.tasks_expand_archive and task_s3_key:
             # Brand-new task created via /tasks/sweep: enqueue the

@@ -10,8 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.config import settings
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
+from oddish.db.models import MetadataSource, TaskUploadEventModel, utcnow
 from oddish.db.storage import StorageClient, get_storage_client
-from oddish.schemas import TaskUploadInitResponse, UploadResponse
+from oddish.schemas import (
+    TaskMetadata,
+    TaskProvenance,
+    TaskUploadInitResponse,
+    UploadResponse,
+)
 
 
 async def _next_version_number(session: AsyncSession, task_id: str) -> int:
@@ -73,6 +79,80 @@ async def _enqueue_tag_project_for_new_version(
     )
 
 
+def _apply_descriptive_metadata(task: TaskModel, metadata: TaskMetadata) -> None:
+    """Write current descriptive values onto the task (last-write-wins).
+
+    task.toml is authoritative for these fields; human curation lives in
+    DIRECT tag assignments, which this never touches.
+    """
+    task.description = metadata.description
+    task.category = metadata.category
+    task.category_raw = metadata.category_raw
+    task.author_name = metadata.author_name
+    task.author_email = metadata.author_email
+    task.author_organization = metadata.author_organization
+    task.expert_time_hours = metadata.expert_time_hours
+    task.metadata_source = MetadataSource.CLIENT
+    task.metadata_updated_at = utcnow()
+
+
+def _apply_version_metadata(version: TaskVersionModel, metadata: TaskMetadata) -> None:
+    """Write hash-backed runtime fields plus the immutable descriptive snapshot."""
+    version.allow_internet = metadata.allow_internet
+    version.cpus = metadata.cpus
+    version.memory_mb = metadata.memory_mb
+    version.storage_mb = metadata.storage_mb
+    version.gpus = metadata.gpus
+    version.gpu_types = metadata.gpu_types or None
+    version.agent_timeout_sec = metadata.agent_timeout_sec
+    version.verifier_timeout_sec = metadata.verifier_timeout_sec
+    version.build_timeout_sec = metadata.build_timeout_sec
+
+    version.description_snapshot = metadata.description
+    version.category_snapshot = metadata.category
+    version.topic_tags_snapshot = metadata.topic_tags or None
+    version.expert_time_hours_snapshot = metadata.expert_time_hours
+
+
+def record_upload_event(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    created_version: bool,
+    content_hash: str | None,
+    provenance: TaskProvenance | None,
+    uploader_user_id: str | None = None,
+) -> None:
+    """Append one row per upload attempt, including content-unchanged no-ops.
+
+    ``created_version`` is required rather than derived from ``task_version_id``:
+    the FK is ON DELETE SET NULL, so a deleted version would otherwise make a real
+    upload indistinguishable from a no-op.
+    """
+    prov = provenance or TaskProvenance()
+    session.add(
+        TaskUploadEventModel(
+            task_id=task_id,
+            task_version_id=task_version_id,
+            created_version=created_version,
+            content_hash=content_hash,
+            source_repo=prov.source_repo,
+            source_commit=prov.source_commit,
+            source_ref=prov.source_ref,
+            source_path=prov.source_path,
+            ci_provider=prov.ci_provider,
+            ci_run_id=prov.ci_run_id,
+            ci_run_url=prov.ci_run_url,
+            ci_pr_number=prov.ci_pr_number,
+            uploader_is_ci=prov.uploader_is_ci,
+            uploader_user_id=uploader_user_id,
+            uploader_cli_version=prov.uploader_cli_version,
+            uploader_host=prov.uploader_host,
+        )
+    )
+
+
 def _task_s3_prefix_for_version(task_id: str, version: int) -> str:
     return f"tasks/{task_id}/v{version}/"
 
@@ -91,6 +171,9 @@ async def initialize_task_upload(
     content_hash: str,
     message: str | None = None,
     force_new_version: bool = False,
+    task_metadata: TaskMetadata | None = None,
+    provenance: TaskProvenance | None = None,
+    uploader_user_id: str | None = None,
 ) -> TaskUploadInitResponse:
     """Prepare a task upload and return direct-upload details when supported."""
     normalized_name = _normalize_task_name(task_name)
@@ -109,6 +192,18 @@ async def initialize_task_upload(
             and latest.content_hash
             and latest.content_hash == content_hash
         ):
+            if task_metadata is not None:
+                _apply_descriptive_metadata(existing_task, task_metadata)
+            record_upload_event(
+                session,
+                task_id=existing_task.id,
+                task_version_id=None,
+                created_version=False,
+                content_hash=content_hash,
+                provenance=provenance,
+                uploader_user_id=uploader_user_id,
+            )
+            await session.commit()
             return TaskUploadInitResponse(
                 task_id=existing_task.id,
                 name=normalized_name,
@@ -172,6 +267,8 @@ async def complete_task_upload(
     register: bool = False,
     user: str | None = None,
     priority: Priority | None = None,
+    task_metadata: TaskMetadata | None = None,
+    provenance: TaskProvenance | None = None,
 ) -> UploadResponse:
     """Finalize a direct-to-S3 upload after the client has uploaded bytes.
 
@@ -244,6 +341,19 @@ async def complete_task_upload(
             await session.flush()
 
             new_task.current_version_id = version_id
+
+            if task_metadata is not None:
+                _apply_descriptive_metadata(new_task, task_metadata)
+                _apply_version_metadata(version_row, task_metadata)
+            record_upload_event(
+                session,
+                task_id=task_id,
+                task_version_id=version_id,
+                created_version=True,
+                content_hash=content_hash,
+                provenance=provenance,
+                uploader_user_id=created_by_user_id,
+            )
 
             if settings.tasks_expand_archive:
                 # Brand-new tasks need the same expansion kick-off as
@@ -327,6 +437,20 @@ async def complete_task_upload(
                 version_id=version_id,
                 org_id=existing_task.org_id,
             )
+
+        if task_metadata is not None:
+            _apply_descriptive_metadata(existing_task, task_metadata)
+            if new_version_created:
+                _apply_version_metadata(version_row, task_metadata)
+        record_upload_event(
+            session,
+            task_id=task_id,
+            task_version_id=version_id,
+            created_version=new_version_created,
+            content_hash=content_hash,
+            provenance=provenance,
+            uploader_user_id=created_by_user_id,
+        )
 
         await session.commit()
 
