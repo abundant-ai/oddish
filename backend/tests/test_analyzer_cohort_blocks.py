@@ -107,7 +107,7 @@ async def test_run_cohort_via_blocks(monkeypatch):
         }
     }
 
-    findings, sections = await run_cohort(
+    findings, sections, _by_model = await run_cohort(
         client,
         runtime,
         bucket="bad",
