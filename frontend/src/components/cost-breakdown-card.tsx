@@ -528,9 +528,18 @@ function MethodologyNote() {
 // Top-level card
 // =============================================================================
 
-type ChartDimension = "agent" | "model" | "user";
+type ChartDimension = "agent" | "model" | "user" | "type";
 
-const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user"];
+const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user", "type"];
+
+// "type" stacks model inference vs QA — labels the toggle without the generic
+// word "type", which reads as meaningless next to agent/model/user.
+const DIMENSION_LABELS: Record<ChartDimension, string> = {
+  agent: "Agent",
+  model: "Model",
+  user: "User",
+  type: "Model vs QA",
+};
 
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("1");
@@ -549,7 +558,9 @@ export function CostBreakdownCard() {
       ? data.series_by_agent
       : dimension === "model"
         ? data.series_by_model
-        : data.series_by_user
+        : dimension === "user"
+          ? data.series_by_user
+          : (data.series_by_type ?? data.series_by_agent)
     : null;
 
   return (
@@ -624,10 +635,10 @@ export function CostBreakdownCard() {
                       key={dim}
                       variant={dimension === dim ? "secondary" : "ghost"}
                       size="sm"
-                      className="h-7 px-2 text-xs capitalize"
+                      className="h-7 px-2 text-xs"
                       onClick={() => setDimension(dim)}
                     >
-                      {dim}
+                      {DIMENSION_LABELS[dim]}
                     </Button>
                   ))}
                 </div>
@@ -646,17 +657,6 @@ export function CostBreakdownCard() {
               <h3 className="text-sm font-medium">Cost by model</h3>
               <ModelTable models={data.by_model} windowDays={windowDays} />
             </section>
-
-            {data.series_qa_by_model &&
-              data.series_qa_by_model.buckets.length > 0 && (
-                <section className="space-y-2">
-                  <h3 className="text-sm font-medium">QA cost over time</h3>
-                  <CostChart
-                    series={data.series_qa_by_model}
-                    bucket={data.bucket}
-                  />
-                </section>
-              )}
 
             {data.qa_by_model && data.qa_by_model.length > 0 && (
               <section className="space-y-2">
@@ -705,15 +705,27 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
   const qaCost = totals.qa_cost_usd ?? 0;
   const grandTotal = totals.cost_usd + qaCost;
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
           {formatCostUsd(grandTotal)}
         </div>
         <div className="text-muted-foreground text-[10px]">Total cost</div>
-        <div className="text-muted-foreground mt-0.5 text-[10px] tabular-nums">
-          Model inference {formatCostUsd(totals.cost_usd)} · QA{" "}
-          {formatCostUsd(qaCost)}
+      </div>
+      <div className="bg-background/70 flex flex-col justify-center gap-1 rounded-md border border-[#6f88b4]/18 p-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-muted-foreground text-[10px]">
+            Model inference
+          </span>
+          <span className="text-sm font-bold tabular-nums">
+            {formatCostUsd(totals.cost_usd)}
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-muted-foreground text-[10px]">QA</span>
+          <span className="text-sm font-bold tabular-nums">
+            {formatCostUsd(qaCost)}
+          </span>
         </div>
       </div>
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">

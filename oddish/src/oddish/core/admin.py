@@ -1372,6 +1372,7 @@ class CostBreakdownResponse(BaseModel):
     series_by_agent: CostSeries
     series_by_model: CostSeries
     series_by_user: CostSeries
+    series_by_type: CostSeries
     series_qa_by_model: CostSeries
     totals: CostTotals
     by_user: list[CostUserBreakdown]
@@ -1674,6 +1675,52 @@ async def _qa_cost_time_series(
     )
 
 
+# Stack keys for the inference-vs-QA "type" series.
+_TYPE_INFERENCE_KEY = "inference"
+_TYPE_QA_KEY = "qa"
+
+
+def _build_type_series(trial_series: CostSeries, qa_series: CostSeries) -> CostSeries:
+    """Cost over time split into two stacks: model inference vs QA.
+
+    Reuses the already-computed trial and QA series -- each of their buckets
+    carries a ``cost_usd`` grand total, so we only fold those two per bucket
+    rather than issuing another query. Bucket starts are the union of both axes
+    (trial spend on ``finished_at``, QA on ``created_at``), so a bucket with QA
+    but no trials -- or vice versa -- still appears.
+    """
+    inference_by_bucket = {b.bucket_start: b.cost_usd for b in trial_series.buckets}
+    trials_by_bucket = {b.bucket_start: b.trial_count for b in trial_series.buckets}
+    qa_by_bucket = {b.bucket_start: b.cost_usd for b in qa_series.buckets}
+    bucket_starts = sorted(set(inference_by_bucket) | set(qa_by_bucket))
+
+    buckets: list[CostSeriesBucket] = []
+    for bstart in bucket_starts:
+        inference = inference_by_bucket.get(bstart, 0.0)
+        qa = qa_by_bucket.get(bstart, 0.0)
+        costs: dict[str, float] = {}
+        if inference > 0:
+            costs[_TYPE_INFERENCE_KEY] = round(inference, 4)
+        if qa > 0:
+            costs[_TYPE_QA_KEY] = round(qa, 4)
+        buckets.append(
+            CostSeriesBucket(
+                bucket_start=bstart,
+                cost_usd=round(inference + qa, 4),
+                trial_count=trials_by_bucket.get(bstart, 0),
+                costs=costs,
+            )
+        )
+    return CostSeries(
+        dimension="type",
+        keys=[
+            CostSeriesKey(key=_TYPE_INFERENCE_KEY, label="Model inference"),
+            CostSeriesKey(key=_TYPE_QA_KEY, label="QA"),
+        ],
+        buckets=buckets,
+    )
+
+
 def _clean_author(value: str | None) -> str | None:
     """Ignore blank and placeholder 'unknown' author strings."""
     cleaned = (value or "").strip()
@@ -1845,6 +1892,9 @@ async def get_cost_breakdown_core(
     series_qa_by_model = await _qa_cost_time_series(
         session, since=since, bucket=bucket
     )
+    # Two-stack inference-vs-QA view over the same buckets; folds the grand
+    # totals the two series above already carry, so it needs no extra query.
+    series_by_type = _build_type_series(series_by_agent, series_qa_by_model)
 
     # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
     # JSON-key bind params match (two inline copies bind as distinct params and
@@ -2240,6 +2290,7 @@ async def get_cost_breakdown_core(
         series_by_agent=series_by_agent,
         series_by_model=series_by_model,
         series_by_user=series_by_user,
+        series_by_type=series_by_type,
         series_qa_by_model=series_qa_by_model,
         totals=totals,
         by_user=by_user_out,
