@@ -27,6 +27,8 @@ VALID = {
     "experiment_failed_enabled": True,
     "trial_failed_enabled": False,
     "qa_failed_enabled": True,
+    "experiment_finished_enabled": True,
+    "trial_finished_enabled": False,
     "experiment_milestone_usd": 2500,
     "trial_ping_usd": 50,
 }
@@ -109,6 +111,8 @@ async def test_put_writes_and_echoes(monkeypatch):
         experiment_failed_enabled=True,
         trial_failed_enabled=False,
         qa_failed_enabled=True,
+        experiment_finished_enabled=True,
+        trial_finished_enabled=False,
         experiment_milestone_usd=2500,
         trial_ping_usd=50,
     )
@@ -118,6 +122,7 @@ async def test_put_writes_and_echoes(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["expensive_trial_enabled"] is False
+    assert body["trial_finished_enabled"] is False
     assert body["trial_ping_usd"] == 50
     assert any("INSERT INTO user_alert_preferences" in s for s in session.statements)
     assert any("ON CONFLICT" in s for s in session.statements)
@@ -147,6 +152,8 @@ async def test_null_cutoffs_are_accepted_as_inherit(monkeypatch):
         experiment_failed_enabled=True,
         trial_failed_enabled=True,
         qa_failed_enabled=True,
+        experiment_finished_enabled=True,
+        trial_finished_enabled=True,
         experiment_milestone_usd=None,
         trial_ping_usd=None,
     )
