@@ -944,14 +944,19 @@ def _experiment_tag_assignment_exists(
 
 def _experiment_tag_predicates(resolved: ResolvedTagFilter) -> list:
     """WHERE clauses for the experiments page query: ``all`` AND-chains one
-    EXISTS per id, ``any`` is one EXISTS over the set, ``none`` one NOT
-    EXISTS. Resolution (merge-following, DELETED-dropping) happened in
-    ``resolve_names_to_ids``; the EXISTS re-checks liveness so a tag deleted
-    between resolution and execution can't match."""
+    EXISTS per token *group* (mirrors ``build_filter_predicates`` in
+    ``filter_ast.py`` — a bare-key token's ids share a group so the EXISTS
+    ORs within it, while distinct tokens still AND against each other),
+    ``any`` is one EXISTS over the set, ``none`` one NOT EXISTS. Resolution
+    (merge-following, DELETED-dropping) happened in ``resolve_names_to_ids``;
+    the EXISTS re-checks liveness so a tag deleted between resolution and
+    execution can't match."""
     clauses = []
-    for n, tid in enumerate(resolved.all_ids):
+    for n, group in enumerate(resolved.all_groups):
+        if not group:
+            continue
         clauses.append(
-            _experiment_tag_assignment_exists([tid], param_key=f"exp_tags_all_{n}")
+            _experiment_tag_assignment_exists(group, param_key=f"exp_tags_all_{n}")
         )
     if resolved.any_ids:
         clauses.append(

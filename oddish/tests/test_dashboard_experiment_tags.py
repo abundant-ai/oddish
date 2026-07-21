@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import uuid
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -13,9 +16,16 @@ def test_experiment_tag_predicates_buckets():
     from oddish.core.dashboard import _experiment_tag_predicates
     from oddish.core.tags.filter_ast import ResolvedTagFilter
 
-    resolved = ResolvedTagFilter(all_ids=["a", "b"], any_ids=["c"], none_ids=["d"])
+    # Two single-id groups (the value-less-tag / single-token shape) plus
+    # any/none -- mirrors the pre-``all_groups`` flat-id behavior.
+    resolved = ResolvedTagFilter(
+        all_ids=["a", "b"],
+        any_ids=["c"],
+        none_ids=["d"],
+        all_groups=[["a"], ["b"]],
+    )
     clauses = _experiment_tag_predicates(resolved)
-    # AND bucket: one EXISTS per id; ANY: one over the set; NONE: one NOT EXISTS.
+    # AND bucket: one EXISTS per group; ANY: one over the set; NONE: one NOT EXISTS.
     assert len(clauses) == 4
     sql = " ".join(str(c) for c in clauses)
     assert sql.count("EXISTS") == 4
@@ -27,6 +37,26 @@ def test_experiment_tag_predicates_buckets():
 
     names = re.findall(r":(\w+)", sql)
     assert len(names) == len(set(names))
+
+
+def test_experiment_tag_predicates_ors_within_a_bare_key_group():
+    """A bare key's fanned-out ids land in ONE ``all_groups`` entry -- the
+    EXISTS must match ANY of them (OR within the key), not require all of
+    them (which would always be empty, the bug this branch is fixing)."""
+    from oddish.core.dashboard import _experiment_tag_predicates
+    from oddish.core.tags.filter_ast import ResolvedTagFilter
+
+    resolved = ResolvedTagFilter(
+        all_ids=["re", "opt"],
+        any_ids=[],
+        none_ids=[],
+        all_groups=[["re", "opt"]],
+    )
+    clauses = _experiment_tag_predicates(resolved)
+    assert len(clauses) == 1
+    sql = str(clauses[0])
+    assert "NOT EXISTS" not in sql
+    assert "= ANY(" in sql
 
 
 def test_experiment_tag_predicates_empty_filter():
@@ -148,3 +178,194 @@ def test_unknown_positive_token_returns_empty_page():
     ast3 = TagFilterAST(all=["real"], any_=["ghost"], none=[])
     assert _has_unknown_positive_tokens(ast3, unknown={"ghost"}) is True
     assert _has_unknown_positive_tokens(ast3, unknown=set()) is False
+
+
+# ---------------------------------------------------------------------------
+# DB-backed: bare-key OR-within-group semantics on the experiments page.
+# Mirrors the tasks-page fix (test_browse_tag_filters.py) -- same bug class,
+# different consumer of ``ResolvedTagFilter`` (_experiment_tag_predicates
+# AND-chains raw ids instead of using ``all_groups``).
+# ---------------------------------------------------------------------------
+
+
+def _org() -> str:
+    return f"exptagreg-{uuid.uuid4().hex[:8]}"
+
+
+async def _make_experiment(session, *, org_id: str, name: str):
+    from oddish.db.models import ExperimentModel
+
+    experiment = ExperimentModel(name=name, org_id=org_id)
+    session.add(experiment)
+    await session.flush()
+    return experiment
+
+
+async def _tag_experiment(session, *, tag_id: str, experiment_id: str, org_id: str):
+    from oddish.core.tags.service import assign_tag_core
+
+    await assign_tag_core(
+        session,
+        tag_id=tag_id,
+        scope="EXPERIMENT",
+        target_id=experiment_id,
+        task_id=None,
+        org_id=org_id,
+        actor_user_id=None,
+        sync_projection=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_experiments_bare_key_matches_any_experiment_under_key(
+    session,
+):
+    """THE MOTIVATING BUG: ``experiments_tags="category"`` (a bare key) must
+    return every experiment tagged under ANY value of that key, not zero --
+    the old AND-of-all-ids reading required an experiment to hold every
+    category value simultaneously, which silently emptied the page."""
+    from oddish.core.dashboard import load_dashboard_experiments
+    from oddish.core.tags.service import create_tag_core
+
+    org_id = _org()
+    re_id = await create_tag_core(
+        session,
+        key="category",
+        value="reverse-engineering",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    opt_id = await create_tag_core(
+        session,
+        key="category",
+        value="optimization",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    await session.flush()
+
+    re_exp = await _make_experiment(session, org_id=org_id, name=f"re-{org_id}")
+    opt_exp = await _make_experiment(session, org_id=org_id, name=f"opt-{org_id}")
+    await _tag_experiment(
+        session, tag_id=re_id, experiment_id=re_exp.id, org_id=org_id
+    )
+    await _tag_experiment(
+        session, tag_id=opt_id, experiment_id=opt_exp.id, org_id=org_id
+    )
+    await session.flush()
+
+    rows, _ = await load_dashboard_experiments(
+        session,
+        org_id=org_id,
+        experiments_limit=50,
+        experiments_offset=0,
+        experiments_query=None,
+        experiments_status="",
+        experiments_tags="category",
+    )
+    ids = {row["id"] for row in rows}
+    assert ids == {re_exp.id, opt_exp.id}
+
+
+@pytest.mark.asyncio
+async def test_dashboard_experiments_all_across_different_keys_still_ands(session):
+    """OR-within-a-key must not weaken cross-key AND: an experiment must have
+    SOME category AND SOME topic to match ``experiments_tags="category,topic"``,
+    even though either key alone is now an OR across its fanned-out values."""
+    from oddish.core.dashboard import load_dashboard_experiments
+    from oddish.core.tags.service import create_tag_core
+
+    org_id = _org()
+    category_id = await create_tag_core(
+        session,
+        key="category",
+        value="reverse-engineering",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    topic_id = await create_tag_core(
+        session,
+        key="topic",
+        value="compilers",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    await session.flush()
+
+    both = await _make_experiment(session, org_id=org_id, name=f"both-{org_id}")
+    category_only = await _make_experiment(
+        session, org_id=org_id, name=f"cat-only-{org_id}"
+    )
+    topic_only = await _make_experiment(
+        session, org_id=org_id, name=f"topic-only-{org_id}"
+    )
+    await _tag_experiment(session, tag_id=category_id, experiment_id=both.id, org_id=org_id)
+    await _tag_experiment(session, tag_id=topic_id, experiment_id=both.id, org_id=org_id)
+    await _tag_experiment(
+        session, tag_id=category_id, experiment_id=category_only.id, org_id=org_id
+    )
+    await _tag_experiment(
+        session, tag_id=topic_id, experiment_id=topic_only.id, org_id=org_id
+    )
+    await session.flush()
+
+    rows, _ = await load_dashboard_experiments(
+        session,
+        org_id=org_id,
+        experiments_limit=50,
+        experiments_offset=0,
+        experiments_query=None,
+        experiments_status="",
+        experiments_tags="category,topic",
+    )
+    ids = {row["id"] for row in rows}
+    assert ids == {both.id}
+
+
+@pytest.mark.asyncio
+async def test_dashboard_experiments_value_less_tag_regression(session):
+    """Regression guard: a bare-key token for a plain (value-less) tag --
+    the pre-derived-tags shape, where a key always resolved to exactly one
+    id -- must keep matching exactly that tag, unchanged."""
+    from oddish.core.dashboard import load_dashboard_experiments
+    from oddish.core.tags.service import create_tag_core
+
+    org_id = _org()
+    flaky_id = await create_tag_core(
+        session,
+        key="Flaky Trial",
+        value=None,
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    await session.flush()
+
+    flaky_exp = await _make_experiment(session, org_id=org_id, name=f"flaky-{org_id}")
+    other_exp = await _make_experiment(session, org_id=org_id, name=f"other-{org_id}")
+    await _tag_experiment(
+        session, tag_id=flaky_id, experiment_id=flaky_exp.id, org_id=org_id
+    )
+    await session.flush()
+
+    rows, _ = await load_dashboard_experiments(
+        session,
+        org_id=org_id,
+        experiments_limit=50,
+        experiments_offset=0,
+        experiments_query=None,
+        experiments_status="",
+        experiments_tags="Flaky Trial",
+    )
+    ids = {row["id"] for row in rows}
+    assert ids == {flaky_exp.id}
+    assert other_exp.id not in ids
