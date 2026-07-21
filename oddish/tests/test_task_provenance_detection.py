@@ -193,3 +193,27 @@ def test_detect_provenance_does_not_raise_on_decode_error(monkeypatch, tmp_path:
     ctx = detect_provenance(tmp_path, env={})
     assert ctx.source_repo is None
     assert ctx.source_commit is None
+
+
+# --- Finding 4: an over-length detected value degrades instead of raising --
+
+
+def test_detect_provenance_drops_overlong_field_instead_of_raising(
+    monkeypatch, tmp_path: Path
+):
+    real_git = task_provenance._git
+
+    def _fake_git(task_path, *args):
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            # Exceeds TaskProvenance.source_ref's max_length=255.
+            return "x" * 300
+        return real_git(task_path, *args)
+
+    monkeypatch.setattr(task_provenance, "_git", _fake_git)
+    monkeypatch.setattr(task_provenance.socket, "gethostname", lambda: "laptop-1")
+
+    ctx = detect_provenance(tmp_path, env={})
+
+    assert ctx.source_ref is None
+    # Only the offending field is dropped -- the rest of provenance survives.
+    assert ctx.uploader_host == "laptop-1"

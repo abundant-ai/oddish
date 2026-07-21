@@ -13,6 +13,8 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from oddish.schemas import TaskProvenance
 
 _PR_REF_PATTERN = re.compile(r"^refs/pull/(\d+)/")
@@ -110,7 +112,7 @@ def detect_provenance(
     except OSError:
         host = None
 
-    return TaskProvenance(
+    fields = dict(
         source_repo=ci.source_repo
         or _normalize_remote(_git(task_path, "remote", "get-url", "origin")),
         source_commit=_git(task_path, "rev-parse", "HEAD"),
@@ -124,3 +126,16 @@ def detect_provenance(
         uploader_cli_version=cli_version,
         uploader_host=None if ci.uploader_is_ci else host,
     )
+    try:
+        return TaskProvenance(**fields)
+    except ValidationError as exc:
+        # A detected value (e.g. an overlong branch name or hostname) violated
+        # a schema bound. Drop just the offending fields and keep the rest --
+        # upload must never fail because provenance could not be determined.
+        for error in exc.errors():
+            if error["loc"]:
+                fields.pop(error["loc"][0], None)
+        try:
+            return TaskProvenance(**fields)
+        except ValidationError:
+            return TaskProvenance()
