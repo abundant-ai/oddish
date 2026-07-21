@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.naming import TagNameError
@@ -41,7 +42,16 @@ logger = logging.getLogger(__name__)
 # letting a malformed vocabulary value (bad charset, profanity) 500 the
 # whole request. rebuild_derived_tags itself also catches these per-pair
 # (see below) so one bad pair can't abort retraction of the rest.
-DERIVED_TAG_ERRORS = (TagNameError, TagPolicyError, TagProfanityError)
+#
+# DBAPIError is included because the tag machinery hits the database
+# directly (native enum reads/writes) and can fail for reasons that have
+# nothing to do with the caller's data -- e.g. a deploy where code referencing
+# a new enum value ('DERIVED') goes live before the migration that adds it.
+# Every call site MUST wrap the rebuild in ``session.begin_nested()``: a
+# DBAPIError poisons the session's current transaction, so catching the
+# exception alone leaves the enclosing transaction unusable. The SAVEPOINT
+# rollback undoes only the rebuild, not the caller's other writes.
+DERIVED_TAG_ERRORS = (TagNameError, TagPolicyError, TagProfanityError, DBAPIError)
 
 _DEFAULT_TAG_NAME_MAX_LEN = 64
 

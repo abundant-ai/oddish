@@ -882,12 +882,16 @@ async def create_task(
         if submission.task_metadata is not None:
             _apply_descriptive_metadata(task, submission.task_metadata)
             try:
-                await rebuild_derived_tags(
-                    session,
-                    task_id=task_id,
-                    org_id=org_id,
-                    metadata=submission.task_metadata,
-                )
+                # Savepoint: a DBAPIError poisons the session, so the
+                # rollback must undo only the rebuild, not this sweep's
+                # transaction (which also inserts the sweep's trials).
+                async with session.begin_nested():
+                    await rebuild_derived_tags(
+                        session,
+                        task_id=task_id,
+                        org_id=org_id,
+                        metadata=submission.task_metadata,
+                    )
             except DERIVED_TAG_ERRORS as exc:
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc
@@ -925,12 +929,13 @@ async def create_task(
             _apply_descriptive_metadata(task, submission.task_metadata)
             _apply_version_metadata(version_row, submission.task_metadata)
             try:
-                await rebuild_derived_tags(
-                    session,
-                    task_id=task_id,
-                    org_id=org_id,
-                    metadata=submission.task_metadata,
-                )
+                async with session.begin_nested():
+                    await rebuild_derived_tags(
+                        session,
+                        task_id=task_id,
+                        org_id=org_id,
+                        metadata=submission.task_metadata,
+                    )
             except DERIVED_TAG_ERRORS as exc:
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc

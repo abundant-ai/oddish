@@ -246,12 +246,16 @@ async def initialize_task_upload(
             if task_metadata is not None:
                 _apply_descriptive_metadata(existing_task, task_metadata)
                 try:
-                    await rebuild_derived_tags(
-                        session,
-                        task_id=existing_task.id,
-                        org_id=existing_task.org_id,
-                        metadata=task_metadata,
-                    )
+                    # Savepoint: a DBAPIError poisons the session, so the
+                    # rollback must undo only the rebuild, not this whole
+                    # upload transaction.
+                    async with session.begin_nested():
+                        await rebuild_derived_tags(
+                            session,
+                            task_id=existing_task.id,
+                            org_id=existing_task.org_id,
+                            metadata=task_metadata,
+                        )
                 except DERIVED_TAG_ERRORS as exc:
                     logger.warning(
                         "rebuild_derived_tags failed for task %s: %s",
@@ -410,12 +414,13 @@ async def complete_task_upload(
                 _apply_descriptive_metadata(new_task, task_metadata)
                 _apply_version_metadata(version_row, task_metadata)
                 try:
-                    await rebuild_derived_tags(
-                        session,
-                        task_id=task_id,
-                        org_id=new_task.org_id,
-                        metadata=task_metadata,
-                    )
+                    async with session.begin_nested():
+                        await rebuild_derived_tags(
+                            session,
+                            task_id=task_id,
+                            org_id=new_task.org_id,
+                            metadata=task_metadata,
+                        )
                 except DERIVED_TAG_ERRORS as exc:
                     logger.warning(
                         "rebuild_derived_tags failed for task %s: %s", task_id, exc
@@ -518,12 +523,13 @@ async def complete_task_upload(
             if new_version_created:
                 _apply_version_metadata(version_row, task_metadata)
             try:
-                await rebuild_derived_tags(
-                    session,
-                    task_id=task_id,
-                    org_id=existing_task.org_id,
-                    metadata=task_metadata,
-                )
+                async with session.begin_nested():
+                    await rebuild_derived_tags(
+                        session,
+                        task_id=task_id,
+                        org_id=existing_task.org_id,
+                        metadata=task_metadata,
+                    )
             except DERIVED_TAG_ERRORS as exc:
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc

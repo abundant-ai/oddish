@@ -67,6 +67,7 @@ _TEST_TASK_NAMES = (
     "registry-retry-distinct-provenance",
     "registry-complete-retry-newtask",
     "registry-complete-retry-newversion",
+    "registry-dbapierror",
 )
 
 
@@ -582,3 +583,95 @@ async def test_retried_complete_new_version_collapses_to_one_event(session):
         )
     ).scalars().all()
     assert len(events) == 3
+
+
+@pytest.mark.asyncio
+async def test_content_unchanged_survives_derived_tag_db_error(session, monkeypatch):
+    """C-1 merge blocker: a DBAPIError inside rebuild_derived_tags (e.g. the
+    native ``tag_assignment_source`` enum missing 'DERIVED' because the
+    migration hasn't landed yet) must not fail the upload or poison the
+    transaction. The task's descriptive columns and the upload event row
+    must still be written -- only the derived tags are left stale.
+    """
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from oddish.core.tags import derived as derived_module
+    from oddish.db.models import TagAssignmentModel, TagAssignmentSource, TagAssignmentState
+    from oddish.db.models import TagModel
+
+    init = await initialize_task_upload(
+        "registry-dbapierror",
+        content_hash="hash-same",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    first = await complete_task_upload(
+        task_id=init.task_id,
+        task_name="registry-dbapierror",
+        version=init.version,
+        content_hash="hash-same",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    real_execute = AsyncSession.execute
+
+    async def _boom_on_derived_read(self, statement, *args, **kwargs):
+        if statement is derived_module._EXISTING_NON_DERIVED:
+            raise DBAPIError(
+                "SELECT tag_id FROM tag_assignments ...",
+                {},
+                Exception(
+                    'invalid input value for enum tag_assignment_source: "DERIVED"'
+                ),
+            )
+        return await real_execute(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "execute", _boom_on_derived_read)
+
+    changed = _metadata()
+    changed.description = "Updated despite tag DB failure."
+    changed.category = "systems"
+    second = await initialize_task_upload(
+        "registry-dbapierror",
+        content_hash="hash-same",
+        task_metadata=changed,
+        provenance=TaskProvenance(source_repo="someone/laptop-copy"),
+    )
+
+    assert second.content_unchanged is True
+    assert second.task_id == first.task_id
+
+    task = (
+        await session.execute(select(TaskModel).where(TaskModel.id == first.task_id))
+    ).scalar_one()
+    assert task.description == "Updated despite tag DB failure."
+    assert task.category == "systems"
+
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    assert len(events) == 2
+    assert events[1].source_repo == "someone/laptop-copy"
+
+    active = (
+        await session.execute(
+            select(TagModel.normalized_value)
+            .join(TagAssignmentModel, TagAssignmentModel.tag_id == TagModel.id)
+            .where(
+                TagAssignmentModel.task_id == first.task_id,
+                TagAssignmentModel.source == TagAssignmentSource.DERIVED,
+                TagAssignmentModel.state == TagAssignmentState.ACTIVE,
+                TagModel.normalized_key == "category",
+            )
+        )
+    ).scalars().all()
+    # The rebuild never ran -- the OLD category tag (ml-training) is still
+    # the only active DERIVED category tag; "systems" was never assigned.
+    assert active == ["ml-training"]
