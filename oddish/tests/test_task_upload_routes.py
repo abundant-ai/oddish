@@ -71,6 +71,8 @@ _TEST_TASK_NAMES = (
     "route-newtask",
     "route-newversion",
     "route-badvocab",
+    "route-oversized-description",
+    "route-out-of-range-cpus",
 )
 
 
@@ -389,3 +391,52 @@ async def test_malformed_vocabulary_does_not_500_upload(client, session):
     ).scalar_one()
     # Descriptive metadata still persists even though tag derivation failed.
     assert task.description == "Port CBACT01C."
+
+
+@pytest.mark.asyncio
+async def test_wire_level_oversized_description_rejected_by_route(client, session):
+    """Spec Testing #2, Pydantic-bound case: a request whose task_metadata
+    violates a Pydantic field bound (description over 8192 chars) must be
+    rejected AT THE WIRE with 422, not silently stored with the bad field
+    dropped. C3 above covers the policy-level case (passes Pydantic, fails
+    tag policy); this is the wire-level twin that was never written."""
+    response = client.post(
+        "/tasks/upload/init",
+        json={
+            "name": "route-oversized-description",
+            "content_hash": "hash-v1",
+            "task_metadata": _metadata_payload(description="x" * 8193),
+            "provenance": _provenance_payload(),
+        },
+    )
+    assert response.status_code == 422
+
+    task = (
+        await session.execute(
+            select(TaskModel).where(TaskModel.name == "route-oversized-description")
+        )
+    ).scalar_one_or_none()
+    assert task is None
+
+
+@pytest.mark.asyncio
+async def test_wire_level_out_of_range_number_rejected_by_route(client, session):
+    """Spec Testing #2, Pydantic-bound case: an out-of-range numeric field
+    (cpus over the 1024 ceiling) must also be rejected at the wire."""
+    response = client.post(
+        "/tasks/upload/init",
+        json={
+            "name": "route-out-of-range-cpus",
+            "content_hash": "hash-v1",
+            "task_metadata": _metadata_payload(cpus=2000),
+            "provenance": _provenance_payload(),
+        },
+    )
+    assert response.status_code == 422
+
+    task = (
+        await session.execute(
+            select(TaskModel).where(TaskModel.name == "route-out-of-range-cpus")
+        )
+    ).scalar_one_or_none()
+    assert task is None

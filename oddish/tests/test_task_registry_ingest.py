@@ -65,6 +65,8 @@ _TEST_TASK_NAMES = (
     "registry-reupload",
     "registry-retry-dedupe",
     "registry-retry-distinct-provenance",
+    "registry-complete-retry-newtask",
+    "registry-complete-retry-newversion",
 )
 
 
@@ -426,3 +428,157 @@ async def test_content_unchanged_different_source_commit_is_not_deduped(session)
     ).scalars().all()
     assert len(events) == 3
     assert [e.source_commit for e in events] == [_provenance().source_commit, "b" * 40, "c" * 40]
+
+
+@pytest.mark.asyncio
+async def test_retried_complete_new_task_collapses_to_one_event(session):
+    """I-2 (b): a retried /tasks/upload/complete for a brand-new task must
+    not duplicate the audit event.
+
+    On retry, ``existing_task`` is no longer None (the first call already
+    committed it), so the function falls into the "existing task" branch
+    with ``new_version_created=False`` -- a *different* created_version value
+    than the original call recorded, which is exactly why record_upload_event
+    must not key its dedupe on created_version."""
+    init = await initialize_task_upload(
+        "registry-complete-retry-newtask",
+        content_hash="hash-a",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    first = await complete_task_upload(
+        task_id=init.task_id,
+        task_name="registry-complete-retry-newtask",
+        version=init.version,
+        content_hash="hash-a",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    # Simulates the CLI's _retry_request re-POSTing the identical complete
+    # body after a transient 5xx / lost response.
+    retry = await complete_task_upload(
+        task_id=init.task_id,
+        task_name="registry-complete-retry-newtask",
+        version=init.version,
+        content_hash="hash-a",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    assert retry.task_id == first.task_id
+
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    assert len(events) == 1
+    assert events[0].created_version is True
+
+    # A genuinely distinct complete call (different provenance) for the SAME
+    # version must still get its own row.
+    await complete_task_upload(
+        task_id=init.task_id,
+        task_name="registry-complete-retry-newtask",
+        version=init.version,
+        content_hash="hash-a",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=TaskProvenance(source_repo="abundant-ai/harbor-lh", source_commit="d" * 40),
+    )
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    assert len(events) == 2
+
+
+@pytest.mark.asyncio
+async def test_retried_complete_new_version_collapses_to_one_event(session):
+    """I-2 (b): a retried /tasks/upload/complete cutting a new version on an
+    EXISTING task must not duplicate the audit event either."""
+    init1 = await initialize_task_upload(
+        "registry-complete-retry-newversion",
+        content_hash="hash-v1",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    await complete_task_upload(
+        task_id=init1.task_id,
+        task_name="registry-complete-retry-newversion",
+        version=init1.version,
+        content_hash="hash-v1",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    init2 = await initialize_task_upload(
+        "registry-complete-retry-newversion",
+        content_hash="hash-v2",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    assert init2.version == 2
+    first2 = await complete_task_upload(
+        task_id=init2.task_id,
+        task_name="registry-complete-retry-newversion",
+        version=init2.version,
+        content_hash="hash-v2",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    # Same retry scenario as above, but for the v2-cutting call: the retry
+    # finds v2 already committed, so new_version_created flips to False.
+    retry2 = await complete_task_upload(
+        task_id=init2.task_id,
+        task_name="registry-complete-retry-newversion",
+        version=init2.version,
+        content_hash="hash-v2",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    assert retry2.version_id == first2.version_id
+
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first2.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    # v1's created event + v2's created event -- the retry collapsed, not a
+    # third row.
+    assert len(events) == 2
+    assert events[1].task_version_id == first2.version_id
+    assert events[1].created_version is True
+
+    # A genuinely distinct complete call for the same v2 (different
+    # provenance) must still get its own row.
+    await complete_task_upload(
+        task_id=init2.task_id,
+        task_name="registry-complete-retry-newversion",
+        version=init2.version,
+        content_hash="hash-v2",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=TaskProvenance(source_repo="abundant-ai/harbor-lh", source_commit="e" * 40),
+    )
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first2.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    assert len(events) == 3

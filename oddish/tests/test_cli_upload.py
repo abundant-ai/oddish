@@ -321,6 +321,84 @@ def test_upload_task_complete_body_carries_metadata_and_provenance(
     assert "provenance" in complete_body
 
 
+def test_load_task_metadata_warns_and_drops_oversized_category(
+    caplog, tmp_path: Path
+) -> None:
+    """M-2: a bound violation (category over TaskMetadata's 128-char max)
+    must not silently discard the metadata block -- it must warn, naming the
+    task, and still return None so the caller's upload proceeds."""
+    task_path = tmp_path / "task"
+    _write_minimal_task(
+        task_path,
+        task_toml=f"""\
+version = "1.0"
+
+[metadata]
+description = "first description"
+category = "{"x" * 200}"
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+""",
+    )
+
+    with caplog.at_level("WARNING", logger="oddish.cli.api"):
+        result = cli_api.load_task_metadata(task_path)
+
+    assert result is None
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert task_path.name in warnings[0].getMessage()
+
+
+def test_upload_task_still_succeeds_with_oversized_metadata(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """M-2: the upload itself must still go through when metadata is dropped
+    for a bound violation -- only the metadata block is omitted, not the
+    whole upload."""
+    task_path = tmp_path / "task"
+    _write_minimal_task(
+        task_path,
+        task_toml=f"""\
+version = "1.0"
+
+[metadata]
+description = "first description"
+category = "{"x" * 200}"
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+build_timeout_sec = 600.0
+""",
+    )
+
+    monkeypatch.setattr(cli_api, "get_auth_headers", lambda: {})
+    monkeypatch.setattr(cli_api, "_upload_to_presigned_url", lambda *_a, **_k: None)
+    fake_client = _RecordingUploadClient()
+    monkeypatch.setattr(cli_api.httpx, "Client", lambda *_a, **_k: fake_client)
+
+    result = cli_api.upload_task("http://api", task_path)
+
+    assert result == {"task_id": "T1"}
+    complete_body = fake_client.bodies["/tasks/upload/complete"]
+    assert "task_metadata" not in complete_body
+
+
 def test_build_sweep_payload_carries_metadata_and_provenance(tmp_path: Path) -> None:
     task_path = tmp_path / "task"
     _write_minimal_task(task_path)

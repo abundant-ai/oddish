@@ -144,32 +144,43 @@ async def record_upload_event(
     the FK is ON DELETE SET NULL, so a deleted version would otherwise make a real
     upload indistinguishable from a no-op.
 
-    Dedupes only the content-unchanged no-op case (see
+    Dedupes retries of the SAME upload attempt (see
     ``_UPLOAD_EVENT_RETRY_DEDUPE_WINDOW``): an identical (task_id,
-    content_hash, source_commit) event within the window is treated as a
-    retry of the same request and skipped. A real upload that creates a
-    version is never deduped -- retrying that is already guarded server-side
-    by the version's own uniqueness, not by this table.
+    task_version_id, content_hash, source_commit) event within the window is
+    treated as a retry and skipped. This covers both init's content-unchanged
+    no-op (``task_version_id`` is NULL) and complete's version-creating /
+    version-reusing calls (``task_version_id`` set) -- ``/tasks/upload/complete``
+    is wrapped in the same client-side retry as init, and ``task_version_id``
+    is deterministic from ``(task_id, version)``, so a retried complete call
+    reuses the identical id and would otherwise double the row (once with
+    ``created_version=True`` from the original call, once with ``False`` from
+    the retry, since by then the version row the original call created already
+    exists). ``created_version`` is deliberately excluded from the match for
+    this reason. A genuinely distinct upload of identical content (e.g. two CI
+    runs of an unchanged task, much later) is never deduped past the window.
     """
     prov = provenance or TaskProvenance()
 
-    if task_version_id is None and not created_version:
-        duplicate = await session.scalar(
-            select(TaskUploadEventModel.id)
-            .where(
-                TaskUploadEventModel.task_id == task_id,
-                TaskUploadEventModel.task_version_id.is_(None),
-                TaskUploadEventModel.created_version.is_(False),
-                TaskUploadEventModel.content_hash == content_hash,
-                TaskUploadEventModel.source_commit == prov.source_commit,
-                TaskUploadEventModel.created_at
-                >= utcnow() - _UPLOAD_EVENT_RETRY_DEDUPE_WINDOW,
-            )
-            .order_by(TaskUploadEventModel.created_at.desc())
-            .limit(1)
+    version_match = (
+        TaskUploadEventModel.task_version_id.is_(None)
+        if task_version_id is None
+        else TaskUploadEventModel.task_version_id == task_version_id
+    )
+    duplicate = await session.scalar(
+        select(TaskUploadEventModel.id)
+        .where(
+            TaskUploadEventModel.task_id == task_id,
+            version_match,
+            TaskUploadEventModel.content_hash == content_hash,
+            TaskUploadEventModel.source_commit == prov.source_commit,
+            TaskUploadEventModel.created_at
+            >= utcnow() - _UPLOAD_EVENT_RETRY_DEDUPE_WINDOW,
         )
-        if duplicate is not None:
-            return
+        .order_by(TaskUploadEventModel.created_at.desc())
+        .limit(1)
+    )
+    if duplicate is not None:
+        return
 
     session.add(
         TaskUploadEventModel(

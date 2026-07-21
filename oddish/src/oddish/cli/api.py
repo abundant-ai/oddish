@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import os
 import random
 import shutil
@@ -11,6 +12,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import tomllib
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -18,6 +20,7 @@ from collections.abc import Iterable
 from typing import Any, cast
 
 import httpx
+import pydantic
 import typer
 import yaml
 from rich.console import Console
@@ -70,6 +73,7 @@ from oddish.task_timeouts import (
 )
 
 console = Console()
+logger = logging.getLogger(__name__)
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
 
 
@@ -353,15 +357,23 @@ def _canonical_task_config_bytes(config_path: Path) -> bytes:
 
 
 def load_task_metadata(task_path: Path) -> TaskMetadata | None:
-    """Project task.toml into upload metadata, or None if unreadable."""
+    """Project task.toml into upload metadata, or None if unreadable.
+
+    Non-fatal: the upload must still succeed even when the [metadata]/
+    [environment]/... stanza doesn't fit TaskMetadata's bounds (e.g. a
+    description over 8192 chars or a category over 128) -- but dropping the
+    whole block silently leaves the user with no idea why nothing persisted,
+    so this warns with the task name and reason. validate_task_timeout_config
+    (called earlier in upload_task) only validates timeout fields, not these
+    bounds, so it does not already cover this.
+    """
     config_path = task_path / "task.toml"
     if not config_path.exists():
         return None
     try:
         return project_task_config(_parse_task_config(config_path))
-    except Exception:
-        # Metadata is a nice-to-have; a malformed toml is already caught and
-        # reported by validate_task_timeout_config earlier in upload_task.
+    except (pydantic.ValidationError, tomllib.TOMLDecodeError) as exc:
+        logger.warning("Skipping task metadata for %s: %s", task_path.name, exc)
         return None
 
 
@@ -685,11 +697,14 @@ def upload_task(
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
-            # init is retry-safe: a content-hash match short-circuits (server
-            # dedupes the resulting task_upload_events row within a short
-            # window) and a new task gets a fresh task id allocated
-            # server-side, so a retry after a transient 5xx/429 can't
-            # duplicate trials.
+            # init is retry-safe for trials: a content-hash match short-
+            # circuits and a new task gets a fresh id allocated server-side,
+            # so a retry after a transient 5xx/429 can't duplicate trials.
+            # The task_upload_events row it writes (content-unchanged branch)
+            # and the one /complete writes below are both deduped
+            # server-side within a short window keyed on (task_id,
+            # task_version_id, content_hash, source_commit), so retries of
+            # either call don't duplicate audit events either.
             init_response = _retry_request(
                 lambda: client.post(
                     f"{api_url}/tasks/upload/init",
@@ -743,7 +758,9 @@ def upload_task(
                     mode="json", exclude_none=True
                 )
             # complete is keyed on (task_id, version, content_hash); replaying
-            # it after a transient failure resolves to the same version.
+            # it after a transient failure resolves to the same version (see
+            # the init comment above for why its task_upload_events row
+            # doesn't get duplicated either).
             response = _retry_request(
                 lambda: client.post(
                     f"{api_url}/tasks/upload/complete",
