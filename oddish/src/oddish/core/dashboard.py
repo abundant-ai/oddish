@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from collections.abc import Sequence
 from typing import Any
@@ -41,11 +42,6 @@ from oddish.core.tags.projection import (
 from oddish.config import normalize_model_id
 from oddish.db import (
     ExperimentModel,
-    TagAssignmentModel,
-    TagAssignmentScope,
-    TagAssignmentState,
-    TagModel,
-    TagState,
     TaskModel,
     TaskStatus,
     TrialModel,
@@ -567,7 +563,10 @@ def _experiment_freetext_match(needle: str, *, org_id: str | None):
     (legacy ``user`` / ``github_username`` tag), OR any of its tag names -- so
     a plain word finds work by name, author, or tag without learning the
     ``github:`` / ``tag:`` prefixes. Explicit qualifiers still route to their
-    own precise (AND-ed) filters.
+    own precise (AND-ed) filters. Tag matching reaches through member tasks'
+    TASK-scope assignments too (``_experiment_tag_match_exists``) so a bare
+    word matching a derived tag (``category:*``/``topic:*``/``org:*``) isn't
+    silently dropped the same way the explicit ``tag:`` filter used to be.
     """
     pattern = f"%{escape_like(needle)}%"
 
@@ -594,27 +593,20 @@ def _experiment_freetext_match(needle: str, *, org_id: str | None):
     author_exists = author_exists.correlate(ExperimentModel)
 
     # Experiments carry tags only via tag_assignments (no effective_tag_ids
-    # column), so match the assigned tag's display key. Tags aren't registered
-    # for the soft-delete session filter, so exclude dead rows explicitly.
-    tag_exists = (
-        select(1)
-        .select_from(TagAssignmentModel)
-        .join(TagModel, TagModel.id == TagAssignmentModel.tag_id)
-        .where(TagAssignmentModel.scope == TagAssignmentScope.EXPERIMENT)
-        .where(TagAssignmentModel.state == TagAssignmentState.ACTIVE)
-        .where(TagAssignmentModel.deleted_at.is_(None))
-        .where(TagAssignmentModel.target_id == ExperimentModel.id)
-        .where(TagModel.deleted_at.is_(None))
-        .where(TagModel.state != TagState.DELETED)
-        .where(TagModel.key.ilike(pattern, escape="\\"))
-        .correlate(ExperimentModel)
+    # column), so match the assigned (merge-resolved) tag's display key.
+    # param key must be unique per call -- this function runs once per
+    # search needle within one statement.
+    tag_param_key = f"freetext_tag_{uuid.uuid4().hex}"
+    tag_exists = _experiment_tag_match_exists(
+        f"t.key ILIKE :{tag_param_key} ESCAPE '\\'",
+        **{tag_param_key: pattern},
     )
 
     return or_(
         ExperimentModel.name.ilike(pattern, escape="\\"),
         ExperimentModel.id.ilike(pattern, escape="\\"),
         author_exists.exists(),
-        tag_exists.exists(),
+        tag_exists,
     )
 
 
@@ -915,31 +907,36 @@ async def _org_has_unowned_live_experiments(
     return (await session.execute(probe)).first() is not None
 
 
-def _experiment_tag_assignment_exists(
-    tag_ids: list[str], *, param_key: str, negate: bool = False
-):
-    """(NOT) match ``tag_ids`` against an experiment two ways: an ACTIVE
-    EXPERIMENT-scope assignment directly on the experiment, OR an ACTIVE
-    TASK-scope assignment on any live task still linked to it via
-    ``task_experiments``.
+def _experiment_tag_match_exists(match_sql: str, *, negate: bool = False, **bindparams):
+    """(NOT) match an experiment's tags two ways: an ACTIVE EXPERIMENT-scope
+    assignment directly on the experiment, OR an ACTIVE TASK-scope
+    assignment on any live task still linked to it via ``task_experiments``.
+
+    ``match_sql`` is the leaf WHERE fragment run against the merge-resolved
+    tag alias ``t`` in BOTH arms (e.g. ``"t.id = ANY(:tag_ids)"`` for an
+    id-set match, or a ``t.key ILIKE`` pattern for free-text) — callers
+    supply their own matching condition rather than hand-rolling the
+    ``task_experiments``/``tasks``/``tag_assignments`` join a second time.
 
     The second arm exists because derived tags (``category:*``, ``topic:*``,
     ``org:*``) are assigned only at TASK scope by design (see
     ``core/tags/derived.py``) — they never get an EXPERIMENT-scope row. The
     shared ``/tags`` dropdown lists them regardless of which page it's
-    rendered on, so without this arm a user could select a real, offered tag
-    on the experiments page and always get zero results with no explanation.
-    Reaching into member tasks makes the filter do the useful thing (find
+    rendered on, and the experiments free-text search box offers the same
+    tags implicitly, so without this arm either path lets a user pick a
+    real, offered tag and always get zero results with no explanation.
+    Reaching into member tasks makes the match do the useful thing (find
     experiments touching that category/topic/org) instead of the merely
-    honest thing (hide those tags from the experiments-page picker); it
+    honest thing (hide those tags from experiments-page matching); it
     mirrors the existing ``task_experiments`` join in
     ``_experiment_freetext_match``'s author match above.
 
     Merge-resolution and DELETED-dropping happened in
-    ``resolve_names_to_ids``; both arms re-check liveness so a tag deleted
-    between resolution and execution can't match. ``param_key`` must be
-    unique per clause — the clauses are ANDed into one statement and
-    identical bind names would collide."""
+    ``resolve_names_to_ids`` for id-based callers; both arms re-check
+    liveness regardless so a tag deleted between resolution and execution
+    can't match. Bind param names in ``match_sql``/``bindparams`` must be
+    unique per call site — a caller building several clauses into one ANDed
+    statement needs distinct names or they collide."""
     condition = f"""
         (
             EXISTS (
@@ -953,7 +950,7 @@ def _experiment_tag_assignment_exists(
                   AND ta.target_id = experiments.id
                   AND t.deleted_at IS NULL
                   AND t.state <> 'DELETED'
-                  AND t.id = ANY(:{param_key})
+                  AND {match_sql}
             )
             OR EXISTS (
                 SELECT 1
@@ -971,13 +968,26 @@ def _experiment_tag_assignment_exists(
                   AND ta.deleted_at IS NULL
                   AND t.deleted_at IS NULL
                   AND t.state <> 'DELETED'
-                  AND t.id = ANY(:{param_key})
+                  AND {match_sql}
             )
         )
         """
     if negate:
         condition = f"NOT {condition}"
-    return text(condition).bindparams(**{param_key: list(tag_ids)})
+    return text(condition).bindparams(**bindparams)
+
+
+def _experiment_tag_assignment_exists(
+    tag_ids: list[str], *, param_key: str, negate: bool = False
+):
+    """(NOT) match ``tag_ids`` against an experiment's tags — see
+    ``_experiment_tag_match_exists`` for the (EXPERIMENT-scope OR
+    member-task TASK-scope) join it runs. ``param_key`` must be unique per
+    clause — the clauses are ANDed into one statement and identical bind
+    names would collide."""
+    return _experiment_tag_match_exists(
+        f"t.id = ANY(:{param_key})", negate=negate, **{param_key: list(tag_ids)}
+    )
 
 
 def _experiment_tag_predicates(resolved: ResolvedTagFilter) -> list:

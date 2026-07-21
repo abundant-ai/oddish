@@ -464,4 +464,49 @@ async def test_dashboard_experiments_match_via_member_task_derived_tag(session):
     ids = {row["id"] for row in rows}
     assert matching_exp.id in ids
     assert other_exp.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_dashboard_experiments_freetext_matches_via_member_task_derived_tag(
+    session,
+):
+    """Same gap as the ``tag:`` filter fix above, but in the free-text search
+    box: ``_experiment_freetext_match``'s own tag matching was still scoped
+    to EXPERIMENT-scope assignments only, so a bare word matching a derived
+    tag's key (assigned only at TASK scope) silently returned nothing."""
+    from oddish.core.dashboard import load_dashboard_experiments
+    from oddish.core.tags.service import create_tag_core
+
+    org_id = _org()
+    category_id = await create_tag_core(
+        session,
+        key="category",
+        value="reverse-engineering",
+        org_id=org_id,
+        actor_user_id=None,
+        policy={},
+        is_admin=True,
+    )
+    await session.flush()
+
+    task = await _make_task(session, org_id=org_id, name=f"re-task-ft-{org_id}")
+    await _tag_task_derived(session, tag_id=category_id, task_id=task.id, org_id=org_id)
+
+    matching_exp = await _make_experiment(session, org_id=org_id, name=f"re-exp-ft-{org_id}")
+    other_exp = await _make_experiment(session, org_id=org_id, name=f"other-exp-ft-{org_id}")
+    await _link_task_to_experiment(
+        session, task_id=task.id, experiment_id=matching_exp.id
+    )
+    await session.flush()
+
+    rows, _ = await load_dashboard_experiments(
+        session,
+        org_id=org_id,
+        experiments_limit=50,
+        experiments_offset=0,
+        experiments_query="category",
+        experiments_status="",
+    )
+    ids = {row["id"] for row in rows}
+    assert matching_exp.id in ids
     assert other_exp.id not in ids
