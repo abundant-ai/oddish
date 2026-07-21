@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -118,7 +119,16 @@ def _apply_version_metadata(version: TaskVersionModel, metadata: TaskMetadata) -
     version.expert_time_hours_snapshot = metadata.expert_time_hours
 
 
-def record_upload_event(
+# The content-unchanged branch of initialize_task_upload (task_version_id IS
+# NULL, created_version=False) writes+commits on every call but is still
+# wrapped in the CLI's retry_request, so a transient 5xx or a lost response
+# duplicates this append-only row. Window sized to cover _RETRY_MAX_ATTEMPTS'
+# capped-exponential-backoff retry loop (cli/api.py), not a guess at "how
+# long between genuinely separate uploads."
+_UPLOAD_EVENT_RETRY_DEDUPE_WINDOW = timedelta(seconds=60)
+
+
+async def record_upload_event(
     session: AsyncSession,
     *,
     task_id: str,
@@ -133,8 +143,34 @@ def record_upload_event(
     ``created_version`` is required rather than derived from ``task_version_id``:
     the FK is ON DELETE SET NULL, so a deleted version would otherwise make a real
     upload indistinguishable from a no-op.
+
+    Dedupes only the content-unchanged no-op case (see
+    ``_UPLOAD_EVENT_RETRY_DEDUPE_WINDOW``): an identical (task_id,
+    content_hash, source_commit) event within the window is treated as a
+    retry of the same request and skipped. A real upload that creates a
+    version is never deduped -- retrying that is already guarded server-side
+    by the version's own uniqueness, not by this table.
     """
     prov = provenance or TaskProvenance()
+
+    if task_version_id is None and not created_version:
+        duplicate = await session.scalar(
+            select(TaskUploadEventModel.id)
+            .where(
+                TaskUploadEventModel.task_id == task_id,
+                TaskUploadEventModel.task_version_id.is_(None),
+                TaskUploadEventModel.created_version.is_(False),
+                TaskUploadEventModel.content_hash == content_hash,
+                TaskUploadEventModel.source_commit == prov.source_commit,
+                TaskUploadEventModel.created_at
+                >= utcnow() - _UPLOAD_EVENT_RETRY_DEDUPE_WINDOW,
+            )
+            .order_by(TaskUploadEventModel.created_at.desc())
+            .limit(1)
+        )
+        if duplicate is not None:
+            return
+
     session.add(
         TaskUploadEventModel(
             task_id=task_id,
@@ -211,7 +247,7 @@ async def initialize_task_upload(
                         existing_task.id,
                         exc,
                     )
-            record_upload_event(
+            await record_upload_event(
                 session,
                 task_id=existing_task.id,
                 task_version_id=None,
@@ -373,7 +409,7 @@ async def complete_task_upload(
                     logger.warning(
                         "rebuild_derived_tags failed for task %s: %s", task_id, exc
                     )
-            record_upload_event(
+            await record_upload_event(
                 session,
                 task_id=task_id,
                 task_version_id=version_id,
@@ -481,7 +517,7 @@ async def complete_task_upload(
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc
                 )
-        record_upload_event(
+        await record_upload_event(
             session,
             task_id=task_id,
             task_version_id=version_id,

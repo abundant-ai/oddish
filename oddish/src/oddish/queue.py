@@ -891,7 +891,7 @@ async def create_task(
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc
                 )
-        record_upload_event(
+        await record_upload_event(
             session,
             task_id=task_id,
             task_version_id=version_id,
@@ -928,7 +928,7 @@ async def create_task(
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc
                 )
-        record_upload_event(
+        await record_upload_event(
             session,
             task_id=task_id,
             task_version_id=version_id,

@@ -63,6 +63,8 @@ _TEST_TASK_NAMES = (
     "registry-legacy",
     "registry-immutable",
     "registry-reupload",
+    "registry-retry-dedupe",
+    "registry-retry-distinct-provenance",
 )
 
 
@@ -329,3 +331,98 @@ async def test_reupload_existing_task_changed_content_cuts_new_version(session):
     assert len(events) == 2
     assert events[1].created_version is True
     assert events[1].task_version_id == second.version_id
+
+
+@pytest.mark.asyncio
+async def test_retried_content_unchanged_init_collapses_to_one_event(session):
+    """A client retry (transient 5xx / lost response) of the SAME init
+    request must not duplicate the append-only audit row -- this is the
+    exact scenario cli/api.py's _retry_request wraps around init."""
+    init = await initialize_task_upload(
+        "registry-retry-dedupe",
+        content_hash="hash-retry",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    first = await complete_task_upload(
+        task_id=init.task_id,
+        task_name="registry-retry-dedupe",
+        version=init.version,
+        content_hash="hash-retry",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    # Two content-unchanged calls, identical provenance, back to back --
+    # simulates the client retrying after not seeing the first response.
+    await initialize_task_upload(
+        "registry-retry-dedupe",
+        content_hash="hash-retry",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    await initialize_task_upload(
+        "registry-retry-dedupe",
+        content_hash="hash-retry",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    # One created_version=True event from the real upload, plus exactly one
+    # collapsed content-unchanged event -- not three.
+    assert len(events) == 2
+    assert events[1].created_version is False
+    assert events[1].task_version_id is None
+
+
+@pytest.mark.asyncio
+async def test_content_unchanged_different_source_commit_is_not_deduped(session):
+    """A genuinely distinct re-upload (different provenance) must still get
+    its own row even though the content hash matches -- only true retries of
+    the SAME request collapse."""
+    init = await initialize_task_upload(
+        "registry-retry-distinct-provenance",
+        content_hash="hash-distinct",
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+    first = await complete_task_upload(
+        task_id=init.task_id,
+        task_name="registry-retry-distinct-provenance",
+        version=init.version,
+        content_hash="hash-distinct",
+        register=True,
+        task_metadata=_metadata(),
+        provenance=_provenance(),
+    )
+
+    await initialize_task_upload(
+        "registry-retry-distinct-provenance",
+        content_hash="hash-distinct",
+        task_metadata=_metadata(),
+        provenance=TaskProvenance(source_repo="abundant-ai/harbor-lh", source_commit="b" * 40),
+    )
+    await initialize_task_upload(
+        "registry-retry-distinct-provenance",
+        content_hash="hash-distinct",
+        task_metadata=_metadata(),
+        provenance=TaskProvenance(source_repo="abundant-ai/harbor-lh", source_commit="c" * 40),
+    )
+
+    events = (
+        await session.execute(
+            select(TaskUploadEventModel)
+            .where(TaskUploadEventModel.task_id == first.task_id)
+            .order_by(TaskUploadEventModel.created_at)
+        )
+    ).scalars().all()
+    assert len(events) == 3
+    assert [e.source_commit for e in events] == [_provenance().source_commit, "b" * 40, "c" * 40]

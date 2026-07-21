@@ -685,9 +685,11 @@ def upload_task(
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
-            # init is retry-safe: a content-hash match short-circuits and a new
-            # task gets a fresh task id allocated server-side, so a retry after
-            # a transient 5xx/429 can't duplicate trials.
+            # init is retry-safe: a content-hash match short-circuits (server
+            # dedupes the resulting task_upload_events row within a short
+            # window) and a new task gets a fresh task id allocated
+            # server-side, so a retry after a transient 5xx/429 can't
+            # duplicate trials.
             init_response = _retry_request(
                 lambda: client.post(
                     f"{api_url}/tasks/upload/init",
