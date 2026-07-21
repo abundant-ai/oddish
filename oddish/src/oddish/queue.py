@@ -789,6 +789,7 @@ async def create_task(
     task_id: str | None = None,
     org_id: str | None = None,
     billed_user_id: str | None = None,
+    submitter_user_id: str | None = None,
 ) -> TaskModel:
     """Create a task with its trials.
 
@@ -891,6 +892,12 @@ async def create_task(
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc
                 )
+        # uploader_user_id is the actual submitter, NOT billed_user_id: billing
+        # follows the resolved owner (github_id/github_username first), which
+        # for a CI-authored PR is the PR author, not whoever ran the sweep.
+        # submitter_user_id is None on paths with no authenticated caller
+        # (e.g. the open-source self-hosted server) -- NULL beats mislabeling
+        # the event with someone else's identity.
         await record_upload_event(
             session,
             task_id=task_id,
@@ -898,7 +905,7 @@ async def create_task(
             created_version=False,
             content_hash=submission.content_hash,
             provenance=submission.provenance,
-            uploader_user_id=billed_user_id,
+            uploader_user_id=submitter_user_id,
         )
     else:
         version_number = 1
@@ -928,6 +935,8 @@ async def create_task(
                 logger.warning(
                     "rebuild_derived_tags failed for task %s: %s", task_id, exc
                 )
+        # See the uploader_user_id note above: the actual submitter, not the
+        # billed owner.
         await record_upload_event(
             session,
             task_id=task_id,
@@ -935,7 +944,7 @@ async def create_task(
             created_version=True,
             content_hash=submission.content_hash,
             provenance=submission.provenance,
-            uploader_user_id=billed_user_id,
+            uploader_user_id=submitter_user_id,
         )
 
         if settings.tasks_expand_archive and task_s3_key:

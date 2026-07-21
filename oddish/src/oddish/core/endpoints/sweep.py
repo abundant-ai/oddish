@@ -325,6 +325,7 @@ async def create_task_sweep_core(
     submission: TaskSweepSubmission,
     org_id: str | None = None,
     billed_user_id: str | None = None,
+    submitter_user_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     idempotency_key: str | None = None,
@@ -643,6 +644,7 @@ async def create_task_sweep_core(
             task_id=submission.task_id,
             org_id=org_id,
             billed_user_id=billed_user_id,
+            submitter_user_id=submitter_user_id,
         )
     except TaskTimeoutValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -701,6 +703,9 @@ async def create_task_sweep_batch_core(
     resolve_billed_user_id: (
         Callable[[AsyncSession, TaskSweepSubmission], Awaitable[str | None]] | None
     ) = None,
+    resolve_submitter_user_id: (
+        Callable[[AsyncSession, TaskSweepSubmission], Awaitable[str | None]] | None
+    ) = None,
 ) -> list[TaskSweepBatchItemResult]:
     """Create several task sweeps in one transaction, best-effort.
 
@@ -730,12 +735,17 @@ async def create_task_sweep_batch_core(
     pre_failures: dict[int, TaskSweepBatchItemResult] = {}
     item_envs: list[EnvironmentType | None] = [default_environment] * len(submissions)
     billed_user_ids: list[str | None] = [None] * len(submissions)
+    submitter_user_ids: list[str | None] = [None] * len(submissions)
     for index, submission in enumerate(submissions):
         try:
             if prepare is not None:
                 item_envs[index] = await prepare(session, submission)
             if resolve_billed_user_id is not None:
                 billed_user_ids[index] = await resolve_billed_user_id(
+                    session, submission
+                )
+            if resolve_submitter_user_id is not None:
+                submitter_user_ids[index] = await resolve_submitter_user_id(
                     session, submission
                 )
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
@@ -754,6 +764,7 @@ async def create_task_sweep_batch_core(
                     submission=submission,
                     org_id=org_id,
                     billed_user_id=billed_user_ids[index],
+                    submitter_user_id=submitter_user_ids[index],
                     default_environment=item_envs[index],
                     allowed_environments=allowed_environments,
                 )
