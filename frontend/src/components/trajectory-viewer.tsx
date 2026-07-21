@@ -968,13 +968,13 @@ export function TrajectoryViewer({
               value={expandedSteps}
               onValueChange={setExpandedSteps}
             >
-              {groups.map((group, gi) => (
-                // Keyed on the group's first step index, not gi: the summary
-                // resolves after the trajectory, so group count (and every
-                // index-derived key) changes when it arrives. A positional key
-                // would remount every AccordionItem/StepContent below it.
+              {groups.map((group) => (
+                // Keyed on the group's first step index, never positionally: the
+                // summary resolves after the trajectory, so the group count — and
+                // every index-derived key — changes when it arrives. A positional
+                // key would remount every AccordionItem/StepContent below it.
                 <div
-                  key={`${group.key ?? "unclaimed"}-${group.steps[0]?.idx ?? gi}`}
+                  key={`${group.key ?? "unclaimed"}-${group.steps[0].idx}`}
                   className="mt-5 first:mt-0"
                 >
                   {group.label && (

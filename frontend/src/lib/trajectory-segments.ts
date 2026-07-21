@@ -77,14 +77,14 @@ export function toSegments(
 }
 
 /**
- * Cut `steps` into contiguous runs by owning segment, preserving step order.
+ * step_id -> owning segment, the one source of truth for step attribution.
  *
  * Segments are not a partition: the model can leave steps unclaimed, interleave
  * two components, or put one step_id in two components (the backend's
  * `filter_output` drops invalid ids but never dedupes). First claim wins, ordered
- * by lowest step_id, so every step renders exactly once and in true order.
+ * by lowest step_id, so every step is attributed exactly once — and the grouped
+ * list and the Activity timeline agree on which component owns it.
  */
-/** step_id -> owning segment. First claim wins; see groupStepsBySegment. */
 export function segmentOwners(segments: Segment[]): Map<number, Segment> {
   const ordered = segments
     .filter((s) => s.stepIds.length > 0)
@@ -99,6 +99,11 @@ export function segmentOwners(segments: Segment[]): Map<number, Segment> {
   return owner;
 }
 
+/**
+ * Cut `steps` into contiguous runs by owning segment, preserving step order.
+ * Unclaimed runs come back with `key: null`, and an interleaved segment yields
+ * one run per stretch rather than being hoisted out of order.
+ */
 export function groupStepsBySegment(
   steps: IndexedStep[],
   segments: Segment[],
