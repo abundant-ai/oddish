@@ -30,12 +30,12 @@ import json
 
 from sqlalchemy import select
 
-from api.services.blocks.analyzer.analyzer_block import (
+from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerBlock,
     AnalyzerInput,
     AnalyzerType,
 )
-from api.services.blocks.analyzer.analyzer_llm_client import (
+from oddish.blocks.analyzer.analyzer_llm_client import (
     ApiAnalyzerLLMClient,
     LLMClientType,
 )

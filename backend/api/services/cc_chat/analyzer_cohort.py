@@ -120,13 +120,14 @@ async def run_cohort(
 ) -> tuple[list[Finding], dict[str, str], tuple[list[dict], str]]:
     # Imported here so the module still loads if the block layer is refactored;
     # the cohort is the only caller that wires blocks to a shared sandbox client.
-    from api.services.blocks.analyzer.analyzer_block import (
+    from oddish.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
         AnalyzerInput,
         AnalyzerType,
     )
-    from api.services.blocks.analyzer.analyzer_llm_client import (
-        LLMClientType,
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+
+    from api.services.blocks.analyzer.sandbox_llm_client import (
         SandboxAnalyzerLLMClient,
     )
 

@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
 
 
 class _RecordingStream:
@@ -64,7 +64,7 @@ class _RecordingAnthropic:
 def _patch(monkeypatch) -> dict:
     _RecordingAnthropic.sink = {}
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _RecordingAnthropic,
     )
     return _RecordingAnthropic.sink

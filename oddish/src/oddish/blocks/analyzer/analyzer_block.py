@@ -19,12 +19,12 @@ from oddish.db.models import (
 )
 from oddish.db.storage import get_storage_client
 
-from api.services.blocks.analyzer.analyzer_llm_client import (
+from oddish.blocks.analyzer.analyzer_llm_client import (
     AnalyzerLLMClient,
     LLMClientType,
     create_llm_client,
 )
-from api.services.blocks.block import Block
+from oddish.blocks.block import Block
 
 
 class AnalyzerType(str, enum.Enum):
@@ -32,6 +32,7 @@ class AnalyzerType(str, enum.Enum):
     HEADROOM_ANALYSIS = "headroom_analysis"
     SCALING_ANALYSIS = "scaling_analysis"
     TRAJECTORY_SUMMARY = "trajectory_summary"
+    TASK_VERDICT = "task_verdict"
 
 
 @dataclass
@@ -80,6 +81,8 @@ class AnalyzerBlock(Block):
         client: AnalyzerLLMClient | None = None,
         system_prompt: str | None = None,
         model: str | None = None,
+        max_tokens: int | None = None,
+        response_format: Any | None = None,
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
         triggered_by_user_id: str | None = None,
@@ -112,9 +115,12 @@ class AnalyzerBlock(Block):
             block_metadata = {**(block_metadata or {}), "model": model}
         self.block_metadata = block_metadata
         self._output_transform = output_transform
-        # Only used when self-provisioning (client is None): which Anthropic key
-        # the backend gets. None -> the analyzer key / global default.
+        # Only used when self-provisioning (client is None). api_key: None -> the
+        # analyzer key / provider default. response_format is OpenAI-only; the
+        # other backends ignore it.
         self._api_key = api_key
+        self._max_tokens = max_tokens
+        self._response_format = response_format
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -264,7 +270,11 @@ class AnalyzerBlock(Block):
         """Yield each output chunk to the caller and accumulate it. Lazily
         provisions the backend client (or uses the injected one)."""
         client = self._client or await create_llm_client(
-            self.llm_client_type, api_key=self._api_key
+            self.llm_client_type,
+            model=self.model,
+            api_key=self._api_key,
+            max_tokens=self._max_tokens,
+            response_format=self._response_format,
         )
         try:
             async for chunk in client.stream(

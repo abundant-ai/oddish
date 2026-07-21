@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.services.blocks.analyzer.analyzer_block import (
+from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerBlock,
     AnalyzerInput,
     AnalyzerType,
 )
-from api.services.blocks.analyzer.analyzer_llm_client import (
+from oddish.blocks.analyzer.analyzer_llm_client import (
     FakeAnalyzerLLMClient,
     LLMClientType,
 )
@@ -68,7 +68,7 @@ def _session(monkeypatch, added: list, trial_row=TRIAL_ROW, analyzer_row=None):
             return False
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_block.get_session",
+        "oddish.blocks.analyzer.analyzer_block.get_session",
         lambda: _FakeSession(),
     )
 
@@ -241,7 +241,7 @@ async def test_record_cost_never_raises(monkeypatch, caplog):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_block.get_session", _boom
+        "oddish.blocks.analyzer.analyzer_block.get_session", _boom
     )
     b = _make_block()
     b.usage = USAGE
@@ -254,7 +254,7 @@ async def test_run_captures_usage_from_client_and_persists(monkeypatch):
     added: list = []
     _session(monkeypatch, added)
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_block.get_storage_client",
+        "oddish.blocks.analyzer.analyzer_block.get_storage_client",
         lambda: SimpleNamespace(
             upload_bytes=lambda *a, **k: _noop()
         ),
@@ -274,7 +274,7 @@ async def test_failed_block_still_records_spend(monkeypatch):
     added: list = []
     _session(monkeypatch, added)
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_block.get_storage_client",
+        "oddish.blocks.analyzer.analyzer_block.get_storage_client",
         lambda: SimpleNamespace(upload_bytes=lambda *a, **k: _noop()),
     )
     client = FakeAnalyzerLLMClient(

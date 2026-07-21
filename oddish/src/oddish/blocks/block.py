@@ -37,7 +37,9 @@ class Block:
         formatter: Callable[[BaseModel], str],
         fallback: str | None = None,
     ) -> str:
-        default = fallback if fallback is not None else f"<{name}>[unavailable]</{name}>"
+        default = (
+            fallback if fallback is not None else f"<{name}>[unavailable]</{name}>"
+        )
         try:
             data = schema(**raw_input)
         except Exception:

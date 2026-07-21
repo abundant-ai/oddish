@@ -353,7 +353,7 @@ def _payload() -> str:
 
 @pytest.mark.asyncio
 async def test_summarize_trial_returns_full_record():
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     record = await summarize_trial(
@@ -378,7 +378,7 @@ async def test_summarize_trial_returns_full_record():
 async def test_summarize_trial_records_raw_on_parse_failure():
     """A revised taxonomy that fails to parse is exactly when raw matters most,
     and that is the path where block.run() raises."""
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     record = await summarize_trial(
@@ -396,8 +396,8 @@ async def test_summarize_trial_records_raw_on_parse_failure():
 async def test_summarize_trial_does_not_persist_by_default(monkeypatch):
     from unittest.mock import AsyncMock
 
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     s3 = AsyncMock()
@@ -420,8 +420,8 @@ async def test_summarize_trial_persists_when_persist_is_true(monkeypatch):
     stubbed the savers would satisfy that one alone."""
     from unittest.mock import AsyncMock
 
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     s3 = AsyncMock()
@@ -443,7 +443,7 @@ async def test_summarize_trial_persists_when_persist_is_true(monkeypatch):
 async def test_summarize_trial_propagates_cancellation():
     import asyncio
 
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     with pytest.raises(asyncio.CancelledError):
@@ -458,7 +458,7 @@ async def test_summarize_trial_records_failure_raised_before_the_block_exists():
     """A trajectory that isn't a dict is rejected by TrajectoryInput inside
     build_summary_block -- before any block exists to carry status/error.
     That must still be a record, not an exception."""
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     record = await summarize_trial(
@@ -485,7 +485,7 @@ def _surrogate_payload() -> str:
 
 @pytest.mark.asyncio
 async def test_summarize_trial_never_reports_success_without_a_summary():
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     record = await summarize_trial(
@@ -517,7 +517,7 @@ class _RaisingAcloseClient:
 async def test_summarize_trial_keeps_success_when_only_teardown_fails(monkeypatch):
     """A good summary must not be relabeled failed just because aclose()
     raised after the block already succeeded."""
-    import api.services.blocks.analyzer.analyzer_llm_client as llm_mod
+    import oddish.blocks.analyzer.analyzer_llm_client as llm_mod
     from api.services.summary_dump import summarize_trial
 
     monkeypatch.setattr(llm_mod, "ApiAnalyzerLLMClient", _RaisingAcloseClient)
@@ -561,7 +561,7 @@ def _cohort_trial(trial_id, task_name):
 
 
 def _stub_cohort(monkeypatch, cohort, *, prep_raises_for=()):
-    import api.services.blocks.analyzer.analyzer_llm_client as llm_mod
+    import oddish.blocks.analyzer.analyzer_llm_client as llm_mod
     import api.services.summarize_trajectory as st
     import api.services.summary_dump as sd
     import oddish.core.trial_io as trial_io
@@ -757,7 +757,7 @@ class _CapturingClient:
 async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
     """A dump is only trustworthy if it sends what prod sends. The 2048 cap
     truncated long trajectories mid-JSON, so both sides must move together."""
-    import api.services.blocks.analyzer.analyzer_llm_client as llm_mod
+    import oddish.blocks.analyzer.analyzer_llm_client as llm_mod
     from api.services.summarize_trajectory import (
         SUMMARY_MAX_TOKENS,
         TaskContext,
@@ -767,7 +767,7 @@ async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
 
     from unittest.mock import AsyncMock
 
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
 
     monkeypatch.setattr(llm_mod, "ApiAnalyzerLLMClient", _CapturingClient)
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
