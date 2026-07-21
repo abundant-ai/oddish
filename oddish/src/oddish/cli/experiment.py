@@ -121,7 +121,9 @@ def _explain_failure(resp, permission_hint: str) -> None:
     elif resp.status_code == 404 and str(detail).strip() == "Not Found":
         # FastAPI's router-level 404: the path itself is unknown, which on a
         # correct URL means the backend predates these routes.
-        console.print("[red]This API server does not have the collection-editing routes.[/red]")
+        console.print(
+            "[red]This API server does not have the collection-editing routes.[/red]"
+        )
         console.print("  The backend may need upgrading to a version that supports")
         console.print("  `oddish experiment add/remove/rename`.")
     elif resp.status_code == 404:
