@@ -5,24 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Activity, Star } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import type { TrajectoryStep, TrajectorySummary } from "@/lib/types";
-import {
-  componentLabel,
-  phaseColorVars,
-  stepDurationsMs,
-  stepTokens,
-} from "@/lib/trajectory-metrics";
-
-/**
- * Normalized segment of the run. Sourced from the summary's `components`
- * (taxonomy-valued, schema v4+) or its legacy free-text `phases`. `key` is what
- * colors are assigned by, so repeats of the same taxonomy value share a color.
- */
-interface Segment {
-  key: string;
-  label: string;
-  gist: string;
-  stepIds: number[];
-}
+import { phaseColorVars, stepDurationsMs, stepTokens } from "@/lib/trajectory-metrics";
+import { toSegments } from "@/lib/trajectory-segments";
 
 interface TrajectoryActivityProps {
   trialId: string;
@@ -206,30 +190,6 @@ export function TrajectoryActivity({
       </CardContent>
     </Card>
   );
-}
-
-function toSegments(summary: TrajectorySummary | null | undefined): Segment[] {
-  if (!summary) return [];
-  // step_ids arrive in LLM order; the header renders a first–last range.
-  const sorted = (ids: number[]) => [...ids].sort((a, b) => a - b);
-  if (summary.components?.length) {
-    return summary.components
-      .filter((c) => c.step_ids.length > 0)
-      .map((c) => ({
-        key: c.trajectory_component,
-        label: componentLabel(c.trajectory_component),
-        gist: c.summary ?? "",
-        stepIds: sorted(c.step_ids),
-      }));
-  }
-  return (summary.phases ?? [])
-    .filter((p) => p.step_ids.length > 0)
-    .map((p) => ({
-      key: p.label,
-      label: p.label,
-      gist: p.gist,
-      stepIds: sorted(p.step_ids),
-    }));
 }
 
 /** One-line label for a step in the component list. */

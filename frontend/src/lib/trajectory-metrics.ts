@@ -1,4 +1,4 @@
-import type { TrajectoryComponentKind, TrajectoryStep } from "@/lib/types";
+import type { TrajectoryStep } from "@/lib/types";
 
 /**
  * Per-step duration in ms, derived from timestamps (time since the previous
@@ -22,27 +22,6 @@ export function stepTokens(step: TrajectoryStep): number | null {
   if (!m) return null;
   if (m.prompt_tokens == null && m.completion_tokens == null) return null;
   return (m.prompt_tokens ?? 0) + (m.completion_tokens ?? 0);
-}
-
-const COMPONENT_LABELS: Record<TrajectoryComponentKind, string> = {
-  reading_files: "Reading files",
-  thinking_recall: "Recalling",
-  thinking_understand: "Understanding",
-  thinking_hypothesize: "Hypothesizing",
-  thinking_diagnose: "Diagnosing",
-  implementing: "Implementing",
-  writing_tests: "Writing tests",
-  testing_public: "Running public tests",
-  testing_custom: "Running custom tests",
-  testing_custom_edge_cases: "Testing edge cases",
-  debugging: "Debugging",
-};
-
-/** Display label for a taxonomy value; unknown values degrade to de-snaked text. */
-export function componentLabel(kind: string): string {
-  return (
-    COMPONENT_LABELS[kind as TrajectoryComponentKind] ?? kind.replace(/_/g, " ")
-  );
 }
 
 const PHASE_SLOTS = 8;
