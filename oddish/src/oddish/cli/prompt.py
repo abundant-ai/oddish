@@ -117,6 +117,29 @@ def activate(
     console.print(f"[green]Activated {key} v{version}[/green]")
 
 
+@prompt_app.command("seed")
+def seed(
+    api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
+):
+    """Create any missing built-in prompts from their seed content."""
+    from oddish.core.prompt_seeds import PROMPT_SEEDS
+
+    url = _resolve(api_url)
+    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+        for key, (description, content) in PROMPT_SEEDS.items():
+            got = client.get(f"{url}/prompts/{key}")
+            if got.status_code == 200:
+                console.print(f"[dim]{key}: exists, skipping[/dim]")
+                continue
+            resp = client.put(
+                f"{url}/prompts/{key}",
+                json={"content": content, "description": description, "activate": True},
+            )
+            if resp.status_code != 200:
+                _fail(resp)
+            console.print(f"[green]Seeded {key}[/green]")
+
+
 @prompt_app.command("diff")
 def diff(
     key: str,
