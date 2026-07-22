@@ -12,6 +12,7 @@ from oddish.core.llm_key_fingerprint import (  # noqa: E402
     hash_llm_key,
     key_hint,
     platform_key_hash_for_provider,
+    trial_llm_key_hash,
 )
 
 
@@ -91,3 +92,30 @@ def test_stamp_strips_whitespace_to_match_admin_paste(monkeypatch):
     # admin pastes into the UI (the router strips before hashing).
     monkeypatch.setenv("XAI_API_KEY", "xai-secret-9f2c\n")
     assert platform_key_hash_for_provider("xai") == hash_llm_key("xai-secret-9f2c")
+
+
+def test_byok_overlay_stamps_the_user_key(monkeypatch):
+    # A trial that ran on a BYOK overlay must stamp the user's key, so listing
+    # the platform key never swallows BYOK spend -- and pasting the user key
+    # can exclude it.
+    monkeypatch.setenv("XAI_API_KEY", "xai-platform")
+    assert trial_llm_key_hash("xai", {"XAI_API_KEY": "xai-user"}) == hash_llm_key(
+        "xai-user"
+    )
+
+    # claude-code BYOK on a Bedrock-canonicalized model reroutes to the direct
+    # Anthropic API: the overlay carries ANTHROPIC_API_KEY, not bedrock's var.
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "aws-platform")
+    assert trial_llm_key_hash(
+        "bedrock", {"ANTHROPIC_API_KEY": "sk-ant-user"}
+    ) == hash_llm_key("sk-ant-user")
+
+
+def test_no_byok_overlay_falls_back_to_platform_key(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", "xai-platform")
+    platform = hash_llm_key("xai-platform")
+    assert trial_llm_key_hash("xai", None) == platform
+    assert trial_llm_key_hash("xai", {}) == platform
+    # An overlay with no model key for this provider (e.g. probe-only creds)
+    # does not shadow the platform stamp.
+    assert trial_llm_key_hash("xai", {"ODDISH_PROBE_TASK_ID": "t1"}) == platform

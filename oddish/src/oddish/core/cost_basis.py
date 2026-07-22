@@ -92,6 +92,16 @@ def _cost_excluded_key_spend():
     )
 
 
+def not_excluded_llm_key_filter():
+    """Drop trials stamped with an LLM key on the admin cost-exclusion list.
+
+    Shared by :func:`first_party_spend_filter` (settled spend) and the quota
+    inflight reservation, so excluded-key spend neither counts against a cap
+    once settled nor reserves against it while a stamped attempt is retrying.
+    """
+    return ~_cost_excluded_key_spend()
+
+
 def first_party_spend_filter():
     """Select actual Oddish executions, excluding non-spend materializations.
 
@@ -105,7 +115,7 @@ def first_party_spend_filter():
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
         not_combine_copy_filter(),
-        ~_cost_excluded_key_spend(),
+        not_excluded_llm_key_filter(),
     )
 
 

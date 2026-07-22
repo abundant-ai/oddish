@@ -175,3 +175,34 @@ async def test_excluded_key_spend_dropped_then_reincluded_on_removal(seeded_data
 
         org_total = await sum_org_cost_usd(session, ORG, period_start)
         assert abs(float(org_total) - (counted + EXCLUDED_COST)) <= 1e-6, org_total
+
+
+@pytest.mark.asyncio
+async def test_inflight_reservation_skips_excluded_key_spend(seeded_data):
+    # A RETRYING attempt keeps its settlement stamp while finished_at is NULL.
+    # Its partial cost must not reserve quota that the settled sums will never
+    # charge -- and must reserve again once the key leaves the list.
+    from oddish.core.quotas import inflight_reserved_usd
+    from oddish.db import TrialStatus
+
+    excluded_id = seeded_data
+    inflight = _trial(EXCLUDED_TASK, 9, 5.0, utcnow(), EXCLUDED_HASH)
+    inflight.finished_at = None
+    inflight.status = TrialStatus.RETRYING
+
+    async with get_session() as session:
+        session.add(inflight)
+        await session.flush()
+
+        reserved = await inflight_reserved_usd(session, ORG, USER)
+        assert float(reserved) == 0.0, reserved
+
+        await session.execute(
+            CostExcludedLlmKeyModel.__table__.update()
+            .where(CostExcludedLlmKeyModel.id == excluded_id)
+            .values(deleted_at=utcnow())
+        )
+        await session.flush()
+
+        reserved = await inflight_reserved_usd(session, ORG, USER)
+        assert float(reserved) >= 5.0, reserved

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -29,7 +30,7 @@ from oddish.db import (
     WorkerJobStatus,
     utcnow,
 )
-from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
+from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.observability import log_unpriced_trial_if_needed
@@ -623,6 +624,7 @@ async def _store_trial_results(
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
+    byok_env: Mapping[str, str] | None = None,
 ) -> bool:
     """Persist the trial outcome. Returns True when the trial is left in a
     terminal state (SUCCESS/FAILED with finished_at set), False when it stays
@@ -710,10 +712,11 @@ async def _store_trial_results(
                 cache_tokens=outcome.cache_tokens,
                 cache_write_tokens=outcome.cache_write_tokens,
             )
-            # Stamp the platform key this trial ran on so its spend can be
-            # dropped from cost accounting when the key is on the admin
+            # Stamp the key this trial ran on -- the BYOK overlay's key when
+            # one was injected, else the worker's platform key -- so its spend
+            # can be dropped from cost accounting when that key is on the admin
             # exclusion list. Forward-only; NULL when the key can't be resolved.
-            trial.llm_key_hash = platform_key_hash_for_provider(provider)
+            trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
 
             trial.phase_timing = outcome.phase_timing
             # Verifier-reported benchmark metrics (the metrics.json contract),
@@ -1415,6 +1418,7 @@ async def run_trial_job(
                 probe_analysis=probe_analysis,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
+                byok_env=byok_resolution.env if byok_resolution else None,
             )
         )
     finally:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Mapping
 
 
 def hash_llm_key(raw_key: str) -> str:
@@ -57,6 +58,43 @@ def _oddish_platform_key(provider: str) -> str | None:
     return configured or os.environ.get(_ODDISH_PROVIDER_ENV_KEYS[provider])
 
 
+def _provider_key_var(provider: str) -> str | None:
+    """Canonical env-var name holding ``provider``'s API key, or None."""
+    var = _ODDISH_PROVIDER_ENV_KEYS.get(provider)
+    if var:
+        return var
+    from harbor.agents.utils import PROVIDER_KEYS
+
+    mapped = PROVIDER_KEYS.get(provider)
+    if isinstance(mapped, list):
+        mapped = mapped[0] if mapped else None
+    return mapped or None
+
+
+def trial_llm_key_hash(
+    provider: str | None, byok_env: Mapping[str, str] | None = None
+) -> str | None:
+    """Hash of the key that funded one trial.
+
+    A BYOK overlay replaces the platform credential inside the agent env, so
+    when it carries the provider's key variable -- or ``ANTHROPIC_API_KEY``,
+    the variable every direct-Anthropic reroute (including claude-code on a
+    Bedrock-canonicalized model) injects -- the trial ran, and was paid for, on
+    that user key: hash it, so listing the platform key can never swallow BYOK
+    spend and a pasted BYOK key matches. With no overlay the platform key
+    funded the run (:func:`platform_key_hash_for_provider`).
+    """
+    if byok_env and provider:
+        var = _provider_key_var(provider)
+        raw = (byok_env.get(var) if var else None) or byok_env.get(
+            "ANTHROPIC_API_KEY"
+        )
+        raw = (raw or "").strip()
+        if raw:
+            return hash_llm_key(raw)
+    return platform_key_hash_for_provider(provider)
+
+
 def platform_key_hash_for_provider(provider: str | None) -> str | None:
     """Hash of the platform API key configured for ``provider``, or None.
 
@@ -74,11 +112,7 @@ def platform_key_hash_for_provider(provider: str | None) -> str | None:
     if provider in _ODDISH_PROVIDER_ENV_KEYS:
         raw = _oddish_platform_key(provider)
     else:
-        from harbor.agents.utils import PROVIDER_KEYS
-
-        var = PROVIDER_KEYS.get(provider)
-        if isinstance(var, list):
-            var = var[0] if var else None
+        var = _provider_key_var(provider)
         if not var:
             return None
         raw = os.environ.get(var)
