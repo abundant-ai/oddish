@@ -1,9 +1,11 @@
 """Admin API for the LLM-key cost-exclusion list.
 
 Admins register LLM provider API keys (e.g. sponsored/free keys) whose spend is
-ignored across quota enforcement and every cost surface. Only a one-way SHA-256
-hash and a masked hint are stored -- the pasted key is hashed and discarded.
-Trials stamped with a matching hash are dropped by ``first_party_spend_filter``.
+ignored by cost accounting: quota enforcement and the admin cost dashboards,
+i.e. every surface sharing ``first_party_spend_filter`` (experiment pages keep
+showing raw compute cost, as they do for imported trials). Only a one-way
+SHA-256 hash and a masked hint are stored -- the pasted key is hashed and
+discarded.
 
 Writes require a JWT org admin: a FULL-scope API key passes ``require_admin`` but
 must not be able to edit what counts as spend, so the mutating routes re-check

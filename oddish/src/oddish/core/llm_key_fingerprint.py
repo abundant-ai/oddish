@@ -36,6 +36,7 @@ _ODDISH_PROVIDER_ENV_KEYS: dict[str, str] = {
     "meta": "META_API_KEY",
     "zai": "ZAI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+    "moonshot": "MOONSHOT_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
 }
 

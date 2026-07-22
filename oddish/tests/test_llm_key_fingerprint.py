@@ -57,6 +57,9 @@ def test_oddish_wired_providers_resolve_outside_harbor_map(monkeypatch):
     monkeypatch.setenv("MINIMAX_API_KEY", "mm-2222")
     assert platform_key_hash_for_provider("minimax") == hash_llm_key("mm-2222")
 
+    monkeypatch.setenv("MOONSHOT_API_KEY", "ms-5555")
+    assert platform_key_hash_for_provider("moonshot") == hash_llm_key("ms-5555")
+
     monkeypatch.setenv("FIREWORKS_API_KEY", "fw-3333")
     assert platform_key_hash_for_provider("fireworks") == hash_llm_key("fw-3333")
 

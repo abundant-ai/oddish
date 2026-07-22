@@ -54,7 +54,16 @@ export function CostExcludedKeysCard() {
   }
 
   async function remove(id: string) {
-    await fetch(`/api/admin/cost-excluded-keys/${id}`, { method: "DELETE" });
+    setFormError(null);
+    const res = await fetch(`/api/admin/cost-excluded-keys/${id}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setFormError(
+        body?.details || body?.error || "Failed to remove key."
+      );
+    }
     await mutate();
   }
 
@@ -64,8 +73,9 @@ export function CostExcludedKeysCard() {
         <CardTitle className="text-base">Cost-excluded LLM keys</CardTitle>
         <p className="text-muted-foreground text-sm">
           Spend on these LLM provider API keys (e.g. sponsored or free keys) is
-          ignored across quota enforcement and every cost view. Only a one-way
-          hash is stored — the key itself is never saved.
+          ignored by cost accounting: quota enforcement and the admin cost
+          dashboards. Experiment pages still show the trials&apos; raw compute
+          cost. Only a one-way hash is stored — the key itself is never saved.
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
