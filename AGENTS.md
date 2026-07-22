@@ -158,6 +158,16 @@ High-level flow:
    S3; only counts, the tool name, and the report's trial-relative artifact path
    are stored in `trials.result`. Use the CLI or dashboard to watch progress and
    pull logs/artifacts back locally.
+   It also derives trajectory elapsed time and tool usage directly from ATIF
+   steps into `trials.trajectory_duration_seconds`, `trials.total_tool_calls`,
+   and `trials.tool_counts`. Task and experiment filters combine model and
+   trajectory metric constraints against the same eligible trial. Their
+   `any` mode requires one passing trial; `all` requires at least one eligible
+   trial and rejects the row when any eligible trial fails the constraints.
+   The canonical cross-surface contract is `oddish.filters.TrialMetricFilter`;
+   CLI and API adapters must parse/serialize through it. SQL surfaces must use
+   `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
+   injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
 Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and

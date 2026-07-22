@@ -10,7 +10,7 @@ import {
 } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -153,7 +153,7 @@ function CommandSnippet({ command }: { command: string }) {
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border/80 bg-muted/35 px-3 py-2">
+    <div className="border-border/80 bg-muted/35 flex items-center gap-2 rounded-md border px-3 py-2">
       <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs">
         {command}
       </code>
@@ -177,14 +177,14 @@ function CommandSnippet({ command }: { command: string }) {
 
 function EmptyExperimentsState() {
   return (
-    <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 p-6">
+    <div className="bg-card/60 rounded-lg border border-dashed border-[#6f88b4]/30 p-6">
       <div className="flex flex-col items-center text-center">
-        <Clock className="mb-3 h-11 w-11 text-muted-foreground/70" />
+        <Clock className="text-muted-foreground/70 mb-3 h-11 w-11" />
         <p className="text-base font-medium">No experiments yet</p>
       </div>
 
       <div className="mt-5 grid gap-3 lg:grid-cols-3">
-        <div className="rounded-lg border border-[#85b85c]/20 bg-background/80 p-4">
+        <div className="bg-background/80 rounded-lg border border-[#85b85c]/20 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium">
             <Terminal className="h-4 w-4 text-[#5c8e43]" />
             Install the CLI
@@ -192,7 +192,7 @@ function EmptyExperimentsState() {
           <CommandSnippet command="uv pip install oddish" />
         </div>
 
-        <div className="rounded-lg border border-[#6f88b4]/20 bg-background/80 p-4">
+        <div className="bg-background/80 rounded-lg border border-[#6f88b4]/20 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium">
             <Key className="h-4 w-4 text-[#6f88b4]" />
             Add an API key
@@ -200,7 +200,7 @@ function EmptyExperimentsState() {
           <CommandSnippet command={'export ODDISH_API_KEY="ok_..."'} />
         </div>
 
-        <div className="rounded-lg border border-[#85b85c]/20 bg-background/80 p-4">
+        <div className="bg-background/80 rounded-lg border border-[#85b85c]/20 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium">
             <ArrowRight className="h-4 w-4 text-[#5c8e43]" />
             Submit your first job
@@ -218,11 +218,11 @@ function MineEmptyExperimentsState({
   onViewOrgExperiments: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 p-6">
+    <div className="bg-card/60 rounded-lg border border-dashed border-[#6f88b4]/30 p-6">
       <div className="flex flex-col items-center text-center">
-        <Users className="mb-3 h-11 w-11 text-muted-foreground/70" />
+        <Users className="text-muted-foreground/70 mb-3 h-11 w-11" />
         <p className="text-base font-medium">No experiments of yours yet</p>
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+        <p className="text-muted-foreground mt-1 max-w-md text-sm">
           Your organization may have other experiments. Switch to the org view
           to browse everything, or submit a new job to get started.
         </p>
@@ -288,13 +288,13 @@ function ExperimentsTableBody({
     try {
       const res = await fetch(
         `/api/experiments/${encodeExperimentRouteParam(deleteTarget.id)}`,
-        { method: "DELETE" },
+        { method: "DELETE" }
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to delete experiment",
+          errorData.detail || errorData.error || "Failed to delete experiment"
         );
       }
 
@@ -302,7 +302,7 @@ function ExperimentsTableBody({
       setDeleteTarget(null);
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete experiment",
+        error instanceof Error ? error.message : "Failed to delete experiment"
       );
     } finally {
       setIsDeleting(false);
@@ -311,7 +311,7 @@ function ExperimentsTableBody({
 
   return (
     <>
-      <div className="mb-3 text-[11px] text-muted-foreground">
+      <div className="text-muted-foreground mb-3 text-[11px]">
         Showing {experiments.length}
         {" • "}
         Page {currentExperimentsPage}
@@ -332,7 +332,7 @@ function ExperimentsTableBody({
           <EmptyExperimentsState />
         )
       ) : experiments.length === 0 ? (
-        <div className="py-8 text-center text-muted-foreground">
+        <div className="text-muted-foreground py-8 text-center">
           <p>No experiments match the current filters.</p>
         </div>
       ) : (
@@ -370,7 +370,7 @@ function ExperimentsTableBody({
                       <div className="flex items-center gap-1.5">
                         <Link
                           href={`/experiments/${encodeExperimentRouteParam(
-                            experiment.id,
+                            experiment.id
                           )}`}
                           className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
                         >
@@ -378,7 +378,7 @@ function ExperimentsTableBody({
                         </Link>
                         {experiment.is_public && (
                           <Globe
-                            className="h-3.5 w-3.5 text-muted-foreground"
+                            className="text-muted-foreground h-3.5 w-3.5"
                             aria-label="Published experiment"
                           />
                         )}
@@ -391,21 +391,21 @@ function ExperimentsTableBody({
                         </div>
                       )}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
                       <span className="text-foreground/80">
                         {formatTaskAuthor(
-                          experiment.author ?? experiment.last_author,
+                          experiment.author ?? experiment.last_author
                         )}
                       </span>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
                       <span className="text-foreground/80">
                         {formatTaskAuthor(
-                          experiment.last_runner ?? experiment.last_author,
+                          experiment.last_runner ?? experiment.last_author
                         )}
                       </span>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs">
+                    <TableCell className="text-xs whitespace-nowrap">
                       {experiment.last_pr_url ? (
                         <Link
                           href={experiment.last_pr_url}
@@ -418,7 +418,7 @@ function ExperimentsTableBody({
                           }
                           className={cn(
                             badgeVariants({ variant: "outline" }),
-                            "max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+                            "hover:bg-accent max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors"
                           )}
                         >
                           <GitPullRequest
@@ -428,7 +428,7 @@ function ExperimentsTableBody({
                           {(() => {
                             const { label, number } = prBadge(
                               experiment.last_pr_url,
-                              experiment.last_pr_number,
+                              experiment.last_pr_number
                             );
                             return (
                               <span className="min-w-0 truncate">
@@ -452,7 +452,7 @@ function ExperimentsTableBody({
                       )}
                     </TableCell>
                     <TableCell>{experiment.task_count}</TableCell>
-                    <TableCell className="whitespace-nowrap font-mono text-xs">
+                    <TableCell className="font-mono text-xs whitespace-nowrap">
                       {/* done = terminal (success + failed + skipped), so a
                           finished experiment reads N/N, not "2/5". The (R)/(F)/(S)
                           suffixes break down the composition. */}
@@ -496,7 +496,7 @@ function ExperimentsTableBody({
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-right text-xs whitespace-nowrap">
                       {experiment.last_created_at
                         ? formatShortDateTime(experiment.last_created_at)
                         : "—"}
@@ -517,7 +517,7 @@ function ExperimentsTableBody({
                           experiment.id === "uncategorized" ||
                           experiment.name === "Uncategorized"
                         }
-                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        className="text-destructive hover:text-destructive h-8 w-8"
                         aria-label={`Delete ${experiment.name}`}
                       >
                         <Trash2 className="h-4 w-4" />
@@ -568,7 +568,7 @@ function ExperimentsTableBody({
             <AlertDialogTitle>Delete this experiment?</AlertDialogTitle>
             <AlertDialogDescription>
               This permanently deletes{" "}
-              <span className="font-medium text-foreground">
+              <span className="text-foreground font-medium">
                 {deleteTarget?.name}
               </span>{" "}
               and removes {deleteTarget?.taskCount ?? 0} tasks and{" "}
@@ -705,7 +705,7 @@ function RecentTasksCard({
                           {memberDisplayName(member)}
                         </span>
                         {member.github_username && (
-                          <span className="truncate text-[10px] text-muted-foreground">
+                          <span className="text-muted-foreground truncate text-[10px]">
                             @{member.github_username}
                           </span>
                         )}
@@ -746,7 +746,7 @@ function RecentTasksCard({
               <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
               <p className="text-muted-foreground">
                 Filters stack (AND) and are case-insensitive, e.g.{" "}
-                <code className="rounded bg-muted px-1 font-mono">
+                <code className="bg-muted rounded px-1 font-mono">
                   github:alice tag:smoke
                 </code>
               </p>
@@ -786,6 +786,7 @@ function RecentTasksCard({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        <ExperimentMetricFilters />
       </CardHeader>
       <CardContent>
         <Suspense key={paramsKey} fallback={<ExperimentsSkeleton />}>
@@ -803,6 +804,76 @@ function RecentTasksCard({
         </Suspense>
       </CardContent>
     </Card>
+  );
+}
+
+function ExperimentMetricFilters() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const update = (key: string, value: string) => {
+    const next = new URLSearchParams(searchParams.toString());
+    if (value) next.set(key, value);
+    else next.delete(key);
+    next.delete("page");
+    router.push(`${pathname}?${next.toString()}`);
+  };
+  const mode = searchParams.get("metricMatch") === "all" ? "all" : "any";
+  const help =
+    "Any trial matches when one selected-model trial meets every metric constraint. All trials requires every selected-model trial to meet every constraint.";
+  return (
+    <details className="w-full rounded-md border border-[#6f88b4]/20 px-3 py-2">
+      <summary className="cursor-pointer text-xs font-medium">
+        Trial metrics
+      </summary>
+      <div className="mt-2 grid gap-2 sm:grid-cols-6">
+        {[
+          ["model", "Model", "e.g. openai/gpt-5"],
+          ["minSteps", "Min steps", "100"],
+          ["minTime", "Min time (s)", "120"],
+          ["minTools", "Min tool calls", "10"],
+          ["tool", "Tool name", "e.g. bash"],
+        ].map(([key, label, placeholder]) => (
+          <label
+            key={key}
+            className="text-muted-foreground space-y-1 text-[11px]"
+          >
+            <span>{label}</span>
+            <Input
+              key={`${key}-${searchParams.get(key) ?? ""}`}
+              defaultValue={searchParams.get(key) ?? ""}
+              placeholder={placeholder}
+              type={key === "model" || key === "tool" ? "text" : "number"}
+              min={key === "model" || key === "tool" ? undefined : 0}
+              className="h-8"
+              onBlur={(event) => update(key, event.target.value.trim())}
+            />
+          </label>
+        ))}
+        <div className="space-y-1" title={help}>
+          <span className="text-muted-foreground text-[11px]">
+            Match across
+          </span>
+          <div className="grid h-8 grid-cols-2 rounded-md border p-0.5">
+            {(["any", "all"] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={cn(
+                  "rounded px-1 text-[11px] capitalize",
+                  mode === value && "bg-secondary font-medium"
+                )}
+                onClick={() =>
+                  update("metricMatch", value === "all" ? "all" : "")
+                }
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -882,7 +953,7 @@ export function DashboardClient({
     page?: number;
   }) => {
     startTransition(() =>
-      router.push(buildFilterHref(overrides), { scroll: false }),
+      router.push(buildFilterHref(overrides), { scroll: false })
     );
   };
 

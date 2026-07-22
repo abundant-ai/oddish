@@ -482,9 +482,36 @@ async def browse_tasks(
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
     tags_none: str | None = Query(None),
+    models: str | None = Query(None),
+    min_steps: int | None = Query(None, ge=0),
+    max_steps: int | None = Query(None, ge=0),
+    min_duration_seconds: float | None = Query(None, ge=0),
+    max_duration_seconds: float | None = Query(None, ge=0),
+    min_tool_calls: int | None = Query(None, ge=0),
+    max_tool_calls: int | None = Query(None, ge=0),
+    tool_names: str | None = Query(None),
+    tool_count_mins: str | None = Query(None),
+    trial_metric_match: str = Query("any", pattern="^(any|all)$"),
 ) -> TaskBrowseResponse:
     """Browse latest task versions with aggregated trial stats."""
     async with get_session() as session:
+        from oddish.filters.trial_metrics import TrialMetricFilter
+
+        try:
+            metric_filter = TrialMetricFilter.from_query(
+                models=models,
+                min_steps=min_steps,
+                max_steps=max_steps,
+                min_duration_seconds=min_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                min_tool_calls=min_tool_calls,
+                max_tool_calls=max_tool_calls,
+                tool_names=tool_names,
+                tool_count_mins=tool_count_mins,
+                match=trial_metric_match,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return await browse_tasks_core(
             session,
             limit=limit,
@@ -493,6 +520,16 @@ async def browse_tasks(
             tags_all=_split_tag_csv(tags),
             tags_any=_split_tag_csv(tags_any),
             tags_none=_split_tag_csv(tags_none),
+            models=metric_filter.models,
+            min_steps=metric_filter.min_steps,
+            max_steps=metric_filter.max_steps,
+            min_duration_seconds=metric_filter.min_duration_seconds,
+            max_duration_seconds=metric_filter.max_duration_seconds,
+            min_tool_calls=metric_filter.min_tool_calls,
+            max_tool_calls=metric_filter.max_tool_calls,
+            tool_names=metric_filter.tool_names,
+            tool_count_mins=metric_filter.tool_count_mins,
+            trial_metric_match=metric_filter.match.value,
         )
 
 
