@@ -60,8 +60,13 @@ against the oddish Postgres. Read-only is enforced in layers, strongest first:
    (INSERT/UPDATE/DELETE/DDL/etc.) with *"cannot execute … in a read-only
    transaction"*. This holds even if the DSN points at a read/write role.
 2. **Dedicated RO role (recommended).** Point `ODDISH_DATABASE_URL_RO` at a
-   Postgres role granted only `SELECT`. This is defense in depth on top of (1)
-   and also blocks superuser-only escape hatches (`pg_read_file`, `COPY … TO
+   Postgres role granted only `SELECT`, and grant that `SELECT` only on the
+   analytics tables you want reachable (e.g. `analysis_costs`, `trials`,
+   `tasks`, `experiments`, cost views) — **never** on user/auth/secret tables.
+   Table-scoped grants are the real containment here: an allow-listed user (or a
+   prompt injection riding in on a trial log) then gets `permission denied` for
+   anything off the list, not a data dump. This is also defense in depth on top
+   of (1) and blocks superuser-only escape hatches (`pg_read_file`, `COPY … TO
    PROGRAM`); grant it no superuser and no write privileges.
 3. **Statement shape check.** The query must be a single statement beginning
    with `SELECT`/`WITH`/`EXPLAIN`/`SHOW`/`TABLE`/`VALUES`; stacked
@@ -86,6 +91,13 @@ The agent is told to aggregate in SQL and add `LIMIT`, and to introspect
   direct messages to the bot are silently ignored. To support DMs you would add
   the `message.im` event and the `im:history` scope, and handle that event type
   in `_dispatch`.
+- **`oddish_sql` is a broad read surface.** The bot reads untrusted content
+  (trial logs, task names) *and* has a SQL tool *and* posts to a channel, so a
+  prompt injection riding in on a trial log could try to make it query and leak
+  data. The system prompt tells it to treat tool output as data and refuse to
+  read secrets, but the durable control is the RO role's table-scoped grants
+  (see Read-only SQL above) plus the allow-list of who can drive the bot — keep
+  both tight rather than relying on the prompt alone.
 - **Single shared identity.** Every backend call is attributed to the one admin
   API key regardless of who asked; the Slack asker is captured in the logs only.
 - **Mixed scoping.** The cost and queue-health tools hit admin endpoints that are

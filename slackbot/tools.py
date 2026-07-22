@@ -13,6 +13,7 @@ _LOG_TAIL_CHARS = 6000
 # Read-only SQL guardrails. The Postgres READ ONLY transaction (below) is the
 # real enforcement; these just bound blast radius and give clean errors.
 _SQL_MAX_ROWS = 200
+_SQL_MAX_CELL_CHARS = 200
 _SQL_STATEMENT_TIMEOUT_MS = 15000
 _SQL_CONNECT_TIMEOUT = 10
 _SQL_ALLOWED_LEADERS = ("select", "with", "explain", "show", "table", "values")
@@ -168,7 +169,11 @@ async def oddish_trial_logs(args: dict) -> dict:
         data = await _get(f"/trials/{quote(tid, safe='')}/logs/structured")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
-            return _text(f"No trial found for id `{tid}`.")
+            return _text(
+                f"No trial found for id `{tid}` in this bot's org. Trial-log lookups are "
+                "org-scoped, so a trial that shows up in global cost/SQL data can still be "
+                "missing here if it belongs to another org."
+            )
         raise
     parts = [f"*Trial {data.get('trial_id')}*"]
     if data.get("exception"):
@@ -248,15 +253,30 @@ def _check_readonly_sql(sql: str) -> str | None:
     return None
 
 
+def _cell(v) -> str:
+    """One table cell: never None, single-line, and length-bounded.
+
+    A single wide field (JSON blob, log line) would otherwise blow the whole
+    12k ``_text`` budget and could truncate mid-fence, so cap each cell and
+    strip newlines that would break the Slack code block's row alignment.
+    """
+    if v is None:
+        return ""
+    s = str(v).replace("\n", " ").replace("\r", " ")
+    return s if len(s) <= _SQL_MAX_CELL_CHARS else s[: _SQL_MAX_CELL_CHARS - 1] + "…"
+
+
 def _format_rows(records: list[asyncpg.Record], truncated: bool) -> str:
     if not records:
-        return "_(0 rows)_"
+        return "_(0 rows returned)_"
     cols = list(records[0].keys())
     lines = [" | ".join(cols), " | ".join("---" for _ in cols)]
     for rec in records:
-        lines.append(" | ".join("" if v is None else str(v) for v in rec.values()))
+        lines.append(" | ".join(_cell(v) for v in rec.values()))
     header = f"*{len(records)} row(s)*" + (
-        f" _(capped at {_SQL_MAX_ROWS}; add a tighter WHERE/LIMIT)_" if truncated else ""
+        f" _(capped at {_SQL_MAX_ROWS}; aggregate in SQL or add a tighter WHERE/LIMIT)_"
+        if truncated
+        else ""
     )
     return header + "\n```\n" + "\n".join(lines) + "\n```"
 
@@ -268,8 +288,11 @@ def _format_rows(records: list[asyncpg.Record], truncated: bool) -> str:
     "cost from `analysis_costs`, join trials to tasks, aggregate spend by day. "
     "Only SELECT/WITH/EXPLAIN/SHOW is allowed; the query runs in a READ ONLY "
     "transaction with a 15s statement timeout and at most 200 rows are returned. "
-    "Explore the schema with `select table_name, column_name, data_type from "
-    "information_schema.columns where table_schema='public' order by 1,2`.",
+    "Raw SQL bypasses the app's soft-delete filter, so add `WHERE deleted_at IS "
+    "NULL` on tables that have it. List a table's columns with `select "
+    "column_name, data_type from information_schema.columns where "
+    "table_name='<table>' order by ordinal_position`, or list tables with "
+    "`select table_name from information_schema.tables where table_schema='public'`.",
     {
         "type": "object",
         "properties": {"query": {"type": "string"}},
