@@ -51,6 +51,7 @@ ANALYSIS_MODEL = "claude-sonnet-5"
 # TrialClassifier model. Normalized to a direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
 VERDICT_MODEL = "gpt-5.4"
+PRE_TRIAL_MODEL = ANALYSIS_MODEL
 
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
@@ -1106,6 +1107,10 @@ class Settings(BaseSettings):
     # the legacy compute_task_verdict path with no branching in either.
     verdict_via_analyzer_block: bool = False
 
+    # AnalyzerBlock-backed pre-trial QA audit. Gates registration only; off ->
+    # pre-trial analysis does not run and no task columns are written.
+    pre_trial_via_analyzer_block: bool = False
+
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``
@@ -1180,6 +1185,7 @@ class Settings(BaseSettings):
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
+    pre_trial_model: str = PRE_TRIAL_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()

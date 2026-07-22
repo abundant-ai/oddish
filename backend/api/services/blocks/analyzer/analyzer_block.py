@@ -24,6 +24,7 @@ class AnalyzerType(str, enum.Enum):
     SCALING_ANALYSIS = "scaling_analysis"
     TRAJECTORY_SUMMARY = "trajectory_summary"
     TASK_VERDICT = "task_verdict"
+    PRE_TRIAL = "pre_trial"
 
 
 @dataclass

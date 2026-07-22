@@ -275,3 +275,9 @@ def compute_action_item_id(item: ActionItem) -> str:
         ]
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+class PreTrialActionItems(BaseModel):
+    """List wrapper so the block's output_schema is a dict-shaped model."""
+
+    items: list[ActionItem] = Field(default_factory=list)
