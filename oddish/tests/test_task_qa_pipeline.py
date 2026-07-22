@@ -22,6 +22,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import oddish.queue as queue_mod  # noqa: E402
+from oddish.analyze.models import (  # noqa: E402
+    ActionItem,
+    ActionItemSource,
+    ActionTier,
+    Dimension,
+    ProblemType,
+)
 from oddish.db import (  # noqa: E402
     AnalysisStatus,
     TaskStatus,
@@ -33,6 +40,7 @@ from oddish.workers.queue import qa_handler  # noqa: E402
 from oddish.workers.queue.qa_handler import (  # noqa: E402
     _classifications_from_trials,
     _trial_needs_classification,
+    default_pre_trial_synth as qh_default_pre_trial_synth,
 )
 
 
@@ -393,6 +401,225 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     assert task.status == TaskStatus.COMPLETED
     assert task.verdict["is_good"] is False
     assert task.verdict["primary_issue"] == "task issue"
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
+    """CRITICAL INVARIANT: with the default (no-op) ``pre_trial_synth_fn``,
+    ``run_task_qa_job`` must not touch the pre_trial columns at all, and the
+    verdict path must be byte-for-byte unaffected. ``sync_pre_trial_to_task``
+    is patched to blow up if called -- proving the ``if pre_trial_items is
+    not None`` guard actually skips persistence for the legacy default.
+    """
+    task = SimpleNamespace(
+        id="task-9b",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="task-9b-0",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    def fake_compute_verdict(*, classifications, **_kwargs):
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue="",
+            reasoning="fine",
+            recommendations=[],
+        )
+
+    async def fail_sync_pre_trial(*_args, **_kwargs):
+        raise AssertionError(
+            "sync_pre_trial_to_task must not be called for the default no-op synth"
+        )
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler, "sync_pre_trial_to_task", fail_sync_pre_trial)
+
+    assert qa_handler.default_pre_trial_synth is qh_default_pre_trial_synth
+    await qa_handler.run_task_qa_job("task-9b", queue_key="verdict")
+
+    # pre_trial was never assigned onto the task -- proves the guard skipped
+    # persistence entirely rather than writing an empty/None payload.
+    assert not hasattr(task, "pre_trial")
+    assert not hasattr(task, "pre_trial_status")
+    # Verdict path is unaffected.
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_default_pre_trial_synth_returns_none():
+    """Belt-and-braces: the default strategy itself is an unconditional no-op."""
+    assert await qa_handler.default_pre_trial_synth("task-x", ["t-1"], 30) is None
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
+    """An injected ``pre_trial_synth_fn`` runs once before the per-trial loop
+    and its result is persisted via ``sync_pre_trial_to_task`` -- without
+    completing the task or touching verdict fields."""
+    task = SimpleNamespace(
+        id="task-9c",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+        pre_trial=None,
+        pre_trial_status=None,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="task-9c-0",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    def fake_compute_verdict(*, classifications, **_kwargs):
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue="",
+            reasoning="fine",
+            recommendations=[],
+        )
+
+    captured: dict = {}
+
+    async def stub_pre_trial_synth(task_id, trial_ids, timeout):
+        captured["task_id"] = task_id
+        captured["trial_ids"] = trial_ids
+        return [
+            ActionItem(
+                source=ActionItemSource.PRE_TRIAL,
+                problem_type=ProblemType.MISMATCH,
+                dimension=Dimension.ORACLE,
+                file="solution.py",
+                line_start=1,
+                line_end=1,
+                title="t",
+                detail="d",
+                recommendation="r",
+                tier=ActionTier.SHOULD_FIX,
+            )
+        ]
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+
+    await qa_handler.run_task_qa_job(
+        "task-9c", queue_key="verdict", pre_trial_synth_fn=stub_pre_trial_synth
+    )
+
+    assert captured["task_id"] == "task-9c"
+    assert captured["trial_ids"] == ["task-9c-0"]
+    assert task.pre_trial_status == VerdictStatus.SUCCESS
+    assert task.pre_trial["items"][0]["file"] == "solution.py"
+    # Pre-trial must never complete the task or touch verdict fields.
+    assert task.status == TaskStatus.COMPLETED  # completed by the verdict path, not pre-trial
+    assert task.verdict_status == VerdictStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatch):
+    """A raising ``pre_trial_synth_fn`` must be swallowed: recorded as a
+    pre_trial failure, but the verdict path still runs to completion."""
+    task = SimpleNamespace(
+        id="task-9d",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+        pre_trial=None,
+        pre_trial_status=None,
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="task-9d-0",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    def fake_compute_verdict(*, classifications, **_kwargs):
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue="",
+            reasoning="fine",
+            recommendations=[],
+        )
+
+    async def boom_pre_trial_synth(task_id, trial_ids, timeout):
+        raise RuntimeError("sandbox exploded")
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+
+    await qa_handler.run_task_qa_job(
+        "task-9d", queue_key="verdict", pre_trial_synth_fn=boom_pre_trial_synth
+    )
+
+    assert task.pre_trial_status == VerdictStatus.FAILED
+    assert "sandbox exploded" in task.pre_trial_error
+    # Verdict path is unaffected by the pre-trial crash.
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.status == TaskStatus.COMPLETED
 
 
 @pytest.mark.asyncio

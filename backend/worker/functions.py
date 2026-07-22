@@ -125,6 +125,14 @@ from .verdict_synth import install_verdict_block_qa_handler
 if install_verdict_block_qa_handler():
     console.print("[dim]qa: verdict-via-analyzer-block handler registered[/dim]")
 
+# Swap the core QA handler's pre-trial-synthesis strategy for the
+# AnalyzerBlock-backed one. Gated by settings.pre_trial_via_analyzer_block;
+# off -> the legacy no-op (pre-trial does not run), unchanged.
+from .pre_trial_synth import install_pre_trial_block_qa_handler
+
+if install_pre_trial_block_qa_handler():
+    console.print("[dim]qa: pre-trial-via-analyzer-block handler registered[/dim]")
+
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
 # The QA hook refreshes the whole PR comment (per-trial classifications +

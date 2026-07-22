@@ -8,7 +8,12 @@ from sqlalchemy import func, select
 from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
-from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
+from oddish.core.verdict_sync import (
+    build_pre_trial_payload,
+    build_verdict_payload,
+    sync_pre_trial_to_task,
+    sync_verdict_to_task,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -56,6 +61,21 @@ async def default_verdict_synth(
         verbose=True,
         timeout=timeout,
     )
+
+
+# The pre-trial-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
+# can be injected here the same way verdict synthesis is, without oddish
+# importing backend/. Mirrors VerdictSynthFn's shape.
+PreTrialSynthFn = Callable[[str, list[str], float], Awaitable[Any]]
+
+
+async def default_pre_trial_synth(
+    task_id: str, trial_ids: list[str], timeout: float
+) -> Any:
+    """Legacy default: pre-trial analysis does not run. Returning ``None``
+    is load-bearing -- the ``pre_trial_items is not None`` guard in
+    ``run_task_qa_job`` is what keeps this a complete no-op."""
+    return None
 
 
 async def _heartbeat_qa_worker_job(
@@ -192,6 +212,7 @@ async def run_task_qa_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     verdict_synth_fn: VerdictSynthFn = default_verdict_synth,
+    pre_trial_synth_fn: PreTrialSynthFn = default_pre_trial_synth,
 ) -> None:
     """Classify a task's live trials and store one verdict."""
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
@@ -229,6 +250,40 @@ async def run_task_qa_job(
     classifications: list[TrialClassification] = []
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
+
+        # Pre-trial: a task-source audit, independent of trial classification
+        # -- runs once, before the per-trial loop, even when there are zero
+        # live trials to classify. The default strategy returns None, and the
+        # `is not None` guard makes that a complete no-op: sync_pre_trial_to_task
+        # is never called and no pre_trial column is touched. A pre-trial
+        # failure is swallowed here so it can never block the verdict path.
+        try:
+            pre_trial_items = await pre_trial_synth_fn(
+                task_id, [trial_id for trial_id, _ in live_trials], 180
+            )
+            if pre_trial_items is not None:
+                await sync_pre_trial_to_task(
+                    task_id,
+                    payload=build_pre_trial_payload(pre_trial_items),
+                    error=None,
+                    should_store=lambda session: _worker_job_is_running(
+                        session, worker_job_id
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Pre-trial synthesis failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+            await sync_pre_trial_to_task(
+                task_id,
+                payload=None,
+                error=exc,
+                should_store=lambda session: _worker_job_is_running(
+                    session, worker_job_id
+                ),
+            )
+
         if not live_trials:
             # Every live trial is excluded from QA (bulk-migrated imports
             # filtered by imported_at; gate-skipped trials). Nothing to classify
