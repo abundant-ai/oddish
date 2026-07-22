@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-22]
+
+### Added
+
+- `oddish kimi-claude-code` agent alias hardcodes Moonshot's Claude Code eval knobs (CLI version, disallowed tools, long-context/sandbox env) while still routing the caller-supplied model through Moonshot (#843).
+- New `anthropic-hdo/<model>` provider prefix routes Claude trials to the direct Anthropic API using a separate `ANTHROPIC_HDO_API_KEY`, instead of the default Bedrock/platform-key path, with its own provider/queue bucket and network allowlist (#842).
+- `oddish experiment add` / `remove` / `rename` let a collection experiment be edited in place — merging in trials from another experiment or task, dropping a task, or renaming — without minting a new share link (#837).
+- Admin cost dashboard now surfaces QA/analysis spend: a stat tile split into Model inference vs QA, a per-model QA cost table, and a "Model vs QA" stack-by option on the Cost over time chart (#839, #845, #846).
+- Slack DMs now fire for "experiment finished", "trial finished", and "task finished" (QA verdict success) events, each independently toggleable per-user alongside the existing failure alerts (#840, #844).
+- Task-verdict synthesis can now run through the `AnalyzerBlock` primitive instead of the legacy inline OpenAI path, gated behind a default-off `verdict_via_analyzer_block` setting; groundwork for a sandboxed cross-trial analyzer (#809).
+
+### Changed
+
+- `AnalyzerBlock` runs (trajectory summaries, cohort failure-analysis reduce, and the new verdict block) now record their LLM spend to `analysis_costs` keyed by block kind, billed to whichever user triggered the call rather than the trial's original runner (#836).
+- The trial Trajectory card now groups its step accordion under taxonomy-component headers instead of duplicating the same steps in a separate Activity list; the Activity card keeps only its visuals (legend, timeline, token heatmap) (#835).
+- Harbor pinned to latest upstream `main`; Modal trials now request exact GPU types (`H100!`, `A100-40GB`) instead of ambiguous ones that could silently upgrade to H200/80GB (#841).
+
+### Fixed
+
+- The trial Summary tab's Activity card (color legend, timeline, token heatmap) had gone blank for every trial since the trajectory summary schema moved to taxonomy `components` — it still read the old `phases` field. It now reads `components` with `phases` as a legacy fallback (#832).
+- Offline-task routing that sent `allow_internet=false` tasks to Modal was reverted after the diagnosis proved wrong (a Harbor regression, not a Daytona egress limitation, caused the original failures); offline detection still correctly honors `network_mode` in addition to the legacy `allow_internet` flag (#834, supersedes #831).
+- `run_cohort`'s reduce phase, left half-converted by an earlier `AnalyzerBlock` migration, threw `NameError` on every sandbox-analyzer cohort run; the reduce path is now fully wired through `AnalyzerBlock` (#826).
+- A duplicate `thinking` constructor parameter (introduced by two PRs landing in parallel) made `analyzer_llm_client.py` a `SyntaxError` that broke every analyzer, report, and summary import path — fixed and guarded with a regression test (#825).
+
+---
+
 ## [2026-07-20]
 
 ### Changed
