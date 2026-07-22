@@ -4,8 +4,11 @@ import asyncio
 
 from sqlalchemy import func, select
 
+from oddish.analyze import BaselineValidation, TrialClassification
+from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
+from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -23,6 +26,49 @@ from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 QA_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+async def synthesize_task_verdict(
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None,
+    quality_check_passed: bool,
+    timeout: float,
+) -> TaskVerdictModel:
+    """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
+
+    The block self-provisions the direct API client for ``settings.verdict_model``
+    (an OpenAI/Azure model, so the API client uses the OpenAI SDK) with
+    TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the cap,
+    and closes it on every exit path. ``timeout`` bounds the whole block run --
+    the client has no per-request timeout knob -- falling back to
+    VERDICT_TIMEOUT, and the block persists itself to ``analyzer_blocks`` + S3.
+    """
+    from oddish.analyze.classifier import VERDICT_MAX_TOKENS, VERDICT_TIMEOUT
+    from oddish.blocks.analyzer.analyzer_block import (
+        AnalyzerBlock,
+        AnalyzerInput,
+        AnalyzerType,
+    )
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
+
+    vb = VerdictBlock(
+        classifications, baseline=baseline, quality_check_passed=quality_check_passed
+    )
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.TASK_VERDICT,
+        llm_client_type=LLMClientType.API,
+        input=AnalyzerInput(input={"num_trials": len(classifications)}),
+        # build_prompt() raises rather than sending the degraded placeholder
+        # (see VerdictBlock.build_prompt).
+        prompt=vb.build_prompt(),
+        model=settings.verdict_model,
+        max_tokens=VERDICT_MAX_TOKENS,
+        response_format=TaskVerdictModel,
+        output_transform=vb.to_verdict,
+    )
+    out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+    return TaskVerdictModel(**out.output)
 
 
 async def _heartbeat_qa_worker_job(
@@ -160,8 +206,6 @@ async def run_task_qa_job(
     worker_job_id: str | None = None,
 ) -> None:
     """Classify a task's live trials and store one verdict."""
-    from oddish.analyze import TrialClassification, compute_task_verdict
-
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
     async with get_session() as session:
@@ -285,27 +329,14 @@ async def run_task_qa_job(
             raise ValueError("No successful classifications to synthesize verdict from")
 
         console.print("[dim]Starting verdict synthesis...[/dim]")
-        verdict = compute_task_verdict(
-            classifications=classifications,
-            baseline=None,
-            quality_check_passed=True,
-            model=settings.verdict_model,
-            console=console,
-            verbose=True,
-            timeout=180,
+        baseline = None
+        quality_check_passed = True
+        timeout = 180
+        verdict = await synthesize_task_verdict(
+            classifications, baseline, quality_check_passed, timeout
         )
 
-        verdict_result = {
-            "is_good": verdict.is_good,
-            "confidence": verdict.confidence,
-            "primary_issue": verdict.primary_issue,
-            "reasoning": verdict.reasoning,
-            "recommendations": verdict.recommendations,
-            "task_problem_count": verdict.task_problem_count,
-            "agent_problem_count": verdict.agent_problem_count,
-            "success_count": verdict.success_count,
-            "harness_error_count": verdict.harness_error_count,
-        }
+        verdict_result = build_verdict_payload(verdict, classifications)
 
         console.print(
             f"[green]Verdict computed:[/green] {'GOOD' if verdict.is_good else 'NEEDS REVIEW'} "
@@ -326,38 +357,19 @@ async def run_task_qa_job(
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
-    async def _store_results() -> None:
-        async with get_session() as session:
-            task = await session.get(TaskModel, task_id, with_for_update=True)
-            if not task:
-                return
-
-            if not await _worker_job_is_running(session, worker_job_id):
-                console.print(
-                    f"[dim]QA {task_id} result ignored; job was cancelled[/dim]"
-                )
-                return
-
-            if verdict_result:
-                task.verdict = verdict_result
-                task.verdict_status = VerdictStatus.SUCCESS
-                task.verdict_error = None
-                task.verdict_finished_at = utcnow()
-                task.status = TaskStatus.COMPLETED
-                task.finished_at = utcnow()
-                console.print(
-                    f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]"
-                )
-            else:
-                task.verdict_status = VerdictStatus.FAILED
-                task.verdict_error = (
-                    verdict_error or "Verdict synthesis failed with exception"
-                )
-                task.verdict_finished_at = utcnow()
-                task.status = TaskStatus.COMPLETED
-                task.finished_at = utcnow()
-                console.print(
-                    f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
-                )
-
-    await asyncio.shield(_store_results())
+    status = await asyncio.shield(
+        sync_verdict_to_task(
+            task_id,
+            payload=verdict_result,
+            error=verdict_error,
+            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+        )
+    )
+    if status is None:
+        console.print(f"[dim]QA {task_id} result ignored; job was cancelled[/dim]")
+    elif verdict_result:
+        console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
+    else:
+        console.print(
+            f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
+        )

@@ -590,6 +590,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dockerfile-parse"
+version = "2.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/df/929ee0b5d2c8bd8d713c45e71b94ab57c7e11e322130724d54f469b2cd48/dockerfile-parse-2.0.1.tar.gz", hash = "sha256:3184ccdc513221983e503ac00e1aa504a2aa8f84e5de673c46b0b6eee99ec7bc", size = 24556, upload-time = "2023-07-18T13:36:07.897Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/6c/79cd5bc1b880d8c1a9a5550aa8dacd57353fa3bb2457227e1fb47383eb49/dockerfile_parse-2.0.1-py2.py3-none-any.whl", hash = "sha256:bdffd126d2eb26acf1066acb54cb2e336682e1d72b974a40894fac76a4df17f6", size = 14845, upload-time = "2023-07-18T13:36:06.052Z" },
+]
+
+[[package]]
 name = "docstring-parser"
 version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -911,7 +920,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?branch=main#d070837196905505cd1944099fb93e1b9ad80fd2" }
+source = { git = "https://github.com/abundant-ai/harbor?branch=main#7f512048d213dfd50f181b4a4f19f88eee88e4bd" }
 dependencies = [
     { name = "dirhash" },
     { name = "fastapi" },
@@ -1596,6 +1605,7 @@ all = [
     { name = "asyncpg" },
     { name = "better-profanity" },
     { name = "daytona" },
+    { name = "dockerfile-parse" },
     { name = "fastapi" },
     { name = "google-generativeai" },
     { name = "mcp" },
@@ -1637,6 +1647,7 @@ worker = [
     { name = "asyncpg" },
     { name = "better-profanity" },
     { name = "daytona" },
+    { name = "dockerfile-parse" },
     { name = "fastapi" },
     { name = "google-generativeai" },
     { name = "mcp" },
@@ -1689,6 +1700,7 @@ requires-dist = [
     { name = "better-profanity", marker = "extra == 'server'", specifier = ">=0.7.0,<1.0" },
     { name = "cryptography", specifier = ">=42" },
     { name = "daytona", marker = "extra == 'worker'", specifier = ">=0.192.0" },
+    { name = "dockerfile-parse", marker = "extra == 'worker'", specifier = ">=2.0.1" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
     { name = "harbor", git = "https://github.com/abundant-ai/harbor?branch=main" },
@@ -2511,8 +2523,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
-    { name = "jeepney" },
+    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [

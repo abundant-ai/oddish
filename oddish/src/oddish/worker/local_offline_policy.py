@@ -32,7 +32,13 @@ logger = logging.getLogger(__name__)
 
 
 def task_is_offline(task_dir: Path) -> bool:
-    """True if the task's ``task.toml`` sets ``environment.allow_internet = false``."""
+    """True if the task's ``task.toml`` denies or restricts the agent's egress.
+
+    Covers both spellings: the modern ``environment.network_mode`` (anything but
+    ``public``) and the legacy ``environment.allow_internet = false``. Checking
+    only the legacy flag missed tasks that spell it the modern way, which is the
+    same blind spot that made ``enable_local_internet`` a silent no-op.
+    """
     config_path = task_dir / "task.toml"
     if not config_path.exists():
         return False
@@ -42,6 +48,10 @@ def task_is_offline(task_dir: Path) -> bool:
         logger.exception("local-policy: could not parse %s", config_path)
         return False
     env = data.get("environment") or {}
+    network_mode = env.get("network_mode")
+    if network_mode is not None:
+        # Harbor ignores allow_internet whenever network_mode is explicit.
+        return str(network_mode) != "public"
     return env.get("allow_internet", True) is False
 
 

@@ -13,7 +13,10 @@ from slack_notifications import (
     ExperimentCandidate,
     FailedExperiment,
     FailedTrial,
+    FinishedExperiment,
+    FinishedTrial,
     QaFailure,
+    TaskFinished,
     TrialSpend,
     build_alerts,
 )
@@ -111,6 +114,30 @@ def test_each_failure_toggle_off_drops_its_own_dm():
     )
     assert _keys(_build(qa_failed)) == ["qa-failed:task/1"]
     assert _build(qa_failed, UserAlertPrefs(qa_failed_enabled=False)) == []
+
+
+def test_each_finish_toggle_off_drops_its_own_dm():
+    exp_finished = AlertCandidates(
+        finished_experiments=[
+            FinishedExperiment("e1", "Exp", "Ada", 5, owner_email=OWNER)
+        ]
+    )
+    assert _keys(_build(exp_finished)) == ["experiment-finished:e1"]
+    assert _build(exp_finished, UserAlertPrefs(experiment_finished_enabled=False)) == []
+
+    trial_finished = AlertCandidates(
+        finished_trials=[
+            FinishedTrial("t", "task/1", None, "Exp", "Ada", owner_email=OWNER)
+        ]
+    )
+    assert _keys(_build(trial_finished)) == ["trial-finished:task/1"]
+    assert _build(trial_finished, UserAlertPrefs(trial_finished_enabled=False)) == []
+
+    task_finished = AlertCandidates(
+        tasks_finished=[TaskFinished("task/1", "Task", None, owner_email=OWNER)]
+    )
+    assert _keys(_build(task_finished)) == ["task-finished:task/1"]
+    assert _build(task_finished, UserAlertPrefs(task_finished_enabled=False)) == []
 
 
 def test_one_owners_mute_does_not_touch_another_owner():
@@ -238,6 +265,9 @@ def _row(**kw):
         experiment_failed_enabled=kw.get("experiment_failed_enabled", True),
         trial_failed_enabled=kw.get("trial_failed_enabled", True),
         qa_failed_enabled=kw.get("qa_failed_enabled", True),
+        experiment_finished_enabled=kw.get("experiment_finished_enabled", True),
+        trial_finished_enabled=kw.get("trial_finished_enabled", True),
+        task_finished_enabled=kw.get("task_finished_enabled", True),
         experiment_milestone_usd=kw.get("experiment_milestone_usd"),
         trial_ping_usd=kw.get("trial_ping_usd"),
     )

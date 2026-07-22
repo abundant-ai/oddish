@@ -578,6 +578,54 @@ def to_meta_model_id(model: str | None) -> str | None:
     return f"{META_PROVIDER}/{meta_bare_model_id(model)}"
 
 
+# Direct Anthropic API via a separate HDO key. Opt-in with an explicit
+# ``anthropic-hdo/<model>`` prefix so Claude trials can use
+# ``ANTHROPIC_HDO_API_KEY`` (injected as ``ANTHROPIC_API_KEY``) instead of the
+# default Bedrock / platform Anthropic route. Prefix-only: bare Claude ids keep
+# their existing Bedrock/force-direct path.
+ANTHROPIC_HDO_PROVIDER = "anthropic-hdo"
+_ANTHROPIC_HDO_PROVIDER_PREFIXES: frozenset[str] = frozenset({"anthropic-hdo"})
+
+
+def is_anthropic_hdo_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects the Anthropic HDO key route."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_HDO_PROVIDER_PREFIXES
+    )
+
+
+def anthropic_hdo_bare_model_id(model: str) -> str:
+    """Strip the ``anthropic-hdo/`` prefix, returning the bare Anthropic model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_HDO_PROVIDER_PREFIXES
+    ):
+        return str(bare).strip()
+    return raw
+
+
+def to_anthropic_hdo_model_id(model: str | None) -> str | None:
+    """Canonicalize an HDO Claude reference to ``anthropic-hdo/<bare-id>``.
+
+    Keeps HDO trials off the Bedrock provider/queue bucket so they get their
+    own concurrency key and so the Harbor runner can overwrite
+    ``ANTHROPIC_API_KEY`` with ``ANTHROPIC_HDO_API_KEY``.
+    """
+    if not is_anthropic_hdo_model(model):
+        return model
+    assert model is not None
+    return f"{ANTHROPIC_HDO_PROVIDER}/{anthropic_hdo_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -879,6 +927,8 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "grok": XAI_PROVIDER,
     # Meta OpenAI-compatible relay for mini-swe-agent evals.
     "meta": META_PROVIDER,
+    # Direct Anthropic API with the separate HDO key (ANTHROPIC_HDO_API_KEY).
+    "anthropic-hdo": ANTHROPIC_HDO_PROVIDER,
 }
 
 
@@ -1289,6 +1339,13 @@ class Settings(BaseSettings):
     analyzer_anthropic_api_key: str | None = Field(
         default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
     )
+    # Separate Anthropic key for ``anthropic-hdo/<model>`` trials. Injected as
+    # ``ANTHROPIC_API_KEY`` (overwriting the platform key) so Claude Code talks
+    # to the direct Anthropic API with this credential instead of Bedrock /
+    # ``ANTHROPIC_API_KEY``.
+    anthropic_hdo_api_key: str | None = Field(
+        default=None, alias="ANTHROPIC_HDO_API_KEY"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
@@ -1477,6 +1534,10 @@ class Settings(BaseSettings):
             return to_minimax_model_id(cleaned)
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
+        # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
+        # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
+        if is_anthropic_hdo_model(cleaned):
+            return to_anthropic_hdo_model_id(cleaned)
 
         if strict:
             return to_bedrock_model_id(cleaned)

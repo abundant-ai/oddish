@@ -148,7 +148,7 @@ async def summarize_trial(
     yields a record carrying ``status``, ``error``, and whatever ``raw``
     accumulated -- including failures raised before a block even exists.
     """
-    from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
     from api.services.summarize_trajectory import (
         SCHEMA_VERSION,
         SUMMARY_MAX_TOKENS,

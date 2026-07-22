@@ -94,11 +94,9 @@ async def test_meta_mini_swe_agent_forwards_reasoning_effort(tmp_path):
     await agent.run("fix the task", _FakeEnvironment(), SimpleNamespace())
 
     run_command = commands[-1][0]
-    # meta/ models are not openai/-prefixed, so effort rides in extra_body of the
-    # chat-completions request body.
-    assert (
-        "model.model_kwargs.extra_body.reasoning_effort=xhigh" in run_command
-    )
+    # Harbor forwards non-openai/ effort as a top-level LiteLLM model kwarg so
+    # LiteLLM can translate it to the provider-native request shape.
+    assert "model.model_kwargs.reasoning_effort=xhigh" in run_command
 
 
 @pytest.mark.asyncio
@@ -230,7 +228,9 @@ async def test_mini_swe_agent_config_flags_survive_flaglike_prompts(tmp_path, ta
     # both corrupts what the model reads and leaves the real flag unpatched.
     assert task in run_command
     # Config flags must land on the real trailing flag...
-    assert "-c mini -c /tmp/oddish-mini-swe-agent.yaml --exit-immediately" in run_command
+    assert (
+        "-c mini -c /tmp/oddish-mini-swe-agent.yaml --exit-immediately" in run_command
+    )
     # ...exactly once.
     assert run_command.count("-c /tmp/oddish-mini-swe-agent.yaml") == 1
 

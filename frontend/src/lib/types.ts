@@ -654,10 +654,31 @@ export interface TrajectoryGraph {
   generated_at?: string;
 }
 
+/** Pre-v4 segmentation. Still present on summaries generated before #790. */
 export interface TrajectoryPhase {
   label: string;
   gist: string;
   step_ids: number[];
+}
+
+/** Flat vocabulary of `TrajectoryBlockTaxonomy` (backend trajectory_component_block.py). */
+export type TrajectoryComponentKind =
+  | "reading_files"
+  | "thinking_recall"
+  | "thinking_understand"
+  | "thinking_hypothesize"
+  | "thinking_diagnose"
+  | "implementing"
+  | "writing_tests"
+  | "testing_public"
+  | "testing_custom"
+  | "testing_custom_edge_cases"
+  | "debugging";
+
+export interface TrajectoryComponent {
+  step_ids: number[];
+  trajectory_component: TrajectoryComponentKind;
+  summary: string | null;
 }
 
 export interface TrajectorySummary {
@@ -666,7 +687,8 @@ export interface TrajectorySummary {
   generated_at: string;
   summary: string;
   highlights: TrajectoryHighlight[];
-  phases: TrajectoryPhase[];
+  components?: TrajectoryComponent[];
+  phases?: TrajectoryPhase[];
 }
 
 interface QueueSlot {
@@ -937,9 +959,15 @@ interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
+  qa_cost_usd?: number;
   prev_cost_usd?: number | null;
   month_cost_usd?: number;
   month_budget_usd?: number | null;
+}
+
+export interface CostQaModelBreakdown {
+  model: string;
+  cost_usd: number;
 }
 
 export interface CostBreakdownResponse {
@@ -948,9 +976,12 @@ export interface CostBreakdownResponse {
   series_by_agent: CostSeries;
   series_by_model: CostSeries;
   series_by_user: CostSeries;
+  series_by_type?: CostSeries;
+  series_qa_by_model?: CostSeries;
   totals: CostTotals;
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
+  qa_by_model?: CostQaModelBreakdown[];
   experiments: CostExperimentBreakdown[];
   timestamp: string;
 }

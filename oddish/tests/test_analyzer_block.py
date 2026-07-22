@@ -1,6 +1,6 @@
 import logging
 
-from api.services.blocks.analyzer.analyzer_block import (
+from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerType,
     AnalyzerInput,
     AnalyzerOutput,
@@ -13,6 +13,10 @@ def test_key_prefix_uses_enum_value():
     assert (
         block_key_prefix(AnalyzerType.HEADROOM_ANALYSIS) == "analyzer/headroom_analysis"
     )
+
+
+def test_task_verdict_analyzer_type_value():
+    assert AnalyzerType.TASK_VERDICT.value == "task_verdict"
 
 
 def test_io_dataclasses_accept_any():
@@ -29,8 +33,8 @@ def test_block_logger_prepends_prefix(caplog):
 
 import pytest
 
-from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
-from api.services.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.db.models import JobStatus, utcnow
 
 
@@ -63,7 +67,7 @@ async def test_save_to_s3_uses_prefix_key(monkeypatch):
             calls["ct"] = content_type
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_block.get_storage_client",
+        "oddish.blocks.analyzer.analyzer_block.get_storage_client",
         lambda: _FakeStorage(),
     )
     b = _make_block()
@@ -80,7 +84,7 @@ async def test_save_to_s3_swallows_and_logs_errors(monkeypatch, caplog):
             raise RuntimeError("s3 down")
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_block.get_storage_client",
+        "oddish.blocks.analyzer.analyzer_block.get_storage_client",
         lambda: _BoomStorage(),
     )
     b = _make_block()
@@ -103,7 +107,7 @@ async def test_save_to_db_adds_row(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_block.get_session",
+        "oddish.blocks.analyzer.analyzer_block.get_session",
         lambda: _FakeSession(),
     )
     b = _make_block(block_metadata={"k": "v"})
@@ -127,7 +131,7 @@ async def test_save_to_db_adds_row(monkeypatch):
 
 import asyncio
 
-from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
 
 
 def _patch_persistence(monkeypatch):

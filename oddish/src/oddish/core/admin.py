@@ -33,6 +33,7 @@ from oddish.core.quotas import (
     sum_cost_usd_by_org_user_all_orgs,
 )
 from oddish.db import (
+    AnalysisCostModel,
     ExperimentModel,
     TaskModel,
     TrialModel,
@@ -1260,6 +1261,13 @@ class CostModelBreakdown(BaseModel):
     cost_estimated_usd: float
 
 
+class CostQaModelBreakdown(BaseModel):
+    """QA/analysis (trial-classifier) spend for one model."""
+
+    model: str
+    cost_usd: float
+
+
 class CostUserBreakdown(BaseModel):
     # Stable grouping key: a user id for billed/submitter rows, else a synthetic
     # ``ghid:``/``ghuser:``/``__unattributed__`` key for label-only fallback rows.
@@ -1352,6 +1360,7 @@ class CostTotals(BaseModel):
     cost_usd: float
     cost_native_usd: float
     cost_estimated_usd: float
+    qa_cost_usd: float = 0.0
     prev_cost_usd: float | None = None
     month_cost_usd: float = 0.0
     month_budget_usd: float | None = None
@@ -1363,9 +1372,12 @@ class CostBreakdownResponse(BaseModel):
     series_by_agent: CostSeries
     series_by_model: CostSeries
     series_by_user: CostSeries
+    series_by_type: CostSeries
+    series_qa_by_model: CostSeries
     totals: CostTotals
     by_user: list[CostUserBreakdown]
     by_model: list[CostModelBreakdown]
+    qa_by_model: list[CostQaModelBreakdown] = []
     experiments: list[CostExperimentBreakdown]
     timestamp: str
 
@@ -1616,6 +1628,99 @@ async def _cost_time_series(
     return by_agent, by_model, by_user
 
 
+async def _qa_cost_time_series(
+    session: AsyncSession,
+    *,
+    since: datetime | None,
+    bucket: str,
+) -> CostSeries:
+    """QA/analysis spend over time, stacked by model.
+
+    Recorded as a direct native ``cost_usd`` on ``analysis_costs`` (no settled
+    decomposition), on the job's ``created_at`` axis.
+    """
+    bucket_col = _utc_date_trunc(bucket, AnalysisCostModel.created_at)
+    query = (
+        select(
+            bucket_col.label("bucket"),
+            AnalysisCostModel.model.label("model"),
+            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0).label("cost_usd"),
+            func.count(AnalysisCostModel.id).label("job_count"),
+        )
+        .where(AnalysisCostModel.deleted_at.is_(None))
+        .group_by(bucket_col, AnalysisCostModel.model)
+    )
+    if since is not None:
+        query = query.where(AnalysisCostModel.created_at >= since)
+
+    per_bucket: dict[datetime, dict[str, float]] = {}
+    totals: dict[str, float] = {}
+    jobs_per_bucket: dict[datetime, int] = {}
+    for row in (await session.execute(query)).all():
+        bstart = row.bucket
+        key = _model_label(row.model)
+        cost = float(row.cost_usd)
+        slot = per_bucket.setdefault(bstart, {})
+        slot[key] = slot.get(key, 0.0) + cost
+        totals[key] = totals.get(key, 0.0) + cost
+        jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(row.job_count or 0)
+
+    return _build_dimension_series(
+        "model",
+        bucket_starts=sorted(jobs_per_bucket.keys()),
+        per_bucket=per_bucket,
+        totals=totals,
+        trials_per_bucket=jobs_per_bucket,
+        labels={},
+    )
+
+
+# Stack keys for the inference-vs-QA "type" series.
+_TYPE_INFERENCE_KEY = "inference"
+_TYPE_QA_KEY = "qa"
+
+
+def _build_type_series(trial_series: CostSeries, qa_series: CostSeries) -> CostSeries:
+    """Cost over time split into two stacks: model inference vs QA.
+
+    Reuses the already-computed trial and QA series -- each of their buckets
+    carries a ``cost_usd`` grand total, so we only fold those two per bucket
+    rather than issuing another query. Bucket starts are the union of both axes
+    (trial spend on ``finished_at``, QA on ``created_at``), so a bucket with QA
+    but no trials -- or vice versa -- still appears.
+    """
+    inference_by_bucket = {b.bucket_start: b.cost_usd for b in trial_series.buckets}
+    trials_by_bucket = {b.bucket_start: b.trial_count for b in trial_series.buckets}
+    qa_by_bucket = {b.bucket_start: b.cost_usd for b in qa_series.buckets}
+    bucket_starts = sorted(set(inference_by_bucket) | set(qa_by_bucket))
+
+    buckets: list[CostSeriesBucket] = []
+    for bstart in bucket_starts:
+        inference = inference_by_bucket.get(bstart, 0.0)
+        qa = qa_by_bucket.get(bstart, 0.0)
+        costs: dict[str, float] = {}
+        if inference > 0:
+            costs[_TYPE_INFERENCE_KEY] = round(inference, 4)
+        if qa > 0:
+            costs[_TYPE_QA_KEY] = round(qa, 4)
+        buckets.append(
+            CostSeriesBucket(
+                bucket_start=bstart,
+                cost_usd=round(inference + qa, 4),
+                trial_count=trials_by_bucket.get(bstart, 0),
+                costs=costs,
+            )
+        )
+    return CostSeries(
+        dimension="type",
+        keys=[
+            CostSeriesKey(key=_TYPE_INFERENCE_KEY, label="Model inference"),
+            CostSeriesKey(key=_TYPE_QA_KEY, label="QA"),
+        ],
+        buckets=buckets,
+    )
+
+
 def _clean_author(value: str | None) -> str | None:
     """Ignore blank and placeholder 'unknown' author strings."""
     cleaned = (value or "").strip()
@@ -1784,6 +1889,12 @@ async def get_cost_breakdown_core(
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
         session, since=since, bucket=bucket, resolve_github_users=resolve_github_users
     )
+    series_qa_by_model = await _qa_cost_time_series(
+        session, since=since, bucket=bucket
+    )
+    # Two-stack inference-vs-QA view over the same buckets; folds the grand
+    # totals the two series above already carry, so it needs no extra query.
+    series_by_type = _build_type_series(series_by_agent, series_qa_by_model)
 
     # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
     # JSON-key bind params match (two inline copies bind as distinct params and
@@ -2125,6 +2236,32 @@ async def get_cost_breakdown_core(
         for e in experiment_rows
     ]
 
+    # QA/analysis spend (trial-classifier LLM cost). Recorded as a direct native
+    # cost_usd, so a plain SUM -- no settled_cost decomposition like trials need.
+    qa_query = (
+        select(
+            AnalysisCostModel.model.label("model"),
+            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0).label("cost_usd"),
+        )
+        .where(AnalysisCostModel.deleted_at.is_(None))
+        .group_by(AnalysisCostModel.model)
+    )
+    if since is not None:
+        qa_query = qa_query.where(AnalysisCostModel.created_at >= since)
+    qa_by_model_totals: dict[str, float] = {}
+    for row in (await session.execute(qa_query)).all():
+        label = _model_label(row.model)
+        qa_by_model_totals[label] = qa_by_model_totals.get(label, 0.0) + float(
+            row.cost_usd
+        )
+    qa_by_model = [
+        CostQaModelBreakdown(model=model, cost_usd=round(cost, 4))
+        for model, cost in sorted(
+            qa_by_model_totals.items(), key=lambda kv: kv[1], reverse=True
+        )
+    ]
+    qa_cost_total = round(sum(qa_by_model_totals.values()), 4)
+
     totals = CostTotals(
         window_days=window_days,
         trial_count=total_trials,
@@ -2141,6 +2278,7 @@ async def get_cost_breakdown_core(
         cost_usd=round(total_native + total_estimated, 4),
         cost_native_usd=round(total_native, 4),
         cost_estimated_usd=round(total_estimated, 4),
+        qa_cost_usd=qa_cost_total,
         prev_cost_usd=prev_window_cost,
         month_cost_usd=month_cost,
         month_budget_usd=month_budget,
@@ -2152,9 +2290,12 @@ async def get_cost_breakdown_core(
         series_by_agent=series_by_agent,
         series_by_model=series_by_model,
         series_by_user=series_by_user,
+        series_by_type=series_by_type,
+        series_qa_by_model=series_qa_by_model,
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),
+        qa_by_model=qa_by_model,
         experiments=experiments_out,
         timestamp=now.isoformat(),
     )

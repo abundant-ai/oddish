@@ -29,6 +29,7 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
 │   ├── analyze/                # QA prompts and analysis helpers
+│   ├── blocks/                 # Block/AnalyzerBlock primitive + LLM backends
 │   ├── cli/                    # oddish run/upload/ls/status/cancel/pull/collect/...
 │   ├── core/                   # shared endpoint/service logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
@@ -192,6 +193,13 @@ High-level flow:
   stage reconciliation in one cleanup sweep
 - soft-delete semantics on domain rows via the `deleted_at` column and
   a session-level filter (`oddish.db.soft_delete`)
+
+`oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
+building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
+backends, so verdict synthesis runs in a backend-free worker. The Daytona
+sandbox backend needs cc_chat and stays in
+`backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
+itself into core's client factory on import.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.
@@ -417,21 +425,25 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
-- Claude trials run through AWS Bedrock only. `CLAUDE_CODE_USE_BEDROCK=1` is
+- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. `ANTHROPIC_API_KEY` is not a trial route.
+  `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key
+  via the explicit `anthropic-hdo/<model>` prefix: that route overwrites
+  `ANTHROPIC_API_KEY` with `ANTHROPIC_HDO_API_KEY` and blanks Bedrock routing
+  for the trial.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
-- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, and Meta each have explicit
-  canonical provider prefixes and queue keys: `zai/`, `minimax/`, `moonshot/`,
-  `fireworks/`, `xai/`, and `meta/`. Add or change provider aliases in
-  `config.py`, then update env injection in the Harbor runner and the network
-  allowlist notes.
+- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, Meta, and Anthropic HDO each
+  have explicit canonical provider prefixes and queue keys: `zai/`, `minimax/`,
+  `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
+  change provider aliases in `config.py`, then update env injection in the
+  Harbor runner and the network allowlist notes.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
-  `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`,
-  `XAI_API_KEY`, `META_API_KEY`) and must not be persisted on trial rows.
+  `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
+  `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
+  on trial rows.
 - `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
   `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
   but not every xAI model is served there — some (e.g. newer/unreleased models)
