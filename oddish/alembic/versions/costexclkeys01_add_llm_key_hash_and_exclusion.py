@@ -1,7 +1,7 @@
 """add trials.llm_key_hash + cost_excluded_llm_keys
 
 Revision ID: costexclkeys01
-Revises: analysis_costs_001
+Revises: concurrency_override_001
 Create Date: 2026-07-17 00:00:00.000000
 
 Supports excluding sponsored/free LLM-provider-key spend from cost accounting.
@@ -17,8 +17,6 @@ Supports excluding sponsored/free LLM-provider-key spend from cost accounting.
   the soft-delete tombstone; the partial UNIQUE keeps one live row per hash so a
   removed key can be re-added.
 
-NOTE: ``down_revision`` targets ``analysis_costs_001``; confirm the single head
-at merge time -- the repo's revision graph currently has multiple branches.
 """
 
 from typing import Sequence, Union
@@ -26,7 +24,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "costexclkeys01"
-down_revision: Union[str, Sequence[str], None] = "analysis_costs_001"
+down_revision: Union[str, Sequence[str], None] = "concurrency_override_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

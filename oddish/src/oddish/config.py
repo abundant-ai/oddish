@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from decimal import Decimal
@@ -12,6 +13,8 @@ from harbor.agents.utils import PROVIDER_KEYS
 from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
+logger = logging.getLogger(__name__)
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
@@ -40,7 +43,10 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-ANALYSIS_MODEL = "global.anthropic.claude-sonnet-4-6"
+# Plain Anthropic-style id (no Bedrock inference-profile mapping): the
+# classifier and trajectory analyzers route non-Bedrock Claude ids to the
+# direct Anthropic API.
+ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -60,6 +66,25 @@ def next_probe_model(index: int) -> str:
 
 
 NOP_ORACLE_QUEUE_KEY = "nop_oracle"
+
+# Reserved queue keys the dashboard queue/pipeline stats use for the
+# trajectory-analysis and task-verdict pipelines. These are *presentation*
+# buckets over ``trials.analysis_status`` / ``tasks.verdict_status`` — NOT
+# worker_jobs queue keys — and exist so pipeline counts can never be folded
+# into (and impersonate) a real model's queue bucket. Before this split, the
+# analysis pipeline was keyed off the analysis *model*'s queue key, so every
+# trial mid-classification showed up as "running" under that model's queue
+# (an incident showed 4k+ phantom "running workers" under one model).
+ANALYSIS_PIPELINE_QUEUE_KEY = "analysis"
+VERDICT_PIPELINE_QUEUE_KEY = "verdict"
+
+# Sentinel prefix stamped on ``trials.analysis_error`` when orphaned-pipeline
+# cleanup finalizes a stranded classification as FAILED. These rows mean "the
+# QA job died before classifying this trial", NOT "classification ran and
+# failed" -- so resurrect paths (a task re-opened by appending trials, a QA
+# retry) match on this prefix and reopen them for the next QA pass instead of
+# permanently excluding the trial from the verdict.
+ORPHANED_ANALYSIS_ERROR_PREFIX = "Analysis orphaned: "
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 # Suffixed/prefixed variants of the deterministic baseline agents (e.g.
 # "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
@@ -119,8 +144,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
-HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
+HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
+# Pin of abundant-ai/harbor@main (upstream-style NetworkPolicy; no fork Modal CIDR stack).
+HARBOR_DEFAULT_SHA = "12929b0ec9386f983ec9243b5daadd6b80d1010a"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -552,6 +578,54 @@ def to_meta_model_id(model: str | None) -> str | None:
     return f"{META_PROVIDER}/{meta_bare_model_id(model)}"
 
 
+# Direct Anthropic API via a separate HDO key. Opt-in with an explicit
+# ``anthropic-hdo/<model>`` prefix so Claude trials can use
+# ``ANTHROPIC_HDO_API_KEY`` (injected as ``ANTHROPIC_API_KEY``) instead of the
+# default Bedrock / platform Anthropic route. Prefix-only: bare Claude ids keep
+# their existing Bedrock/force-direct path.
+ANTHROPIC_HDO_PROVIDER = "anthropic-hdo"
+_ANTHROPIC_HDO_PROVIDER_PREFIXES: frozenset[str] = frozenset({"anthropic-hdo"})
+
+
+def is_anthropic_hdo_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects the Anthropic HDO key route."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_HDO_PROVIDER_PREFIXES
+    )
+
+
+def anthropic_hdo_bare_model_id(model: str) -> str:
+    """Strip the ``anthropic-hdo/`` prefix, returning the bare Anthropic model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_HDO_PROVIDER_PREFIXES
+    ):
+        return str(bare).strip()
+    return raw
+
+
+def to_anthropic_hdo_model_id(model: str | None) -> str | None:
+    """Canonicalize an HDO Claude reference to ``anthropic-hdo/<bare-id>``.
+
+    Keeps HDO trials off the Bedrock provider/queue bucket so they get their
+    own concurrency key and so the Harbor runner can overwrite
+    ``ANTHROPIC_API_KEY`` with ``ANTHROPIC_HDO_API_KEY``.
+    """
+    if not is_anthropic_hdo_model(model):
+        return model
+    assert model is not None
+    return f"{ANTHROPIC_HDO_PROVIDER}/{anthropic_hdo_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -853,6 +927,8 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "grok": XAI_PROVIDER,
     # Meta OpenAI-compatible relay for mini-swe-agent evals.
     "meta": META_PROVIDER,
+    # Direct Anthropic API with the separate HDO key (ANTHROPIC_HDO_API_KEY).
+    "anthropic-hdo": ANTHROPIC_HDO_PROVIDER,
 }
 
 
@@ -1024,7 +1100,7 @@ class Settings(BaseSettings):
     live_tail_enabled: bool = True
     live_tail_interval_sec: float = 30.0
 
-    harbor_source_repo: str = "rishidesai/harbor"
+    harbor_source_repo: str = "abundant-ai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
     harbor_source_ref: str = "main"
@@ -1138,12 +1214,15 @@ class Settings(BaseSettings):
     # ODDISH_GATE_LLM_ON_BASELINES; default off leaves every path unchanged.
     gate_llm_on_baselines: bool = False
 
-    # Dynamic per-model concurrency controller (default OFF; see
-    # workers.queue.concurrency_controller). When enabled, the reconciler
-    # recomputes a per-queue advisory limit each cycle and the dispatcher reads
-    # it (decaying to the static limit when stale). Off => today's behavior.
+    # DEPRECATED (default OFF; see workers.queue.concurrency_controller). The
+    # self-tuning advisory controller predates database-backed admin overrides,
+    # which are now the supported way to change a per-model limit at runtime:
+    # set it in the Queue Health admin card (PUT /admin/concurrency), which both
+    # the dispatcher plan and the worker slot lease honor immediately. Leave this
+    # OFF; enabling it logs a deprecation warning and the path may be removed.
     dynamic_model_concurrency: bool = False
-    # Feed-forward provider rate-limit config: a quota-BUCKET table keyed by
+    # DEPRECATED: feed-forward provider rate-limit config consumed only by the
+    # deprecated dynamic controller above. A quota-BUCKET table keyed by
     # bucket_id (rpm / tpm / headroom — the published provider limits) plus a
     # MANY-to-one queue_key -> bucket_id map. Operator-owned JSON via
     # ODDISH_PROVIDER_RATE_LIMITS / ODDISH_QUEUE_KEY_BUCKETS; the controller
@@ -1255,6 +1334,18 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
+    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
+    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
+    analyzer_anthropic_api_key: str | None = Field(
+        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
+    )
+    # Separate Anthropic key for ``anthropic-hdo/<model>`` trials. Injected as
+    # ``ANTHROPIC_API_KEY`` (overwriting the platform key) so Claude Code talks
+    # to the direct Anthropic API with this credential instead of Bedrock /
+    # ``ANTHROPIC_API_KEY``.
+    anthropic_hdo_api_key: str | None = Field(
+        default=None, alias="ANTHROPIC_HDO_API_KEY"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
@@ -1349,6 +1440,20 @@ class Settings(BaseSettings):
         )
         return self
 
+    @model_validator(mode="after")
+    def _warn_deprecated_dynamic_concurrency(self) -> "Settings":
+        # Soft-deprecation: fires once per process (settings are a singleton) so
+        # operators still running the self-tuning controller are steered to the
+        # database-backed admin override that replaced it.
+        if self.dynamic_model_concurrency:
+            logger.warning(
+                "ODDISH_DYNAMIC_MODEL_CONCURRENCY is deprecated: the self-tuning "
+                "concurrency controller has been superseded by database-backed "
+                "admin overrides (PUT /admin/concurrency, Queue Health card). "
+                "Set per-model limits there instead; this flag may be removed."
+            )
+        return self
+
     @staticmethod
     def _normalize_azure_openai_deployments(
         deployments: dict[str, str],
@@ -1382,8 +1487,17 @@ class Settings(BaseSettings):
                 return provider
         return self.get_provider_for_agent(agent)
 
-    def normalize_trial_model(self, agent: str, model: str | None) -> str | None:
+    def normalize_trial_model(
+        self, agent: str, model: str | None, *, strict: bool = True
+    ) -> str | None:
         """Canonicalize trial model input for storage/routing.
+
+        ``strict=True`` (default, the live create/queue/execute path) raises for
+        a Claude model with no Bedrock runtime id. ``strict=False`` is for
+        read-side rendering/cost/notify over already-stored trials: an imported
+        legacy model (e.g. ``claude-3-5-sonnet-20241022``) has no Bedrock id and
+        never executes, so fall back to the un-collapsed model rather than 500
+        the page.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
         - For nop/oracle, always force the model to the single canonical
@@ -1420,8 +1534,17 @@ class Settings(BaseSettings):
             return to_minimax_model_id(cleaned)
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
+        # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
+        # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
+        if is_anthropic_hdo_model(cleaned):
+            return to_anthropic_hdo_model_id(cleaned)
 
-        return to_bedrock_model_id(cleaned)
+        if strict:
+            return to_bedrock_model_id(cleaned)
+        try:
+            return to_bedrock_model_id(cleaned)
+        except ValueError:
+            return cleaned
 
     def normalize_queue_key(self, model: str) -> str:
         """Normalize queue keys.
@@ -1469,10 +1592,13 @@ class Settings(BaseSettings):
     def get_qa_queue_key(self) -> str:
         """Concurrency bucket for the task-level QA job.
 
-        Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
-        existing per-model concurrency overrides keep applying.
+        Keyed off ``analysis_model``: the bulk of a QA job's LLM work is the
+        per-trial classification pass, which runs on the analysis model, so the
+        job leases slots from that model's concurrency bucket (and existing
+        per-model concurrency overrides keep applying). The single
+        verdict-synthesis call on ``verdict_model`` rides along.
         """
-        return self.normalize_queue_key(self.verdict_model)
+        return self.normalize_queue_key(self.analysis_model)
 
     def get_task_expand_queue_key(self) -> str:
         """Dedicated queue key for task-expansion jobs.
@@ -1508,8 +1634,8 @@ class Settings(BaseSettings):
     def get_known_queue_keys(self) -> set[str]:
         keys = {
             NOP_ORACLE_QUEUE_KEY,
-            self.get_analysis_queue_key(),
-            self.get_qa_queue_key(),
+            ANALYSIS_PIPELINE_QUEUE_KEY,
+            VERDICT_PIPELINE_QUEUE_KEY,
         }
         keys.update(self.model_concurrency_overrides.keys())
         return keys

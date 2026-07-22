@@ -35,6 +35,7 @@ from auth import (
     require_can_manage_quotas,
 )
 from auth.verification import invalidate_cached_clerk_auth
+from pg_errors import is_undefined_table_error
 from oddish.config import QuotaMode, settings
 from models import (
     OrgQuotaModel,
@@ -232,21 +233,6 @@ def _as_float_or_none(value) -> float | None:
     return None if value is None else float(value)
 
 
-def _is_undefined_table_error(exc: ProgrammingError) -> bool:
-    error: BaseException | None = exc.orig if exc.orig is not None else exc
-    seen: set[int] = set()
-    while error is not None and id(error) not in seen:
-        seen.add(id(error))
-        if (
-            getattr(error, "sqlstate", None) == "42P01"
-            or getattr(error, "pgcode", None) == "42P01"
-            or type(error).__name__ == "UndefinedTableError"
-        ):
-            return True
-        error = error.__cause__
-    return False
-
-
 async def _org_trial_usage(session, org_id) -> tuple[Decimal, Decimal]:
     used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
     reserved = await org_inflight_reserved_usd(session, org_id)
@@ -286,7 +272,7 @@ async def _org_quota_fields_or_unavailable(org_id) -> dict:
         async with get_session() as session:
             return await _org_quota_fields(session, org_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "GET /quotas org cap unavailable (org_quotas schema not "
@@ -305,7 +291,7 @@ async def _bump_totals_or_empty(org_id) -> dict:
         async with get_session() as session:
             return await live_bump_totals_by_user(session, org_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "boosts unavailable (quota_bumps schema not migrated yet); "
@@ -326,7 +312,7 @@ async def _bump_total_or_zero(
         async with session.begin_nested():
             return await live_bump_total(session, org_id, user_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "boost lookup unavailable (quota_bumps schema not migrated yet); "
@@ -426,7 +412,7 @@ async def get_org_quota_usage(
                 session, auth.org_id, start_of_today_utc()
             )
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "GET /quotas/org cap unavailable (org_quotas schema not migrated "
@@ -482,7 +468,7 @@ async def set_org_quota(
 
             org_fields = await _org_quota_fields(session, auth.org_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         raise HTTPException(
             status_code=503,

@@ -1,27 +1,24 @@
 """LLM-backed trajectory summarization.
 
-Two pure-ish responsibilities:
+Responsibilities:
   - ``preprocess`` strips image content parts and truncates large text fields
     so the token cost of the summary call is bounded.
-  - ``generate`` calls the Anthropic API with a preprocessed trajectory and
-    returns a persistable summary dict.
-
-This module deliberately mirrors the JSON-parsing style of
-``oddish.worker.probe_analysis`` rather than using tool-use so the test
-patterns and prompt-shape conventions match the rest of the repo.
+  - ``generate`` runs the summary as an ``AnalyzerBlock`` over a
+    ``TrajectoryBlock`` (prompt + parse) and returns a persistable summary dict.
+  - ``get_or_generate_summary`` reads the latest fresh summary block for a trial
+    (source of truth), generating + mirroring into ``trials.trajectory_summary``
+    on a miss.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, MutableMapping
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.trial_io import (
@@ -35,7 +32,17 @@ MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
+
+# Output cap for the summary call. The Anthropic API requires max_tokens, so
+# some value must be set; this one is a ceiling, not a target -- billing is on
+# tokens actually generated. Was 2048 (inherited from the pre-migration cap),
+# which truncated the model mid-JSON on long trajectories: a dump of 30 trials
+# from experiment c02666c5 produced 13 parse failures whose raw output ended
+# mid-token at ~5.3k chars, and those trials silently got no summary at all.
+# Well under the model's own limit, so the binding constraint is the prompt's
+# schema, not this number.
+SUMMARY_MAX_TOKENS = 16384
 
 
 def _truncate(text: str) -> str:
@@ -126,215 +133,107 @@ class SummaryGenerationError(RuntimeError):
     """Raised when the LLM returned content we could not turn into a summary."""
 
 
-def _strip_code_fences(text: str) -> str:
-    raw = text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```", 2)[1]
-        if raw.lstrip().startswith("json"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw
-        raw = raw.rsplit("```", 1)[0]
-    return raw.strip()
+def resolve_summary_model() -> str:
+    """The shared analysis model for trajectory summaries.
 
-
-def _render_prompt(trajectory: dict, task_context: "TaskContext") -> str:
-    instruction = (
-        _truncate(task_context.instruction)
-        if task_context.instruction is not None
-        else "[unavailable]"
-    )
-    verifier_output = (
-        _truncate(task_context.verifier_output)
-        if task_context.verifier_output is not None
-        else "[unavailable]"
-    )
-    final_reward = (
-        f"{task_context.final_reward}"
-        if task_context.final_reward is not None
-        else "[unavailable]"
-    )
-    model_used = task_context.model_used or "[unavailable]"
-
-    return (
-        "You are summarizing a recorded agent trajectory for a developer "
-        "who wants a quick scan before diving into the per-step view.\n\n"
-        f"<task>\n"
-        f"Name: {task_context.task_name}\n"
-        f"Instruction: {instruction}\n"
-        f"</task>\n\n"
-        f"<outcome>\n"
-        f"Final reward: {final_reward}\n"
-        f"Verifier output: {verifier_output}\n"
-        f"Model: {model_used}\n"
-        f"</outcome>\n\n"
-        "Produce a 2-3 sentence summary covering what the agent set out "
-        "to do, how it ended, and whether the verifier agreed. Then 3-6 "
-        "pivotal 'key moments' with their step ids.\n\n"
-        "Each highlight must reference a real `step_id` from the "
-        "trajectory below. Pick steps where something genuinely shifted: "
-        "a strategy was committed, a key tool call landed, an error "
-        "redirected the work, or the final verdict was reached. Skip "
-        "filler.\n\n"
-        "Also segment the run into phases: assign EVERY step to exactly one "
-        "short phase label naming the intent of that stretch of work (for "
-        'example "Explore", "Reproduce", "Diagnose", "Implement fix", '
-        '"Verify"). Reuse the same label when that kind of work resumes later '
-        "in the run, and give each phase a one-sentence gist. Cover all steps "
-        "in order.\n\n"
-        "Respond with ONLY a JSON object (no preamble, no code fences) "
-        "matching this exact shape:\n"
-        "{\n"
-        '  "summary": "2-3 sentences",\n'
-        '  "highlights": [\n'
-        '    {"step_id": <int>, "title": "<short label>", '
-        '"why": "<one sentence>"}\n'
-        "  ],\n"
-        '  "phases": [\n'
-        '    {"label": "<short phase name>", "step_ids": [<int>, ...], '
-        '"gist": "<one sentence>"}\n'
-        "  ]\n"
-        "}\n"
-        "Highlights must be ordered by step_id ascending. Phases must cover "
-        "the steps in order.\n\n"
-        f"<trajectory>\n{json.dumps(preprocess(trajectory))}\n</trajectory>"
-    )
-
-
-def _normalize_phases(
-    raw_phases: Any, ordered_step_ids: list[int]
-) -> list[dict]:
-    """Coalesce model-emitted phase assignments into contiguous ordered segments.
-
-    Each step in ``ordered_step_ids`` is mapped to a phase label from
-    ``raw_phases`` (a list of ``{label, step_ids, gist}``); an untagged step
-    carries forward the previous label. Consecutive steps sharing a label merge
-    into one segment. Returns ``[]`` when nothing usable was provided. A label
-    may recur in non-adjacent segments — that recurrence is meaningful.
+    Bedrock inference-profile ids are normalized back to the plain API id
+    because the summary runs on the direct Anthropic API; plain ids pass
+    through unchanged.
     """
-    if not isinstance(raw_phases, list) or not ordered_step_ids:
-        return []
-
-    valid = set(ordered_step_ids)
-    label_by_step: dict[int, str] = {}
-    gist_by_label: dict[str, str] = {}
-    for entry in raw_phases:
-        if not isinstance(entry, dict):
-            continue
-        label = str(entry.get("label") or "").strip()
-        if not label:
-            continue
-        gist = str(entry.get("gist") or "").strip()
-        if gist and label not in gist_by_label:
-            gist_by_label[label] = gist
-        step_ids = entry.get("step_ids")
-        if not isinstance(step_ids, list):
-            continue
-        for sid in step_ids:
-            if isinstance(sid, int) and sid in valid and sid not in label_by_step:
-                label_by_step[sid] = label
-
-    if not label_by_step:
-        return []
-
-    segments: list[dict] = []
-    prev_label: str | None = None
-    for sid in ordered_step_ids:
-        label = label_by_step.get(sid) or prev_label or "Untagged"
-        prev_label = label
-        if segments and segments[-1]["label"] == label:
-            segments[-1]["step_ids"].append(sid)
-        else:
-            segments.append(
-                {"label": label, "gist": gist_by_label.get(label, ""), "step_ids": [sid]}
-            )
-    return segments
-
-
-async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
-    """Call Claude to produce a persistable summary dict for ``trajectory``.
-
-    Raises ``SummaryGenerationError`` if the model returns malformed JSON
-    or cannot be parsed. Highlights referencing step_ids that are not in
-    the source trajectory are dropped silently.
-    """
-    from anthropic import AsyncAnthropic
-
     from oddish.config import settings, to_anthropic_api_model_id
 
-    valid_step_ids = {
-        step.get("step_id")
-        for step in (trajectory.get("steps") or [])
-        if isinstance(step.get("step_id"), int)
-    }
-
-    prompt = _render_prompt(trajectory, task_context)
-
-    # The summary runs on the shared analysis model (the same
-    # ODDISH_ANALYSIS_MODEL knob as the trajectory graph). Normalize Bedrock
-    # inference-profile ids back to the plain API id the direct Anthropic API
-    # accepts; plain ids pass through unchanged.
-    model = (
+    return (
         to_anthropic_api_model_id(settings.analysis_model)
         or settings.analysis_model
     )
 
+
+def build_summary_block(
+    trajectory: dict,
+    task_context: "TaskContext",
+    *,
+    analyzer_id: str | None,
+    model: str,
+    client,
+    triggered_by_user_id: str | None = None,
+):
+    """Build the trajectory-summary ``AnalyzerBlock``.
+
+    Single construction site shared by ``generate()`` (the production path)
+    and the offline dump harness, so the two cannot drift in prompt, parser,
+    or block metadata.
+    """
+    from oddish.blocks.analyzer.analyzer_block import (
+        AnalyzerBlock,
+        AnalyzerInput,
+        AnalyzerType,
+    )
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryInput,
+    )
+
+    tb = TrajectoryBlock(TrajectoryInput(
+        task_name=task_context.task_name,
+        instruction=task_context.instruction,
+        final_reward=task_context.final_reward,
+        model_used=task_context.model_used,
+        verifier_output=task_context.verifier_output,
+        trajectory=trajectory,
+    ))
+    return AnalyzerBlock(
+        analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
+        llm_client_type=LLMClientType.API,
+        input=AnalyzerInput(
+            input={"trial_id": analyzer_id, "task_name": task_context.task_name}
+        ),
+        prompt=tb.build_prompt(),
+        analyzer_id=analyzer_id,
+        block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
+        output_transform=lambda raw: tb.to_summary(raw, model=model),
+        client=client,
+        triggered_by_user_id=triggered_by_user_id,
+    )
+
+
+async def generate(
+    trajectory: dict,
+    task_context: "TaskContext",
+    *,
+    analyzer_id: str | None = None,
+    client=None,
+    triggered_by_user_id: str | None = None,
+) -> dict:
+    """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
+
+    Builds the block via ``build_summary_block`` (shared with the offline dump
+    harness), streams it -- the block self-persists to ``analyzer_blocks`` +
+    S3 -- and returns the parsed ``schema_version=4`` summary. Raises
+    ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
+    injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
+    """
+    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+
+    model = resolve_summary_model()
+    owned = client is None
+    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
+    block = build_summary_block(
+        trajectory,
+        task_context,
+        analyzer_id=analyzer_id,
+        model=model,
+        client=llm,
+        triggered_by_user_id=triggered_by_user_id,
+    )
     try:
-        client = AsyncAnthropic()
-        msg = await client.messages.create(
-            model=model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        out = await block.run()
     except Exception as e:
-        raise SummaryGenerationError(f"Anthropic API call failed: {e}") from e
-
-    raw_text = ""
-    for block in msg.content:
-        if hasattr(block, "text"):
-            raw_text += block.text
-    raw_text = _strip_code_fences(raw_text)
-    try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError as e:
-        raise SummaryGenerationError(f"Model returned non-JSON: {e}") from e
-
-    if not isinstance(parsed, dict):
-        raise SummaryGenerationError(
-            f"Model returned {type(parsed).__name__}, expected object"
-        )
-
-    summary = str(parsed.get("summary") or "").strip()
-    raw_highlights = parsed.get("highlights") or []
-    highlights: list[dict] = []
-    if isinstance(raw_highlights, list):
-        for entry in raw_highlights:
-            if not isinstance(entry, dict):
-                continue
-            step_id = entry.get("step_id")
-            if not isinstance(step_id, int) or step_id not in valid_step_ids:
-                continue
-            highlights.append(
-                {
-                    "step_id": step_id,
-                    "title": str(entry.get("title") or "").strip(),
-                    "why": str(entry.get("why") or "").strip(),
-                }
-            )
-
-    ordered_step_ids = [
-        step.get("step_id")
-        for step in (trajectory.get("steps") or [])
-        if isinstance(step.get("step_id"), int)
-    ]
-    phases = _normalize_phases(parsed.get("phases"), ordered_step_ids)
-
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "model": model,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "summary": summary,
-        "highlights": highlights,
-        "phases": phases,
-    }
+        raise SummaryGenerationError(f"summary block failed: {e}") from e
+    finally:
+        if owned:
+            await llm.aclose()
+    return out.output
 
 
 # ---------------------------------------------------------------------------
@@ -392,44 +291,65 @@ async def build_task_context(trial) -> TaskContext:
 # Per-trial-id locks so two concurrent requests don't both kick off
 # generation for the same trial. Process-local (Modal containers each
 # get their own dict) — that's acceptable: cross-container racing
-# results in at most a few duplicate Anthropic calls, and the second
-# write into the JSONB column is idempotent.
+# results in at most a few duplicate generations, and the writes are idempotent.
 _GEN_LOCKS: MutableMapping[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
-def _is_fresh(summary: dict | None) -> bool:
+async def _load_fresh_summary_block(
+    session: AsyncSession, trial_id: str
+) -> dict | None:
+    """The latest fresh SUCCESS trajectory_summary block for a trial, or None.
+
+    Source of truth for the summary: an ``analyzer_blocks`` row of type
+    ``trajectory_summary`` whose output carries the current ``schema_version``.
+    """
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerType
+    from oddish.db.models import AnalyzerBlockModel, JobStatus
+
     return (
-        isinstance(summary, dict)
-        and summary.get("schema_version") == SCHEMA_VERSION
-    )
+        await session.execute(
+            select(AnalyzerBlockModel.output)
+            .where(
+                AnalyzerBlockModel.analyzer_id == trial_id,
+                AnalyzerBlockModel.type == AnalyzerType.TRAJECTORY_SUMMARY.value,
+                AnalyzerBlockModel.status == JobStatus.SUCCESS,
+                AnalyzerBlockModel.output["schema_version"].astext == SCHEMA_VERSION,
+            )
+            .order_by(AnalyzerBlockModel.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel
+    session: AsyncSession, trial: TrialModel, triggered_by_user_id: str | None = None
 ) -> dict | None:
-    """Return the persisted trajectory summary, generating on miss.
+    """Return the trajectory summary, generating on miss.
 
-    Returns ``None`` when the trial has no trajectory to summarize.
-    Raises ``SummaryGenerationError`` if the LLM call fails.
+    Source of truth is the latest fresh SUCCESS trajectory_summary
+    ``AnalyzerBlock`` for the trial; the result is mirrored into
+    ``trials.trajectory_summary`` for the graph builder + analyzer-input readers.
+    Returns ``None`` when the trial has no trajectory; raises
+    ``SummaryGenerationError`` if generation fails.
     """
-    if _is_fresh(trial.trajectory_summary):
-        return trial.trajectory_summary
+    fresh = await _load_fresh_summary_block(session, trial.id)
+    if fresh is not None:
+        return fresh
 
     # Use the same "has a trajectory" notion as the trajectory endpoint /
     # trajectory-graph gate (true for finished Grok Build runs whose
     # grok-build.json synthesizes to ATIF), not just the raw has_trajectory
-    # column — otherwise those trials get an Agent Graph but no summary, and the
-    # graph would segment via its own path instead of the shared phases.
+    # column — otherwise those trials get an Agent Graph but no summary.
     from oddish.core.helpers import _has_fetchable_trajectory
 
     if not _has_fetchable_trajectory(trial):
         return None
 
     async with _GEN_LOCKS[trial.id]:
-        # Re-check inside the lock — another coroutine may have populated.
-        await session.refresh(trial, attribute_names=["trajectory_summary"])
-        if _is_fresh(trial.trajectory_summary):
-            return trial.trajectory_summary
+        # Re-check inside the lock — another coroutine may have generated one.
+        fresh = await _load_fresh_summary_block(session, trial.id)
+        if fresh is not None:
+            return fresh
 
         trajectory, task_context = await asyncio.gather(
             read_trial_trajectory(trial),
@@ -438,8 +358,15 @@ async def get_or_generate_summary(
         if trajectory is None:
             return None
 
-        summary = await generate(trajectory, task_context)
+        summary = await generate(
+            trajectory,
+            task_context,
+            analyzer_id=trial.id,
+            triggered_by_user_id=triggered_by_user_id,
+        )
 
+        # Mirror into the trials column for the graph builder + analyzer-input
+        # bundles, which read it synchronously via getattr.
         await session.execute(
             update(TrialModel)
             .where(TrialModel.id == trial.id)

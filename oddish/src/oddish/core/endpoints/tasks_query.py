@@ -20,7 +20,7 @@ from sqlalchemy import (
     tuple_,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, load_only, selectinload
+from sqlalchemy.orm import aliased, lazyload, load_only, noload, selectinload
 
 from oddish.core.experiment_membership import (
     gathered_trial_ids_select,
@@ -71,6 +71,7 @@ from oddish.schemas import (
     TaskStatusResponse,
     UserTagRef,
 )
+from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.model_pricing import estimate_cost_usd, get_model_pricing
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
@@ -93,7 +94,7 @@ def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bo
         return None, False
     from oddish.config import settings
 
-    model_name = settings.normalize_trial_model(row["agent"], row["model"])
+    model_name = settings.normalize_trial_model(row["agent"], row["model"], strict=False)
     estimated = estimate_cost_usd(
         model_name or row["model"],
         row["input_tokens"],
@@ -444,6 +445,22 @@ async def list_tasks_core(
     return response
 
 
+async def _experiment_member_task_ids(session: AsyncSession, experiment_id: str):
+    """Task ids in ``experiment_id``, mirroring ``TaskModel.experiments`` membership.
+
+    Materialized up front so the task fetch filters by primary key instead of an
+    ``EXISTS`` probe per row: under ``ORDER BY created_at DESC LIMIT`` that probe
+    made Postgres walk the org's whole task set, since members are a small
+    fraction and the limit never fills.
+    """
+    result = await session.execute(
+        select(task_experiments.c.task_id)
+        .where(task_experiments.c.experiment_id == experiment_id)
+        .where(task_experiments.c.deleted_at.is_(None))
+    )
+    return result.scalars().all()
+
+
 async def list_experiment_task_shells_core(
     session: AsyncSession,
     *,
@@ -455,17 +472,33 @@ async def list_experiment_task_shells_core(
     record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
     """List task shells for the experiment detail first paint."""
+    query_started_at = now()
+    member_task_ids = await _experiment_member_task_ids(session, experiment_id)
     query = (
         select(TaskModel)
+        .where(TaskModel.id.in_(member_task_ids))
         .order_by(TaskModel.created_at.desc())
-        .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
-        .options(load_only(*TASK_STATUS_RESPONSE_COLUMNS))
+        .options(
+            load_only(*TASK_STATUS_RESPONSE_COLUMNS),
+            # ``TaskModel.trials`` and ``TaskModel.experiments`` default to
+            # select-in eager loading.  A task-shell response deliberately
+            # contains neither relationship: scoped counts and the effective
+            # version are fetched by the aggregate queries below, and the one
+            # context experiment is attached explicitly after this query.
+            # Suppress both default loaders here so a large collection does
+            # not hydrate every historical trial/experiment for its tasks
+            # before returning the lightweight shell.
+            # Keep trials unloaded (rather than committing an empty
+            # collection) so another explicit selectinload in the same
+            # request/session can still enrich these task identities.
+            lazyload(TaskModel.trials),
+            noload(TaskModel.experiments),
+        )
     )
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
     query = query.limit(limit).offset(offset)
 
-    query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
         record_timing("tasks_query", elapsed_ms(query_started_at), "Task shells query")
@@ -522,10 +555,12 @@ async def list_experiment_slim_tasks(
         trial_in_experiment(experiment_id),
         TrialModel.is_probe.is_(False),
     )
+    query_started_at = now()
+    member_task_ids = await _experiment_member_task_ids(session, experiment_id)
     query = (
         select(TaskModel)
+        .where(TaskModel.id.in_(member_task_ids))
         .order_by(TaskModel.created_at.desc())
-        .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
         .options(
             load_only(*TASK_STATUS_RESPONSE_COLUMNS),
             selectinload(trials_relationship).load_only(*SLIM_TRIAL_RESPONSE_COLUMNS),
@@ -535,7 +570,6 @@ async def list_experiment_slim_tasks(
         query = query.where(TaskModel.org_id == org_id)
     query = query.limit(limit).offset(offset)
 
-    query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
         record_timing("tasks_query", elapsed_ms(query_started_at), "Slim tasks query")
@@ -858,6 +892,10 @@ def _agent_compare_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Same scoped trial set as ``_task_metrics_subquery`` — exclude combine
+        # copies so the "A beats B" comparison isn't skewed by re-materialized
+        # duplicates of a subject's trials.
+        not_combine_copy_filter(),
         # NOTE: skipped trials are intentionally INCLUDED in metric denominators
         # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
@@ -879,6 +917,7 @@ def _subject_value_scalar(
         TrialModel.task_version_id == TaskModel.current_version_id,
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        not_combine_copy_filter(),
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -931,6 +970,7 @@ def _top_performer_predicate(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        not_combine_copy_filter(),
         subject_col.isnot(None),
     )
     if org_id is not None:
@@ -1067,6 +1107,10 @@ def _task_metrics_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Combine copies re-materialize an existing execution under another
+        # experiment; excluding them keeps the cost sort / aggregate filters on
+        # the same execution population the card counters and detail view show.
+        not_combine_copy_filter(),
         # NOTE: skipped trials are intentionally INCLUDED in metric denominators
         # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
@@ -1903,6 +1947,11 @@ async def browse_tasks_core(
         # Probes have their own tab; keep them out of the browser's counts
         # and out of last_run_at, which drives the page ordering.
         TrialModel.is_probe.isnot(True),
+        # A combine copy's created_at is its materialization time, so counting it
+        # here would freshen last_run_at and jump an old task up the page even
+        # though the card's counters/cost/icons exclude it. The source trial
+        # still supplies the real activity time.
+        not_combine_copy_filter(),
     )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
@@ -2014,6 +2063,10 @@ async def browse_tasks_core(
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.is_probe.isnot(True),
+                # Combine copies double-count an execution already counted under
+                # its source experiment; drop them so the card's trial counts and
+                # cost match the task-detail view (which excludes them too).
+                not_combine_copy_filter(),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -2097,6 +2150,10 @@ async def browse_tasks_core(
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.is_probe.isnot(True),
+                # Combine copies re-materialize the same execution under other
+                # experiments; keeping them rendered as duplicate result icons on
+                # the card. Exclude so each execution shows once.
+                not_combine_copy_filter(),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -2126,6 +2183,8 @@ async def browse_tasks_core(
                     status=trial_row["trial_status"],
                     reward=trial_row["reward"],
                     error_message=trial_row["error_message"],
+                    agent=str(trial_row["agent"]),
+                    model=trial_row["model"],
                 )
             )
             if cost_scope_active:

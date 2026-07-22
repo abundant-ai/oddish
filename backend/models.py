@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
@@ -265,9 +265,7 @@ class OrgQuotaModel(TimestampedMixin, Base):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
-        CheckConstraint(
-            "period_kind IN ('monthly')", name="ck_org_quotas_period_kind"
-        ),
+        CheckConstraint("period_kind IN ('monthly')", name="ck_org_quotas_period_kind"),
     )
 
 
@@ -480,6 +478,14 @@ class UserProviderKeyModel(TimestampedMixin, Base):
 
 
 class SlackExpenseAlertModel(Base):
+    """Outbox row for one Slack expense alert, delivered at-least-once.
+
+    A row is recorded with its rendered ``payload`` when the alert first
+    fires (``notified_at`` NULL means pending) and marked sent after the
+    Slack post succeeds. Silent alerts are recorded born-sent. Rows from
+    before the outbox carried no payload and are settled on sight.
+    """
+
     __tablename__ = "slack_expense_alerts"
 
     alert_key: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -488,6 +494,86 @@ class SlackExpenseAlertModel(Base):
     )
     notified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipient_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recipient_clerk_user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mention_emails: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
+
+class SlackAlertSettingsModel(Base):
+    """Admin override for the shared-channel Slack escalation.
+
+    At most one row, ``id == SETTINGS_ROW_ID``, enforced by a CHECK: the alerts
+    are deployment-wide rather than org-scoped -- the cron scans every org --
+    so there is nothing to key this by. A missing row means the defaults in
+    ``slack_alert_settings.py`` stand. This covers only the in-channel
+    escalation floor and ping list; the per-user DM cutoffs live in
+    ``user_alert_preferences``.
+    """
+
+    __tablename__ = "slack_alert_settings"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    trial_escalation_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    always_ping_emails: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class UserAlertPreferencesModel(Base):
+    """A user's own choice of which Slack DM alerts to receive, and at what
+    cutoffs. One row per user, keyed by user id; a missing row means the
+    defaults in ``user_alert_prefs.py`` (all five DM types on, cutoffs inherited
+    from the global settings). The two USD columns are nullable on purpose:
+    NULL inherits the admin/global cutoff, a value pins it for this person.
+    """
+
+    __tablename__ = "user_alert_preferences"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    cost_milestone_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    expensive_trial_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    trial_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    qa_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_finished_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    trial_finished_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    task_finished_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_milestone_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    trial_ping_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
     )
 
 

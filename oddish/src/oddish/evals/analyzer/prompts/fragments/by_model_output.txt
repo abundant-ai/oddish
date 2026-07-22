@@ -1,0 +1,8 @@
+"by_model": [
+  {{"model": "<exact model id from the per-model counts above — never invent one>",
+    "narrative": "...markdown: how THIS model behaved, and how that differs from the others...",
+    "relative_strengths": "what this model did better than the others, or empty",
+    "relative_weaknesses": "what this model did worse than the others, or empty",
+    "distinctive_failures": ["failure modes seen in this model and not the others"]}}
+],
+"cross_model_comparison": "...markdown: claims that only exist in contrast — where the models diverge, and what that divergence implies. Empty if only one model ran."

@@ -41,6 +41,36 @@ from oddish.model_pricing import estimate_cost_usd
 # canonical "cancelled" signal on the row.
 CANCELLED_HARBOR_STAGE = "cancelled"
 
+# ``combine_experiments_core`` materializes a source trial as a brand-new row
+# under the *same* task, so a copy is indistinguishable from an original except
+# for this prefix on ``idempotency_key``. It is the only provenance a copy
+# carries -- there is no ``combined_from_trial_id`` column.
+COMBINE_IDEMPOTENCY_PREFIX = "combine:"
+
+
+def is_combine_copy(trial) -> bool:
+    """True when this trial row is an experiment-combine materialization.
+
+    Python-side twin of :func:`not_combine_copy_filter`, for surfaces that
+    filter an already-loaded relationship instead of issuing a query.
+    """
+    key = getattr(trial, "idempotency_key", None)
+    return bool(key) and key.startswith(COMBINE_IDEMPOTENCY_PREFIX)
+
+
+def not_combine_copy_filter():
+    """Drop experiment-combine copies (idempotency_key ``combine:%``).
+
+    A combine copy re-materializes an existing trial's result under another
+    experiment, so counting it double-counts the same execution. Shared by
+    :func:`first_party_spend_filter` and the task browser so both count the
+    same execution population the task-detail view shows.
+    """
+    return or_(
+        TrialModel.idempotency_key.is_(None),
+        TrialModel.idempotency_key.notlike(f"{COMBINE_IDEMPOTENCY_PREFIX}%"),
+    )
+
 
 def _cost_excluded_key_spend():
     """Trials stamped with an LLM key that admins flagged cost-excluded.
@@ -74,10 +104,7 @@ def first_party_spend_filter():
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
-        or_(
-            TrialModel.idempotency_key.is_(None),
-            TrialModel.idempotency_key.notlike("combine:%"),
-        ),
+        not_combine_copy_filter(),
         ~_cost_excluded_key_spend(),
     )
 
@@ -138,9 +165,9 @@ def settled_cost_columns() -> list:
             ),
             0.0,
         ).label("native_cost"),
-        func.coalesce(
-            func.sum(case((has_tokens, estimator_input), else_=0)), 0
-        ).label("est_input"),
+        func.coalesce(func.sum(case((has_tokens, estimator_input), else_=0)), 0).label(
+            "est_input"
+        ),
         func.coalesce(
             func.sum(case((has_tokens, nonnegative_output), else_=0)), 0
         ).label("est_output"),

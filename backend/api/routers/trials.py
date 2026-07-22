@@ -412,7 +412,9 @@ async def generate_trial_trajectory_graph(
         # the graph's own segmentation rather than failing the request.
         summary: dict | None = None
         try:
-            summary = await get_or_generate_summary(session, attached_trial)
+            summary = await get_or_generate_summary(
+                session, attached_trial, triggered_by_user_id=auth.user_id
+            )
         except Exception as e:
             # Best-effort: the graph reuses the summary's phases when present but
             # segments the run itself otherwise. Any failure here (generation
@@ -433,9 +435,9 @@ async def get_trial_trajectory_summary(
 ) -> dict:
     """Get a Claude-generated summary of the trajectory.
 
-    Returns the persisted summary from `trials.trajectory_summary` when
-    fresh, otherwise generates one and writes it back. 404 when the trial
-    has no trajectory; 502 if generation fails.
+    Returns the summary from the latest `analyzer_blocks` row (mirrored to
+    `trials.trajectory_summary`) when fresh, otherwise generates one. 404 when
+    the trial has no trajectory; 502 if generation fails.
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
@@ -444,7 +446,9 @@ async def get_trial_trajectory_summary(
             attached_trial = await session.get(TrialModel, trial.id)
             if attached_trial is None:
                 raise HTTPException(status_code=404, detail="Trial not found")
-            summary = await get_or_generate_summary(session, attached_trial)
+            summary = await get_or_generate_summary(
+                session, attached_trial, triggered_by_user_id=auth.user_id
+            )
     except SummaryGenerationError as e:
         logger.error(
             "Trajectory summary generation failed for trial %s: %s", trial_id, e

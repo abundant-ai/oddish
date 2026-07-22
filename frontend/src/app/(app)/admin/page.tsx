@@ -38,6 +38,7 @@ import { UsagePanel } from "@/components/usage-panel";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { CostExcludedKeysCard } from "@/components/cost-excluded-keys-card";
+import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
 const formatAge = (dateStr: string | null) => {
@@ -720,6 +721,16 @@ function AdminPageContent() {
 
         <TabsContent value="costs" className="space-y-4">
           <CostBreakdownCard />
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                Channel spend escalation
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <SlackAlertSettingsForm />
+            </CardContent>
+          </Card>
           <CostExcludedKeysCard />
         </TabsContent>
 

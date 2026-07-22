@@ -30,6 +30,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
 - `oddish experiment create` - build a collection experiment from explicit trial IDs
+- `oddish experiment add` / `oddish experiment remove` / `oddish experiment rename` - edit a collection in place; its share link keeps working
 - `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
@@ -108,6 +109,8 @@ Options
 - `--environment-kwarg`, `--harbor-environment-kwarg TEXT` - Pass Harbor environment kwargs as `KEY=VALUE`; can be used multiple times
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
 - `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
+- `--allow-agent-host TEXT` - Extra hostname for a restricted agent phase (maps to Harbor `extra_allowed_hosts`); usually unnecessary because Oddish auto-injects the model API host. Can be used multiple times
+- `--disable-web-tools/--no-disable-web-tools` - Force-disable server-side web tools; usually unnecessary because Oddish does this automatically on closed-internet agent phases (`claude-code`: `disallowed_tools=WebSearch WebFetch`; `codex`: `web_search=disabled`)
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
 - `--registry-login TEXT` - Per-run container-registry login as `username=USER,token=TOKEN[,registry=docker.io]`; repeatable and honored by `--retry`.
   Wrap comma-bearing values like `--registry-login "username=USER,token='a,b'"`.
@@ -172,7 +175,7 @@ max_trial_attempts: 3
 harbor:
   environment:
     kwargs:
-      agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+      region: us-east
 ```
 
 `max_trial_attempts` is optional. It is the total Oddish worker attempt budget
@@ -533,6 +536,34 @@ from explicit trial IDs only, never publishes, and requires `--name`:
 ```bash
 oddish experiment create --name my-set <trial_id_1> <trial_id_2>
 ```
+
+### Editing a Collection
+
+A collection can be edited after it's created, and its share link keeps
+working — the URL never changes.
+
+```bash
+# merge another experiment's trials in
+oddish experiment add <collection_id> --from <other_experiment_id>
+
+# add specific trials, or a task pinned to one version
+oddish experiment add <collection_id> <trial_id_1> <trial_id_2> --task <task_id>@16
+
+# drop a task from the collection (all versions of it)
+oddish experiment remove <collection_id> --task <task_id>
+
+# rename it
+oddish experiment rename <collection_id> --name "21-task rollup"
+```
+
+`remove` only unlinks — the trials stay in their home experiment with their
+artifacts intact. `add` needs a `TASKS`-scoped key; `remove` and `rename`
+require an admin API key, the same gate `oddish delete` uses. `remove` refuses
+to take out the last of a collection's trials — if you want the collection
+gone, use `oddish delete` to remove it entirely. (This is a guard on the
+`remove` command, not a guarantee about collections in general: deleting the
+underlying trials with `oddish delete --trial` can still leave a collection
+with nothing to show.)
 
 ## Delete Data
 

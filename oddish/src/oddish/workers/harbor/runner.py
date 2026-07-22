@@ -12,16 +12,22 @@ from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
+from harbor.environments.kube_ops import kube_chart_present
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.config import (
     EnvironmentConfig,
     MCPServerConfig,
+    NetworkMode,
     TaskConfig as HarborTaskConfig,
+    normalize_allowed_hosts,
 )
+from harbor.models.trial.config import AgentConfig as HarborAgentConfig
+from harbor.models.trial.config import EnvironmentConfig as HarborEnvironmentConfig
 from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
+from harbor.utils.env import resolve_env_vars
 
-from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.config import BEDROCK_ENV_VARS, is_anthropic_hdo_model, settings
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -29,10 +35,12 @@ from oddish.worker.probe_staging import stage_org_skills
 from .agent_config import (
     _build_agent_config,
     _claude_code_forces_direct_api,
+    _resolve_anthropic_hdo_api_key,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
+from .model_hosts import outbound_hosts_for_model
 from .modal_debug import (
     _capture_modal_output,
     _format_exception_message,
@@ -145,6 +153,151 @@ def _effective_task_build_timeout_sec(task_path: Path) -> float:
     except Exception:
         return _ENV_BUILD_TIMEOUT_BASE_SEC
     return base if base > 0 else _ENV_BUILD_TIMEOUT_BASE_SEC
+
+
+def _task_has_dynamic_restricted_agent_phase(task_path: Path) -> bool:
+    """True when env starts public but the agent phase is restricted.
+
+    That is the swe-marathon closed-internet shape (public setup → allowlist /
+    no-network agent → no-network verifier) that needs run-specific model hosts
+    and web-tool disable applied transparently.
+    """
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(
+            (task_path / "task.toml").read_text()
+        )
+    except Exception:
+        return False
+
+    baseline = task_config.environment.resolve_baseline()
+    if baseline.network_mode != NetworkMode.PUBLIC:
+        return False
+
+    task_policy = task_config.agent.explicit_phase_policy()
+    effective_policies = []
+    for step in task_config.steps or [None]:
+        step_policy = step.agent.explicit_phase_policy() if step is not None else None
+        effective_policies.append(step_policy or task_policy or baseline)
+    return any(
+        policy.network_mode != NetworkMode.PUBLIC for policy in effective_policies
+    )
+
+
+def _supports_auto_restricted_agent_network(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+) -> bool:
+    """Whether this trial shape should get automatic closed-internet defaults."""
+    if environment_config.import_path is not None:
+        return False
+    if environment_config.type not in (EnvironmentType.DAYTONA, EnvironmentType.MODAL):
+        return False
+
+    environment_dir = task_path / "environment"
+    # Compose / kube sandboxes do not use the same phase-policy switching path.
+    if (environment_dir / "docker-compose.yaml").exists():
+        return False
+    if environment_config.extra_docker_compose:
+        return False
+    if kube_chart_present(environment_dir, environment_config.kwargs):
+        return False
+    return _task_has_dynamic_restricted_agent_phase(task_path)
+
+
+def _apply_restricted_agent_web_tool_defaults(
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Disable server-side web tools unless the user already set a toggle."""
+    from oddish.cli.closed_internet import web_tool_kwargs_for_agent
+
+    defaults = web_tool_kwargs_for_agent(
+        agent_name=agent_config.name,
+        import_path=agent_config.import_path,
+    )
+    if not defaults:
+        return
+    kwargs = dict(agent_config.kwargs or {})
+    for key, value in defaults.items():
+        kwargs.setdefault(key, value)
+    agent_config.kwargs = kwargs
+
+
+def _inject_restricted_agent_model_hosts(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Keep model transport reachable during a restricted agent phase.
+
+    Harbor can switch Modal/Daytona sandboxes after agent setup, but it needs
+    the run-specific model destinations to turn a restrictive phase policy into
+    a model-only allowlist. Infer those destinations from the fully normalized
+    agent config at runtime so task bundles never contain provider endpoints.
+    """
+    if not _supports_auto_restricted_agent_network(
+        task_path=task_path,
+        environment_config=environment_config,
+    ):
+        return
+
+    # Model/provider decides the API host — not the agent harness. Oddish routes
+    # many providers through claude-code; use the normalized model + the base
+    # URLs already stamped onto agent env by provider routing.
+    agent_kwargs = dict(agent_config.kwargs or {})
+    resolved_env = resolve_env_vars(agent_config.env) if agent_config.env else {}
+    if resolved_env:
+        agent_kwargs["extra_env"] = resolved_env
+    inferred_hosts = normalize_allowed_hosts(
+        outbound_hosts_for_model(
+            agent_config.model_name,
+            agent_env=resolved_env,
+            agent_kwargs=agent_kwargs,
+        )
+    )
+    agent_config.extra_allowed_hosts = list(
+        dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts])
+    )
+
+
+def _apply_restricted_agent_network_defaults(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Transparent closed-internet defaults for restricted agent phases.
+
+    Users should not need ``--allow-agent-host`` / ``--disable-web-tools`` for
+    the common public→restricted agent-phase task shape; those CLI flags remain
+    as explicit overrides.
+    """
+    if not _supports_auto_restricted_agent_network(
+        task_path=task_path,
+        environment_config=environment_config,
+    ):
+        return
+    _inject_restricted_agent_model_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+    _apply_restricted_agent_web_tool_defaults(agent_config)
+
+
+def _inject_daytona_agent_model_hosts(
+    *,
+    task_path: Path,
+    environment_config: HarborEnvironmentConfig,
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Backward-compatible alias for restricted-agent host injection."""
+    _inject_restricted_agent_model_hosts(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
 
 
 def _read_query_cli_text() -> str:
@@ -395,8 +548,15 @@ async def run_harbor_trial_async(
         # the user key as ambient for the build + run so the trial routes to the
         # direct Anthropic API even on a worker with no platform key; the agent
         # then authenticates with the user's key.
+        #
+        # ``anthropic-hdo/<model>`` is the same idea with the platform
+        # ANTHROPIC_HDO_API_KEY: overwrite ambient ANTHROPIC_API_KEY so routing
+        # and auth both use the HDO credential instead of Bedrock / the default
+        # Anthropic key. HDO wins over BYOK when the model prefix opts in.
         byok_anthropic_env: dict[str, str] = {}
-        if "claude-code" in (agent or "").strip().lower():
+        if is_anthropic_hdo_model(model):
+            byok_anthropic_env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
+        elif "claude-code" in (agent or "").strip().lower():
             _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
             if _byok_key:
                 byok_anthropic_env["ANTHROPIC_API_KEY"] = _byok_key
@@ -409,13 +569,18 @@ async def run_harbor_trial_async(
                 is_probe=is_probe,
                 probe_oddish_env=extra_agent_env,
             )
+            _apply_restricted_agent_network_defaults(
+                task_path=effective_task_path,
+                environment_config=env_config,
+                agent_config=agent_config,
+            )
 
-        # TODO: Temporary workaround; remove once RishiDesai/harbor has the
-        # correct fix.
         # Claude Code downloads its CLI at agent-setup and calls its model
-        # endpoint during agent.run(). On closed-internet tasks Harbor's fallback
-        # domains cover neither the installer CDN nor custom model routes, so
+        # endpoint during agent.run(). On closed-internet tasks, installer CDN
+        # hosts and custom model routes are not always in the task allowlist, so
         # allow both via the environment baseline (which spans install + run).
+        # Model API hosts are also injected automatically for restricted agent
+        # phases via _apply_restricted_agent_network_defaults.
         if "claude-code" in (agent or "").strip().lower():
             hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
             base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")

@@ -41,7 +41,7 @@ dependencies = [
     "cryptography>=42",
     # Harbor (task models, agent config, dataset handling). Published wheels
     # resolve this PyPI release; local and hosted development intentionally
-    # override it with the rishidesai/harbor fork below.
+    # override it with the abundant-ai/harbor fork below.
     "harbor==0.18.0",
     # JSON Schema validation (result_focus structured-output schema checks).
     "jsonschema>=4.0",
@@ -52,6 +52,8 @@ dependencies = [
     "litellm==1.83.14",
     # YAML parsing for skill frontmatter (skills library).
     "pyyaml>=6.0",
+    # Comment-preserving TOML round-trip for task.toml typography normalization.
+    "tomlkit==0.15.1",
 ]
 
 [project.optional-dependencies]
@@ -78,17 +80,15 @@ server = [
 worker = [
     "oddish[server]",
     # Needed when hosted workers run Harbor with EnvironmentType.DAYTONA.
-    # Floor is 0.185.0: Harbor's daytona environment imports ``GpuType`` from
-    # the daytona SDK, which was only added in 0.185.0. A lower version (e.g.
-    # the previously-locked 0.176.0) makes Harbor's ``from daytona import ...``
-    # fail, which it swallows into ``_HAS_DAYTONA = False`` and then surfaces as
-    # a misleading ``MissingExtraError`` at sandbox-build time.
-    "daytona>=0.185.0",
+    # Harbor's pinned Daytona implementation uses runtime network settings,
+    # which require the SDK API shipped in 0.192.0 and newer.
+    "daytona>=0.192.0",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
     "google-generativeai==0.8.6",
     "modal>=1.5.0",
+    "dockerfile-parse>=2.0.1",
 ]
 dev = [
     "pytest==9.0.2",
@@ -111,10 +111,11 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
+# abundant-ai/harbor main. uv.lock records the exact commit used by the worker image.
+harbor = { git = "https://github.com/abundant-ai/harbor", branch = "main" }
 
 [tool.uv]
-override-dependencies = ["harbor==0.15.0"]
+override-dependencies = ["harbor==0.16.1"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock"]

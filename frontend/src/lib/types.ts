@@ -240,6 +240,8 @@ interface TaskBrowseTrial {
   status: TrialStatus;
   reward: number | null;
   error_message?: string | null;
+  agent: string;
+  model: string | null;
 }
 
 export interface TaskBrowseItem {
@@ -652,10 +654,31 @@ export interface TrajectoryGraph {
   generated_at?: string;
 }
 
+/** Pre-v4 segmentation. Still present on summaries generated before #790. */
 export interface TrajectoryPhase {
   label: string;
   gist: string;
   step_ids: number[];
+}
+
+/** Flat vocabulary of `TrajectoryBlockTaxonomy` (backend trajectory_component_block.py). */
+export type TrajectoryComponentKind =
+  | "reading_files"
+  | "thinking_recall"
+  | "thinking_understand"
+  | "thinking_hypothesize"
+  | "thinking_diagnose"
+  | "implementing"
+  | "writing_tests"
+  | "testing_public"
+  | "testing_custom"
+  | "testing_custom_edge_cases"
+  | "debugging";
+
+export interface TrajectoryComponent {
+  step_ids: number[];
+  trajectory_component: TrajectoryComponentKind;
+  summary: string | null;
 }
 
 export interface TrajectorySummary {
@@ -664,7 +687,8 @@ export interface TrajectorySummary {
   generated_at: string;
   summary: string;
   highlights: TrajectoryHighlight[];
-  phases: TrajectoryPhase[];
+  components?: TrajectoryComponent[];
+  phases?: TrajectoryPhase[];
 }
 
 interface QueueSlot {
@@ -815,6 +839,8 @@ export interface QueueCapacityStat {
   queued_scheduled: number;
   running: number;
   limit: number;
+  deploy_limit: number;
+  override_limit: number | null;
   fill: number | null;
   oldest_queued_age_seconds: number | null;
   wait_p50_seconds: number | null;
@@ -933,9 +959,15 @@ interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
+  qa_cost_usd?: number;
   prev_cost_usd?: number | null;
   month_cost_usd?: number;
   month_budget_usd?: number | null;
+}
+
+export interface CostQaModelBreakdown {
+  model: string;
+  cost_usd: number;
 }
 
 export interface CostBreakdownResponse {
@@ -944,9 +976,12 @@ export interface CostBreakdownResponse {
   series_by_agent: CostSeries;
   series_by_model: CostSeries;
   series_by_user: CostSeries;
+  series_by_type?: CostSeries;
+  series_qa_by_model?: CostSeries;
   totals: CostTotals;
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
+  qa_by_model?: CostQaModelBreakdown[];
   experiments: CostExperimentBreakdown[];
   timestamp: string;
 }
@@ -1030,6 +1065,32 @@ export type ReportStatus =
   | "success"
   | "failed";
 
+export interface ModelDenominators {
+  trials: number;
+  scored: number;
+  solved: number;
+  mean_reward: number | null;
+  analyzed: number;
+  bad: number;
+  good: number;
+}
+
+export interface ByModelEntry {
+  model: string;
+  bucket: "bad" | "good" | "all";
+  narrative: string;
+  relative_strengths: string;
+  relative_weaknesses: string;
+  distinctive_failures: string[];
+}
+
+export interface ByModel {
+  version: number;
+  comparison: string;
+  denominators: Record<string, ModelDenominators>;
+  models: ByModelEntry[];
+}
+
 export interface Report {
   id: string;
   name: string;
@@ -1043,6 +1104,7 @@ export interface Report {
   num_bad_failures?: number | null;
   num_good_failures?: number | null;
   breakdown?: Record<string, number> | null;
+  by_model?: ByModel | null;
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;

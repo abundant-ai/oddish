@@ -1,0 +1,115 @@
+name: Migration Upgrade Check
+
+# Pre-merge mirror of supabase-db-migrations.yml. That job runs `alembic
+# upgrade head` against PRODUCTION Supabase on push to main — so a migration
+# that fails at the SQL/DDL level is only discovered after it is merged and
+# already half-applied to prod. This job runs the identical upgrade against a
+# throwaway Postgres at PR time, so the failure surfaces on the PR instead.
+#
+# Always-run + internal skip: there is intentionally NO `paths:` filter, so the
+# workflow fires on every PR and can be marked a REQUIRED status check. A
+# path-filtered workflow would never report a status on PRs that miss the paths,
+# leaving a required check stuck "pending" and blocking merge forever. Instead
+# the job always runs and the real work is gated on a `git diff` against the PR
+# base — no migration changes → the job reports green immediately.
+
+on:
+  pull_request:
+
+concurrency:
+  group: migration-upgrade-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    # NOTE: the Postgres service starts on every PR, even when the diff step
+    # skips the real work — services can't be gated on a step output. It's a
+    # lightweight container; if the startup cost on no-op PRs matters, split
+    # detection into a cheap always-run job and gate this whole job on it.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # Host is the service name "postgres", not localhost: the job runs inside
+      # a container on the same user-defined network as the service container.
+      ODDISH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/postgres
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so we can diff HEAD against the PR base commit.
+          fetch-depth: 0
+
+      - name: Detect migration changes
+        id: changes
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          if git diff --name-only "$base" HEAD \
+              | grep -qE '^(oddish|backend)/alembic/'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Migration files changed — running upgrade."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No migration changes — skipping upgrade (reports green)."
+          fi
+
+      # Same order as prod: oddish migrations first (alembic_version), then
+      # backend (alembic_version_backend), both against the one DB.
+      - name: Sync oddish dependencies
+        if: steps.changes.outputs.run == 'true'
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+        run: uv sync --frozen --extra server
+
+      - name: Run oddish migrations
+        if: steps.changes.outputs.run == 'true'
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+        run: uv run alembic upgrade head
+
+      - name: Sync backend dependencies
+        if: steps.changes.outputs.run == 'true'
+        working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+        run: uv sync --frozen
+
+      - name: Run backend migrations
+        if: steps.changes.outputs.run == 'true'
+        working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+        run: uv run alembic upgrade head
+
+      - name: Summarize migration run
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Migration upgrade check"
+            echo
+            if [ "${{ steps.changes.outputs.run }}" = "true" ]; then
+              echo "- Ran \`alembic upgrade head\` against an ephemeral Postgres"
+              echo "- Core migrations: \`oddish/alembic\` · Cloud: \`backend/alembic\`"
+            else
+              echo "- Skipped: no migration changes in this PR"
+            fi
+            echo "- Commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

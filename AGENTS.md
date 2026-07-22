@@ -29,6 +29,7 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
 │   ├── analyze/                # QA prompts and analysis helpers
+│   ├── blocks/                 # Block/AnalyzerBlock primitive + LLM backends
 │   ├── cli/                    # oddish run/upload/ls/status/cancel/pull/collect/...
 │   ├── core/                   # shared endpoint/service logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
@@ -103,6 +104,7 @@ Postgres
   - trials / tasks    # domain state + live UI columns
   - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
+  - model_concurrency_overrides # admin-set limits over deploy configuration
         |
         v
 Workers (auto-started by API, or standalone via python -m oddish.workers.queue.worker)
@@ -180,10 +182,24 @@ High-level flow:
   the shared `classify_trial_and_store`, then synthesize the task verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
+- database-backed admin concurrency overrides; these take precedence over
+  `ODDISH_MODEL_CONCURRENCY_OVERRIDES` and are read by both the dispatcher plan
+  and each worker's slot acquisition. This is the supported way to change a
+  per-model limit at runtime. The self-tuning advisory controller
+  (`ODDISH_DYNAMIC_MODEL_CONCURRENCY` + `concurrency_controller.py`) is
+  **deprecated** in favor of it: leave the flag OFF; enabling it logs a
+  deprecation warning and the path may be removed
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
   stage reconciliation in one cleanup sweep
 - soft-delete semantics on domain rows via the `deleted_at` column and
   a session-level filter (`oddish.db.soft_delete`)
+
+`oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
+building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
+backends, so verdict synthesis runs in a backend-free worker. The Daytona
+sandbox backend needs cc_chat and stays in
+`backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
+itself into core's client factory on import.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.
@@ -323,8 +339,9 @@ Behavior:
 | `queue_manager.py` | Per-queue-key concurrency bookkeeping, `run_polling_worker` |
 | `worker.py` | Standalone poll loop (`python -m oddish.workers.queue.worker`) |
 
-Auxiliary modules (`concurrency_controller.py`, `db_helpers.py`, `job_tokens.py`,
-`runtime_status.py`, `shared.py`, `trial_failures.py`) support these.
+Auxiliary modules (`concurrency_controller.py` (deprecated — see admin
+overrides), `db_helpers.py`, `job_tokens.py`, `runtime_status.py`, `shared.py`,
+`trial_failures.py`) support these.
 
 Handler registration lives in `oddish.workers.jobs` (`registry.py`,
 `handlers.py`). Both the standalone worker and the backend call
@@ -408,21 +425,25 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
-- Claude trials run through AWS Bedrock only. `CLAUDE_CODE_USE_BEDROCK=1` is
+- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. `ANTHROPIC_API_KEY` is not a trial route.
+  `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key
+  via the explicit `anthropic-hdo/<model>` prefix: that route overwrites
+  `ANTHROPIC_API_KEY` with `ANTHROPIC_HDO_API_KEY` and blanks Bedrock routing
+  for the trial.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
-- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, and Meta each have explicit
-  canonical provider prefixes and queue keys: `zai/`, `minimax/`, `moonshot/`,
-  `fireworks/`, `xai/`, and `meta/`. Add or change provider aliases in
-  `config.py`, then update env injection in the Harbor runner and the network
-  allowlist notes.
+- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, Meta, and Anthropic HDO each
+  have explicit canonical provider prefixes and queue keys: `zai/`, `minimax/`,
+  `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
+  change provider aliases in `config.py`, then update env injection in the
+  Harbor runner and the network allowlist notes.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
-  `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`,
-  `XAI_API_KEY`, `META_API_KEY`) and must not be persisted on trial rows.
+  `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
+  `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
+  on trial rows.
 - `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
   `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
   but not every xAI model is served there — some (e.g. newer/unreleased models)
@@ -513,6 +534,32 @@ so it won't catch the omission — the failure only shows up on the compact
 experiment page. Builder unit tests can't catch it either (in-memory models
 have all attrs set); the bug lives in the query options, not the builder.
 
+### Dashboard pipeline stats use reserved queue keys
+
+`get_queue_stats` / `get_queue_stats_by_org` (`oddish/src/oddish/queue.py`)
+bucket trial counts by each trial's own `queue_key`, and the
+trajectory-analysis / verdict pipeline counts under the **reserved**
+`analysis` / `verdict` buckets (`ANALYSIS_PIPELINE_QUEUE_KEY` /
+`VERDICT_PIPELINE_QUEUE_KEY` in `oddish/src/oddish/config.py`). Never key
+pipeline counts off the analysis/verdict *model*'s queue key: that folds
+pipeline state into a real model's bucket — an incident rendered 4k+ trials
+mid-classification as "running workers" under one model's queue while that
+model's actual trials were routed into the "analyses" pipeline. These are
+presentation buckets only; the task-level QA worker job still enqueues under
+`get_qa_queue_key()` (the analysis model's concurrency bucket).
+
+Related invariant: a QA job that dies or is cancelled mid-classification must
+not strand its trials in a non-terminal `analysis_status`. The stale-heartbeat
+QA mirror resets them (RETRYING → `QUEUED`, FAILED → `FAILED` with the
+`ORPHANED_ANALYSIS_ERROR_PREFIX` sentinel), the append-supersede cancel path
+requeues in-flight rows via `requeue_inflight_trial_analysis` (which also
+reopens sentinel-FAILED rows when an append resurrects the task), and
+`_reset_orphaned_trial_analysis` in the cleanup sweep is the backstop. If you
+add a new way to kill or cancel a QA job, reset its task's in-flight
+`analysis_status` the same way — and select the trial rows `FOR UPDATE SKIP
+LOCKED`: these writers may hold the task row lock, and *waiting* on trial rows
+inverts the trials-then-task lock order `cancel_tasks_runs` takes (deadlock).
+
 ---
 
 ## `backend/` — Hosted Cloud Layer
@@ -591,8 +638,8 @@ sweep):
    peer average, with at least one peer" filter (`trial_average_multiplier`)
    is gone, so the $200 floor is unconditional. A trial over $1,000 produces
    two alerts: the owner's DM, plus a separate in-channel escalation
-   (`trial-escalation:{id}:1000`) mentioning the owner and a hardcoded
-   always-ping list (`ALWAYS_PING_EMAILS` in `slack_notifications.py`). Both
+   (`trial-escalation:{id}`) mentioning the owner and the admin-editable
+   always-ping list (see below). Both
    carry the ":rotating_light: *Very expensive trial*" heading in place of
    the usual ":warning: *Expensive trial*". Milestones are driven by *new*
    spend: spend that finished within the 2h watch window. Milestones already
@@ -602,13 +649,25 @@ sweep):
    markers; primary and retry completion is atomic. Indeterminate loud claims
    are not repeated because the external channels do not offer an idempotency
    key, while interrupted silent claims are completed without sending.
-   All thresholds -- the $1,000 milestone/repeat, the $200 trial floor, the
-   $1,000 escalation, and the 0.5 experiment-failed ratio -- are hardcoded
-   module constants, not environment-configurable; the five `ODDISH_SLACK_*`
-   threshold env vars (`ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD`,
-   `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`, `ODDISH_SLACK_EXPENSIVE_TRIAL_USD`,
-   `ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER`,
-   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO`) are gone. It uses the shared
+   The in-channel escalation -- the $1,000 floor a trial must clear to post to
+   the shared channel, plus the always-ping list -- is admin-editable at runtime
+   from the Costs tab of `/admin`, backed by the single `slack_alert_settings`
+   row (`PUT /admin/slack-alert-settings`, `require_admin`). The constants in
+   `slack_alert_settings.py` are the defaults that stand when no row exists, and
+   DELETE restores them. `load_alerts` reads the row once per run in a session
+   of its own -- a missing table (deploy-before-migrate) falls back to the
+   defaults rather than aborting the run's transaction. The escalation threshold
+   is deliberately absent from the alert key: a key that embedded it would mint
+   fresh dedup rows on each retune and re-alert the whole window. The per-user
+   DM cutoffs -- the $1,000 milestone/repeat and the $200 trial floor -- are
+   deploy-time constants (`DEFAULT_*_USD` in `user_alert_prefs.py`) that each
+   person inherits until they override them in their own notification settings;
+   they are not admin-editable. The 0.5 experiment-failed ratio stays a module
+   constant in `slack_notifications.py` because it governs failure DMs, not
+   spend. The five `ODDISH_SLACK_*` threshold env vars
+   (`ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD`, `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`,
+   `ODDISH_SLACK_EXPENSIVE_TRIAL_USD`, `ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER`,
+   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO`) remain gone. It uses the shared
    settled-cost basis and contains no agent/LLM path. It is on by default for
    the production app and off by default on preview apps; a preview opts in
    by setting `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
@@ -685,6 +744,11 @@ silently breaks throughput or correctness — read before touching
    "release only if zero jobs RUNNING on the key") — that was the original bug:
    one live job pinned every leaked lease for ~12h and starved the queue. The
    link is always `queue_slots.locked_by == worker_jobs.current_worker_id`.
+   The limit used for both spawn planning and slot acquisition comes from
+   `model_concurrency_overrides` when an admin override exists, otherwise from
+   the deploy-time `ODDISH_MODEL_CONCURRENCY_OVERRIDES` / default settings.
+   Dynamic advice never exceeds an admin override, and an override-read failure
+   fails closed at zero rather than risking reopening a disabled queue.
 
 4. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
    model under two keys gets the *sum* of both buckets against one provider quota

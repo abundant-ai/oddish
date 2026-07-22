@@ -43,6 +43,7 @@ oddish-pulls/
 
 # Git worktrees (local isolation)
 .worktrees/
+.claude/worktrees/
 
 # Playwright e2e artifacts
 frontend/test-results/
@@ -52,5 +53,6 @@ frontend/playwright/.cache/
 
 # Brainstorming visual companion
 .superpowers/
+docs/superpowers/
 /ABI-69-notes.md
 /.junie/

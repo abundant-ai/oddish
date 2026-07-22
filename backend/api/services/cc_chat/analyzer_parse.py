@@ -73,6 +73,18 @@ def _elide(v: str, limit: int = _SECTION_LOG_LIMIT) -> str:
     return v if len(v) <= limit else f"{v[:limit]}...(+{len(v) - limit}B)"
 
 
+def _by_model_from(raw: dict) -> list[dict]:
+    """Raw per-model entries, unvalidated. Normalization and the drop of
+    unknown models happen host-side in by_model.normalize_entries -- this
+    layer only extracts."""
+    entries = raw.get("by_model")
+    return entries if isinstance(entries, list) else []
+
+
+def _comparison_from(raw: dict) -> str:
+    return str(raw.get("cross_model_comparison") or "")
+
+
 def _sections_from(raw: dict, bucket: str) -> dict[str, str]:
     keys = SECTION_KEYS_BY_BUCKET[bucket]
     sections = {k: _section_value(raw, k) for k in keys}
@@ -135,7 +147,7 @@ def parse_cohort_result(
     findings_bytes: bytes,
     stream_text: str,
     host_by_trial: dict[str, dict],
-) -> tuple[list[Finding], dict[str, str]]:
+) -> tuple[list[Finding], dict[str, str], tuple[list[dict], str]]:
     logger.info(
         "analyzer-sandbox: parsing %s cohort: reduce file=%dB, findings file=%dB, "
         "stream=%dB, %d trials in cohort",
@@ -151,11 +163,11 @@ def parse_cohort_result(
     )
 
     sections: dict[str, str] | None = None
+    raw: dict | None = None
     if reduce_bytes.strip():
         try:
-            sections = _sections_from(
-                parse_json(reduce_bytes.decode("utf-8", "replace")), bucket
-            )
+            raw = parse_json(reduce_bytes.decode("utf-8", "replace"))
+            sections = _sections_from(raw, bucket)
             logger.info(
                 "analyzer-sandbox: %s reduce file parsed: sections=%s",
                 bucket, _render_sections(sections),
@@ -165,6 +177,7 @@ def parse_cohort_result(
             # to the caller: the file yielded nothing. Both fall back to the stream,
             # which may still hold a good result. If it doesn't, the check below
             # raises with both channels accounted for.
+            raw = None
             logger.warning(
                 "analyzer-sandbox: %s reduce file unusable (%s); "
                 "falling back to the stream", bucket, exc,
@@ -190,7 +203,8 @@ def parse_cohort_result(
                 f"file head={_elide(reduce_bytes.decode('utf-8', 'replace'))!r}; "
                 f"stream tail={_elide(stream_text[-_SECTION_LOG_LIMIT:])!r}"
             )
-        sections = _sections_from(blocks[-1], bucket)
+        raw = blocks[-1]
+        sections = _sections_from(raw, bucket)
         logger.info(
             "analyzer-sandbox: %s reduce recovered from the stream: sections=%s",
             bucket, _render_sections(sections),
@@ -207,8 +221,10 @@ def parse_cohort_result(
             "%r block(s) kept", bucket, len(findings), len(blocks), _MAP_MARKER,
         )
 
+    by_model = (_by_model_from(raw), _comparison_from(raw)) if raw is not None else ([], "")
+
     logger.info(
         "analyzer-sandbox: %s parsed: %d finding(s), %d section(s)",
         bucket, len(findings), len(sections),
     )
-    return findings, sections
+    return findings, sections, by_model

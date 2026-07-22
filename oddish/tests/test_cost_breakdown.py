@@ -15,9 +15,15 @@ from sqlalchemy import text
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import settings  # noqa: E402
-from oddish.core.admin import get_cost_breakdown_core  # noqa: E402
+from oddish.core.admin import (  # noqa: E402
+    _UNATTRIBUTED_KEY,
+    _spend_identity,
+    get_cost_breakdown_core,
+)
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER  # noqa: E402
+from oddish.config import normalize_model_id  # noqa: E402
 from oddish.db import (  # noqa: E402
+    AnalysisCostModel,
     ExperimentModel,
     TaskModel,
     TrialModel,
@@ -760,3 +766,130 @@ async def test_cost_breakdown_attribution_fallbacks_and_billability(
         if u.key in {"ghuser:octo-ext", "ghid:gh-9001", SUBMITTER, PAYER}
     )
     assert _approx(fall_total, 42.0)
+
+
+def test_spend_identity_github_rung_precedence():
+    # A resolved GitHub identity keys on that user, so their handle spend lands
+    # on the same row their billed spend does instead of a ghost @handle row.
+    assert _spend_identity(None, "gh-1", "octo", None, "user-1") == (
+        "user-1",
+        "user-1",
+        None,
+    )
+    # The billed payer still outranks it.
+    assert _spend_identity("payer", "gh-1", "octo", None, "user-1") == (
+        "payer",
+        "payer",
+        None,
+    )
+    # Resolving to nobody leaves every existing fallback exactly as it was.
+    assert _spend_identity(None, "gh-1", "octo", None, None) == (
+        "ghid:gh-1",
+        None,
+        "@octo",
+    )
+    assert _spend_identity(None, None, "octo", None, None) == (
+        "ghuser:octo",
+        None,
+        "@octo",
+    )
+    assert _spend_identity(None, None, None, "sub", None) == ("sub", "sub", None)
+    assert _spend_identity(None, None, None, None, None) == (
+        _UNATTRIBUTED_KEY,
+        None,
+        "Unattributed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cost_breakdown_merges_resolved_github_identity(seeded_fallback_data):
+    """A handle owned by a registered user folds into that user's row."""
+
+    async def resolver(_session, identities):
+        # Only "octo-ext" belongs to someone registered; gh-9001 is a stranger.
+        return {i: MERGED for i in identities if i[2] == "octo-ext"}
+
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(
+            session,
+            window_days=7,
+            experiment_limit=500,
+            user_limit=500,
+            resolve_github_users=resolver,
+        )
+
+    by_user = {u.key: u for u in result.by_user}
+
+    # MERGED's own billed (3.0) + submitter-fallback (2.0) + the handle's 10.0.
+    assert "ghuser:octo-ext" not in by_user
+    assert _approx(by_user[MERGED].cost_usd, 15.0)
+    assert by_user[MERGED].owner_user_id == MERGED
+    assert by_user[MERGED].label is None
+    # The handle's spend was never billed, so the merged row still says so.
+    assert by_user[MERGED].has_unbilled_spend is True
+
+    # An identity that resolves to nobody is untouched by the resolver.
+    assert _approx(by_user["ghid:gh-9001"].cost_usd, 20.0)
+    assert by_user["ghid:gh-9001"].label == "@with-id"
+    assert by_user["ghid:gh-9001"].owner_user_id is None
+
+    # One person, one row: merging must not double-count them in "N users".
+    assert result.totals.user_count == sum(1 for u in result.by_user if u.label is None)
+    assert sum(1 for u in result.by_user if u.key == MERGED) == 1
+
+
+@pytest.mark.asyncio
+async def test_cost_breakdown_includes_qa_analysis_cost():
+    """Analysis-job spend surfaces as qa_cost_usd plus a qa_by_model row."""
+    recent = utcnow() - timedelta(hours=1)
+    qa_model = f"gpt-5.5-qa-{_RUN}"
+    label = normalize_model_id(qa_model)
+
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(session, window_days=7)
+        baseline = result.totals.qa_cost_usd
+
+    async with get_session() as session:
+        session.add_all(
+            [
+                AnalysisCostModel(
+                    id=f"qacost-{_RUN}-{i}",
+                    job_kind="trial_classifier",
+                    model=qa_model,
+                    cost_usd=cost,
+                    cost_source="native",
+                    created_at=recent,
+                )
+                for i, cost in enumerate((0.25, 0.75))
+            ]
+        )
+
+    try:
+        async with get_session() as session:
+            result = await get_cost_breakdown_core(session, window_days=7)
+        # Robust to other analysis rows already in the shared DB: check the delta.
+        assert _approx(result.totals.qa_cost_usd - baseline, 1.0)
+        by_model = {m.model: m.cost_usd for m in result.qa_by_model}
+        assert _approx(by_model.get(label), 1.0)
+        # The QA time series buckets the same spend, stacked by model.
+        qa_series = result.series_qa_by_model
+        assert qa_series.dimension == "model"
+        assert label in {k.key for k in qa_series.keys}
+        series_model_total = sum(b.costs.get(label, 0.0) for b in qa_series.buckets)
+        assert _approx(series_model_total, 1.0)
+        # The two-stack "type" series folds that same QA spend under one "qa"
+        # stack next to inference; its qa total matches the QA series' grand
+        # total (both derive from the same analysis rows).
+        type_series = result.series_by_type
+        assert type_series.dimension == "type"
+        assert {k.key for k in type_series.keys} == {"inference", "qa"}
+        type_qa_total = sum(b.costs.get("qa", 0.0) for b in type_series.buckets)
+        qa_series_grand_total = sum(b.cost_usd for b in qa_series.buckets)
+        assert _approx(type_qa_total, qa_series_grand_total)
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                AnalysisCostModel.__table__.delete().where(
+                    AnalysisCostModel.id.like(f"qacost-{_RUN}-%")
+                )
+            )
