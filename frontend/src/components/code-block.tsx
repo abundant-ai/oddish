@@ -82,6 +82,8 @@ interface CodeBlockProps {
   /** Max character count before truncation. 0 disables truncation. Default: 50000. */
   truncateAt?: number;
   showCopyButton?: boolean;
+  /** 1-indexed [start, end] line range to highlight, inclusive. */
+  highlightLines?: [number, number] | null;
 }
 
 export function CodeBlock({
@@ -91,6 +93,7 @@ export function CodeBlock({
   maxHeight = "16rem",
   truncateAt = 50000,
   showCopyButton = true,
+  highlightLines,
 }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
@@ -124,6 +127,21 @@ export function CodeBlock({
             light: "github-light",
             dark: "github-dark-default",
           },
+          transformers: [
+            {
+              line(node, line) {
+                node.properties = node.properties || {};
+                node.properties.id = `L${line}`;
+                if (
+                  highlightLines &&
+                  line >= highlightLines[0] &&
+                  line <= highlightLines[1]
+                ) {
+                  this.addClassToHast(node, "qa-line-highlight");
+                }
+              },
+            },
+          ],
         });
         if (!cancelled) setHighlightedHtml(html);
       } catch {
@@ -135,7 +153,7 @@ export function CodeBlock({
     return () => {
       cancelled = true;
     };
-  }, [truncatedCode, language, shouldHighlight]);
+  }, [truncatedCode, language, shouldHighlight, highlightLines]);
 
   const handleCopy = useCallback(async () => {
     await navigator.clipboard.writeText(code);

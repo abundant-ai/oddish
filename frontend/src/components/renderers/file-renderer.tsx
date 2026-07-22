@@ -165,6 +165,8 @@ interface FileRendererProps {
    * types ignore this and always render normally.
    */
   viewMode?: "rendered" | "raw";
+  /** 1-indexed [start, end] line range to highlight in the "code" renderer. */
+  highlightLines?: [number, number] | null;
 }
 
 /**
@@ -179,6 +181,7 @@ export function FileRenderer({
   fileSize,
   kind,
   viewMode = "rendered",
+  highlightLines,
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
 
@@ -235,6 +238,7 @@ export function FileRenderer({
         <CodeRenderer
           content={content ?? ""}
           language={getLanguageFromFilename(fileName)}
+          highlightLines={highlightLines}
         />
       );
   }

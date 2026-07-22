@@ -317,6 +317,21 @@
 }
 
 /*
+ * Line-highlight for code-renderer deep-links (e.g. #L12). Needs
+ * !important + higher specificity than ".dark .shiki span" above, which
+ * force-resets every span's background to --shiki-dark-bg.
+ */
+.shiki span.qa-line-highlight,
+.dark .shiki span.qa-line-highlight {
+  display: block;
+  background-color: color-mix(
+    in oklab,
+    var(--paper-partial-bg) 60%,
+    transparent
+  ) !important;
+}
+
+/*
  * Clerk dark-mode readability. Element keys verified against
  * @clerk/javascript packages/ui/src/customizables/elementDescriptors.ts —
  * each `.cl-<key>` corresponds to a real Clerk DOM class. The headings
