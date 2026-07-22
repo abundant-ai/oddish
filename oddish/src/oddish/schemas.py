@@ -1334,6 +1334,7 @@ class TaskStatusResponse(BaseModel):
         None,
         description="Error message if verdict computation failed",
     )
+    pre_trial_analysis: dict | None = None
     jobs: list[VisibleWorkerJob] = Field(
         default_factory=list,
         description="Active/recent worker_jobs rows for this task and its trials",

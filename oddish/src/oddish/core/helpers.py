@@ -910,6 +910,7 @@ def _build_task_status_response(
         verdict_status=task.verdict_status,
         verdict=task.verdict,
         verdict_error=task.verdict_error,
+        pre_trial_analysis=task.pre_trial,
         jobs=list(jobs or []),
         created_at=task.created_at,
         updated_at=task.updated_at,
