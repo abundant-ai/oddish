@@ -51,12 +51,12 @@ _SPACE_MAP: dict[str, str] = {
     for cp in (0x00A0, 0x1680, *range(0x2000, 0x200B), 0x202F, 0x205F, 0x3000)
 }
 
-# Zero-width and byte-order marks -> removed entirely:
-#   200B zero-width space, 200C non-joiner, 200D joiner, 2060 word joiner,
-#   FEFF zero-width no-break / BOM.
-_ZERO_WIDTH: frozenset[str] = frozenset(
-    chr(cp) for cp in (0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF)
-)
+# Accidental invisibles -> removed entirely: 200B zero-width space, 00AD soft
+# hyphen, FEFF zero-width no-break / BOM. We deliberately KEEP the zero-width
+# joiner (200D) and non-joiner (200C): they are structural in emoji ZWJ
+# sequences (family emoji) and in scripts like Persian/Arabic, so dropping them
+# would corrupt real text rather than clean it up.
+_ZERO_WIDTH: frozenset[str] = frozenset(chr(cp) for cp in (0x200B, 0x00AD, 0xFEFF))
 
 # Accented Latin letters live in these blocks (Latin-1 Supplement plus Latin
 # Extended-A/B). Gating on the range is what keeps us from decomposing
