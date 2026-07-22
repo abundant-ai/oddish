@@ -1998,20 +1998,15 @@ class PromptVersionResponse(BaseModel):
 
 class PromptResponse(BaseModel):
     id: str
-    key: str
+    kind: str
     description: str
-    active_version: int | None = None
+    latest_version: int | None = None  # populated by the router, not the ORM
     created_at: datetime
     updated_at: datetime
-    content: str | None = None  # resolved active/selected version content
+    content: str | None = None  # resolved latest/selected version content
     model_config = {"from_attributes": True}
 
 
 class PromptSetRequest(BaseModel):
     content: str
     description: str | None = None
-    activate: bool = True
-
-
-class PromptActivateRequest(BaseModel):
-    version: int

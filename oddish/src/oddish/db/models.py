@@ -2126,24 +2126,33 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
+class PromptKind(str, Enum):
+    """The slot a prompt fills. Exactly one ``prompts`` row exists per kind;
+    stored as a plain string column so the vocabulary can grow without a
+    Postgres enum migration. Enforced at the API boundary, not the DB."""
+
+    QA_PRE_TRIAL = "QA_PRE_TRIAL"
+    QA_POST_TRIAL = "QA_POST_TRIAL"
+
+
 class PromptModel(TimestampedMixin, Base):
-    """A named, versioned analyzer prompt. ``active_version`` points at the
-    ``prompt_versions.version`` that runs. Editing appends a new version."""
+    """A versioned analyzer prompt, one row per kind. The highest
+    ``prompt_versions.version`` is always the one that runs; editing appends
+    a new version (no activation pointer)."""
 
     __tablename__ = "prompts"
     __table_args__ = (
         Index(
-            "idx_prompts_unique_key",
-            "key",
+            "idx_prompts_unique_kind",
+            "kind",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    active_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     versions: Mapped[list["PromptVersionModel"]] = relationship(  # type: ignore[assignment]
         "PromptVersionModel",

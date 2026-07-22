@@ -25,14 +25,13 @@ def upgrade() -> None:
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
             sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
             sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
-            sa.Column("key", sa.String(128), nullable=False),
+            sa.Column("kind", sa.String(128), nullable=False),
             sa.Column("description", sa.Text, nullable=False, server_default=""),
-            sa.Column("active_version", sa.Integer, nullable=True),
         )
         op.create_index(
-            "idx_prompts_unique_key",
+            "idx_prompts_unique_kind",
             "prompts",
-            ["key"],
+            ["kind"],
             unique=True,
             postgresql_where=sa.text("deleted_at IS NULL"),
         )
@@ -60,5 +59,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_prompt_versions_prompt_id", table_name="prompt_versions")
     op.drop_table("prompt_versions")
-    op.drop_index("idx_prompts_unique_key", table_name="prompts")
+    op.drop_index("idx_prompts_unique_kind", table_name="prompts")
     op.drop_table("prompts")
