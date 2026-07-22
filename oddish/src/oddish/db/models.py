@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy import Enum as SQLEnum
@@ -649,6 +650,80 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     # ``metadata`` is reserved on the declarative Base, so the attribute is
     # ``block_metadata`` while the DB column is literally named ``metadata``.
     block_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+
+
+class PromptModel(TimestampedMixin, Base):
+    """Named prompt whose active_version selects an immutable revision."""
+
+    __tablename__ = "prompts"
+    __table_args__ = (
+        Index(
+            "idx_prompts_unique_key",
+            "key",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    active_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    versions: Mapped[list["PromptVersionModel"]] = relationship(  # type: ignore[assignment]
+        "PromptVersionModel",
+        back_populates="prompt",
+        cascade="all, delete-orphan",
+        order_by="PromptVersionModel.version",
+        lazy="selectin",
+    )
+
+
+class PromptVersionModel(Base):
+    """Immutable numbered revision of a registered prompt."""
+
+    __tablename__ = "prompt_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "prompt_id", "version", name="uq_prompt_versions_prompt_version"
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    prompt_id: Mapped[str] = mapped_column(
+        ForeignKey("prompts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt: Mapped["PromptModel"] = relationship(  # type: ignore[assignment]
+        "PromptModel", back_populates="versions"
+    )
+
+
+class QARunModel(TimestampedMixin, Base):
+    """Lineage for one execution of one QA prompt version."""
+
+    __tablename__ = "qa_runs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    prompt_version_id: Mapped[str] = mapped_column(
+        ForeignKey("prompt_versions.id"), nullable=False, index=True
+    )
+    analyzer_block_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    triggered_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    llm_client_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        PGEnum(JobStatus, name="jobstatus", create_type=False), nullable=False
+    )
+    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -2109,12 +2184,14 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
-from oddish.db.soft_delete import register_soft_delete_models
+from oddish.db.soft_delete import register_soft_delete_models  # noqa: E402
 
 register_soft_delete_models(
     ExperimentModel,
     AnalyzerModel,
     AnalyzerBlockModel,
+    PromptModel,
+    QARunModel,
     TaskModel,
     TrialModel,
     TagModel,

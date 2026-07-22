@@ -1,0 +1,88 @@
+"""Versioned prompt registry; callers own the transaction."""
+
+from __future__ import annotations
+
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from oddish.db import PromptModel, PromptVersionModel
+
+
+async def _get_prompt(session: AsyncSession, key: str) -> PromptModel | None:
+    return await session.scalar(select(PromptModel).where(PromptModel.key == key))
+
+
+async def set_prompt_core(
+    session: AsyncSession,
+    *,
+    key: str,
+    content: str,
+    description: str | None = None,
+    activate: bool = True,
+    created_by: str | None = None,
+) -> PromptVersionModel:
+    prompt = await _get_prompt(session, key)
+    if prompt is None:
+        prompt = PromptModel(key=key, description=description or "")
+        session.add(prompt)
+        await session.flush()
+        next_version = 1
+    else:
+        if description is not None:
+            prompt.description = description
+        versions = await prompt.awaitable_attrs.versions
+        next_version = max((v.version for v in versions), default=0) + 1
+    version = PromptVersionModel(
+        prompt_id=prompt.id,
+        version=next_version,
+        content=content,
+        created_by=created_by,
+    )
+    session.add(version)
+    if activate:
+        prompt.active_version = next_version
+    await session.flush()
+    return version
+
+
+async def list_prompts_core(session: AsyncSession) -> list[PromptModel]:
+    return list((await session.scalars(select(PromptModel).order_by(PromptModel.key))).all())
+
+
+async def list_prompt_versions_core(
+    session: AsyncSession, key: str
+) -> list[PromptVersionModel]:
+    prompt = await _get_prompt(session, key)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail=f"Prompt '{key}' not found")
+    return sorted(await prompt.awaitable_attrs.versions, key=lambda v: v.version)
+
+
+async def get_prompt_core(
+    session: AsyncSession, key: str, *, version: int | None = None
+) -> tuple[PromptModel, PromptVersionModel]:
+    prompt = await _get_prompt(session, key)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail=f"Prompt '{key}' not found")
+    target = version if version is not None else prompt.active_version
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Prompt '{key}' has no active version")
+    for item in await prompt.awaitable_attrs.versions:
+        if item.version == target:
+            return prompt, item
+    raise HTTPException(status_code=404, detail=f"Prompt '{key}' has no version {target}")
+
+
+async def activate_prompt_version_core(
+    session: AsyncSession, key: str, version: int
+) -> PromptModel:
+    prompt, _ = await get_prompt_core(session, key, version=version)
+    prompt.active_version = version
+    await session.flush()
+    return prompt
+
+
+async def get_active_prompt_content(session: AsyncSession, key: str) -> str:
+    _, version = await get_prompt_core(session, key)
+    return version.content

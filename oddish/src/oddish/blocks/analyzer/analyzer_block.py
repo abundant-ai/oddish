@@ -33,6 +33,7 @@ class AnalyzerType(str, enum.Enum):
     SCALING_ANALYSIS = "scaling_analysis"
     TRAJECTORY_SUMMARY = "trajectory_summary"
     TASK_VERDICT = "task_verdict"
+    CUSTOM_QA = "custom_qa"
 
 
 @dataclass
@@ -86,6 +87,8 @@ class AnalyzerBlock(Block):
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
         triggered_by_user_id: str | None = None,
+        runtime_env: dict[str, str] | None = None,
+        attribution_org_id: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -121,6 +124,8 @@ class AnalyzerBlock(Block):
         self._api_key = api_key
         self._max_tokens = max_tokens
         self._response_format = response_format
+        self._runtime_env = runtime_env
+        self.attribution_org_id = attribution_org_id
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -197,7 +202,9 @@ class AnalyzerBlock(Block):
             "billed_user_id": self.triggered_by_user_id,
         }
         if not self.analyzer_id:
-            return blank
+            return {**blank, "org_id": self.attribution_org_id}
+        if self.attribution_org_id is not None:
+            return {**blank, "org_id": self.attribution_org_id}
 
         trial = (
             await session.execute(
@@ -275,6 +282,7 @@ class AnalyzerBlock(Block):
             api_key=self._api_key,
             max_tokens=self._max_tokens,
             response_format=self._response_format,
+            runtime_env=self._runtime_env,
         )
         try:
             async for chunk in client.stream(

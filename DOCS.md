@@ -34,8 +34,35 @@ export ODDISH_API_KEY="ok_..."
 - `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
+- `oddish qa` - run and compare versioned QA prompt variants for an experiment, task, or trial
 
 Every command except `oddish logs` accepts `--json` for machine-readable output (CI / scripts / agents).
+
+### Custom QA prompt runs
+
+Run two prompt variants concurrently and retain the exact prompt version,
+model, scope, command/config, AnalyzerBlock ID, and output for each run:
+
+```bash
+oddish qa task <task_id> \
+  --variant oracle-check \
+  --variant degenerate-check@2 \
+  --model claude-opus-4-6 \
+  --reasoning-effort high \
+  --allow-oddish-cli
+```
+
+Variants reference prompts saved in the shared registry. With no `@VERSION`,
+the active version is resolved and pinned into the run; `key@2` selects an
+exact historical version. Manage them with `oddish prompt list`,
+`oddish prompt set KEY --file prompt.md`, `oddish prompt versions KEY`, and
+`oddish prompt activate KEY VERSION`.
+
+The default `sandbox` backend is agentic. `--allow-oddish-cli` explicitly
+forwards the current `ODDISH_API_KEY` into the ephemeral sandbox, allowing the
+prompt to run `oddish`, including oracle/nop and lazy-solution experiments.
+The credential is runtime-only and is not persisted in QA metadata. Use
+`--backend api` for a prompt-only provider call without shell execution.
 
 ### Lifecycle
 

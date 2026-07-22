@@ -170,6 +170,26 @@ High-level flow:
   no handler). Nothing enqueues either anymore.
 - **Reserved**: `QA_REVIEW` (enum value, no handler yet).
 
+### Custom QA runs
+
+`POST /qa/runs` (hosted backend) runs one or more registered prompt variants through
+`AnalyzerBlock`; `GET /qa/runs/{id}` and the `/prompts` endpoints expose durable
+lineage. The shared `prompts` registry owns the stable key and active-version
+pointer, `prompt_versions` stores immutable numbered content, and `qa_runs`
+records the exact version, scope (`experiment` / `task` /
+`trial`), model, reasoning effort, backend, resolved config/command,
+`analyzer_blocks` ID, status, and output. Every prompt edit appends an immutable
+version; activating a version changes the pointer without rewriting history.
+
+`oddish prompt` manages registry versions. `oddish qa ... --variant key` uses
+the active version and `--variant key@N` pins a historical version. Variants in
+one request run concurrently for A/B comparison. The hosted `sandbox` backend can receive
+the caller's `ok_...` credential only with explicit `--allow-oddish-cli`; it is
+injected into the ephemeral sandbox and must never be persisted in prompt,
+block, or run metadata. That mode installs the Oddish CLI so the QA agent can
+execute oracle/nop and submit degenerate test solutions. The `api` backend is
+prompt-only and rejects credential forwarding.
+
 ## Package Boundaries
 
 `oddish` owns the execution core and shared queue/runtime primitives:

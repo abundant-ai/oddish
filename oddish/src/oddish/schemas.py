@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -1921,6 +1921,67 @@ class ReportResponse(BaseModel):
     experiment_ids: list[str] = []
     created_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class QAPromptVariant(BaseModel):
+    key: str = Field(min_length=1, max_length=128)
+    version: int | None = Field(default=None, ge=1)
+
+
+class CustomQARunRequest(BaseModel):
+    scope_type: Literal["experiment", "task", "trial"]
+    scope_id: str = Field(min_length=1, max_length=64)
+    variants: list[QAPromptVariant] = Field(min_length=1)
+    model: str = "claude-sonnet-4-6"
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    backend: Literal["api", "sandbox"] = "api"
+    allow_credential_forwarding: bool = False
+
+
+class CustomQARunResponse(BaseModel):
+    id: str
+    prompt_key: str
+    prompt_version: int
+    prompt_version_id: str
+    analyzer_block_id: str
+    scope_type: str
+    scope_id: str
+    model: str
+    reasoning_effort: str | None
+    backend: str
+    status: str
+    output: Any | None = None
+    error: str | None = None
+    run_config: dict
+
+
+class PromptVersionResponse(BaseModel):
+    version: int
+    content: str
+    created_at: datetime
+    created_by: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class PromptResponse(BaseModel):
+    id: str
+    key: str
+    description: str
+    active_version: int | None = None
+    created_at: datetime
+    updated_at: datetime
+    content: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class PromptSetRequest(BaseModel):
+    content: str
+    description: str | None = None
+    activate: bool = True
+
+
+class PromptActivateRequest(BaseModel):
+    version: int = Field(ge=1)
 
 
 # ---------------------------------------------------------------------------
