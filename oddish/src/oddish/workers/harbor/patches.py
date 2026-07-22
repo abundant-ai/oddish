@@ -360,33 +360,24 @@ def _patch_modal_dind() -> None:
     )
 
 
-# --- Grok Build session capture -------------------------------------------
-#
-# Harbor's stock GrokBuild (and the preinstalled `grok-build-api-key-no-search`
-# variant the closed-internet swap substitutes on restricted-network runs) runs
-# grok headless with `--output-format json`. That stdout carries only the final
-# assistant text plus usage -- a 16-turn run collapses into a single-step
-# trajectory with no tool calls, no commands, no timestamps. The real per-turn
-# record lives only in the CLI's on-disk session store under
-# `$GROK_HOME/sessions`. Oddish's own OddishGrokBuild captures and converts
-# that store, but ephemeral-Harbor children build agents by *name* inside a
-# harbor-only env, so they get the stock classes. These patches close that gap:
-# capture the session store into the trial logs around the agent run, then
-# rebuild trajectory.json from it post-run when the capture is richer.
-
+# Harbor's stock GrokBuild (and the `-api-key-no-search` variant substituted on
+# restricted-network Modal runs) reads only grok's headless stdout, which
+# carries the final text but no per-turn record -- a 16-turn run collapses into
+# a one-step trajectory. The per-turn record (tool calls, commands, usage)
+# exists only in the CLI session store under $GROK_HOME. Ephemeral children
+# build agents by name in a harbor-only env, so OddishGrokBuild's capture never
+# runs there; these patches capture the store into the trial logs and rebuild
+# trajectory.json from it when richer.
 _GROK_SESSION_DIRNAME = "grok-session"
 _GROK_SESSION_SANDBOX_PATH = f"/logs/agent/{_GROK_SESSION_DIRNAME}"
 _GROK_CAPTURE_MARKER = "_oddish_grok_capture_wrapped"
 _GROK_REBUILD_MARKER = "_oddish_grok_rebuild_wrapped"
 
-# Sandboxes are fresh per trial, but clearing is cheap insurance against a
-# reused container leaving several sessions the converter cannot pick between.
+# Clear reused sandboxes so the converter sees only this run's session.
 _GROK_CLEAR_SESSIONS_CMD = (
     'set +e; GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
     'rm -rf "$GROK_HOME/sessions" "$GROK_HOME/logs" 2>/dev/null; exit 0'
 )
-# sessions/ holds the tool-call trajectory; logs/ holds the sampling log with
-# per-request token usage the session stream omits.
 _GROK_CAPTURE_SESSIONS_CMD = (
     "set +e; "
     f"mkdir -p {_GROK_SESSION_SANDBOX_PATH}; "
@@ -400,13 +391,7 @@ _GROK_SESSION_MODULE: Any = None
 
 
 def _load_grok_session_module() -> Any:
-    """Load grok_build_session.py by file path.
-
-    The ephemeral child runs in a harbor-only env (no oddish package), but this
-    file executes from the oddish source tree, so the sibling module is loaded
-    the same way _entry.py loads this one. It only imports harbor models, which
-    the child has.
-    """
+    """Load the converter in Harbor-only children where oddish is not installed."""
     global _GROK_SESSION_MODULE
     if _GROK_SESSION_MODULE is not None:
         return _GROK_SESSION_MODULE
@@ -423,53 +408,29 @@ def _load_grok_session_module() -> Any:
 
 
 def _grok_session_id(logs_dir: Path) -> str | None:
-    """Pull the session id out of grok-build.json (single dict or NDJSON)."""
     path = logs_dir / "grok-build.json"
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    candidates: list[Any] = []
     try:
-        candidates.append(json.loads(text))
+        candidates = [json.loads(text)]
     except json.JSONDecodeError:
+        candidates = []
         for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
             try:
                 candidates.append(json.loads(line))
             except json.JSONDecodeError:
-                continue
-    session_id: str | None = None
-    for event in candidates:
+                pass
+    for event in reversed(candidates):
         if isinstance(event, dict):
             value = event.get("sessionId") or event.get("session_id")
             if isinstance(value, str) and value:
-                session_id = value
-    return session_id
-
-
-def _trajectory_step_count(trajectory_path: Path) -> int:
-    try:
-        data = json.loads(trajectory_path.read_text(encoding="utf-8"))
-    except Exception:
-        return 0
-    steps = data.get("steps")
-    return len(steps) if isinstance(steps, list) else 0
-
-
-def _existing_trajectory_agent(trajectory_path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(trajectory_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    agent = data.get("agent")
-    return agent if isinstance(agent, dict) else {}
+                return value
+    return None
 
 
 def _rebuild_grok_trajectory_from_session(agent: Any) -> None:
-    """Overwrite trajectory.json from the captured session when richer."""
     from harbor.utils.trajectory_utils import format_trajectory_json
 
     logs_dir = Path(agent.logs_dir)
@@ -478,9 +439,15 @@ def _rebuild_grok_trajectory_from_session(agent: Any) -> None:
         return
 
     trajectory_path = logs_dir / "trajectory.json"
-    # The stock agent just wrote the collapsed trajectory; reuse its resolved
-    # version/model rather than re-deriving them across harbor versions.
-    existing_agent = _existing_trajectory_agent(trajectory_path)
+    try:
+        existing = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    except Exception:
+        existing = {}
+    existing_agent = existing.get("agent", {})
+    if not isinstance(existing_agent, dict):
+        existing_agent = {}
+    existing_steps = existing.get("steps")
+    existing_step_count = len(existing_steps) if isinstance(existing_steps, list) else 0
     session_mod = _load_grok_session_module()
     trajectory = session_mod.build_session_trajectory(
         capture_root,
@@ -491,7 +458,7 @@ def _rebuild_grok_trajectory_from_session(agent: Any) -> None:
     )
     if trajectory is None or not trajectory.steps:
         return
-    if len(trajectory.steps) <= _trajectory_step_count(trajectory_path):
+    if len(trajectory.steps) <= existing_step_count:
         return
     trajectory_path.write_text(
         format_trajectory_json(trajectory.to_json_dict()), encoding="utf-8"
@@ -514,8 +481,7 @@ def _wrap_grok_run(
         try:
             return await orig(self, *args, **kwargs)
         finally:
-            # Capture on the failure path too: a crashed run still leaves the
-            # session store behind, and it is the only per-turn evidence.
+            # Failed runs still leave the only per-turn evidence in the session store.
             if environment is not None:
                 try:
                     await self.exec_as_agent(

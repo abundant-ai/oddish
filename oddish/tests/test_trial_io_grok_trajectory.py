@@ -87,8 +87,6 @@ def test_read_trial_trajectory_marks_tool_results_as_user_observations(monkeypat
 
 
 class _FakeSessionStorage:
-    """S3 with a collapsed persisted trajectory plus a captured session store."""
-
     def __init__(self, prefix: str, session_id: str):
         self.prefix = prefix
         self.session_id = session_id
@@ -163,7 +161,6 @@ class _FakeSessionStorage:
 
 
 def test_read_trial_trajectory_rebuilds_collapsed_from_captured_session(monkeypatch):
-    """A one-step stdout trajectory yields to the captured session store."""
     prefix = "tasks/task-1/trials/trial-collapsed/"
     storage = _FakeSessionStorage(prefix, "019f-session")
     monkeypatch.setattr(trial_io, "get_storage_client", lambda: storage)
@@ -188,7 +185,6 @@ def test_read_trial_trajectory_rebuilds_collapsed_from_captured_session(monkeypa
 
 
 def test_read_trial_trajectory_keeps_multi_step_trajectory_untouched(monkeypatch):
-    """A already-rich persisted trajectory is returned as-is (no rebuild)."""
     prefix = "tasks/task-1/trials/trial-rich/"
 
     class _RichStorage(_FakeSessionStorage):

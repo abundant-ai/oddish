@@ -161,15 +161,7 @@ def _read_task_archive_bytes(archive_bytes: bytes, file_path: str) -> bytes:
 
 
 def _file_content_fields(raw: bytes) -> dict:
-    """JSON-safe ``content`` fields for a file body.
-
-    Tasks carry binary members (oracle binaries, GPG bundles, fixture blobs).
-    Decoding those as UTF-8 raised, which HTTP layers surfaced as an error and
-    clients recorded as a dropped file. UTF-8 text still passes through
-    unchanged so existing consumers keep reading ``content`` as text; anything
-    else is base64-encoded and flagged with ``encoding`` so the exact bytes
-    survive the JSON route. ``sha256`` lets clients verify either way.
-    """
+    """Keep UTF-8 responses compatible while encoding binary bodies losslessly."""
     fields: dict = {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
     try:
         fields["content"] = raw.decode("utf-8")
@@ -713,10 +705,9 @@ class StorageClient:
                     continue
                 if s3_path.suffix in (".json", ".patch"):
                     continue
-                # Logs are text-by-contract but the odd binary artifact under a
-                # log dir must not sink the whole concatenated read.
-                data = await self.download_bytes(s3_key)
-                content = data.decode("utf-8", errors="replace")
+                content = (await self.download_bytes(s3_key)).decode(
+                    "utf-8", errors="replace"
+                )
                 logs.append(f"=== {s3_key} ===\n{content}\n")
 
         return "\n".join(logs) if logs else ""

@@ -66,11 +66,8 @@ def _write_bytes(path: Path, content: bytes) -> None:
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _load_checksums(output_root: Path) -> dict[str, str]:
@@ -90,7 +87,6 @@ def _write_checksums(output_root: Path, checksums: dict[str, str]) -> None:
 def _record_existing_checksum(
     checksums: dict[str, str], key: str, local_file: Path
 ) -> None:
-    """Backfill a checksum for a file skipped because it's already on disk."""
     if key not in checksums:
         try:
             checksums[key] = _sha256_file(local_file)
@@ -207,15 +203,6 @@ def _download_task_file(
     remote_path: str,
     download_url: str | None = None,
 ) -> tuple[bytes | None, str | None]:
-    """Fetch one task file as raw bytes.
-
-    Tasks routinely carry binary members (oracle ELF binaries, GPG-encrypted
-    private bundles, fixture blobs). Decoding them as UTF-8 here raised
-    UnicodeDecodeError, which the caller then recorded as a per-file error and
-    skipped -- so the pulled tree looked complete but silently lacked exactly
-    the members an edit-and-reupload round-trip cannot reconstruct. Stay in
-    bytes, mirroring ``_download_trial_file``.
-    """
     if download_url:
         return _download_presigned_bytes(download_url)
     encoded_path = quote(remote_path, safe="/")
@@ -228,8 +215,6 @@ def _download_task_file(
         return None, f"{response.status_code}: {response.text}"
     data = response.json()
     content = str(data.get("content", ""))
-    # The server base64-encodes non-UTF-8 bodies so binary survives the JSON
-    # route; presigned URLs (requested by _list_task_files) stay the default.
     if data.get("encoding") == "base64":
         try:
             return base64.b64decode(content, validate=True), None
@@ -249,7 +234,6 @@ def _save_downloaded_file(
     checksums: dict[str, str] | None,
     checksum_key: str | None,
 ) -> str:
-    """Save one downloaded file byte-exact. Returns 'saved' or 'error'."""
     if content is None:
         if err:
             _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
@@ -278,7 +262,6 @@ def _download_and_save_trial_file(
     checksums: dict[str, str] | None = None,
     checksum_key: str | None = None,
 ) -> str:
-    """Download a single trial file and save it. Returns 'saved', 'error'."""
     content, err = _download_trial_file(client, trial_id, remote_path, download_url)
     return _save_downloaded_file(
         content,
@@ -304,7 +287,6 @@ def _download_and_save_task_file(
     checksums: dict[str, str] | None = None,
     checksum_key: str | None = None,
 ) -> str:
-    """Download a single task file and save it. Returns 'saved', 'error'."""
     content, err = _download_task_file(client, task_id, remote_path, download_url)
     return _save_downloaded_file(
         content,
@@ -713,10 +695,7 @@ def _pull_once(
         "tasks": [],
         "errors": [],
     }
-    # sha256 of every pulled file, keyed by path relative to output_root.
-    # Persisted as checksums.json so audits can fingerprint a pulled tree
-    # without re-downloading. Loaded first so files skipped as already-present
-    # keep their entry across --watch iterations.
+    # Preserve entries for files skipped on later --watch iterations.
     checksums = _load_checksums(output_root)
 
     if target_type == "trial":

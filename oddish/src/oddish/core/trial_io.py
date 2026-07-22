@@ -208,29 +208,21 @@ def _convert_grok_build_text_to_trajectory(
 
 
 def _grok_session_id_from_text(text: str) -> str | None:
-    session_id: str | None = None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = _json.loads(line)
-        except _json.JSONDecodeError:
-            continue
+    try:
+        events = [_json.loads(text)]
+    except _json.JSONDecodeError:
+        events = []
+        for line in text.splitlines():
+            try:
+                events.append(_json.loads(line))
+            except _json.JSONDecodeError:
+                pass
+    for event in reversed(events):
         if isinstance(event, dict):
             candidate = event.get("sessionId") or event.get("session_id")
             if isinstance(candidate, str) and candidate:
-                session_id = candidate
-    if session_id is None:
-        try:
-            whole = _json.loads(text)
-        except _json.JSONDecodeError:
-            return None
-        if isinstance(whole, dict):
-            candidate = whole.get("sessionId") or whole.get("session_id")
-            if isinstance(candidate, str) and candidate:
-                session_id = candidate
-    return session_id
+                return candidate
+    return None
 
 
 def _trajectory_steps(trajectory: dict | None) -> int:
@@ -245,13 +237,7 @@ async def _build_trajectory_from_captured_session(
     s3_prefix: str,
     storage: StorageClient,
 ) -> dict | None:
-    """Rebuild a rich trajectory from an uploaded ``agent/grok-session`` capture.
-
-    Some harnesses persist only grok's headless stdout, whose single result
-    payload collapses a whole multi-turn run into a one-step trajectory. When
-    the trial also uploaded the CLI session store (tool calls, per-turn usage),
-    mirror its ``.jsonl`` files to a temp dir and convert them instead.
-    """
+    """Recover tool calls and usage absent from Grok's headless stdout."""
     marker = f"/agent/{GROK_SESSION_CAPTURE_DIRNAME}/"
     try:
         keys = await storage.list_keys(s3_prefix)
@@ -303,7 +289,6 @@ async def _enrich_if_collapsed(
     s3_prefix: str,
     storage: StorageClient,
 ) -> dict | None:
-    """Swap a one-step trajectory for a session-store rebuild when richer."""
     if _trajectory_steps(parsed) > 1:
         return parsed
     try:
@@ -315,9 +300,7 @@ async def _enrich_if_collapsed(
             "Session trajectory rebuild failed for %s", trial.id, exc_info=True
         )
         return parsed
-    if _trajectory_steps(rebuilt) > _trajectory_steps(parsed):
-        return rebuilt
-    return parsed
+    return rebuilt if _trajectory_steps(rebuilt) > _trajectory_steps(parsed) else parsed
 
 
 async def read_trial_logs(trial: TrialModel) -> dict:
@@ -415,8 +398,6 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                     cmd_name = match.group(1)
                     download_plan.append((key, "command", cmd_name))
                     matched_keys.add(key)
-            # Grok trials have no command-* dirs; their per-command output is
-            # the captured session store's terminal logs (call-<id>-<turn>.log).
             elif (
                 f"/agent/{GROK_SESSION_CAPTURE_DIRNAME}/" in key
                 and "/terminal/" in key
@@ -499,9 +480,7 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                 elif category == "other" and extra_info:
                     other_list.append((extra_info, content))
 
-            # Sort commands by run order: both command-<n> and the grok
-            # terminal logs' call-<id>-<n> end in their sequence number, which
-            # lexicographic order would scramble past 9.
+            # Numeric suffixes preserve run order beyond command 9.
             commands_list.sort(key=lambda x: _command_sort_key(x[0]))
             result["agent"]["commands"] = [
                 {"name": name, "content": content} for name, content in commands_list
@@ -743,8 +722,7 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
             f"No trajectory in S3 for {trial.id} at {s3_prefix}: {e}"
         )
 
-    # No stdout-derived trajectory at all, but a captured session store still
-    # yields a full one (e.g. the stock agent wrote nothing usable).
+    # A session capture can exist even when stdout produced no trajectory.
     try:
         rebuilt = await _build_trajectory_from_captured_session(
             trial, s3_prefix, storage

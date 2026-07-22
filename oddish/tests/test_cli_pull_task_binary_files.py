@@ -115,7 +115,6 @@ def test_download_task_file_json_fallback_returns_encoded_text():
 
 
 def test_download_task_file_json_fallback_decodes_base64_binary():
-    """The server base64-encodes non-UTF-8 bodies; the client must restore bytes."""
     import base64
 
     class _FakeResponse:
@@ -145,7 +144,6 @@ def test_download_task_file_json_fallback_decodes_base64_binary():
 
 
 def test_download_and_save_task_file_rejects_size_mismatch(tmp_path):
-    """A truncated download must be recorded as an error, not saved as truth."""
     local_file = tmp_path / "files" / "environment" / "binary" / "snowball"
     error_dir = tmp_path / "errors"
     checksums: dict[str, str] = {}
@@ -201,7 +199,6 @@ def test_download_and_save_task_file_records_sha256(tmp_path):
 
 
 def test_extract_task_archive_round_trips_binary_and_checksums(tmp_path):
-    """The archive path must extract binary members byte-exact with checksums."""
     import hashlib
     import io
     import tarfile

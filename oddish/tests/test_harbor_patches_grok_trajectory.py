@@ -1,11 +1,4 @@
-"""Grok session capture + trajectory rebuild for ephemeral-Harbor runs.
-
-Harbor's stock grok agents run grok headless with non-streaming JSON output,
-which collapses a multi-turn run into a single-step trajectory and never
-persists the CLI session store. The oddish harbor patches capture
-``$GROK_HOME/sessions`` into the trial logs around the agent run and rebuild
-``trajectory.json`` from the capture when it is richer.
-"""
+"""Grok session capture + trajectory rebuild patches for ephemeral-Harbor runs."""
 
 from __future__ import annotations
 
@@ -120,7 +113,6 @@ def test_rebuild_replaces_collapsed_trajectory_with_session_steps(tmp_path):
     assert tool_steps[0]["tool_calls"][0]["function_name"] == "run_terminal_command"
     assert tool_steps[0]["tool_calls"][0]["arguments"] == {"command": "ls /app"}
     assert tool_steps[0]["observation"]["results"][0]["content"] == "main.py\n"
-    # Version/model carry over from what the stock agent resolved.
     assert trajectory["agent"]["version"] == "grok 0.2.106 (bde89716f6)"
     assert trajectory["agent"]["model_name"] == "v9m-rl-learnability-tp8"
 

@@ -1,10 +1,4 @@
-"""Task-file content reads must be binary-safe.
-
-The JSON content route used to decode every body as UTF-8, so binary members
-(oracle binaries, GPG bundles) raised and surfaced as errors — the last
-non-binary-safe leg of ``oddish pull``. Non-UTF-8 bodies now come back
-base64-encoded with an ``encoding`` marker and a sha256 for verification.
-"""
+"""The task-file JSON content route must round-trip binary bodies (base64 + sha256)."""
 
 from __future__ import annotations
 
