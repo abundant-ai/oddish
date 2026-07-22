@@ -459,7 +459,10 @@ async def _prepare_trial_run(
         trial.output_tokens = None
         trial.total_steps = None
         trial.cost_usd = None
-        trial.llm_key_hash = None
+        # llm_key_hash deliberately survives this reset: it is the last
+        # attempt's funding key, the best prediction for the retry, and wiping
+        # it would flip an excluded-key trial back into the inflight quota
+        # reservation mid-run. Settlement overwrites it with the actual key.
         trial.phase_timing = None
         trial.has_trajectory = False
         trial.attempts += 1

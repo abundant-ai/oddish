@@ -178,20 +178,30 @@ async def test_excluded_key_spend_dropped_then_reincluded_on_removal(seeded_data
 
 
 @pytest.mark.asyncio
-async def test_inflight_reservation_skips_excluded_key_spend(seeded_data):
-    # A RETRYING attempt keeps its settlement stamp while finished_at is NULL.
-    # Its partial cost must not reserve quota that the settled sums will never
-    # charge -- and must reserve again once the key leaves the list.
+async def test_inflight_reservation_skips_excluded_key_spend(seeded_data, monkeypatch):
+    # A RETRYING attempt keeps its settlement stamp while finished_at is NULL,
+    # and the retry-start reset keeps the stamp too (only results are wiped).
+    # Neither shape may reserve quota the settled sums will never charge --
+    # and both reserve again once the key leaves the list.
+    from oddish.config import settings
     from oddish.core.quotas import inflight_reserved_usd
     from oddish.db import TrialStatus
 
+    monkeypatch.setattr(settings, "pending_trial_reservation_usd", 2.5)
+
     excluded_id = seeded_data
-    inflight = _trial(EXCLUDED_TASK, 9, 5.0, utcnow(), EXCLUDED_HASH)
-    inflight.finished_at = None
-    inflight.status = TrialStatus.RETRYING
+    retrying = _trial(EXCLUDED_TASK, 9, 5.0, utcnow(), EXCLUDED_HASH)
+    retrying.finished_at = None
+    retrying.status = TrialStatus.RETRYING
+
+    # A retry attempt that already restarted: results wiped, stamp kept.
+    running_retry = _trial(EXCLUDED_TASK, 10, None, utcnow(), EXCLUDED_HASH)
+    running_retry.finished_at = None
+    running_retry.status = TrialStatus.RUNNING
 
     async with get_session() as session:
-        session.add(inflight)
+        session.add(retrying)
+        session.add(running_retry)
         await session.flush()
 
         reserved = await inflight_reserved_usd(session, ORG, USER)
@@ -204,5 +214,6 @@ async def test_inflight_reservation_skips_excluded_key_spend(seeded_data):
         )
         await session.flush()
 
+        # greatest(5.0, floor) + greatest(0, floor=2.5)
         reserved = await inflight_reserved_usd(session, ORG, USER)
-        assert float(reserved) >= 5.0, reserved
+        assert abs(float(reserved) - 7.5) <= 1e-6, reserved
