@@ -4,7 +4,8 @@ from pathlib import Path
 from rich.console import Console
 
 from oddish.config import settings
-from oddish.db import reconfigure_database_connections
+from oddish.core.prompt_seeds import seed_prompts
+from oddish.db import get_session, reconfigure_database_connections
 from oddish.workers.harbor.runner import log_local_storage_snapshot
 
 console = Console()
@@ -30,6 +31,28 @@ def _materialize_gcp_adc_credentials() -> None:
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(path)
 
 
+async def _seed_analyzer_prompts() -> None:
+    """Ensure the built-in analyzer prompts (pre_trial_qa, post_trial_qa)
+    exist before this worker can pick up a QA job.
+
+    Previously only ``oddish prompt seed`` created these rows, so a fresh
+    deploy with ``pre_trial_via_analyzer_block`` on 404s on every QA job.
+    ``seed_prompts`` only inserts missing keys, so re-running it here on
+    every container invocation is a cheap no-op once seeded -- and it
+    self-heals if a row is ever deleted, unlike a one-shot migration.
+    Best-effort: a seeding hiccup must not block the worker from picking up
+    its job.
+    """
+    try:
+        async with get_session() as session:
+            created = await seed_prompts(session)
+            await session.commit()
+        if created:
+            console.print(f"[dim]Seeded prompts: {', '.join(created)}[/dim]")
+    except Exception as e:  # noqa: BLE001 - seeding must not block worker startup
+        console.print(f"[yellow]Prompt seeding skipped: {e}[/yellow]")
+
+
 async def configure_storage_paths() -> None:
     """Prepare storage directories and refresh DB connections for Modal workers.
 
@@ -41,6 +64,7 @@ async def configure_storage_paths() -> None:
     containers and we want fresh connection pools per invocation.
     """
     await reconfigure_database_connections()
+    await _seed_analyzer_prompts()
 
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
     _materialize_gcp_adc_credentials()
