@@ -113,6 +113,24 @@ function writeVersionToQuery(
   window.history.replaceState(window.history.state, "", url.toString());
 }
 
+function readFileFromQuery(): { file: string | null; line: number | null } {
+  if (typeof window === "undefined") return { file: null, line: null };
+  const p = new URLSearchParams(window.location.search);
+  const file = p.get("file");
+  const lineRaw = p.get("line");
+  return { file, line: lineRaw ? Number(lineRaw) : null };
+}
+
+function writeFileToQuery(file: string | null, line: number | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (file) url.searchParams.set("file", file);
+  else url.searchParams.delete("file");
+  if (line != null) url.searchParams.set("line", String(line));
+  else url.searchParams.delete("line");
+  window.history.replaceState(window.history.state, "", url.toString());
+}
+
 function CostBadge({
   cost,
   trialCount,
@@ -857,6 +875,10 @@ export function TaskDetailClient({
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [drawerShowTask, setDrawerShowTask] = useState(true);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
+  const [fileTarget, setFileTarget] = useState<{
+    file: string;
+    line: number | null;
+  } | null>(null);
 
   const handleSelectTrial = useCallback(
     (trial: Trial) => {
@@ -881,6 +903,41 @@ export function TaskDetailClient({
       trialGroups,
     });
   }, [orderedTrials, trialGroups]);
+
+  // Deep-link a file/line into the task files drawer (e.g. from action
+  // items) and mirror the target into the URL for shareable links.
+  // Not yet called from this file — action items (Task 4) will invoke it.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const openFileAtLine = useCallback(
+    (file: string, line: number | null) => {
+      setFileTarget({ file, line });
+      setDrawer({
+        mode: "task",
+        trial: null,
+        trialIndex: null,
+        orderedTrials,
+        trialGroups,
+      });
+      writeFileToQuery(file, line);
+    },
+    [orderedTrials, trialGroups]
+  );
+
+  // Hydrate the drawer + file target from `?file=&line=` on mount.
+  useEffect(() => {
+    const { file, line } = readFileFromQuery();
+    if (file) {
+      setFileTarget({ file, line });
+      setDrawer({
+        mode: "task",
+        trial: null,
+        trialIndex: null,
+        orderedTrials,
+        trialGroups,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleNavigateToTrial = useCallback(
     (trial: Trial, trialIndex: number) => {
@@ -1209,7 +1266,13 @@ export function TaskDetailClient({
         {drawer && (
           <UnifiedDrawerWrapper
             open={true}
-            onOpenChange={(open) => !open && setDrawer(null)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setDrawer(null);
+                setFileTarget(null);
+                writeFileToQuery(null, null);
+              }
+            }}
             mode={drawer.mode}
             showTask={drawerShowTask}
             showTrial={drawerShowTrial}
@@ -1229,9 +1292,15 @@ export function TaskDetailClient({
             taskContent={
               <TaskFilesPanel
                 isOpen={true}
-                onClose={() => setDrawer(null)}
+                onClose={() => {
+                  setDrawer(null);
+                  setFileTarget(null);
+                  writeFileToQuery(null, null);
+                }}
                 taskId={task.id}
                 task={task}
+                initialFilePath={fileTarget?.file ?? undefined}
+                initialLine={fileTarget?.line ?? undefined}
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={

@@ -114,6 +114,12 @@ interface TaskFilesPanelProps {
    */
   initialFilePath?: string | null;
   /**
+   * Line number to scroll into view (and highlight) once `initialFilePath`
+   * resolves and its content has loaded. Pairs with `initialFilePath` for
+   * deep-linking straight to a line (e.g. from action items).
+   */
+  initialLine?: number | null;
+  /**
    * Task id to source the PROBE entry from, for panes that drive file listing
    * via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side "Task
    * definition" pane). Falls back to `taskId` when not set.
@@ -283,6 +289,7 @@ export function TaskFilesPanel({
   filesUrl,
   taskVersion,
   initialFilePath,
+  initialLine,
   probeTaskId,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
@@ -823,6 +830,17 @@ export function TaskFilesPanel({
     }
   }, [selectedFile]);
 
+  // Scroll a deep-linked line into view once its file content has loaded.
+  useEffect(() => {
+    if (!initialLine || !selectedFile) return;
+    const t = setTimeout(() => {
+      contentRef.current
+        ?.querySelector(`#L${initialLine}`)
+        ?.scrollIntoView({ block: "center" });
+    }, 60); // allow Shiki html to mount
+    return () => clearTimeout(t);
+  }, [initialLine, selectedFile, fileContent]);
+
   // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
@@ -1044,6 +1062,7 @@ export function TaskFilesPanel({
             content={isBinary ? null : fileContent}
             fileSize={fullFileSize ?? selectedFile.size}
             viewMode={viewMode}
+            highlightLines={initialLine ? [initialLine, initialLine] : null}
           />
         </div>
         {!isBinary && isTruncated && (
