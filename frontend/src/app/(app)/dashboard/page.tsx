@@ -116,8 +116,11 @@ export default async function DashboardPage({
     experiments_author_query: parsedQuery.authors.join(","),
     experiments_models: firstParam(params.model) || undefined,
     experiments_min_steps: metricNumber("minSteps"),
+    experiments_max_steps: metricNumber("maxSteps"),
     experiments_min_duration_seconds: metricNumber("minTime"),
+    experiments_max_duration_seconds: metricNumber("maxTime"),
     experiments_min_tool_calls: metricNumber("minTools"),
+    experiments_max_tool_calls: metricNumber("maxTools"),
     experiments_tool_names: firstParam(params.tool) || undefined,
     experiments_trial_metric_match:
       firstParam(params.metricMatch) === "all" ? "all" : "any",

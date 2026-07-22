@@ -23,6 +23,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -77,12 +82,14 @@ import {
   Clock,
   Copy,
   ExternalLink,
+  Filter,
   GitPullRequest,
   Trash2,
   Globe,
   Key,
   Terminal,
   Users,
+  X,
 } from "lucide-react";
 
 // =============================================================================
@@ -785,8 +792,8 @@ function RecentTasksCard({
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+          <ExperimentTrialFilters />
         </div>
-        <ExperimentMetricFilters />
       </CardHeader>
       <CardContent>
         <Suspense key={paramsKey} fallback={<ExperimentsSkeleton />}>
@@ -807,73 +814,176 @@ function RecentTasksCard({
   );
 }
 
-function ExperimentMetricFilters() {
+// Trial filter groups managed by the popover, keyed by their URL params.
+// Mirrors the tasks sidebar's Trial group (label + per-group clear + h-8
+// controls) so both surfaces read as the same filter system.
+const TRIAL_FILTER_GROUPS: {
+  label: string;
+  keys: [string] | [string, string];
+  placeholder?: string;
+}[] = [
+  { label: "Model", keys: ["model"], placeholder: "e.g. openai/gpt-5" },
+  { label: "Trajectory length", keys: ["minSteps", "maxSteps"] },
+  { label: "Trajectory time (s)", keys: ["minTime", "maxTime"] },
+  { label: "Tool calls", keys: ["minTools", "maxTools"] },
+  { label: "Tool names", keys: ["tool"], placeholder: "bash, read_file" },
+];
+
+function ExperimentTrialFilters() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const update = (key: string, value: string) => {
+
+  const commit = (patch: Record<string, string>) => {
     const next = new URLSearchParams(searchParams.toString());
-    if (value) next.set(key, value);
-    else next.delete(key);
+    for (const [key, value] of Object.entries(patch)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
     next.delete("page");
-    router.push(`${pathname}?${next.toString()}`);
+    const queryString = next.toString();
+    router.push(queryString ? `${pathname}?${queryString}` : pathname);
   };
+
   const mode = searchParams.get("metricMatch") === "all" ? "all" : "any";
+  const groupActive = (keys: readonly string[]) =>
+    keys.some((key) => searchParams.get(key));
+  const activeCount =
+    TRIAL_FILTER_GROUPS.filter((group) => groupActive(group.keys)).length +
+    (mode === "all" ? 1 : 0);
+  const clearGroup = (keys: readonly string[]) =>
+    commit(Object.fromEntries(keys.map((key) => [key, ""])));
   const help =
     "Any trial matches when one selected-model trial meets every metric constraint. All trials requires every selected-model trial to meet every constraint.";
+
+  const field = (key: string, placeholder: string, numeric: boolean) => (
+    <Input
+      key={`${key}-${searchParams.get(key) ?? ""}`}
+      defaultValue={searchParams.get(key) ?? ""}
+      placeholder={placeholder}
+      type={numeric ? "number" : "text"}
+      min={numeric ? 0 : undefined}
+      className="h-8 text-xs"
+      onBlur={(event) => commit({ [key]: event.target.value.trim() })}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
+  );
+
   return (
-    <details className="w-full rounded-md border border-[#6f88b4]/20 px-3 py-2">
-      <summary className="cursor-pointer text-xs font-medium">
-        Trial metrics
-      </summary>
-      <div className="mt-2 grid gap-2 sm:grid-cols-6">
-        {[
-          ["model", "Model", "e.g. openai/gpt-5"],
-          ["minSteps", "Min steps", "100"],
-          ["minTime", "Min time (s)", "120"],
-          ["minTools", "Min tool calls", "10"],
-          ["tool", "Tool name", "e.g. bash"],
-        ].map(([key, label, placeholder]) => (
-          <label
-            key={key}
-            className="text-muted-foreground space-y-1 text-[11px]"
-          >
-            <span>{label}</span>
-            <Input
-              key={`${key}-${searchParams.get(key) ?? ""}`}
-              defaultValue={searchParams.get(key) ?? ""}
-              placeholder={placeholder}
-              type={key === "model" || key === "tool" ? "text" : "number"}
-              min={key === "model" || key === "tool" ? undefined : 0}
-              className="h-8"
-              onBlur={(event) => update(key, event.target.value.trim())}
-            />
-          </label>
-        ))}
-        <div className="space-y-1" title={help}>
-          <span className="text-muted-foreground text-[11px]">
-            Match across
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 border-[#6f88b4]/20"
+        >
+          <Filter className="mr-1 h-3.5 w-3.5" />
+          Filters
+          {activeCount > 0 ? (
+            <span className="text-muted-foreground ml-1 text-[11px]">
+              ({activeCount})
+            </span>
+          ) : null}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-sm font-medium">
+            <Filter className="h-3.5 w-3.5" />
+            Trial filters
+            {activeCount > 0 ? (
+              <span className="text-muted-foreground text-[11px]">
+                ({activeCount})
+              </span>
+            ) : null}
           </span>
-          <div className="grid h-8 grid-cols-2 rounded-md border p-0.5">
-            {(["any", "all"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={cn(
-                  "rounded px-1 text-[11px] capitalize",
-                  mode === value && "bg-secondary font-medium"
-                )}
-                onClick={() =>
-                  update("metricMatch", value === "all" ? "all" : "")
-                }
-              >
-                {value}
-              </button>
-            ))}
+          {activeCount > 0 ? (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground text-[11px]"
+              onClick={() =>
+                commit(
+                  Object.fromEntries(
+                    [
+                      ...TRIAL_FILTER_GROUPS.flatMap((group) => group.keys),
+                      "metricMatch",
+                    ].map((key) => [key, ""])
+                  )
+                )
+              }
+            >
+              Clear all
+            </button>
+          ) : null}
+        </div>
+        <div className="space-y-3">
+          {TRIAL_FILTER_GROUPS.map((group) => (
+            <div
+              key={group.label}
+              className="border-b border-[#6f88b4]/10 pb-3"
+            >
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-xs font-medium">{group.label}</span>
+                {groupActive(group.keys) ? (
+                  <button
+                    type="button"
+                    aria-label={`Clear ${group.label} filter`}
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => clearGroup(group.keys)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                ) : null}
+              </div>
+              {group.keys.length === 2 ? (
+                <div className="flex items-center gap-1">
+                  {field(group.keys[0], "min", true)}
+                  <span className="text-muted-foreground text-xs">–</span>
+                  {field(group.keys[1], "max", true)}
+                </div>
+              ) : (
+                field(group.keys[0], group.placeholder ?? "", false)
+              )}
+            </div>
+          ))}
+          <div title={help}>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-xs font-medium">Match metrics across</span>
+              {mode === "all" ? (
+                <button
+                  type="button"
+                  aria-label="Clear match mode filter"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => commit({ metricMatch: "" })}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              ) : null}
+            </div>
+            <div className="grid grid-cols-2 rounded-md border p-0.5">
+              {(["any", "all"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={cn(
+                    "rounded px-2 py-1.5 text-xs capitalize",
+                    mode === value && "bg-primary text-primary-foreground"
+                  )}
+                  onClick={() =>
+                    commit({ metricMatch: value === "all" ? "all" : "" })
+                  }
+                >
+                  {value} trial{value === "all" ? "s" : ""}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
-    </details>
+      </PopoverContent>
+    </Popover>
   );
 }
 
