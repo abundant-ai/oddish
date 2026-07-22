@@ -1947,6 +1947,11 @@ async def browse_tasks_core(
         # Probes have their own tab; keep them out of the browser's counts
         # and out of last_run_at, which drives the page ordering.
         TrialModel.is_probe.isnot(True),
+        # A combine copy's created_at is its materialization time, so counting it
+        # here would freshen last_run_at and jump an old task up the page even
+        # though the card's counters/cost/icons exclude it. The source trial
+        # still supplies the real activity time.
+        not_combine_copy_filter(),
     )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)

@@ -199,7 +199,9 @@ function trialModelKey(model: string | null): string {
 type TrialGroup = {
   key: string;
   agent: string;
-  model: string | null;
+  // Badge text: the distinguishing model for a model-scoped agent ("default"
+  // for a null/blank model), the single real model otherwise, else null.
+  modelLabel: string | null;
   trials: LatestTrial[];
 };
 
@@ -220,7 +222,8 @@ function groupLatestTrials(trials: LatestTrial[]): TrialGroup[] {
 
   const groups = new Map<string, TrialGroup>();
   for (const trial of trials) {
-    const key = modelScoped.has(trial.agent)
+    const scoped = modelScoped.has(trial.agent);
+    const key = scoped
       ? `${trial.agent}/${trialModelKey(trial.model)}`
       : trial.agent;
     const group = groups.get(key);
@@ -230,7 +233,9 @@ function groupLatestTrials(trials: LatestTrial[]): TrialGroup[] {
       groups.set(key, {
         key,
         agent: trial.agent,
-        model: trial.model,
+        modelLabel: scoped
+          ? trialModelKey(trial.model)
+          : trial.model?.trim() || null,
         trials: [trial],
       });
     }
@@ -274,12 +279,12 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
                 <span className="text-foreground font-mono text-[11px] font-medium">
                   {group.agent}
                 </span>
-                {group.model ? (
+                {group.modelLabel ? (
                   <Badge
                     variant="outline"
                     className="w-fit font-mono text-[10px]"
                   >
-                    {group.model}
+                    {group.modelLabel}
                   </Badge>
                 ) : null}
               </div>
