@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Activity, Star } from "lucide-react";
 import type { TrajectoryStep } from "@/lib/types";
 import {
+  fmtDurationMs,
   phaseColorVars,
   stepDurationsMs,
   stepTokens,
@@ -23,6 +24,31 @@ const fmtMs = (ms: number) =>
   ms >= 1000
     ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`
     : `${Math.round(ms)}ms`;
+
+interface InstanceStat {
+  key: string;
+  label: string;
+  firstStepId: number;
+  rangeLabel: string;
+  stepCount: number;
+  toolCount: number;
+  durationMs: number;
+}
+
+interface KindStat {
+  key: string;
+  label: string;
+  instances: InstanceStat[];
+  stepCount: number;
+  toolCount: number;
+  durationMs: number;
+}
+
+interface MetricValues {
+  stepCount: number;
+  toolCount: number;
+  durationMs: number;
+}
 
 export function TrajectoryActivity({
   trialId,
@@ -55,12 +81,21 @@ export function TrajectoryActivity({
   const stepById = new Map(
     steps.map((step, index) => [Number(step.step_id), index])
   );
-  const componentStats = segments.map((segment) => {
+
+  // One stat per component instance; v5 fields when present, else derived from
+  // the live steps so older summaries render identically.
+  const instances: InstanceStat[] = segments.map((segment) => {
     const indexes = segment.stepIds
       .map((id) => stepById.get(Number(id)))
       .filter((index): index is number => index !== undefined);
+    const ids = segment.stepIds.map(Number);
+    const lo = Math.min(...ids);
+    const hi = Math.max(...ids);
     return {
-      ...segment,
+      key: segment.key,
+      label: segment.label,
+      firstStepId: ids[0],
+      rangeLabel: lo === hi ? `step ${lo}` : `steps ${lo}–${hi}`,
       stepCount: indexes.length,
       toolCount:
         segment.toolCount ??
@@ -74,6 +109,57 @@ export function TrajectoryActivity({
     };
   });
 
+  // Instances rolled up by taxonomy kind, in first-appearance order (matching
+  // color assignment); a kind's instances stay chronological within its bar.
+  const kinds: KindStat[] = [];
+  const kindByKey = new Map<string, KindStat>();
+  for (const instance of instances) {
+    let kind = kindByKey.get(instance.key);
+    if (!kind) {
+      kind = {
+        key: instance.key,
+        label: instance.label,
+        instances: [],
+        stepCount: 0,
+        toolCount: 0,
+        durationMs: 0,
+      };
+      kindByKey.set(instance.key, kind);
+      kinds.push(kind);
+    }
+    kind.instances.push(instance);
+    kind.stepCount += instance.stepCount;
+    kind.toolCount += instance.toolCount;
+    kind.durationMs += instance.durationMs;
+  }
+  for (const kind of kinds) {
+    kind.instances.sort((a, b) => a.firstStepId - b.firstStepId);
+  }
+
+  const sections = [
+    {
+      name: "Steps",
+      total: steps.length,
+      totalLabel: steps.length.toLocaleString(),
+      value: (m: MetricValues) => m.stepCount,
+      fmt: (n: number) => n.toLocaleString(),
+    },
+    {
+      name: "Tool calls",
+      total: totalTools,
+      totalLabel: totalTools.toLocaleString(),
+      value: (m: MetricValues) => m.toolCount,
+      fmt: (n: number) => n.toLocaleString(),
+    },
+    {
+      name: "Time",
+      total: totalMs,
+      totalLabel: totalMs > 0 ? fmtDurationMs(totalMs) : "—",
+      value: (m: MetricValues) => m.durationMs,
+      fmt: (n: number) => (n > 0 ? fmtDurationMs(n) : "—"),
+    },
+  ];
+
   const widthPct = (i: number) =>
     totalMs > 0
       ? Math.max((durations[i] / totalMs) * 100, 1.5)
@@ -84,6 +170,14 @@ export function TrajectoryActivity({
     if (idx >= 0) onStepSelect(idx);
   };
 
+  const instanceTitle = (instance: InstanceStat) =>
+    [
+      instance.label,
+      instance.rangeLabel,
+      `${instance.toolCount} ${instance.toolCount === 1 ? "tool" : "tools"}`,
+      instance.durationMs > 0 ? fmtDurationMs(instance.durationMs) : "—",
+    ].join(" · ");
+
   return (
     <Card className="my-3">
       <CardHeader className="pb-2">
@@ -93,58 +187,64 @@ export function TrajectoryActivity({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-3 gap-2">
-          <Metric label="Steps" value={steps.length.toLocaleString()} />
-          <Metric label="Tool calls" value={totalTools.toLocaleString()} />
-          <Metric label="Elapsed" value={totalMs > 0 ? fmtMs(totalMs) : "—"} />
-        </div>
-
-        <div className="overflow-hidden rounded-md border">
-          {componentStats.map((component, index) => (
-            <div
-              key={`${component.key}-${index}`}
-              className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-3 border-b px-3 py-2 text-xs last:border-b-0"
-            >
-              <span className="flex min-w-0 items-center gap-2 font-medium">
-                <span
-                  className="h-3 w-1 shrink-0 rounded-sm"
-                  style={{
-                    background:
-                      colorFor.get(component.key) ?? "var(--phase-other)",
-                  }}
-                />
-                <span className="truncate">{component.label}</span>
-              </span>
-              <span className="text-muted-foreground font-mono">
-                {component.stepCount}{" "}
-                {component.stepCount === 1 ? "step" : "steps"}
-              </span>
-              <span className="text-muted-foreground font-mono">
-                {component.toolCount}{" "}
-                {component.toolCount === 1 ? "tool" : "tools"}
-              </span>
-              <span className="text-muted-foreground w-14 text-right font-mono">
-                {component.durationMs > 0 ? fmtMs(component.durationMs) : "—"}
+        {/* one mini bar chart per metric; rows double as the timeline legend */}
+        {sections.map((section) => (
+          <div key={section.name}>
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs font-medium">{section.name}</span>
+              <span className="text-muted-foreground font-mono text-xs">
+                {section.totalLabel} total
               </span>
             </div>
-          ))}
-        </div>
-
-        {/* legend */}
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {[...colorFor.entries()].map(([key, color]) => (
-            <span
-              key={key}
-              className="text-muted-foreground flex items-center gap-1.5 font-mono text-xs"
-            >
-              <span
-                className="h-2.5 w-2.5 rounded-sm"
-                style={{ background: color }}
-              />
-              {labelFor.get(key) ?? key}
-            </span>
-          ))}
-        </div>
+            <div className="mt-1.5 space-y-1">
+              {kinds.map((kind) => (
+                <div key={kind.key} className="flex items-center gap-2">
+                  <span
+                    className="flex w-36 shrink-0 items-center gap-1.5 text-xs"
+                    title={kind.label}
+                  >
+                    <span
+                      className="h-3 w-1 shrink-0 rounded-sm"
+                      style={{
+                        background:
+                          colorFor.get(kind.key) ?? "var(--phase-other)",
+                      }}
+                    />
+                    <span className="truncate">{kind.label}</span>
+                  </span>
+                  {/* gap between segments = the split between instances */}
+                  <div className="bg-muted/40 flex h-2 flex-1 gap-0.5 overflow-hidden rounded-sm">
+                    {section.total > 0 &&
+                      kind.instances.map((instance, i) => {
+                        const pct = Math.min(
+                          100,
+                          (section.value(instance) / section.total) * 100
+                        );
+                        if (pct <= 0) return null;
+                        return (
+                          <button
+                            key={`${instance.firstStepId}-${i}`}
+                            type="button"
+                            title={instanceTitle(instance)}
+                            onClick={() => select(instance.firstStepId)}
+                            style={{
+                              width: `${pct}%`,
+                              background:
+                                colorFor.get(kind.key) ?? "var(--phase-other)",
+                            }}
+                            className="h-full min-w-[3px] shrink-0 rounded-sm transition hover:brightness-110"
+                          />
+                        );
+                      })}
+                  </div>
+                  <span className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs">
+                    {section.fmt(section.value(kind))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
 
         {/* timeline */}
         <div className="overflow-x-auto">
@@ -201,16 +301,5 @@ export function TrajectoryActivity({
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-muted/20 rounded-md border px-3 py-2">
-      <div className="font-mono text-base font-semibold tabular-nums">
-        {value}
-      </div>
-      <div className="text-muted-foreground text-[11px]">{label}</div>
-    </div>
   );
 }
