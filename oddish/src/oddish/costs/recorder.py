@@ -155,6 +155,11 @@ async def _close_rows(
 
 
 async def _trial_scope(session: Any, job: Any) -> dict[str, Any]:
+    # Scope columns for a worker span, minus trials.attempts on purpose: the
+    # worker span opens at claim, BEFORE run_trial_job bumps trials.attempts,
+    # so snapshotting it here would disagree with the sandbox/verifier spans
+    # (which read the post-bump value). worker_job_attempt is the reliable
+    # per-execution key; the informational trial attempt stays None here.
     if job.subject_table != "trials" or not job.subject_id:
         return {}
     trial = (
@@ -163,7 +168,6 @@ async def _trial_scope(session: Any, job: Any) -> dict[str, Any]:
                 TrialModel.experiment_id,
                 TrialModel.org_id,
                 TrialModel.billed_user_id,
-                TrialModel.attempts,
             ).where(TrialModel.id == job.subject_id)
         )
     ).one_or_none()
@@ -174,7 +178,6 @@ async def _trial_scope(session: Any, job: Any) -> dict[str, Any]:
         "experiment_id": trial.experiment_id,
         "org_id": trial.org_id,
         "billed_user_id": trial.billed_user_id,
-        "attempt": trial.attempts,
     }
 
 
@@ -470,6 +473,7 @@ async def reconcile_compute_cost_spans() -> int:
                     select(
                         ModalCostSpanModel,
                         WorkerJobModel.finished_at,
+                        WorkerJobModel.attempts,
                         TrialModel.heartbeat_at,
                     )
                     .join(
@@ -491,13 +495,26 @@ async def reconcile_compute_cost_spans() -> int:
                 )
             ).all()
             closed = 0
-            for span, job_finished_at, trial_heartbeat_at in rows:
+            for span, job_finished_at, job_attempts, trial_heartbeat_at in rows:
+                # The job's finished_at is the LATEST attempt's end. Only apply
+                # it to a span from that same attempt. A span left open by an
+                # earlier attempt (a hard-killed worker that ran no close path)
+                # must not be billed through the later attempt's finished_at, so
+                # close it at its own started_at -- a ~zero-duration floor is far
+                # safer than over-counting a different attempt's whole runtime.
+                is_stale_attempt = (
+                    span.worker_job_attempt is not None
+                    and job_attempts is not None
+                    and span.worker_job_attempt < job_attempts
+                )
+                if is_stale_attempt:
+                    close_at = span.started_at
+                else:
+                    close_at = job_finished_at or trial_heartbeat_at or span.started_at
                 closed += await _close_rows(
                     session,
                     [span],
-                    finished_at=(
-                        job_finished_at or trial_heartbeat_at or span.started_at
-                    ),
+                    finished_at=close_at,
                     rates=rates,
                     basis="reconciled",
                 )

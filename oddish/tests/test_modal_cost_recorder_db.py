@@ -250,3 +250,51 @@ async def test_terminal_reconciliation_uses_trial_heartbeat_fallback() -> None:
         assert row.cost_usd is not None and row.cost_usd > 0
     finally:
         await _remove(ids)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_reconcile_does_not_bill_stale_attempt_through_later_finished_at() -> (
+    None
+):
+    # A span left open by attempt 1 must not be closed at the job's terminal
+    # finished_at (which belongs to a later attempt). It closes at its own
+    # started_at instead -- a ~zero-duration floor, never a later attempt's run.
+    ids = await _seed()
+    experiment_id, _, trial_id, worker_job_id = ids
+    t0 = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    job_finished = t0 + timedelta(hours=1)  # end of a LATER attempt
+    try:
+        await transition_agent_sandbox(
+            worker_job_id=worker_job_id,
+            worker_job_attempt=1,  # stale: the job is on attempt 3 (see _seed)
+            trial_id=trial_id,
+            attempt=1,
+            experiment_id=experiment_id,
+            org_id="org-modal",
+            billed_user_id="user-modal",
+            provider="modal",
+            external_id=f"sb-stale-{worker_job_id}",
+            resources=_sandbox_resources(),
+            observed_at=t0,
+        )
+        async with get_session() as session:
+            await session.execute(
+                update(WorkerJobModel)
+                .where(WorkerJobModel.id == worker_job_id)
+                .values(status=WorkerJobStatus.FAILED, finished_at=job_finished)
+            )
+
+        assert await reconcile_compute_cost_spans() == 1
+        async with get_session() as session:
+            row = await session.scalar(
+                select(ModalCostSpanModel).where(
+                    ModalCostSpanModel.worker_job_id == worker_job_id
+                )
+            )
+        assert row is not None
+        assert row.finished_at == t0  # its own start, NOT job_finished (t0 + 1h)
+        assert row.cost_usd == Decimal("0.000000")  # zero duration -> zero cost
+        assert row.basis == "reconciled"
+    finally:
+        await _remove(ids)

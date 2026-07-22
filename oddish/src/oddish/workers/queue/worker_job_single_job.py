@@ -595,6 +595,12 @@ async def run_single_worker_job(
         outcome = await handler.run(job)  # type: ignore[arg-type]
     except asyncio.CancelledError:
         console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
+        # This attempt's compute is over; close its worker span at cancel time
+        # so the reconciler doesn't later close it at the job's (much later)
+        # terminal finished_at. CAS close, so any other close path is a no-op.
+        await close_worker_span(
+            job.id, job.attempts, finished_at=datetime.now(timezone.utc)
+        )
         raise
     except Exception as exc:  # handler-raised exceptions are retryable by default
         console.print(f"[red]worker_job {job.id} handler error: {exc!r}[/red]")

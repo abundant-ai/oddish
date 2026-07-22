@@ -121,6 +121,9 @@ if install_sandbox_analyzer_handler():
 
 # Register the Daytona-sandbox analyzer backend into core's client factory.
 # Import for the side effect; core runs every non-sandbox block without it.
+from api.services.blocks.analyzer import (
+    sandbox_llm_client as _sandbox_llm_client,
+)  # noqa: F401
 
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
