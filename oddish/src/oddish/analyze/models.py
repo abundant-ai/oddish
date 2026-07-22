@@ -280,4 +280,4 @@ def compute_action_item_id(item: ActionItem) -> str:
 class PreTrialActionItems(BaseModel):
     """List wrapper so the block's output_schema is a dict-shaped model."""
 
-    items: list[ActionItem] = Field(default_factory=list)
+    items: list[ActionItem] = Field(default_factory=list, description="Pre-trial QA findings")
