@@ -60,34 +60,36 @@ def _module_level_call_lineno(tree: ast.Module, func_name: str) -> int | None:
             return node.lineno
         if isinstance(node, ast.If) and call_target(node.test) == func_name:
             return node.lineno
+        if isinstance(node, ast.Assign) and call_target(node.value) == func_name:
+            return node.lineno
     return None
 
 
 def test_functions_module_wires_pre_trial_block_after_builtin_handlers_registered():
     """Mirrors test_verdict_synth_registration.py's equivalent check: proves
     worker/functions.py -- the module that actually runs at worker container
-    load -- calls install_pre_trial_block_qa_handler() at module scope, after
-    ensure_builtin_handlers_registered() so the defensive re-registration
-    elsewhere can't clobber the override back to the core handler."""
+    load -- calls install_block_qa_handlers() (the composed installer that
+    wires in pre_trial_block_synth when settings.pre_trial_via_analyzer_block
+    is on) at module scope, after ensure_builtin_handlers_registered() so the
+    defensive re-registration elsewhere can't clobber the override back to
+    the core handler."""
     source_path = Path(__file__).resolve().parent.parent / "worker" / "functions.py"
     tree = ast.parse(source_path.read_text(), filename=str(source_path))
 
     ensure_builtin_line = _module_level_call_lineno(
         tree, "ensure_builtin_handlers_registered"
     )
-    install_pre_trial_line = _module_level_call_lineno(
-        tree, "install_pre_trial_block_qa_handler"
-    )
+    install_block_line = _module_level_call_lineno(tree, "install_block_qa_handlers")
 
     assert ensure_builtin_line is not None, (
         "functions.py must call ensure_builtin_handlers_registered() at module scope"
     )
-    assert install_pre_trial_line is not None, (
-        "functions.py must call install_pre_trial_block_qa_handler() at module scope "
-        "to actually wire the AnalyzerBlock-backed pre-trial synth into the running worker"
+    assert install_block_line is not None, (
+        "functions.py must call install_block_qa_handlers() at module scope to "
+        "actually wire the AnalyzerBlock-backed pre-trial synth into the running worker"
     )
-    assert install_pre_trial_line > ensure_builtin_line, (
-        "install_pre_trial_block_qa_handler() must run after "
+    assert install_block_line > ensure_builtin_line, (
+        "install_block_qa_handlers() must run after "
         "ensure_builtin_handlers_registered(), or the defensive re-registration "
         "would clobber the override"
     )

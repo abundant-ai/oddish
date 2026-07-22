@@ -117,21 +117,21 @@ from .analyzer_sandbox import install_sandbox_analyzer_handler
 if install_sandbox_analyzer_handler():
     console.print("[dim]analyzer: sandbox-per-cohort handler registered[/dim]")
 
-# Swap the core QA handler's verdict-synthesis strategy for the
-# AnalyzerBlock-backed one. Gated by settings.verdict_via_analyzer_block;
-# off -> the legacy compute_task_verdict path, unchanged.
-from .verdict_synth import install_verdict_block_qa_handler
+# Swap the core QA handler's verdict- and/or pre-trial-synthesis strategies
+# for their AnalyzerBlock-backed ones, gated independently by
+# settings.verdict_via_analyzer_block / settings.pre_trial_via_analyzer_block.
+# Composed onto a SINGLE handler (rather than each flag registering its own
+# override=True subclass) so enabling both flags can't have one override
+# clobber the other -- see qa_block_handlers.py.
+from .qa_block_handlers import install_block_qa_handlers
 
-if install_verdict_block_qa_handler():
-    console.print("[dim]qa: verdict-via-analyzer-block handler registered[/dim]")
-
-# Swap the core QA handler's pre-trial-synthesis strategy for the
-# AnalyzerBlock-backed one. Gated by settings.pre_trial_via_analyzer_block;
-# off -> the legacy no-op (pre-trial does not run), unchanged.
-from .pre_trial_synth import install_pre_trial_block_qa_handler
-
-if install_pre_trial_block_qa_handler():
-    console.print("[dim]qa: pre-trial-via-analyzer-block handler registered[/dim]")
+_block_qa_handler = install_block_qa_handlers()
+if _block_qa_handler is not None:
+    console.print(
+        "[dim]qa: block-synth handler registered "
+        f"(verdict={settings.verdict_via_analyzer_block}, "
+        f"pre_trial={settings.pre_trial_via_analyzer_block})[/dim]"
+    )
 
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
