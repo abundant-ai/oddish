@@ -26,7 +26,7 @@ from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from oddish.config import api_base_url_for_modal_app, settings
 from oddish.core.prompts import get_prompt_core
-from oddish.db import get_session
+from oddish.db import PromptKind, get_session
 from oddish.db.models import TaskModel
 from oddish.workers.queue.qa_handler import register_pre_trial_synth
 from worker.pre_trial_sandbox import provision_oddish_sandbox_client
@@ -56,9 +56,9 @@ async def synthesize_task_pre_trial(
     which the caller (``run_task_qa_job``) invokes with these items.
     """
     async with get_session() as session:
-        _, ver = await get_prompt_core(session, "pre_trial_qa")
+        _, ver = await get_prompt_core(session, PromptKind.QA_PRE_TRIAL.value)
         prompt_template = ver.content
-        active_version = ver.version
+        prompt_version = ver.version
 
     org_id = await _resolve_org_id(task_id)
     if org_id is None:
@@ -96,8 +96,8 @@ async def synthesize_task_pre_trial(
             output_transform=block_obj.to_action_items,
             client=client,
             block_metadata={
-                "prompt_key": "pre_trial_qa",
-                "prompt_version": active_version,
+                "prompt_key": PromptKind.QA_PRE_TRIAL.value,
+                "prompt_version": prompt_version,
             },
         )
         result = await asyncio.wait_for(

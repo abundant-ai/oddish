@@ -97,8 +97,8 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     into a list of `ActionItem`. The block/client/session are all faked --
     no real sandbox, LLM, or DB."""
 
-    async def fake_get_prompt_core(session, key):
-        assert key == "pre_trial_qa"
+    async def fake_get_prompt_core(session, kind):
+        assert kind == "QA_PRE_TRIAL"
         return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
     async def fake_resolve_org_id(task_id):
@@ -127,7 +127,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
         "task_xyz-v1"
     )
     assert _FakeAnalyzerBlock.last_kwargs["block_metadata"] == {
-        "prompt_key": "pre_trial_qa",
+        "prompt_key": "QA_PRE_TRIAL",
         "prompt_version": 7,
     }
 
