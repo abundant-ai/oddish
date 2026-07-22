@@ -5,6 +5,7 @@ import json as _json
 import logging
 import mimetypes
 import re
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -22,6 +23,10 @@ from oddish.db.storage import (
     StorageClient,
     _cleanup_temp_directory,
     resolve_trial_directory,
+)
+from oddish.workers.agents.grok_build_session import (
+    GROK_SESSION_CAPTURE_DIRNAME,
+    build_session_trajectory,
 )
 from oddish.workers.agents.grok_build_trajectory import (
     convert_grok_build_json_text_to_trajectory,
@@ -202,6 +207,119 @@ def _convert_grok_build_text_to_trajectory(
     return trajectory.to_json_dict()
 
 
+def _grok_session_id_from_text(text: str) -> str | None:
+    session_id: str | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            candidate = event.get("sessionId") or event.get("session_id")
+            if isinstance(candidate, str) and candidate:
+                session_id = candidate
+    if session_id is None:
+        try:
+            whole = _json.loads(text)
+        except _json.JSONDecodeError:
+            return None
+        if isinstance(whole, dict):
+            candidate = whole.get("sessionId") or whole.get("session_id")
+            if isinstance(candidate, str) and candidate:
+                session_id = candidate
+    return session_id
+
+
+def _trajectory_steps(trajectory: dict | None) -> int:
+    if not isinstance(trajectory, dict):
+        return 0
+    steps = trajectory.get("steps")
+    return len(steps) if isinstance(steps, list) else 0
+
+
+async def _build_trajectory_from_captured_session(
+    trial: TrialModel,
+    s3_prefix: str,
+    storage: StorageClient,
+) -> dict | None:
+    """Rebuild a rich trajectory from an uploaded ``agent/grok-session`` capture.
+
+    Some harnesses persist only grok's headless stdout, whose single result
+    payload collapses a whole multi-turn run into a one-step trajectory. When
+    the trial also uploaded the CLI session store (tool calls, per-turn usage),
+    mirror its ``.jsonl`` files to a temp dir and convert them instead.
+    """
+    marker = f"/agent/{GROK_SESSION_CAPTURE_DIRNAME}/"
+    try:
+        keys = await storage.list_keys(s3_prefix)
+    except Exception:
+        return None
+    session_keys = [k for k in keys if marker in k and k.endswith(".jsonl")]
+    if not session_keys:
+        return None
+
+    session_id: str | None = None
+    for grok_key in _grok_build_candidate_keys(trial, s3_prefix):
+        try:
+            session_id = _grok_session_id_from_text(
+                await storage.download_text(grok_key)
+            )
+        except Exception:
+            continue
+        if session_id:
+            break
+
+    with tempfile.TemporaryDirectory(prefix="oddish-grok-session-") as tmp:
+        capture_root = Path(tmp)
+        for key in session_keys:
+            rel_parts = PurePosixPath(key.split(marker, 1)[1]).parts
+            if not rel_parts or ".." in rel_parts:
+                continue
+            local_path = capture_root.joinpath(*rel_parts)
+            try:
+                content = await storage.download_bytes(key)
+            except Exception:
+                continue
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(content)
+
+        trajectory = build_session_trajectory(
+            capture_root,
+            session_id=session_id,
+            agent_version="unknown",
+            model_name=trial.model,
+        )
+    if trajectory is None or not trajectory.steps:
+        return None
+    return trajectory.to_json_dict()
+
+
+async def _enrich_if_collapsed(
+    parsed: dict | None,
+    trial: TrialModel,
+    s3_prefix: str,
+    storage: StorageClient,
+) -> dict | None:
+    """Swap a one-step trajectory for a session-store rebuild when richer."""
+    if _trajectory_steps(parsed) > 1:
+        return parsed
+    try:
+        rebuilt = await _build_trajectory_from_captured_session(
+            trial, s3_prefix, storage
+        )
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Session trajectory rebuild failed for %s", trial.id, exc_info=True
+        )
+        return parsed
+    if _trajectory_steps(rebuilt) > _trajectory_steps(parsed):
+        return rebuilt
+    return parsed
+
+
 async def read_trial_logs(trial: TrialModel) -> dict:
     """Read trial logs from S3 or local storage."""
     s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
@@ -239,6 +357,11 @@ async def read_trial_logs(trial: TrialModel) -> dict:
         logs_parts.append(f"=== {rel} ===\n{content}\n")
 
     return {"trial_id": trial.id, "logs": "\n".join(logs_parts) if logs_parts else ""}
+
+
+def _command_sort_key(name: str) -> tuple[int, str]:
+    match = re.search(r"(\d+)$", name)
+    return (int(match.group(1)) if match else 1 << 30, name)
 
 
 async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
@@ -292,6 +415,16 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                     cmd_name = match.group(1)
                     download_plan.append((key, "command", cmd_name))
                     matched_keys.add(key)
+            # Grok trials have no command-* dirs; their per-command output is
+            # the captured session store's terminal logs (call-<id>-<turn>.log).
+            elif (
+                f"/agent/{GROK_SESSION_CAPTURE_DIRNAME}/" in key
+                and "/terminal/" in key
+                and key.endswith(".log")
+            ):
+                cmd_name = key.rsplit("/", 1)[-1].removesuffix(".log")
+                download_plan.append((key, "command", cmd_name))
+                matched_keys.add(key)
             # Verifier logs
             elif key.endswith("/verifier/test-stdout.txt") or key.endswith(
                 "/test-stdout.txt"
@@ -366,8 +499,10 @@ async def _read_trial_logs_structured_uncached(trial: TrialModel) -> dict:
                 elif category == "other" and extra_info:
                     other_list.append((extra_info, content))
 
-            # Sort commands by name (command-0, command-1, etc.)
-            commands_list.sort(key=lambda x: x[0])
+            # Sort commands by run order: both command-<n> and the grok
+            # terminal logs' call-<id>-<n> end in their sequence number, which
+            # lexicographic order would scramble past 9.
+            commands_list.sort(key=lambda x: _command_sort_key(x[0]))
             result["agent"]["commands"] = [
                 {"name": name, "content": content} for name, content in commands_list
             ]
@@ -566,7 +701,7 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
             content = await storage.download_text(trajectory_key)
             if content:
                 parsed: dict = _json.loads(content)
-                return parsed
+                return await _enrich_if_collapsed(parsed, trial, s3_prefix, storage)
         except Exception:
             continue
 
@@ -579,7 +714,7 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
                     model_name=trial.model,
                 )
                 if parsed:
-                    return parsed
+                    return await _enrich_if_collapsed(parsed, trial, s3_prefix, storage)
         except Exception:
             continue
 
@@ -591,7 +726,7 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
                 content = await storage.download_text(f)
                 if content:
                     parsed = _json.loads(content)
-                    return parsed
+                    return await _enrich_if_collapsed(parsed, trial, s3_prefix, storage)
             if f.endswith("/agent/grok-build.json"):
                 grok_build_keys.append(f)
         for f in grok_build_keys:
@@ -602,10 +737,23 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
                     model_name=trial.model,
                 )
                 if parsed:
-                    return parsed
+                    return await _enrich_if_collapsed(parsed, trial, s3_prefix, storage)
     except Exception as e:
         logging.getLogger(__name__).debug(
             f"No trajectory in S3 for {trial.id} at {s3_prefix}: {e}"
+        )
+
+    # No stdout-derived trajectory at all, but a captured session store still
+    # yields a full one (e.g. the stock agent wrote nothing usable).
+    try:
+        rebuilt = await _build_trajectory_from_captured_session(
+            trial, s3_prefix, storage
+        )
+        if rebuilt:
+            return rebuilt
+    except Exception:
+        logging.getLogger(__name__).debug(
+            "Session trajectory rebuild failed for %s", trial.id, exc_info=True
         )
 
     # Local path fallback
@@ -687,8 +835,7 @@ def _graph_is_fresh(graph: dict | None) -> bool:
     from oddish.analyze.trajectory_graph import GRAPH_SCHEMA_VERSION
 
     return (
-        isinstance(graph, dict)
-        and graph.get("schema_version") == GRAPH_SCHEMA_VERSION
+        isinstance(graph, dict) and graph.get("schema_version") == GRAPH_SCHEMA_VERSION
     )
 
 

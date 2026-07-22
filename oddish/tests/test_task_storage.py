@@ -332,9 +332,7 @@ async def test_resolve_trial_directory_prefers_existing_local_path(
 
 
 @pytest.mark.asyncio
-async def test_resolve_trial_directory_missing_everywhere_raises(
-    monkeypatch, tmp_path
-):
+async def test_resolve_trial_directory_missing_everywhere_raises(monkeypatch, tmp_path):
     storage = _FakeStorage(exists=False)
     monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
 
@@ -710,16 +708,16 @@ async def test_get_task_file_content_uses_expanded_layout(monkeypatch):
             f"{expanded_prefix}task.toml",
         }
 
-    async def fake_download_text(s3_key: str) -> str:
+    async def fake_download_bytes(s3_key: str) -> bytes:
         assert s3_key == f"{expanded_prefix}task.toml"
-        return "name = 'demo-expanded'\n"
+        return b"name = 'demo-expanded'\n"
 
     async def fake_get_presigned_url(s3_key: str, expiration: int = 900) -> str:
         assert s3_key == f"{expanded_prefix}task.toml"
         return "https://example.com/expanded-task"
 
     monkeypatch.setattr(storage, "object_exists", fake_object_exists)
-    monkeypatch.setattr(storage, "download_text", fake_download_text)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
     monkeypatch.setattr(storage, "get_presigned_url", fake_get_presigned_url)
 
     payload = await storage.get_task_file_content(

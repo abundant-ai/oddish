@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -136,7 +138,7 @@ def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, obj
     return [files[path] for path in sorted(files)]
 
 
-def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
+def _read_task_archive_bytes(archive_bytes: bytes, file_path: str) -> bytes:
     normalized_path = normalize_s3_relative_path(file_path)
     if not normalized_path:
         raise HTTPException(status_code=400, detail="Invalid file path")
@@ -151,11 +153,30 @@ def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
             extracted = tar.extractfile(member)
             if extracted is None:
                 break
-            return extracted.read().decode("utf-8")
+            return extracted.read()
 
     raise HTTPException(
         status_code=404, detail=f"Task file not found: {normalized_path}"
     )
+
+
+def _file_content_fields(raw: bytes) -> dict:
+    """JSON-safe ``content`` fields for a file body.
+
+    Tasks carry binary members (oracle binaries, GPG bundles, fixture blobs).
+    Decoding those as UTF-8 raised, which HTTP layers surfaced as an error and
+    clients recorded as a dropped file. UTF-8 text still passes through
+    unchanged so existing consumers keep reading ``content`` as text; anything
+    else is base64-encoded and flagged with ``encoding`` so the exact bytes
+    survive the JSON route. ``sha256`` lets clients verify either way.
+    """
+    fields: dict = {"sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+    try:
+        fields["content"] = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        fields["content"] = base64.b64encode(raw).decode("ascii")
+        fields["encoding"] = "base64"
+    return fields
 
 
 class StorageClient:
@@ -187,7 +208,9 @@ class StorageClient:
     # Size-bounded in total decompressed byte footprint so a single task doesn't
     # blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]]]]" = OrderedDict()
+    _archive_cache: (
+        "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]]]]"
+    ) = OrderedDict()
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -690,7 +713,10 @@ class StorageClient:
                     continue
                 if s3_path.suffix in (".json", ".patch"):
                     continue
-                content = await self.download_text(s3_key)
+                # Logs are text-by-contract but the odd binary artifact under a
+                # log dir must not sink the whole concatenated read.
+                data = await self.download_bytes(s3_key)
+                content = data.decode("utf-8", errors="replace")
                 logs.append(f"=== {s3_key} ===\n{content}\n")
 
         return "\n".join(logs) if logs else ""
@@ -1150,32 +1176,32 @@ class StorageClient:
                             "key": s3_key,
                             "url": url,
                         }
-                    content = await self.download_text(s3_key)
+                    raw = await self.download_bytes(s3_key)
                     return {
                         "path": normalized_path,
-                        "content": content,
                         "key": s3_key,
+                        **_file_content_fields(raw),
                     }
 
         root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
             archive_bytes, _members = await self._load_task_archive(archive_key)
-            content = _read_task_archive_text(archive_bytes, normalized_path)
+            raw = _read_task_archive_bytes(archive_bytes, normalized_path)
             archive_etag = await self._head_archive_etag(archive_key)
             return {
                 "path": normalized_path,
-                "content": content,
                 "key": f"{archive_key}#{normalized_path}",
                 "archive_key": archive_key,
                 "archive_etag": archive_etag,
+                **_file_content_fields(raw),
             }
         s3_key = f"{root_prefix}{normalized_path}"
 
         if presign:
             url = await self.get_presigned_url(s3_key, expiration=presign_expiration)
             return {"path": normalized_path, "key": s3_key, "url": url}
-        content = await self.download_text(s3_key)
-        return {"path": normalized_path, "content": content, "key": s3_key}
+        raw = await self.download_bytes(s3_key)
+        return {"path": normalized_path, "key": s3_key, **_file_content_fields(raw)}
 
     async def get_trial_result_json(self, s3_prefix: str) -> dict | None:
         """

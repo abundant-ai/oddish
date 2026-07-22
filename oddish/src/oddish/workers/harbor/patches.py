@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import importlib.util
 import inspect
 import json
 import logging
@@ -12,6 +13,7 @@ import re
 import shlex
 import tempfile
 from functools import partial
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,7 @@ def apply_harbor_patches() -> None:
         return
     _patch_daytona_dind()
     _patch_modal_dind()
+    _patch_grok_session_capture()
     _PATCHED = True
 
 
@@ -354,4 +357,204 @@ def _patch_modal_dind() -> None:
         partial(_wrap_wait_for_docker_daemon, with_diagnostics=False, with_mirror=True),
         marker="_oddish_wrapped",
         label="registry-mirror+registry-login",
+    )
+
+
+# --- Grok Build session capture -------------------------------------------
+#
+# Harbor's stock GrokBuild (and the preinstalled `grok-build-api-key-no-search`
+# variant the closed-internet swap substitutes on restricted-network runs) runs
+# grok headless with `--output-format json`. That stdout carries only the final
+# assistant text plus usage -- a 16-turn run collapses into a single-step
+# trajectory with no tool calls, no commands, no timestamps. The real per-turn
+# record lives only in the CLI's on-disk session store under
+# `$GROK_HOME/sessions`. Oddish's own OddishGrokBuild captures and converts
+# that store, but ephemeral-Harbor children build agents by *name* inside a
+# harbor-only env, so they get the stock classes. These patches close that gap:
+# capture the session store into the trial logs around the agent run, then
+# rebuild trajectory.json from it post-run when the capture is richer.
+
+_GROK_SESSION_DIRNAME = "grok-session"
+_GROK_SESSION_SANDBOX_PATH = f"/logs/agent/{_GROK_SESSION_DIRNAME}"
+_GROK_CAPTURE_MARKER = "_oddish_grok_capture_wrapped"
+_GROK_REBUILD_MARKER = "_oddish_grok_rebuild_wrapped"
+
+# Sandboxes are fresh per trial, but clearing is cheap insurance against a
+# reused container leaving several sessions the converter cannot pick between.
+_GROK_CLEAR_SESSIONS_CMD = (
+    'set +e; GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
+    'rm -rf "$GROK_HOME/sessions" "$GROK_HOME/logs" 2>/dev/null; exit 0'
+)
+# sessions/ holds the tool-call trajectory; logs/ holds the sampling log with
+# per-request token usage the session stream omits.
+_GROK_CAPTURE_SESSIONS_CMD = (
+    "set +e; "
+    f"mkdir -p {_GROK_SESSION_SANDBOX_PATH}; "
+    'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
+    f'cp -a "$GROK_HOME/sessions" {_GROK_SESSION_SANDBOX_PATH}/ 2>/dev/null; '
+    f'cp -a "$GROK_HOME/logs" {_GROK_SESSION_SANDBOX_PATH}/ 2>/dev/null; '
+    "exit 0"
+)
+
+_GROK_SESSION_MODULE: Any = None
+
+
+def _load_grok_session_module() -> Any:
+    """Load grok_build_session.py by file path.
+
+    The ephemeral child runs in a harbor-only env (no oddish package), but this
+    file executes from the oddish source tree, so the sibling module is loaded
+    the same way _entry.py loads this one. It only imports harbor models, which
+    the child has.
+    """
+    global _GROK_SESSION_MODULE
+    if _GROK_SESSION_MODULE is not None:
+        return _GROK_SESSION_MODULE
+    module_path = (
+        Path(__file__).resolve().parent.parent / "agents" / "grok_build_session.py"
+    )
+    spec = importlib.util.spec_from_file_location("_oddish_grok_session", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _GROK_SESSION_MODULE = module
+    return module
+
+
+def _grok_session_id(logs_dir: Path) -> str | None:
+    """Pull the session id out of grok-build.json (single dict or NDJSON)."""
+    path = logs_dir / "grok-build.json"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    candidates: list[Any] = []
+    try:
+        candidates.append(json.loads(text))
+    except json.JSONDecodeError:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                candidates.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    session_id: str | None = None
+    for event in candidates:
+        if isinstance(event, dict):
+            value = event.get("sessionId") or event.get("session_id")
+            if isinstance(value, str) and value:
+                session_id = value
+    return session_id
+
+
+def _trajectory_step_count(trajectory_path: Path) -> int:
+    try:
+        data = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    steps = data.get("steps")
+    return len(steps) if isinstance(steps, list) else 0
+
+
+def _existing_trajectory_agent(trajectory_path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    agent = data.get("agent")
+    return agent if isinstance(agent, dict) else {}
+
+
+def _rebuild_grok_trajectory_from_session(agent: Any) -> None:
+    """Overwrite trajectory.json from the captured session when richer."""
+    from harbor.utils.trajectory_utils import format_trajectory_json
+
+    logs_dir = Path(agent.logs_dir)
+    capture_root = logs_dir / _GROK_SESSION_DIRNAME
+    if not capture_root.is_dir():
+        return
+
+    trajectory_path = logs_dir / "trajectory.json"
+    # The stock agent just wrote the collapsed trajectory; reuse its resolved
+    # version/model rather than re-deriving them across harbor versions.
+    existing_agent = _existing_trajectory_agent(trajectory_path)
+    session_mod = _load_grok_session_module()
+    trajectory = session_mod.build_session_trajectory(
+        capture_root,
+        session_id=_grok_session_id(logs_dir),
+        agent_version=existing_agent.get("version") or "unknown",
+        model_name=existing_agent.get("model_name")
+        or getattr(agent, "model_name", None),
+    )
+    if trajectory is None or not trajectory.steps:
+        return
+    if len(trajectory.steps) <= _trajectory_step_count(trajectory_path):
+        return
+    trajectory_path.write_text(
+        format_trajectory_json(trajectory.to_json_dict()), encoding="utf-8"
+    )
+    logger.info(
+        "Rebuilt grok trajectory from session store: %d steps", len(trajectory.steps)
+    )
+
+
+def _wrap_grok_run(
+    orig: Callable[..., Awaitable[Any]],
+) -> Callable[..., Awaitable[Any]]:
+    async def run(self: Any, *args: Any, **kwargs: Any) -> Any:
+        environment = args[0] if args else kwargs.get("environment")
+        if environment is not None:
+            try:
+                await self.exec_as_agent(environment, command=_GROK_CLEAR_SESSIONS_CMD)
+            except Exception:
+                logger.debug("grok: pre-run session clear failed", exc_info=True)
+        try:
+            return await orig(self, *args, **kwargs)
+        finally:
+            # Capture on the failure path too: a crashed run still leaves the
+            # session store behind, and it is the only per-turn evidence.
+            if environment is not None:
+                try:
+                    await self.exec_as_agent(
+                        environment, command=_GROK_CAPTURE_SESSIONS_CMD
+                    )
+                except Exception:
+                    logger.warning("grok: session capture failed", exc_info=True)
+
+    setattr(run, _GROK_CAPTURE_MARKER, True)
+    return run
+
+
+def _wrap_grok_populate_post_run(orig: Callable[..., Any]) -> Callable[..., Any]:
+    def populate_context_post_run(self: Any, context: Any) -> None:
+        orig(self, context)
+        try:
+            _rebuild_grok_trajectory_from_session(self)
+        except Exception:
+            logger.warning("grok: session trajectory rebuild failed", exc_info=True)
+
+    setattr(populate_context_post_run, _GROK_REBUILD_MARKER, True)
+    return populate_context_post_run
+
+
+def _patch_grok_session_capture() -> None:
+    module_path = "harbor.agents.installed.grok_build"
+    _install_method_patch(
+        module_path,
+        "GrokBuild",
+        "run",
+        _wrap_grok_run,
+        marker=_GROK_CAPTURE_MARKER,
+        label="grok-session-capture",
+    )
+    _install_method_patch(
+        module_path,
+        "GrokBuild",
+        "populate_context_post_run",
+        _wrap_grok_populate_post_run,
+        marker=_GROK_REBUILD_MARKER,
+        label="grok-session-trajectory",
     )

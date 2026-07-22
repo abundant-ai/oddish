@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import io
 import json
 import tarfile
@@ -61,6 +63,39 @@ def _write_text(path: Path, content: str) -> None:
 def _write_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _load_checksums(output_root: Path) -> dict[str, str]:
+    try:
+        data = json.loads((output_root / "checksums.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _write_checksums(output_root: Path, checksums: dict[str, str]) -> None:
+    _write_json(output_root / "checksums.json", dict(sorted(checksums.items())))
+
+
+def _record_existing_checksum(
+    checksums: dict[str, str], key: str, local_file: Path
+) -> None:
+    """Backfill a checksum for a file skipped because it's already on disk."""
+    if key not in checksums:
+        try:
+            checksums[key] = _sha256_file(local_file)
+        except OSError:
+            pass
 
 
 def _make_client(api_url: str) -> httpx.Client:
@@ -192,9 +227,43 @@ def _download_task_file(
     if response.status_code != 200:
         return None, f"{response.status_code}: {response.text}"
     data = response.json()
-    # This JSON route can only carry text; presigned URLs (requested by
-    # _list_task_files) are the binary-safe path and the default.
-    return str(data.get("content", "")).encode("utf-8"), None
+    content = str(data.get("content", ""))
+    # The server base64-encodes non-UTF-8 bodies so binary survives the JSON
+    # route; presigned URLs (requested by _list_task_files) stay the default.
+    if data.get("encoding") == "base64":
+        try:
+            return base64.b64decode(content, validate=True), None
+        except Exception as exc:
+            return None, f"invalid base64 content: {exc}"
+    return content.encode("utf-8"), None
+
+
+def _save_downloaded_file(
+    content: bytes | None,
+    err: str | None,
+    *,
+    local_file: Path,
+    error_dir: Path,
+    rel: Path,
+    expected_size: int | None,
+    checksums: dict[str, str] | None,
+    checksum_key: str | None,
+) -> str:
+    """Save one downloaded file byte-exact. Returns 'saved' or 'error'."""
+    if content is None:
+        if err:
+            _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
+        return "error"
+    if expected_size is not None and len(content) != expected_size:
+        _write_text(
+            error_dir / f"{rel.as_posix()}.error.txt",
+            f"size mismatch: expected {expected_size} bytes, got {len(content)}",
+        )
+        return "error"
+    _write_bytes(local_file, content)
+    if checksums is not None and checksum_key:
+        checksums[checksum_key] = hashlib.sha256(content).hexdigest()
+    return "saved"
 
 
 def _download_and_save_trial_file(
@@ -205,15 +274,22 @@ def _download_and_save_trial_file(
     local_file: Path,
     error_dir: Path,
     rel: Path,
+    expected_size: int | None = None,
+    checksums: dict[str, str] | None = None,
+    checksum_key: str | None = None,
 ) -> str:
     """Download a single trial file and save it. Returns 'saved', 'error'."""
     content, err = _download_trial_file(client, trial_id, remote_path, download_url)
-    if content is None:
-        if err:
-            _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
-        return "error"
-    _write_bytes(local_file, content)
-    return "saved"
+    return _save_downloaded_file(
+        content,
+        err,
+        local_file=local_file,
+        error_dir=error_dir,
+        rel=rel,
+        expected_size=expected_size,
+        checksums=checksums,
+        checksum_key=checksum_key,
+    )
 
 
 def _download_and_save_task_file(
@@ -224,21 +300,30 @@ def _download_and_save_task_file(
     local_file: Path,
     error_dir: Path,
     rel: Path,
+    expected_size: int | None = None,
+    checksums: dict[str, str] | None = None,
+    checksum_key: str | None = None,
 ) -> str:
     """Download a single task file and save it. Returns 'saved', 'error'."""
     content, err = _download_task_file(client, task_id, remote_path, download_url)
-    if content is None:
-        if err:
-            _write_text(error_dir / f"{rel.as_posix()}.error.txt", err)
-        return "error"
-    _write_bytes(local_file, content)
-    return "saved"
+    return _save_downloaded_file(
+        content,
+        err,
+        local_file=local_file,
+        error_dir=error_dir,
+        rel=rel,
+        expected_size=expected_size,
+        checksums=checksums,
+        checksum_key=checksum_key,
+    )
 
 
 def _extract_task_archive(
     archive_bytes: bytes,
     task_root: Path,
     summary: dict[str, int],
+    checksums: dict[str, str] | None = None,
+    checksum_prefix: str = "",
 ) -> dict[str, int]:
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
         for member in tar.getmembers():
@@ -250,18 +335,24 @@ def _extract_task_archive(
                 summary["task_file_errors"] += 1
                 continue
             local_file = task_root / rel
+            checksum_key = f"{checksum_prefix}{rel.as_posix()}"
             if (
                 local_file.exists()
                 and local_file.is_file()
                 and local_file.stat().st_size == member.size
             ):
                 summary["task_files_skipped"] += 1
+                if checksums is not None:
+                    _record_existing_checksum(checksums, checksum_key, local_file)
                 continue
             extracted = tar.extractfile(member)
             if extracted is None:
                 summary["task_file_errors"] += 1
                 continue
-            _write_bytes(local_file, extracted.read())
+            content = extracted.read()
+            _write_bytes(local_file, content)
+            if checksums is not None:
+                checksums[checksum_key] = hashlib.sha256(content).hexdigest()
             summary["task_files_saved"] += 1
     return summary
 
@@ -274,6 +365,7 @@ def _pull_trial(
     include_logs: bool,
     include_files: bool,
     include_structured_logs: bool,
+    checksums: dict[str, str] | None = None,
     status_update: StatusCallback | None = None,
 ) -> dict:
     trial_root = output_root / "trials" / trial_id
@@ -333,7 +425,7 @@ def _pull_trial(
             status_update(f"Pulling trial {trial_id}: listing files")
         listing = _list_trial_files(client, trial_id)
         if listing:
-            to_download: list[tuple[str, str | None, Path, Path]] = []
+            to_download: list[tuple[str, str | None, Path, Path, int | None]] = []
             for file_meta in listing.get("files", []):
                 remote_path = file_meta.get("path")
                 if not remote_path:
@@ -347,13 +439,21 @@ def _pull_trial(
                 # pulled trials without another conversion step.
                 local_file = trial_root / rel
                 remote_size = file_meta.get("size")
+                if not isinstance(remote_size, int):
+                    remote_size = None
                 if (
                     local_file.exists()
                     and local_file.is_file()
-                    and isinstance(remote_size, int)
+                    and remote_size is not None
                     and local_file.stat().st_size == remote_size
                 ):
                     summary["files_skipped"] = int(summary["files_skipped"]) + 1
+                    if checksums is not None:
+                        _record_existing_checksum(
+                            checksums,
+                            f"trials/{trial_id}/{rel.as_posix()}",
+                            local_file,
+                        )
                     continue
                 download_url = file_meta.get("url")
                 to_download.append(
@@ -362,6 +462,7 @@ def _pull_trial(
                         download_url if isinstance(download_url, str) else None,
                         local_file,
                         rel,
+                        remote_size,
                     )
                 )
 
@@ -382,8 +483,17 @@ def _pull_trial(
                         local_file,
                         error_dir,
                         rel,
+                        remote_size,
+                        checksums,
+                        f"trials/{trial_id}/{rel.as_posix()}",
                     ): rel
-                    for remote_path, download_url, local_file, rel in to_download
+                    for (
+                        remote_path,
+                        download_url,
+                        local_file,
+                        rel,
+                        remote_size,
+                    ) in to_download
                 }
                 completed = 0
                 for future in as_completed(futures):
@@ -406,9 +516,11 @@ def _pull_task_files(
     task_id: str,
     output_root: Path,
     *,
+    checksums: dict[str, str] | None = None,
     status_update: StatusCallback | None = None,
 ) -> dict:
     task_root = output_root / "tasks" / task_id / "files"
+    checksum_prefix = f"tasks/{task_id}/files/"
     summary = {"task_files_saved": 0, "task_files_skipped": 0, "task_file_errors": 0}
     if status_update:
         status_update(f"Pulling task {task_id}: listing task files")
@@ -428,9 +540,11 @@ def _pull_task_files(
             return summary
         if status_update:
             status_update(f"Pulling task {task_id}: extracting task archive")
-        return _extract_task_archive(archive_bytes, task_root, summary)
+        return _extract_task_archive(
+            archive_bytes, task_root, summary, checksums, checksum_prefix
+        )
 
-    to_download: list[tuple[str, str | None, Path, Path]] = []
+    to_download: list[tuple[str, str | None, Path, Path, int | None]] = []
     for file_meta in listing.get("files", []):
         remote_path = file_meta.get("path")
         if not remote_path:
@@ -443,13 +557,19 @@ def _pull_task_files(
 
         local_file = task_root / rel
         remote_size = file_meta.get("size")
+        if not isinstance(remote_size, int):
+            remote_size = None
         if (
             local_file.exists()
             and local_file.is_file()
-            and isinstance(remote_size, int)
+            and remote_size is not None
             and local_file.stat().st_size == remote_size
         ):
             summary["task_files_skipped"] += 1
+            if checksums is not None:
+                _record_existing_checksum(
+                    checksums, f"{checksum_prefix}{rel.as_posix()}", local_file
+                )
             continue
         download_url = file_meta.get("url")
         to_download.append(
@@ -458,6 +578,7 @@ def _pull_task_files(
                 download_url if isinstance(download_url, str) else None,
                 local_file,
                 rel,
+                remote_size,
             )
         )
 
@@ -478,8 +599,17 @@ def _pull_task_files(
                 local_file,
                 error_dir,
                 rel,
+                remote_size,
+                checksums,
+                f"{checksum_prefix}{rel.as_posix()}",
             ): rel
-            for remote_path, download_url, local_file, rel in to_download
+            for (
+                remote_path,
+                download_url,
+                local_file,
+                rel,
+                remote_size,
+            ) in to_download
         }
         completed = 0
         for future in as_completed(futures):
@@ -583,6 +713,11 @@ def _pull_once(
         "tasks": [],
         "errors": [],
     }
+    # sha256 of every pulled file, keyed by path relative to output_root.
+    # Persisted as checksums.json so audits can fingerprint a pulled tree
+    # without re-downloading. Loaded first so files skipped as already-present
+    # keep their entry across --watch iterations.
+    checksums = _load_checksums(output_root)
 
     if target_type == "trial":
         if status_update:
@@ -594,9 +729,11 @@ def _pull_once(
             include_logs=include_logs,
             include_files=include_files,
             include_structured_logs=include_structured_logs,
+            checksums=checksums,
             status_update=status_update,
         )
         run_manifest["trials"].append(summary)
+        _write_checksums(output_root, checksums)
         return run_manifest
 
     if target_type == "task":
@@ -634,6 +771,7 @@ def _pull_once(
                     include_logs=include_logs,
                     include_files=include_files,
                     include_structured_logs=include_structured_logs,
+                    checksums=checksums,
                     status_update=None,
                 ): tid
                 for tid in trial_ids
@@ -652,8 +790,10 @@ def _pull_once(
                 client,
                 target_id,
                 output_root,
+                checksums=checksums,
                 status_update=status_update,
             )
+        _write_checksums(output_root, checksums)
         return run_manifest
 
     tasks = (
@@ -694,6 +834,7 @@ def _pull_once(
                 client,
                 task_id,
                 output_root,
+                checksums=checksums,
                 status_update=status_update,
             )
         run_manifest["tasks"].append(task_summary)
@@ -713,6 +854,7 @@ def _pull_once(
                 include_logs=include_logs,
                 include_files=include_files,
                 include_structured_logs=include_structured_logs,
+                checksums=checksums,
                 status_update=None,
             ): trial_id
             for _task_id, trial_id in all_trial_work
@@ -726,6 +868,7 @@ def _pull_once(
                     f"Pulling experiment {target_id}: downloading trials ({completed_trials}/{total_trials})"
                 )
 
+    _write_checksums(output_root, checksums)
     return run_manifest
 
 
@@ -757,9 +900,7 @@ def _debug_files(
         if json_output:
             print_json({"error": response.text, "status": response.status_code})
         else:
-            console.print(
-                f"[red]Failed to list debug files:[/red] {response.text}"
-            )
+            console.print(f"[red]Failed to list debug files:[/red] {response.text}")
         raise typer.Exit(1)
 
     data = response.json()

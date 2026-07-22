@@ -112,3 +112,120 @@ def test_download_task_file_json_fallback_returns_encoded_text():
 
     assert err is None
     assert content == b"compile.sh contents\n"
+
+
+def test_download_task_file_json_fallback_decodes_base64_binary():
+    """The server base64-encodes non-UTF-8 bodies; the client must restore bytes."""
+    import base64
+
+    class _FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "content": base64.b64encode(_GPG_BYTES).decode("ascii"),
+                "encoding": "base64",
+            }
+
+    class _FakeClient:
+        @staticmethod
+        def get(url, params=None):
+            return _FakeResponse()
+
+    content, err = pull_cli._download_task_file(
+        client=_FakeClient(),
+        task_id="implement-snowball-abc",
+        remote_path="environment/private_bundle.tar.gz.gpg",
+        download_url=None,
+    )
+
+    assert err is None
+    assert content == _GPG_BYTES
+
+
+def test_download_and_save_task_file_rejects_size_mismatch(tmp_path):
+    """A truncated download must be recorded as an error, not saved as truth."""
+    local_file = tmp_path / "files" / "environment" / "binary" / "snowball"
+    error_dir = tmp_path / "errors"
+    checksums: dict[str, str] = {}
+
+    with patch.object(
+        pull_cli, "_download_presigned_bytes", return_value=(_ELF_BYTES, None)
+    ):
+        status = pull_cli._download_and_save_task_file(
+            client=None,
+            task_id="implement-snowball-abc",
+            remote_path="environment/binary/snowball",
+            download_url="https://s3.example/presigned",
+            local_file=local_file,
+            error_dir=error_dir,
+            rel=Path("environment/binary/snowball"),
+            expected_size=len(_ELF_BYTES) + 7,
+            checksums=checksums,
+            checksum_key="tasks/implement-snowball-abc/files/environment/binary/snowball",
+        )
+
+    assert status == "error"
+    assert not local_file.exists()
+    assert checksums == {}
+    error_text = (error_dir / "environment/binary/snowball.error.txt").read_text()
+    assert "size mismatch" in error_text
+
+
+def test_download_and_save_task_file_records_sha256(tmp_path):
+    import hashlib
+
+    local_file = tmp_path / "files" / "environment" / "binary" / "snowball"
+    checksums: dict[str, str] = {}
+    key = "tasks/implement-snowball-abc/files/environment/binary/snowball"
+
+    with patch.object(
+        pull_cli, "_download_presigned_bytes", return_value=(_ELF_BYTES, None)
+    ):
+        status = pull_cli._download_and_save_task_file(
+            client=None,
+            task_id="implement-snowball-abc",
+            remote_path="environment/binary/snowball",
+            download_url="https://s3.example/presigned",
+            local_file=local_file,
+            error_dir=tmp_path / "errors",
+            rel=Path("environment/binary/snowball"),
+            expected_size=len(_ELF_BYTES),
+            checksums=checksums,
+            checksum_key=key,
+        )
+
+    assert status == "saved"
+    assert checksums == {key: hashlib.sha256(_ELF_BYTES).hexdigest()}
+
+
+def test_extract_task_archive_round_trips_binary_and_checksums(tmp_path):
+    """The archive path must extract binary members byte-exact with checksums."""
+    import hashlib
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        info = tarfile.TarInfo("environment/private_bundle.tar.gz.gpg")
+        info.size = len(_GPG_BYTES)
+        tar.addfile(info, io.BytesIO(_GPG_BYTES))
+
+    checksums: dict[str, str] = {}
+    summary = pull_cli._extract_task_archive(
+        buffer.getvalue(),
+        tmp_path / "files",
+        {"task_files_saved": 0, "task_files_skipped": 0, "task_file_errors": 0},
+        checksums,
+        "tasks/implement-snowball-abc/files/",
+    )
+
+    saved = tmp_path / "files" / "environment" / "private_bundle.tar.gz.gpg"
+    assert summary["task_files_saved"] == 1
+    assert saved.read_bytes() == _GPG_BYTES
+    assert checksums == {
+        "tasks/implement-snowball-abc/files/environment/private_bundle.tar.gz.gpg": (
+            hashlib.sha256(_GPG_BYTES).hexdigest()
+        )
+    }
