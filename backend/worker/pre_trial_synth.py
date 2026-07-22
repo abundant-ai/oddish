@@ -28,8 +28,19 @@ from oddish.config import api_base_url_for_modal_app, settings
 from oddish.core.prompts import get_prompt_core
 from oddish.db import PromptKind, get_session
 from oddish.db.models import TaskModel
-from oddish.workers.queue.qa_handler import register_pre_trial_synth
+from oddish.workers.queue.qa_handler import (
+    PRE_TRIAL_LEASE_MARGIN_SECONDS,
+    register_pre_trial_synth,
+)
 from worker.pre_trial_sandbox import provision_oddish_sandbox_client
+
+# Provisioning (sandbox create + claude-code/harbor/oddish-CLI installs) runs
+# before the block-run wait_for, and the claim lease is sized as
+# pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS -- so provisioning must
+# be bounded by the margin or a hang lets wall time outrun the lease. A
+# timed-out provision may leak a half-created sandbox; Daytona's
+# auto_delete_minutes reaps it.
+_PROVISION_TIMEOUT_SECONDS = PRE_TRIAL_LEASE_MARGIN_SECONDS
 
 
 async def _resolve_org_id(task_id: str) -> str | None:
@@ -74,11 +85,14 @@ async def synthesize_task_pre_trial(
     # prod and PR previews resolve automatically (mirrors api/app.py's cc_chat
     # orchestrator wiring).
     api_base_url = settings.public_api_base_url or api_base_url_for_modal_app()
-    client = await provision_oddish_sandbox_client(
-        org_id=org_id,
-        model=settings.pre_trial_model,
-        api_key=None,
-        api_base_url=api_base_url,
+    client = await asyncio.wait_for(
+        provision_oddish_sandbox_client(
+            org_id=org_id,
+            model=settings.pre_trial_model,
+            api_key=None,
+            api_base_url=api_base_url,
+        ),
+        timeout=_PROVISION_TIMEOUT_SECONDS,
     )
     try:
         block = AnalyzerBlock(

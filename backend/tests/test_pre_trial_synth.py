@@ -176,3 +176,31 @@ async def test_synth_raises_when_org_id_unresolved(monkeypatch):
 
     with pytest.raises(RuntimeError, match="task_xyz"):
         await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
+
+
+@pytest.mark.asyncio
+async def test_provisioning_is_time_bounded(monkeypatch):
+    """Sandbox provisioning runs before the block-run wait_for, but it must
+    not be unbounded: the claim lease is sized as pre_trial_timeout +
+    PRE_TRIAL_LEASE_MARGIN_SECONDS, so a provisioning hang longer than the
+    margin would let the wall clock outrun the lease. A hang must surface as
+    TimeoutError (-> recorded as pre-trial failure), not run forever."""
+    import asyncio
+
+    async def fake_get_prompt_core(session, kind):
+        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+
+    async def fake_resolve_org_id(task_id):
+        return "org_1"
+
+    async def hanging_provision(**kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
+    monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
+    monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
+    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", hanging_provision)
+    monkeypatch.setattr(mod, "_PROVISION_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(TimeoutError):
+        await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", ["t1"], timeout=30.0)

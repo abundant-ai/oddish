@@ -232,6 +232,82 @@ async def _pre_trial_store_allowed(
     return current == task_version_id
 
 
+async def _run_pre_trial_audit(
+    task_id: str, worker_job_id: str | None, live_trial_ids: list[str]
+) -> None:
+    """Claim, run, and persist the per-version pre-trial audit.
+
+    Gated off by default (settings.pre_trial_enabled) and a no-op unless the
+    hosted synth is registered; _claim_pre_trial_version keeps it to once per
+    task version. Exceptions are swallowed (pre-trial must never fail the
+    verdict path) EXCEPT cancellation, which propagates. The ``finally``
+    guarantees the release invariant for every exit -- success-but-vetoed
+    store, synth failure, a double-fault while recording that failure, and
+    job cancellation (CancelledError is a BaseException, so it skips both
+    handlers below): a claim that persisted no terminal status is rolled back
+    so the next QA run redoes it promptly instead of waiting out the lease.
+    """
+    pre_trial_version_id: str | None = None
+    pre_trial_stored: str | None = None
+    try:
+        if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
+            pre_trial_version_id = await _claim_pre_trial_version(task_id)
+        if pre_trial_version_id is not None:
+            pre_trial_items = await _pre_trial_synth_fn(
+                task_id,
+                pre_trial_version_id,
+                live_trial_ids,
+                settings.pre_trial_timeout,
+            )
+            if pre_trial_items is not None:
+                pre_trial_stored = await sync_pre_trial_to_task_version(
+                    pre_trial_version_id,
+                    payload=build_pre_trial_payload(pre_trial_items),
+                    error=None,
+                    should_store=lambda session: _pre_trial_store_allowed(
+                        session, worker_job_id, task_id, pre_trial_version_id
+                    ),
+                )
+    except Exception as exc:  # noqa: BLE001
+        console.print(
+            f"[red]Pre-trial synthesis failed for {task_id} "
+            f"(version {pre_trial_version_id}): "
+            f"{type(exc).__name__}: {exc}[/red]"
+        )
+        # Double-fault guard: recording the failure is itself a DB write, so
+        # it can fail too -- caught locally so that can never escape to the
+        # caller and get misattributed as a verdict-synthesis failure (which
+        # would mark the whole verdict FAILED for what is really just a
+        # pre-trial write hiccup).
+        try:
+            if pre_trial_version_id is not None:
+                pre_trial_stored = await sync_pre_trial_to_task_version(
+                    pre_trial_version_id,
+                    payload=None,
+                    error=exc,
+                    should_store=lambda session: _pre_trial_store_allowed(
+                        session, worker_job_id, task_id, pre_trial_version_id
+                    ),
+                )
+        except Exception as sync_exc:  # noqa: BLE001
+            console.print(
+                f"[red]Failed to record pre-trial failure for {task_id}: "
+                f"{type(sync_exc).__name__}: {sync_exc}[/red]"
+            )
+    finally:
+        if pre_trial_version_id is not None and pre_trial_stored is None:
+            try:
+                await _release_pre_trial_claim(pre_trial_version_id)
+            except Exception as release_exc:  # noqa: BLE001
+                # Lease expiry reclaims it eventually; just don't mask the
+                # in-flight exception (or cancellation) with a release error.
+                console.print(
+                    f"[red]Failed to release pre-trial claim "
+                    f"{pre_trial_version_id}: "
+                    f"{type(release_exc).__name__}: {release_exc}[/red]"
+                )
+
+
 def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
     """Return true when a live trial still needs QA."""
     return analysis_status not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
@@ -349,66 +425,11 @@ async def run_task_qa_job(
 
         # Pre-trial: a per-version task-source audit, independent of trial
         # classification -- runs before the per-trial loop, even when there are
-        # zero live trials to classify. Gated off by default
-        # (settings.pre_trial_enabled) and a no-op unless the hosted synth is
-        # registered; _claim_pre_trial_version keeps it to once per task
-        # version, and the `is not None` guards keep a skipped run from
-        # touching any pre_trial column. A pre-trial failure is swallowed here
-        # so it can never block the verdict path.
-        pre_trial_version_id: str | None = None
-        pre_trial_stored: str | None = None
-        try:
-            if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
-                pre_trial_version_id = await _claim_pre_trial_version(task_id)
-            if pre_trial_version_id is not None:
-                pre_trial_items = await _pre_trial_synth_fn(
-                    task_id,
-                    pre_trial_version_id,
-                    [trial_id for trial_id, _ in live_trials],
-                    settings.pre_trial_timeout,
-                )
-                if pre_trial_items is not None:
-                    pre_trial_stored = await sync_pre_trial_to_task_version(
-                        pre_trial_version_id,
-                        payload=build_pre_trial_payload(pre_trial_items),
-                        error=None,
-                        should_store=lambda session: _pre_trial_store_allowed(
-                            session, worker_job_id, task_id, pre_trial_version_id
-                        ),
-                    )
-                # A claim that persisted nothing (cancelled job, or a new
-                # upload made the audit describe a different snapshot) is
-                # released so the next QA run redoes it promptly.
-                if pre_trial_stored is None:
-                    await _release_pre_trial_claim(pre_trial_version_id)
-        except Exception as exc:  # noqa: BLE001
-            console.print(
-                f"[red]Pre-trial synthesis failed for {task_id} "
-                f"(version {pre_trial_version_id}): "
-                f"{type(exc).__name__}: {exc}[/red]"
-            )
-            # Double-fault guard: recording the failure is itself a DB write,
-            # so it can fail too -- caught locally so that can never escape
-            # into the outer try/except below and get misattributed as a
-            # verdict-synthesis failure (which would mark the whole verdict
-            # FAILED for what is really just a pre-trial write hiccup).
-            try:
-                if pre_trial_version_id is not None:
-                    pre_trial_stored = await sync_pre_trial_to_task_version(
-                        pre_trial_version_id,
-                        payload=None,
-                        error=exc,
-                        should_store=lambda session: _pre_trial_store_allowed(
-                            session, worker_job_id, task_id, pre_trial_version_id
-                        ),
-                    )
-                    if pre_trial_stored is None:
-                        await _release_pre_trial_claim(pre_trial_version_id)
-            except Exception as sync_exc:  # noqa: BLE001
-                console.print(
-                    f"[red]Failed to record pre-trial failure for {task_id}: "
-                    f"{type(sync_exc).__name__}: {sync_exc}[/red]"
-                )
+        # zero live trials to classify. Failures are swallowed inside so it
+        # can never block the verdict path; cancellation propagates.
+        await _run_pre_trial_audit(
+            task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
+        )
 
         if not live_trials:
             # Every live trial is excluded from QA (bulk-migrated imports
