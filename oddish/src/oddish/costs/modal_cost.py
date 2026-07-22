@@ -86,6 +86,17 @@ DEFAULT_RATES: tuple[RateRow, ...] = tuple(
         ("modal", "gpu:A10", "0.000306"),
         ("modal", "gpu:L4", "0.000222"),
         ("modal", "gpu:T4", "0.000164"),
+        # Daytona (seeded by modal_costs_002). Public list prices from
+        # daytona.io/pricing, converted per-hour / 3600 to per-second. Only the
+        # sandbox class exists for daytona (the oddish worker always runs on
+        # Modal); GPU trials route to Modal, so daytona GPU rows are defensive.
+        # Free-tier allowances (20 vCPU-h + 40 GiB-h/day, $200 credit) are not
+        # modeled: this is a gross list-price estimate, like the Modal rows.
+        ("daytona", "sandbox:cpu_core_sec", "0.0000140"),
+        ("daytona", "sandbox:mem_gib_sec", "0.0000045"),
+        ("daytona", "gpu:H200", "0.0012611111"),
+        ("daytona", "gpu:H100", "0.0010972222"),
+        ("daytona", "gpu:RTX_PRO_6000", "0.0008416667"),
     )
 )
 
@@ -281,8 +292,9 @@ def estimate_span_cost(
             cost_usd=None, unpriced_reason="unknown_gpu", rate_snapshot=snapshot
         )
 
-    # cpu/mem present but the provider has no rate card (e.g. daytona before
-    # rates exist): record the span, leave it unpriced.
+    # cpu/mem present but the provider has no rate card (e.g. docker/gke, or
+    # a new provider before rates are seeded): record the span, leave it
+    # unpriced rather than guessing a modal/daytona rate.
     if (cpu is not None and rate_selection.cpu is None) or (
         mem_mb is not None and rate_selection.mem is None
     ):

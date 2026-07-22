@@ -45,6 +45,7 @@ import {
 import type { TooltipContentProps } from "recharts";
 import type {
   CostBreakdownResponse,
+  CostComputeProviderBreakdown,
   CostExperimentBreakdown,
   CostModelBreakdown,
   CostQaModelBreakdown,
@@ -413,7 +414,7 @@ export function CostChart({
   if (series.buckets.length === 0)
     return (
       <div className="text-muted-foreground flex h-[240px] items-center justify-center rounded-lg border text-sm">
-        No trial spend in this window.
+        No spend in this window.
       </div>
     );
 
@@ -528,17 +529,28 @@ function MethodologyNote() {
 // Top-level card
 // =============================================================================
 
-type ChartDimension = "agent" | "model" | "user" | "type";
+type ChartDimension = "agent" | "model" | "user" | "type" | "compute";
 
-const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user", "type"];
+const CHART_DIMENSIONS: ChartDimension[] = [
+  "agent",
+  "model",
+  "user",
+  "type",
+  "compute",
+];
 
-// "type" stacks model inference vs QA — labels the toggle without the generic
-// word "type", which reads as meaningless next to agent/model/user.
 const DIMENSION_LABELS: Record<ChartDimension, string> = {
   agent: "Agent",
   model: "Model",
   user: "User",
-  type: "Model vs QA",
+  type: "Cost type",
+  compute: "Compute",
+};
+
+const EMPTY_COMPUTE_SERIES: CostSeries = {
+  dimension: "provider",
+  keys: [],
+  buckets: [],
 };
 
 export function CostBreakdownCard() {
@@ -560,7 +572,9 @@ export function CostBreakdownCard() {
         ? data.series_by_model
         : dimension === "user"
           ? data.series_by_user
-          : (data.series_by_type ?? data.series_by_agent)
+          : dimension === "compute"
+            ? (data.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES)
+            : (data.series_by_type ?? data.series_by_agent)
     : null;
 
   return (
@@ -665,6 +679,16 @@ export function CostBreakdownCard() {
               </section>
             )}
 
+            {data.compute_by_provider &&
+              data.compute_by_provider.length > 0 && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-medium">
+                    Compute cost by provider
+                  </h3>
+                  <ComputeProviderTable providers={data.compute_by_provider} />
+                </section>
+              )}
+
             <section className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">Top experiments by cost</h3>
@@ -703,14 +727,17 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         ? "bg-amber-500"
         : "bg-blue-500";
   const qaCost = totals.qa_cost_usd ?? 0;
-  const grandTotal = totals.cost_usd + qaCost;
+  const computeCost = totals.compute_cost_usd ?? 0;
+  const grandTotal = totals.cost_usd + qaCost + computeCost;
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
           {formatCostUsd(grandTotal)}
         </div>
-        <div className="text-muted-foreground text-[10px]">Total cost</div>
+        <div className="text-muted-foreground text-[10px]">
+          Total · inference + QA + compute
+        </div>
       </div>
       <div className="bg-background/70 flex flex-col justify-center gap-1 rounded-md border border-[#6f88b4]/18 p-2">
         <div className="flex items-baseline justify-between gap-2">
@@ -730,6 +757,14 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
       </div>
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
+          {formatCostUsd(computeCost)}
+        </div>
+        <div className="text-muted-foreground text-[10px]">
+          Compute estimate
+        </div>
+      </div>
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
           {formatCostUsd(monthCost)}
           {budget != null && (
             <span className="text-muted-foreground font-normal">
@@ -739,7 +774,7 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
           )}
         </div>
         <div className="text-muted-foreground text-[10px]">
-          Monthly quota
+          Inference monthly quota
           {monthPct != null
             ? ` · ${Math.round(monthPct)}%`
             : " · month to date"}
@@ -776,7 +811,7 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
           </div>
         )}
         <div className="text-muted-foreground text-[10px]">
-          Δ vs prior period
+          Inference Δ vs prior period
         </div>
       </div>
     </div>
@@ -1024,6 +1059,45 @@ function QaModelTable({ models }: { models: CostQaModelBreakdown[] }) {
             <TableCell className="font-mono text-xs">{model.model}</TableCell>
             <TableCell className="text-right font-mono text-xs">
               {formatCostUsd(model.cost_usd)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+const COMPUTE_PROVIDER_LABELS: Record<string, string> = {
+  modal: "Modal",
+  daytona: "Daytona",
+  other: "Other",
+};
+
+function ComputeProviderTable({
+  providers,
+}: {
+  providers: CostComputeProviderBreakdown[];
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Provider</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">Spans</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {providers.map((provider) => (
+          <TableRow key={provider.provider}>
+            <TableCell className="text-xs">
+              {COMPUTE_PROVIDER_LABELS[provider.provider] ?? provider.provider}
+            </TableCell>
+            <TableCell className="text-right font-mono text-xs">
+              {formatCostUsd(provider.cost_usd)}
+            </TableCell>
+            <TableCell className="text-right font-mono text-xs">
+              {provider.span_count.toLocaleString()}
             </TableCell>
           </TableRow>
         ))}
