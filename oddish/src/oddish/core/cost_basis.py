@@ -51,12 +51,25 @@ COMBINE_IDEMPOTENCY_PREFIX = "combine:"
 def is_combine_copy(trial) -> bool:
     """True when this trial row is an experiment-combine materialization.
 
-    Python-side twin of the ``notlike('combine:%')`` clause in
-    ``first_party_spend_filter``, for surfaces that filter an already-loaded
-    relationship instead of issuing a query.
+    Python-side twin of :func:`not_combine_copy_filter`, for surfaces that
+    filter an already-loaded relationship instead of issuing a query.
     """
     key = getattr(trial, "idempotency_key", None)
     return bool(key) and key.startswith(COMBINE_IDEMPOTENCY_PREFIX)
+
+
+def not_combine_copy_filter():
+    """Drop experiment-combine copies (idempotency_key ``combine:%``).
+
+    A combine copy re-materializes an existing trial's result under another
+    experiment, so counting it double-counts the same execution. Shared by
+    :func:`first_party_spend_filter` and the task browser so both count the
+    same execution population the task-detail view shows.
+    """
+    return or_(
+        TrialModel.idempotency_key.is_(None),
+        TrialModel.idempotency_key.notlike(f"{COMBINE_IDEMPOTENCY_PREFIX}%"),
+    )
 
 
 def first_party_spend_filter():
@@ -69,10 +82,7 @@ def first_party_spend_filter():
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
-        or_(
-            TrialModel.idempotency_key.is_(None),
-            TrialModel.idempotency_key.notlike(f"{COMBINE_IDEMPOTENCY_PREFIX}%"),
-        ),
+        not_combine_copy_filter(),
     )
 
 
