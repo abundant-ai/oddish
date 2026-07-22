@@ -668,8 +668,17 @@ function AdminPageContent() {
   // between them.
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { data: operatorAccess, error: operatorAccessError } = useSWR<{
+    allowed: boolean;
+  }>("/api/admin/operator-access", fetcher);
+  const operatorAccessResolved =
+    operatorAccess !== undefined || operatorAccessError !== undefined;
+  const canManagePlatform = operatorAccess?.allowed === true;
+  const allowedTabs = canManagePlatform
+    ? ADMIN_TABS
+    : ADMIN_TABS.filter((tab) => tab !== "concurrency");
   const requestedTab = searchParams.get("tab") ?? "";
-  const activeTab = (ADMIN_TABS as readonly string[]).includes(requestedTab)
+  const activeTab = (allowedTabs as readonly string[]).includes(requestedTab)
     ? requestedTab
     : "overview";
   const handleTabChange = (value: string) => {
@@ -681,17 +690,17 @@ function AdminPageContent() {
   // An unknown ?tab= (typo, removed tab) falls back to overview on screen;
   // rewrite the URL to match so bookmarks and back/forward stay consistent.
   useEffect(() => {
-    if (requestedTab && requestedTab !== activeTab) {
+    if (operatorAccessResolved && requestedTab && requestedTab !== activeTab) {
       router.replace("/admin", { scroll: false });
     }
-  }, [requestedTab, activeTab, router]);
+  }, [operatorAccessResolved, requestedTab, activeTab, router]);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Admin Dashboard</h1>
         <p className="text-muted-foreground text-sm">
-          Internal system monitoring for workers and job queues
+          Organization usage, spend, queues, tags, and quotas
         </p>
       </div>
 
@@ -705,13 +714,15 @@ function AdminPageContent() {
           <TabsTrigger value="usage">Usage</TabsTrigger>
           <TabsTrigger value="costs">Costs</TabsTrigger>
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
-          <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
+          {canManagePlatform && (
+            <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
+          )}
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
           <TabsTrigger value="quotas">Quotas</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
-          <QueueHealthOverviewCard />
+          <QueueHealthOverviewCard canManageConcurrency={canManagePlatform} />
         </TabsContent>
 
         <TabsContent value="usage" className="space-y-4">
@@ -720,16 +731,18 @@ function AdminPageContent() {
 
         <TabsContent value="costs" className="space-y-4">
           <CostBreakdownCard />
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">
-                Channel spend escalation
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <SlackAlertSettingsForm />
-            </CardContent>
-          </Card>
+          {canManagePlatform && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">
+                  Channel spend escalation
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SlackAlertSettingsForm />
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="worker-jobs" className="space-y-4">
@@ -737,10 +750,12 @@ function AdminPageContent() {
           <OrphanedStateCard />
         </TabsContent>
 
-        <TabsContent value="concurrency" className="space-y-4">
-          <QueueHealthCard />
-          <QueueSlotsCard />
-        </TabsContent>
+        {canManagePlatform && (
+          <TabsContent value="concurrency" className="space-y-4">
+            <QueueHealthCard />
+            <QueueSlotsCard />
+          </TabsContent>
+        )}
 
         <TabsContent value="tags" className="space-y-4">
           <Card>

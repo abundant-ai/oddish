@@ -189,17 +189,35 @@ class WorkerJobsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def get_queue_slots_core(session: AsyncSession) -> QueueSlotsResponse:
+async def get_queue_slots_core(
+    session: AsyncSession, *, org_id: str | None = None
+) -> QueueSlotsResponse:
     """Get current state of queue-key slot leases."""
     now = utcnow()
     result = await session.execute(
         text(
             """
-            SELECT queue_key, slot, locked_by, locked_until
-            FROM queue_slots
-            ORDER BY queue_key, slot
+            SELECT qs.queue_key,
+                   qs.slot,
+                   CASE WHEN :org_id IS NULL OR EXISTS (
+                            SELECT 1 FROM worker_jobs wj
+                            WHERE wj.current_worker_id = qs.locked_by
+                              AND wj.status::text = 'RUNNING'
+                              AND wj.org_id = :org_id
+                        )
+                        THEN qs.locked_by END AS locked_by,
+                   CASE WHEN :org_id IS NULL OR EXISTS (
+                            SELECT 1 FROM worker_jobs wj
+                            WHERE wj.current_worker_id = qs.locked_by
+                              AND wj.status::text = 'RUNNING'
+                              AND wj.org_id = :org_id
+                        )
+                        THEN qs.locked_until END AS locked_until
+            FROM queue_slots qs
+            ORDER BY qs.queue_key, qs.slot
             """
-        )
+        ),
+        {"org_id": org_id},
     )
     rows = result.all()
 
@@ -239,7 +257,9 @@ async def get_queue_slots_core(session: AsyncSession) -> QueueSlotsResponse:
     )
 
 
-async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
+async def get_queue_status_core(
+    session: AsyncSession, *, org_id: str | None = None
+) -> QueueStatusResponse:
     """Get queue status grouped by worker-job kind and queue key."""
     now = utcnow()
 
@@ -259,10 +279,12 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
                     COUNT(*) FILTER (WHERE status::text = 'RUNNING') AS running
                 FROM worker_jobs
                 WHERE status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND (:org_id IS NULL OR org_id = :org_id)
                 GROUP BY kind, queue_key
                 ORDER BY kind, queue_key
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -310,6 +332,7 @@ async def get_orphaned_state_core(
     session: AsyncSession,
     *,
     stale_after_minutes: int = 15,
+    org_id: str | None = None,
 ) -> OrphanedStateResponse:
     """Summarize stale queue/pipeline state.
 
@@ -334,6 +357,7 @@ async def get_orphaned_state_core(
                         FROM worker_jobs wj
                         WHERE wj.kind::text = 'TRIAL'
                           AND wj.status::text = 'RUNNING'
+                          AND (:org_id IS NULL OR wj.org_id = :org_id)
                           AND (
                               wj.heartbeat_at IS NULL
                               OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -343,6 +367,7 @@ async def get_orphaned_state_core(
                         SELECT COUNT(*)
                         FROM tasks t
                         WHERE t.deleted_at IS NULL
+                          AND (:org_id IS NULL OR t.org_id = :org_id)
                           AND (
                             (
                                 t.status = 'RUNNING'
@@ -369,7 +394,7 @@ async def get_orphaned_state_core(
                     ) AS active_tasks_without_active_trials
                 """
             ),
-            {"stale_after_minutes": stale_after_minutes},
+            {"stale_after_minutes": stale_after_minutes, "org_id": org_id},
         )
     ).one()
 
@@ -396,6 +421,7 @@ async def get_orphaned_state_core(
                 JOIN trials tr ON wj.subject_table = 'trials' AND wj.subject_id = tr.id
                 WHERE wj.kind::text = 'TRIAL'
                   AND wj.status::text = 'RUNNING'
+                  AND (:org_id IS NULL OR wj.org_id = :org_id)
                   AND tr.deleted_at IS NULL
                   AND (
                       wj.heartbeat_at IS NULL
@@ -405,7 +431,7 @@ async def get_orphaned_state_core(
                 LIMIT 20
                 """
             ),
-            {"stale_after_minutes": stale_after_minutes},
+            {"stale_after_minutes": stale_after_minutes, "org_id": org_id},
         )
     ).all()
 
@@ -422,6 +448,7 @@ async def get_orphaned_state_core(
                     t.updated_at
                 FROM tasks t
                 WHERE t.deleted_at IS NULL
+                  AND (:org_id IS NULL OR t.org_id = :org_id)
                   AND (
                     (
                         t.status = 'RUNNING'
@@ -448,7 +475,8 @@ async def get_orphaned_state_core(
                 ORDER BY t.updated_at ASC NULLS FIRST
                 LIMIT 20
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -496,6 +524,7 @@ async def get_worker_jobs_admin_core(
     *,
     stale_after_minutes: int = 15,
     sample_limit: int = 25,
+    org_id: str | None = None,
 ) -> WorkerJobsResponse:
     """Summarize the unified ``worker_jobs`` table for the admin page.
 
@@ -516,9 +545,11 @@ async def get_worker_jobs_admin_core(
                        status::text AS status,
                        COUNT(*) AS n
                 FROM   worker_jobs
+                WHERE  (:org_id IS NULL OR org_id = :org_id)
                 GROUP  BY kind, status
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
     counts: dict[str, dict[str, int]] = {}
@@ -549,6 +580,7 @@ async def get_worker_jobs_admin_core(
                        org_id
                 FROM   worker_jobs
                 WHERE  status::text = 'RUNNING'
+                  AND  (:org_id IS NULL OR org_id = :org_id)
                   AND  (
                       heartbeat_at IS NULL
                       OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -560,6 +592,7 @@ async def get_worker_jobs_admin_core(
             {
                 "stale_after_minutes": stale_after_minutes,
                 "sample_limit": sample_limit,
+                "org_id": org_id,
             },
         )
     ).all()
@@ -588,11 +621,12 @@ async def get_worker_jobs_admin_core(
                        org_id
                 FROM   worker_jobs
                 WHERE  status::text IN ('FAILED', 'CANCELLED')
+                  AND  (:org_id IS NULL OR org_id = :org_id)
                 ORDER  BY finished_at DESC NULLS LAST
                 LIMIT  :sample_limit
                 """
             ),
-            {"sample_limit": sample_limit},
+            {"sample_limit": sample_limit, "org_id": org_id},
         )
     ).all()
 
@@ -640,6 +674,7 @@ async def get_worker_jobs_admin_core(
                        ) AS p95
                 FROM   worker_jobs
                 WHERE  status::text IN ('SUCCESS', 'FAILED')
+                  AND  (:org_id IS NULL OR org_id = :org_id)
                   AND  claimed_at IS NOT NULL
                   AND  finished_at IS NOT NULL
                   AND  finished_at >= NOW() - INTERVAL '1 hour'
@@ -647,7 +682,8 @@ async def get_worker_jobs_admin_core(
                 HAVING COUNT(*) >= 3
                 ORDER  BY kind, queue_key
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -760,7 +796,9 @@ async def update_model_concurrency_core(
     )
 
 
-async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
+async def get_queue_health_core(
+    session: AsyncSession, *, org_id: str | None = None
+) -> QueueHealthResponse:
     """Aggregate throughput, per-queue-key capacity fill, and component health."""
     now = utcnow()
 
@@ -777,12 +815,16 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
                        COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '15 minutes') AS finished_15m,
                        COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '60 minutes') AS finished_60m
                 FROM   worker_jobs
-                WHERE  started_at  >= NOW() - INTERVAL '60 minutes'
-                   OR  finished_at >= NOW() - INTERVAL '60 minutes'
+                WHERE  (:org_id IS NULL OR org_id = :org_id)
+                  AND  (
+                       started_at  >= NOW() - INTERVAL '60 minutes'
+                    OR finished_at >= NOW() - INTERVAL '60 minutes'
+                  )
                 GROUP  BY kind
                 ORDER  BY kind
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
     throughput = [
@@ -819,9 +861,11 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
                        ))) AS oldest_queued_age_seconds
                 FROM   worker_jobs
                 WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND  (:org_id IS NULL OR org_id = :org_id)
                 GROUP  BY queue_key
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -839,12 +883,14 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
                        ) AS wait_p95
                 FROM   worker_jobs
                 WHERE  claimed_at IS NOT NULL
+                  AND  (:org_id IS NULL OR org_id = :org_id)
                   AND  claimed_at >= NOW() - INTERVAL '1 hour'
                   AND  claimed_at >= created_at
                 GROUP  BY queue_key
                 HAVING COUNT(*) >= 3
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
     wait_by_key: dict[str, tuple[float | None, float | None]] = {}
@@ -923,7 +969,7 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
         get_queue_runtime_statuses,
     )
 
-    statuses = await get_queue_runtime_statuses(session)
+    statuses = await get_queue_runtime_statuses(session) if org_id is None else {}
 
     def _component(name: str) -> QueueRuntimeComponentStatus | None:
         row = statuses.get(name)
@@ -1098,7 +1144,7 @@ async def get_cached_load_snapshot(ttl: float = LOAD_CACHE_TTL_SECONDS) -> LoadS
 
 
 # ---------------------------------------------------------------------------
-# Cost breakdown: global admin spend view over billable trials only.
+# Cost breakdown: admin spend view over billable trials, optionally org-scoped.
 # ---------------------------------------------------------------------------
 
 _MAX_MODELS_PER_USER = 6
@@ -1511,6 +1557,7 @@ async def _cost_time_series(
     *,
     since: datetime | None,
     bucket: str,
+    org_id: str | None = None,
     resolve_github_users: GithubUserResolver | None = None,
 ) -> tuple[CostSeries, CostSeries, CostSeries]:
     """Billable cost over time, stacked three ways: by agent, model, and user.
@@ -1553,6 +1600,8 @@ async def _cost_time_series(
         )
     )
     query = query.where(_real_spend_filter(), TrialModel.finished_at.isnot(None))
+    if org_id is not None:
+        query = query.where(TrialModel.org_id == org_id)
     if since is not None:
         query = query.where(TrialModel.finished_at >= since)
 
@@ -1633,6 +1682,7 @@ async def _qa_cost_time_series(
     *,
     since: datetime | None,
     bucket: str,
+    org_id: str | None = None,
 ) -> CostSeries:
     """QA/analysis spend over time, stacked by model.
 
@@ -1652,6 +1702,8 @@ async def _qa_cost_time_series(
     )
     if since is not None:
         query = query.where(AnalysisCostModel.created_at >= since)
+    if org_id is not None:
+        query = query.where(AnalysisCostModel.org_id == org_id)
 
     per_bucket: dict[datetime, dict[str, float]] = {}
     totals: dict[str, float] = {}
@@ -1663,7 +1715,9 @@ async def _qa_cost_time_series(
         slot = per_bucket.setdefault(bstart, {})
         slot[key] = slot.get(key, 0.0) + cost
         totals[key] = totals.get(key, 0.0) + cost
-        jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(row.job_count or 0)
+        jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(
+            row.job_count or 0
+        )
 
     return _build_dimension_series(
         "model",
@@ -1772,6 +1826,7 @@ async def _prev_window_costs(
     *,
     prev_start: datetime,
     prev_end: datetime,
+    org_id: str | None = None,
     resolve_github_users: GithubUserResolver | None = None,
 ) -> tuple[dict[tuple[str | None, str], float], float]:
     """Per-(org, payer) spend and total spend for the prior adjacent window.
@@ -1808,6 +1863,8 @@ async def _prev_window_costs(
         )
         .execution_options(include_deleted=True)
     )
+    if org_id is not None:
+        query = query.where(TrialModel.org_id == org_id)
     rows = (await session.execute(query)).all()
     github_users = await _github_users_for_rows(session, rows, resolve_github_users)
 
@@ -1871,6 +1928,7 @@ async def _billed_cost_since(
 async def get_cost_breakdown_core(
     session: AsyncSession,
     *,
+    org_id: str | None = None,
     window_days: int | None = 7,
     experiment_limit: int = 100,
     user_limit: int = 100,
@@ -1887,10 +1945,14 @@ async def get_cost_breakdown_core(
 
     bucket = _series_bucket(window_days)
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
-        session, since=since, bucket=bucket, resolve_github_users=resolve_github_users
+        session,
+        since=since,
+        bucket=bucket,
+        org_id=org_id,
+        resolve_github_users=resolve_github_users,
     )
     series_qa_by_model = await _qa_cost_time_series(
-        session, since=since, bucket=bucket
+        session, since=since, bucket=bucket, org_id=org_id
     )
     # Two-stack inference-vs-QA view over the same buckets; folds the grand
     # totals the two series above already carry, so it needs no extra query.
@@ -1957,6 +2019,8 @@ async def get_cost_breakdown_core(
     detail_query = detail_query.where(
         _real_spend_filter(), TrialModel.finished_at.isnot(None)
     )
+    if org_id is not None:
+        detail_query = detail_query.where(TrialModel.org_id == org_id)
     if since is not None:
         detail_query = detail_query.where(TrialModel.finished_at >= since)
 
@@ -2109,23 +2173,25 @@ async def get_cost_breakdown_core(
             session,
             prev_start=since - window_span,
             prev_end=since,
+            org_id=org_id,
             resolve_github_users=resolve_github_users,
         )
 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    month_org_ids = (
-        await session.scalars(
-            select(TrialModel.org_id)
-            .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
-            .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
-            .where(
-                _real_spend_filter(),
-                TrialModel.finished_at >= month_start,
-            )
-            .distinct()
-            .execution_options(include_deleted=True)
+    month_org_query = (
+        select(TrialModel.org_id)
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
+        .where(
+            _real_spend_filter(),
+            TrialModel.finished_at >= month_start,
         )
-    ).all()
+        .distinct()
+        .execution_options(include_deleted=True)
+    )
+    if org_id is not None:
+        month_org_query = month_org_query.where(TrialModel.org_id == org_id)
+    month_org_ids = (await session.scalars(month_org_query)).all()
     month_limits_by_org = {
         org_id: await get_effective_org_limit(session, org_id)
         for org_id in month_org_ids
@@ -2140,13 +2206,23 @@ async def get_cost_breakdown_core(
     month_cost = await _billed_cost_since(
         session,
         since=month_start,
-        org_ids=budgeted_month_org_ids if month_budget is not None else None,
+        org_ids=(
+            {org_id}
+            if org_id is not None
+            else budgeted_month_org_ids
+            if month_budget is not None
+            else None
+        ),
     )
 
     quota_start = quota_window_start(now)
     quota_spent = await sum_cost_usd_by_org_user_all_orgs(session, quota_start)
     quota_limits = await effective_limits_by_org_user_all_orgs(session)
     inflight_counts = await inflight_trial_count_by_org_user_all_orgs(session)
+    if org_id is not None:
+        quota_spent = {k: v for k, v in quota_spent.items() if k[0] == org_id}
+        quota_limits = {k: v for k, v in quota_limits.items() if k[0] == org_id}
+        inflight_counts = {k: v for k, v in inflight_counts.items() if k[0] == org_id}
 
     user_rows = sorted(by_user.values(), key=lambda u: u["cost_usd"], reverse=True)[
         :user_limit
@@ -2248,6 +2324,8 @@ async def get_cost_breakdown_core(
     )
     if since is not None:
         qa_query = qa_query.where(AnalysisCostModel.created_at >= since)
+    if org_id is not None:
+        qa_query = qa_query.where(AnalysisCostModel.org_id == org_id)
     qa_by_model_totals: dict[str, float] = {}
     for row in (await session.execute(qa_query)).all():
         label = _model_label(row.model)

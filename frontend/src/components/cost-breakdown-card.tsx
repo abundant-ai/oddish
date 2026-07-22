@@ -878,11 +878,7 @@ function UserTable({
                 {user.owner_user_id ? (
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium">
                     <Link
-                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}${
-                        user.org_id
-                          ? `&org=${encodeURIComponent(user.org_id)}`
-                          : ""
-                      }`}
+                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}`}
                       className="text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
                     >
                       {userLabel(user)}

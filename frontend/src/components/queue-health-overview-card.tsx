@@ -280,9 +280,11 @@ function ConcurrencyLimitCell({
 function CapacityTable({
   rows,
   onSaved,
+  editable,
 }: {
   rows: QueueCapacityStat[];
   onSaved: () => Promise<unknown>;
+  editable: boolean;
 }) {
   // Edited limits, keyed by queue_key. A row without an entry (or whose entry
   // matches the current effective limit) is considered unchanged.
@@ -443,15 +445,19 @@ function CapacityTable({
                   )}
                 </TableCell>
                 <TableCell className="text-right">
-                  <ConcurrencyLimitCell
-                    stat={row}
-                    value={draftFor(row)}
-                    dirty={isDirty(row)}
-                    disabled={saving}
-                    onChange={(value) => setDraft(row.queue_key, value)}
-                    onSave={saveAll}
-                    onReset={() => clearDraft(row.queue_key)}
-                  />
+                  {editable ? (
+                    <ConcurrencyLimitCell
+                      stat={row}
+                      value={draftFor(row)}
+                      dirty={isDirty(row)}
+                      disabled={saving}
+                      onChange={(value) => setDraft(row.queue_key, value)}
+                      onSave={saveAll}
+                      onReset={() => clearDraft(row.queue_key)}
+                    />
+                  ) : (
+                    <span className="font-mono text-[11px]">{row.limit}</span>
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
                   {formatAgeSeconds(row.oldest_queued_age_seconds)}
@@ -467,22 +473,26 @@ function CapacityTable({
           })}
         </TableBody>
       </Table>
-      <div className="flex items-center justify-end gap-3">
-        {error && <span className="text-destructive text-[11px]">{error}</span>}
-        <span className="text-muted-foreground text-[11px]">
-          {dirtyRows.length > 0
-            ? `${dirtyRows.length} unsaved change${dirtyRows.length === 1 ? "" : "s"}`
-            : "No changes"}
-        </span>
-        <Button
-          size="sm"
-          className="h-7 text-[11px]"
-          disabled={saving || dirtyRows.length === 0}
-          onClick={saveAll}
-        >
-          {saving ? "Saving…" : "Save changes"}
-        </Button>
-      </div>
+      {editable && (
+        <div className="flex items-center justify-end gap-3">
+          {error && (
+            <span className="text-destructive text-[11px]">{error}</span>
+          )}
+          <span className="text-muted-foreground text-[11px]">
+            {dirtyRows.length > 0
+              ? `${dirtyRows.length} unsaved change${dirtyRows.length === 1 ? "" : "s"}`
+              : "No changes"}
+          </span>
+          <Button
+            size="sm"
+            className="h-7 text-[11px]"
+            disabled={saving || dirtyRows.length === 0}
+            onClick={saveAll}
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -549,7 +559,11 @@ function ThroughputTable({
 // Top-level card
 // ---------------------------------------------------------------------------
 
-export function QueueHealthOverviewCard() {
+export function QueueHealthOverviewCard({
+  canManageConcurrency = false,
+}: {
+  canManageConcurrency?: boolean;
+}) {
   const [filter, setFilter] = useState("");
   const { data, error, isLoading, mutate } = useSWR<QueueHealthResponse>(
     "/api/admin/queue-health",
@@ -645,7 +659,11 @@ export function QueueHealthOverviewCard() {
                 placeholder="Filter by queue key..."
                 className="h-8 text-xs"
               />
-              <CapacityTable rows={capacity} onSaved={mutate} />
+              <CapacityTable
+                rows={capacity}
+                onSaved={mutate}
+                editable={canManageConcurrency}
+              />
             </section>
 
             <section className="space-y-2">
