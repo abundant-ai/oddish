@@ -91,6 +91,8 @@ def upgrade() -> None:
             sa.Column("cpu_limit", sa.Float(), nullable=True),
             sa.Column("mem_request_mb", sa.Integer(), nullable=True),
             sa.Column("mem_limit_mb", sa.Integer(), nullable=True),
+            sa.Column("cpu_enforcement_mode", sa.String(16), nullable=True),
+            sa.Column("mem_enforcement_mode", sa.String(16), nullable=True),
             sa.Column("gpu_type", sa.String(32), nullable=True),
             sa.Column("gpu_count", sa.Integer(), nullable=True),
             sa.Column("price_multiplier", sa.Numeric(), nullable=True),

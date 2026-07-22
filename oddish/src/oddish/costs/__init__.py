@@ -16,6 +16,7 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     select_rates,
 )
+from oddish.costs.recorder import WorkerBillingSpec
 
 __all__ = [
     "DEFAULT_RATES",
@@ -26,6 +27,7 @@ __all__ = [
     "RateRow",
     "RateSelection",
     "SpanResources",
+    "WorkerBillingSpec",
     "build_span_row",
     "close_span_values",
     "estimate_span_cost",

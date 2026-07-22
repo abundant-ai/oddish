@@ -1076,6 +1076,11 @@ class Settings(BaseSettings):
     # this is enabled.
     job_scoped_tokens_enabled: bool = False
 
+    # Record gross list-price estimates for Modal worker functions and Harbor
+    # sandboxes. Accounting is isolated from job execution and fails open while
+    # the corresponding migration rolls out.
+    modal_cost_tracking: bool = True
+
     # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
     # inference -- the bearer token returns 400 "Operation not allowed" and the
     # SigV4 keys are rejected -- so every Bedrock claude-code call fails. While

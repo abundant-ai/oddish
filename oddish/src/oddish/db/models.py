@@ -1349,6 +1349,8 @@ class ModalCostSpanModel(TimestampedMixin, Base):
     cpu_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
     mem_request_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
     mem_limit_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cpu_enforcement_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    mem_enforcement_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Modal billing name (post-normalization), e.g. "H100", "A100-80GB".
     gpu_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     gpu_count: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -27,6 +27,8 @@ def test_span_table_name_and_columns() -> None:
         "cpu_limit",
         "mem_request_mb",
         "mem_limit_mb",
+        "cpu_enforcement_mode",
+        "mem_enforcement_mode",
         "gpu_type",
         "gpu_count",
         "price_multiplier",

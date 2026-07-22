@@ -108,6 +108,8 @@ class SpanResources:
     price_multiplier: Decimal
     container_class: ContainerClass
     spec_source: str  # "pinned" | "override" | "modal_default" | "unknown"
+    cpu_enforcement_mode: str | None = None
+    mem_enforcement_mode: str | None = None
 
 
 # Modal billing names as they appear in the gpu:* skus.
@@ -369,6 +371,8 @@ def build_span_row(
         cpu_limit=resources.cpu_limit,
         mem_request_mb=resources.mem_request_mb,
         mem_limit_mb=resources.mem_limit_mb,
+        cpu_enforcement_mode=resources.cpu_enforcement_mode,
+        mem_enforcement_mode=resources.mem_enforcement_mode,
         gpu_type=resources.gpu_type,
         gpu_count=resources.gpu_count,
         price_multiplier=resources.price_multiplier,

@@ -61,6 +61,7 @@ from modal_app import (
 from backfill_github_id import backfill_github_id
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
+from oddish.costs.recorder import WorkerBillingSpec
 from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
@@ -120,7 +121,6 @@ if install_sandbox_analyzer_handler():
 
 # Register the Daytona-sandbox analyzer backend into core's client factory.
 # Import for the side effect; core runs every non-sandbox block without it.
-from api.services.blocks.analyzer import sandbox_llm_client as _sandbox_llm_client  # noqa: F401
 
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
@@ -246,6 +246,11 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
             modal_function_call_id=fc_id,
             post_success_hooks=_POST_SUCCESS_HOOKS,
             harbor_variant_id=harbor_variant_id,
+            worker_billing_spec=WorkerBillingSpec(
+                cpu_cores=WORKER_CPU,
+                memory_mb=WORKER_MEMORY_MB,
+                nonpreemptible=WORKER_NONPREEMPTIBLE,
+            ),
         )
         if jobs_processed == 0:
             console.print(
