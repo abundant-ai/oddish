@@ -80,7 +80,7 @@ async def test_run_cohort_via_blocks(monkeypatch):
     # Each block persists its raw stream to S3 + DB (best-effort, failure-isolated
     # in production). Stub both so this stays a hermetic wiring test with no real
     # S3/DB and no leaked client session.
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
 
     async def _noop(self, *a, **kw):
         return None
@@ -107,7 +107,7 @@ async def test_run_cohort_via_blocks(monkeypatch):
         }
     }
 
-    findings, sections = await run_cohort(
+    findings, sections, _by_model = await run_cohort(
         client,
         runtime,
         bucket="bad",

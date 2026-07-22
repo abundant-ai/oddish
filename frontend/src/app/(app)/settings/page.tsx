@@ -945,6 +945,9 @@ interface AlertPrefs {
   experiment_failed_enabled: boolean;
   trial_failed_enabled: boolean;
   qa_failed_enabled: boolean;
+  experiment_finished_enabled: boolean;
+  trial_finished_enabled: boolean;
+  task_finished_enabled: boolean;
   experiment_milestone_usd: number | null;
   trial_ping_usd: number | null;
   inherited_experiment_milestone_usd: number;
@@ -959,12 +962,12 @@ const ALERT_TOGGLES: {
   {
     key: "cost_milestone_enabled",
     label: "Expensive experiment",
-    description: "Each time one of your experiments passes a spend milestone.",
+    description: "An experiment's spend passes a milestone within 24 hours.",
   },
   {
     key: "expensive_trial_enabled",
     label: "Expensive trial",
-    description: "A single trial of yours costs more than your trial cutoff.",
+    description: "A trial finished within 24 hours costs more than your cutoff.",
   },
   {
     key: "experiment_failed_enabled",
@@ -980,6 +983,21 @@ const ALERT_TOGGLES: {
     key: "qa_failed_enabled",
     label: "QA failed",
     description: "A task's QA verdict came back bad.",
+  },
+  {
+    key: "experiment_finished_enabled",
+    label: "Experiment finished",
+    description: "All of an experiment's trials have finished running.",
+  },
+  {
+    key: "trial_finished_enabled",
+    label: "Trial finished",
+    description: "One of your trials finished running.",
+  },
+  {
+    key: "task_finished_enabled",
+    label: "Task finished",
+    description: "A task's QA verdict came back good.",
   },
 ];
 

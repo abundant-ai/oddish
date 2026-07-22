@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from oddish.config import settings
+from oddish.core.model_concurrency import (
+    load_effective_model_concurrency_limit,
+    load_effective_model_concurrency_limits,
+)
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.slots import acquire_queue_slot, release_queue_slot
 from oddish.workers.queue.worker_job_dispatcher import stamp_dispatch_stage
@@ -41,7 +44,7 @@ async def run_polling_worker(
     await run_dispatch_loop(
         InProcessDispatcher(worker_id_prefix="oss"),
         max_workers=max_workers,
-        concurrency_for=settings.get_model_concurrency,
+        concurrency_limits_for=load_effective_model_concurrency_limits,
         on_stage=stamp_dispatch_stage,
         fallback_interval=poll_interval,
     )
@@ -63,7 +66,7 @@ async def run_assigned_queue_worker(
     Returns the number of jobs processed.
     """
     worker_id = worker_id or f"{queue_key}-{uuid4().hex[:12]}"
-    limit = settings.get_model_concurrency(queue_key)
+    limit = await load_effective_model_concurrency_limit(queue_key)
     if limit <= 0:
         console.print(
             f"[dim]Queue limit is {limit} (queue_key={queue_key}), exiting[/dim]"

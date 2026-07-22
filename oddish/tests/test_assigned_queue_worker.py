@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.workers.queue import queue_manager
+
+
+def _limit(value):
+    async def load(queue_key):
+        return value
+
+    return load
 
 
 def test_assigned_queue_worker_acquires_drains_and_releases(monkeypatch) -> None:
@@ -28,9 +34,7 @@ def test_assigned_queue_worker_acquires_drains_and_releases(monkeypatch) -> None
     monkeypatch.setattr(queue_manager, "release_queue_slot", _release)
     monkeypatch.setattr(queue_manager, "drain_worker_jobs", _drain)
     monkeypatch.setattr(
-        queue_manager,
-        "settings",
-        types.SimpleNamespace(get_model_concurrency=lambda qk: 5),
+        queue_manager, "load_effective_model_concurrency_limit", _limit(5)
     )
 
     processed = asyncio.run(queue_manager.run_assigned_queue_worker("gpt-4o"))
@@ -45,9 +49,7 @@ def test_assigned_queue_worker_acquires_drains_and_releases(monkeypatch) -> None
 
 def test_assigned_queue_worker_zero_limit_skips(monkeypatch) -> None:
     monkeypatch.setattr(
-        queue_manager,
-        "settings",
-        types.SimpleNamespace(get_model_concurrency=lambda qk: 0),
+        queue_manager, "load_effective_model_concurrency_limit", _limit(0)
     )
 
     async def _boom(**kwargs):  # pragma: no cover - must not be called
@@ -73,9 +75,7 @@ def test_assigned_queue_worker_releases_slot_even_on_drain_error(monkeypatch) ->
     monkeypatch.setattr(queue_manager, "release_queue_slot", _release)
     monkeypatch.setattr(queue_manager, "drain_worker_jobs", _drain)
     monkeypatch.setattr(
-        queue_manager,
-        "settings",
-        types.SimpleNamespace(get_model_concurrency=lambda qk: 1),
+        queue_manager, "load_effective_model_concurrency_limit", _limit(1)
     )
 
     try:
@@ -91,8 +91,6 @@ def test_assigned_queue_worker_no_slot_available(monkeypatch) -> None:
 
     monkeypatch.setattr(queue_manager, "acquire_queue_slot", _acquire)
     monkeypatch.setattr(
-        queue_manager,
-        "settings",
-        types.SimpleNamespace(get_model_concurrency=lambda qk: 1),
+        queue_manager, "load_effective_model_concurrency_limit", _limit(1)
     )
     assert asyncio.run(queue_manager.run_assigned_queue_worker("x")) == 0

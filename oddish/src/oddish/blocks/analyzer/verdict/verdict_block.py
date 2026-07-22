@@ -8,8 +8,8 @@ from oddish.analyze.models import (
     TrialClassification,
 )
 
-from api.services.blocks.analyzer.verdict import verdict_prompts as vp
-from api.services.blocks.block import Block
+from oddish.blocks.analyzer.verdict import verdict_prompts as vp
+from oddish.blocks.block import Block
 
 
 class _EmptyInput(BaseModel):
@@ -32,9 +32,7 @@ class VerdictBlock(Block):
     prompt -- but here that fallback would silently become the whole judge
     prompt, and the judge would return a confident-looking verdict about
     nothing, persisted as SUCCESS. build_prompt() is overridden to detect
-    that sentinel and raise instead, so a raising build_verdict_prompt fails
-    this path exactly as loudly as it fails the legacy path (which calls it
-    outside any try/except)."""
+    that sentinel and raise instead."""
 
     output_schema = TaskVerdictModel
 

@@ -11,8 +11,6 @@ from harbor.models.environment_type import EnvironmentType
 from oddish.config import settings
 from oddish.workers.harbor import runner as harbor_runner
 
-AGENT_TOOLS_IMAGE = "ghcr.io/org/harbor-agent-tools:tag"
-
 
 def _run_and_capture_env_kwargs(environment: EnvironmentType, tmp_path: Path) -> dict:
     """Run run_harbor_trial_async with Harbor's Job faked out, returning the
@@ -76,9 +74,13 @@ def _run_and_capture_env_kwargs(environment: EnvironmentType, tmp_path: Path) ->
 
 
 def test_modal_env_kwargs_unchanged_passthrough(tmp_path: Path) -> None:
-    # On Modal the kwargs are passed through untouched (behavior-preserving).
+    # Modal keeps caller kwargs and adds Oddish's hosted sandbox invariants.
     kwargs = _run_and_capture_env_kwargs(EnvironmentType.MODAL, tmp_path)
-    assert kwargs == {"keep": "value"}
+    assert kwargs == {
+        "keep": "value",
+        "app_name": "oddish-trials",
+        "modal_exact_gpu_type": True,
+    }
 
 
 def test_daytona_env_kwargs_get_autostop_defaults(tmp_path: Path) -> None:

@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from decimal import Decimal
@@ -12,6 +13,8 @@ from harbor.agents.utils import PROVIDER_KEYS
 from harbor.llms.utils import split_provider_model_name
 from harbor.models.agent.name import AgentName
 from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
+logger = logging.getLogger(__name__)
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
@@ -143,7 +146,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-HARBOR_DEFAULT_SHA = "555fc203d51ef97d937703654e7d03b29cba4a02"
+# Pin of abundant-ai/harbor@main (upstream-style NetworkPolicy; no fork Modal CIDR stack).
+HARBOR_DEFAULT_SHA = "d070837196905505cd1944099fb93e1b9ad80fd2"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -575,6 +579,54 @@ def to_meta_model_id(model: str | None) -> str | None:
     return f"{META_PROVIDER}/{meta_bare_model_id(model)}"
 
 
+# Direct Anthropic API via a separate HDO key. Opt-in with an explicit
+# ``anthropic-hdo/<model>`` prefix so Claude trials can use
+# ``ANTHROPIC_HDO_API_KEY`` (injected as ``ANTHROPIC_API_KEY``) instead of the
+# default Bedrock / platform Anthropic route. Prefix-only: bare Claude ids keep
+# their existing Bedrock/force-direct path.
+ANTHROPIC_HDO_PROVIDER = "anthropic-hdo"
+_ANTHROPIC_HDO_PROVIDER_PREFIXES: frozenset[str] = frozenset({"anthropic-hdo"})
+
+
+def is_anthropic_hdo_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects the Anthropic HDO key route."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_HDO_PROVIDER_PREFIXES
+    )
+
+
+def anthropic_hdo_bare_model_id(model: str) -> str:
+    """Strip the ``anthropic-hdo/`` prefix, returning the bare Anthropic model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_HDO_PROVIDER_PREFIXES
+    ):
+        return str(bare).strip()
+    return raw
+
+
+def to_anthropic_hdo_model_id(model: str | None) -> str | None:
+    """Canonicalize an HDO Claude reference to ``anthropic-hdo/<bare-id>``.
+
+    Keeps HDO trials off the Bedrock provider/queue bucket so they get their
+    own concurrency key and so the Harbor runner can overwrite
+    ``ANTHROPIC_API_KEY`` with ``ANTHROPIC_HDO_API_KEY``.
+    """
+    if not is_anthropic_hdo_model(model):
+        return model
+    assert model is not None
+    return f"{ANTHROPIC_HDO_PROVIDER}/{anthropic_hdo_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -876,6 +928,8 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "grok": XAI_PROVIDER,
     # Meta OpenAI-compatible relay for mini-swe-agent evals.
     "meta": META_PROVIDER,
+    # Direct Anthropic API with the separate HDO key (ANTHROPIC_HDO_API_KEY).
+    "anthropic-hdo": ANTHROPIC_HDO_PROVIDER,
 }
 
 
@@ -1102,22 +1156,17 @@ class Settings(BaseSettings):
     # branching in either.
     analyzer_sandbox_enabled: bool = True
 
-    # Switch for the AnalyzerBlock-backed verdict-synthesis path. Gates
-    # registration, not handler internals, so unsetting it reverts task QA to
-    # the legacy compute_task_verdict path with no branching in either.
-    verdict_via_analyzer_block: bool = False
+    # AnalyzerBlock-backed pre-trial QA audit (a task-source audit run before
+    # trials). Off by default: verdict is now always-on through AnalyzerBlock,
+    # but the pre-trial sandbox path (installs the oddish CLI, runs `oddish
+    # pull`) is unproven until the Python-3.13 sandbox smoke test passes, so it
+    # stays gated. When on, backend must have registered the hosted synth via
+    # register_pre_trial_synth(); otherwise it is a no-op.
+    pre_trial_enabled: bool = False
 
-    # AnalyzerBlock-backed pre-trial QA audit. Gates registration only; off ->
-    # pre-trial analysis does not run and no task columns are written.
-    pre_trial_via_analyzer_block: bool = False
-
-    # Single source of truth for the pre-trial-synthesis timeout: oddish's
-    # qa_handler.py passes this to pre_trial_synth_fn, and backend's
-    # pre_trial_synth.py falls back to it (`timeout or settings.pre_trial_timeout`)
-    # when called with a falsy timeout. oddish/ can't import backend/, so this
-    # lives here rather than as a shared constant.
+    # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
+    # import backend/, so this lives here rather than as a shared constant.
     pre_trial_timeout: float = 180.0
-
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``
@@ -1177,12 +1226,15 @@ class Settings(BaseSettings):
     # ODDISH_GATE_LLM_ON_BASELINES; default off leaves every path unchanged.
     gate_llm_on_baselines: bool = False
 
-    # Dynamic per-model concurrency controller (default OFF; see
-    # workers.queue.concurrency_controller). When enabled, the reconciler
-    # recomputes a per-queue advisory limit each cycle and the dispatcher reads
-    # it (decaying to the static limit when stale). Off => today's behavior.
+    # DEPRECATED (default OFF; see workers.queue.concurrency_controller). The
+    # self-tuning advisory controller predates database-backed admin overrides,
+    # which are now the supported way to change a per-model limit at runtime:
+    # set it in the Queue Health admin card (PUT /admin/concurrency), which both
+    # the dispatcher plan and the worker slot lease honor immediately. Leave this
+    # OFF; enabling it logs a deprecation warning and the path may be removed.
     dynamic_model_concurrency: bool = False
-    # Feed-forward provider rate-limit config: a quota-BUCKET table keyed by
+    # DEPRECATED: feed-forward provider rate-limit config consumed only by the
+    # deprecated dynamic controller above. A quota-BUCKET table keyed by
     # bucket_id (rpm / tpm / headroom — the published provider limits) plus a
     # MANY-to-one queue_key -> bucket_id map. Operator-owned JSON via
     # ODDISH_PROVIDER_RATE_LIMITS / ODDISH_QUEUE_KEY_BUCKETS; the controller
@@ -1300,6 +1352,13 @@ class Settings(BaseSettings):
     analyzer_anthropic_api_key: str | None = Field(
         default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
     )
+    # Separate Anthropic key for ``anthropic-hdo/<model>`` trials. Injected as
+    # ``ANTHROPIC_API_KEY`` (overwriting the platform key) so Claude Code talks
+    # to the direct Anthropic API with this credential instead of Bedrock /
+    # ``ANTHROPIC_API_KEY``.
+    anthropic_hdo_api_key: str | None = Field(
+        default=None, alias="ANTHROPIC_HDO_API_KEY"
+    )
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
@@ -1394,6 +1453,20 @@ class Settings(BaseSettings):
         )
         return self
 
+    @model_validator(mode="after")
+    def _warn_deprecated_dynamic_concurrency(self) -> "Settings":
+        # Soft-deprecation: fires once per process (settings are a singleton) so
+        # operators still running the self-tuning controller are steered to the
+        # database-backed admin override that replaced it.
+        if self.dynamic_model_concurrency:
+            logger.warning(
+                "ODDISH_DYNAMIC_MODEL_CONCURRENCY is deprecated: the self-tuning "
+                "concurrency controller has been superseded by database-backed "
+                "admin overrides (PUT /admin/concurrency, Queue Health card). "
+                "Set per-model limits there instead; this flag may be removed."
+            )
+        return self
+
     @staticmethod
     def _normalize_azure_openai_deployments(
         deployments: dict[str, str],
@@ -1474,6 +1547,10 @@ class Settings(BaseSettings):
             return to_minimax_model_id(cleaned)
         if is_moonshot_model(cleaned):
             return to_moonshot_model_id(cleaned)
+        # Explicit ``anthropic-hdo/`` keeps Claude on the direct Anthropic API
+        # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
+        if is_anthropic_hdo_model(cleaned):
+            return to_anthropic_hdo_model_id(cleaned)
 
         if strict:
             return to_bedrock_model_id(cleaned)
