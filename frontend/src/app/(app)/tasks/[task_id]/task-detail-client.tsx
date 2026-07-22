@@ -23,6 +23,7 @@ import {
 import { TagEditor } from "@/components/tag-editor";
 import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ProbeLaunchButton } from "@/components/probe-launch-button";
+import { ActionItemsPanel } from "@/components/action-items-panel";
 import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -872,6 +873,12 @@ export function TaskDetailClient({
     return out;
   }, [trialGroups]);
 
+  const actionItems = useMemo(() => {
+    const pre = task?.pre_trial_analysis?.items ?? [];
+    const post = (task?.trials ?? []).flatMap((t) => t.analysis?.action_items ?? []);
+    return [...pre, ...post];
+  }, [task]);
+
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [drawerShowTask, setDrawerShowTask] = useState(true);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
@@ -906,8 +913,6 @@ export function TaskDetailClient({
 
   // Deep-link a file/line into the task files drawer (e.g. from action
   // items) and mirror the target into the URL for shareable links.
-  // Not yet called from this file — action items (Task 4) will invoke it.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const openFileAtLine = useCallback(
     (file: string, line: number | null) => {
       setFileTarget({ file, line });
@@ -1230,6 +1235,8 @@ export function TaskDetailClient({
             />
           }
         />
+
+        <ActionItemsPanel items={actionItems} onOpenFile={openFileAtLine} />
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
