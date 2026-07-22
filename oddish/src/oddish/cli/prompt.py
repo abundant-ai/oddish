@@ -50,7 +50,7 @@ def get_prompt(
     json_output: Annotated[bool, typer.Option("--json")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
-    """Print a prompt's content (active version by default)."""
+    """Print a prompt's content (latest version by default)."""
     url = _resolve(api_url)
     params = {"version": version} if version is not None else {}
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
