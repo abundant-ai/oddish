@@ -578,6 +578,9 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     async def fake_claim(_task_id):
         return version.id
 
+    async def fake_store_allowed(_session, _worker_job_id, _task_id, _version_id):
+        return True
+
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
     monkeypatch.setattr(
@@ -587,6 +590,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     monkeypatch.setattr(qa_handler.settings, "pre_trial_enabled", True)
     monkeypatch.setattr(qa_handler, "_pre_trial_synth_fn", stub_pre_trial_synth)
     monkeypatch.setattr(qa_handler, "_claim_pre_trial_version", fake_claim)
+    monkeypatch.setattr(qa_handler, "_pre_trial_store_allowed", fake_store_allowed)
 
     await qa_handler.run_task_qa_job("task-9c", queue_key="verdict")
 
@@ -659,6 +663,9 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def fake_claim(_task_id):
         return version.id
 
+    async def fake_store_allowed(_session, _worker_job_id, _task_id, _version_id):
+        return True
+
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
     monkeypatch.setattr(
@@ -668,12 +675,98 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     monkeypatch.setattr(qa_handler.settings, "pre_trial_enabled", True)
     monkeypatch.setattr(qa_handler, "_pre_trial_synth_fn", boom_pre_trial_synth)
     monkeypatch.setattr(qa_handler, "_claim_pre_trial_version", fake_claim)
+    monkeypatch.setattr(qa_handler, "_pre_trial_store_allowed", fake_store_allowed)
 
     await qa_handler.run_task_qa_job("task-9d", queue_key="verdict")
 
     assert version.pre_trial_status == VerdictStatus.FAILED
     assert "sandbox exploded" in version.pre_trial_error
     # Verdict path is unaffected by the pre-trial crash.
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.status == TaskStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
+    """When the store gate vetoes persistence (job cancelled mid-audit, or a
+    new upload made the audited snapshot stale), the RUNNING claim must be
+    released -- not left to wait out the lease -- and the verdict path must
+    be unaffected."""
+    task = SimpleNamespace(
+        id="task-9e",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    version = SimpleNamespace(
+        id="task-9e-v1",
+        task_id="task-9e",
+        pre_trial=None,
+        pre_trial_status=VerdictStatus.RUNNING,  # as _claim_pre_trial_version left it
+        pre_trial_started_at=object(),
+        pre_trial_error=None,
+        pre_trial_finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="task-9e-0",
+        analysis_status=AnalysisStatus.SUCCESS,
+        analysis={"classification": "GOOD_SUCCESS", "subtype": "Clean"},
+    )
+    session = _QASession(task=task, trials=[trial], task_version=version)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return [(trial.id, AnalysisStatus.SUCCESS)]
+
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue="",
+            reasoning="fine",
+            recommendations=[],
+            task_problem_count=0,
+            agent_problem_count=0,
+            success_count=1,
+            harness_error_count=0,
+        )
+
+    async def stub_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
+        return []
+
+    async def fake_claim(_task_id):
+        return version.id
+
+    async def veto_store(_session, _worker_job_id, _task_id, _version_id):
+        return False
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler.settings, "pre_trial_enabled", True)
+    monkeypatch.setattr(qa_handler, "_pre_trial_synth_fn", stub_pre_trial_synth)
+    monkeypatch.setattr(qa_handler, "_claim_pre_trial_version", fake_claim)
+    monkeypatch.setattr(qa_handler, "_pre_trial_store_allowed", veto_store)
+
+    await qa_handler.run_task_qa_job("task-9e", queue_key="verdict")
+
+    # Claim released: unclaimed again, nothing persisted.
+    assert version.pre_trial_status is None
+    assert version.pre_trial_started_at is None
+    assert version.pre_trial is None
+    assert version.pre_trial_finished_at is None
+    # Verdict path is unaffected.
     assert task.verdict_status == VerdictStatus.SUCCESS
     assert task.status == TaskStatus.COMPLETED
 

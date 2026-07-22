@@ -48,10 +48,12 @@ async def synthesize_task_pre_trial(
     source, then runs the audit through an AnalyzerBlock (the same runner the
     verdict path uses). ``task_version_id`` is the version being audited (the
     task's current version, claimed by the caller); the sandbox pulls the
-    task's current source, so the two match. Never completes the task and
-    never touches verdict state -- that boundary lives in
-    ``sync_pre_trial_to_task_version``, which the caller (``run_task_qa_job``)
-    invokes with these items.
+    task's *current* source, so the two match unless a new upload lands
+    mid-audit -- the caller's store gate (``_pre_trial_store_allowed``)
+    detects that and discards the result rather than persisting findings
+    against the wrong snapshot. Never completes the task and never touches
+    verdict state -- that boundary lives in ``sync_pre_trial_to_task_version``,
+    which the caller (``run_task_qa_job``) invokes with these items.
     """
     async with get_session() as session:
         _, ver = await get_prompt_core(session, "pre_trial_qa")

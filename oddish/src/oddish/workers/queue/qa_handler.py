@@ -155,15 +155,25 @@ async def _worker_job_is_running(
     return status == WorkerJobStatus.RUNNING
 
 
+# Lease slack on top of settings.pre_trial_timeout before a RUNNING claim is
+# considered abandoned: sandbox provisioning + CLI install happen outside the
+# block-run timeout, so the lease must outlive both.
+PRE_TRIAL_LEASE_MARGIN_SECONDS = 900
+
+
 async def _claim_pre_trial_version(task_id: str) -> str | None:
     """Resolve the task's current version and claim it for the pre-trial audit.
 
     Pre-trial runs once per task *version* (each version is a distinct source
     snapshot), so a sweep-append QA re-run must not re-audit unchanged source:
     a version whose ``pre_trial_status`` is already terminal is skipped. A
-    stale RUNNING (worker died mid-audit) is reclaimed rather than wedging the
-    version forever. Returns None to skip: no version rows (legacy upload),
-    version gone, or already audited.
+    RUNNING claim within its lease is treated as an audit in flight (QA jobs
+    are serialized per queue key today; the lease keeps a concurrent worker
+    from doubling the sandbox spend if that ever changes), while a RUNNING
+    claim past its lease (worker died mid-audit, or a cancelled job never
+    released) is reclaimed rather than wedging the version forever. Returns
+    None to skip: no version rows (legacy upload), version gone, already
+    audited, or an audit in flight.
     """
     async with get_session() as session:
         version_id = await session.scalar(
@@ -178,9 +188,48 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
             return None
         if version.pre_trial_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
             return None
+        if (
+            version.pre_trial_status == VerdictStatus.RUNNING
+            and version.pre_trial_started_at is not None
+            and (utcnow() - version.pre_trial_started_at).total_seconds()
+            < settings.pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS
+        ):
+            return None
         version.pre_trial_status = VerdictStatus.RUNNING
         version.pre_trial_started_at = utcnow()
     return str(version_id)
+
+
+async def _release_pre_trial_claim(task_version_id: str) -> None:
+    """Roll a claimed-but-unpersisted audit back to unclaimed so a later QA
+    run redoes it promptly (cancelled job, or the task's current version moved
+    on mid-audit) instead of waiting out the RUNNING lease. Only a still-
+    RUNNING claim is reset; a terminal status written by someone else wins.
+    """
+    async with get_session() as session:
+        version = await session.get(
+            TaskVersionModel, task_version_id, with_for_update=True
+        )
+        if version is not None and version.pre_trial_status == VerdictStatus.RUNNING:
+            version.pre_trial_status = None
+            version.pre_trial_started_at = None
+
+
+async def _pre_trial_store_allowed(
+    session, worker_job_id: str | None, task_id: str, task_version_id: str
+) -> bool:
+    """Gate for persisting a pre-trial result: the QA job must still be
+    running AND the audited version must still be the task's current version.
+    The sandbox agent pulls the task's *current* source, so if a new upload
+    landed mid-audit the findings describe the new snapshot, not the claimed
+    row -- discard them and let the next QA run audit the new version.
+    """
+    if not await _worker_job_is_running(session, worker_job_id):
+        return False
+    current = await session.scalar(
+        select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+    )
+    return current == task_version_id
 
 
 def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
@@ -307,6 +356,7 @@ async def run_task_qa_job(
         # touching any pre_trial column. A pre-trial failure is swallowed here
         # so it can never block the verdict path.
         pre_trial_version_id: str | None = None
+        pre_trial_stored: str | None = None
         try:
             if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
                 pre_trial_version_id = await _claim_pre_trial_version(task_id)
@@ -318,14 +368,19 @@ async def run_task_qa_job(
                     settings.pre_trial_timeout,
                 )
                 if pre_trial_items is not None:
-                    await sync_pre_trial_to_task_version(
+                    pre_trial_stored = await sync_pre_trial_to_task_version(
                         pre_trial_version_id,
                         payload=build_pre_trial_payload(pre_trial_items),
                         error=None,
-                        should_store=lambda session: _worker_job_is_running(
-                            session, worker_job_id
+                        should_store=lambda session: _pre_trial_store_allowed(
+                            session, worker_job_id, task_id, pre_trial_version_id
                         ),
                     )
+                # A claim that persisted nothing (cancelled job, or a new
+                # upload made the audit describe a different snapshot) is
+                # released so the next QA run redoes it promptly.
+                if pre_trial_stored is None:
+                    await _release_pre_trial_claim(pre_trial_version_id)
         except Exception as exc:  # noqa: BLE001
             console.print(
                 f"[red]Pre-trial synthesis failed for {task_id} "
@@ -339,14 +394,16 @@ async def run_task_qa_job(
             # FAILED for what is really just a pre-trial write hiccup).
             try:
                 if pre_trial_version_id is not None:
-                    await sync_pre_trial_to_task_version(
+                    pre_trial_stored = await sync_pre_trial_to_task_version(
                         pre_trial_version_id,
                         payload=None,
                         error=exc,
-                        should_store=lambda session: _worker_job_is_running(
-                            session, worker_job_id
+                        should_store=lambda session: _pre_trial_store_allowed(
+                            session, worker_job_id, task_id, pre_trial_version_id
                         ),
                     )
+                    if pre_trial_stored is None:
+                        await _release_pre_trial_claim(pre_trial_version_id)
             except Exception as sync_exc:  # noqa: BLE001
                 console.print(
                     f"[red]Failed to record pre-trial failure for {task_id}: "

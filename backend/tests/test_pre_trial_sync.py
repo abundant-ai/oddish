@@ -1,12 +1,18 @@
 import uuid
+from datetime import timedelta
 
 import pytest
 
 from oddish.analyze.models import ActionItem, ActionItemSource, ActionTier, Dimension, ProblemType
 from oddish.core.verdict_sync import build_pre_trial_payload, sync_pre_trial_to_task_version
 from oddish.db import get_session
-from oddish.db.models import JobStatus, TaskModel, TaskStatus, TaskVersionModel
-from oddish.workers.queue.qa_handler import _claim_pre_trial_version
+from oddish.db.models import JobStatus, TaskModel, TaskStatus, TaskVersionModel, utcnow
+from oddish.workers.queue.qa_handler import (
+    PRE_TRIAL_LEASE_MARGIN_SECONDS,
+    _claim_pre_trial_version,
+    _pre_trial_store_allowed,
+    _release_pre_trial_claim,
+)
 
 
 def _item():
@@ -149,15 +155,126 @@ async def test_claim_skips_already_audited_version(terminal):
 
 
 @pytest.mark.asyncio
-async def test_claim_reclaims_stale_running_version():
-    # A worker that died mid-audit leaves RUNNING; the next QA run must be
-    # able to reclaim rather than wedge the version forever.
+async def test_claim_skips_running_version_within_lease():
+    # An audit in flight (RUNNING, fresh started_at) must not be double-run:
+    # a second claimer backs off instead of doubling the sandbox spend.
     task_id, version_id = await _make_task_with_version()
     try:
         async with get_session() as session:
             version = await session.get(TaskVersionModel, version_id)
             version.pre_trial_status = JobStatus.RUNNING
+            version.pre_trial_started_at = utcnow()
+            await session.commit()
+        assert await _claim_pre_trial_version(task_id) is None
+    finally:
+        await _cleanup(task_id)
+
+
+@pytest.mark.asyncio
+async def test_claim_reclaims_stale_running_version():
+    # A worker that died mid-audit leaves RUNNING past its lease; the next QA
+    # run must be able to reclaim rather than wedge the version forever.
+    task_id, version_id = await _make_task_with_version()
+    try:
+        from oddish.config import settings
+
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            version.pre_trial_status = JobStatus.RUNNING
+            version.pre_trial_started_at = utcnow() - timedelta(
+                seconds=settings.pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS + 60
+            )
             await session.commit()
         assert await _claim_pre_trial_version(task_id) == version_id
+    finally:
+        await _cleanup(task_id)
+
+
+@pytest.mark.asyncio
+async def test_release_resets_running_claim_only():
+    task_id, version_id = await _make_task_with_version()
+    try:
+        assert await _claim_pre_trial_version(task_id) == version_id
+        await _release_pre_trial_claim(version_id)
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            assert version.pre_trial_status is None
+            assert version.pre_trial_started_at is None
+
+        # A terminal status written by someone else must win over a release.
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            version.pre_trial_status = JobStatus.SUCCESS
+            await session.commit()
+        await _release_pre_trial_claim(version_id)
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            assert version.pre_trial_status == JobStatus.SUCCESS
+    finally:
+        await _cleanup(task_id)
+
+
+@pytest.mark.asyncio
+async def test_store_vetoed_when_version_no_longer_current():
+    # A new upload mid-audit means the pulled source belongs to the NEW
+    # version; findings must not be persisted against the stale claimed row.
+    task_id, version_id = await _make_task_with_version()
+    try:
+        v2_id = f"{task_id}-v2"
+        async with get_session() as session:
+            session.add(
+                TaskVersionModel(
+                    id=v2_id, task_id=task_id, version=2,
+                    task_path="/tmp/does-not-matter",
+                )
+            )
+            await session.flush()
+            task = await session.get(TaskModel, task_id)
+            task.current_version_id = v2_id
+            await session.commit()
+
+        async with get_session() as session:
+            assert (
+                await _pre_trial_store_allowed(session, None, task_id, version_id)
+                is False
+            )
+            assert (
+                await _pre_trial_store_allowed(session, None, task_id, v2_id)
+                is True
+            )
+
+        stored = await sync_pre_trial_to_task_version(
+            version_id,
+            payload=build_pre_trial_payload([_item()]),
+            error=None,
+            should_store=lambda s: _pre_trial_store_allowed(
+                s, None, task_id, version_id
+            ),
+        )
+        assert stored is None
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            assert version.pre_trial is None
+            assert version.pre_trial_status is None
+    finally:
+        await _cleanup(task_id)
+
+
+@pytest.mark.asyncio
+async def test_failed_sync_clears_payload():
+    # A payload must only ever be paired with SUCCESS.
+    task_id, version_id = await _make_task_with_version()
+    try:
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            version.pre_trial = {"items": [{"stale": True}]}
+            await session.commit()
+        await sync_pre_trial_to_task_version(
+            version_id, payload=None, error=RuntimeError("boom")
+        )
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            assert version.pre_trial_status == JobStatus.FAILED
+            assert version.pre_trial is None
     finally:
         await _cleanup(task_id)

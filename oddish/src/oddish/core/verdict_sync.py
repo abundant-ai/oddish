@@ -107,28 +107,36 @@ async def sync_pre_trial_to_task_version(
     payload: dict | None,
     error: BaseException | str | None,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
-) -> None:
+) -> str | None:
     """Write the pre-trial columns on the audited task version. Unlike
     :func:`sync_verdict_to_task`, this never completes the task and never
     touches a verdict column -- pre-trial is a per-version source audit that
     runs independently of trial classification.
+
+    Returns the terminal ``VerdictStatus`` value written, or ``None`` when
+    the write was skipped (version gone, or ``should_store`` vetoed it) so
+    the caller can release its claim on the version.
     """
     async with get_session() as session:
         version = await session.get(
             TaskVersionModel, task_version_id, with_for_update=True
         )
         if version is None:
-            return
+            return None
 
         if should_store is not None and not await should_store(session):
-            return
+            return None
 
         if error is None:
             version.pre_trial = payload
             version.pre_trial_status = VerdictStatus.SUCCESS
             version.pre_trial_error = None
         else:
+            # Cleared so a payload is only ever paired with SUCCESS. The claim
+            # makes SUCCESS terminal, so nothing good is being thrown away.
+            version.pre_trial = None
             version.pre_trial_status = VerdictStatus.FAILED
             version.pre_trial_error = str(error)
 
         version.pre_trial_finished_at = utcnow()
+        return version.pre_trial_status.value
