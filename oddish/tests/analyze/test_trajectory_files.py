@@ -30,3 +30,19 @@ def test_extracts_reads_writes_and_commands(tmp_path):
 
 def test_missing_log_returns_empty(tmp_path):
     assert parse_trajectory_file_access(tmp_path) == []
+
+
+def test_skips_malformed_line_and_parses_the_rest(tmp_path):
+    lines = [
+        json.dumps(_assistant("Read", {"file_path": "verifier.py"})),
+        "not valid json {{{",
+        json.dumps(_assistant("Edit", {"file_path": "solution.py"})),
+    ]
+    (tmp_path / "claude-code.txt").write_text("\n".join(lines))
+
+    steps = parse_trajectory_file_access(tmp_path)
+
+    assert len(steps) == 2
+    assert steps[0].files_read == ["verifier.py"]
+    assert steps[1].files_written == ["solution.py"]
+    assert [s.step_index for s in steps] == [1, 2]

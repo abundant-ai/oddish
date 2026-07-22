@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Awaitable, Callable
+
+from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
 from oddish.db import TaskModel, TaskStatus, TrialModel, VerdictStatus, get_session, utcnow
+
+logger = logging.getLogger(__name__)
 
 
 def build_verdict_payload(
@@ -128,13 +133,15 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
     """Stamp exploited=true (+ evidence) onto ``task.pre_trial`` items whose id
     was exploited in any trial. The "doubly note" elevation. Idempotent.
     """
-    from sqlalchemy import select
-
     async with get_session() as session:
         task = await session.get(TaskModel, task_id, with_for_update=True)
         if task is None or not task.pre_trial:
             return
 
+        # Intentionally reads ALL trials, unlike the verdict path which filters
+        # ``superseded_by_trial_id.is_(None)``: a superseded/retried trial that
+        # exploited the weakness is still valid evidence the task-source flaw is
+        # exploitable. This is a task-level audit, not the current-trial verdict.
         trials = (
             await session.execute(select(TrialModel).where(TrialModel.task_id == task_id))
         ).scalars().all()
@@ -144,6 +151,15 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
             for a in (trial.analysis or {}).get("exploitation", []):
                 if a.get("exploited") and a.get("links_to"):
                     exploited.setdefault(a["links_to"], a.get("exploit_evidence") or "")
+
+        known_ids = {item.get("id") for item in task.pre_trial.get("items", [])}
+        unmatched = sorted(set(exploited) - known_ids)
+        if unmatched:
+            logger.warning(
+                "task %s: exploited links_to id(s) %s did not match any pre_trial item id",
+                task_id,
+                unmatched,
+            )
 
         # Build fresh item dicts rather than mutating in place: the loaded
         # ``task.pre_trial`` dict is the very object SQLAlchemy diffs the

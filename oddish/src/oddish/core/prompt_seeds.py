@@ -24,6 +24,11 @@ PROMPT_SEEDS: dict[str, tuple[str, str]] = {
         "Pre-trial QA auditor: verifier completeness, oracle correctness, info leakage.",
         _load("pre_trial_qa.v1.txt"),
     ),
+    # NOTE: seeded for the registry, but not currently wired up -- the live
+    # classifier (analyze/classifier.py) sends the post-trial instructions
+    # inlined in analyze/classify_prompt.txt, not this registry entry.
+    # Editing this key's content via the registry has no runtime effect
+    # until the classifier is switched to fetch from the registry.
     "post_trial_qa": (
         "Post-trial QA: exploited/causal assessment + new trajectory action items.",
         _load("post_trial_qa.v1.txt"),

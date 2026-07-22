@@ -135,7 +135,9 @@ async def classify_trial_and_store(
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
-        pre_trial_items = (task.pre_trial or {}).get("items") if task.pre_trial else None
+        pre_trial_items = (
+            (task.pre_trial or {}).get("items") if task.pre_trial else None
+        ) or None
         # Probe trials carry the operator directive in harbor_config; their
         # analysis is the shared probe_summary, not the generic classifier.
         trial_harbor_config = trial.harbor_config or {}
@@ -221,7 +223,7 @@ async def classify_trial_and_store(
 
             file_access = [
                 fa.__dict__ for fa in parse_trajectory_file_access(trial_dir_to_use)
-            ]
+            ] or None
 
             console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
             classification = await classifier.classify_trial(

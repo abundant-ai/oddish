@@ -128,7 +128,7 @@ def _write_qa_context(
         return None, None, None
 
     qa_context_dir = trial_dir / ".qa_context"
-    qa_context_dir.mkdir(exist_ok=True)
+    qa_context_dir.mkdir(parents=True, exist_ok=True)
 
     pre_trial_context = None
     if pre_trial_items is not None:
