@@ -64,12 +64,12 @@ def test_default_sha_matches_uv_lock_pin():
 
 def test_probe_harbor_ref_matches_pyproject_pin():
     # The probe fetches harbor from ``harbor_source_ref``; it must track the same
-    # branch the dependency is pinned to, or probe trials run different harbor code
+    # revision the dependency is pinned to, or probe trials run different harbor code
     # than the trials being probed. Derived from pyproject so the two are checked
     # to move together whenever the pin is re-pointed.
     with open("pyproject.toml", "rb") as fh:
         harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
-    assert Settings().harbor_source_ref == harbor_pin["branch"]
+    assert Settings().harbor_source_ref == harbor_pin["rev"]
 
 
 def test_pyproject_default_source_matches_config():

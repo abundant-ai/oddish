@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from typing import Any, override
+from typing import Any
 
 from harbor.agents.installed.gemini_cli import GeminiCli
 from harbor.environments.base import BaseEnvironment
@@ -26,7 +26,6 @@ class OddishGeminiCli(GeminiCli):
         self._oddish_disable_web_tools = disable_web_tools
         super().__init__(*args, **kwargs)
 
-    @override
     async def install(self, environment: BaseEnvironment) -> None:
         await super().install(environment)
         if not self._oddish_disable_web_tools:
@@ -45,7 +44,6 @@ class OddishGeminiCli(GeminiCli):
             ),
         )
 
-    @override
     def _build_settings_config(
         self,
         model: str | None = None,
