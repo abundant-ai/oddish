@@ -40,8 +40,12 @@ _SQL_DEFAULT_TABLES = (
 )
 _SQL_ALLOWED_SCHEMAS = {None, "public", "information_schema"}
 _SQL_ALLOWED_STMTS = {"RawStmt", "SelectStmt", "ExplainStmt", "VariableShowStmt"}
-# Statement/clause node keys that mean "this is not a pure read".
-_SQL_WRITE_NODES = {"intoClause", "lockingClause"}
+# Node keys that mean "not a pure read": SELECT INTO / locking, and the XML /
+# table-function machinery (xmltable, XMLPARSE/XMLSERIALIZE, json_table) that a
+# cost tool never needs and that has been an XXE/file-read vector.
+_SQL_FORBIDDEN_NODES = {
+    "intoClause", "lockingClause", "XmlExpr", "XmlSerialize", "RangeTableFunc",
+}
 _SQL_DANGEROUS_FUNCS = {
     "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file",
     "pg_ls_waldir", "pg_ls_logdir", "lo_export", "lo_import", "lo_get",
@@ -49,7 +53,8 @@ _SQL_DANGEROUS_FUNCS = {
     "dblink_connect_u", "set_config", "pg_sleep", "pg_sleep_for",
     "pg_sleep_until", "pg_terminate_backend", "pg_cancel_backend",
     "pg_reload_conf", "pg_read_server_files", "pg_logfile_rotate",
-    "query_to_xml", "copy",
+    "xpath", "xpath_exists", "xmltable", "query_to_xml", "table_to_xml",
+    "database_to_xml", "schema_to_xml", "cursor_to_xml", "copy",
 }
 
 
@@ -320,7 +325,7 @@ def _validate_sql(sql: str) -> str | None:
         if bad_node["key"] is None:
             if key.endswith("Stmt") and key not in _SQL_ALLOWED_STMTS:
                 bad_node["key"] = key
-            elif key in _SQL_WRITE_NODES:
+            elif key in _SQL_FORBIDDEN_NODES:
                 bad_node["key"] = key
         if key == "CommonTableExpr" and isinstance(val, dict) and val.get("ctename"):
             ctes.add(val["ctename"])
