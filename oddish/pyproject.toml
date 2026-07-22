@@ -113,7 +113,7 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 [tool.uv.sources]
 # Immutable Harbor revision containing the verified Daytona Compose egress
 # implementation.
-harbor = { git = "https://github.com/abundant-ai/harbor", rev = "8a8ee069c6a5aacb8836b6f795d6ddf537aab57b" }
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "ab6d389c5578bfa382d70ee55f38dcac435eb651" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

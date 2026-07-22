@@ -147,7 +147,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
 # Exact Harbor PR #8 revision baked into this preview worker.
-HARBOR_DEFAULT_SHA = "8a8ee069c6a5aacb8836b6f795d6ddf537aab57b"
+HARBOR_DEFAULT_SHA = "ab6d389c5578bfa382d70ee55f38dcac435eb651"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1109,7 +1109,7 @@ class Settings(BaseSettings):
     harbor_source_repo: str = "abundant-ai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "8a8ee069c6a5aacb8836b6f795d6ddf537aab57b"
+    harbor_source_ref: str = "ab6d389c5578bfa382d70ee55f38dcac435eb651"
 
     registry_auth_key: str | None = None
 
