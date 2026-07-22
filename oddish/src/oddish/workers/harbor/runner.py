@@ -65,7 +65,9 @@ from .restricted_network import (
     RestrictedNetworkProfile,
     RestrictedNetworkProfileError,
     apply_restricted_network_profile,
+    assert_no_serialized_restricted_routes,
     is_static_restricted_agent_supported,
+    reject_submitted_restricted_routes,
     set_runtime_model_name,
 )
 from .modal_debug import (
@@ -1146,6 +1148,8 @@ async def run_harbor_trial_async(
     try:
         # Build Harbor configs inside the try: model normalization and
         # Job.create can both fail and should return a well-formed outcome.
+        if restricted_compose_kind == "dynamic":
+            reject_submitted_restricted_routes(raw)
         env_config = hc.environment.model_copy()
         env_config.type = environment
 
@@ -1203,6 +1207,8 @@ async def run_harbor_trial_async(
                 probe_oddish_env=extra_agent_env,
             )
             if restricted_compose_kind == "dynamic":
+                assert_no_serialized_restricted_routes(agent_config)
+            if restricted_compose_kind == "dynamic":
                 runtime_transport_env = _resolved_runtime_transport_env(
                     openai_env,
                     agent_config=agent_config,
@@ -1258,6 +1264,8 @@ async def run_harbor_trial_async(
                 agent_config=agent_config,
                 runtime_transport_env=runtime_transport_env,
             )
+            if restricted_compose_kind == "dynamic":
+                assert_no_serialized_restricted_routes(agent_config)
 
         # Claude Code downloads its CLI at agent-setup and calls its model
         # endpoint during agent.run(). On closed-internet tasks, installer CDN

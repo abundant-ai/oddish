@@ -110,7 +110,6 @@ def test_compose_restricted_profile_keeps_runtime_host_out_of_config(tmp_path):
     agent_config = HarborAgentConfig(
         name="codex",
         model_name="example-model",
-        extra_allowed_hosts=["existing.test"],
     )
 
     harbor_runner._apply_restricted_agent_network_defaults(
@@ -120,7 +119,7 @@ def test_compose_restricted_profile_keeps_runtime_host_out_of_config(tmp_path):
         runtime_transport_env={"OPENAI_BASE_URL": "https://model.test/v1"},
     )
 
-    assert agent_config.extra_allowed_hosts == ["existing.test"]
+    assert agent_config.extra_allowed_hosts == []
     assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("model.test",)
     assert "model.test" not in agent_config.model_dump_json()
     assert agent_config.kwargs["web_search"] == "disabled"
@@ -437,6 +436,7 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
     config = captured["config"]
     agent_config = config.agents[0]
     assert agent_config.model_name == "openai/public-model"
+    assert agent_config.extra_allowed_hosts == []
     assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == runtime_deployment
     assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("private-model.test",)
     serialized = config.model_dump_json()
@@ -2364,6 +2364,35 @@ def test_run_harbor_trial_async_byok_forces_direct_without_platform_key(
     # Nothing leaked past the trial: the temporary env was restored.
     assert os.environ.get("ANTHROPIC_API_KEY") is None
     assert os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"
+
+
+def test_restricted_compose_keeps_byok_credential_outside_route_guard(
+    monkeypatch, tmp_path
+):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer")
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", True)
+    seen: dict[str, object] = {}
+    _byok_runner_doubles(monkeypatch, seen)
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=tmp_path / "jobs",
+            model="global.anthropic.claude-sonnet-4-6",
+            environment=EnvironmentType.DAYTONA,
+            extra_agent_env={"ANTHROPIC_API_KEY": "sk-user-byok"},
+        )
+    )
+
+    assert outcome.error is None
+    assert seen["ambient_anthropic"] == "sk-user-byok"
+    assert seen["ambient_bedrock"] == ""
+    assert os.environ.get("ANTHROPIC_API_KEY") is None
 
 
 def test_run_harbor_trial_async_no_byok_keeps_bedrock_without_platform_key(

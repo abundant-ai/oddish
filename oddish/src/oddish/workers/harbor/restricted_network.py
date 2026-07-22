@@ -160,6 +160,67 @@ def set_runtime_model_name(agent_config: AgentConfig, model_name: str) -> None:
     object.__setattr__(agent_config, RUNTIME_MODEL_NAME_ATTR, model_name)
 
 
+def reject_submitted_restricted_routes(
+    raw_harbor_config: Mapping[str, Any],
+) -> None:
+    """Reject caller-controlled routes for a restricted Compose agent phase.
+
+    Runtime model routes are a worker capability, not a trial input.  Inspect
+    both the current ``agent_config`` payload and the legacy
+    ``agent_overrides`` shape before building Harbor's effective AgentConfig.
+    The error deliberately names only fixed field paths; submitted values may
+    contain private endpoints or credentials and must never be reflected.
+    """
+
+    rejected_fields: list[str] = []
+    for root_key in ("agent_config", "agent_overrides"):
+        raw_agent = raw_harbor_config.get(root_key)
+        if not isinstance(raw_agent, Mapping):
+            continue
+
+        if raw_agent.get("extra_allowed_hosts"):
+            rejected_fields.append(f"{root_key}.extra_allowed_hosts")
+
+        raw_env = raw_agent.get("env")
+        if isinstance(raw_env, Mapping):
+            rejected_fields.extend(
+                f"{root_key}.env.{key}"
+                for key in sorted(
+                    set(raw_env).intersection(_KNOWN_TRANSPORT_BASE_URL_KEYS)
+                )
+            )
+
+        raw_kwargs = raw_agent.get("kwargs")
+        raw_extra_env = (
+            raw_kwargs.get("extra_env") if isinstance(raw_kwargs, Mapping) else None
+        )
+        if isinstance(raw_extra_env, Mapping):
+            rejected_fields.extend(
+                f"{root_key}.kwargs.extra_env.{key}"
+                for key in sorted(
+                    set(raw_extra_env).intersection(_KNOWN_TRANSPORT_BASE_URL_KEYS)
+                )
+            )
+
+    if rejected_fields:
+        raise RestrictedNetworkProfileError(
+            "Restricted Daytona Compose agent phases do not accept "
+            "caller-supplied network routes in: "
+            f"{', '.join(rejected_fields)}. Routes must come from the "
+            "worker-attested runtime profile."
+        )
+
+
+def assert_no_serialized_restricted_routes(agent_config: AgentConfig) -> None:
+    """Ensure the built config cannot widen the restricted route boundary."""
+
+    if agent_config.extra_allowed_hosts:
+        raise RestrictedNetworkProfileError(
+            "Restricted Daytona Compose agent config contains non-attested "
+            "extra_allowed_hosts after build; refusing to create the job."
+        )
+
+
 def is_static_restricted_agent_supported(agent_config: AgentConfig) -> bool:
     """Static closed environments are safe only for setup-free stock agents."""
     return _class_path(resolve_effective_agent_class(agent_config)) in {

@@ -22,6 +22,8 @@ from oddish.workers.harbor.restricted_network import (
     RestrictedNetworkProfile,
     RestrictedNetworkProfileError,
     apply_restricted_network_profile,
+    assert_no_serialized_restricted_routes,
+    reject_submitted_restricted_routes,
     resolve_effective_agent_class,
     restricted_network_profile_for_config,
 )
@@ -110,6 +112,89 @@ network_mode = "no-network"
         encoding="utf-8",
     )
     return task_path
+
+
+@pytest.mark.parametrize(
+    ("raw_config", "expected_field"),
+    [
+        (
+            {"agent_config": {"extra_allowed_hosts": ["private-route.test"]}},
+            "agent_config.extra_allowed_hosts",
+        ),
+        (
+            {"agent_config": {"env": {"OPENAI_BASE_URL": "${PRIVATE_MODEL_ROUTE}"}}},
+            "agent_config.env.OPENAI_BASE_URL",
+        ),
+        (
+            {
+                "agent_config": {
+                    "kwargs": {
+                        "extra_env": {
+                            "ANTHROPIC_BASE_URL": "https://private-route.test"
+                        }
+                    }
+                }
+            },
+            "agent_config.kwargs.extra_env.ANTHROPIC_BASE_URL",
+        ),
+        (
+            {
+                "agent_overrides": {
+                    "env": {"GOOGLE_GEMINI_BASE_URL": "private-route.test"}
+                }
+            },
+            "agent_overrides.env.GOOGLE_GEMINI_BASE_URL",
+        ),
+        (
+            {
+                "agent_overrides": {
+                    "kwargs": {
+                        "extra_env": {"CURSOR_API_ENDPOINT": "private-route.test"}
+                    }
+                }
+            },
+            "agent_overrides.kwargs.extra_env.CURSOR_API_ENDPOINT",
+        ),
+        (
+            {"agent_overrides": {"extra_allowed_hosts": ["private-route.test"]}},
+            "agent_overrides.extra_allowed_hosts",
+        ),
+    ],
+)
+def test_submitted_restricted_routes_are_rejected_without_echoing_values(
+    raw_config, expected_field
+) -> None:
+    with pytest.raises(RestrictedNetworkProfileError) as exc_info:
+        reject_submitted_restricted_routes(raw_config)
+
+    message = str(exc_info.value)
+    assert expected_field in message
+    assert "private-route.test" not in message
+    assert "${PRIVATE_MODEL_ROUTE}" not in message
+
+
+def test_submitted_byok_credential_is_not_treated_as_a_route() -> None:
+    reject_submitted_restricted_routes(
+        {
+            "agent_config": {
+                "env": {
+                    "ANTHROPIC_API_KEY": "private-byok-value",
+                    "OPENAI_API_KEY": "private-byok-value",
+                }
+            },
+            "agent_overrides": {"env": {"FIREWORKS_API_KEY": "private-byok-value"}},
+        }
+    )
+
+
+def test_effective_restricted_config_must_not_serialize_routes() -> None:
+    config = AgentConfig(name="nop", extra_allowed_hosts=["route.test"])
+
+    with pytest.raises(
+        RestrictedNetworkProfileError,
+        match="non-attested extra_allowed_hosts after build",
+    ):
+        assert_no_serialized_restricted_routes(config)
 
 
 def test_explicit_empty_profile_is_valid() -> None:
@@ -496,6 +581,94 @@ def test_unknown_agent_fails_before_job_create(monkeypatch, tmp_path) -> None:
     assert job_create_called is False
     assert outcome.exception_type == "RestrictedNetworkProfileError"
     assert "does not declare" in (outcome.error or "")
+
+
+def test_submitted_route_fails_before_agent_build_or_job_create(
+    monkeypatch, tmp_path
+) -> None:
+    task_path = _restricted_task(tmp_path)
+    agent_build_called = False
+    job_create_called = False
+
+    def _unexpected_agent_build(**kwargs):
+        nonlocal agent_build_called
+        agent_build_called = True
+        raise AssertionError("agent build must not run")
+
+    class SentinelJob:
+        @classmethod
+        async def create(cls, config):
+            nonlocal job_create_called
+            job_create_called = True
+            raise AssertionError("Job.create must not run")
+
+    monkeypatch.setattr(runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(runner, "Job", SentinelJob)
+    monkeypatch.setattr(runner, "get_backend", lambda value: None)
+    monkeypatch.setattr(runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(
+        runner, "_check_local_storage_preflight", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(runner, "_build_agent_config", _unexpected_agent_build)
+    private_value = "https://must-not-appear.test/private"
+
+    outcome = asyncio.run(
+        runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="codex",
+            jobs_dir=tmp_path / "jobs",
+            environment=EnvironmentType.DAYTONA,
+            harbor_config={"agent_config": {"env": {"OPENAI_BASE_URL": private_value}}},
+        )
+    )
+
+    assert agent_build_called is False
+    assert job_create_called is False
+    assert outcome.exception_type == "RestrictedNetworkProfileError"
+    assert "agent_config.env.OPENAI_BASE_URL" in (outcome.error or "")
+    assert private_value not in (outcome.error or "")
+
+
+def test_built_serialized_route_fails_before_job_create(monkeypatch, tmp_path) -> None:
+    task_path = _restricted_task(tmp_path)
+    job_create_called = False
+
+    class SentinelJob:
+        @classmethod
+        async def create(cls, config):
+            nonlocal job_create_called
+            job_create_called = True
+            raise AssertionError("Job.create must not run")
+
+    monkeypatch.setattr(runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(runner, "Job", SentinelJob)
+    monkeypatch.setattr(runner, "get_backend", lambda value: None)
+    monkeypatch.setattr(runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(
+        runner, "_check_local_storage_preflight", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        runner,
+        "_build_agent_config",
+        lambda **kwargs: AgentConfig(
+            name="nop", extra_allowed_hosts=["unexpected-route.test"]
+        ),
+    )
+    monkeypatch.setattr(runner, "_trial_uses_openai_provider", lambda **kwargs: False)
+
+    outcome = asyncio.run(
+        runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="nop",
+            jobs_dir=tmp_path / "jobs",
+            environment=EnvironmentType.DAYTONA,
+        )
+    )
+
+    assert job_create_called is False
+    assert outcome.exception_type == "RestrictedNetworkProfileError"
+    assert "non-attested extra_allowed_hosts after build" in (outcome.error or "")
+    assert "unexpected-route.test" not in (outcome.error or "")
 
 
 def test_restricted_compose_ephemeral_variant_fails_before_dispatch(
