@@ -668,11 +668,12 @@ function AdminPageContent() {
   // between them.
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { data: operatorAccess, error: operatorAccessError } = useSWR<{
-    allowed: boolean;
-  }>("/api/admin/operator-access", fetcher);
-  const operatorAccessResolved =
-    operatorAccess !== undefined || operatorAccessError !== undefined;
+  const {
+    data: operatorAccess,
+    error: operatorAccessError,
+    mutate: retryOperatorAccess,
+  } = useSWR<{ allowed: boolean }>("/api/admin/operator-access", fetcher);
+  const operatorAccessResolved = operatorAccess !== undefined;
   const canManagePlatform = operatorAccess?.allowed === true;
   const allowedTabs = canManagePlatform
     ? ADMIN_TABS
@@ -703,6 +704,24 @@ function AdminPageContent() {
           Organization usage, spend, queues, tags, and quotas
         </p>
       </div>
+
+      {operatorAccessError && operatorAccess === undefined && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Operator controls unavailable</AlertTitle>
+          <AlertDescription className="flex items-center justify-between gap-4">
+            The capability check failed. Global controls remain hidden until it
+            succeeds.
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => retryOperatorAccess()}
+            >
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Tabs
         value={activeTab}

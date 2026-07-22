@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from api.routers import admin
 
@@ -23,7 +24,6 @@ async def test_admin_diagnostics_pass_active_org(monkeypatch):
         return object()
 
     for route, core_name, kwargs in (
-        (admin.get_queue_slots, "get_queue_slots_core", {}),
         (admin.get_queue_status, "get_queue_status_core", {}),
         (admin.get_queue_health, "get_queue_health_core", {}),
         (
@@ -42,11 +42,20 @@ async def test_admin_diagnostics_pass_active_org(monkeypatch):
 
     assert calls == [
         {"org_id": "org-a"},
-        {"org_id": "org-a"},
         {"org_id": "org-a", "include_global_details": False},
         {"stale_after_minutes": 10, "org_id": "org-a"},
         {"stale_after_minutes": 10, "sample_limit": 5, "org_id": "org-a"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_queue_slots_require_operator_org(monkeypatch):
+    monkeypatch.delenv("ODDISH_OPERATOR_ORG_ID", raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await admin.get_queue_slots(auth=SimpleNamespace(org_id="org-a"))
+
+    assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio

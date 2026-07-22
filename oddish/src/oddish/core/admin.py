@@ -189,35 +189,17 @@ class WorkerJobsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def get_queue_slots_core(
-    session: AsyncSession, *, org_id: str | None = None
-) -> QueueSlotsResponse:
+async def get_queue_slots_core(session: AsyncSession) -> QueueSlotsResponse:
     """Get current state of queue-key slot leases."""
     now = utcnow()
     result = await session.execute(
         text(
             """
-            SELECT qs.queue_key,
-                   qs.slot,
-                   CASE WHEN :org_id IS NULL OR EXISTS (
-                            SELECT 1 FROM worker_jobs wj
-                            WHERE wj.current_worker_id = qs.locked_by
-                              AND wj.status::text = 'RUNNING'
-                              AND wj.org_id = :org_id
-                        )
-                        THEN qs.locked_by END AS locked_by,
-                   CASE WHEN :org_id IS NULL OR EXISTS (
-                            SELECT 1 FROM worker_jobs wj
-                            WHERE wj.current_worker_id = qs.locked_by
-                              AND wj.status::text = 'RUNNING'
-                              AND wj.org_id = :org_id
-                        )
-                        THEN qs.locked_until END AS locked_until
-            FROM queue_slots qs
-            ORDER BY qs.queue_key, qs.slot
+            SELECT queue_key, slot, locked_by, locked_until
+            FROM queue_slots
+            ORDER BY queue_key, slot
             """
-        ),
-        {"org_id": org_id},
+        )
     )
     rows = result.all()
 

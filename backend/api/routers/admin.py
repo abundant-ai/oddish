@@ -64,8 +64,9 @@ async def get_queue_slots(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> QueueSlotsResponse:
     """Get current state of queue-key slot leases."""
+    _require_operator_org(auth)
     async with get_session() as session:
-        return await get_queue_slots_core(session, org_id=auth.org_id)
+        return await get_queue_slots_core(session)
 
 
 @router.get("/queue-status", response_model=QueueStatusResponse)
