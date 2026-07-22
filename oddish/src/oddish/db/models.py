@@ -628,6 +628,8 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
 
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # input/output are arbitrary JSON (the block's I/O are typed ``any``).
     input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
@@ -788,6 +790,19 @@ class TaskModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     verdict_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Pre-trial QA analysis (task-source audit; runs before trials)
+    pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pre_trial_status: Mapped[VerdictStatus | None] = mapped_column(
+        SQLEnum(VerdictStatus), nullable=True
+    )
+    pre_trial_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pre_trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pre_trial_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
