@@ -10,6 +10,8 @@ from oddish.analyze.analysis_cost import (
     build_analysis_cost_row,
     should_record_cost,
 )
+from oddish.analyze.models import compute_action_item_id
+from oddish.analyze.trajectory_files import parse_trajectory_file_access
 from oddish.config import settings
 from oddish.db import AnalysisStatus, TaskModel, utcnow
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
@@ -22,6 +24,27 @@ ANALYSIS_TIMEOUT = 900  # 15 minutes
 # slow classification can't drift across the reap threshold mid-run.
 # 30s matches the trial heartbeat interval for consistency.
 ANALYSIS_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def classification_to_result_dict(classification) -> dict:
+    """Render a ``TrialClassification`` for storage on ``trial.analysis``.
+
+    Assigns a stable id to any action item the classifier left id-less,
+    mirroring ``build_pre_trial_payload``'s server-side id computation.
+    """
+    for item in classification.action_items:
+        item.id = item.id or compute_action_item_id(item)
+    return {
+        "trial_name": classification.trial_name,
+        "classification": classification.classification.value,
+        "subtype": classification.subtype,
+        "evidence": classification.evidence,
+        "root_cause": classification.root_cause,
+        "recommendation": classification.recommendation,
+        "reward": classification.reward,
+        "action_items": [i.model_dump(mode="json") for i in classification.action_items],
+        "exploitation": [e.model_dump(mode="json") for e in classification.exploitation],
+    }
 
 
 async def _heartbeat_analysis_worker_job(
@@ -112,6 +135,7 @@ async def classify_trial_and_store(
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
+        pre_trial_items = (task.pre_trial or {}).get("items") if task.pre_trial else None
         # Probe trials carry the operator directive in harbor_config; their
         # analysis is the shared probe_summary, not the generic classifier.
         trial_harbor_config = trial.harbor_config or {}
@@ -195,24 +219,21 @@ async def classify_trial_and_store(
                 timeout=ANALYSIS_TIMEOUT,  # 5 minutes
             )
 
+            file_access = [
+                fa.__dict__ for fa in parse_trajectory_file_access(trial_dir_to_use)
+            ]
+
             console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
             classification = await classifier.classify_trial(
                 trial_dir=trial_dir_to_use,
                 task_dir=task_dir_to_use,
                 trial_agent=trial_agent,
+                pre_trial_items=pre_trial_items,
+                file_access=file_access,
             )
             analysis_usage = classifier.last_usage
 
-            # Convert to dict for storage
-            classification_result = {
-                "trial_name": classification.trial_name,
-                "classification": classification.classification.value,
-                "subtype": classification.subtype,
-                "evidence": classification.evidence,
-                "root_cause": classification.root_cause,
-                "recommendation": classification.recommendation,
-                "reward": classification.reward,
-            }
+            classification_result = classification_to_result_dict(classification)
 
             # Check if classification is a fallback (indicates Claude SDK issue)
             if "classification failed" in (classification.evidence or "").lower():

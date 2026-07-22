@@ -142,6 +142,7 @@ def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
 def _classifications_from_trials(trials) -> list:
     """Build verdict inputs from stored trial QA."""
     from oddish.analyze import Classification, TrialClassification
+    from oddish.analyze.models import ActionItem, ExploitationAssessment
 
     classifications: list = []
     for trial in trials:
@@ -160,6 +161,13 @@ def _classifications_from_trials(trials) -> list:
                     root_cause=analysis.get("root_cause", ""),
                     recommendation=analysis.get("recommendation", ""),
                     reward=analysis.get("reward"),
+                    action_items=[
+                        ActionItem(**x) for x in analysis.get("action_items", [])
+                    ],
+                    exploitation=[
+                        ExploitationAssessment(**x)
+                        for x in analysis.get("exploitation", [])
+                    ],
                 )
             )
     return classifications
