@@ -797,7 +797,10 @@ async def update_model_concurrency_core(
 
 
 async def get_queue_health_core(
-    session: AsyncSession, *, org_id: str | None = None
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    include_global_details: bool = True,
 ) -> QueueHealthResponse:
     """Aggregate throughput, per-queue-key capacity fill, and component health."""
     now = utcnow()
@@ -923,17 +926,26 @@ async def get_queue_health_core(
             current = bucket["oldest"]
             bucket["oldest"] = age if current is None else max(current, age)
 
-    overrides = await get_model_concurrency_overrides(session)
-    for key in settings.get_known_queue_keys() | overrides.keys():
-        merged.setdefault(
-            key,
-            {"queued": 0, "queued_scheduled": 0, "running": 0, "oldest": None},
-        )
+    overrides: dict[str, int] = {}
+    if include_global_details:
+        overrides = await get_model_concurrency_overrides(session)
+        for key in settings.get_known_queue_keys() | overrides.keys():
+            merged.setdefault(
+                key,
+                {
+                    "queued": 0,
+                    "queued_scheduled": 0,
+                    "running": 0,
+                    "oldest": None,
+                },
+            )
 
     capacity: list[QueueCapacityStat] = []
     for key, bucket in merged.items():
-        deploy_limit = settings.get_model_concurrency(key)
-        override_limit = overrides.get(key)
+        deploy_limit = (
+            settings.get_model_concurrency(key) if include_global_details else 0
+        )
+        override_limit = overrides.get(key) if include_global_details else None
         limit = override_limit if override_limit is not None else deploy_limit
         running = int(bucket["running"] or 0)
         wait_p50, wait_p95 = wait_by_key.get(key, (None, None))
@@ -969,7 +981,9 @@ async def get_queue_health_core(
         get_queue_runtime_statuses,
     )
 
-    statuses = await get_queue_runtime_statuses(session) if org_id is None else {}
+    statuses = (
+        await get_queue_runtime_statuses(session) if include_global_details else {}
+    )
 
     def _component(name: str) -> QueueRuntimeComponentStatus | None:
         row = statuses.get(name)

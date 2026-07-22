@@ -43,7 +43,7 @@ async def test_admin_diagnostics_pass_active_org(monkeypatch):
     assert calls == [
         {"org_id": "org-a"},
         {"org_id": "org-a"},
-        {"org_id": "org-a"},
+        {"org_id": "org-a", "include_global_details": False},
         {"stale_after_minutes": 10, "org_id": "org-a"},
         {"stale_after_minutes": 10, "sample_limit": 5, "org_id": "org-a"},
     ]
@@ -80,6 +80,22 @@ async def test_admin_costs_pass_active_org(monkeypatch):
         "resolve_github_users": admin.resolve_github_users,
         "enriched_org_id": "org-a",
     }
+
+
+@pytest.mark.asyncio
+async def test_operator_queue_health_includes_global_details(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-a")
+    monkeypatch.setattr(admin, "get_session", _session)
+
+    async def fake(session, **kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(admin, "get_queue_health_core", fake)
+    await admin.get_queue_health(auth=SimpleNamespace(org_id="org-a"))
+
+    assert seen == {"org_id": "org-a", "include_global_details": True}
 
 
 @pytest.mark.asyncio

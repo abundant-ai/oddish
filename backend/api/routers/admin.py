@@ -49,9 +49,13 @@ _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
-def _require_operator_org(auth: AuthContext) -> None:
+def _is_operator_org(auth: AuthContext) -> bool:
     operator_org_id = os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
-    if not operator_org_id or auth.org_id != operator_org_id:
+    return bool(operator_org_id and auth.org_id == operator_org_id)
+
+
+def _require_operator_org(auth: AuthContext) -> None:
+    if not _is_operator_org(auth):
         raise HTTPException(status_code=403, detail="Operator organization required")
 
 
@@ -98,7 +102,11 @@ async def get_queue_health(
     operator self-diagnose "queued but not running" without psql + Modal logs.
     """
     async with get_session() as session:
-        return await get_queue_health_core(session, org_id=auth.org_id)
+        return await get_queue_health_core(
+            session,
+            org_id=auth.org_id,
+            include_global_details=_is_operator_org(auth),
+        )
 
 
 @router.put("/concurrency", response_model=ModelConcurrencySetting)
@@ -342,10 +350,7 @@ class OperatorAccessResponse(BaseModel):
 async def get_operator_access(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> OperatorAccessResponse:
-    operator_org_id = os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
-    return OperatorAccessResponse(
-        allowed=bool(operator_org_id and auth.org_id == operator_org_id)
-    )
+    return OperatorAccessResponse(allowed=_is_operator_org(auth))
 
 
 class SlackAlertSettingsRequest(BaseModel):
