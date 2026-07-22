@@ -104,14 +104,22 @@ def test_parse_raises_on_malformed_json():
         TrajectoryBlock(_input()).parse("not json")
 
 
-def test_to_summary_is_schema_v4_with_components():
+def test_to_summary_is_schema_v5_with_component_metadata():
     raw = json.dumps({
         "summary": "s", "highlights": [],
-        "components": [{"step_ids": [1], "trajectory_component": "implementing", "summary": "y"}],
+        "components": [{"step_ids": [1, 2], "trajectory_component": "implementing", "summary": "y"}],
     })
-    d = TrajectoryBlock(_input()).to_summary(raw, model="claude-x")
-    assert d["schema_version"] == "4"
+    trajectory = {"steps": [
+        {"step_id": 1, "timestamp": "2026-01-01T00:00:00Z", "tool_calls": [{"id": "a"}]},
+        {"step_id": 2, "timestamp": "2026-01-01T00:00:02.500Z", "tool_calls": [{"id": "b"}, {"id": "c"}]},
+        {"step_id": 3, "timestamp": "2026-01-01T00:00:04Z"},
+    ]}
+    d = TrajectoryBlock(_input(trajectory=trajectory)).to_summary(raw, model="claude-x")
+    assert d["schema_version"] == "5"
     assert d["model"] == "claude-x"
     assert "generated_at" in d
     assert "phases" not in d
     assert d["components"][0]["trajectory_component"] == "implementing"
+    assert d["components"][0]["step_count"] == 2
+    assert d["components"][0]["tool_count"] == 3
+    assert d["components"][0]["duration_ms"] == 2500

@@ -35,6 +35,9 @@ export interface Segment {
   label: string;
   gist: string;
   stepIds: number[];
+  stepCount?: number;
+  toolCount?: number;
+  durationMs?: number;
 }
 
 /** A step paired with its index in the *full* trajectory, which search must not disturb. */
@@ -52,7 +55,7 @@ export interface StepGroup {
 }
 
 export function toSegments(
-  summary: TrajectorySummary | null | undefined,
+  summary: TrajectorySummary | null | undefined
 ): Segment[] {
   if (!summary) return [];
   const sorted = (ids: number[]) => [...ids].sort((a, b) => a - b);
@@ -64,6 +67,9 @@ export function toSegments(
         label: componentLabel(c.trajectory_component),
         gist: c.summary ?? "",
         stepIds: sorted(c.step_ids),
+        stepCount: c.step_count,
+        toolCount: c.tool_count,
+        durationMs: c.duration_ms,
       }));
   }
   return (summary.phases ?? [])
@@ -106,7 +112,7 @@ export function segmentOwners(segments: Segment[]): Map<number, Segment> {
  */
 export function groupStepsBySegment(
   steps: IndexedStep[],
-  segments: Segment[],
+  segments: Segment[]
 ): StepGroup[] {
   const owner = segmentOwners(segments);
 
