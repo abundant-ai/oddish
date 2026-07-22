@@ -64,6 +64,7 @@ from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
 )
+from oddish.text_normalize import normalize_typography, summarize_normalization
 
 console = Console()
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
@@ -412,6 +413,28 @@ def validate_no_git_lfs_pointers(task_path: Path) -> None:
     raise typer.Exit(1)
 
 
+def normalize_task_config_typography(task_path: Path) -> dict[str, str]:
+    """Rewrite smart typography in a task's ``task.toml`` to ASCII, in place.
+
+    ``task.toml`` is pure config/metadata prose, so an LLM's curly quotes and
+    en/em dashes there carry no meaning the ASCII form lacks -- but they render
+    as stray glyphs in the Oddish file viewer and trip ASCII-only downstream
+    tooling. Normalizing before upload keeps what is stored (and shown) clean.
+
+    Descriptive metadata is excluded from ``compute_task_content_hash``, so this
+    does not spuriously mint a new task version. Returns the ``{char:
+    replacement}`` summary of what changed (empty when nothing did).
+    """
+    config_path = task_path / "task.toml"
+    if not config_path.exists():
+        return {}
+    original = config_path.read_text(encoding="utf-8")
+    changes = summarize_normalization(original)
+    if changes:
+        config_path.write_text(normalize_typography(original), encoding="utf-8")
+    return changes
+
+
 def archive_task_dir(task_path: Path) -> Path:
     """Create a tarball of a task directory."""
     # Create tarball in temp directory
@@ -634,6 +657,17 @@ def upload_task(
     immediately (used by ``oddish upload``). The legacy sweep path leaves
     this False so task-row creation still happens inside ``/tasks/sweep``.
     """
+    typography_changes = normalize_task_config_typography(task_path)
+    if typography_changes:
+        rendered = ", ".join(
+            f"{escape(repr(orig))}->{escape(repr(repl))}"
+            for orig, repl in typography_changes.items()
+        )
+        console.print(
+            f"[dim]Normalized non-ASCII typography in {task_path.name}/task.toml: "
+            f"{rendered}[/dim]"
+        )
+
     try:
         validate_task_timeout_config(task_path)
     except TaskTimeoutValidationError as exc:
