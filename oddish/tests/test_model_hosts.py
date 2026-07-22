@@ -1,4 +1,7 @@
-from oddish.workers.harbor.model_hosts import outbound_hosts_for_model
+from oddish.workers.harbor.model_hosts import (
+    outbound_hosts_for_agent,
+    outbound_hosts_for_model,
+)
 
 
 def test_outbound_hosts_follow_model_not_agent_env_shape():
@@ -18,10 +21,17 @@ def test_outbound_hosts_follow_model_not_agent_env_shape():
     ]
 
 
-def test_outbound_hosts_prefer_routed_base_url_env():
+def test_outbound_hosts_preserve_legacy_union_unless_exact_route_requested():
     hosts = outbound_hosts_for_model(
-        "claude-sonnet-4",  # no useful provider prefix
-        agent_env={"ANTHROPIC_BASE_URL": "https://api.fireworks.ai/inference"},
+        "openai/model-with-explicit-route",
+        agent_env={"OPENAI_BASE_URL": "https://api.fireworks.ai/inference"},
+    )
+    assert hosts == ["api.fireworks.ai", "api.openai.com", "ab.chatgpt.com"]
+
+    hosts = outbound_hosts_for_model(
+        "openai/model-with-explicit-route",
+        agent_env={"OPENAI_BASE_URL": "https://api.fireworks.ai/inference"},
+        prefer_exact_base_url=True,
     )
     assert hosts == ["api.fireworks.ai"]
 
@@ -52,3 +62,40 @@ def test_bare_claude_id_does_not_override_routed_base_url():
         "claude-sonnet-4",
         agent_env={"ANTHROPIC_BASE_URL": "https://api.fireworks.ai/inference"},
     ) == ["api.fireworks.ai"]
+
+
+def test_outbound_hosts_for_cursor_model_and_harness():
+    cursor_hosts = ["*.cursor.sh"]
+
+    assert outbound_hosts_for_model("cursor/composer") == cursor_hosts
+    # Cursor transports every selectable model through its own service, even
+    # when the model id itself has another provider prefix.
+    assert outbound_hosts_for_agent("cursor-cli") == cursor_hosts
+    assert (
+        outbound_hosts_for_agent(
+            None, import_path="harbor.agents.installed.cursor_cli:CursorCli"
+        )
+        == cursor_hosts
+    )
+    assert outbound_hosts_for_agent("codex") == []
+
+
+def test_outbound_hosts_read_cursor_custom_endpoint():
+    hosts = outbound_hosts_for_model(
+        "custom-model",
+        agent_env={"CURSOR_API_BASE_URL": "https://cursor-proxy.example/v1"},
+    )
+    assert hosts == ["cursor-proxy.example"]
+
+    assert outbound_hosts_for_agent(
+        "cursor-cli",
+        agent_env={"CURSOR_API_BASE_URL": "https://cursor-proxy.example/v1"},
+    ) == ["*.cursor.sh", "cursor-proxy.example"]
+
+
+def test_outbound_hosts_read_gemini_custom_endpoint():
+    assert outbound_hosts_for_model(
+        "google/gemini-test",
+        agent_env={"GOOGLE_GEMINI_BASE_URL": "https://gemini-relay.example/v1"},
+        prefer_exact_base_url=True,
+    ) == ["gemini-relay.example"]

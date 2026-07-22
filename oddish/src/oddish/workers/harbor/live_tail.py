@@ -26,6 +26,46 @@ MAX_CONSECUTIVE_FAILURES = 5
 MAX_TRIAL_EVENTS = 5000
 PAYLOAD_CLIP_CHARS = 2048
 _SKIP_TICK = object()
+_runtime_redactions: dict[str, dict[str, str]] = {}
+
+
+def configure_runtime_redactions(trial_id: str, replacements: dict[str, str]) -> None:
+    """Stage trial-private exact replacements until its tailer is created."""
+    if replacements:
+        _runtime_redactions[trial_id] = dict(replacements)
+
+
+def clear_runtime_redactions(trial_id: str) -> None:
+    _runtime_redactions.pop(trial_id, None)
+
+
+def _redact_exact_text(text: str, replacements: dict[str, str]) -> str:
+    for value in sorted(replacements, key=len, reverse=True):
+        text = text.replace(value, replacements[value])
+    return text
+
+
+def _redact_exact_value(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        return _redact_exact_text(value, replacements)
+    if isinstance(value, dict):
+        return {
+            _redact_exact_value(key, replacements): _redact_exact_value(
+                item, replacements
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_exact_value(item, replacements) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_exact_value(item, replacements) for item in value)
+    return value
+
+
+def _redact_exact_bytes(data: bytes, replacements: dict[str, str]) -> bytes:
+    for value in sorted(replacements, key=len, reverse=True):
+        data = data.replace(value.encode("utf-8"), replacements[value].encode("utf-8"))
+    return data
 
 
 class TailExecError(RuntimeError):
@@ -744,6 +784,7 @@ class LiveTailer:
         log_path: str,
         fold: Fold,
         snapshot: bool = False,
+        runtime_redactions: dict[str, str] | None = None,
     ):
         self.trial_id = trial_id
         self.environment = environment
@@ -751,6 +792,7 @@ class LiveTailer:
         self.log_path = log_path
         self.fold = fold
         self.snapshot = snapshot
+        self.runtime_redactions = dict(runtime_redactions or {})
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -770,7 +812,11 @@ class LiveTailer:
         finally:
             if self.carry and not self.replaced:
                 with contextlib.suppress(Exception):
-                    self._buffer_events(self.fold.feed_line(self.carry))
+                    self._buffer_events(
+                        self.fold.feed_line(
+                            _redact_exact_bytes(self.carry, self.runtime_redactions)
+                        )
+                    )
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._persist_tick())
 
@@ -809,7 +855,11 @@ class LiveTailer:
         if self.snapshot:
             snapshot_raw = await self._read_snapshot()
             if snapshot_raw:
-                self._buffer_events(self.fold.feed_line(snapshot_raw))
+                self._buffer_events(
+                    self.fold.feed_line(
+                        _redact_exact_bytes(snapshot_raw, self.runtime_redactions)
+                    )
+                )
         else:
             tail_raw = await self._read_tail()
             if isinstance(tail_raw, bytes) and tail_raw:
@@ -865,7 +915,9 @@ class LiveTailer:
         lines, self.carry = split_lines(self.carry + raw)
         self.offset += len(raw)
         for line in lines:
-            self._buffer_events(self.fold.feed_line(line))
+            self._buffer_events(
+                self.fold.feed_line(_redact_exact_bytes(line, self.runtime_redactions))
+            )
 
     def _buffer_events(self, rendered: list[dict[str, Any]]) -> None:
         if self.replaced or self.capped:
@@ -916,7 +968,7 @@ class LiveTailer:
         return len(rows)
 
     def _sanitize_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        payload = event.get("payload")
+        payload = _redact_exact_value(event.get("payload"), self.runtime_redactions)
         safe_payload = sanitize_transcript_value(
             payload if isinstance(payload, dict) else {}
         )
@@ -997,6 +1049,7 @@ def start(
         log_path=adapter.log_path,
         fold=adapter.make_fold(model),
         snapshot=adapter.snapshot,
+        runtime_redactions=_runtime_redactions.get(trial_id),
     )
     old = _tailers.pop(trial_id, None)
     if old:

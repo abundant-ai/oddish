@@ -16,6 +16,12 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from harbor.trial.hooks import TrialEvent
+from harbor.agents.factory import AgentFactory
+from harbor.models.task.config import TaskConfig as HarborTaskConfig
+from harbor.models.trial.config import AgentConfig
+from harbor.models.trial.config import TaskConfig as TrialTaskConfig
+from harbor.models.trial.config import TrialConfig
+from harbor.trial import network_policy as network_policy_module
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -25,6 +31,79 @@ harbor_entry = importlib.import_module("oddish.workers.harbor._entry")
 
 RegistryCredential = _registry_auth.RegistryCredential
 current_registry_credentials = _registry_auth.current_registry_credentials
+
+
+def test_runtime_allowed_hosts_are_consumed_but_never_serialized(tmp_path):
+    from oddish.workers.harbor.restricted_network import set_runtime_allowed_hosts
+
+    harbor_patches._patch_restricted_network_runtime_fields()
+    task_cfg = HarborTaskConfig.model_validate_toml(
+        """schema_version = "1.3"
+
+[environment]
+network_mode = "public"
+
+[agent]
+network_mode = "no-network"
+"""
+    )
+    agent_cfg = AgentConfig(name="nop", model_name="public/model")
+    set_runtime_allowed_hosts(agent_cfg, ("runtime-relay.test",))
+
+    policy = network_policy_module.resolve_agent_phase_policy(
+        task_cfg,
+        agent_cfg,
+        task_cfg.environment.resolve_baseline(),
+    )
+
+    assert policy.allowed_hosts == ["runtime-relay.test"]
+    assert "runtime-relay.test" not in agent_cfg.model_dump_json()
+
+
+def test_runtime_model_is_used_in_memory_but_reported_as_public(tmp_path):
+    from oddish.workers.harbor.restricted_network import set_runtime_model_name
+
+    harbor_patches._patch_restricted_network_runtime_fields()
+    agent_cfg = AgentConfig(name="nop", model_name="openai/public-model")
+    set_runtime_model_name(agent_cfg, "private-deployment")
+
+    agent = AgentFactory.create_agent_from_config(agent_cfg, tmp_path)
+    info = agent.to_agent_info()
+
+    assert agent.model_name == "private-deployment"
+    assert info.model_info is not None
+    assert info.model_info.provider == "openai"
+    assert info.model_info.name == "public-model"
+    serialized = agent_cfg.model_dump_json()
+    assert "private-deployment" not in serialized
+    assert "openai/public-model" in serialized
+
+
+def test_runtime_fields_survive_job_to_trial_config_without_serializing(tmp_path):
+    from oddish.workers.harbor.restricted_network import (
+        RUNTIME_ALLOWED_HOSTS_ATTR,
+        RUNTIME_MODEL_NAME_ATTR,
+        set_runtime_allowed_hosts,
+        set_runtime_model_name,
+    )
+
+    agent_cfg = AgentConfig(name="nop", model_name="openai/public-model")
+    set_runtime_allowed_hosts(agent_cfg, ("runtime-relay.test",))
+    set_runtime_model_name(agent_cfg, "private-deployment")
+
+    trial_cfg = TrialConfig(
+        task=TrialTaskConfig(path=tmp_path),
+        agent=agent_cfg,
+        trials_dir=tmp_path,
+    )
+
+    assert getattr(trial_cfg.agent, RUNTIME_ALLOWED_HOSTS_ATTR) == (
+        "runtime-relay.test",
+    )
+    assert getattr(trial_cfg.agent, RUNTIME_MODEL_NAME_ATTR) == "private-deployment"
+    serialized = trial_cfg.model_dump_json()
+    assert "runtime-relay.test" not in serialized
+    assert "private-deployment" not in serialized
 
 
 class _FakeStrategy:
@@ -321,6 +400,30 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
     assert calls == {"daytona": 1, "modal": 1}
 
 
+def test_daytona_mirror_patch_targets_dind_only(monkeypatch):
+    calls: list[tuple[str, str, str]] = []
+
+    def capture(module_path, class_name, method_name, _wrap, **_kwargs):
+        calls.append((module_path, class_name, method_name))
+
+    monkeypatch.setattr(harbor_patches, "_install_method_patch", capture)
+
+    harbor_patches._patch_daytona_dind()
+
+    assert calls == [
+        (
+            "harbor.environments.daytona.environment",
+            "_DaytonaDinD",
+            "_wait_for_docker_daemon",
+        ),
+        (
+            "harbor.environments.daytona.environment",
+            "_DaytonaDinD",
+            "_vm_exec",
+        ),
+    ]
+
+
 def test_install_method_patch_replaces_target_once(monkeypatch):
     module_name = "fake_harbor_module"
     module = ModuleType(module_name)
@@ -436,6 +539,34 @@ async def test_daytona_vm_exec_adds_registry_mirror_flag_for_dockerd():
     assert "&;" not in sent
     _assert_shell_parses(sent)
     assert "base64 -d" not in sent
+    assert strategy.calls[0]["kwargs"] == {"timeout_sec": 10}
+
+
+@pytest.mark.asyncio
+async def test_daytona_vm_exec_preserves_absolute_dockerd_entrypoint():
+    strategy = _CaptureStrategy()
+    wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
+
+    cmd = (
+        "/usr/local/bin/dockerd-entrypoint.sh dockerd "
+        "--host=unix:///var/run/docker.sock "
+        "> /var/log/dockerd.log 2>&1 &"
+    )
+    await wrapped(strategy, cmd, timeout_sec=10)
+
+    sent = strategy.calls[0]["command"]
+    assert sent.startswith("if grep -q")
+    assert "/usr/local/bin/if" not in sent
+    assert sent.count("/usr/local/bin/dockerd-entrypoint.sh dockerd") == 2
+    assert (
+        "else\n"
+        "/usr/local/bin/dockerd-entrypoint.sh dockerd "
+        "--registry-mirror=https://mirror.gcr.io "
+        "--host=unix:///var/run/docker.sock "
+        "> /var/log/dockerd.log 2>&1 &\n"
+        "fi"
+    ) in sent
+    _assert_shell_parses(sent)
     assert strategy.calls[0]["kwargs"] == {"timeout_sec": 10}
 
 

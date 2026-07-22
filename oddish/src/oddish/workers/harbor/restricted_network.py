@@ -1,0 +1,596 @@
+"""Fail-closed runtime capabilities for restricted agent phases.
+
+The network-policy orchestrator must not guess from a submitted agent or model
+name.  It resolves the *effective* class that Harbor will instantiate and asks
+that class for one complete capability: model transport plus the settings that
+disable server-side web tools.  Custom agents can participate by implementing
+``restricted_network_profile`` with the structural signature documented by
+``RestrictedNetworkProfileProvider`` below.
+
+The compatibility adapters in this module cover Oddish's current stock
+operational agents while the same hook is adopted upstream.  They are keyed by
+the exact resolved Python class, never by inheritance, trial-facing aliases, or
+model-name branches in the runner.  An unrecognised class is rejected before
+``Job.create`` whenever the task requests a restricted agent phase; public
+tasks do not consult this module.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol, cast, runtime_checkable
+
+from harbor.agents.factory import AgentFactory
+from harbor.agents.installed.acp_registry import is_acp_registry_shorthand
+from harbor.models.agent.name import AgentName
+from harbor.models.task.config import normalize_allowed_hosts
+from harbor.models.trial.config import AgentConfig
+from harbor.utils.import_path import import_class
+
+from oddish.workers.agents.network import normalize_domain_or_url
+
+from .model_hosts import outbound_hosts_for_model
+
+
+class RestrictedNetworkProfileError(ValueError):
+    """The effective agent cannot safely run inside a restricted phase."""
+
+
+@dataclass(frozen=True)
+class RestrictedNetworkProfile:
+    """Complete runtime contract for one effective agent implementation.
+
+    ``outbound_hosts`` is the exact union required by the harness and its model
+    transport.  A deliberately transport-free implementation declares an
+    empty tuple.  Security overrides are force-applied for restricted trials;
+    a submitted config cannot turn server-side web tools back on.
+
+    """
+
+    outbound_hosts: tuple[str, ...] = ()
+    env_overrides: Mapping[str, str] = field(default_factory=dict)
+    kwarg_overrides: Mapping[str, Any] = field(default_factory=dict)
+    server_web_disabled: bool = False
+
+
+@runtime_checkable
+class RestrictedNetworkProfileProvider(Protocol):
+    """Structural hook available to any custom Harbor agent class.
+
+    The return value may be ``RestrictedNetworkProfile`` or a mapping with the
+    same field names.  Returning ``None`` (or omitting the hook) is an explicit
+    inability to satisfy the boundary and therefore fails closed.
+    """
+
+    @classmethod
+    def restricted_network_profile(
+        cls,
+        *,
+        model_name: str | None,
+        env: Mapping[str, str],
+        kwargs: Mapping[str, Any],
+    ) -> RestrictedNetworkProfile | Mapping[str, Any] | None: ...
+
+
+_ANTHROPIC_RUNTIME_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
+_OPENAI_RUNTIME_HOSTS = ("api.openai.com", "ab.chatgpt.com")
+_CLAUDE_WEB_TOOLS = "WebSearch WebFetch"
+_CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
+_GEMINI_RUNTIME_HOSTS = ("generativelanguage.googleapis.com",)
+
+_KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(
+    {
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "META_BASE_URL",
+        "OPENROUTER_BASE_URL",
+        "FIREWORKS_BASE_URL",
+        "ZAI_BASE_URL",
+        "MINIMAX_BASE_URL",
+        "MOONSHOT_BASE_URL",
+        "CURSOR_API_BASE_URL",
+        "CURSOR_API_ENDPOINT",
+        "GEMINI_API_BASE_URL",
+        "GOOGLE_API_BASE_URL",
+        "GOOGLE_GEMINI_BASE_URL",
+    }
+)
+_OPENAI_BASE_URL_KEYS = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
+_GEMINI_BASE_URL_KEYS = (
+    "GOOGLE_GEMINI_BASE_URL",
+    "GEMINI_API_BASE_URL",
+    "GOOGLE_API_BASE_URL",
+)
+_CURSOR_BASE_URL_KEYS = ("CURSOR_API_BASE_URL", "CURSOR_API_ENDPOINT")
+
+# These are deliberately ordinary underscore attributes rather than Pydantic
+# fields. Harbor receives the values in memory, while JobConfig/TrialConfig
+# serialization ignores them. This keeps worker-only routes out of config.json,
+# result.json, lock files, and uploaded artifacts.
+RUNTIME_ALLOWED_HOSTS_ATTR = "_oddish_runtime_allowed_hosts"
+RUNTIME_MODEL_NAME_ATTR = "_oddish_runtime_model_name"
+
+_SAFE_PROFILE_ENV_KEYS = frozenset(
+    {
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "META_BASE_URL",
+        "OPENROUTER_BASE_URL",
+        "FIREWORKS_BASE_URL",
+        "ZAI_BASE_URL",
+        "MINIMAX_BASE_URL",
+        "MOONSHOT_BASE_URL",
+        "CURSOR_API_BASE_URL",
+        "CURSOR_API_ENDPOINT",
+        "GEMINI_API_BASE_URL",
+        "GOOGLE_API_BASE_URL",
+        "GOOGLE_GEMINI_BASE_URL",
+        "GEMINI_FORCE_OAUTH",
+        "GEMINI_OAUTH_CREDS_PATH",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+    }
+)
+
+_CURSOR_ENV_OVERRIDES: dict[str, str] = {
+    "CURSOR_FORCED_SHELL_EGRESS": "1",
+    "CURSOR_FORCED_SHELL_EGRESS_ALLOW_WEB_TOOLS": "0",
+    # Harbor owns the outer process/network boundary.  Preserve normal task
+    # filesystem and inner-network semantics in Cursor's nested shell sandbox.
+    "CURSOR_FORCED_SHELL_EGRESS_NETWORK_DEFAULT": "allow",
+    "CURSOR_FORCED_SHELL_EGRESS_WRITABLE_PATHS": "/",
+}
+
+
+def _class_path(agent_class: type[Any]) -> str:
+    return f"{agent_class.__module__}:{agent_class.__qualname__}"
+
+
+def set_runtime_allowed_hosts(
+    agent_config: AgentConfig, hosts: tuple[str, ...]
+) -> None:
+    """Attach worker-only network routes without serializing them."""
+    object.__setattr__(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR, hosts)
+
+
+def set_runtime_model_name(agent_config: AgentConfig, model_name: str) -> None:
+    """Attach a worker-only provider deployment without serializing it."""
+    object.__setattr__(agent_config, RUNTIME_MODEL_NAME_ATTR, model_name)
+
+
+def is_static_restricted_agent_supported(agent_config: AgentConfig) -> bool:
+    """Static closed environments are safe only for setup-free stock agents."""
+    return _class_path(resolve_effective_agent_class(agent_config)) in {
+        "harbor.agents.nop:NopAgent",
+        "harbor.agents.oracle:OracleAgent",
+    }
+
+
+def resolve_effective_agent_class(agent_config: AgentConfig) -> type[Any]:
+    """Resolve exactly the class Harbor will instantiate, without constructing it."""
+    import_path = agent_config.import_path
+    name = agent_config.name
+
+    # Mirror AgentFactory's unified --agent handling for custom import paths.
+    if (
+        import_path is None
+        and name is not None
+        and ":" in name
+        and not is_acp_registry_shorthand(name)
+    ):
+        import_path, name = name, None
+
+    if import_path is not None:
+        return cast(type[Any], import_class(import_path, label="agent"))
+    if name is None:
+        raise RestrictedNetworkProfileError(
+            "Restricted agent phase requires an agent name or import_path."
+        )
+    try:
+        agent_name = AgentName(name)
+    except ValueError as exc:
+        # ACP registry shorthand and future aliases cannot be safely inferred.
+        # They can opt in through a concrete import_path with the structural
+        # capability hook instead of silently receiving public egress.
+        raise RestrictedNetworkProfileError(
+            f"Restricted agent phase cannot resolve effective agent class for {name!r}; "
+            "use an import_path whose class declares restricted_network_profile()."
+        ) from exc
+    return cast(type[Any], AgentFactory.get_agent_class(agent_name))
+
+
+def _coerce_profile(
+    raw: RestrictedNetworkProfile | Mapping[str, Any] | None,
+    *,
+    agent_class: type[Any],
+) -> RestrictedNetworkProfile:
+    if raw is None:
+        raise RestrictedNetworkProfileError(
+            f"{_class_path(agent_class)} does not declare a safe restricted-network "
+            "profile. Add restricted_network_profile() or run a public agent phase."
+        )
+    if isinstance(raw, RestrictedNetworkProfile):
+        profile = raw
+    elif isinstance(raw, Mapping):
+        allowed_keys = {
+            "outbound_hosts",
+            "env_overrides",
+            "kwarg_overrides",
+            "server_web_disabled",
+        }
+        unexpected = set(raw) - allowed_keys
+        if unexpected:
+            raise RestrictedNetworkProfileError(
+                f"{_class_path(agent_class)} returned unknown restricted-network "
+                f"profile fields: {sorted(unexpected)}"
+            )
+        try:
+            profile = RestrictedNetworkProfile(
+                outbound_hosts=tuple(raw.get("outbound_hosts") or ()),
+                env_overrides=dict(raw.get("env_overrides") or {}),
+                kwarg_overrides=dict(raw.get("kwarg_overrides") or {}),
+                server_web_disabled=raw.get("server_web_disabled") is True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise RestrictedNetworkProfileError(
+                f"{_class_path(agent_class)} returned an invalid restricted-network profile."
+            ) from exc
+    else:
+        raise RestrictedNetworkProfileError(
+            f"{_class_path(agent_class)} returned unsupported restricted-network "
+            f"profile type {type(raw).__name__}."
+        )
+
+    if not profile.server_web_disabled:
+        raise RestrictedNetworkProfileError(
+            f"{_class_path(agent_class)} did not attest that server-side web tools "
+            "are disabled; refusing to start a restricted agent phase."
+        )
+    try:
+        outbound_hosts = tuple(normalize_allowed_hosts(list(profile.outbound_hosts)))
+    except (TypeError, ValueError) as exc:
+        raise RestrictedNetworkProfileError(
+            f"{_class_path(agent_class)} returned invalid outbound hosts."
+        ) from exc
+    return RestrictedNetworkProfile(
+        outbound_hosts=outbound_hosts,
+        env_overrides=dict(profile.env_overrides),
+        kwarg_overrides=dict(profile.kwarg_overrides),
+        server_web_disabled=True,
+    )
+
+
+ProfileFactory = Callable[
+    [type[Any], AgentConfig, Mapping[str, str]], RestrictedNetworkProfile
+]
+
+
+def _selected_transport_hosts(
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+    *,
+    base_url_keys: tuple[str, ...],
+    default_hosts: tuple[str, ...] = (),
+    infer_model: bool = True,
+) -> tuple[str, ...]:
+    """Resolve one restricted-Compose transport without widening by union.
+
+    The legacy host helper intentionally unions every base URL it sees. That is
+    useful for existing runners whose setup and model transports share one
+    allowlist, but it is unsafe for the agent-only Compose boundary: an
+    unrelated worker ``*_BASE_URL`` would become public egress. The effective
+    agent adapter therefore declares exactly which aliases it consumes. Any
+    other known route, or two conflicting aliases for the selected route,
+    fails closed before Harbor constructs the job.
+    """
+    selected_keys = frozenset(base_url_keys)
+    configured = {
+        key: value.strip()
+        for key, value in resolved_env.items()
+        if key in _KNOWN_TRANSPORT_BASE_URL_KEYS and value.strip()
+    }
+    irrelevant = sorted(set(configured) - selected_keys)
+    if irrelevant:
+        raise RestrictedNetworkProfileError(
+            "Restricted agent transport received base URL settings that its "
+            f"effective agent does not consume: {', '.join(irrelevant)}."
+        )
+
+    selected = {key: configured[key] for key in base_url_keys if key in configured}
+    canonical_values = {value.rstrip("/") for value in selected.values()}
+    if len(canonical_values) > 1:
+        raise RestrictedNetworkProfileError(
+            "Restricted agent transport received conflicting aliases for its "
+            f"selected base URL: {', '.join(sorted(selected))}."
+        )
+    if selected:
+        hosts = {
+            host
+            for value in selected.values()
+            if (host := normalize_domain_or_url(value))
+        }
+        if len(hosts) != 1:
+            raise RestrictedNetworkProfileError(
+                "Restricted agent transport base URL is invalid."
+            )
+        return tuple(hosts)
+
+    inferred = (
+        tuple(outbound_hosts_for_model(agent_config.model_name)) if infer_model else ()
+    )
+    return inferred or default_hosts
+
+
+def _model_transport_base_url_keys(model_name: str | None) -> tuple[str, ...]:
+    """Base URL aliases consumed by LiteLLM-style model transports."""
+    raw = (model_name or "").strip().lower()
+    provider = raw.partition("/")[0] if "/" in raw else ""
+    return {
+        "anthropic": ("ANTHROPIC_BASE_URL",),
+        "anthropic-hdo": ("ANTHROPIC_BASE_URL",),
+        "openai": _OPENAI_BASE_URL_KEYS,
+        "meta": ("META_BASE_URL", *_OPENAI_BASE_URL_KEYS),
+        "openrouter": ("OPENROUTER_BASE_URL",),
+        "fireworks": ("FIREWORKS_BASE_URL",),
+        "zai": ("ZAI_BASE_URL",),
+        "minimax": ("MINIMAX_BASE_URL",),
+        "moonshot": ("MOONSHOT_BASE_URL",),
+        "google": _GEMINI_BASE_URL_KEYS,
+        "gemini": _GEMINI_BASE_URL_KEYS,
+    }.get(provider, ())
+
+
+def _transport_free_profile(
+    _agent_class: type[Any],
+    _agent_config: AgentConfig,
+    _resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    return RestrictedNetworkProfile(server_web_disabled=True)
+
+
+def _claude_profile(
+    _agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    hosts = _selected_transport_hosts(
+        agent_config,
+        resolved_env,
+        base_url_keys=("ANTHROPIC_BASE_URL",),
+        default_hosts=_ANTHROPIC_RUNTIME_HOSTS,
+    )
+    return RestrictedNetworkProfile(
+        outbound_hosts=hosts,
+        kwarg_overrides={"disallowed_tools": _CLAUDE_WEB_TOOLS},
+        server_web_disabled=True,
+    )
+
+
+def _codex_profile(
+    _agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    hosts = _selected_transport_hosts(
+        agent_config,
+        resolved_env,
+        base_url_keys=_OPENAI_BASE_URL_KEYS,
+        default_hosts=_OPENAI_RUNTIME_HOSTS,
+    )
+    return RestrictedNetworkProfile(
+        outbound_hosts=hosts,
+        kwarg_overrides={"web_search": "disabled"},
+        server_web_disabled=True,
+    )
+
+
+def _grok_profile(
+    _agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    return RestrictedNetworkProfile(
+        outbound_hosts=_selected_transport_hosts(
+            agent_config,
+            resolved_env,
+            base_url_keys=(),
+        ),
+        kwarg_overrides={"disable_web_search": True},
+        server_web_disabled=True,
+    )
+
+
+def _mini_swe_profile(
+    _agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    # mini-swe-agent has no provider-side web search/fetch tool. Its shell is
+    # still constrained by Harbor's network namespace policy.
+    return RestrictedNetworkProfile(
+        outbound_hosts=_selected_transport_hosts(
+            agent_config,
+            resolved_env,
+            base_url_keys=_model_transport_base_url_keys(agent_config.model_name),
+        ),
+        server_web_disabled=True,
+    )
+
+
+def _cursor_profile(
+    _agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    selected = _selected_transport_hosts(
+        agent_config,
+        resolved_env,
+        base_url_keys=_CURSOR_BASE_URL_KEYS,
+        infer_model=False,
+    )
+    # Cursor is transport-authoritative: its service fronts the selected model.
+    # This list is complete, rather than being OR'd with an unrelated provider
+    # fallback. Custom subclasses can instead return their own full union from
+    # restricted_network_profile().
+    hosts = tuple(dict.fromkeys([*_CURSOR_RUNTIME_HOSTS, *selected]))
+    return RestrictedNetworkProfile(
+        outbound_hosts=tuple(hosts),
+        env_overrides=_CURSOR_ENV_OVERRIDES,
+        server_web_disabled=True,
+    )
+
+
+def _gemini_profile(
+    _agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    env = dict(resolved_env)
+    uses_oauth = bool(env.get("GEMINI_OAUTH_CREDS_PATH")) or env.get(
+        "GEMINI_FORCE_OAUTH", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    uses_vertex = env.get("GOOGLE_GENAI_USE_VERTEXAI", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    has_custom_base_url = any(env.get(key, "").strip() for key in _GEMINI_BASE_URL_KEYS)
+    if uses_oauth:
+        raise RestrictedNetworkProfileError(
+            "Restricted Gemini CLI phases do not support OAuth transport because "
+            "its runtime service hosts are not bounded. Use API-key auth with an "
+            "explicit GOOGLE_GEMINI_BASE_URL or a public agent phase."
+        )
+    if uses_vertex and not has_custom_base_url:
+        raise RestrictedNetworkProfileError(
+            "Restricted Gemini CLI phases require an explicit "
+            "GOOGLE_GEMINI_BASE_URL for Vertex transport."
+        )
+    hosts = _selected_transport_hosts(
+        agent_config,
+        resolved_env,
+        base_url_keys=_GEMINI_BASE_URL_KEYS,
+        default_hosts=_GEMINI_RUNTIME_HOSTS,
+    )
+    return RestrictedNetworkProfile(
+        outbound_hosts=hosts,
+        env_overrides={
+            "GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/etc/gemini-cli/settings.json"
+        },
+        kwarg_overrides={"disable_web_tools": True},
+        server_web_disabled=True,
+    )
+
+
+# Temporary exact-class adapters for the stock implementations Oddish operates.
+# A subclass is new executable code and must either appear here explicitly or
+# define its own local capability hook; inheriting a trusted profile is unsafe.
+_COMPATIBILITY_PROFILES: dict[str, ProfileFactory] = {
+    "harbor.agents.nop:NopAgent": _transport_free_profile,
+    "harbor.agents.oracle:OracleAgent": _transport_free_profile,
+    "harbor.agents.installed.claude_code:ClaudeCode": _claude_profile,
+    "harbor.agents.installed.codex:Codex": _codex_profile,
+    "harbor.agents.installed.cursor_cli:CursorCli": _cursor_profile,
+    "harbor.agents.installed.mini_swe_agent:MiniSweAgent": _mini_swe_profile,
+    "oddish.workers.agents.claude_code:OddishClaudeCode": _claude_profile,
+    "oddish.workers.agents.claude_code:OddishProbeClaudeCode": _claude_profile,
+    "oddish.workers.agents.codex:OddishCodex": _codex_profile,
+    "oddish.workers.agents.codex:AzureCompatibleCodex": _codex_profile,
+    "oddish.workers.agents.grok_build:OddishGrokBuild": _grok_profile,
+    "oddish.workers.agents.gemini_cli:OddishGeminiCli": _gemini_profile,
+    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent": _mini_swe_profile,
+    "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent": _mini_swe_profile,
+}
+
+
+def _compatibility_factory(agent_class: type[Any]) -> ProfileFactory | None:
+    return _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
+
+
+def _safe_hook_context(
+    resolved_env: Mapping[str, str], kwargs: Mapping[str, Any]
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Expose routing metadata, never worker credentials, to custom hooks."""
+    safe_env = {
+        key: value
+        for key, value in resolved_env.items()
+        if key in _SAFE_PROFILE_ENV_KEYS
+    }
+    sensitive_fragments = ("key", "token", "secret", "password", "credential")
+
+    def without_credentials(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                key: without_credentials(item)
+                for key, item in value.items()
+                if not any(
+                    fragment in str(key).lower() for fragment in sensitive_fragments
+                )
+            }
+        if isinstance(value, list):
+            return [without_credentials(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(without_credentials(item) for item in value)
+        return value
+
+    safe_kwargs = without_credentials(kwargs)
+    return safe_env, safe_kwargs
+
+
+def restricted_network_profile_for_config(
+    agent_config: AgentConfig,
+    *,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    """Resolve and validate one complete profile for the effective agent class."""
+    agent_class = resolve_effective_agent_class(agent_config)
+    # Only a hook defined by this exact class is trusted. ``getattr`` alone
+    # would let an arbitrary subclass inherit a stock agent's attestation.
+    local_hook = agent_class.__dict__.get("restricted_network_profile")
+    hook = getattr(agent_class, "restricted_network_profile", None)
+    if local_hook is not None and callable(hook):
+        safe_env, safe_kwargs = _safe_hook_context(
+            resolved_env, dict(agent_config.kwargs or {})
+        )
+        raw = hook(
+            model_name=agent_config.model_name,
+            env=safe_env,
+            kwargs=safe_kwargs,
+        )
+    else:
+        factory = _compatibility_factory(agent_class)
+        raw = (
+            factory(agent_class, agent_config, resolved_env)
+            if factory is not None
+            else None
+        )
+    return _coerce_profile(raw, agent_class=agent_class)
+
+
+def apply_restricted_network_profile(
+    *,
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+    runtime_only_hosts: bool = False,
+) -> RestrictedNetworkProfile:
+    """Force-apply a validated profile and return it for setup host handling."""
+    profile = restricted_network_profile_for_config(
+        agent_config,
+        resolved_env=resolved_env,
+    )
+    if runtime_only_hosts:
+        set_runtime_allowed_hosts(agent_config, profile.outbound_hosts)
+    else:
+        agent_config.extra_allowed_hosts = list(
+            dict.fromkeys([*agent_config.extra_allowed_hosts, *profile.outbound_hosts])
+        )
+    kwargs = dict(agent_config.kwargs or {})
+    kwargs.update(profile.kwarg_overrides)
+    agent_config.kwargs = kwargs
+    env = dict(agent_config.env or {})
+    env.update(profile.env_overrides)
+    agent_config.env = env
+    return profile

@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest  # noqa: E402
+from pydantic import BaseModel, ConfigDict  # noqa: E402
 from harbor.models.environment_type import EnvironmentType  # noqa: E402
 from harbor.models.trial.config import (  # noqa: E402
     AgentConfig as HarborAgentConfig,
@@ -28,6 +29,10 @@ from oddish.workers.agents.grok_build_trajectory import (  # noqa: E402
 from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
 from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
 from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
+from oddish.workers.harbor.restricted_network import (  # noqa: E402
+    RUNTIME_ALLOWED_HOSTS_ATTR,
+    RUNTIME_MODEL_NAME_ATTR,
+)
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -61,7 +66,9 @@ network_mode = "{agent_mode}"
     return task_path
 
 
-@pytest.mark.parametrize("environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL])
+@pytest.mark.parametrize(
+    "environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL]
+)
 def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     monkeypatch, tmp_path, environment_type
 ):
@@ -97,20 +104,94 @@ def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
     }
 
 
-def test_apply_restricted_agent_network_defaults_disables_web_tools(
+def test_compose_restricted_profile_keeps_runtime_host_out_of_config(tmp_path):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="codex",
+        model_name="example-model",
+        extra_allowed_hosts=["existing.test"],
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+        runtime_transport_env={"OPENAI_BASE_URL": "https://model.test/v1"},
+    )
+
+    assert agent_config.extra_allowed_hosts == ["existing.test"]
+    assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("model.test",)
+    assert "model.test" not in agent_config.model_dump_json()
+    assert agent_config.kwargs["web_search"] == "disabled"
+
+
+def test_compose_transport_ignores_unrelated_worker_route_for_other_agent(
     monkeypatch, tmp_path
 ):
-    task_path = _write_network_policy_task(tmp_path)
-    environment_config = HarborEnvironmentConfig(type=EnvironmentType.MODAL)
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://worker-gemini-route.test/v1")
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="codex", model_name="openai/model")
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {"OPENAI_BASE_URL": "https://selected-openai-route.test/v1"},
+        agent_config=agent_config,
+    )
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+        runtime_transport_env=runtime_env,
+    )
+
+    assert runtime_env == {"OPENAI_BASE_URL": "https://selected-openai-route.test/v1"}
+    assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == (
+        "selected-openai-route.test",
+    )
+
+
+def test_compose_transport_validates_selected_agent_extra_env(tmp_path):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="codex",
+        model_name="openai/model",
+        kwargs={
+            "extra_env": {
+                "OPENAI_BASE_URL": "https://selected-openai-route.test/v1",
+                "ANTHROPIC_BASE_URL": "https://irrelevant-route.test/v1",
+            }
+        },
+    )
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="ANTHROPIC_BASE_URL",
+    ):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=environment_config,
+            agent_config=agent_config,
+        )
+
+
+@pytest.mark.parametrize(
+    ("environment_type", "compose"),
+    [
+        (EnvironmentType.DAYTONA, True),
+    ],
+)
+def test_apply_restricted_agent_network_defaults_disables_web_tools(
+    tmp_path, environment_type, compose
+):
+    task_path = _write_network_policy_task(tmp_path, compose=compose)
+    environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(
         name="claude-code",
         model_name="anthropic/claude-opus-4-8",
+        env={"ANTHROPIC_BASE_URL": "https://model.test/v1"},
         kwargs={"effort": "max"},
-    )
-    monkeypatch.setattr(
-        harbor_runner,
-        "outbound_hosts_for_model",
-        lambda *args, **kwargs: ["api.anthropic.com"],
     )
 
     harbor_runner._apply_restricted_agent_network_defaults(
@@ -119,9 +200,50 @@ def test_apply_restricted_agent_network_defaults_disables_web_tools(
         agent_config=agent_config,
     )
 
-    assert agent_config.extra_allowed_hosts == ["api.anthropic.com"]
+    assert agent_config.extra_allowed_hosts == []
+    assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("model.test",)
     assert agent_config.kwargs["disallowed_tools"] == "WebSearch WebFetch"
     assert agent_config.kwargs["effort"] == "max"
+
+
+def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="cursor-cli",
+        model_name="cursor/composer",
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert agent_config.extra_allowed_hosts == []
+    assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("*.cursor.sh",)
+    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS"] == "1"
+    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_ALLOW_WEB_TOOLS"] == "0"
+    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_NETWORK_DEFAULT"] == "allow"
+    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_WRITABLE_PATHS"] == "/"
+
+
+def test_restricted_cursor_does_not_allow_underlying_model_provider(tmp_path):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(
+        name="cursor-cli",
+        model_name="openai/gpt-5",
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert agent_config.extra_allowed_hosts == []
+    assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("*.cursor.sh",)
 
 
 @pytest.mark.parametrize(
@@ -167,6 +289,256 @@ def test_inject_restricted_agent_model_hosts_skips_unsupported_shapes(
 
     assert host_calls == 0
     assert agent_config.extra_allowed_hosts == []
+
+
+def test_daytona_compose_restriction_classifier_is_shape_scoped(tmp_path):
+    dynamic = _write_network_policy_task(tmp_path / "dynamic", compose=True)
+    static = _write_network_policy_task(
+        tmp_path / "static",
+        environment_mode="no-network",
+        agent_mode="no-network",
+        compose=True,
+    )
+    public = _write_network_policy_task(
+        tmp_path / "public",
+        environment_mode="public",
+        agent_mode="public",
+        compose=True,
+    )
+    single = _write_network_policy_task(tmp_path / "single")
+    kube = _write_network_policy_task(tmp_path / "kube", compose=True)
+    chart = kube / "environment" / "chart"
+    chart.mkdir()
+    (chart / "Chart.yaml").write_text("apiVersion: v2\nname: test\nversion: 0.1.0\n")
+
+    daytona = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    modal = HarborEnvironmentConfig(type=EnvironmentType.MODAL)
+    docker = HarborEnvironmentConfig(type=EnvironmentType.DOCKER)
+
+    assert (
+        harbor_runner._daytona_compose_restriction_kind(
+            task_path=dynamic, environment_config=daytona
+        )
+        == "dynamic"
+    )
+    assert (
+        harbor_runner._daytona_compose_restriction_kind(
+            task_path=static, environment_config=daytona
+        )
+        == "static"
+    )
+    for task_path, environment_config in (
+        (public, daytona),
+        (single, daytona),
+        (kube, daytona),
+        (dynamic, modal),
+        (dynamic, docker),
+    ):
+        assert (
+            harbor_runner._daytona_compose_restriction_kind(
+                task_path=task_path,
+                environment_config=environment_config,
+            )
+            == "none"
+        )
+
+
+def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
+    monkeypatch, tmp_path
+):
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    jobs_dir = tmp_path / "jobs"
+    runtime_endpoint = "https://private-model.test/openai/v1"
+    runtime_secret = "runtime-secret-value"
+    runtime_deployment = "private-deployment-name"
+    captured: dict[str, object] = {}
+
+    class _FakeJob:
+        def __init__(self, config):
+            self.config = config
+            self.job_dir = config.jobs_dir / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            captured["config"] = config
+            captured["ambient_endpoint"] = os.environ.get("OPENAI_BASE_URL")
+            captured["ambient_secret"] = os.environ.get("OPENAI_API_KEY")
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            leaked = f"{runtime_endpoint}\n{runtime_secret}\n{runtime_deployment}\n"
+            (self.job_dir / "agent.log").write_text(leaked, encoding="utf-8")
+            (self.job_dir / "result.json").write_text(leaked, encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(harbor_runner, "apply_harbor_patches", lambda: None)
+    monkeypatch.setattr(harbor_runner, "get_backend", lambda value: None)
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        harbor_runner, "_trial_uses_openai_provider", lambda **kwargs: True
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "_trial_requested_model",
+        lambda **kwargs: ("codex", "openai/public-model"),
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "_build_agent_config",
+        lambda **kwargs: HarborAgentConfig(
+            import_path="oddish.workers.agents.codex:AzureCompatibleCodex",
+            model_name=runtime_deployment,
+        ),
+    )
+    monkeypatch.setattr(
+        type(harbor_runner.settings),
+        "get_openai_provider",
+        lambda self: "azure",
+    )
+    monkeypatch.setattr(
+        type(harbor_runner.settings),
+        "get_openai_agent_env",
+        lambda self, **kwargs: {
+            "OPENAI_API_KEY": runtime_secret,
+            "OPENAI_BASE_URL": runtime_endpoint,
+        },
+    )
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="codex",
+            model="openai/public-model",
+            jobs_dir=jobs_dir,
+            environment=EnvironmentType.DAYTONA,
+        )
+    )
+
+    assert outcome.reward == 1.0
+    config = captured["config"]
+    agent_config = config.agents[0]
+    assert agent_config.model_name == "openai/public-model"
+    assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == runtime_deployment
+    assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("private-model.test",)
+    serialized = config.model_dump_json()
+    assert runtime_endpoint not in serialized
+    assert runtime_secret not in serialized
+    assert runtime_deployment not in serialized
+    assert captured["ambient_endpoint"] == runtime_endpoint
+    assert captured["ambient_secret"] == runtime_secret
+    for output_name in ("agent.log", "result.json"):
+        output = (outcome.job_dir / output_name).read_text()
+        assert runtime_endpoint not in output
+        assert runtime_secret not in output
+        assert runtime_deployment not in output
+
+
+def test_runtime_transport_artifact_redaction_is_streaming_binary_and_atomic(
+    monkeypatch, tmp_path
+):
+    secret = "runtime-secret-crosses-boundary"
+    replacement = "[REDACTED]"
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"\x00prefix:" + secret.encode() + b":suffix\xff")
+    monkeypatch.setattr(harbor_runner, "_ARTIFACT_REDACTION_CHUNK_BYTES", 7)
+
+    harbor_runner._redact_runtime_transport_file(artifact, {secret: replacement})
+
+    output = artifact.read_bytes()
+    assert secret.encode() not in output
+    assert replacement.encode() in output
+    assert output.startswith(b"\x00prefix:")
+    assert output.endswith(b":suffix\xff")
+    assert list(tmp_path.glob(".oddish-redact-*")) == []
+
+
+def test_runtime_transport_redacts_before_lifecycle_callback() -> None:
+    runtime_endpoint = "https://private-model-route.test/openai/v1"
+    runtime_secret = "private-runtime-secret"
+    environment_handle = object()
+    seen = []
+
+    class _HookEvent(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+
+        payload: dict[str, object]
+        environment: object | None = None
+
+    async def callback(event):
+        seen.append(event)
+
+    wrapped = harbor_runner._redacting_hook_callback(
+        callback,
+        {
+            runtime_endpoint: "https://runtime-model-endpoint.invalid",
+            runtime_secret: "[REDACTED]",
+        },
+    )
+    assert wrapped is not None
+    asyncio.run(
+        wrapped(
+            _HookEvent(
+                payload={
+                    "warning": f"setup saw {runtime_endpoint}",
+                    "nested": {"error": runtime_secret},
+                },
+                environment=environment_handle,
+            )
+        )
+    )
+
+    assert len(seen) == 1
+    serialized = json.dumps(seen[0].payload)
+    assert runtime_endpoint not in serialized
+    assert runtime_secret not in serialized
+    assert "runtime-model-endpoint.invalid" in serialized
+    assert "[REDACTED]" in serialized
+    assert seen[0].environment is environment_handle
+
+
+def test_lifecycle_redaction_strips_worker_only_agent_attributes() -> None:
+    config = HarborAgentConfig(name="codex", model_name="openai/public-model")
+    object.__setattr__(
+        config,
+        RUNTIME_ALLOWED_HOSTS_ATTR,
+        ("private-runtime-route.test",),
+    )
+    object.__setattr__(
+        config,
+        RUNTIME_MODEL_NAME_ATTR,
+        "private-runtime-deployment",
+    )
+
+    redacted = harbor_runner._redact_runtime_transport_value(
+        config,
+        {
+            "private-runtime-route.test": "runtime-model-endpoint.invalid",
+            "private-runtime-deployment": "openai/public-model",
+        },
+    )
+
+    assert not hasattr(redacted, RUNTIME_ALLOWED_HOSTS_ATTR)
+    assert not hasattr(redacted, RUNTIME_MODEL_NAME_ATTR)
+    assert redacted.model_name == "openai/public-model"
 
 
 def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
@@ -2925,9 +3297,7 @@ def test_ephemeral_gke_trial_receives_sized_env_build_multiplier(tmp_path, monke
             job_dir=None,
         )
 
-    monkeypatch.setattr(
-        harbor_ephemeral, "run_ephemeral_harbor_trial", _fake_ephemeral
-    )
+    monkeypatch.setattr(harbor_ephemeral, "run_ephemeral_harbor_trial", _fake_ephemeral)
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
     )
@@ -2979,9 +3349,7 @@ def test_ephemeral_non_gke_trial_passes_caller_env_build_multiplier_through(
             job_dir=None,
         )
 
-    monkeypatch.setattr(
-        harbor_ephemeral, "run_ephemeral_harbor_trial", _fake_ephemeral
-    )
+    monkeypatch.setattr(harbor_ephemeral, "run_ephemeral_harbor_trial", _fake_ephemeral)
     monkeypatch.setattr(
         harbor_runner, "validate_task_timeout_config", lambda path: None
     )

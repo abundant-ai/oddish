@@ -1,10 +1,10 @@
-"""Model/provider → outbound API hosts for restricted-network trials.
+"""Agent/model → outbound API hosts for restricted-network trials.
 
 Oddish routes many providers through the same agent harness (notably
-``claude-code``). The model id — not the agent name — decides which API host
-must be reachable. Prefer hosts already present in the trial's agent env
-(base URLs set by provider routing), then fall back to Oddish's model
-classifiers and default base URLs.
+``claude-code``), so the model id usually decides which API host must be
+reachable. Harnesses that front models through their own service (Cursor CLI)
+also contribute runtime hosts. Prefer hosts already present in the trial's
+agent env, then fall back to Oddish's classifiers and default base URLs.
 """
 
 from __future__ import annotations
@@ -32,6 +32,11 @@ from oddish.config import (
 )
 from oddish.workers.agents.network import normalize_domain_or_url
 
+_CURSOR_BASE_URL_ENV_KEYS = (
+    "CURSOR_API_BASE_URL",
+    "CURSOR_API_ENDPOINT",
+)
+
 _BASE_URL_ENV_KEYS = (
     "ANTHROPIC_BASE_URL",
     "OPENAI_BASE_URL",
@@ -42,11 +47,20 @@ _BASE_URL_ENV_KEYS = (
     "ZAI_BASE_URL",
     "MINIMAX_BASE_URL",
     "MOONSHOT_BASE_URL",
+    "GOOGLE_GEMINI_BASE_URL",
+    "GEMINI_API_BASE_URL",
+    "GOOGLE_API_BASE_URL",
+    *_CURSOR_BASE_URL_ENV_KEYS,
 )
 
 _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")
 _GEMINI_HOSTS = ("generativelanguage.googleapis.com",)
+# Cursor CLI fronts every selectable model through Cursor's own API. Its
+# bootstrap endpoint returns the agent-stream URL at runtime (currently under
+# api5), and the installer is intentionally unpinned. Use Cursor's official
+# domain boundary instead of encoding ephemeral transport hostnames.
+_CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"
 _BEDROCK_STS_DOMAINS = ("sts.amazonaws.com",)
@@ -100,11 +114,15 @@ def _host_from_url(value: str | None) -> str | None:
     return normalize_domain_or_url(value)
 
 
-def _hosts_from_env(env: Mapping[str, str] | None) -> list[str]:
+def _hosts_from_env(
+    env: Mapping[str, str] | None,
+    *,
+    keys: tuple[str, ...] = _BASE_URL_ENV_KEYS,
+) -> list[str]:
     if not env:
         return []
     hosts: list[str] = []
-    for key in _BASE_URL_ENV_KEYS:
+    for key in keys:
         host = _host_from_url(env.get(key))
         if host:
             hosts.append(host)
@@ -115,11 +133,38 @@ def _default_host(url: str) -> str | None:
     return _host_from_url(url)
 
 
+def outbound_hosts_for_agent(
+    agent_name: str | None,
+    *,
+    import_path: str | None = None,
+    agent_env: Mapping[str, str] | None = None,
+    agent_kwargs: dict[str, Any] | None = None,
+) -> list[str]:
+    """Return API hosts required by an agent harness itself.
+
+    Most harnesses call the provider named by ``model_name`` directly. Cursor
+    CLI is different: all model choices are transported through Cursor's API,
+    so its runtime hosts must be allowed even when the selected model id has a
+    non-Cursor provider prefix.
+    """
+    name = (agent_name or "").strip().lower()
+    path = (import_path or "").strip().lower()
+    if name == "cursor-cli" or name.startswith("cursor-cli-") or "cursor_cli" in path:
+        hosts = list(_CURSOR_RUNTIME_HOSTS)
+        hosts.extend(_hosts_from_env(agent_env, keys=_CURSOR_BASE_URL_ENV_KEYS))
+        extra_env = (agent_kwargs or {}).get("extra_env")
+        if isinstance(extra_env, dict):
+            hosts.extend(_hosts_from_env(extra_env, keys=_CURSOR_BASE_URL_ENV_KEYS))
+        return list(dict.fromkeys(hosts))
+    return []
+
+
 def outbound_hosts_for_model(
     model_name: str | None,
     *,
     agent_env: Mapping[str, str] | None = None,
     agent_kwargs: dict[str, Any] | None = None,
+    prefer_exact_base_url: bool = False,
 ) -> list[str]:
     """Return API hosts the trial must reach for *model_name*.
 
@@ -135,6 +180,12 @@ def outbound_hosts_for_model(
     extra_env = (agent_kwargs or {}).get("extra_env")
     if isinstance(extra_env, dict):
         hosts.extend(_hosts_from_env(extra_env))
+
+    # Daytona Compose/DinD callers can request the normalized per-trial route
+    # as authoritative. The default remains the historical union used by
+    # Modal and single-container trials.
+    if hosts and prefer_exact_base_url:
+        return list(dict.fromkeys(hosts))
 
     if is_fireworks_model(model_name):
         host = _default_host(
@@ -189,6 +240,8 @@ def outbound_hosts_for_model(
                     hosts.append(azure_host)
         elif head in ("gemini", "google"):
             hosts.extend(_GEMINI_HOSTS)
+        elif head == "cursor":
+            hosts.extend(_CURSOR_RUNTIME_HOSTS)
         elif head == "bedrock":
             hosts.extend(bedrock_domains_for_model(model_name=model_name))
         elif not head and not hosts and raw.startswith("claude-"):

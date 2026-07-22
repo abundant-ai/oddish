@@ -49,9 +49,96 @@ def apply_harbor_patches() -> None:
     global _PATCHED
     if _PATCHED:
         return
+    _patch_restricted_network_runtime_fields()
     _patch_daytona_dind()
     _patch_modal_dind()
     _PATCHED = True
+
+
+def _patch_restricted_network_runtime_fields() -> None:
+    """Teach Harbor to consume Oddish's non-serialized runtime fields.
+
+    The fields are attached only to restricted Daytona Compose AgentConfig
+    instances. Public, single-container, Modal, Kubernetes, and local Docker
+    configs never carry them, so their behavior remains byte-for-byte the
+    upstream path.
+    """
+    from harbor.agents.factory import AgentFactory
+    from harbor.trial import network_policy as network_policy_module
+
+    from .restricted_network import (
+        RUNTIME_ALLOWED_HOSTS_ATTR,
+        RUNTIME_MODEL_NAME_ATTR,
+    )
+
+    original_policy = network_policy_module.resolve_agent_phase_policy
+    if not getattr(original_policy, "_oddish_runtime_fields_wrapped", False):
+
+        def resolve_agent_phase_policy(
+            task_cfg: Any,
+            trial_agent_cfg: Any,
+            agent_env_baseline: Any,
+            step_cfg: Any = None,
+        ) -> Any:
+            policy = original_policy(
+                task_cfg,
+                trial_agent_cfg,
+                agent_env_baseline,
+                step_cfg,
+            )
+            runtime_hosts = tuple(
+                getattr(trial_agent_cfg, RUNTIME_ALLOWED_HOSTS_ATTR, ()) or ()
+            )
+            if not runtime_hosts:
+                return policy
+            return network_policy_module.merge_extra_allowlists(
+                policy,
+                network_policy_module.normalize_allowed_hosts(list(runtime_hosts)),
+            )
+
+        setattr(
+            resolve_agent_phase_policy,
+            "_oddish_runtime_fields_wrapped",
+            True,
+        )
+        network_policy_module.resolve_agent_phase_policy = resolve_agent_phase_policy
+
+    current_factory = AgentFactory.create_agent_from_config
+    if not getattr(current_factory, "_oddish_runtime_fields_wrapped", False):
+        original_factory = current_factory.__func__
+
+        def create_agent_from_config(
+            cls: type[Any],
+            config: Any,
+            logs_dir: Any,
+            **kwargs: Any,
+        ) -> Any:
+            runtime_model = getattr(config, RUNTIME_MODEL_NAME_ATTR, None)
+            if not runtime_model:
+                return original_factory(cls, config, logs_dir, **kwargs)
+
+            runtime_config = config.model_copy(deep=False)
+            runtime_config.model_name = runtime_model
+            agent = original_factory(cls, runtime_config, logs_dir, **kwargs)
+
+            # Keep provider/deployment details in the running agent, but report
+            # the submitted public model identity in result.json.
+            public_model = config.model_name
+            if public_model:
+                if "/" in public_model:
+                    provider, name = public_model.split("/", 1)
+                else:
+                    provider, name = None, public_model
+                agent._parsed_model_provider = provider
+                agent._parsed_model_name = name
+            return agent
+
+        setattr(
+            create_agent_from_config,
+            "_oddish_runtime_fields_wrapped",
+            True,
+        )
+        AgentFactory.create_agent_from_config = classmethod(create_agent_from_config)
 
 
 async def _collect_dockerd_diagnostics(strategy: Any) -> str:
@@ -263,14 +350,20 @@ def _daytona_command_with_mirror(command: str) -> str:
     if _DAYTONA_DOCKERD_MARKER not in command:
         return command
     before, after = command.split(_DAYTONA_DOCKERD_MARKER, 1)
-    existing = f"{_DAYTONA_DOCKERD_MARKER}{after}"
-    config_command = _strip_registry_mirror_flags(existing)
-    if _MIRROR_URL in existing:
+    # Keep any executable prefix (for example ``/usr/local/bin/``) attached to
+    # the daemon command in both branches.  Putting the prefix before the
+    # conditional would turn an absolute entrypoint into ``/usr/local/bin/if``.
+    daemon_command = f"{_DAYTONA_DOCKERD_MARKER}{after}"
+    existing = command
+    config_command = f"{before}{_strip_registry_mirror_flags(daemon_command)}"
+    if _MIRROR_URL in daemon_command:
         mirrored = existing
     else:
-        mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
+        mirrored = (
+            f"{before}{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
+        )
     return (
-        f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
+        f"if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
         f"2>/dev/null; then\n"
         f"{config_command}\n"
         f"else\n{mirrored}\nfi"
