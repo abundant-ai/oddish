@@ -130,10 +130,14 @@ class TrialClassifier:
         model: str = ANALYSIS_MODEL,
         verbose: bool = False,
         timeout: int = 300,
+        prompt_template: str | None = None,
     ):
         self._model = model
         self._verbose = verbose
         self._timeout = timeout
+        # Cloud QA supplies the latest QA_POST_TRIAL registry version. Keep the
+        # packaged prompt as a fallback for local/library callers without a DB.
+        self._prompt_template = prompt_template or _CLASSIFY_PROMPT
         # Usage/cost of the most recent successful CLI classification, or None.
         self.last_usage: AnalysisUsage | None = None
         self._setup_authentication()
@@ -222,7 +226,7 @@ class TrialClassifier:
         else:
             result_str = "unknown"
 
-        prompt = _CLASSIFY_PROMPT.format(
+        prompt = self._prompt_template.format(
             result=result_str,
             task_dir=str(task_dir),
             trial_dir=str(trial_dir),

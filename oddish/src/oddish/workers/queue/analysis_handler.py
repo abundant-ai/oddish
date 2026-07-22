@@ -11,7 +11,8 @@ from oddish.analyze.analysis_cost import (
     should_record_cost,
 )
 from oddish.config import settings
-from oddish.db import AnalysisStatus, TaskModel, utcnow
+from oddish.core.prompts import get_prompt_core
+from oddish.db import AnalysisStatus, PromptKind, TaskModel, utcnow
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -117,6 +118,24 @@ async def classify_trial_and_store(
         trial_harbor_config = trial.harbor_config or {}
         trial_reward = trial.reward
 
+        # The per-trial log auditor is the post-trial QA stage. Resolve its
+        # latest immutable registry version while this worker already owns a DB
+        # session; local/self-host installs without seeded prompts retain the
+        # packaged classifier prompt as a compatibility fallback.
+        post_trial_prompt: str | None = None
+        post_trial_prompt_version: int | None = None
+        try:
+            _, prompt_version = await get_prompt_core(
+                session, PromptKind.QA_POST_TRIAL.value
+            )
+            post_trial_prompt = prompt_version.content
+            post_trial_prompt_version = prompt_version.version
+        except Exception as exc:
+            console.print(
+                "[yellow]QA_POST_TRIAL prompt unavailable; using packaged "
+                f"classifier prompt: {exc}[/yellow]"
+            )
+
         # Log storage locations for debugging
         console.print(f"[dim]Task S3 key: {task_s3_key or '(not set)'}[/dim]")
         console.print(f"[dim]Trial S3 key: {trial_s3_key or '(not set)'}[/dim]")
@@ -193,6 +212,7 @@ async def classify_trial_and_store(
                 model=settings.analysis_model,
                 verbose=True,
                 timeout=ANALYSIS_TIMEOUT,  # 5 minutes
+                prompt_template=post_trial_prompt,
             )
 
             console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
@@ -213,6 +233,9 @@ async def classify_trial_and_store(
                 "recommendation": classification.recommendation,
                 "reward": classification.reward,
             }
+            if post_trial_prompt_version is not None:
+                classification_result["prompt_kind"] = PromptKind.QA_POST_TRIAL.value
+                classification_result["prompt_version"] = post_trial_prompt_version
 
             # Check if classification is a fallback (indicates Claude SDK issue)
             if "classification failed" in (classification.evidence or "").lower():

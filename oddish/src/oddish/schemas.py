@@ -1988,3 +1988,28 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PromptVersionResponse(BaseModel):
+    version: int
+    content: str
+    created_at: datetime
+    created_by: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class PromptResponse(BaseModel):
+    id: str
+    kind: str
+    description: str
+    latest_version: int | None = None  # populated by the router, not the ORM
+    version: int | None = None  # the resolved version content belongs to
+    created_at: datetime
+    updated_at: datetime
+    content: str | None = None  # resolved latest/selected version content
+    model_config = {"from_attributes": True}
+
+
+class PromptSetRequest(BaseModel):
+    content: str
+    description: str | None = None

@@ -159,6 +159,15 @@ High-level flow:
    are stored in `trials.result`. Use the CLI or dashboard to watch progress and
    pull logs/artifacts back locally.
 
+QA analyzer prompts are stored in the versioned `prompts` / `prompt_versions`
+registry. `PromptKind.QA_PRE_TRIAL` drives the source audit and
+`PromptKind.QA_POST_TRIAL` drives the existing per-trial log classifier. Prompt
+updates append immutable versions and the highest version always runs. Workers
+seed missing built-in kinds at startup without overwriting operator edits. A
+trial classification records the post-trial prompt kind and version in
+`trials.analysis`; local/library classification without a registry row falls
+back to the packaged `analyze/classify_prompt.txt`.
+
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):
