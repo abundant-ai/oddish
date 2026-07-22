@@ -79,6 +79,10 @@ async def verdict_block_synth(
     return TaskVerdictModel(**out.output)
 
 
+# Retained for tests only: functions.py wires verdict_block_synth onto
+# BlockQaJobHandler via install_block_qa_handlers() (qa_block_handlers.py),
+# not via this class/installer -- not on the runtime path since the
+# compose fix, but its tests still import it directly.
 class VerdictBlockQaJobHandler(QaJobHandler):
     """Same QA orchestration as QaJobHandler -- only the verdict-synthesis
     strategy differs."""

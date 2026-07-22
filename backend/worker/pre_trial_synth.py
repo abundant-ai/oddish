@@ -30,8 +30,6 @@ from oddish.db import get_session
 from oddish.db.models import TaskModel
 from oddish.workers.jobs.handlers import QaJobHandler
 
-_PRE_TRIAL_TIMEOUT = 180.0
-
 
 async def _resolve_org_id(task_id: str) -> str | None:
     async with get_session() as session:
@@ -56,6 +54,13 @@ async def pre_trial_block_synth(
         prompt_template = ver.content
         active_version = ver.version
 
+    org_id = await _resolve_org_id(task_id)
+    if org_id is None:
+        # mint_internal_read_key's org_id is typed `str`, not `str | None` --
+        # fail loudly here instead of letting a missing/deleted task's org
+        # surface as a confusing type error (or a None-scoped key) downstream.
+        raise RuntimeError(f"Cannot resolve org_id for task {task_id}")
+
     block_obj = PreTrialBlock(
         task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
     )
@@ -64,7 +69,7 @@ async def pre_trial_block_synth(
     # cc_chat orchestrator wiring).
     api_base_url = settings.public_api_base_url or api_base_url_for_modal_app()
     client = await provision_oddish_sandbox_client(
-        org_id=await _resolve_org_id(task_id),
+        org_id=org_id,
         model=settings.pre_trial_model,
         api_key=None,
         api_base_url=api_base_url,
@@ -84,7 +89,7 @@ async def pre_trial_block_synth(
             },
         )
         result = await asyncio.wait_for(
-            block.run(), timeout=timeout or _PRE_TRIAL_TIMEOUT
+            block.run(), timeout=timeout or settings.pre_trial_timeout
         )
     finally:
         await client.aclose()
@@ -93,6 +98,10 @@ async def pre_trial_block_synth(
     return [ActionItem(**it) for it in data.get("items", [])]
 
 
+# Retained for tests only: functions.py wires pre_trial_block_synth onto
+# BlockQaJobHandler via install_block_qa_handlers() (qa_block_handlers.py),
+# not via this class/installer -- not on the runtime path since the
+# compose fix, but its tests still import it directly.
 class PreTrialBlockQaJobHandler(QaJobHandler):
     """Same QA orchestration as QaJobHandler -- only the pre-trial-synthesis
     strategy differs."""

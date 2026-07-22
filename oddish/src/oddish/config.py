@@ -1111,6 +1111,13 @@ class Settings(BaseSettings):
     # pre-trial analysis does not run and no task columns are written.
     pre_trial_via_analyzer_block: bool = False
 
+    # Single source of truth for the pre-trial-synthesis timeout: oddish's
+    # qa_handler.py passes this to pre_trial_synth_fn, and backend's
+    # pre_trial_synth.py falls back to it (`timeout or settings.pre_trial_timeout`)
+    # when called with a falsy timeout. oddish/ can't import backend/, so this
+    # lives here rather than as a shared constant.
+    pre_trial_timeout: float = 180.0
+
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``

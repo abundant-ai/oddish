@@ -1,5 +1,6 @@
 import json
 
+from api.services.blocks.analyzer.pre_trial import pre_trial_prompts
 from api.services.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 
 
@@ -30,3 +31,24 @@ def test_to_action_items_parses_list_wrapper():
 def test_to_action_items_tolerates_code_fences():
     raw = "```json\n{\"items\": []}\n```"
     assert _block().to_action_items(raw) == {"items": []}
+
+
+def test_pre_trial_section_joins_trial_ids():
+    prompt = pre_trial_prompts.pre_trial_section(
+        "task_abc", ["t1", "t2", "t3"], "Trials so far: {trial_ids}"
+    )
+    assert prompt == "Trials so far: t1, t2, t3"
+
+
+def test_pre_trial_section_empty_trial_ids_uses_placeholder():
+    prompt = pre_trial_prompts.pre_trial_section(
+        "task_abc", [], "Trials so far: {trial_ids}"
+    )
+    assert prompt == "Trials so far: (none yet)"
+
+
+def test_pre_trial_section_substitutes_task_id_and_trial_ids_together():
+    prompt = pre_trial_prompts.pre_trial_section(
+        "task_abc", ["t1"], "Task {task_id} has run: {trial_ids}"
+    )
+    assert prompt == "Task task_abc has run: t1"

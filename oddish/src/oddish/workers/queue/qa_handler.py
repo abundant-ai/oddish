@@ -259,7 +259,9 @@ async def run_task_qa_job(
         # failure is swallowed here so it can never block the verdict path.
         try:
             pre_trial_items = await pre_trial_synth_fn(
-                task_id, [trial_id for trial_id, _ in live_trials], 180
+                task_id,
+                [trial_id for trial_id, _ in live_trials],
+                settings.pre_trial_timeout,
             )
             if pre_trial_items is not None:
                 await sync_pre_trial_to_task(
@@ -275,14 +277,25 @@ async def run_task_qa_job(
                 f"[red]Pre-trial synthesis failed for {task_id}: "
                 f"{type(exc).__name__}: {exc}[/red]"
             )
-            await sync_pre_trial_to_task(
-                task_id,
-                payload=None,
-                error=exc,
-                should_store=lambda session: _worker_job_is_running(
-                    session, worker_job_id
-                ),
-            )
+            # Double-fault guard: recording the failure is itself a DB write,
+            # so it can fail too -- caught locally so that can never escape
+            # into the outer try/except below and get misattributed as a
+            # verdict-synthesis failure (which would mark the whole verdict
+            # FAILED for what is really just a pre-trial write hiccup).
+            try:
+                await sync_pre_trial_to_task(
+                    task_id,
+                    payload=None,
+                    error=exc,
+                    should_store=lambda session: _worker_job_is_running(
+                        session, worker_job_id
+                    ),
+                )
+            except Exception as sync_exc:  # noqa: BLE001
+                console.print(
+                    f"[red]Failed to record pre-trial failure for {task_id}: "
+                    f"{type(sync_exc).__name__}: {sync_exc}[/red]"
+                )
 
         if not live_trials:
             # Every live trial is excluded from QA (bulk-migrated imports

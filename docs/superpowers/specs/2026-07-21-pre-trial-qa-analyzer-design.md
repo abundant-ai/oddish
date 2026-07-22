@@ -347,3 +347,37 @@ before the post-trial linkage lands.
 - `frontend/src/components/renderers/code-highlight.tsx`,
   `components/task-files-panel.tsx`,
   `app/(app)/tasks/[task_id]/task-detail-client.tsx`, new action-items component
+
+## Enabling this feature
+
+Both `verdict_via_analyzer_block` and `pre_trial_via_analyzer_block` default
+OFF. Before flipping `pre_trial_via_analyzer_block` on in a live deployment,
+run this checklist:
+
+1. **Confirm the Daytona sandbox image runs Python 3.13.** `oddish`'s
+   `pyproject.toml` pins `requires-python >=3.13,<3.14`, and
+   `Provisioner.create` (`backend/api/services/cc_chat/provisioner.py`) takes
+   no `snapshot` param — pre-trial always provisions on Daytona's *default*
+   image, not a pinned oddish-ready one. If that default image isn't 3.13,
+   `ClaudeCodeRuntime.install_oddish_cli`'s `pip install oddish` raises inside
+   the sandbox and every task records pre_trial FAILED (silently, since
+   pre-trial failures are swallowed and never touch verdict status). This is
+   **not** covered by any existing automated test — it can only be caught by
+   an actual live smoke test: provision a sandbox with `RealDaytonaClient`,
+   run `python3 --version`, and confirm `oddish pull` succeeds end-to-end
+   before enabling the flag org-wide. Deferred to that manual smoke test
+   rather than blocking on it here, per the review decision that this risk
+   doesn't warrant holding the rest of the feature back.
+2. **Confirm the deployed `oddish` version is actually released on PyPI.**
+   `install_oddish_cli` runs `pip install oddish` inside the sandbox with no
+   version pin or local wheel fallback — if the version referenced by
+   `ODDISH_API_BASE_URL`'s deployed backend hasn't been published yet (e.g.
+   testing an unreleased branch), the install resolves to a stale PyPI
+   release or fails outright.
+3. **Prompt seeding is automatic as of the Important #1 fix** (see
+   `backend/worker/runtime.py::_seed_analyzer_prompts`, called from
+   `configure_storage_paths` on every worker container invocation): the
+   `pre_trial_qa`/`post_trial_qa` prompt rows are created idempotently before
+   any QA job can run, so the manual `oddish prompt seed` step is no longer a
+   precondition for enabling the flag (though it still works for an operator
+   who wants to seed ahead of time or re-seed after an edit).
