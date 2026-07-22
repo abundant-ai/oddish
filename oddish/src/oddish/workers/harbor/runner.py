@@ -155,7 +155,7 @@ def _resources_from_environment_config(env: Any, overrides: Any) -> SpanResource
         price_multiplier=Decimal(1),
         container_class="sandbox",
         spec_source=(
-            "override" if has_override else "pinned" if pinned else "modal_default"
+            "override" if has_override else "pinned" if pinned else "provider_default"
         ),
         cpu_enforcement_mode=cpu_mode.value,
         mem_enforcement_mode=mem_mode.value,
@@ -233,7 +233,7 @@ def capture_live_sandbox_resources(
             price_multiplier=Decimal(1),
             container_class="sandbox",
             spec_source=(
-                "override" if has_override else "pinned" if pinned else "modal_default"
+                "override" if has_override else "pinned" if pinned else "provider_default"
             ),
             cpu_enforcement_mode=cpu_mode.value,
             mem_enforcement_mode=mem_mode.value,

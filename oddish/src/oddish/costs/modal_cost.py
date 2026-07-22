@@ -34,10 +34,22 @@ ESTIMATOR_VERSION = 1
 
 ContainerClass = Literal["function", "sandbox"]
 
-# Modal's default request when a task pins nothing (harbor passes None and
-# Modal applies its minimum request, billed with burst above it).
+# Provider defaults applied when a task pins nothing (harbor passes None and
+# the provider substitutes its own default, billed with burst above it). Modal
+# uses a 0.125-core / 128-MiB minimum request; Daytona defaults to 1 vCPU /
+# 1 GiB. Picking by provider avoids pricing an unpinned Daytona sandbox at
+# Modal's ~8x-smaller minimum.
 MODAL_DEFAULT_CPU_REQUEST = 0.125
 MODAL_DEFAULT_MEM_REQUEST_MB = 128
+DAYTONA_DEFAULT_CPU_REQUEST = 1.0
+DAYTONA_DEFAULT_MEM_REQUEST_MB = 1024
+
+
+def _provider_default_request(provider: str) -> tuple[float, int]:
+    if provider == "daytona":
+        return DAYTONA_DEFAULT_CPU_REQUEST, DAYTONA_DEFAULT_MEM_REQUEST_MB
+    return MODAL_DEFAULT_CPU_REQUEST, MODAL_DEFAULT_MEM_REQUEST_MB
+
 
 _MIB_PER_GIB = Decimal(1024)
 _MICROS_PER_SEC = Decimal(1_000_000)
@@ -118,7 +130,7 @@ class SpanResources:
     gpu_count: int
     price_multiplier: Decimal
     container_class: ContainerClass
-    spec_source: str  # "pinned" | "override" | "modal_default" | "unknown"
+    spec_source: str  # "pinned" | "override" | "provider_default" | "unknown"
     cpu_enforcement_mode: str | None = None
     mem_enforcement_mode: str | None = None
 
@@ -262,9 +274,10 @@ def estimate_span_cost(
     """Price a closed span. Never guesses: a missing GPU rate or an empty
     resource spec yields ``cost_usd=None`` with an ``unpriced_reason``.
 
-    ``spec_source == "modal_default"`` with no cpu/mem/gpu at all prices at
-    Modal's default request (0.125 core, 128 MiB) instead of going unpriced —
-    still a floor, since Modal bills burst above the request.
+    ``spec_source == "provider_default"`` with no cpu/mem/gpu at all prices at
+    the provider's default request (Modal 0.125 core / 128 MiB, Daytona
+    1 vCPU / 1 GiB) instead of going unpriced — still a floor, since the
+    provider bills burst above the request.
     """
     duration = _duration_seconds(started_at, finished_at)
 
@@ -273,9 +286,8 @@ def estimate_span_cost(
     gpu_count = resources.gpu_count or 0
 
     if cpu is None and mem_mb is None and gpu_count <= 0:
-        if resources.spec_source == "modal_default":
-            cpu = MODAL_DEFAULT_CPU_REQUEST
-            mem_mb = MODAL_DEFAULT_MEM_REQUEST_MB
+        if resources.spec_source == "provider_default":
+            cpu, mem_mb = _provider_default_request(rate_selection.provider)
         else:
             return EstimateResult(
                 cost_usd=None,

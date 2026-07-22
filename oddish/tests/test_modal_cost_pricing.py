@@ -284,14 +284,14 @@ def test_no_resources_reason_when_spec_empty() -> None:
     assert res.unpriced_reason == "no_resources"
 
 
-def test_modal_default_prices_at_default_request() -> None:
-    # Unpinned task: harbor passes None -> Modal's default request of
+def test_provider_default_prices_at_modal_default_request() -> None:
+    # Unpinned Modal task: harbor passes None -> Modal's default request of
     # 0.125 core / 128 MiB (= 0.125 GiB) is the billing floor.
     sel = select_rates(DEFAULT_RATES, "modal", "sandbox", None, T0)
     res = estimate_span_cost(
         T0,
         T0 + timedelta(hours=1),
-        _sandbox(cpu_request=None, mem_request_mb=None, spec_source="modal_default"),
+        _sandbox(cpu_request=None, mem_request_mb=None, spec_source="provider_default"),
         sel,
     )
     expected = Decimal(3600) * (
@@ -301,6 +301,22 @@ def test_modal_default_prices_at_default_request() -> None:
     assert res.unpriced_reason is None
     assert res.rate_snapshot["billed_cpu_cores"] == "0.125"
     assert res.rate_snapshot["billed_mem_gib"] == "0.125"
+
+
+def test_provider_default_uses_daytona_defaults_for_daytona_span() -> None:
+    # Unpinned Daytona task must price at Daytona's 1 vCPU / 1 GiB default,
+    # NOT Modal's 8x-smaller 0.125 core / 128 MiB minimum.
+    sel = select_rates(DEFAULT_RATES, "daytona", "sandbox", None, T0)
+    res = estimate_span_cost(
+        T0,
+        T0 + timedelta(hours=1),
+        _sandbox(cpu_request=None, mem_request_mb=None, spec_source="provider_default"),
+        sel,
+    )
+    expected = Decimal(3600) * (Decimal("1") * DAYTONA_CPU + Decimal("1") * DAYTONA_MEM)
+    assert res.cost_usd == expected
+    assert res.rate_snapshot["billed_cpu_cores"] == "1.0"
+    assert res.rate_snapshot["billed_mem_gib"] == "1"
 
 
 def test_unrated_provider_records_no_rate() -> None:
