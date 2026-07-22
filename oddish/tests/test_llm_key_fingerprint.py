@@ -43,3 +43,51 @@ def test_provider_hash_none_when_unresolvable(monkeypatch):
     assert platform_key_hash_for_provider("xai") is None  # env not set
     assert platform_key_hash_for_provider(None) is None
     assert platform_key_hash_for_provider("not-a-real-provider") is None
+
+
+def test_oddish_wired_providers_resolve_outside_harbor_map(monkeypatch):
+    # zai / minimax / fireworks exist only in Oddish's wiring, not Harbor's
+    # PROVIDER_KEYS -- they must still stamp.
+    from oddish.config import settings
+
+    monkeypatch.setenv("ZAI_API_KEY", "zai-sponsored-1111")
+    assert platform_key_hash_for_provider("zai") == hash_llm_key("zai-sponsored-1111")
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "mm-2222")
+    assert platform_key_hash_for_provider("minimax") == hash_llm_key("mm-2222")
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "fw-3333")
+    assert platform_key_hash_for_provider("fireworks") == hash_llm_key("fw-3333")
+
+    # azure resolves the key the worker actually exports
+    # (AZURE_OPENAI_API_KEY), not Harbor's AZURE_API_KEY.
+    monkeypatch.setattr(settings, "azure_openai_api_key", None)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_API_KEY", "az-wrong-var")
+    assert platform_key_hash_for_provider("azure") is None
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-4444")
+    assert platform_key_hash_for_provider("azure") == hash_llm_key("az-4444")
+
+
+def test_anthropic_hdo_prefers_settings_then_env(monkeypatch):
+    # Mirrors the worker's _resolve_anthropic_hdo_api_key: settings value
+    # first, process env as the fallback.
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_hdo_api_key", "hdo-from-settings")
+    monkeypatch.setenv("ANTHROPIC_HDO_API_KEY", "hdo-from-env")
+    assert platform_key_hash_for_provider("anthropic-hdo") == hash_llm_key(
+        "hdo-from-settings"
+    )
+
+    monkeypatch.setattr(settings, "anthropic_hdo_api_key", None)
+    assert platform_key_hash_for_provider("anthropic-hdo") == hash_llm_key(
+        "hdo-from-env"
+    )
+
+
+def test_stamp_strips_whitespace_to_match_admin_paste(monkeypatch):
+    # An env value with a stray newline must hash equal to the trimmed key an
+    # admin pastes into the UI (the router strips before hashing).
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret-9f2c\n")
+    assert platform_key_hash_for_provider("xai") == hash_llm_key("xai-secret-9f2c")

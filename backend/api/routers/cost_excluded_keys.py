@@ -17,6 +17,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from auth import AuthContext, can_manage_api_keys, require_admin
 from oddish.core.llm_key_fingerprint import hash_llm_key, key_hint
@@ -97,7 +98,13 @@ async def add_cost_excluded_key(
             created_by_user_id=auth.user_id,
         )
         session.add(row)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Concurrent add of the same key: the partial unique index on live
+            # key_hash rows is the arbiter, so surface the same 409 the
+            # existence pre-check would have returned.
+            raise HTTPException(status_code=409, detail="key is already excluded")
         return _response(row)
 
 

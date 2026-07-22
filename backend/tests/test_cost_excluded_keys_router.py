@@ -159,6 +159,23 @@ async def test_add_duplicate_is_409(admin_client, monkeypatch):
     assert resp.status_code == 409
 
 
+async def test_add_race_integrity_error_is_409(admin_client, monkeypatch):
+    # Two concurrent adds of the same key both pass the existence pre-check;
+    # the loser's INSERT hits the partial unique index. That must surface as
+    # the same 409 as the pre-check, not a 500.
+    from sqlalchemy.exc import IntegrityError
+
+    class RacingSession(FakeSession):
+        async def commit(self):
+            raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+    _install_fake_get_session(monkeypatch, RacingSession(query_rows=[]))
+    resp = await admin_client.post(
+        "/admin/cost-excluded-keys", json={"key": "xai-race-key"}
+    )
+    assert resp.status_code == 409
+
+
 async def test_add_empty_key_is_400(admin_client, monkeypatch):
     _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
     resp = await admin_client.post("/admin/cost-excluded-keys", json={"key": "   "})
