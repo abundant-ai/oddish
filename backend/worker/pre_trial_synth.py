@@ -25,7 +25,7 @@ from api.services.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from worker.pre_trial_sandbox import provision_oddish_sandbox_client
 from oddish.analyze.models import ActionItem
 from oddish.config import api_base_url_for_modal_app, settings
-from oddish.core.prompts import get_active_prompt_content
+from oddish.core.prompts import get_prompt_core
 from oddish.db import get_session
 from oddish.db.models import TaskModel
 from oddish.workers.jobs.handlers import QaJobHandler
@@ -52,7 +52,9 @@ async def pre_trial_block_synth(
     function's caller (``run_task_qa_job``) invokes.
     """
     async with get_session() as session:
-        prompt_template = await get_active_prompt_content(session, "pre_trial_qa")
+        _, ver = await get_prompt_core(session, "pre_trial_qa")
+        prompt_template = ver.content
+        active_version = ver.version
 
     block_obj = PreTrialBlock(
         task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
@@ -76,7 +78,10 @@ async def pre_trial_block_synth(
             model=settings.pre_trial_model,
             output_transform=block_obj.to_action_items,
             client=client,
-            block_metadata={"prompt_key": "pre_trial_qa"},
+            block_metadata={
+                "prompt_key": "pre_trial_qa",
+                "prompt_version": active_version,
+            },
         )
         result = await asyncio.wait_for(
             block.run(), timeout=timeout or _PRE_TRIAL_TIMEOUT

@@ -57,6 +57,16 @@ def block_logger(key_prefix: str) -> logging.LoggerAdapter:
     )
 
 
+def _block_row_kwargs(*, block_metadata: dict | None, **base) -> dict:
+    """Pure kwargs builder for AnalyzerBlockModel, so prompt_key/prompt_version
+    extraction from block_metadata is unit-testable without a DB."""
+    md = block_metadata or {}
+    base["prompt_key"] = md.get("prompt_key")
+    base["prompt_version"] = md.get("prompt_version")
+    base["block_metadata"] = block_metadata
+    return base
+
+
 class AnalyzerBlock(Block):
     """One composable analyzer job. Runs a prompt through a swappable backend,
     streams the output, and persists to S3 + DB on every exit path."""
@@ -137,20 +147,22 @@ class AnalyzerBlock(Block):
             async with get_session() as session:
                 session.add(
                     AnalyzerBlockModel(
-                        id=self.id,
-                        analyzer_id=self.analyzer_id,
-                        type=self.analyzer_type.value,
-                        key_prefix=self.key_prefix,
-                        llm_client_type=self.llm_client_type.value,
-                        prompt=self.prompt,
-                        input=self.input.input,
-                        output=self.output.output if self.output else None,
-                        status=self.status,
-                        error=self.error,
-                        job_started_at=self.job_started_at,
-                        job_ended_at=self.job_ended_at,
-                        job_duration_seconds=self.job_duration_seconds,
-                        block_metadata=self.block_metadata,
+                        **_block_row_kwargs(
+                            block_metadata=self.block_metadata,
+                            id=self.id,
+                            analyzer_id=self.analyzer_id,
+                            type=self.analyzer_type.value,
+                            key_prefix=self.key_prefix,
+                            llm_client_type=self.llm_client_type.value,
+                            prompt=self.prompt,
+                            input=self.input.input,
+                            output=self.output.output if self.output else None,
+                            status=self.status,
+                            error=self.error,
+                            job_started_at=self.job_started_at,
+                            job_ended_at=self.job_ended_at,
+                            job_duration_seconds=self.job_duration_seconds,
+                        )
                     )
                 )
             self.log.info("saved block row id=%s status=%s", self.id, self.status.value)
