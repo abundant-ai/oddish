@@ -13,7 +13,8 @@ from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
 
 console = Console()
 prompt_app = typer.Typer(
-    help="Manage versioned analyzer prompts.", no_args_is_help=True
+    help="Manage versioned analyzer prompts (latest version is always live).",
+    no_args_is_help=True,
 )
 
 
@@ -39,12 +40,12 @@ def list_prompts(
     if resp.status_code != 200:
         _fail(resp)
     for p in resp.json():
-        console.print(f"{p['key']:32}  v{p.get('active_version')}  {p.get('description','')}")
+        console.print(f"{p['kind']:32}  v{p.get('latest_version')}  {p.get('description','')}")
 
 
 @prompt_app.command("get")
 def get_prompt(
-    key: str,
+    kind: str,
     version: Annotated[Optional[int], typer.Option("--version", "-v")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
@@ -53,7 +54,7 @@ def get_prompt(
     url = _resolve(api_url)
     params = {"version": version} if version is not None else {}
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{key}", params=params)
+        resp = client.get(f"{url}/prompts/{kind}", params=params)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
@@ -65,56 +66,38 @@ def get_prompt(
 
 @prompt_app.command("set")
 def set_prompt(
-    key: str,
+    kind: str,
     file: Annotated[Path, typer.Option("--file", "-f", help="File with prompt content.")],
     description: Annotated[Optional[str], typer.Option("--description", "-d")] = None,
-    no_activate: Annotated[bool, typer.Option("--no-activate", help="Append without activating.")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
-    """Append a new prompt version from a file (activates it by default)."""
+    """Append a new prompt version from a file (it becomes live immediately — latest always runs)."""
     url = _resolve(api_url)
     content = file.read_text()
-    payload: dict = {"content": content, "activate": not no_activate}
+    payload: dict = {"content": content}
     if description is not None:
         payload["description"] = description
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.put(f"{url}/prompts/{key}", json=payload)
+        resp = client.put(f"{url}/prompts/{kind}", json=payload)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
-    console.print(
-        f"[green]Set {key}[/green] active_version={data.get('active_version')}"
-    )
+    console.print(f"[green]Set {kind}[/green] latest_version={data.get('latest_version')}")
 
 
 @prompt_app.command("versions")
 def versions(
-    key: str,
+    kind: str,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """List a prompt's versions."""
     url = _resolve(api_url)
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{key}/versions")
+        resp = client.get(f"{url}/prompts/{kind}/versions")
     if resp.status_code != 200:
         _fail(resp)
     for v in resp.json():
         console.print(f"v{v['version']:<4} {v.get('created_at','')}  {v.get('created_by') or ''}")
-
-
-@prompt_app.command("activate")
-def activate(
-    key: str,
-    version: int,
-    api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
-):
-    """Point the active version at an existing version number."""
-    url = _resolve(api_url)
-    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.post(f"{url}/prompts/{key}/activate", json={"version": version})
-    if resp.status_code != 200:
-        _fail(resp)
-    console.print(f"[green]Activated {key} v{version}[/green]")
 
 
 @prompt_app.command("seed")
@@ -126,23 +109,23 @@ def seed(
 
     url = _resolve(api_url)
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        for key, (description, content) in PROMPT_SEEDS.items():
-            got = client.get(f"{url}/prompts/{key}")
+        for kind, (description, content) in PROMPT_SEEDS.items():
+            got = client.get(f"{url}/prompts/{kind}")
             if got.status_code == 200:
-                console.print(f"[dim]{key}: exists, skipping[/dim]")
+                console.print(f"[dim]{kind}: exists, skipping[/dim]")
                 continue
             resp = client.put(
-                f"{url}/prompts/{key}",
-                json={"content": content, "description": description, "activate": True},
+                f"{url}/prompts/{kind}",
+                json={"content": content, "description": description},
             )
             if resp.status_code != 200:
                 _fail(resp)
-            console.print(f"[green]Seeded {key}[/green]")
+            console.print(f"[green]Seeded {kind}[/green]")
 
 
 @prompt_app.command("diff")
 def diff(
-    key: str,
+    kind: str,
     version_a: int,
     version_b: int,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
@@ -150,12 +133,12 @@ def diff(
     """Unified diff between two versions of a prompt."""
     url = _resolve(api_url)
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        ra = client.get(f"{url}/prompts/{key}", params={"version": version_a})
-        rb = client.get(f"{url}/prompts/{key}", params={"version": version_b})
+        ra = client.get(f"{url}/prompts/{kind}", params={"version": version_a})
+        rb = client.get(f"{url}/prompts/{kind}", params={"version": version_b})
     for r in (ra, rb):
         if r.status_code != 200:
             _fail(r)
     a = ra.json().get("content", "").splitlines(keepends=True)
     b = rb.json().get("content", "").splitlines(keepends=True)
-    for line in difflib.unified_diff(a, b, fromfile=f"{key}@v{version_a}", tofile=f"{key}@v{version_b}"):
+    for line in difflib.unified_diff(a, b, fromfile=f"{kind}@v{version_a}", tofile=f"{kind}@v{version_b}"):
         console.print(line.rstrip("\n"))
