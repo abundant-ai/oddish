@@ -4,7 +4,7 @@ import { ActionItem, DIMENSION_META, TIER_META, groupByDimension } from "@/lib/a
 
 interface ActionItemsPanelProps {
   items: ActionItem[];
-  onOpenFile: (file: string, line: number | null) => void;
+  onOpenFile: (file: string, lineStart: number | null, lineEnd?: number | null) => void;
 }
 
 export function ActionItemsPanel({ items, onOpenFile }: ActionItemsPanelProps) {
@@ -31,7 +31,14 @@ export function ActionItemsPanel({ items, onOpenFile }: ActionItemsPanelProps) {
               {groups[dim].map((item) => {
                 const meta = TIER_META[item.tier] ?? TIER_META.should_fix;
                 return (
-                  <li key={item.id} className="flex items-start gap-2 text-sm">
+                  <li
+                    key={item.id}
+                    className={`flex items-start gap-2 rounded text-sm ${
+                      item.exploited
+                        ? "border border-red-500/40 bg-red-500/5 p-2 dark:border-red-400/40 dark:bg-red-400/10"
+                        : ""
+                    }`}
+                  >
                     <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${meta.cls}`}>
                       {meta.label}
                     </span>
@@ -47,7 +54,9 @@ export function ActionItemsPanel({ items, onOpenFile }: ActionItemsPanelProps) {
                         <button
                           type="button"
                           className="font-mono text-primary underline underline-offset-2"
-                          onClick={() => onOpenFile(item.file, item.line_start)}
+                          onClick={() =>
+                            onOpenFile(item.file, item.line_start, item.line_end)
+                          }
                         >
                           {item.file}:{item.line_start}
                           {item.line_end !== item.line_start ? `-${item.line_end}` : ""}

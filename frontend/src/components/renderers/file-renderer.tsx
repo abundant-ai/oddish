@@ -234,6 +234,9 @@ export function FileRenderer({
       return <TextRenderer content={content ?? ""} />;
     case "code":
     default:
+      // `#L{n}` anchors + highlightLines only exist on this code-render path
+      // (added by Shiki in code-block.tsx); a deep-link to a non-code file
+      // opens the file but won't scroll/highlight.
       return (
         <CodeRenderer
           content={content ?? ""}
