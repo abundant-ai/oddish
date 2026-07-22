@@ -793,19 +793,6 @@ class TaskModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # Pre-trial QA analysis (task-source audit; runs before trials)
-    pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    pre_trial_status: Mapped[VerdictStatus | None] = mapped_column(
-        SQLEnum(VerdictStatus), nullable=True
-    )
-    pre_trial_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    pre_trial_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    pre_trial_finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
     # Migration provenance: set when created by the Sauron->Oddish importer,
     # NULL otherwise. Rich provenance lives in ``tags``; this is the clean
     # audit/rollback marker (WHERE imported_at IS NOT NULL).
@@ -899,6 +886,20 @@ class TaskVersionModel(TimestampedMixin, Base):
         nullable=False,
         default=list,
         server_default=text("'{}'::text[]"),
+    )
+
+    # Pre-trial QA analysis (task-source audit; runs once per version since
+    # each version is a distinct source snapshot to audit)
+    pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pre_trial_status: Mapped[VerdictStatus | None] = mapped_column(
+        SQLEnum(VerdictStatus), nullable=True
+    )
+    pre_trial_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pre_trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pre_trial_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Relationships

@@ -116,10 +116,16 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
 
-    items = await synthesize_task_pre_trial("task_xyz", ["t1", "t2"], timeout=30.0)
+    items = await synthesize_task_pre_trial(
+        "task_xyz", "task_xyz-v1", ["t1", "t2"], timeout=30.0
+    )
 
     prompt = _FakeAnalyzerBlock.last_kwargs["prompt"]
     assert prompt == "Audit task_xyz. Trials: t1, t2"
+    # The audited version is recorded on the block input for attribution.
+    assert _FakeAnalyzerBlock.last_kwargs["input"].input["task_version_id"] == (
+        "task_xyz-v1"
+    )
     assert _FakeAnalyzerBlock.last_kwargs["block_metadata"] == {
         "prompt_key": "pre_trial_qa",
         "prompt_version": 7,
@@ -152,7 +158,7 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _EmptyAnalyzerBlock)
 
-    items = await synthesize_task_pre_trial("task_xyz", [], timeout=30.0)
+    items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
     assert items == []
 
 
@@ -169,4 +175,4 @@ async def test_synth_raises_when_org_id_unresolved(monkeypatch):
     monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
 
     with pytest.raises(RuntimeError, match="task_xyz"):
-        await synthesize_task_pre_trial("task_xyz", [], timeout=30.0)
+        await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)

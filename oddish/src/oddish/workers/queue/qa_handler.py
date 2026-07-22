@@ -13,13 +13,14 @@ from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.verdict_sync import (
     build_pre_trial_payload,
     build_verdict_payload,
-    sync_pre_trial_to_task,
+    sync_pre_trial_to_task_version,
     sync_verdict_to_task,
 )
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -81,7 +82,8 @@ async def synthesize_task_verdict(
 # The pre-trial-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
 # can be injected here the same way verdict synthesis is, without oddish
 # importing backend/. Mirrors VerdictSynthFn's shape.
-PreTrialSynthFn = Callable[[str, list[str], float], Awaitable[Any]]
+# Args: (task_id, task_version_id, trial_ids, timeout).
+PreTrialSynthFn = Callable[[str, str, list[str], float], Awaitable[Any]]
 
 # Hosted (AnalyzerBlock-backed) pre-trial synth, registered by backend at import
 # via register_pre_trial_synth(). oddish/ can't import backend/, so the sandbox-
@@ -151,6 +153,34 @@ async def _worker_job_is_running(
         statement = statement.with_for_update()
     status = await session.scalar(statement)
     return status == WorkerJobStatus.RUNNING
+
+
+async def _claim_pre_trial_version(task_id: str) -> str | None:
+    """Resolve the task's current version and claim it for the pre-trial audit.
+
+    Pre-trial runs once per task *version* (each version is a distinct source
+    snapshot), so a sweep-append QA re-run must not re-audit unchanged source:
+    a version whose ``pre_trial_status`` is already terminal is skipped. A
+    stale RUNNING (worker died mid-audit) is reclaimed rather than wedging the
+    version forever. Returns None to skip: no version rows (legacy upload),
+    version gone, or already audited.
+    """
+    async with get_session() as session:
+        version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        if version_id is None:
+            return None
+        version = await session.get(
+            TaskVersionModel, version_id, with_for_update=True
+        )
+        if version is None:
+            return None
+        if version.pre_trial_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
+            return None
+        version.pre_trial_status = VerdictStatus.RUNNING
+        version.pre_trial_started_at = utcnow()
+    return str(version_id)
 
 
 def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
@@ -268,33 +298,38 @@ async def run_task_qa_job(
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
 
-        # Pre-trial: a task-source audit, independent of trial classification
-        # -- runs once, before the per-trial loop, even when there are zero
-        # live trials to classify. Gated off by default (settings.pre_trial_enabled)
-        # and a no-op unless the hosted synth is registered; the `is not None`
-        # guard keeps a skipped run from touching any pre_trial column. A pre-trial
-        # failure is swallowed here so it can never block the verdict path.
+        # Pre-trial: a per-version task-source audit, independent of trial
+        # classification -- runs before the per-trial loop, even when there are
+        # zero live trials to classify. Gated off by default
+        # (settings.pre_trial_enabled) and a no-op unless the hosted synth is
+        # registered; _claim_pre_trial_version keeps it to once per task
+        # version, and the `is not None` guards keep a skipped run from
+        # touching any pre_trial column. A pre-trial failure is swallowed here
+        # so it can never block the verdict path.
+        pre_trial_version_id: str | None = None
         try:
             if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
+                pre_trial_version_id = await _claim_pre_trial_version(task_id)
+            if pre_trial_version_id is not None:
                 pre_trial_items = await _pre_trial_synth_fn(
                     task_id,
+                    pre_trial_version_id,
                     [trial_id for trial_id, _ in live_trials],
                     settings.pre_trial_timeout,
                 )
-            else:
-                pre_trial_items = None
-            if pre_trial_items is not None:
-                await sync_pre_trial_to_task(
-                    task_id,
-                    payload=build_pre_trial_payload(pre_trial_items),
-                    error=None,
-                    should_store=lambda session: _worker_job_is_running(
-                        session, worker_job_id
-                    ),
-                )
+                if pre_trial_items is not None:
+                    await sync_pre_trial_to_task_version(
+                        pre_trial_version_id,
+                        payload=build_pre_trial_payload(pre_trial_items),
+                        error=None,
+                        should_store=lambda session: _worker_job_is_running(
+                            session, worker_job_id
+                        ),
+                    )
         except Exception as exc:  # noqa: BLE001
             console.print(
-                f"[red]Pre-trial synthesis failed for {task_id}: "
+                f"[red]Pre-trial synthesis failed for {task_id} "
+                f"(version {pre_trial_version_id}): "
                 f"{type(exc).__name__}: {exc}[/red]"
             )
             # Double-fault guard: recording the failure is itself a DB write,
@@ -303,14 +338,15 @@ async def run_task_qa_job(
             # verdict-synthesis failure (which would mark the whole verdict
             # FAILED for what is really just a pre-trial write hiccup).
             try:
-                await sync_pre_trial_to_task(
-                    task_id,
-                    payload=None,
-                    error=exc,
-                    should_store=lambda session: _worker_job_is_running(
-                        session, worker_job_id
-                    ),
-                )
+                if pre_trial_version_id is not None:
+                    await sync_pre_trial_to_task_version(
+                        pre_trial_version_id,
+                        payload=None,
+                        error=exc,
+                        should_store=lambda session: _worker_job_is_running(
+                            session, worker_job_id
+                        ),
+                    )
             except Exception as sync_exc:  # noqa: BLE001
                 console.print(
                     f"[red]Failed to record pre-trial failure for {task_id}: "

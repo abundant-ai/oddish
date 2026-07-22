@@ -40,15 +40,18 @@ async def _resolve_org_id(task_id: str) -> str | None:
 
 
 async def synthesize_task_pre_trial(
-    task_id: str, trial_ids: list[str], timeout: float
+    task_id: str, task_version_id: str, trial_ids: list[str], timeout: float
 ) -> list[ActionItem]:
     """PreTrialSynthFn implementation backed by PreTrialBlock/AnalyzerBlock.
 
     Self-provisions a sandbox client that can ``oddish pull`` the task's
     source, then runs the audit through an AnalyzerBlock (the same runner the
-    verdict path uses). Never completes the task and never touches verdict
-    state -- that boundary lives in ``sync_pre_trial_to_task``, which the
-    caller (``run_task_qa_job``) invokes with these items.
+    verdict path uses). ``task_version_id`` is the version being audited (the
+    task's current version, claimed by the caller); the sandbox pulls the
+    task's current source, so the two match. Never completes the task and
+    never touches verdict state -- that boundary lives in
+    ``sync_pre_trial_to_task_version``, which the caller (``run_task_qa_job``)
+    invokes with these items.
     """
     async with get_session() as session:
         _, ver = await get_prompt_core(session, "pre_trial_qa")
@@ -79,7 +82,13 @@ async def synthesize_task_pre_trial(
         block = AnalyzerBlock(
             analyzer_type=AnalyzerType.PRE_TRIAL,
             llm_client_type=LLMClientType.SANDBOX,
-            input=AnalyzerInput(input={"task_id": task_id, "trial_ids": trial_ids}),
+            input=AnalyzerInput(
+                input={
+                    "task_id": task_id,
+                    "task_version_id": task_version_id,
+                    "trial_ids": trial_ids,
+                }
+            ),
             prompt=block_obj.build_prompt(),
             model=settings.pre_trial_model,
             output_transform=block_obj.to_action_items,

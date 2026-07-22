@@ -3,7 +3,14 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from oddish.analyze import Classification, TrialClassification
-from oddish.db import TaskModel, TaskStatus, VerdictStatus, get_session, utcnow
+from oddish.db import (
+    TaskModel,
+    TaskStatus,
+    TaskVersionModel,
+    VerdictStatus,
+    get_session,
+    utcnow,
+)
 
 
 def build_verdict_payload(
@@ -83,8 +90,8 @@ async def sync_verdict_to_task(
 
 
 def build_pre_trial_payload(items: list) -> dict:
-    """Render the dict stored on ``tasks.pre_trial``. Computes each item's
-    stable id server-side (the LLM output omits it)."""
+    """Render the dict stored on ``task_versions.pre_trial``. Computes each
+    item's stable id server-side (the LLM output omits it)."""
     from oddish.analyze.models import compute_action_item_id
 
     out = []
@@ -94,31 +101,34 @@ def build_pre_trial_payload(items: list) -> dict:
     return {"items": out}
 
 
-async def sync_pre_trial_to_task(
-    task_id: str,
+async def sync_pre_trial_to_task_version(
+    task_version_id: str,
     *,
     payload: dict | None,
     error: BaseException | str | None,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> None:
-    """Write the pre-trial columns. Unlike :func:`sync_verdict_to_task`, this
-    never completes the task and never touches a verdict column -- pre-trial
-    is a task-source audit that runs independently of trial classification.
+    """Write the pre-trial columns on the audited task version. Unlike
+    :func:`sync_verdict_to_task`, this never completes the task and never
+    touches a verdict column -- pre-trial is a per-version source audit that
+    runs independently of trial classification.
     """
     async with get_session() as session:
-        task = await session.get(TaskModel, task_id, with_for_update=True)
-        if task is None:
+        version = await session.get(
+            TaskVersionModel, task_version_id, with_for_update=True
+        )
+        if version is None:
             return
 
         if should_store is not None and not await should_store(session):
             return
 
         if error is None:
-            task.pre_trial = payload
-            task.pre_trial_status = VerdictStatus.SUCCESS
-            task.pre_trial_error = None
+            version.pre_trial = payload
+            version.pre_trial_status = VerdictStatus.SUCCESS
+            version.pre_trial_error = None
         else:
-            task.pre_trial_status = VerdictStatus.FAILED
-            task.pre_trial_error = str(error)
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = str(error)
 
-        task.pre_trial_finished_at = utcnow()
+        version.pre_trial_finished_at = utcnow()
