@@ -898,6 +898,7 @@ export function DashboardClient({
 }: DashboardClientProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
 
   // Selection filters (Org/Mine, member, status) and the page come from the
@@ -918,7 +919,8 @@ export function DashboardClient({
   const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${experimentsOffset}`;
 
   // Build a dashboard URL for the given selection/page, preserving the current
-  // search. Defaults are omitted so the clean view stays "/dashboard".
+  // search and any params this helper doesn't manage (e.g. trial metric
+  // filters). Defaults are omitted so the clean view stays "/dashboard".
   const buildFilterHref = (overrides: {
     author?: string;
     status?: string;
@@ -928,7 +930,11 @@ export function DashboardClient({
     const status = overrides.status ?? statusFilter;
     const page = overrides.page ?? 1;
     const query = searchQuery.trim();
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("author");
+    params.delete("status");
+    params.delete("q");
+    params.delete("page");
     if (author !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR) {
       params.set("author", author);
     }

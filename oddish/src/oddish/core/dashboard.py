@@ -1066,18 +1066,14 @@ async def load_dashboard_experiments(
 
     normalized_query = (experiments_query or "").strip()
 
-    page_query = (
-        select(
-            ExperimentModel.id.label("experiment_id"),
-            ExperimentModel.name.label("experiment_name"),
-            ExperimentModel.is_public.label("experiment_is_public"),
-            ExperimentModel.last_activity_at.label("last_activity_at"),
-            ExperimentModel.owner.label("experiment_owner"),
-            ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
-            ExperimentModel.link.label("experiment_link"),
-        )
-        or bool(experiments_tool_names)
-        or bool(experiments_tool_count_mins)
+    page_query = select(
+        ExperimentModel.id.label("experiment_id"),
+        ExperimentModel.name.label("experiment_name"),
+        ExperimentModel.is_public.label("experiment_is_public"),
+        ExperimentModel.last_activity_at.label("last_activity_at"),
+        ExperimentModel.owner.label("experiment_owner"),
+        ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
+        ExperimentModel.link.label("experiment_link"),
     )
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
@@ -1164,7 +1160,9 @@ async def load_dashboard_experiments(
         tool_count_mins=experiments_tool_count_mins,
         match=experiments_trial_metric_match,
     )
-    if metric_filter.has_metric_constraints:
+    # Gate on is_empty, not has_metric_constraints: a model-only filter still
+    # needs the predicate (models are folded into the eligible-trial scope).
+    if not metric_filter.is_empty:
         membership = or_(
             TrialModel.experiment_id == ExperimentModel.id,
             exists(
