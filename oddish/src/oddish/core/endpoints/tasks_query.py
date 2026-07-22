@@ -1409,7 +1409,7 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(
             _trial_exists(TrialModel.agent.in_(list(agents)))
         )
-    model_and_finished_predicates = []
+    trial_finished_predicates = []
     metric_filter = TrialMetricFilter.from_query(
         models=models,
         min_steps=min_steps,
@@ -1422,19 +1422,20 @@ async def browse_tasks_core(
         tool_count_mins=tool_count_mins,
         match=trial_metric_match,
     )
-    metric_filter_active = metric_filter.has_metric_constraints
-    if models and not metric_filter_active:
-        model_and_finished_predicates.append(TrialModel.model.in_(list(models)))
+    # Models always ride the metric predicate (same eligible-trial contract and
+    # deleted_at handling as the dashboard); finished-at bounds join its scope
+    # when it's active so every constraint is checked against the same trial.
+    metric_filter_active = not metric_filter.is_empty
     if trial_finished_after is not None:
-        model_and_finished_predicates.append(
+        trial_finished_predicates.append(
             TrialModel.finished_at >= trial_finished_after
         )
     if trial_finished_before is not None:
-        model_and_finished_predicates.append(
+        trial_finished_predicates.append(
             TrialModel.finished_at <= trial_finished_before
         )
-    if model_and_finished_predicates:
-        ranked_tasks = ranked_tasks.where(_trial_exists(*model_and_finished_predicates))
+    if trial_finished_predicates and not metric_filter_active:
+        ranked_tasks = ranked_tasks.where(_trial_exists(*trial_finished_predicates))
     if agent_models:
         # Each token is "agent:model" (model = everything after the first colon;
         # agent names have no colons) or bare "agent" for a null model. Match a
@@ -1543,6 +1544,7 @@ async def browse_tasks_core(
                 membership=(
                     TrialModel.task_id == TaskModel.id,
                     TrialModel.task_version_id == TaskModel.current_version_id,
+                    *trial_finished_predicates,
                 )
             ),
         )

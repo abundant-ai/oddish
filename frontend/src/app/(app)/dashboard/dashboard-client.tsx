@@ -283,9 +283,16 @@ function ExperimentsTableBody({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const searchParams = useSearchParams();
+  const trialFiltersActive = TRIAL_FILTER_PARAM_KEYS.some((key) =>
+    searchParams.get(key)
+  );
   const isMemberSelected = authorFilter !== "all" && authorFilter !== "me";
   const hasFilters =
-    searchQuery.trim().length > 0 || statusFilter !== "all" || isMemberSelected;
+    searchQuery.trim().length > 0 ||
+    statusFilter !== "all" ||
+    isMemberSelected ||
+    trialFiltersActive;
 
   const handleDeleteExperiment = async () => {
     if (!deleteTarget || isDeleting) return;
@@ -829,6 +836,13 @@ const TRIAL_FILTER_GROUPS: {
   { label: "Tool names", keys: ["tool"], placeholder: "bash, read_file" },
 ];
 
+// Every URL param the trial filters own; the Suspense key and empty-state
+// checks read these so metric-filter changes behave like any other filter.
+const TRIAL_FILTER_PARAM_KEYS = [
+  ...TRIAL_FILTER_GROUPS.flatMap((group) => group.keys),
+  "metricMatch",
+];
+
 function ExperimentTrialFilters() {
   const router = useRouter();
   const pathname = usePathname();
@@ -839,6 +853,23 @@ function ExperimentTrialFilters() {
     for (const [key, value] of Object.entries(patch)) {
       if (value) next.set(key, value);
       else next.delete(key);
+    }
+    // Keep committed ranges ordered — the server rejects min > max.
+    for (const group of TRIAL_FILTER_GROUPS) {
+      if (group.keys.length !== 2) continue;
+      const [minKey, maxKey] = group.keys;
+      const min = Number(next.get(minKey));
+      const max = Number(next.get(maxKey));
+      if (
+        next.get(minKey) &&
+        next.get(maxKey) &&
+        Number.isFinite(min) &&
+        Number.isFinite(max) &&
+        min > max
+      ) {
+        next.set(minKey, String(max));
+        next.set(maxKey, String(min));
+      }
     }
     next.delete("page");
     const queryString = next.toString();
@@ -1026,7 +1057,10 @@ export function DashboardClient({
 
   // Keying the Suspense boundary on the committed (server) params makes it
   // re-suspend — and show the skeleton — on every content change.
-  const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${experimentsOffset}`;
+  const trialFilterKey = TRIAL_FILTER_PARAM_KEYS.map(
+    (key) => searchParams.get(key) ?? ""
+  ).join(",");
+  const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${experimentsOffset}|${trialFilterKey}`;
 
   // Build a dashboard URL for the given selection/page, preserving the current
   // search and any params this helper doesn't manage (e.g. trial metric
