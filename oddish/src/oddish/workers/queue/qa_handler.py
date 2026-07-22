@@ -9,6 +9,7 @@ from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.verdict_sync import (
+    aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
     build_verdict_payload,
     sync_pre_trial_to_task,
@@ -379,6 +380,18 @@ async def run_task_qa_job(
             )
             trials = trials_result.scalars().all()
             classifications = _classifications_from_trials(trials)
+
+        # The "doubly note" elevation: union each trial's exploitation
+        # assessments back onto task.pre_trial. Best-effort -- a failure here
+        # is a follow-up-audit gap, not a verdict-blocking error, so it must
+        # never stop verdict synthesis from running.
+        try:
+            await aggregate_exploited_into_pre_trial(task_id)
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Exploited-item aggregation failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
 
         console.print(
             f"[cyan]Computing verdict from {len(classifications)} "

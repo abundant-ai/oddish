@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from oddish.analyze import Classification, TrialClassification
-from oddish.db import TaskModel, TaskStatus, VerdictStatus, get_session, utcnow
+from oddish.db import TaskModel, TaskStatus, TrialModel, VerdictStatus, get_session, utcnow
 
 
 def build_verdict_payload(
@@ -122,3 +122,53 @@ async def sync_pre_trial_to_task(
             task.pre_trial_error = str(error)
 
         task.pre_trial_finished_at = utcnow()
+
+
+async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
+    """Stamp exploited=true (+ evidence) onto ``task.pre_trial`` items whose id
+    was exploited in any trial. The "doubly note" elevation. Idempotent.
+    """
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id, with_for_update=True)
+        if task is None or not task.pre_trial:
+            return
+
+        trials = (
+            await session.execute(select(TrialModel).where(TrialModel.task_id == task_id))
+        ).scalars().all()
+
+        exploited: dict[str, str] = {}
+        for trial in trials:
+            for a in (trial.analysis or {}).get("exploitation", []):
+                if a.get("exploited") and a.get("links_to"):
+                    exploited.setdefault(a["links_to"], a.get("exploit_evidence") or "")
+
+        # Build fresh item dicts rather than mutating in place: the loaded
+        # ``task.pre_trial`` dict is the very object SQLAlchemy diffs the
+        # reassignment against, so mutating it before reassigning leaves the
+        # "old" and "new" values equal by content and the UPDATE gets
+        # skipped even though the column is reassigned.
+        changed = False
+        new_items = []
+        for item in task.pre_trial.get("items", []):
+            item_id = item.get("id")
+            if item_id not in exploited:
+                new_items.append(item)
+                continue
+            evidence = exploited[item_id]
+            new_item = dict(item)
+            if not new_item.get("exploited"):
+                changed = True
+            new_item["exploited"] = True
+            if evidence and new_item.get("exploit_evidence") != evidence:
+                new_item["exploit_evidence"] = evidence
+                changed = True
+            new_items.append(new_item)
+
+        if changed:
+            # In-place mutation of a JSONB dict is NOT auto-detected by
+            # SQLAlchemy; reassigning the column is what marks it dirty.
+            task.pre_trial = {**task.pre_trial, "items": new_items}
+            await session.commit()
