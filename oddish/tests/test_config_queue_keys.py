@@ -111,6 +111,34 @@ def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
     assert settings.get_provider_for_trial("claude-code", None) == "bedrock"
 
 
+def test_anthropic_hdo_prefix_stays_off_bedrock_queue(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    expected = "anthropic-hdo/claude-sonnet-4-6"
+
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic-hdo/claude-sonnet-4-6")
+        == expected
+    )
+    assert (
+        settings.get_provider_for_trial(
+            "claude-code", "anthropic-hdo/claude-sonnet-4-6"
+        )
+        == "anthropic-hdo"
+    )
+    assert (
+        settings.get_queue_key_for_trial(
+            "claude-code", "anthropic-hdo/claude-sonnet-4-6"
+        )
+        == expected
+    )
+    # Bare Claude ids still take the Bedrock path — HDO is prefix-opt-in only.
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6")
+        == "global.anthropic.claude-sonnet-4-6"
+    )
+
+
 def test_opus_4_8_maps_to_global_inference_profile(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
@@ -317,10 +345,7 @@ def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):
         settings.get_queue_key_for_trial("grok-build", "grok/redacted-model")
         == "xai/redacted-model"
     )
-    assert (
-        settings.get_provider_for_trial("grok-build", "grok/redacted-model")
-        == "xai"
-    )
+    assert settings.get_provider_for_trial("grok-build", "grok/redacted-model") == "xai"
 
 
 def test_grok_build_without_model_uses_xai_provider_bucket(monkeypatch):

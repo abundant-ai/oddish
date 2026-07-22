@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from api.services.blocks.block import Block
+from oddish.blocks.block import Block
 from oddish.analyze.models import PreTrialActionItems
 
 from . import pre_trial_prompts as pp

@@ -148,12 +148,12 @@ def _minimal_ctx() -> TaskContext:
 
 
 def _fake_llm(payload: str):
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     return FakeAnalyzerLLMClient(chunks=[payload])
 
 
 def _patch_block_persistence(monkeypatch):
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
 
@@ -223,7 +223,7 @@ async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_wraps_client_errors(monkeypatch):
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summarize_trajectory import SummaryGenerationError, generate
     _patch_block_persistence(monkeypatch)
     client = FakeAnalyzerLLMClient(chunks=[], exc=RuntimeError("boom"))
@@ -463,7 +463,7 @@ class _RecordingLLM:
         self._payload = payload
         self.prompt: str | None = None
 
-    async def stream(self, prompt: str):
+    async def stream(self, prompt: str, *, system_prompt: str | None = None):
         self.prompt = prompt
         yield self._payload
 

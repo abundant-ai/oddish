@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.helpers import _has_fetchable_trajectory
-from oddish.db.models import TaskModel, TrialModel
+from oddish.db.models import TaskModel, TrialModel, experiment_trials
 
 MAX_CONCURRENCY = 4
 
@@ -78,7 +78,22 @@ async def resolve_cohort(
             TaskModel.name == task
         )
     else:
-        stmt = stmt.where(TrialModel.experiment_id == experiment)
+        # Collection experiments gather existing trials into a new experiment
+        # for viewing WITHOUT moving them (see experiment_trials' comment in
+        # oddish/db/models.py), so trials.experiment_id still points at each
+        # trial's home experiment -- membership is the union of both forms.
+        # experiment_trials is a Core Table, not a mapped class, so the
+        # soft-delete auto-filter (register_soft_delete_models, ORM-only)
+        # never touches it; deleted_at is filtered explicitly here.
+        member_ids = select(TrialModel.id).where(
+            TrialModel.experiment_id == experiment
+        ).union(
+            select(experiment_trials.c.trial_id).where(
+                experiment_trials.c.experiment_id == experiment,
+                experiment_trials.c.deleted_at.is_(None),
+            )
+        )
+        stmt = stmt.where(TrialModel.id.in_(member_ids))
 
     stmt = stmt.where(TrialModel.is_probe.is_(False)).order_by(TrialModel.id.asc())
     rows = (await session.execute(stmt)).scalars().all()
@@ -133,15 +148,19 @@ async def summarize_trial(
     yields a record carrying ``status``, ``error``, and whatever ``raw``
     accumulated -- including failures raised before a block even exists.
     """
-    from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
-    from api.services.summarize_trajectory import SCHEMA_VERSION, build_summary_block
+    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+    from api.services.summarize_trajectory import (
+        SCHEMA_VERSION,
+        SUMMARY_MAX_TOKENS,
+        build_summary_block,
+    )
     from oddish.db.models import JobStatus
 
     owned = client is None
     llm = None
     try:
-        # max_tokens=2048 matches generate()'s production cap.
-        llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
+        # Shared with generate() so a dump can't diverge from what prod sends.
+        llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
         block = build_summary_block(
             trajectory, task_context, analyzer_id=trial.id, model=model, client=llm,
         )

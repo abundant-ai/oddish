@@ -12,6 +12,15 @@ from oddish.dispatch.backends.inprocess import InProcessDispatcher
 from oddish.dispatch.ports import WorkerHandle
 
 
+def _fake_limits(limit: int):
+    """Flat per-queue_key concurrency limit, keyed by the caller's keys."""
+
+    async def _limits(queue_keys):
+        return {queue_key: limit for queue_key in queue_keys}
+
+    return _limits
+
+
 def test_reattach_recovers_durable_handles() -> None:
     async def _fetch():
         return [("gpt-4o", "fc-1"), ("claude", "fc-2")]
@@ -80,7 +89,7 @@ def test_run_dispatch_loop_reattaches_on_startup(monkeypatch) -> None:
         await cycle.run_dispatch_loop(
             FakeDispatcher(),
             max_workers=1,
-            concurrency_for=lambda qk: 1,
+            concurrency_limits_for=_fake_limits(1),
             _stop=lambda: True,
         )
 
@@ -115,7 +124,7 @@ def test_run_dispatch_loop_survives_cycle_failure(monkeypatch) -> None:
         await cycle.run_dispatch_loop(
             FakeDispatcher(),
             max_workers=1,
-            concurrency_for=lambda qk: 1,
+            concurrency_limits_for=_fake_limits(1),
             _stop=lambda: calls >= 2,
         )
 

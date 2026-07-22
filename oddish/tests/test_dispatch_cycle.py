@@ -22,6 +22,15 @@ from oddish.dispatch.cycle import (
 # --------------------------------------------------------------------------
 # Pre-spawn admission gate
 # --------------------------------------------------------------------------
+def _fake_limits(limit: int):
+    """Flat per-queue_key concurrency limit, keyed by the caller's keys."""
+
+    async def _limits(queue_keys):
+        return {queue_key: limit for queue_key in queue_keys}
+
+    return _limits
+
+
 def test_admit_all_admits_every_queue_key() -> None:
     plan = ["a", "b", "a"]
     admitted, rejected = admit_spawn_plan(plan, admit_all)
@@ -107,7 +116,7 @@ def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
         return await run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 5,
+            concurrency_limits_for=_fake_limits(5),
             _discover=_fake_discover([("gpt-4o", "default")]),
             _counts=_fake_counts(
                 {(None, "gpt-4o", "default"): 3}, {("gpt-4o", "default"): 0}
@@ -126,7 +135,7 @@ def test_build_dispatch_plan_preserves_variant_units_and_counts_held_slots() -> 
     async def _go():
         return await build_dispatch_plan(
             max_workers=10,
-            concurrency_for=lambda qk: 4,
+            concurrency_limits_for=_fake_limits(4),
             _discover=_fake_discover([("gpt-4o", "default"), ("gpt-4o", "blessed")]),
             _counts=_fake_counts(
                 {
@@ -155,7 +164,7 @@ def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
         return await run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 2,
+            concurrency_limits_for=_fake_limits(2),
             _discover=_fake_discover([("busy", "default")]),
             _counts=_fake_counts(
                 {(None, "busy", "default"): 4}, {("busy", "default"): 2}
@@ -180,7 +189,7 @@ def test_run_dispatch_cycle_records_admission_rejection_reason() -> None:
         return await run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 5,
+            concurrency_limits_for=_fake_limits(5),
             admit=admit,
             _discover=_fake_discover([("gpu-task", "default")]),
             _counts=_fake_counts(
@@ -206,7 +215,7 @@ def test_run_dispatch_cycle_held_slots_reduce_available_spawn() -> None:
         return await run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 5,
+            concurrency_limits_for=_fake_limits(5),
             _discover=_fake_discover([("gpt-4o", "default")]),
             _counts=_fake_counts(
                 {(None, "gpt-4o", "default"): 10}, {("gpt-4o", "default"): 0}
@@ -229,7 +238,7 @@ def test_run_dispatch_cycle_held_slots_at_limit_spawns_nothing() -> None:
         return await run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 2,
+            concurrency_limits_for=_fake_limits(2),
             _discover=_fake_discover([("busy", "default")]),
             _counts=_fake_counts(
                 {(None, "busy", "default"): 4}, {("busy", "default"): 0}
@@ -256,7 +265,7 @@ def test_run_dispatch_cycle_same_cycle_spawns_read_as_waiting_for_slot() -> None
         return await run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 2,
+            concurrency_limits_for=_fake_limits(2),
             _discover=_fake_discover([("solo", "default")]),
             _counts=_fake_counts(
                 {(None, "solo", "default"): 5}, {("solo", "default"): 0}

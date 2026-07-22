@@ -1,12 +1,13 @@
 """Hosted pre-trial synthesis: audits a task's source (verifier/oracle/info-
-leakage) via AnalyzerBlock + PreTrialBlock, running the agent in a
-Daytona sandbox that can ``oddish pull`` the task files.
+leakage) via AnalyzerBlock + PreTrialBlock, running the agent in a Daytona
+sandbox that can ``oddish pull`` the task files.
 
-Registered over the core QA handler (QaJobHandler.pre_trial_synth_fn) at
-worker container load, gated on settings.pre_trial_via_analyzer_block --
-following verdict_synth.py's shape: gate registration, not handler
-internals, so unsetting the flag reverts pre-trial to the legacy no-op with
-no branching.
+Registered into core's pre-trial hook (``register_pre_trial_synth``) at worker
+container load. oddish/ can't import backend/, so the sandbox-provisioning
+implementation is injected here the same way the sandbox LLM-client factory is.
+``run_task_qa_job`` invokes the registered hook only when
+``settings.pre_trial_enabled``; unset, this module registers a function that is
+simply never called.
 """
 
 from __future__ import annotations
@@ -15,20 +16,20 @@ import asyncio
 
 from sqlalchemy import select
 
-from api.services.blocks.analyzer.analyzer_block import (
+from oddish.analyze.models import ActionItem
+from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerBlock,
     AnalyzerInput,
     AnalyzerType,
 )
-from api.services.blocks.analyzer.analyzer_llm_client import LLMClientType
-from api.services.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
-from worker.pre_trial_sandbox import provision_oddish_sandbox_client
-from oddish.analyze.models import ActionItem
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from oddish.config import api_base_url_for_modal_app, settings
 from oddish.core.prompts import get_prompt_core
 from oddish.db import get_session
 from oddish.db.models import TaskModel
-from oddish.workers.jobs.handlers import QaJobHandler
+from oddish.workers.queue.qa_handler import register_pre_trial_synth
+from worker.pre_trial_sandbox import provision_oddish_sandbox_client
 
 
 async def _resolve_org_id(task_id: str) -> str | None:
@@ -38,16 +39,16 @@ async def _resolve_org_id(task_id: str) -> str | None:
         )
 
 
-async def pre_trial_block_synth(
+async def synthesize_task_pre_trial(
     task_id: str, trial_ids: list[str], timeout: float
 ) -> list[ActionItem]:
     """PreTrialSynthFn implementation backed by PreTrialBlock/AnalyzerBlock.
 
     Self-provisions a sandbox client that can ``oddish pull`` the task's
-    source, following the same gate/provisioning pattern as verdict_synth's
-    AnalyzerBlock usage. Never completes the task and never touches verdict
-    state -- that boundary lives in ``sync_pre_trial_to_task``, which this
-    function's caller (``run_task_qa_job``) invokes.
+    source, then runs the audit through an AnalyzerBlock (the same runner the
+    verdict path uses). Never completes the task and never touches verdict
+    state -- that boundary lives in ``sync_pre_trial_to_task``, which the
+    caller (``run_task_qa_job``) invokes with these items.
     """
     async with get_session() as session:
         _, ver = await get_prompt_core(session, "pre_trial_qa")
@@ -65,8 +66,8 @@ async def pre_trial_block_synth(
         task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
     )
     # Explicit override wins; otherwise derive from the Modal app identity so
-    # prod and PR previews resolve automatically (mirrors api/app.py's
-    # cc_chat orchestrator wiring).
+    # prod and PR previews resolve automatically (mirrors api/app.py's cc_chat
+    # orchestrator wiring).
     api_base_url = settings.public_api_base_url or api_base_url_for_modal_app()
     client = await provision_oddish_sandbox_client(
         org_id=org_id,
@@ -98,23 +99,5 @@ async def pre_trial_block_synth(
     return [ActionItem(**it) for it in data.get("items", [])]
 
 
-# Retained for tests only: functions.py wires pre_trial_block_synth onto
-# BlockQaJobHandler via install_block_qa_handlers() (qa_block_handlers.py),
-# not via this class/installer -- not on the runtime path since the
-# compose fix, but its tests still import it directly.
-class PreTrialBlockQaJobHandler(QaJobHandler):
-    """Same QA orchestration as QaJobHandler -- only the pre-trial-synthesis
-    strategy differs."""
-
-    pre_trial_synth_fn = staticmethod(pre_trial_block_synth)
-
-
-def install_pre_trial_block_qa_handler() -> bool:
-    """Swap the core QA handler for the AnalyzerBlock-backed pre-trial one.
-    Returns whether it was installed, so the caller can log the mode."""
-    from oddish.workers.jobs import register
-
-    if not settings.pre_trial_via_analyzer_block:
-        return False
-    register(PreTrialBlockQaJobHandler(), override=True)
-    return True
+# Importing this module (from backend.worker.functions) installs the hook.
+register_pre_trial_synth(synthesize_task_pre_trial)

@@ -19,6 +19,15 @@ class _FakePool:
         self.calls.append((" ".join(sql.split()), args))
 
 
+def _fake_limits(limit: int):
+    """Flat per-queue_key concurrency limit, keyed by the caller's keys."""
+
+    async def _limits(queue_keys):
+        return {queue_key: limit for queue_key in queue_keys}
+
+    return _limits
+
+
 def test_stamp_dispatch_stage_marks_spawned_and_reasons(monkeypatch) -> None:
     pool = _FakePool()
 
@@ -95,7 +104,7 @@ def test_run_dispatch_cycle_invokes_on_stage_with_admitted_and_reasons() -> None
         run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 5,
+            concurrency_limits_for=_fake_limits(5),
             on_stage=_on_stage,
             _discover=_discover,
             _counts=_counts,
@@ -135,7 +144,7 @@ def test_run_dispatch_cycle_on_stage_stamps_spawned_handles_not_admitted() -> No
         run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 5,
+            concurrency_limits_for=_fake_limits(5),
             on_stage=_on_stage,
             _discover=_discover,
             _counts=_counts,

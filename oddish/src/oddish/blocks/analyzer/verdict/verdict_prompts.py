@@ -1,9 +1,8 @@
 """Prompt text for the verdict-synthesis VerdictBlock.
 
 The prompt body itself is owned by ``oddish.analyze.build_verdict_prompt``, not
-re-authored here -- reusing it is what makes the block path and the legacy
-path parity-testable. This module only adapts that call into the Block
-section contract.
+re-authored here. This module only adapts that call into the Block section
+contract.
 """
 
 from __future__ import annotations

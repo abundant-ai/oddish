@@ -36,7 +36,7 @@ async def _seed_analyzer_prompts() -> None:
     exist before this worker can pick up a QA job.
 
     Previously only ``oddish prompt seed`` created these rows, so a fresh
-    deploy with ``pre_trial_via_analyzer_block`` on 404s on every QA job.
+    deploy with ``pre_trial_enabled`` on 404s on every QA job.
     ``seed_prompts`` only inserts missing keys, so re-running it here on
     every container invocation is a cheap no-op once seeded -- and it
     self-heals if a row is ever deleted, unlike a one-shot migration.

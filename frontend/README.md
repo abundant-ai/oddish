@@ -15,7 +15,7 @@ Current app surface:
 - `/skills` and `/documents` org skill and doc-store management
 - `/usage` usage and cost reporting
 - `/settings` organization management and API key management
-- `/admin` two tabs: **Worker Jobs** (default) showing the unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, duration percentiles, plus the `OrphanedStateCard`; and **Concurrency** with `queue_slots` leases and per-queue-key health
+- `/admin` includes an **Overview** with editable per-queue-key concurrency limits and queue health, plus detailed **Worker Jobs** and **Concurrency** tabs for job state and `queue_slots` leases
 - `/share/[token]` read-only public experiment view
 - `/datasets` and `/datasets/[token]` public dataset listing and detail pages
 

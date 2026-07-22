@@ -6,10 +6,8 @@ from __future__ import annotations
 
 import os
 
-from api.services.blocks.analyzer.analyzer_llm_client import (
-    SandboxAnalyzerLLMClient,
-    resolve_analyzer_api_key,
-)
+from api.services.blocks.analyzer.sandbox_llm_client import SandboxAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import resolve_analyzer_api_key
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
 from api.services.cc_chat.daytona_client import RealDaytonaClient
 from api.services.cc_chat.provisioner import Provisioner
