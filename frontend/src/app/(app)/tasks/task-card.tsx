@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/tooltip";
 import { ExperimentsList } from "@/components/experiments-list";
 import { TagChip } from "@/components/tag-chip";
+import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 import { formatCostUsd } from "@/lib/format";
 import {
   formatPartialRewardBadgeValue,
@@ -53,7 +54,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       const status = getMatrixStatus(
         trial.status,
         trial.reward,
-        trial.error_message,
+        trial.error_message
       );
       counts[status] += 1;
       return counts;
@@ -71,7 +72,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       pending: 0,
       queued: 0,
       running: 0,
-    } satisfies Record<ReturnType<typeof getMatrixStatus>, number>,
+    } satisfies Record<ReturnType<typeof getMatrixStatus>, number>
   );
 }
 
@@ -126,20 +127,22 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
           {summaryItems
             .filter((item) => item.key !== "skipped" || item.count > 0)
             .map((item) => {
-            const config = STATUS_CONFIG[item.key];
-            return (
-              <div
-                key={item.key}
-                className="flex items-center gap-1 whitespace-nowrap"
-              >
-                <span
-                  className={`inline-flex h-2 w-2 rounded-full ${config.bracketClass}`}
-                />
-                <span>{item.label}</span>
-                <span className="text-foreground font-mono">{item.count}</span>
-              </div>
-            );
-          })}
+              const config = STATUS_CONFIG[item.key];
+              return (
+                <div
+                  key={item.key}
+                  className="flex items-center gap-1 whitespace-nowrap"
+                >
+                  <span
+                    className={`inline-flex h-2 w-2 rounded-full ${config.bracketClass}`}
+                  />
+                  <span>{item.label}</span>
+                  <span className="text-foreground font-mono">
+                    {item.count}
+                  </span>
+                </div>
+              );
+            })}
         </div>
       ) : (
         <div className="text-muted-foreground text-[10px] leading-none">
@@ -148,6 +151,105 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
       )}
     </div>
   );
+}
+
+type LatestTrial = TaskBrowseItem["latest_trials"][number];
+
+function TrialIcon({ trial }: { trial: LatestTrial }) {
+  const status = getMatrixStatus(
+    trial.status,
+    trial.reward,
+    trial.error_message
+  );
+  const config = STATUS_CONFIG[status];
+  const badgeLabel =
+    status === "partial" ? formatPartialRewardBadgeValue(trial.reward) : null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className={`flex h-[18px] w-[18px] items-center justify-center rounded-[4px] border font-mono leading-none font-semibold ${config.matrixClass} ${status === "partial" ? "text-[7px] tracking-[-0.03em]" : ""}`}
+          style={getRewardStyle(trial.reward)}
+          aria-label={`${trial.name} ${config.shortLabel}`}
+        >
+          {badgeLabel}
+        </div>
+      </TooltipTrigger>
+      <TooltipContent>
+        <div className="space-y-0.5">
+          <div className="font-medium">{trial.name}</div>
+          <div className="text-muted-foreground">{config.shortLabel}</div>
+          {trial.reward !== null && (
+            <div className="text-muted-foreground">
+              Score {formatRewardValue(trial.reward)} (
+              {formatRewardPercent(trial.reward)})
+            </div>
+          )}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function trialModelKey(model: string | null): string {
+  return model?.trim() || "default";
+}
+
+type TrialGroup = {
+  key: string;
+  agent: string;
+  model: string | null;
+  trials: LatestTrial[];
+};
+
+// Mirrors the interior task view's agent grouping (experiment-agent-grouping):
+// one section per agent, split by model only when an agent ran more than one.
+function groupLatestTrials(trials: LatestTrial[]): TrialGroup[] {
+  const modelsByAgent = new Map<string, Set<string>>();
+  for (const trial of trials) {
+    const models = modelsByAgent.get(trial.agent) ?? new Set<string>();
+    models.add(trialModelKey(trial.model));
+    modelsByAgent.set(trial.agent, models);
+  }
+  const modelScoped = new Set(
+    Array.from(modelsByAgent.entries())
+      .filter(([, models]) => models.size > 1)
+      .map(([agent]) => agent)
+  );
+
+  const groups = new Map<string, TrialGroup>();
+  for (const trial of trials) {
+    const key = modelScoped.has(trial.agent)
+      ? `${trial.agent}/${trialModelKey(trial.model)}`
+      : trial.agent;
+    const group = groups.get(key);
+    if (group) {
+      group.trials.push(trial);
+    } else {
+      groups.set(key, {
+        key,
+        agent: trial.agent,
+        model: trial.model,
+        trials: [trial],
+      });
+    }
+  }
+
+  // Real agents before baselines (nop/oracle), then most-run first.
+  return Array.from(groups.values()).sort((a, b) => {
+    const baselineDelta =
+      Number(isBaselineAgentName(a.agent)) -
+      Number(isBaselineAgentName(b.agent));
+    if (baselineDelta !== 0) return baselineDelta;
+    return b.trials.length - a.trials.length;
+  });
+}
+
+function groupScorePct(trials: LatestTrial[]): number | null {
+  const rewards = trials.flatMap((t) => (t.reward === null ? [] : [t.reward]));
+  if (rewards.length === 0) return null;
+  return (rewards.reduce((sum, r) => sum + r, 0) / rewards.length) * 100;
 }
 
 function TrialGraphics({ task }: { task: TaskBrowseItem }) {
@@ -159,44 +261,44 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
     );
   }
 
-  return (
-    <div className="flex flex-wrap gap-1">
-      {task.latest_trials.map((trial) => {
-        const status = getMatrixStatus(
-          trial.status,
-          trial.reward,
-          trial.error_message,
-        );
-        const config = STATUS_CONFIG[status];
-        const badgeLabel =
-          status === "partial"
-            ? formatPartialRewardBadgeValue(trial.reward)
-            : null;
+  const groups = groupLatestTrials(task.latest_trials);
 
+  return (
+    <div className="space-y-2">
+      {groups.map((group) => {
+        const scorePct = groupScorePct(group.trials);
         return (
-          <Tooltip key={trial.id}>
-            <TooltipTrigger asChild>
-              <div
-                className={`flex h-[18px] w-[18px] items-center justify-center rounded-[4px] border font-mono leading-none font-semibold ${config.matrixClass} ${status === "partial" ? "text-[7px] tracking-[-0.03em]" : ""}`}
-                style={getRewardStyle(trial.reward)}
-                aria-label={`${trial.name} ${config.shortLabel}`}
-              >
-                {badgeLabel}
+          <div key={group.key} className="space-y-1">
+            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <span className="text-foreground font-mono text-[11px] font-medium">
+                  {group.agent}
+                </span>
+                {group.model ? (
+                  <Badge
+                    variant="outline"
+                    className="w-fit font-mono text-[10px]"
+                  >
+                    {group.model}
+                  </Badge>
+                ) : null}
               </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              <div className="space-y-0.5">
-                <div className="font-medium">{trial.name}</div>
-                <div className="text-muted-foreground">{config.shortLabel}</div>
-                {trial.reward !== null && (
-                  <div className="text-muted-foreground">
-                    Score {formatRewardValue(trial.reward)} (
-                    {formatRewardPercent(trial.reward)})
-                  </div>
-                )}
+              <div className="text-muted-foreground flex items-center gap-2 font-mono text-[10px] leading-none">
+                <span>
+                  {group.trials.length} trial
+                  {group.trials.length === 1 ? "" : "s"}
+                </span>
+                <span className="text-foreground">
+                  {scorePct == null ? "—" : `${scorePct.toFixed(0)}%`}
+                </span>
               </div>
-            </TooltipContent>
-          </Tooltip>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {group.trials.map((trial) => (
+                <TrialIcon key={trial.id} trial={trial} />
+              ))}
+            </div>
+          </div>
         );
       })}
     </div>
@@ -211,7 +313,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
     <Card
       className={cn(
         "bg-card/95 border-[#6f88b4]/20 shadow-xs transition-colors hover:border-[#6f88b4]/40",
-        selected && "border-[#6f88b4]/70 ring-1 ring-[#6f88b4]/40",
+        selected && "border-[#6f88b4]/70 ring-1 ring-[#6f88b4]/40"
       )}
     >
       <CardHeader className="space-y-2 px-5 pt-5 pb-2">
@@ -252,7 +354,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                     onClick={(e) => e.stopPropagation()}
                     className={cn(
                       badgeVariants({ variant: "outline" }),
-                      "hover:bg-accent w-fit gap-1.5 font-mono text-[11px] transition-colors",
+                      "hover:bg-accent w-fit gap-1.5 font-mono text-[11px] transition-colors"
                     )}
                   >
                     <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />

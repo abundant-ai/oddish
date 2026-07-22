@@ -71,6 +71,7 @@ from oddish.schemas import (
     TaskStatusResponse,
     UserTagRef,
 )
+from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.model_pricing import estimate_cost_usd, get_model_pricing
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
@@ -891,6 +892,10 @@ def _agent_compare_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Same scoped trial set as ``_task_metrics_subquery`` — exclude combine
+        # copies so the "A beats B" comparison isn't skewed by re-materialized
+        # duplicates of a subject's trials.
+        not_combine_copy_filter(),
         # NOTE: skipped trials are intentionally INCLUDED in metric denominators
         # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
@@ -912,6 +917,7 @@ def _subject_value_scalar(
         TrialModel.task_version_id == TaskModel.current_version_id,
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        not_combine_copy_filter(),
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -964,6 +970,7 @@ def _top_performer_predicate(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        not_combine_copy_filter(),
         subject_col.isnot(None),
     )
     if org_id is not None:
@@ -1100,6 +1107,10 @@ def _task_metrics_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Combine copies re-materialize an existing execution under another
+        # experiment; excluding them keeps the cost sort / aggregate filters on
+        # the same execution population the card counters and detail view show.
+        not_combine_copy_filter(),
         # NOTE: skipped trials are intentionally INCLUDED in metric denominators
         # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
@@ -2047,6 +2058,10 @@ async def browse_tasks_core(
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.is_probe.isnot(True),
+                # Combine copies double-count an execution already counted under
+                # its source experiment; drop them so the card's trial counts and
+                # cost match the task-detail view (which excludes them too).
+                not_combine_copy_filter(),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -2130,6 +2145,10 @@ async def browse_tasks_core(
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.is_probe.isnot(True),
+                # Combine copies re-materialize the same execution under other
+                # experiments; keeping them rendered as duplicate result icons on
+                # the card. Exclude so each execution shows once.
+                not_combine_copy_filter(),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -2159,6 +2178,8 @@ async def browse_tasks_core(
                     status=trial_row["trial_status"],
                     reward=trial_row["reward"],
                     error_message=trial_row["error_message"],
+                    agent=str(trial_row["agent"]),
+                    model=trial_row["model"],
                 )
             )
             if cost_scope_active:

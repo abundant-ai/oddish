@@ -240,6 +240,8 @@ interface TaskBrowseTrial {
   status: TrialStatus;
   reward: number | null;
   error_message?: string | null;
+  agent: string;
+  model: string | null;
 }
 
 export interface TaskBrowseItem {

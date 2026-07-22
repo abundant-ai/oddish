@@ -1224,6 +1224,8 @@ class TaskBrowseTrial(BaseModel):
     status: TrialStatus
     reward: float | None = None
     error_message: str | None = None
+    agent: str = ""
+    model: str | None = None
 
 
 class TaskBrowseItem(BaseModel):
