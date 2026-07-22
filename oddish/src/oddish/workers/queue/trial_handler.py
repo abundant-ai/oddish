@@ -458,6 +458,7 @@ async def _prepare_trial_run(
         trial.output_tokens = None
         trial.total_steps = None
         trial.cost_usd = None
+        trial.llm_key_hash = None
         trial.phase_timing = None
         trial.has_trajectory = False
         trial.attempts += 1
