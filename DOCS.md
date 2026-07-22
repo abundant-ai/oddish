@@ -48,7 +48,7 @@ A typical run flows through these commands:
 5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
 6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
-`oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. Tasks can be filtered by name and tags with `oddish ls --query` / `--tag`; there is no status or date filtering yet, so other IDs are typically discovered through the dashboard or `oddish status`.
+`oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. `oddish ls` supports the dashboard's task, tag, status, date, model, and trial-metric filters.
 
 ## Submit a Job
 
@@ -222,6 +222,8 @@ counts, reward summary, tags, last run time, and linked experiments.
 oddish ls
 oddish ls --query django
 oddish ls --tag benchmark --not-tag wip
+oddish ls --model openai/gpt-5 --min-steps 100 --min-duration 120
+oddish ls --tool bash --tool-min bash=5 --trial-match all
 oddish ls --json
 ```
 

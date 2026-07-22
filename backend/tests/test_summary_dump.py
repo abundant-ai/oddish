@@ -365,7 +365,7 @@ async def test_summarize_trial_returns_full_record():
     assert record["task_name"] == "my-task"
     assert record["final_reward"] == 1.0
     assert record["model"] == "claude-opus-4-8"
-    assert record["schema_version"] == "4"
+    assert record["schema_version"] == "5"
     assert record["status"] == "success"
     assert record["error"] is None
     assert isinstance(record["duration_s"], float)
