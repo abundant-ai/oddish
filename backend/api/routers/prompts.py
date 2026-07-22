@@ -73,7 +73,10 @@ async def set_prompt(
     data: PromptSetRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> PromptResponse:
-    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    # FULL, not TASKS: prompts are a single global registry that drives QA
+    # for every org, so any org's TASKS key must not be able to rewrite what
+    # every other org's analysis runs on.
+    auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
         await set_prompt_core(
             session,
@@ -94,7 +97,8 @@ async def activate_prompt(
     data: PromptActivateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> PromptResponse:
-    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    # FULL, not TASKS: see set_prompt above.
+    auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
         await activate_prompt_version_core(session, key, data.version)
         await session.commit()

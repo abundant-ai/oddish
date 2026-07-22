@@ -25,9 +25,14 @@ class _FakePrompt:
     updated_at = __import__("datetime").datetime.now()
 
 
+class _FakeSession:
+    async def commit(self):
+        pass
+
+
 @contextlib.asynccontextmanager
 async def _ctx(_):
-    yield None
+    yield _FakeSession()
 
 
 def _auth(scopes):
@@ -72,3 +77,50 @@ async def test_put_requires_write_scope(monkeypatch):
         scopes=(APIKeyScope.READ,), json={"content": "x"},
     )
     assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_tasks_scope(monkeypatch):
+    # Prompts are a single global registry driving every org's QA -- a
+    # TASKS key (scoped to one org's tasks/trials) must not be able to
+    # rewrite it. Only FULL may write.
+    resp = await _call(
+        "PUT", "/prompts/pre_trial_qa", monkeypatch,
+        scopes=(APIKeyScope.TASKS,), json={"content": "x"},
+    )
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_put_accepts_full_scope(monkeypatch):
+    async def fake_set(session, *, key, content, description=None, activate=True, created_by=None):
+        return None
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
+    resp = await _call(
+        "PUT", "/prompts/pre_trial_qa", monkeypatch,
+        scopes=(APIKeyScope.FULL,), json={"content": "x"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_activate_rejects_tasks_scope(monkeypatch):
+    resp = await _call(
+        "POST", "/prompts/pre_trial_qa/activate", monkeypatch,
+        scopes=(APIKeyScope.TASKS,), json={"version": 1},
+    )
+    assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_activate_accepts_full_scope(monkeypatch):
+    async def fake_activate(session, key, version):
+        return None
+
+    monkeypatch.setattr(prompts_router, "activate_prompt_version_core", fake_activate)
+    resp = await _call(
+        "POST", "/prompts/pre_trial_qa/activate", monkeypatch,
+        scopes=(APIKeyScope.FULL,), json={"version": 1},
+    )
+    assert resp.status_code == 200
