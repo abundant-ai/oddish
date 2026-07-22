@@ -680,7 +680,6 @@ export interface TrajectoryComponent {
   trajectory_component: TrajectoryComponentKind;
   summary: string | null;
   /** Deterministic metadata added in summary schema v5; optional for older summaries. */
-  step_count?: number;
   tool_count?: number;
   duration_ms?: number;
 }

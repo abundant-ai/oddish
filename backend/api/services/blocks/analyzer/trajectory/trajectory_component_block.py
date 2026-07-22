@@ -49,7 +49,6 @@ class TrajectoryComponent:
     step_ids: list[int]
     trajectory_component: TrajectoryBlockTaxonomy
     summary: Optional[str] = None
-    step_count: int = 0
     tool_count: int = 0
     duration_ms: int = 0
 
@@ -250,7 +249,6 @@ class TrajectoryBlock(Block):
                 **component,
                 # These fields are derived from the immutable trajectory rather
                 # than supplied by the LLM, so consumers can safely aggregate them.
-                "step_count": len(component_steps),
                 "tool_count": sum(
                     len(step.get("tool_calls") or [])
                     for _, step in component_steps

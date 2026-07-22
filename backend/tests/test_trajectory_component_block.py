@@ -120,6 +120,7 @@ def test_to_summary_is_schema_v5_with_component_metadata():
     assert "generated_at" in d
     assert "phases" not in d
     assert d["components"][0]["trajectory_component"] == "implementing"
-    assert d["components"][0]["step_count"] == 2
+    assert len(d["components"][0]["step_ids"]) == 2
+    assert "step_count" not in d["components"][0]
     assert d["components"][0]["tool_count"] == 3
     assert d["components"][0]["duration_ms"] == 2500

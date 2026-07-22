@@ -35,7 +35,6 @@ export interface Segment {
   label: string;
   gist: string;
   stepIds: number[];
-  stepCount?: number;
   toolCount?: number;
   durationMs?: number;
 }
@@ -67,7 +66,6 @@ export function toSegments(
         label: componentLabel(c.trajectory_component),
         gist: c.summary ?? "",
         stepIds: sorted(c.step_ids),
-        stepCount: c.step_count,
         toolCount: c.tool_count,
         durationMs: c.duration_ms,
       }));

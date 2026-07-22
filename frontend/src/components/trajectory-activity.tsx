@@ -61,7 +61,7 @@ export function TrajectoryActivity({
       .filter((index): index is number => index !== undefined);
     return {
       ...segment,
-      stepCount: segment.stepCount ?? indexes.length,
+      stepCount: indexes.length,
       toolCount:
         segment.toolCount ??
         indexes.reduce(
