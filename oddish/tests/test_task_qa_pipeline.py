@@ -40,7 +40,6 @@ from oddish.workers.queue import qa_handler  # noqa: E402
 from oddish.workers.queue.qa_handler import (  # noqa: E402
     _classifications_from_trials,
     _trial_needs_classification,
-    default_pre_trial_synth as qh_default_pre_trial_synth,
 )
 
 
@@ -368,7 +367,7 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
 
     captured = {"classifications": None}
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
         captured["classifications"] = classifications
         return SimpleNamespace(
             is_good=False,
@@ -388,7 +387,7 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
     monkeypatch.setattr(qa_handler, "classify_trial_and_store", fake_classify)
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
 
     await qa_handler.run_task_qa_job("task-9", queue_key="verdict")
 
@@ -436,13 +435,17 @@ async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
         return SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue="",
             reasoning="fine",
             recommendations=[],
+            task_problem_count=0,
+            agent_problem_count=0,
+            success_count=1,
+            harness_error_count=0,
         )
 
     async def fail_sync_pre_trial(*_args, **_kwargs):
@@ -455,10 +458,11 @@ async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
     monkeypatch.setattr(qa_handler, "sync_pre_trial_to_task", fail_sync_pre_trial)
 
-    assert qa_handler.default_pre_trial_synth is qh_default_pre_trial_synth
+    # pre_trial_enabled defaults False, so the pre-trial block is skipped
+    # entirely -- the guard never calls sync_pre_trial_to_task.
     await qa_handler.run_task_qa_job("task-9b", queue_key="verdict")
 
     # pre_trial was never assigned onto the task -- proves the guard skipped
@@ -470,10 +474,11 @@ async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
     assert task.status == TaskStatus.COMPLETED
 
 
-@pytest.mark.asyncio
-async def test_run_task_qa_job_default_pre_trial_synth_returns_none():
-    """Belt-and-braces: the default strategy itself is an unconditional no-op."""
-    assert await qa_handler.default_pre_trial_synth("task-x", ["t-1"], 30) is None
+def test_pre_trial_disabled_by_default():
+    """Belt-and-braces: the gate that keeps pre-trial a no-op is off by default."""
+    from oddish.config import settings
+
+    assert settings.pre_trial_enabled is False
 
 
 @pytest.mark.asyncio
@@ -510,13 +515,17 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
         return SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue="",
             reasoning="fine",
             recommendations=[],
+            task_problem_count=0,
+            agent_problem_count=0,
+            success_count=1,
+            harness_error_count=0,
         )
 
     captured: dict = {}
@@ -544,11 +553,11 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler.settings, "pre_trial_enabled", True)
+    monkeypatch.setattr(qa_handler, "_pre_trial_synth_fn", stub_pre_trial_synth)
 
-    await qa_handler.run_task_qa_job(
-        "task-9c", queue_key="verdict", pre_trial_synth_fn=stub_pre_trial_synth
-    )
+    await qa_handler.run_task_qa_job("task-9c", queue_key="verdict")
 
     assert captured["task_id"] == "task-9c"
     assert captured["trial_ids"] == ["task-9c-0"]
@@ -592,13 +601,17 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
         return SimpleNamespace(
             is_good=True,
             confidence="high",
             primary_issue="",
             reasoning="fine",
             recommendations=[],
+            task_problem_count=0,
+            agent_problem_count=0,
+            success_count=1,
+            harness_error_count=0,
         )
 
     async def boom_pre_trial_synth(task_id, trial_ids, timeout):
@@ -609,11 +622,11 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler.settings, "pre_trial_enabled", True)
+    monkeypatch.setattr(qa_handler, "_pre_trial_synth_fn", boom_pre_trial_synth)
 
-    await qa_handler.run_task_qa_job(
-        "task-9d", queue_key="verdict", pre_trial_synth_fn=boom_pre_trial_synth
-    )
+    await qa_handler.run_task_qa_job("task-9d", queue_key="verdict")
 
     assert task.pre_trial_status == VerdictStatus.FAILED
     assert "sandbox exploded" in task.pre_trial_error
@@ -658,10 +671,7 @@ async def test_run_task_qa_job_completes_with_no_live_trials(monkeypatch):
     async def fail_classify(_trial_id, should_store=None):
         raise AssertionError("must not classify when there are no live trials")
 
-    async def fail_verdict_synth(*_args, **_kwargs):
-        raise AssertionError("verdict synthesis must not run with no live trials")
-
-    def fail_compute_verdict(**_kwargs):
+    async def fail_compute_verdict(*_args, **_kwargs):
         raise AssertionError("verdict synthesis must not run with no live trials")
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -675,11 +685,9 @@ async def test_run_task_qa_job_completes_with_no_live_trials(monkeypatch):
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
     monkeypatch.setattr(qa_handler, "classify_trial_and_store", fail_classify)
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fail_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fail_compute_verdict)
 
-    await qa_handler.run_task_qa_job(
-        "task-15", queue_key="qa", verdict_synth_fn=fail_verdict_synth
-    )
+    await qa_handler.run_task_qa_job("task-15", queue_key="qa")
 
     # Both of the next two asserts are load-bearing; neither is redundant.
     # ``_QASession`` is a plain fake with no rollback, so a NameError raised
@@ -744,7 +752,7 @@ async def test_run_task_qa_job_ignores_cancelled_worker_job(monkeypatch):
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
         return SimpleNamespace(
             is_good=True,
             confidence="high",
@@ -761,7 +769,7 @@ async def test_run_task_qa_job_ignores_cancelled_worker_job(monkeypatch):
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
 
     await qa_handler.run_task_qa_job(
         "task-11", queue_key="qa", worker_job_id="cancelled-job"
@@ -802,7 +810,7 @@ async def test_run_task_qa_job_ignores_final_cancelled_worker_job(monkeypatch):
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fake_compute_verdict(*, classifications, **_kwargs):
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
         assert classifications
         return SimpleNamespace(
             is_good=True,
@@ -820,7 +828,7 @@ async def test_run_task_qa_job_ignores_final_cancelled_worker_job(monkeypatch):
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fake_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
 
     await qa_handler.run_task_qa_job(
         "task-12", queue_key="qa", worker_job_id="cancelled-job"
@@ -874,7 +882,7 @@ async def test_run_task_qa_job_stops_classifying_after_cancel(monkeypatch):
     async def fake_classify(trial_id, should_store=None):
         classified.append(trial_id)
 
-    def fail_compute_verdict(**_kwargs):
+    async def fail_compute_verdict(*_args, **_kwargs):
         raise AssertionError("verdict synthesis should stop after cancellation")
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -882,7 +890,7 @@ async def test_run_task_qa_job_stops_classifying_after_cancel(monkeypatch):
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
     monkeypatch.setattr(qa_handler, "classify_trial_and_store", fake_classify)
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fail_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fail_compute_verdict)
 
     await qa_handler.run_task_qa_job(
         "task-13", queue_key="qa", worker_job_id="cancelled-job"
@@ -931,7 +939,7 @@ async def test_run_task_qa_job_blocks_inflight_classification_store(monkeypatch)
             trial.analysis_status = AnalysisStatus.SUCCESS
             trial.analysis = {"classification": "GOOD_SUCCESS"}
 
-    def fail_compute_verdict(**_kwargs):
+    async def fail_compute_verdict(*_args, **_kwargs):
         raise AssertionError("verdict synthesis should stop after cancellation")
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -939,7 +947,7 @@ async def test_run_task_qa_job_blocks_inflight_classification_store(monkeypatch)
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
     monkeypatch.setattr(qa_handler, "classify_trial_and_store", fake_classify)
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fail_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fail_compute_verdict)
 
     await qa_handler.run_task_qa_job(
         "task-14", queue_key="qa", worker_job_id="cancelled-job"
@@ -951,12 +959,11 @@ async def test_run_task_qa_job_blocks_inflight_classification_store(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_run_task_qa_job_uses_injected_verdict_synth_fn(monkeypatch):
-    """A stub ``verdict_synth_fn`` replaces ``default_verdict_synth`` entirely,
-    with ``baseline``/``quality_check_passed``/``timeout`` threaded through
-    (not re-derived by the stub) -- the seam Task B exists to create. The
-    stub's output must reach the stored payload via ``build_verdict_payload``.
-    """
+async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypatch):
+    """``baseline``/``quality_check_passed``/``timeout`` are threaded into
+    verdict synthesis by run_task_qa_job, not re-derived downstream, and the
+    synthesized output must reach the stored payload via
+    ``build_verdict_payload``."""
     task = SimpleNamespace(
         id="task-20",
         org_id="org-1",
@@ -982,11 +989,6 @@ async def test_run_task_qa_job_uses_injected_verdict_synth_fn(monkeypatch):
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
-    def fail_compute_verdict(**_kwargs):
-        raise AssertionError(
-            "default_verdict_synth must not run when a verdict_synth_fn is injected"
-        )
-
     captured: dict = {}
 
     async def stub_verdict_synth(
@@ -1009,11 +1011,9 @@ async def test_run_task_qa_job_uses_injected_verdict_synth_fn(monkeypatch):
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
     )
-    monkeypatch.setattr("oddish.analyze.compute_task_verdict", fail_compute_verdict)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", stub_verdict_synth)
 
-    await qa_handler.run_task_qa_job(
-        "task-20", queue_key="qa", verdict_synth_fn=stub_verdict_synth
-    )
+    await qa_handler.run_task_qa_job("task-20", queue_key="qa")
 
     assert len(captured["classifications"]) == 1
     # Threaded through from run_task_qa_job, not re-derived by the stub.
@@ -1021,8 +1021,8 @@ async def test_run_task_qa_job_uses_injected_verdict_synth_fn(monkeypatch):
     assert captured["quality_check_passed"] is True
     assert captured["timeout"] == 180
 
-    # The stub's output reaches the stored payload -- proves both synthesis
-    # paths converge on build_verdict_payload / sync_verdict_to_task.
+    # The stub's output reaches the stored payload via build_verdict_payload /
+    # sync_verdict_to_task.
     assert task.verdict_status == VerdictStatus.SUCCESS
     assert task.status == TaskStatus.COMPLETED
     assert task.verdict["is_good"] is True

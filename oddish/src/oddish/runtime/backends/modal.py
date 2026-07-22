@@ -72,10 +72,15 @@ class ModalBackend:
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
         # Harbor's default sandbox app is the anonymous "__harbor__", which
         # makes trial sandboxes unattributable in the Modal dashboard. Group
-        # them under "<deployed app>-trials" instead; caller kwargs win,
-        # matching the other backends' merge semantics.
+        # them under "<deployed app>-trials" instead; caller app kwargs win.
+        # Exact GPU requests are a hosted invariant: H100 must not become H200
+        # and ambiguous A100 must resolve to the 40GB SKU.
         app_name = f"{os.environ.get('MODAL_APP_NAME', 'oddish')}-trials"
-        return {"app_name": app_name, **base_kwargs}
+        return {
+            "app_name": app_name,
+            **base_kwargs,
+            "modal_exact_gpu_type": True,
+        }
 
     async def teardown(self, external_id: str) -> bool:
         if not external_id:

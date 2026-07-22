@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from sqlalchemy import func, select
 
 from oddish.analyze import BaselineValidation, TrialClassification
+from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.verdict_sync import (
@@ -32,35 +34,48 @@ from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 QA_HEARTBEAT_INTERVAL_SECONDS = 30
 
-# The verdict-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
-# can be injected here without oddish importing backend/. baseline,
-# quality_check_passed, and timeout are passed in rather than re-derived, so
-# the legacy and injected paths can't silently diverge if either default
-# changes later.
-VerdictSynthFn = Callable[
-    [list[TrialClassification], BaselineValidation | None, bool, float],
-    Awaitable[Any],
-]
 
-
-async def default_verdict_synth(
+async def synthesize_task_verdict(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None,
     quality_check_passed: bool,
     timeout: float,
-) -> Any:
-    """Wraps today's ``compute_task_verdict`` call, unchanged."""
-    from oddish.analyze import compute_task_verdict
+) -> TaskVerdictModel:
+    """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
-    return compute_task_verdict(
-        classifications=classifications,
-        baseline=baseline,
-        quality_check_passed=quality_check_passed,
-        model=settings.verdict_model,
-        console=console,
-        verbose=True,
-        timeout=timeout,
+    The block self-provisions the direct API client for ``settings.verdict_model``
+    (an OpenAI/Azure model, so the API client uses the OpenAI SDK) with
+    TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the cap,
+    and closes it on every exit path. ``timeout`` bounds the whole block run --
+    the client has no per-request timeout knob -- falling back to
+    VERDICT_TIMEOUT, and the block persists itself to ``analyzer_blocks`` + S3.
+    """
+    from oddish.analyze.classifier import VERDICT_MAX_TOKENS, VERDICT_TIMEOUT
+    from oddish.blocks.analyzer.analyzer_block import (
+        AnalyzerBlock,
+        AnalyzerInput,
+        AnalyzerType,
     )
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
+
+    vb = VerdictBlock(
+        classifications, baseline=baseline, quality_check_passed=quality_check_passed
+    )
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.TASK_VERDICT,
+        llm_client_type=LLMClientType.API,
+        input=AnalyzerInput(input={"num_trials": len(classifications)}),
+        # build_prompt() raises rather than sending the degraded placeholder
+        # (see VerdictBlock.build_prompt).
+        prompt=vb.build_prompt(),
+        model=settings.verdict_model,
+        max_tokens=VERDICT_MAX_TOKENS,
+        response_format=TaskVerdictModel,
+        output_transform=vb.to_verdict,
+    )
+    out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+    return TaskVerdictModel(**out.output)
 
 
 # The pre-trial-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
@@ -68,14 +83,18 @@ async def default_verdict_synth(
 # importing backend/. Mirrors VerdictSynthFn's shape.
 PreTrialSynthFn = Callable[[str, list[str], float], Awaitable[Any]]
 
+# Hosted (AnalyzerBlock-backed) pre-trial synth, registered by backend at import
+# via register_pre_trial_synth(). oddish/ can't import backend/, so the sandbox-
+# provisioning implementation is injected here rather than imported -- the same
+# seam analyzer_llm_client.register_sandbox_client_factory uses. None until
+# registered; run_task_qa_job only invokes it when settings.pre_trial_enabled.
+_pre_trial_synth_fn: PreTrialSynthFn | None = None
 
-async def default_pre_trial_synth(
-    task_id: str, trial_ids: list[str], timeout: float
-) -> Any:
-    """Legacy default: pre-trial analysis does not run. Returning ``None``
-    is load-bearing -- the ``pre_trial_items is not None`` guard in
-    ``run_task_qa_job`` is what keeps this a complete no-op."""
-    return None
+
+def register_pre_trial_synth(fn: PreTrialSynthFn) -> None:
+    """Install the hosted pre-trial-synthesis implementation."""
+    global _pre_trial_synth_fn
+    _pre_trial_synth_fn = fn
 
 
 async def _heartbeat_qa_worker_job(
@@ -211,8 +230,6 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
-    verdict_synth_fn: VerdictSynthFn = default_verdict_synth,
-    pre_trial_synth_fn: PreTrialSynthFn = default_pre_trial_synth,
 ) -> None:
     """Classify a task's live trials and store one verdict."""
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
@@ -253,16 +270,19 @@ async def run_task_qa_job(
 
         # Pre-trial: a task-source audit, independent of trial classification
         # -- runs once, before the per-trial loop, even when there are zero
-        # live trials to classify. The default strategy returns None, and the
-        # `is not None` guard makes that a complete no-op: sync_pre_trial_to_task
-        # is never called and no pre_trial column is touched. A pre-trial
+        # live trials to classify. Gated off by default (settings.pre_trial_enabled)
+        # and a no-op unless the hosted synth is registered; the `is not None`
+        # guard keeps a skipped run from touching any pre_trial column. A pre-trial
         # failure is swallowed here so it can never block the verdict path.
         try:
-            pre_trial_items = await pre_trial_synth_fn(
-                task_id,
-                [trial_id for trial_id, _ in live_trials],
-                settings.pre_trial_timeout,
-            )
+            if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
+                pre_trial_items = await _pre_trial_synth_fn(
+                    task_id,
+                    [trial_id for trial_id, _ in live_trials],
+                    settings.pre_trial_timeout,
+                )
+            else:
+                pre_trial_items = None
             if pre_trial_items is not None:
                 await sync_pre_trial_to_task(
                     task_id,
@@ -388,7 +408,7 @@ async def run_task_qa_job(
         baseline = None
         quality_check_passed = True
         timeout = 180
-        verdict = await verdict_synth_fn(
+        verdict = await synthesize_task_verdict(
             classifications, baseline, quality_check_passed, timeout
         )
 

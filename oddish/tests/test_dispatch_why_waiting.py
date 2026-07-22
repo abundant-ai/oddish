@@ -10,6 +10,15 @@ from oddish.dispatch.backends.fake import FakeDispatcher
 from oddish.dispatch.cycle import compute_why_waiting, run_dispatch_cycle
 
 
+def _fake_limits(limit: int):
+    """Flat per-queue_key concurrency limit, keyed by the caller's keys."""
+
+    async def _limits(queue_keys):
+        return {queue_key: limit for queue_key in queue_keys}
+
+    return _limits
+
+
 def test_why_waiting_over_cap_reason() -> None:
     why = compute_why_waiting(
         queued_by_queue={"busy": 4},
@@ -89,7 +98,7 @@ def test_run_dispatch_cycle_still_computes_reasons_via_helper() -> None:
         return await run_dispatch_cycle(
             FakeDispatcher(),
             max_workers=10,
-            concurrency_for=lambda qk: 2,
+            concurrency_limits_for=_fake_limits(2),
             _discover=lambda: _aval((("busy", "default"),)),
             _counts=lambda keys: _aval(
                 ({(None, "busy", "default"): 4}, {("busy", "default"): 2})
@@ -114,7 +123,7 @@ def test_on_stage_failure_never_breaks_dispatch() -> None:
         return await run_dispatch_cycle(
             dispatcher,
             max_workers=10,
-            concurrency_for=lambda qk: 5,
+            concurrency_limits_for=_fake_limits(5),
             on_stage=_boom,
             _discover=lambda: _aval((("q", "default"),)),
             _counts=lambda keys: _aval(

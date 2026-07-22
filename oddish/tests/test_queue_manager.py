@@ -13,15 +13,15 @@ from oddish.workers.queue import queue_manager
 def test_run_polling_worker_delegates_to_shared_dispatch_loop(monkeypatch) -> None:
     seen: dict[str, object] = {}
 
-    def fake_concurrency(_settings, queue_key: str) -> int:
-        seen["queue_key"] = queue_key
-        return 7
+    async def fake_concurrency(queue_keys):
+        seen["queue_keys"] = queue_keys
+        return {queue_key: 7 for queue_key in queue_keys}
 
     async def fake_dispatch_loop(
         dispatcher,
         *,
         max_workers,
-        concurrency_for,
+        concurrency_limits_for,
         on_stage,
         fallback_interval,
     ) -> None:
@@ -29,10 +29,12 @@ def test_run_polling_worker_delegates_to_shared_dispatch_loop(monkeypatch) -> No
         seen["max_workers"] = max_workers
         seen["on_stage"] = on_stage
         seen["fallback_interval"] = fallback_interval
-        seen["limit"] = concurrency_for("openai/gpt-test")
+        seen["limit"] = (await concurrency_limits_for(("openai/gpt-test",)))[
+            "openai/gpt-test"
+        ]
 
     monkeypatch.setattr(
-        type(queue_manager.settings), "get_model_concurrency", fake_concurrency
+        queue_manager, "load_effective_model_concurrency_limits", fake_concurrency
     )
     monkeypatch.setattr(cycle, "run_dispatch_loop", fake_dispatch_loop)
 
@@ -43,5 +45,5 @@ def test_run_polling_worker_delegates_to_shared_dispatch_loop(monkeypatch) -> No
     assert seen["max_workers"] == 11
     assert seen["fallback_interval"] == 3.5
     assert seen["on_stage"] is queue_manager.stamp_dispatch_stage
-    assert seen["queue_key"] == "openai/gpt-test"
+    assert seen["queue_keys"] == ("openai/gpt-test",)
     assert seen["limit"] == 7

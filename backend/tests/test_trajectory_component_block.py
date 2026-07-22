@@ -10,7 +10,7 @@ from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
     TrajectoryBlock,
     TrajectoryInput,
 )
-from api.services.blocks.block import BlockParseError
+from oddish.blocks.block import BlockParseError
 
 
 def _traj(step_ids):

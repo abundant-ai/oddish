@@ -10,7 +10,7 @@ from typing import Optional
 from pydantic import BaseModel, model_validator
 
 from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
-from api.services.blocks.block import Block
+from oddish.blocks.block import Block
 
 logger = logging.getLogger("oddish.trajectory_block")
 

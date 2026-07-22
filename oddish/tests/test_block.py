@@ -1,4 +1,4 @@
-"""Tests for api.services.blocks.block.Block."""
+"""Tests for oddish.blocks.block.Block."""
 from __future__ import annotations
 
 import logging
@@ -6,7 +6,7 @@ import logging
 import pytest
 from pydantic import BaseModel
 
-from api.services.blocks.block import Block, BlockParseError
+from oddish.blocks.block import Block, BlockParseError
 
 
 class _In(BaseModel):

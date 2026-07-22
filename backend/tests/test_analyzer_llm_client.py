@@ -3,11 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.services.blocks.analyzer.analyzer_llm_client import (
+from oddish.blocks.analyzer.analyzer_llm_client import (
     LLMClientType,
     FakeAnalyzerLLMClient,
     ApiAnalyzerLLMClient,
-    OpenAIAnalyzerLLMClient,
     _build_openai_client,
     OutputBudgetExceeded,
 )
@@ -81,24 +80,6 @@ async def test_fake_client_raises_when_configured():
 @pytest.mark.asyncio
 async def test_api_client_streams_text_deltas(monkeypatch):
     # Fake the AsyncAnthropic streaming context manager.
-    class _AStream:
-        def __init__(self, parts):
-            self._parts = parts
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        @property
-        def text_stream(self):
-            async def gen():
-                for p in self._parts:
-                    yield p
-
-            return gen()
-
     class _FakeMessages:
         def stream(self, **kwargs):
             assert kwargs["model"] == "claude-opus-4-8"
@@ -113,7 +94,7 @@ async def test_api_client_streams_text_deltas(monkeypatch):
             pass
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _FakeAnthropic,
     )
     client = ApiAnalyzerLLMClient()
@@ -128,7 +109,7 @@ async def test_api_client_pins_thinking_off_by_default(monkeypatch):
     think by default (sonnet-5+). The request must say so explicitly."""
     sent: dict = {}
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(lambda: _AStream(["{}"]), recorder=sent),
     )
     client = ApiAnalyzerLLMClient(model="claude-sonnet-5", max_tokens=2048)
@@ -142,7 +123,7 @@ async def test_api_client_pins_thinking_off_by_default(monkeypatch):
 async def test_api_client_thinking_override_is_forwarded(monkeypatch):
     sent: dict = {}
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(lambda: _AStream(["{}"]), recorder=sent),
     )
     client = ApiAnalyzerLLMClient(thinking={"type": "adaptive"})
@@ -158,7 +139,7 @@ async def test_api_client_raises_when_output_budget_exhausted(monkeypatch):
     the stop_reason check the half-written JSON reaches the block parser and
     surfaces only as an unexplained 'non-JSON output' error."""
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(
             lambda: _AStream(['{"summary": "abc'], stop_reason="max_tokens")
         ),
@@ -172,7 +153,7 @@ async def test_api_client_raises_when_output_budget_exhausted(monkeypatch):
 @pytest.mark.asyncio
 async def test_api_client_does_not_raise_on_normal_stop(monkeypatch):
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _fake_anthropic(lambda: _AStream(["{}"], stop_reason="end_turn")),
     )
     client = ApiAnalyzerLLMClient()
@@ -192,7 +173,7 @@ async def test_api_client_aclose_closes_inner(monkeypatch):
             closed["n"] += 1
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _FakeAnthropic,
     )
     client = ApiAnalyzerLLMClient()
@@ -200,10 +181,8 @@ async def test_api_client_aclose_closes_inner(monkeypatch):
     assert closed["n"] == 1
 
 
-from api.services.blocks.analyzer.analyzer_llm_client import (
-    SandboxAnalyzerLLMClient,
-    create_llm_client,
-)
+from api.services.blocks.analyzer.sandbox_llm_client import SandboxAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import create_llm_client
 
 
 @pytest.mark.asyncio
@@ -213,7 +192,7 @@ async def test_create_llm_client_api_branch():
     await client.aclose()
 
 
-from api.services.blocks.analyzer.analyzer_llm_client import resolve_analyzer_api_key
+from oddish.blocks.analyzer.analyzer_llm_client import resolve_analyzer_api_key
 from oddish.config import settings as _settings
 
 
@@ -231,7 +210,7 @@ class _RecordingAnthropic:
 def _patch_anthropic(monkeypatch):
     _RecordingAnthropic.last_api_key = "UNSET"
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
         _RecordingAnthropic,
     )
 
@@ -326,7 +305,7 @@ async def test_fake_client_records_system_prompt():
     assert c.last_system_prompt == "be terse"
 
 
-from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
 
 
 @pytest.mark.asyncio
@@ -345,7 +324,9 @@ async def test_fake_client_download_file():
         await c._download_file("out/missing.jsonl")
 
 
-# --- OpenAI/Azure backend ---------------------------------------------------
+# --- OpenAI/Azure path of the direct-API client -----------------------------
+# ApiAnalyzerLLMClient routes an OpenAI-family model (gpt-*) through the OpenAI
+# SDK; there is no separate OpenAI client class to construct.
 
 
 class _FakeStreamEvent:
@@ -403,7 +384,7 @@ def _patch_openai_builder(monkeypatch, events, *, runtime_model="gpt-5.4"):
         return fake, runtime_model
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client._build_openai_client",
+        "oddish.blocks.analyzer.analyzer_llm_client._build_openai_client",
         _builder,
     )
     return fake, sent
@@ -418,7 +399,7 @@ async def test_openai_client_yields_only_content_deltas(monkeypatch):
         _FakeStreamEvent("content.delta", delta="lo"),
     ]
     fake, _sent = _patch_openai_builder(monkeypatch, events)
-    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    client = ApiAnalyzerLLMClient(model="gpt-5.4")
     assert await _collect(client, "hi") == ["Hel", "lo"]
     await client.aclose()
     assert fake.closed is True
@@ -432,7 +413,7 @@ async def test_openai_client_forwards_response_format_when_set(monkeypatch):
     class _Fmt:
         pass
 
-    client = OpenAIAnalyzerLLMClient(model="gpt-5.4", response_format=_Fmt)
+    client = ApiAnalyzerLLMClient(model="gpt-5.4", response_format=_Fmt)
     await _collect(client, "hi")
     assert sent["response_format"] is _Fmt
 
@@ -441,7 +422,7 @@ async def test_openai_client_forwards_response_format_when_set(monkeypatch):
 async def test_openai_client_omits_response_format_when_unset(monkeypatch):
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, sent = _patch_openai_builder(monkeypatch, events)
-    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    client = ApiAnalyzerLLMClient(model="gpt-5.4")
     await _collect(client, "hi")
     assert "response_format" not in sent
 
@@ -449,11 +430,11 @@ async def test_openai_client_omits_response_format_when_unset(monkeypatch):
 @pytest.mark.asyncio
 async def test_openai_client_forwards_max_tokens_as_max_completion_tokens(monkeypatch):
     """gpt-5.x-class models reject the legacy `max_tokens` wire param; the
-    constructor keeps the `max_tokens` name, but it must be sent as
-    `max_completion_tokens`, matching classifier.py's OpenAI verdict call."""
+    constructor keeps the `max_tokens` name, but on the OpenAI path it must be
+    sent as `max_completion_tokens`."""
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, sent = _patch_openai_builder(monkeypatch, events)
-    client = OpenAIAnalyzerLLMClient(model="gpt-5.4", max_tokens=4096)
+    client = ApiAnalyzerLLMClient(model="gpt-5.4", max_tokens=4096)
     await _collect(client, "hi")
     assert sent["max_completion_tokens"] == 4096
     assert "max_tokens" not in sent
@@ -463,7 +444,7 @@ async def test_openai_client_forwards_max_tokens_as_max_completion_tokens(monkey
 async def test_openai_client_omits_max_completion_tokens_when_unset(monkeypatch):
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, sent = _patch_openai_builder(monkeypatch, events)
-    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    client = ApiAnalyzerLLMClient(model="gpt-5.4")
     await _collect(client, "hi")
     assert "max_completion_tokens" not in sent
     assert "max_tokens" not in sent
@@ -473,7 +454,7 @@ async def test_openai_client_omits_max_completion_tokens_when_unset(monkeypatch)
 async def test_openai_client_sends_system_prompt_as_system_message(monkeypatch):
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, sent = _patch_openai_builder(monkeypatch, events)
-    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    client = ApiAnalyzerLLMClient(model="gpt-5.4")
     [chunk async for chunk in client.stream("hi", system_prompt="be terse")]
     assert sent["messages"][0] == {"role": "system", "content": "be terse"}
     assert sent["messages"][-1] == {"role": "user", "content": "hi"}
@@ -483,7 +464,7 @@ async def test_openai_client_sends_system_prompt_as_system_message(monkeypatch):
 async def test_openai_client_omits_system_message_when_unset(monkeypatch):
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, sent = _patch_openai_builder(monkeypatch, events)
-    client = OpenAIAnalyzerLLMClient(model="gpt-5.4")
+    client = ApiAnalyzerLLMClient(model="gpt-5.4")
     await _collect(client, "hi")
     assert sent["messages"] == [{"role": "user", "content": "hi"}]
 
@@ -499,7 +480,7 @@ def test_build_openai_client_warns_and_uses_public_key(monkeypatch):
             captured["base_url"] = base_url
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
         _FakeAsyncOpenAI,
     )
     with pytest.warns(UserWarning, match="public OpenAI API"):
@@ -529,7 +510,7 @@ def test_build_openai_client_azure_resolves_deployment_and_does_not_warn(
             captured["base_url"] = base_url
 
     monkeypatch.setattr(
-        "api.services.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncOpenAI",
         _FakeAsyncOpenAI,
     )
     with warnings.catch_warnings():
@@ -541,18 +522,17 @@ def test_build_openai_client_azure_resolves_deployment_and_does_not_warn(
 
 
 @pytest.mark.asyncio
-async def test_create_llm_client_openai_branch(monkeypatch):
+async def test_create_llm_client_api_routes_openai_model_through_openai_sdk(
+    monkeypatch,
+):
+    """An OpenAI-family model reaches the API backend, which routes it through
+    the OpenAI SDK -- no separate OPENAI client type to select."""
     events = [_FakeStreamEvent("content.delta", delta="x")]
     fake, _sent = _patch_openai_builder(monkeypatch, events)
-    client = await create_llm_client(LLMClientType.OPENAI, model="gpt-5.4")
-    assert isinstance(client, OpenAIAnalyzerLLMClient)
+    client = await create_llm_client(LLMClientType.API, model="gpt-5.4")
+    assert isinstance(client, ApiAnalyzerLLMClient)
+    assert client._uses_openai is True
     await client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_create_llm_client_openai_requires_explicit_model():
-    with pytest.raises(ValueError, match="model"):
-        await create_llm_client(LLMClientType.OPENAI)
 
 
 def test_llm_client_type_values_are_pinned():
@@ -560,6 +540,95 @@ def test_llm_client_type_values_are_pinned():
     (analyzer_block.py persists ``.value``), so a typo would be written to rows
     and silently break later queries. Comparisons elsewhere are by identity, so
     nothing else would catch it."""
-    assert LLMClientType.OPENAI.value == "OpenAi"
     assert LLMClientType.API.value == "Api"
     assert LLMClientType.SANDBOX.value == "Sandbox"
+
+
+def test_init_signature_has_no_duplicate_parameters():
+    """Guards against a merge reintroducing a module-level SyntaxError.
+
+    #810 and #812 each added ``thinking`` to this constructor in parallel. The
+    parameter lists did not overlap textually, so git merged both cleanly into
+    a duplicate argument -- a SyntaxError that made the whole module
+    unimportable, taking every analyzer and report path down with it. Nothing
+    in the suite caught it because an unimportable module fails at collection,
+    which reads as an errored test file rather than a broken product.
+    """
+    import inspect
+
+    names = list(inspect.signature(ApiAnalyzerLLMClient.__init__).parameters)
+    assert len(names) == len(set(names)), f"duplicate parameter in {names}"
+
+
+def test_thinking_defaults_to_disabled_and_is_overridable():
+    # The dedupe had to pick one of two assignments; this pins the surviving
+    # behaviour so a future cleanup cannot silently re-enable thinking, which
+    # would spend the output budget on reasoning and truncate block JSON.
+    assert ApiAnalyzerLLMClient(api_key="k")._thinking == {"type": "disabled"}
+    explicit = {"type": "enabled", "budget_tokens": 1024}
+    assert ApiAnalyzerLLMClient(api_key="k", thinking=explicit)._thinking == explicit
+
+
+# --- usage capture -------------------------------------------------------
+
+
+class _UsageStream(_AStream):
+    """A stream whose final message carries real token counts."""
+
+    def __init__(self, parts, stop_reason="end_turn", usage=None):
+        super().__init__(parts, stop_reason)
+        self._usage = usage
+
+    async def get_final_message(self):
+        return SimpleNamespace(stop_reason=self._stop_reason, usage=self._usage)
+
+
+_USAGE = SimpleNamespace(
+    input_tokens=1000,
+    output_tokens=200,
+    cache_read_input_tokens=500,
+    cache_creation_input_tokens=100,
+)
+
+
+@pytest.mark.asyncio
+async def test_stream_captures_usage(monkeypatch):
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _UsageStream(["hi"], usage=_USAGE)),
+    )
+    c = ApiAnalyzerLLMClient(model="claude-opus-4-8", api_key="k")
+    await _collect(c, "p")
+    assert c.last_usage is not None
+    assert c.last_usage.input_tokens == 1600
+    assert c.last_usage.output_tokens == 200
+    assert c.last_usage.source == "estimated"
+    assert c.last_usage.cost_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_usage_is_none_when_api_reports_none(monkeypatch):
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(lambda: _UsageStream(["hi"], usage=None)),
+    )
+    c = ApiAnalyzerLLMClient(api_key="k")
+    await _collect(c, "p")
+    assert c.last_usage is None
+
+
+@pytest.mark.asyncio
+async def test_truncated_run_still_reports_its_spend(monkeypatch):
+    """A block that blew max_tokens burned those tokens; the raise must not
+    discard the usage."""
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_llm_client.AsyncAnthropic",
+        _fake_anthropic(
+            lambda: _UsageStream(["hi"], stop_reason="max_tokens", usage=_USAGE)
+        ),
+    )
+    c = ApiAnalyzerLLMClient(model="claude-opus-4-8", api_key="k")
+    with pytest.raises(OutputBudgetExceeded):
+        await _collect(c, "p")
+    assert c.last_usage is not None
+    assert c.last_usage.input_tokens == 1600

@@ -1,4 +1,4 @@
-from api.services.blocks.analyzer.analyzer_block import _block_row_kwargs
+from oddish.blocks.analyzer.analyzer_block import _block_row_kwargs
 
 
 def test_block_row_includes_prompt_version():

@@ -45,7 +45,9 @@ from oddish.cli.config import (
     is_modal_api_url,
     require_api_key,
 )
+from oddish.cli.preflight import gate_preflight
 from oddish.experiment import generate_experiment_name
+from oddish.preflight.runner import run_checks
 
 console = Console()
 
@@ -485,9 +487,8 @@ def run(
             "--environment-kwarg",
             "--harbor-environment-kwarg",
             help=(
-                "Harbor environment kwarg in KEY=VALUE format, e.g. "
-                "agent_tools_image=ghcr.io/org/harbor-agent-tools:tag "
-                "(can be used multiple times)"
+                "Harbor environment kwarg in KEY=VALUE format "
+                "(can be used multiple times)."
             ),
         ),
     ] = None,
@@ -499,6 +500,16 @@ def run(
                 "Allocate a new task version even when the local content is "
                 "unchanged from the latest existing version. Useful when "
                 "appending trials with a different run_analysis setting."
+            ),
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help=(
+                "Submit even if preflight checks fail. Findings are still "
+                "printed. Unrelated to --force-new-version."
             ),
         ),
     ] = False,
@@ -518,6 +529,30 @@ def run(
             help="Agent kwarg in key=value format (can be used multiple times)",
         ),
     ] = None,
+    allow_agent_hosts: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--allow-agent-host",
+            help=(
+                "Extra hostname for a restricted agent phase "
+                "(Harbor AgentConfig.extra_allowed_hosts). Usually unnecessary: "
+                "Oddish auto-injects the model API host for closed-internet "
+                "tasks (can be used multiple times)."
+            ),
+        ),
+    ] = None,
+    disable_web_tools: Annotated[
+        bool,
+        typer.Option(
+            "--disable-web-tools/--no-disable-web-tools",
+            help=(
+                "Force-disable server-side web tools. Usually unnecessary: "
+                "Oddish does this automatically on closed-internet agent phases "
+                "(claude-code: disallowed_tools=WebSearch WebFetch; "
+                "codex: web_search=disabled). Explicit --agent-kwarg values win."
+            ),
+        ),
+    ] = False,
     artifact_paths: Annotated[
         Optional[list[str]],
         typer.Option(
@@ -651,7 +686,7 @@ def run(
             harbor:
               environment:
                 kwargs:
-                  agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+                  region: us-east
 
     OTHER OPTIONS:
 
@@ -826,6 +861,18 @@ def run(
             quiet=quiet,
         )
 
+    # Gate before upload: a task that leaks its own answer should never cost a
+    # trial. Unlike validate_tasks(), one bad task fails the whole run — a
+    # pre-commit hook does not let 19 of 20 files through.
+    #
+    # Do NOT pass json_output here. `run --json` owns its single stdout JSON
+    # document; letting the gate emit its own `{"ok":...}` blob would concatenate
+    # two JSON documents on stdout and break `json.loads`. The gate instead
+    # renders findings to stderr (human) and aborts via typer.Exit on failure —
+    # consistent with run()'s other pre-upload aborts (the linkage gate).
+    if task_paths:
+        gate_preflight(run_checks(task_paths), force=force)
+
     # Ensure each run uses a single experiment unless specified.
     if not experiment_id and not existing_task_ids:
         experiment_id = generate_experiment_name()
@@ -892,6 +939,8 @@ def run(
             environment_kwargs=environment_kwargs,
             agent_env=agent_env,
             agent_kwargs=agent_kwargs,
+            allow_agent_hosts=allow_agent_hosts,
+            disable_web_tools=disable_web_tools,
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
             content_hash=task_content_hash,

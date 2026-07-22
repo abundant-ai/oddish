@@ -1,7 +1,7 @@
 import json
 
-from api.services.blocks.analyzer.pre_trial import pre_trial_prompts
-from api.services.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
+from oddish.blocks.analyzer.pre_trial import pre_trial_prompts
+from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 
 
 def _block():
