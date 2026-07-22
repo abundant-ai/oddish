@@ -454,6 +454,11 @@ def _atomic_write_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
+        # mkstemp creates the temp file 0600; carry over the original file's
+        # permission bits so the replacement is not suddenly unreadable to
+        # other users (owner/group are already the invoking user's).
+        if path.exists():
+            shutil.copymode(path, tmp_name)
         os.replace(tmp_name, path)
     except BaseException:
         try:
@@ -501,12 +506,12 @@ def normalize_task_config_typography(task_path: Path) -> dict[str, str]:
     if not changes:
         return {}
 
-    updated = tomlkit.dumps(document)
-    # Preserve CRLF line endings if tomlkit re-emitted them as LF.
-    if "\r\n" in original and "\r\n" not in updated:
-        updated = updated.replace("\n", "\r\n")
+    # tomlkit preserves the document's own line endings (verified for all-CRLF
+    # files), so we do not post-process newlines -- a naive "original had CRLF"
+    # heuristic would wrongly rewrite an LF file that merely contained a CRLF
+    # inside a value.
     try:
-        _atomic_write_text(config_path, updated)
+        _atomic_write_text(config_path, tomlkit.dumps(document))
     except OSError:
         return {}
     return changes
@@ -724,6 +729,7 @@ def upload_task(
     user: str | None = None,
     priority: str | None = None,
     force_new_version: bool = False,
+    quiet: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
 
@@ -735,7 +741,7 @@ def upload_task(
     this False so task-row creation still happens inside ``/tasks/sweep``.
     """
     typography_changes = normalize_task_config_typography(task_path)
-    if typography_changes:
+    if typography_changes and not quiet:
         rendered = ", ".join(
             f"{escape(repr(orig))}->{escape(repr(repl))}"
             for orig, repl in typography_changes.items()
@@ -882,6 +888,7 @@ def upload_tasks_with_progress(
             user=user,
             priority=priority,
             force_new_version=force_new_version,
+            quiet=quiet or json_output,
         )
 
     show_progress = not quiet and not json_output

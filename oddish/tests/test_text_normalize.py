@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import tomllib
 
+import pytest
+
 from oddish.text_normalize import normalize_typography, summarize_normalization
 
 # --- pure normalize_typography ------------------------------------------------
@@ -229,3 +231,108 @@ def test_hook_ignores_unparseable_toml(tmp_path):
     (tmp_path / "task.toml").write_text(raw, encoding="utf-8")
     assert normalize_task_config_typography(tmp_path) == {}
     assert (tmp_path / "task.toml").read_text(encoding="utf-8") == raw
+
+
+def test_hook_preserves_file_mode(tmp_path):
+    import os
+    import stat
+
+    from oddish.cli.api import normalize_task_config_typography
+
+    toml = _write(tmp_path, '[metadata]\ndescription = "a—b"\n')
+    os.chmod(toml, 0o644)
+    normalize_task_config_typography(tmp_path)
+    assert stat.S_IMODE(toml.stat().st_mode) == 0o644
+
+
+def test_hook_preserves_crlf_line_endings(tmp_path):
+    from oddish.cli.api import normalize_task_config_typography
+
+    raw = '[metadata]\r\ndescription = "a—b"\r\nother = "plain"\r\n'
+    (tmp_path / "task.toml").write_bytes(raw.encode("utf-8"))
+    normalize_task_config_typography(tmp_path)
+    out = (tmp_path / "task.toml").read_bytes().decode("utf-8")
+    # Structural line endings stay CRLF; no bare LF introduced.
+    assert "\r\n" in out
+    assert not any(
+        out[i] == "\n" and (i == 0 or out[i - 1] != "\r") for i in range(len(out))
+    )
+    assert tomllib.loads(out)["metadata"]["description"] == "a--b"
+
+
+def test_hook_multiline_value_roundtrips_exactly(tmp_path):
+    from oddish.cli.api import normalize_task_config_typography
+
+    # A multi-line literal value carrying a backslash, embedded quotes, and the
+    # em-dash to be normalized. The decoded value must equal the normalized
+    # original, with nothing mangled by the literal -> basic string conversion.
+    toml = _write(
+        tmp_path,
+        "[metadata]\n" "description = '''line1 \\ back \"q\" 'apos'\nline2 — end'''\n",
+    )
+    normalize_task_config_typography(tmp_path)
+    value = tomllib.loads(toml.read_text(encoding="utf-8"))["metadata"]["description"]
+    assert value == "line1 \\ back \"q\" 'apos'\nline2 -- end"
+
+
+def test_hook_preserves_inline_comment_on_mutated_line(tmp_path):
+    from oddish.cli.api import normalize_task_config_typography
+
+    toml = _write(tmp_path, '[metadata]\ndescription = "a—b"  # trailing note\n')
+    normalize_task_config_typography(tmp_path)
+    assert "# trailing note" in toml.read_text(encoding="utf-8")
+
+
+def test_hook_recurses_into_nested_containers(tmp_path):
+    from oddish.cli.api import normalize_task_config_typography
+
+    toml = _write(
+        tmp_path,
+        "[metadata]\n"
+        'nested = { label = "a—b", ok = "plain" }\n'
+        "\n"
+        "[[metadata.items]]\n"
+        'name = "Kolmogorov–Chentsov"\n',
+    )
+    changes = normalize_task_config_typography(tmp_path)
+    parsed = tomllib.loads(toml.read_text(encoding="utf-8"))
+    assert changes == {"—": "--", "–": "-"}
+    assert parsed["metadata"]["nested"]["label"] == "a--b"
+    assert parsed["metadata"]["items"][0]["name"] == "Kolmogorov-Chentsov"
+
+
+def test_upload_task_quiet_suppresses_normalization_message(
+    monkeypatch, tmp_path, capsys
+):
+    from oddish.cli import api
+
+    def stop_after_normalization(_path):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(
+        api, "normalize_task_config_typography", lambda _path: {"—": "--"}
+    )
+    monkeypatch.setattr(api, "validate_task_timeout_config", stop_after_normalization)
+
+    with pytest.raises(RuntimeError, match="stop"):
+        api.upload_task("http://api", tmp_path, quiet=True)
+    assert capsys.readouterr().out == ""
+
+
+def test_json_batch_upload_quiets_worker_messages(monkeypatch, tmp_path):
+    from oddish.cli import api
+
+    quiet_values = []
+
+    def fake_upload_task(_api_url, _task_path, **kwargs):
+        quiet_values.append(kwargs["quiet"])
+        return {"task_id": "task-1"}
+
+    monkeypatch.setattr(api, "upload_task", fake_upload_task)
+    assert api.upload_tasks_with_progress(
+        "http://api",
+        [tmp_path],
+        register=True,
+        json_output=True,
+    ) == [{"task_id": "task-1"}]
+    assert quiet_values == [True]
