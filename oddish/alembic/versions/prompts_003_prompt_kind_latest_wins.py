@@ -37,6 +37,10 @@ def downgrade() -> None:
     cols = {c["name"] for c in sa.inspect(bind).get_columns("prompts")}
     if "active_version" not in cols:
         op.add_column("prompts", sa.Column("active_version", sa.Integer, nullable=True))
+        op.execute(
+            "UPDATE prompts SET active_version = "
+            "(SELECT max(version) FROM prompt_versions WHERE prompt_versions.prompt_id = prompts.id)"
+        )
     if "kind" in cols:
         op.execute("UPDATE prompts SET kind = 'pre_trial_qa' WHERE kind = 'QA_PRE_TRIAL'")
         op.execute("UPDATE prompts SET kind = 'post_trial_qa' WHERE kind = 'QA_POST_TRIAL'")

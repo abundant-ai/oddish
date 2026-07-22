@@ -16,12 +16,17 @@ class _FakeVersion:
         self.created_by = None
 
 
+_V1 = _FakeVersion(1, "hello")
+_V2 = _FakeVersion(2, "world")
+
+
 class _FakePrompt:
     id = "p1"
     kind = "QA_PRE_TRIAL"
     description = "d"
     created_at = __import__("datetime").datetime.now()
     updated_at = __import__("datetime").datetime.now()
+    versions = [_V1, _V2]
 
 
 class _FakeSession:
@@ -48,7 +53,9 @@ def _auth(scopes):
 
 async def _call(method, path, monkeypatch, *, scopes=(APIKeyScope.READ,), **kwargs):
     async def fake_get(session, kind, *, version=None):
-        return _FakePrompt(), _FakeVersion(1, "hello")
+        if version is not None:
+            return _FakePrompt(), _V1
+        return _FakePrompt(), _V2
 
     monkeypatch.setattr(prompts_router, "get_session", lambda: _ctx(None))
     monkeypatch.setattr(prompts_router, "get_prompt_core", fake_get)
@@ -65,8 +72,39 @@ async def test_get_prompt_returns_latest_content(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["kind"] == "QA_PRE_TRIAL"
-    assert body["latest_version"] == 1
+    assert body["latest_version"] == 2
+    assert body["version"] == 2
+    assert body["content"] == "world"
+
+
+@pytest.mark.asyncio
+async def test_pinned_get_reports_true_latest(monkeypatch):
+    # A version-pinned GET must still report the registry's true latest,
+    # separately from the resolved (pinned) version.
+    resp = await _call("GET", "/prompts/QA_PRE_TRIAL?version=1", monkeypatch)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["latest_version"] == 2
+    assert body["version"] == 1
     assert body["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_list_prompts_reports_latest_version(monkeypatch):
+    async def fake_list(session):
+        return [_FakePrompt()]
+
+    monkeypatch.setattr(prompts_router, "get_session", lambda: _ctx(None))
+    monkeypatch.setattr(prompts_router, "list_prompts_core", fake_list)
+    app = create_app()
+    app.dependency_overrides[require_auth] = _auth([APIKeyScope.READ])
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/prompts")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["latest_version"] == 2
 
 
 @pytest.mark.asyncio

@@ -2001,6 +2001,7 @@ class PromptResponse(BaseModel):
     kind: str
     description: str
     latest_version: int | None = None  # populated by the router, not the ORM
+    version: int | None = None  # the resolved version content belongs to
     created_at: datetime
     updated_at: datetime
     content: str | None = None  # resolved latest/selected version content

@@ -27,10 +27,15 @@ from oddish.schemas import (
 router = APIRouter()
 
 
+def _latest_of(versions) -> int | None:
+    return max((v.version for v in versions), default=None)
+
+
 def _to_response(prompt, version) -> PromptResponse:
     resp = PromptResponse.model_validate(prompt)
+    resp.latest_version = _latest_of(prompt.versions)
     if version is not None:
-        resp.latest_version = version.version
+        resp.version = version.version
         resp.content = version.content
     return resp
 
@@ -45,7 +50,7 @@ async def list_prompts(
         out = []
         for p in prompts:
             resp = PromptResponse.model_validate(p)
-            resp.latest_version = max((v.version for v in p.versions), default=None)
+            resp.latest_version = _latest_of(p.versions)
             out.append(resp)
         return out
 

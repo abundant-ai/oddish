@@ -59,5 +59,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_prompt_versions_prompt_id", table_name="prompt_versions")
     op.drop_table("prompt_versions")
-    op.drop_index("idx_prompts_unique_kind", table_name="prompts")
+    op.execute("DROP INDEX IF EXISTS idx_prompts_unique_kind")
+    op.execute("DROP INDEX IF EXISTS idx_prompts_unique_key")
     op.drop_table("prompts")
