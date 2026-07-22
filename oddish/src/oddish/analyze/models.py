@@ -83,6 +83,14 @@ class TrialClassificationModel(BaseModel):
     recommendation: str = Field(
         description="How to fix the task (if BAD_FAILURE or BAD_SUCCESS), or 'N/A' if task is fine"
     )
+    action_items: list[ActionItem] = Field(
+        default_factory=list,
+        description="New trajectory-derived action items (source=post_trial)",
+    )
+    exploitation: list[ExploitationAssessment] = Field(
+        default_factory=list,
+        description="Assessment of each provided pre-trial action item",
+    )
 
 
 class TaskVerdictModel(BaseModel):
@@ -115,6 +123,8 @@ class TrialClassification:
     root_cause: str
     recommendation: str
     reward: float | None = None
+    action_items: list[ActionItem] = field(default_factory=list)
+    exploitation: list[ExploitationAssessment] = field(default_factory=list)
 
     @property
     def is_task_problem(self) -> bool:
@@ -135,6 +145,8 @@ class TrialClassification:
             root_cause=model.root_cause,
             recommendation=model.recommendation,
             reward=reward,
+            action_items=list(model.action_items),
+            exploitation=list(model.exploitation),
         )
 
 
@@ -255,6 +267,19 @@ class ActionItem(BaseModel):
     )
     exploit_evidence: str | None = Field(
         default=None, description="Quote or step reference showing exploitation"
+    )
+    causal: bool = Field(
+        default=False, description="Did trajectory behavior result from this weakness?"
+    )
+
+
+class ExploitationAssessment(BaseModel):
+    """Whether a pre-trial action item was exploited by this trial."""
+
+    links_to: str = Field(description="Pre-trial ActionItem.id this assesses")
+    exploited: bool = Field(description="Did the trajectory exploit this weakness?")
+    exploit_evidence: str | None = Field(
+        default=None, description="Quote or step index showing exploitation"
     )
     causal: bool = Field(
         default=False, description="Did trajectory behavior result from this weakness?"
