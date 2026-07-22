@@ -416,47 +416,28 @@ def validate_no_git_lfs_pointers(task_path: Path) -> None:
 
 
 def _normalize_strings_in_place(node: Any, changes: dict[str, str]) -> None:
-    """Recursively ASCII-normalize every string *value* inside a tomlkit table
-    or array, recording what changed in ``changes``. Non-string scalars (ints,
-    floats, bools, dates) are left untouched.
-
-    Operating on decoded values -- not raw source text -- is what keeps this
-    safe: replacing a curly quote inside a value can never break the TOML string
-    delimiter, because tomlkit re-emits the value with correct escaping.
-    """
     if isinstance(node, MutableMapping):
-        for key in list(node.keys()):
-            value = node[key]
-            if isinstance(value, str):
-                normalized = normalize_typography(value)
-                if normalized != value:
-                    changes.update(summarize_normalization(value))
-                    node[key] = normalized
-            elif isinstance(value, (MutableMapping, MutableSequence)):
-                _normalize_strings_in_place(value, changes)
+        entries = list(node.items())
     elif isinstance(node, MutableSequence):
-        for index, value in enumerate(list(node)):
-            if isinstance(value, str):
-                normalized = normalize_typography(value)
-                if normalized != value:
-                    changes.update(summarize_normalization(value))
-                    node[index] = normalized
-            elif isinstance(value, (MutableMapping, MutableSequence)):
-                _normalize_strings_in_place(value, changes)
+        entries = list(enumerate(node))
+    else:
+        return
+
+    for key, value in entries:
+        if isinstance(value, str):
+            normalized = normalize_typography(value)
+            if normalized != value:
+                changes.update(summarize_normalization(value))
+                node[key] = normalized
+        elif isinstance(value, (MutableMapping, MutableSequence)):
+            _normalize_strings_in_place(value, changes)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically: a temp file in the same directory
-    plus ``os.replace``, so an interrupted or failed write can never leave a
-    truncated ``task.toml`` behind. ``newline=""`` keeps line endings verbatim.
-    """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)
-        # mkstemp creates the temp file 0600; carry over the original file's
-        # permission bits so the replacement is not suddenly unreadable to
-        # other users (owner/group are already the invoking user's).
         if path.exists():
             shutil.copymode(path, tmp_name)
         os.replace(tmp_name, path)
@@ -469,23 +450,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def normalize_task_config_typography(task_path: Path) -> dict[str, str]:
-    """ASCII-normalize the descriptive ``[metadata]`` strings in ``task.toml``.
-
-    Only the ``[metadata]`` table is touched -- the human-facing description and
-    explanation prose an LLM tends to write with smart typography (en/em dashes,
-    curly quotes, accented Latin letters). Every execution-relevant field
-    (``environment``, ``agent``, ``verifier``, ``solution``, ``artifacts``, ...)
-    is left byte-for-byte alone, so normalization can neither corrupt a runtime
-    value nor change ``compute_task_content_hash`` (metadata is excluded from
-    it). tomlkit edits values in place, preserving comments and the layout of
-    the rest of the file.
-
-    Returns the ``{char: replacement}`` summary of what changed -- empty when
-    nothing did, or when the file is absent, a symlink, or not valid UTF-8/TOML.
-    Those last cases are left for the config validators to report rather than
-    silently rewritten, and a write that fails (e.g. a read-only directory) is
-    swallowed so it degrades to "not normalized" instead of breaking the upload.
-    """
+    """Normalize strings under ``[metadata]`` without changing runtime fields."""
     config_path = task_path / "task.toml"
     if not config_path.exists() or config_path.is_symlink():
         return {}
@@ -506,10 +471,6 @@ def normalize_task_config_typography(task_path: Path) -> dict[str, str]:
     if not changes:
         return {}
 
-    # tomlkit preserves the document's own line endings (verified for all-CRLF
-    # files), so we do not post-process newlines -- a naive "original had CRLF"
-    # heuristic would wrongly rewrite an LF file that merely contained a CRLF
-    # inside a value.
     try:
         _atomic_write_text(config_path, tomlkit.dumps(document))
     except OSError:
