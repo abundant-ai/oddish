@@ -36,6 +36,7 @@ image = (
         "slack_sdk",
         "httpx",
         "asyncpg",
+        "pglast",
     )
     .add_local_python_source("tools")
 )
@@ -166,6 +167,16 @@ def _dispatch(payload: dict) -> None:
             _log("duplicate", event_id=event_id)
             return
         claimed = True
+
+        # Optional channel allow-list. When set, the bot answers only in those
+        # channels, so an answer (which can surface DB rows) can be confined to a
+        # private/trusted channel even though the bot is invited elsewhere. Unset
+        # => any channel the bot is in, with the user allow-list as the gate.
+        channels = os.environ.get("SLACK_ALLOWED_CHANNELS", "").strip()
+        if channels and channel not in {c.strip() for c in channels.split(",") if c.strip()}:
+            _log("channel_not_allowed", event_id=event_id, channel=channel, user=user)
+            _notify(channel, thread, "This bot isn't enabled in this channel.", event_id)
+            return
 
         allowed = os.environ.get("SLACK_ALLOWED_USERS", "").strip()
         if not allowed:
@@ -384,8 +395,13 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
                         if isinstance(block, ToolUseBlock):
                             status = f"_Running `{block.name.split('__')[-1]}`…_"
                         elif isinstance(block, TextBlock) and block.text.strip():
-                            status = block.text.strip()
-                            last_text = status
+                            # Capture for end-of-run salvage, but do NOT stream the
+                            # model's intermediate prose into the channel: on a
+                            # prompt-injection attempt a half-formed sensitive line
+                            # could be posted publicly before the final answer
+                            # refuses. Only fixed status text goes out live.
+                            last_text = block.text.strip()
+                            status = "_Working…_"
                     now = time.time()
                     if status and status_ok and now - last_edit > 2:
                         # Best-effort: a failed status edit (e.g. the placeholder
