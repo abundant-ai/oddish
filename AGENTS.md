@@ -254,7 +254,7 @@ renumbering everyone else.
 The admin `GET /admin/costs` response includes analysis spend time series both
 by model (`series_qa_by_model`) and by analyzer job kind
 (`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
-`Analysis type` stack; analyzer spend does not belong on the people leaderboard.
+`Analyzer` stack; analyzer spend does not belong on the people leaderboard.
 
 ### Task Identity
 

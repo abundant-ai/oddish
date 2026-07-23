@@ -545,7 +545,7 @@ const DIMENSION_LABELS: Record<ChartDimension, string> = {
   model: "Model",
   user: "User",
   type: "Model vs QA",
-  analysis_type: "Analysis type",
+  analysis_type: "Analyzer",
 };
 
 export function CostBreakdownCard() {
