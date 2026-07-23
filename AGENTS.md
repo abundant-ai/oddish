@@ -236,6 +236,18 @@ policy, GitHub notification hooks, and public sharing / product endpoints.
 Clerk-based auth and org management, and Next.js route handlers that proxy
 requests to the backend.
 
+The hosted `/admin` dashboard is tenant-scoped even though its core diagnostic
+helpers also serve the global self-hosted/operator view. Ordinary hosted queue
+status, queue health, worker, orphan, cost, per-user cost, and task-expansion
+handlers must pass `auth.org_id`; never accept an organization selector from
+the client. A user cost drilldown returns 404 when the requested user belongs
+to another org. Deployment-wide diagnostics or mutations (global queue
+status/health and slot topology, model concurrency, shared-channel Slack alert
+settings, and the global cost-excluded LLM-key list) additionally require the active org to match
+`ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
+that capability through `GET /admin/operator-access` and hides those controls
+for other orgs.
+
 The authenticated org-scoped cost leaderboard is served by `GET /leaderboard` in
 `backend/api/routers/dashboard.py`. It shares the admin cost dashboard's
 settled first-party spend basis and must stay in sync with its per-user rows:

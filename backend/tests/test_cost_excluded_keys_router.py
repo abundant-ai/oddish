@@ -1,11 +1,3 @@
-"""HTTP-level tests for /admin/cost-excluded-keys.
-
-No live Postgres: the real app is built via create_app() but get_session is
-monkeypatched to a fake async session, and require_auth is overridden per auth
-scenario. Covers that the pasted key is hashed and discarded, and that only a
-JWT org admin may edit the list.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -20,6 +12,11 @@ from auth import AuthContext, AuthMethod, require_auth
 from models import APIKeyScope, UserRole
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def operator_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_1")
 
 
 class _FakeResult:
@@ -47,9 +44,6 @@ class FakeSession:
 
     def add(self, obj):
         self.added.append(obj)
-
-    async def flush(self):
-        pass
 
     async def commit(self):
         # Simulate the Python-side column defaults a real flush would apply.
@@ -96,6 +90,15 @@ def _member_jwt() -> AuthContext:
     )
 
 
+def _other_admin_jwt() -> AuthContext:
+    return AuthContext(
+        method=AuthMethod.CLERK_JWT,
+        org_id="org_2",
+        user_id="admin_2",
+        user_role=UserRole.ADMIN,
+    )
+
+
 def _full_api_key() -> AuthContext:
     return AuthContext(
         method=AuthMethod.API_KEY,
@@ -111,7 +114,7 @@ def app():
     return create_app()
 
 
-async def _client(app, auth):
+def _client(app, auth):
     app.dependency_overrides[require_auth] = lambda: auth
     transport = ASGITransport(app=app)
     return AsyncClient(transport=transport, base_url="http://test")
@@ -129,7 +132,7 @@ async def admin_client(app):
 
 
 async def test_add_hashes_key_and_discards_plaintext(admin_client, monkeypatch):
-    session = FakeSession(query_rows=[])  # no existing row
+    session = FakeSession(query_rows=[])
     _install_fake_get_session(monkeypatch, session)
 
     resp = await admin_client.post(
@@ -140,7 +143,6 @@ async def test_add_hashes_key_and_discards_plaintext(admin_client, monkeypatch):
     body = resp.json()
     assert body["key_hint"] == "9f2c"
     assert body["label"] == "sponsored"
-    # No plaintext or hash leaks in the response.
     assert "key" not in body and "key_hash" not in body
 
     assert len(session.added) == 1
@@ -160,9 +162,6 @@ async def test_add_duplicate_is_409(admin_client, monkeypatch):
 
 
 async def test_add_race_integrity_error_is_409(admin_client, monkeypatch):
-    # Two concurrent adds of the same key both pass the existence pre-check;
-    # the loser's INSERT hits the partial unique index. That must surface as
-    # the same 409 as the pre-check, not a 500.
     from sqlalchemy.exc import IntegrityError
 
     class RacingSession(FakeSession):
@@ -223,7 +222,7 @@ async def test_delete_not_found_is_404(admin_client, monkeypatch):
 
 async def test_member_jwt_cannot_add(app, monkeypatch):
     _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
-    client = await _client(app, _member_jwt())
+    client = _client(app, _member_jwt())
     try:
         resp = await client.post(
             "/admin/cost-excluded-keys", json={"key": "xai-key"}
@@ -235,14 +234,31 @@ async def test_member_jwt_cannot_add(app, monkeypatch):
 
 
 async def test_full_api_key_cannot_add(app, monkeypatch):
-    # A FULL-scope API key passes require_admin but must not edit what counts as
-    # spend, so the manage gate rejects it.
     _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
-    client = await _client(app, _full_api_key())
+    client = _client(app, _full_api_key())
     try:
         resp = await client.post(
             "/admin/cost-excluded-keys", json={"key": "xai-key"}
         )
+        assert resp.status_code == 403
+    finally:
+        await client.aclose()
+        app.dependency_overrides.pop(require_auth, None)
+
+
+@pytest.mark.parametrize("method", ["get", "post", "delete"])
+async def test_non_operator_admin_cannot_access_list(app, monkeypatch, method):
+    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
+    client = _client(app, _other_admin_jwt())
+    try:
+        if method == "get":
+            resp = await client.get("/admin/cost-excluded-keys")
+        elif method == "post":
+            resp = await client.post(
+                "/admin/cost-excluded-keys", json={"key": "xai-key"}
+            )
+        else:
+            resp = await client.delete("/admin/cost-excluded-keys/k1")
         assert resp.status_code == 403
     finally:
         await client.aclose()

@@ -1,16 +1,4 @@
-"""Admin API for the LLM-key cost-exclusion list.
-
-Admins register LLM provider API keys (e.g. sponsored/free keys) whose spend is
-ignored by cost accounting: quota enforcement and the admin cost dashboards,
-i.e. every surface sharing ``first_party_spend_filter`` (experiment pages keep
-showing raw compute cost, as they do for imported trials). Only a one-way
-SHA-256 hash and a masked hint are stored -- the pasted key is hashed and
-discarded.
-
-Writes require a JWT org admin: a FULL-scope API key passes ``require_admin`` but
-must not be able to edit what counts as spend, so the mutating routes re-check
-``can_manage_api_keys`` (JWT-admin-only).
-"""
+"""Admin API for excluding selected LLM keys from cost accounting."""
 
 from __future__ import annotations
 
@@ -22,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from auth import AuthContext, can_manage_api_keys, require_admin
+from auth.permissions import require_operator_org
 from oddish.core.llm_key_fingerprint import hash_llm_key, key_hint
 from oddish.db import CostExcludedLlmKeyModel, get_session, utcnow
 
@@ -52,6 +41,7 @@ def _response(row: CostExcludedLlmKeyModel) -> CostExcludedKeyResponse:
 
 
 def _require_manage(auth: AuthContext) -> None:
+    require_operator_org(auth)
     if not can_manage_api_keys(auth):
         raise HTTPException(
             status_code=403,
@@ -63,6 +53,7 @@ def _require_manage(auth: AuthContext) -> None:
 async def list_cost_excluded_keys(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> list[CostExcludedKeyResponse]:
+    require_operator_org(auth)
     async with get_session() as session:
         result = await session.execute(
             select(CostExcludedLlmKeyModel).order_by(
@@ -107,9 +98,6 @@ async def add_cost_excluded_key(
         try:
             await session.commit()
         except IntegrityError:
-            # Concurrent add of the same key: the partial unique index on live
-            # key_hash rows is the arbiter, so surface the same 409 the
-            # existence pre-check would have returned.
             raise HTTPException(status_code=409, detail="key is already excluded")
         return _response(row)
 
