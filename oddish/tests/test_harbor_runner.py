@@ -221,6 +221,43 @@ def test_compose_transport_drops_unconsumed_openai_route_for_cursor(tmp_path):
         )
 
 
+def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
+    # Ambient Gemini credentials (used when job-scoped injection is off) must
+    # fold into the trial transport env so their raw values are redacted from
+    # live-tail / lifecycle / scrubbed artifacts, the same way OpenAI secrets do.
+    monkeypatch.setenv("GEMINI_API_KEY", "gm-secret-123")
+    monkeypatch.setenv("GOOGLE_API_KEY", "goog-secret-456")
+    agent_config = HarborAgentConfig(name="gemini-cli", model_name="google/gemini-x")
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    assert runtime_env.get("GEMINI_API_KEY") == "gm-secret-123"
+    assert runtime_env.get("GOOGLE_API_KEY") == "goog-secret-456"
+
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    assert replacements["gm-secret-123"] == "[REDACTED]"
+    assert replacements["goog-secret-456"] == "[REDACTED]"
+
+
+def test_compose_classifier_fails_closed_on_unparseable_task_toml(tmp_path):
+    # A Daytona Compose, non-kube task whose task.toml cannot be parsed must fail
+    # closed (raise) rather than silently classify as "none" and disable egress
+    # controls for a trial Harbor may still run restricted.
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    (task_path / "task.toml").write_text("[[[ not valid toml == ==")
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="egress controls disabled",
+    ):
+        harbor_runner._daytona_compose_restriction_kind(
+            task_path=task_path,
+            environment_config=environment_config,
+        )
+
+
 @pytest.mark.parametrize(
     ("environment_type", "compose"),
     [

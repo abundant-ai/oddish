@@ -117,6 +117,18 @@ _GEMINI_RUNTIME_ENV_KEYS = (
     "GEMINI_OAUTH_CREDS_PATH",
     "GOOGLE_GENAI_USE_VERTEXAI",
 )
+# Ambient Gemini credentials must fold into the trial's redaction map the same
+# way get_openai_agent_env folds OpenAI provider secrets, so a worker key used
+# when job-scoped injection is off never survives raw in live-tail, lifecycle
+# payloads, or scrubbed artifacts. These are credentials, not routes: they never
+# affect transport-host selection (not base URLs), only redaction coverage. They
+# are the only secret-VALUE env vars the stock gemini-cli agent forwards;
+# GOOGLE_APPLICATION_CREDENTIALS is intentionally excluded because its value is a
+# file path -- its secret is the file's contents, outside this exact-value map.
+_GEMINI_RUNTIME_SECRET_KEYS = (
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+)
 _ARTIFACT_REDACTION_CHUNK_BYTES = 1024 * 1024
 
 
@@ -132,7 +144,7 @@ def _resolved_runtime_transport_env(
         import_path = (agent_config.import_path or "").strip().lower()
         is_gemini = name == "gemini-cli" or "agents.gemini_cli:" in import_path
         if is_gemini:
-            for key in _GEMINI_RUNTIME_ENV_KEYS:
+            for key in (*_GEMINI_RUNTIME_ENV_KEYS, *_GEMINI_RUNTIME_SECRET_KEYS):
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
         # Drop worker-injected model-transport base URLs the effective agent's
@@ -723,8 +735,18 @@ def _daytona_compose_restriction_kind(
         task_config = HarborTaskConfig.model_validate_toml(
             (task_path / "task.toml").read_text()
         )
-    except Exception:
-        return "none"
+    except Exception as exc:
+        # Fail closed. We have already established this is a Daytona Compose,
+        # non-kube task, so a task.toml we cannot parse may still declare a
+        # restricted agent phase. Returning "none" here would silently disable
+        # caller-route rejection, capability attestation, runtime-only host
+        # injection, and transport redaction for a trial Harbor may still run
+        # restricted. Refuse the trial instead of running it unprotected.
+        raise RestrictedNetworkProfileError(
+            "Cannot classify a Daytona Compose trial's restricted-agent network "
+            f"policy: task.toml is unreadable ({type(exc).__name__}). Refusing to "
+            "run with egress controls disabled."
+        ) from exc
 
     baseline = task_config.environment.resolve_baseline()
     task_policy = task_config.agent.explicit_phase_policy()
@@ -1062,10 +1084,24 @@ async def run_harbor_trial_async(
 
     dispatch_env_config = hc.environment.model_copy()
     dispatch_env_config.type = environment
-    restricted_compose_kind = _daytona_compose_restriction_kind(
-        task_path=task_path,
-        environment_config=dispatch_env_config,
-    )
+    try:
+        restricted_compose_kind = _daytona_compose_restriction_kind(
+            task_path=task_path,
+            environment_config=dispatch_env_config,
+        )
+    except RestrictedNetworkProfileError as exc:
+        # Classifier failed closed (see _daytona_compose_restriction_kind). This
+        # call is before the main try/except, so surface a well-formed outcome
+        # rather than letting the trial crash the worker.
+        return HarborOutcome(
+            reward=None,
+            error=str(exc),
+            exit_code=-1,
+            duration_sec=0.0,
+            job_result_path=None,
+            job_dir=None,
+            exception_type="RestrictedNetworkProfileError",
+        )
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
