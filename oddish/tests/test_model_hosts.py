@@ -30,3 +30,25 @@ def test_outbound_hosts_bedrock_model_ids():
     hosts = outbound_hosts_for_model("global.anthropic.claude-sonnet-4-5-20250929-v1:0")
     assert "bedrock-runtime.us-east-1.amazonaws.com" in hosts
     assert "sts.amazonaws.com" in hosts
+
+
+def test_outbound_hosts_bare_claude_api_id():
+    # claude-code under force-direct-API routing gets the bare Anthropic id
+    # (the provider prefix is stripped so the CLI accepts it). Harbor derives
+    # the agent allowlist from this id, so it must still resolve to the API.
+    assert outbound_hosts_for_model("claude-opus-4-8") == [
+        "api.anthropic.com",
+        "mcp-proxy.anthropic.com",
+    ]
+    assert outbound_hosts_for_model("claude-sonnet-5") == [
+        "api.anthropic.com",
+        "mcp-proxy.anthropic.com",
+    ]
+
+
+def test_bare_claude_id_does_not_override_routed_base_url():
+    # A provider-routed base URL still wins over the bare-id fallback.
+    assert outbound_hosts_for_model(
+        "claude-sonnet-4",
+        agent_env={"ANTHROPIC_BASE_URL": "https://api.fireworks.ai/inference"},
+    ) == ["api.fireworks.ai"]

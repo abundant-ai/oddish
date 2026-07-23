@@ -3003,3 +3003,33 @@ def test_ephemeral_non_gke_trial_passes_caller_env_build_multiplier_through(
     )
 
     assert captured["environment_build_timeout_multiplier"] is None
+
+
+def test_claude_code_environment_hosts_include_model_endpoint():
+    """Regression: offline claude-code trials died on ECONNRESET with 0 tokens.
+
+    Force-direct-API routing rewrites the model to the bare ``claude-opus-4-8``
+    that the CLI needs, which left the environment allowlist holding only the
+    installer CDNs -- exactly the production config.json of
+    amf3-serialization-c175f554-60.
+    """
+    hosts = harbor_runner._claude_code_environment_hosts(
+        HarborAgentConfig(name="claude-code", model_name="claude-opus-4-8")
+    )
+
+    assert "downloads.claude.ai" in hosts  # install still works
+    assert "api.anthropic.com" in hosts  # ...and so does inference
+
+
+def test_claude_code_environment_hosts_follow_routed_base_url():
+    """A provider-routed claude-code (e.g. z.ai) allowlists that host, not Anthropic."""
+    hosts = harbor_runner._claude_code_environment_hosts(
+        HarborAgentConfig(
+            name="claude-code",
+            model_name="zai/glm-4.6",
+            env={"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"},
+        )
+    )
+
+    assert "api.z.ai" in hosts
+    assert "api.anthropic.com" not in hosts

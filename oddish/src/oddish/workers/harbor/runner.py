@@ -9,7 +9,6 @@ import uuid
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -470,6 +469,21 @@ def _apply_restricted_agent_network_defaults(
     _apply_restricted_agent_web_tool_defaults(agent_config)
 
 
+def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts the claude-code CLI needs across install *and* run.
+
+    Harbor derives the agent-phase allowlist from the provider prefix on
+    ``model_name``, but force-direct-API routing strips that prefix to the bare
+    Anthropic id the CLI requires -- leaving Harbor nothing to resolve, so a
+    closed-internet trial reaches the installer CDN and then dies on ECONNRESET
+    at its first API call. Resolve the model endpoint here instead.
+    """
+    return [
+        *_CLAUDE_CODE_INSTALLER_HOSTS,
+        *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+    ]
+
+
 def _inject_daytona_agent_model_hosts(
     *,
     task_path: Path,
@@ -766,11 +780,7 @@ async def run_harbor_trial_async(
         # Model API hosts are also injected automatically for restricted agent
         # phases via _apply_restricted_agent_network_defaults.
         if "claude-code" in (agent or "").strip().lower():
-            hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
-            base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")
-            endpoint_host = urlparse(base_url).hostname if base_url else None
-            if endpoint_host:
-                hosts.append(endpoint_host)
+            hosts = _claude_code_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],
