@@ -102,25 +102,26 @@ export function TrajectorySummary({
                   >
                     <ChevronRight aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
                     <span className="flex-1">
-                      <span className="font-medium">
-                        <span
-                          className={componentKey ? "border-b-2 pb-px" : undefined}
-                          style={
-                            componentKey
-                              ? {
-                                  borderColor:
-                                    colorFor.get(componentKey) ??
-                                    "var(--phase-other)",
-                                }
-                              : undefined
-                          }
-                        >
-                          Step {h.step_id}
-                        </span>{" "}
-                        · {h.title}
+                      <span
+                        className={
+                          componentKey
+                            ? "font-medium border-b-2 pb-px"
+                            : "font-medium"
+                        }
+                        style={
+                          componentKey
+                            ? {
+                                borderColor:
+                                  colorFor.get(componentKey) ??
+                                  "var(--phase-other)",
+                              }
+                            : undefined
+                        }
+                      >
+                        Step {h.step_id} · {h.title}
                       </span>
                       {h.why && (
-                        <span className="block text-xs text-muted-foreground">
+                        <span className="mt-1 block text-xs text-muted-foreground">
                           {h.why}
                         </span>
                       )}
