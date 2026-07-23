@@ -20,6 +20,32 @@ class OrganizationResponse(BaseModel):
     created_at: str
 
 
+class PreTrialAnalysisSettingResponse(BaseModel):
+    enabled: bool
+    can_manage: bool = False
+
+
+class PreTrialAnalysisSettingUpdate(BaseModel):
+    enabled: bool
+
+
+class AnalyzerCostItem(BaseModel):
+    analyzer_type: str
+    cost_usd: float
+    job_count: int
+    input_tokens: int
+    output_tokens: int
+
+
+class AnalyzerCostsResponse(BaseModel):
+    window_days: int
+    total_cost_usd: float
+    total_job_count: int
+    total_input_tokens: int
+    total_output_tokens: int
+    by_type: list[AnalyzerCostItem]
+
+
 # =============================================================================
 # User Models
 # =============================================================================
