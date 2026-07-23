@@ -12,11 +12,13 @@ from __future__ import annotations
 import subprocess
 import tomllib
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from oddish.workers.agents import grok_build as grok_build_module
 from oddish.workers.agents.grok_build import (
+    _BUNDLED_GROK_UPLOAD_PATH,
     _PROMPT_PATH,
     _XAI_API_KEY_ENV,
     _XAI_API_KEYS_ENV,
@@ -26,6 +28,52 @@ from oddish.workers.agents.grok_build import (
 
 def test_advertises_atif_support():
     assert OddishGrokBuild.SUPPORTS_ATIF is True
+
+
+@pytest.mark.asyncio
+async def test_install_uses_bundled_cli_without_network(tmp_path, monkeypatch):
+    bundled = tmp_path / "grok"
+    bundled.write_bytes(b"bundled-grok")
+    monkeypatch.setattr(grok_build_module, "BUNDLED_GROK_CLI_PATH", bundled)
+    environment = AsyncMock()
+    root = AsyncMock()
+    agent = AsyncMock()
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", root)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", agent)
+
+    await OddishGrokBuild(logs_dir=tmp_path).install(environment)
+
+    environment.upload_file.assert_awaited_once_with(
+        str(bundled), _BUNDLED_GROK_UPLOAD_PATH
+    )
+    assert root.await_args.kwargs["command"] == (
+        f"install -m 0755 {_BUNDLED_GROK_UPLOAD_PATH} /usr/local/bin/grok"
+    )
+    commands = [
+        call.kwargs["command"] for call in root.await_args_list + agent.await_args_list
+    ]
+    assert all("curl" not in command for command in commands)
+    assert commands[-1].endswith("command -v grok; grok --version")
+
+
+@pytest.mark.asyncio
+async def test_install_falls_back_to_network_without_bundled_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        grok_build_module,
+        "BUNDLED_GROK_CLI_PATH",
+        tmp_path / "missing-grok",
+    )
+    root = AsyncMock()
+    agent = AsyncMock()
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", root)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", agent)
+
+    await OddishGrokBuild(logs_dir=tmp_path).install(object())
+
+    assert "apt-get install -y curl bash" in root.await_args.kwargs["command"]
+    commands = [call.kwargs["command"] for call in agent.await_args_list]
+    assert "https://x.ai/cli/install.sh" in commands[0]
+    assert commands[-1].endswith("command -v grok; grok --version")
 
 
 def test_build_config_toml_defaults_to_responses_backend(tmp_path):

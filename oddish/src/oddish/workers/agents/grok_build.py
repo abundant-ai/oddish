@@ -32,6 +32,8 @@ _XAI_API_KEY_ENV = "XAI_API_KEY"
 # so a pool of keys on one team shares a single bucket and concurrent trials
 # throttle exactly as they do with one key.
 _XAI_API_KEYS_ENV = "XAI_API_KEYS"
+BUNDLED_GROK_CLI_PATH = "/opt/oddish/grok"
+_BUNDLED_GROK_UPLOAD_PATH = "/tmp/oddish-grok"
 
 # Where the grok CLI persists its full session store (tool calls + token usage);
 # the headless stdout does not carry these, so we copy this tree into the trial
@@ -159,22 +161,34 @@ class OddishGrokBuild(BaseInstalledAgent):
         return ["api.x.ai"]
 
     async def install(self, environment: BaseEnvironment) -> None:
-        await self.exec_as_root(
-            environment,
-            command=(
-                "if command -v apt-get >/dev/null 2>&1; then "
-                "DEBIAN_FRONTEND=noninteractive apt-get update && "
-                "DEBIAN_FRONTEND=noninteractive apt-get install -y curl bash; "
-                "elif command -v apk >/dev/null 2>&1; then "
-                "apk add --no-cache curl bash; "
-                "fi"
-            ),
-        )
+        bundled = os.path.isfile(BUNDLED_GROK_CLI_PATH)
+        if bundled:
+            await environment.upload_file(
+                str(BUNDLED_GROK_CLI_PATH), _BUNDLED_GROK_UPLOAD_PATH
+            )
+            await self.exec_as_root(
+                environment,
+                command=(
+                    f"install -m 0755 {_BUNDLED_GROK_UPLOAD_PATH} /usr/local/bin/grok"
+                ),
+            )
+        else:
+            await self.exec_as_root(
+                environment,
+                command=(
+                    "if command -v apt-get >/dev/null 2>&1; then "
+                    "DEBIAN_FRONTEND=noninteractive apt-get update && "
+                    "DEBIAN_FRONTEND=noninteractive apt-get install -y curl bash; "
+                    "elif command -v apk >/dev/null 2>&1; then "
+                    "apk add --no-cache curl bash; "
+                    "fi"
+                ),
+            )
+        installer = "" if bundled else "curl -fsSL https://x.ai/cli/install.sh | bash; "
         await self.exec_as_agent(
             environment,
             command=(
-                "set -euo pipefail; "
-                "curl -fsSL https://x.ai/cli/install.sh | bash; "
+                f"set -euo pipefail; {installer}"
                 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; '
                 "command -v grok; "
                 "grok --version"

@@ -10,6 +10,7 @@ from oddish.core.harbor_source import (
     HarborVariant,
     harbor_git_requirement,
 )
+from oddish.workers.agents.grok_build import BUNDLED_GROK_CLI_PATH
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -96,6 +97,8 @@ app = modal.App(MODAL_APP_NAME)
 # class of leak structurally impossible.
 WORKER_TASK_MOUNT_PATH = "/mnt/oddish-tasks"
 WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
+GROK_CLI_VERSION = "0.2.111"
+GROK_CLI_SHA256 = "f158d0d43367c3959c5ad213327255ac5991a0ec4c67bb475e09cc8cdba4a7b3"
 
 # Worker configuration
 POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 180)
@@ -624,6 +627,12 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
         .run_commands(
             "curl -fsSL https://claude.ai/install.sh | bash",
             "ln -sf /root/.local/bin/claude /usr/local/bin/claude",
+            f"curl -fsSL -o {BUNDLED_GROK_CLI_PATH} "
+            "https://storage.googleapis.com/grok-build-public-artifacts/cli/"
+            f"grok-{GROK_CLI_VERSION}-linux-x86_64",
+            f"echo '{GROK_CLI_SHA256}  {BUNDLED_GROK_CLI_PATH}' | sha256sum -c -",
+            f"chmod 0755 {BUNDLED_GROK_CLI_PATH}",
+            f"{BUNDLED_GROK_CLI_PATH} --version",
         )
         .pip_install("psycopg2-binary")
         .env(ENV_VARS)

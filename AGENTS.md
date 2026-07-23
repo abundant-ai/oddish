@@ -472,6 +472,10 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`chat_completions` | `responses` | `messages`); pass
   `--agent-kwarg api_backend=chat_completions` to route such a model. When
   unset, the upstream `responses` default is preserved.
+- Modal worker images bundle a pinned, checksum-verified Linux Grok CLI at
+  `/opt/oddish/grok`; `OddishGrokBuild.install` uploads it into Harbor sandboxes,
+  avoiding startup egress to `x.ai`. Non-Modal workers retain the upstream
+  installer fallback. Bump the version and SHA-256 together in `modal_app.py`.
 - `grok-build` trajectories come from the CLI's on-disk **session store**, not
   its headless stdout. `grok -p --output-format json|streaming-json` only emits
   the assistant's `text`/`thought` — no tool calls and no token usage — so
