@@ -543,8 +543,16 @@ async def test_qa_classification_excludes_gate_skipped(monkeypatch, cleanup_task
                 )
             )
         ).scalar_one()
+        task_version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
 
-    live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
+    live_ids = {
+        tid
+        for tid, _ in await _load_live_trials_for_classification(
+            task_id, task_version_id
+        )
+    }
     # The gate-skipped (never-run) kimi must not be handed to the classifier;
     # the baselines (which produced verdicts) still are.
     assert kimi_id not in live_ids

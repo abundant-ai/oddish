@@ -178,8 +178,7 @@ class AnalysisJobHandler:
 
 
 class QaJobHandler:
-    """The single task-level QA job: classify every trial, then synthesize
-    the task verdict. Backed by ``run_task_qa_job``."""
+    """Classify one task-version cohort, then synthesize the task verdict."""
 
     kind = WorkerJobKind.QA
 
@@ -190,14 +189,20 @@ class QaJobHandler:
         return payload
 
     async def run(self, job: WorkerJobLike) -> JobOutcome:
-        task_id = job.subject_id or (job.payload or {}).get("task_id")
+        payload = job.payload or {}
+        task_id = job.subject_id or payload.get("task_id")
         if not task_id:
             raise ValueError("QA worker_job missing subject_id / payload.task_id")
+        task_version_id = payload.get("task_version_id")
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)
             if task is None:
                 return _fail_permanent(f"Task {task_id} vanished before QA")
+            current_version_id = getattr(task, "current_version_id", None)
+            if task_version_id is not None and current_version_id != task_version_id:
+                return JobOutcome.ok()
+            task_version_id = task_version_id or current_version_id
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 task.verdict_status = VerdictStatus.QUEUED
                 task.verdict_error = None
@@ -208,6 +213,7 @@ class QaJobHandler:
             queue_key=job.queue_key,
             modal_function_call_id=job.modal_function_call_id,
             worker_job_id=job.id,
+            task_version_id=task_version_id,
         )
 
         async with get_session() as session:

@@ -357,6 +357,33 @@ async def test_qa_handler_resets_terminal_state_on_retry(monkeypatch):
     assert outcome.success is not None
 
 
+@pytest.mark.asyncio
+async def test_qa_handler_discards_job_for_superseded_task_version(monkeypatch):
+    task_row = SimpleNamespace(
+        current_version_id="task-xyz-v9",
+        verdict_status=VerdictStatus.SUCCESS,
+        verdict_error=None,
+        verdict_finished_at="2026-07-23",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(task_row)
+    )
+    called = _patch_run(monkeypatch, "run_task_qa_job")
+
+    outcome = await QaJobHandler().run(
+        _verdict_claim(
+            payload={
+                "task_id": "task-xyz",
+                "task_version_id": "task-xyz-v8",
+            }
+        )
+    )
+
+    assert outcome.success is not None
+    assert called["args"] is None
+    assert task_row.verdict_status == VerdictStatus.SUCCESS
+
+
 # ---------------------------------------------------------------------------
 # Handler registry side effects
 # ---------------------------------------------------------------------------

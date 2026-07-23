@@ -18,6 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -32,6 +34,7 @@ from oddish.analyze.models import (  # noqa: E402
 from oddish.db import (  # noqa: E402
     AnalysisStatus,
     TaskStatus,
+    TrialModel,
     VerdictStatus,
     WorkerJobKind,
     WorkerJobStatus,
@@ -39,6 +42,8 @@ from oddish.db import (  # noqa: E402
 from oddish.workers.queue import qa_handler  # noqa: E402
 from oddish.workers.queue.qa_handler import (  # noqa: E402
     _classifications_from_trials,
+    _qa_store_allowed,
+    _qa_trial_filters,
     _trial_needs_classification,
 )
 
@@ -101,6 +106,19 @@ def test_classifications_from_trials_filters_probe_and_unfinished():
 
     names = [(c.trial_name, c.classification.value) for c in classifications]
     assert names == [("t-0", "GOOD_SUCCESS"), ("t-3", "BAD_FAILURE")]
+
+
+def test_qa_trial_filters_pin_the_task_version():
+    statement = select(TrialModel.id).where(*_qa_trial_filters("task-9", "task-9-v9"))
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "trials.task_id = 'task-9'" in sql
+    assert "trials.task_version_id = 'task-9-v9'" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +186,7 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
 
     verdict_calls: list[str] = []
 
-    async def fake_verdict_enqueue(_session, *, task_id, org_id):
+    async def fake_verdict_enqueue(_session, *, task_id, org_id, task_version_id=None):
         verdict_calls.append(task_id)
 
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
@@ -322,6 +340,27 @@ class _QASession:
 
 
 @pytest.mark.asyncio
+async def test_qa_store_rejects_a_changed_trial_cohort():
+    task = SimpleNamespace(current_version_id="task-9-v9")
+    trials = [
+        SimpleNamespace(id="task-9-0", analysis_status=AnalysisStatus.SUCCESS),
+        SimpleNamespace(id="task-9-1", analysis_status=AnalysisStatus.SUCCESS),
+    ]
+    session = _QASession(task=task, trials=trials)
+
+    assert (
+        await _qa_store_allowed(
+            session,
+            None,
+            "task-9",
+            "task-9-v9",
+            {"task-9-0"},
+        )
+        is False
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     task = SimpleNamespace(
         id="task-9",
@@ -356,7 +395,7 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [
             ("task-9-0", None),
             ("task-9-1", None),
@@ -443,7 +482,7 @@ async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -538,7 +577,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -603,7 +642,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     assert not hasattr(task, "pre_trial")
     assert not hasattr(task, "pre_trial_status")
     # Pre-trial must never complete the task or touch verdict fields.
-    assert task.status == TaskStatus.COMPLETED  # completed by the verdict path, not pre-trial
+    assert task.status == TaskStatus.COMPLETED  # completed by verdict, not pre-trial
     assert task.verdict_status == VerdictStatus.SUCCESS
 
 
@@ -641,7 +680,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -723,7 +762,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -801,7 +840,7 @@ async def test_run_task_qa_job_completes_with_no_live_trials(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return []
 
     async def fail_classify(_trial_id, should_store=None):
@@ -885,7 +924,7 @@ async def test_run_task_qa_job_ignores_cancelled_worker_job(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -943,7 +982,7 @@ async def test_run_task_qa_job_ignores_final_cancelled_worker_job(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     async def fake_compute_verdict(classifications, *_args, **_kwargs):
@@ -1010,7 +1049,7 @@ async def test_run_task_qa_job_stops_classifying_after_cancel(monkeypatch):
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial_id, None) for trial_id in trials]
 
     classified: list[str] = []
@@ -1066,7 +1105,7 @@ async def test_run_task_qa_job_blocks_inflight_classification_store(monkeypatch)
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, None)]
 
     async def fake_classify(_trial_id, should_store=None):
@@ -1122,7 +1161,7 @@ async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypa
     async def fake_get_session():
         yield session
 
-    async def fake_load_live(_task_id):
+    async def fake_load_live(_task_id, _task_version_id=None):
         return [(trial.id, AnalysisStatus.SUCCESS)]
 
     captured: dict = {}

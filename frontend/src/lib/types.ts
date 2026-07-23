@@ -187,6 +187,9 @@ interface TaskVerdict {
   agent_problem_count?: number;
   success_count?: number;
   harness_error_count?: number;
+  task_version_id?: string | null;
+  trial_count?: number;
+  experiment_ids?: string[];
 }
 
 export interface Task {

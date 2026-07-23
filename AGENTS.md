@@ -127,11 +127,13 @@ High-level flow:
    failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Trajectory analysis is **task-scoped**: when every trial of a
-   `run_analysis` task is terminal, a single `QA` job is enqueued. That one
-   job classifies every live trial's trajectory (written to `trials.analysis`)
-   and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
-   tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
+4. Trajectory analysis uses one **task-level, version-pinned** `QA` job when
+   the trials of a `run_analysis` task are terminal. That job classifies every
+   QA-eligible trial on the task's selected version (written to
+   `trials.analysis`) and synthesizes `tasks.verdict` from that same cohort.
+   It discards its output if the selected version or eligible trial set changes
+   while it runs. A sweep of `T` tasks × `N` trials therefore enqueues `T` QA
+   jobs, not `T × (N + 1)`.
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
@@ -232,8 +234,9 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
   handler registry (`TrialJobHandler`, `QaJobHandler`, `TaskExpandJobHandler`,
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
-- the task-level QA job (`run_task_qa_job`): classify every live trial via
-  the shared `classify_trial_and_store`, then synthesize the task verdict
+- the task-level QA job (`run_task_qa_job`): classify every QA-eligible trial
+  on the pinned current version via the shared `classify_trial_and_store`, then
+  synthesize the task verdict from that unchanged version cohort
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over
@@ -414,7 +417,7 @@ Behavior:
 | `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
 | `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
 | `trial_handler.py` | TRIAL execution body |
-| `qa_handler.py` | Task-level QA job: `run_task_qa_job` classifies every live trial then synthesizes the verdict |
+| `qa_handler.py` | Task-level QA job: `run_task_qa_job` classifies the pinned current-version cohort then synthesizes the verdict |
 | `analysis_handler.py` | `classify_trial_and_store` (shared per-trial classifier) + the transitional `run_analysis_job` wrapper for in-flight legacy ANALYSIS rows |
 | `task_expand_handler.py` / `tag_project_handler.py` | TASK_EXPAND and TAG_PROJECT job bodies |
 | `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, **per-slot** orphaned-slot release (see invariants below) |

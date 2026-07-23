@@ -150,7 +150,7 @@ Options
   Docker Hub creds can also come from `ODDISH_DOCKERHUB_USERNAME` / `ODDISH_DOCKERHUB_TOKEN`.
   Prefer a Docker Hub access token over an account password.
 - `--retry` - Re-run an existing target instead of submitting new work (see below)
-- `--qa` - With `--retry`: re-run the task-level QA job (classify every trial + synthesize the verdict) instead of retrying trials
+- `--qa` - With `--retry`: re-run the task-level QA job for the selected current version instead of retrying trials
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
@@ -171,7 +171,7 @@ oddish run <task_id> --retry -y
 # Retry all failed trials across an experiment
 oddish run <experiment_id> --retry -y
 
-# Re-run the task-level QA job (classify every trial + synthesize the verdict)
+# Re-run QA for the task's selected current version
 oddish run <task_id> --retry --qa
 
 # Machine-readable summary of what was queued
@@ -181,8 +181,9 @@ oddish run <experiment_id> --retry -y --json
 - Default (`--retry` alone) re-queues failed trials. For task and experiment
   targets, only trials currently in a `failed` state are retried.
 - `--qa` re-runs the single task-level QA job: it re-classifies every live trial
-  and synthesizes a fresh task verdict. A trial-shaped id resolves to its parent
-  task; experiment targets run QA for each task.
+  on the task's selected current version and synthesizes a fresh verdict from
+  that version cohort. A trial-shaped id resolves to its parent task; experiment
+  targets run QA for each task.
 - `--qa` requires `--retry`.
 - `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 

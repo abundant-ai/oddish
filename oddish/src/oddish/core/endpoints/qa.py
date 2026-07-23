@@ -143,7 +143,11 @@ async def cancel_task_qa_core(
         # Finalize trials whose classification the QA job had in flight so
         # they don't linger in a RUNNING analysis state.
         for trial in task.trials or []:
-            if trial.superseded_by_trial_id is None and _has_active_analysis(trial):
+            if (
+                trial.task_version_id == task.current_version_id
+                and trial.superseded_by_trial_id is None
+                and _has_active_analysis(trial)
+            ):
                 trial.analysis_status = AnalysisStatus.FAILED
                 trial.analysis_error = USER_CANCELLED_MESSAGE
                 trial.analysis_finished_at = now_value
@@ -169,8 +173,9 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_finished_at = None
 
 
-async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
-    """Count non-terminal, non-superseded trials for a task."""
+async def _count_active_trials(
+    session: AsyncSession, *, task_id: str, task_version_id: str | None
+) -> int:
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -180,6 +185,7 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
+            TrialModel.task_version_id == task_version_id,
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(active_statuses),
         )
@@ -193,12 +199,7 @@ async def rerun_task_qa_core(
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int]:
-    """(Re)run the single task-level QA job for a finished task.
-
-    Resets every live trial's classification and the task verdict, then
-    enqueues one QA job that re-classifies all live trials and synthesizes a
-    fresh verdict.
-    """
+    """Re-run QA for a finished task's current version."""
     return await backfill_task_analysis_core(
         session,
         task_id=task_id,
@@ -249,12 +250,19 @@ async def backfill_task_analysis_core(
         raise HTTPException(status_code=400, detail="Task has no trials to QA")
 
     live_trials = [
-        trial for trial in task.trials if trial.superseded_by_trial_id is None
+        trial
+        for trial in task.trials
+        if trial.task_version_id == task.current_version_id
+        and trial.superseded_by_trial_id is None
     ]
     if not live_trials:
         raise HTTPException(status_code=400, detail="Task has no live trials to QA")
 
-    active_trials = await _count_active_trials(session, task_id=task.id)
+    active_trials = await _count_active_trials(
+        session,
+        task_id=task.id,
+        task_version_id=task.current_version_id,
+    )
     if active_trials > 0:
         raise HTTPException(
             status_code=400,
@@ -301,7 +309,12 @@ async def backfill_task_analysis_core(
 
     from oddish.queue import enqueue_qa_worker_job
 
-    await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
+    await enqueue_qa_worker_job(
+        session,
+        task_id=task.id,
+        org_id=task.org_id,
+        task_version_id=task.current_version_id,
+    )
 
     await session.commit()
     return {

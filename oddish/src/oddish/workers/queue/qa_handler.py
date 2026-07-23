@@ -340,6 +340,17 @@ def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
     return analysis_status not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
 
 
+def _qa_trial_filters(task_id: str, task_version_id: str | None):
+    return (
+        TrialModel.task_id == task_id,
+        TrialModel.task_version_id == task_version_id,
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.imported_at.is_(None),
+        TrialModel.status != TrialStatus.SKIPPED,
+        func.coalesce(TrialModel.error_message, "").notlike(f"{GATE_SKIP_PREFIX}%"),
+    )
+
+
 def _classifications_from_trials(trials) -> list:
     """Build verdict inputs from stored trial QA."""
     from oddish.analyze import Classification, TrialClassification
@@ -376,8 +387,9 @@ def _classifications_from_trials(trials) -> list:
 
 async def _load_live_trials_for_classification(
     task_id: str,
+    task_version_id: str | None,
 ) -> list[tuple[str, AnalysisStatus | None]]:
-    """Return live trial IDs and QA states.
+    """Return QA-eligible trial IDs and states for one task version.
 
     Trials created by the Sauron->Oddish bulk migration (``imported_at IS NOT
     NULL``) are excluded: classifying ~1M historical trials was ruled out on
@@ -392,27 +404,33 @@ async def _load_live_trials_for_classification(
                 select(
                     TrialModel.id,
                     TrialModel.analysis_status,
-                ).where(
-                    TrialModel.task_id == task_id,
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    # Exclude bulk-migrated Sauron trials (see docstring): too
-                    # costly to classify ~1M historical rows.
-                    TrialModel.imported_at.is_(None),
-                    # Gate-skipped trials never ran (no logs to classify); a
-                    # classifier run on them would emit phantom failures and
-                    # pollute the verdict + the agent's pass/fail metrics. New
-                    # skipped trials carry status=SKIPPED; the legacy prefix
-                    # check still excludes pre-SKIPPED rows (marked FAILED +
-                    # the old sentinel message, since we don't backfill).
-                    TrialModel.status != TrialStatus.SKIPPED,
-                    func.coalesce(TrialModel.error_message, "").notlike(
-                        f"{GATE_SKIP_PREFIX}%"
-                    ),
-                )
+                ).where(*_qa_trial_filters(task_id, task_version_id))
             )
         ).all()
 
     return [(str(trial_id), analysis_status) for trial_id, analysis_status in rows]
+
+
+async def _qa_store_allowed(
+    session,
+    worker_job_id: str | None,
+    task_id: str,
+    task_version_id: str | None,
+    trial_ids: set[str],
+) -> bool:
+    if not await _worker_job_is_running(session, worker_job_id):
+        return False
+    task = await session.get(TaskModel, task_id)
+    if task is None or getattr(task, "current_version_id", None) != task_version_id:
+        return False
+    result = await session.execute(
+        select(TrialModel).where(*_qa_trial_filters(task_id, task_version_id))
+    )
+    trials = result.scalars().all()
+    return {str(trial.id) for trial in trials} == trial_ids and all(
+        trial.analysis_status in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+        for trial in trials
+    )
 
 
 async def run_task_qa_job(
@@ -420,8 +438,9 @@ async def run_task_qa_job(
     queue_key: str,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
+    task_version_id: str | None = None,
 ) -> None:
-    """Classify a task's live trials and store one verdict."""
+    """Classify one task-version cohort and store its task verdict."""
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
     async with get_session() as session:
@@ -431,6 +450,16 @@ async def run_task_qa_job(
 
         if not await _worker_job_is_running(session, worker_job_id):
             console.print(f"[dim]QA {task_id} skipped; job was cancelled[/dim]")
+            return
+
+        current_version_id = getattr(task, "current_version_id", None)
+        if task_version_id is None:
+            task_version_id = current_version_id
+        elif current_version_id != task_version_id:
+            console.print(
+                f"[dim]QA {task_id} skipped; version {task_version_id} is no "
+                f"longer current[/dim]"
+            )
             return
 
         if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
@@ -455,8 +484,12 @@ async def run_task_qa_job(
         )
 
     classifications: list[TrialClassification] = []
+    live_trial_ids: set[str] = set()
     try:
-        live_trials = await _load_live_trials_for_classification(task_id)
+        live_trials = await _load_live_trials_for_classification(
+            task_id, task_version_id
+        )
+        live_trial_ids = {trial_id for trial_id, _ in live_trials}
 
         # Pre-trial: a per-version task-source audit, independent of trial
         # classification -- runs before the per-trial loop, even when there are
@@ -486,7 +519,13 @@ async def run_task_qa_job(
             # as neither good nor bad rather than skewing either bucket.
             async with get_session() as session:
                 task = await session.get(TaskModel, task_id, with_for_update=True)
-                if task and await _worker_job_is_running(session, worker_job_id):
+                if task and await _qa_store_allowed(
+                    session,
+                    worker_job_id,
+                    task_id,
+                    task_version_id,
+                    live_trial_ids,
+                ):
                     task.verdict = None
                     task.verdict_status = VerdictStatus.SUCCESS
                     task.verdict_error = None
@@ -535,12 +574,22 @@ async def run_task_qa_job(
                 )
                 return
             trials_result = await session.execute(
-                select(TrialModel).where(
-                    TrialModel.task_id == task_id,
-                    TrialModel.superseded_by_trial_id.is_(None),
-                )
+                select(TrialModel).where(*_qa_trial_filters(task_id, task_version_id))
             )
             trials = trials_result.scalars().all()
+            if {trial.id for trial in trials} != live_trial_ids:
+                raise RuntimeError(
+                    f"QA trial cohort changed for {task_id} version {task_version_id}"
+                )
+            if any(
+                trial.analysis_status
+                not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+                for trial in trials
+            ):
+                raise RuntimeError(
+                    f"QA trial analysis incomplete for {task_id} version "
+                    f"{task_version_id}"
+                )
             classifications = _classifications_from_trials(trials)
 
         # The "doubly note" elevation: union each trial's exploitation
@@ -579,7 +628,18 @@ async def run_task_qa_job(
             task_id=task_id,
         )
 
-        verdict_result = build_verdict_payload(verdict, classifications)
+        verdict_result = {
+            **build_verdict_payload(verdict, classifications),
+            "task_version_id": task_version_id,
+            "trial_count": len(trials),
+            "experiment_ids": sorted(
+                {
+                    experiment_id
+                    for trial in trials
+                    if (experiment_id := getattr(trial, "experiment_id", None))
+                }
+            ),
+        }
 
         console.print(
             f"[green]Verdict computed:[/green] {'GOOD' if verdict.is_good else 'NEEDS REVIEW'} "
@@ -605,7 +665,13 @@ async def run_task_qa_job(
             task_id,
             payload=verdict_result,
             error=verdict_error,
-            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+            should_store=lambda session: _qa_store_allowed(
+                session,
+                worker_job_id,
+                task_id,
+                task_version_id,
+                live_trial_ids,
+            ),
         )
     )
     if status is None:
