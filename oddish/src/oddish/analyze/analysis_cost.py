@@ -44,7 +44,9 @@ def parse_cli_usage(payload: dict, model_id: str | None) -> AnalysisUsage | None
     )
 
 
-def usage_from_api_message(usage: object | None, model: str | None) -> AnalysisUsage | None:
+def usage_from_api_message(
+    usage: object | None, model: str | None
+) -> AnalysisUsage | None:
     """Extract usage from an Anthropic Messages API final message's ``usage``.
 
     Unlike the Claude Code CLI envelope, the API reports token counts but no
@@ -92,6 +94,8 @@ def build_analysis_cost_row(
     experiment_id: str | None,
     billed_user_id: str | None,
     usage: AnalysisUsage,
+    task_id: str | None = None,
+    analyzer_id: str | None = None,
 ) -> AnalysisCostModel:
     return AnalysisCostModel(
         job_kind=job_kind,
@@ -99,6 +103,8 @@ def build_analysis_cost_row(
         org_id=org_id,
         experiment_id=experiment_id,
         billed_user_id=billed_user_id,
+        task_id=task_id,
+        analyzer_id=analyzer_id,
         model=usage.model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
