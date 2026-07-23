@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-23]
+
+### Added
+
+- Trajectory Activity card recast as three per-metric mini bar charts (Steps / Tool calls / Time) grouped by component kind, with per-trial trajectory metrics (duration, tool-call count, per-tool counts) persisted at ingest and a shared `TrialMetricFilter` contract wired through `oddish ls`, the tasks browse API, and the dashboard's experiment filters (#860).
+- `oddish upload`/`oddish run` now ASCII-normalize smart typography (en/em-dashes, curly quotes, accented Latin letters, invisible Unicode spaces) in `task.toml`'s `[metadata]` table before packaging, so LLM-authored prose no longer looks "broken" in the task viewer; the change is scoped structurally to `[metadata]` via `tomlkit` so runtime fields and the task's content hash are unaffected (#859).
+- Pre-trial QA analyzer, default off (`settings.pre_trial_enabled`): a versioned analyzer prompt registry (`prompts`/`prompt_versions` tables, `/prompts` API, `oddish prompt` CLI) plus a `PreTrialBlock` that runs a sandboxed agent — provisioned with a short-lived read key and the `oddish` CLI — against `oddish pull`'d task source to audit verifier completeness, oracle correctness, and info leakage, recording `ActionItem` findings on `task_versions` without touching verdict state (#853).
+
+### Changed
+
+- Bump the default Harbor pin to pick up ATIF trajectory support for `kimi-code`, and fix a pre-existing drift where `HARBOR_DEFAULT_SHA` still pointed at an older commit than the one already vendored in `uv.lock` (#858).
+
+### Fixed
+
+- Task list page no longer counts "combine copies" (the same trial execution re-materialized under another experiment) toward trial totals, cost rollups, or the trial-result icon strip, bringing it in line with the already-correct task-detail view; the card's latest trials are now grouped into per-agent+model sections instead of one flat strip (#851).
+- Trajectory Activity step counts and range labels now derive from persisted `step_ids` rather than only the steps currently loaded in the UI, and sparse step IDs render as exact compact runs (e.g. "steps 1–2, 4, 7–8") instead of a misleading min–max span (#866).
+
+---
+
 ## [2026-07-20]
 
 ### Changed
