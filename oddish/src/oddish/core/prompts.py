@@ -114,9 +114,13 @@ async def list_prompts_core(
 
 
 async def list_prompt_versions_core(
-    session: AsyncSession, kind: str
+    session: AsyncSession,
+    kind: str,
+    *,
+    scope_type: str | None = None,
+    scope_id: str | None = None,
 ) -> list[PromptVersionModel]:
-    prompt = await _get_prompt(session, kind)
+    prompt = await _get_prompt(session, kind, scope_type=scope_type, scope_id=scope_id)
     if prompt is None:
         raise HTTPException(status_code=404, detail=f"Prompt '{kind}' not found")
     versions = await prompt.awaitable_attrs.versions

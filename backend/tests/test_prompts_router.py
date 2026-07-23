@@ -61,6 +61,7 @@ async def _call(
     *,
     scopes=(APIKeyScope.READ,),
     prompt_org_id=None,
+    prompt_core=None,
     **kwargs,
 ):
     async def fake_get(session, kind, *, version=None, scope_type=None, scope_id=None):
@@ -76,7 +77,7 @@ async def _call(
         return {"total": 0, "last_used_at": None, "by_version": []}
 
     monkeypatch.setattr(prompts_router, "get_session", lambda: _ctx(None))
-    monkeypatch.setattr(prompts_router, "get_prompt_core", fake_get)
+    monkeypatch.setattr(prompts_router, "get_prompt_core", prompt_core or fake_get)
     monkeypatch.setattr(prompts_router, "get_prompt_usage_core", fake_usage)
     app = create_app()
     app.dependency_overrides[require_auth] = _auth(list(scopes))
@@ -181,7 +182,17 @@ async def test_put_rejects_tasks_scope(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_put_accepts_full_scope(monkeypatch):
-    async def fake_set(session, *, kind, content, description=None, created_by=None, scope_type=None, scope_id=None, org_id=None):
+    async def fake_set(
+        session,
+        *,
+        kind,
+        content,
+        description=None,
+        created_by=None,
+        scope_type=None,
+        scope_id=None,
+        org_id=None,
+    ):
         return None
 
     monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
@@ -260,3 +271,65 @@ async def test_get_same_org_prompt_id_is_still_readable(monkeypatch):
     resp = await _call("GET", "/prompts/p1", monkeypatch, prompt_org_id="org_1")
     assert resp.status_code == 200
     assert resp.json()["id"] == "p1"
+
+
+def _capturing_prompt_core(seen):
+    async def fake_get(session, ref, *, version=None, scope_type=None, scope_id=None):
+        # _validated_ref calls this first with no scope; record only the
+        # router's own call, which is the second one.
+        seen.append({"scope_type": scope_type, "scope_id": scope_id})
+        return _FakePrompt(), _V2
+
+    return fake_get
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_passes_scope_to_core(monkeypatch):
+    seen = []
+    resp = await _call(
+        "GET",
+        "/prompts/QA_PRE_TRIAL?scope=task&scope_id=task_a",
+        monkeypatch,
+        prompt_core=_capturing_prompt_core(seen),
+    )
+    assert resp.status_code == 200
+    assert seen[-1] == {"scope_type": "task", "scope_id": "task_a"}
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_defaults_to_global_scope(monkeypatch):
+    seen = []
+    resp = await _call(
+        "GET",
+        "/prompts/QA_PRE_TRIAL",
+        monkeypatch,
+        prompt_core=_capturing_prompt_core(seen),
+    )
+    assert resp.status_code == 200
+    assert seen[-1] == {"scope_type": None, "scope_id": None}
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_org_scope_infers_auth_org(monkeypatch):
+    seen = []
+    resp = await _call(
+        "GET",
+        "/prompts/QA_PRE_TRIAL?scope=org",
+        monkeypatch,
+        prompt_core=_capturing_prompt_core(seen),
+    )
+    assert resp.status_code == 200
+    # _auth() builds an AuthContext with org_id="org_1".
+    assert seen[-1] == {"scope_type": "org", "scope_id": "org_1"}
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_rejects_unknown_scope(monkeypatch):
+    resp = await _call("GET", "/prompts/QA_PRE_TRIAL?scope=galaxy", monkeypatch)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_task_scope_requires_scope_id(monkeypatch):
+    resp = await _call("GET", "/prompts/QA_PRE_TRIAL?scope=task", monkeypatch)
+    assert resp.status_code == 422
