@@ -179,7 +179,17 @@ def reject_submitted_restricted_routes(
     """
 
     rejected_fields: list[str] = []
-    for root_key in ("agent_config", "agent_overrides"):
+    # ``environment`` / ``environment_overrides`` are inspected alongside the
+    # agent shapes: a caller-submitted environment allowlist (or transport base
+    # URL) must not widen a restricted trial's egress either, and a legitimate
+    # restricted Compose trial's environment phase never needs a caller-supplied
+    # model route in the submitted config.
+    for root_key in (
+        "agent_config",
+        "agent_overrides",
+        "environment",
+        "environment_overrides",
+    ):
         raw_agent = raw_harbor_config.get(root_key)
         if not isinstance(raw_agent, Mapping):
             continue

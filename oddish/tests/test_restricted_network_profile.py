@@ -875,3 +875,38 @@ def test_grok_profile_is_transport_authoritative():
             resolved_env={},
         )
         assert profile.outbound_hosts == ("api.x.ai",), model
+
+
+def test_submitted_environment_routes_are_rejected():
+    # A caller-submitted environment allowlist or transport base URL must be
+    # rejected too, so it cannot widen a restricted trial's egress via the
+    # environment config; values are never echoed in the error.
+    for raw, field, secret in (
+        (
+            {"environment": {"extra_allowed_hosts": ["private-route.test"]}},
+            "environment.extra_allowed_hosts",
+            "private-route.test",
+        ),
+        (
+            {"environment": {"env": {"OPENAI_BASE_URL": "https://private.test/v1"}}},
+            "environment.env.OPENAI_BASE_URL",
+            "private.test",
+        ),
+    ):
+        with pytest.raises(RestrictedNetworkProfileError) as exc_info:
+            reject_submitted_restricted_routes(raw)
+        assert field in str(exc_info.value)
+        assert secret not in str(exc_info.value)
+
+    # A legitimate restricted-Compose submission carries only resource/lifecycle
+    # environment kwargs (no routes) and must pass unchanged.
+    reject_submitted_restricted_routes(
+        {
+            "agent_config": {"name": "codex"},
+            "environment": {
+                "type": "daytona",
+                "extra_allowed_hosts": [],
+                "kwargs": {"auto_stop_interval_mins": 30, "ephemeral": False},
+            },
+        }
+    )
