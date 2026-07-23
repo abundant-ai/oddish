@@ -153,6 +153,10 @@ _GROK_RUNTIME_SECRET_KEYS = (
     "XAI_API_KEY",
     "XAI_API_KEYS",
 )
+# Ambient Cursor auth the stock cursor-cli agent forwards into the sandbox
+# (cursor_cli.py reads CURSOR_API_KEY from os.environ). Folded into the redaction
+# map for the same reason -- credential, not a route: redaction coverage only.
+_CURSOR_RUNTIME_SECRET_KEYS = ("CURSOR_API_KEY",)
 # Provider-driven credential fold for stock agents (notably mini-swe) that
 # authenticate from the worker os.environ by the model's provider rather than a
 # fixed agent harness. Keyed on the CANONICAL provider from
@@ -209,6 +213,11 @@ def _resolved_runtime_transport_env(
         is_grok = name == "grok-build" or "agents.grok_build:" in import_path
         if is_grok:
             for key in _GROK_RUNTIME_SECRET_KEYS:
+                if key not in runtime_env and (value := os.environ.get(key)):
+                    runtime_env[key] = value
+        is_cursor = name == "cursor-cli" or "cursor_cli:" in import_path
+        if is_cursor:
+            for key in _CURSOR_RUNTIME_SECRET_KEYS:
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
         # General provider-driven fold: a stock agent (e.g. mini-swe) that
@@ -1200,6 +1209,10 @@ async def run_harbor_trial_async(
     start = time.time()
     modal_debug_log_path: Path | None = None
     runtime_transport_replacements: dict[str, str] = {}
+    # Worker-private Azure deployment id when the model was swapped to its public
+    # identity (set below); used to keep the deployment->public substitution as
+    # the final word across later redaction passes.
+    runtime_deployment_model: str | None = None
 
     try:
         # Build Harbor configs inside the try: model normalization and
@@ -1286,6 +1299,7 @@ async def run_harbor_trial_async(
                 # never had its model rewritten to the deployment, so it is
                 # excluded here too and keeps the public model identity.
                 set_runtime_model_name(agent_config, agent_config.model_name)
+                runtime_deployment_model = agent_config.model_name
                 runtime_transport_replacements.update(
                     _runtime_transport_redactions(
                         openai_env,
@@ -1327,7 +1341,13 @@ async def run_harbor_trial_async(
                         {
                             **resolved_agent_env,
                             **runtime_transport_env,
-                        }
+                        },
+                        # Re-assert the deployment->public substitution so this
+                        # full-env pass (which re-redacts AZURE_OPENAI_DEPLOYMENT
+                        # to [REDACTED]) does not clobber it; agent_config.model_name
+                        # is now the public model after the swap above.
+                        runtime_model=runtime_deployment_model,
+                        public_model=agent_config.model_name,
                     )
                 )
             _apply_restricted_agent_network_defaults(

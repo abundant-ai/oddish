@@ -531,10 +531,12 @@ def _grok_profile(
             agent_config,
             resolved_env,
             base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
-            # grok-build always fronts xAI; fall back to its API host so the agent
-            # phase is never left with an empty allowlist (e.g. a bare model id
-            # whose transport route is not explicitly configured).
+            # grok-build is transport-authoritative: it always fronts xAI, so pin
+            # its host to xAI and do NOT let model-id inference substitute another
+            # provider's host (infer_model=False, mirroring _cursor_profile). The
+            # default is used whenever no explicit xAI route is configured.
             default_hosts=_XAI_RUNTIME_HOSTS,
+            infer_model=False,
         ),
         kwarg_overrides={"disable_web_search": True},
         server_web_disabled=True,

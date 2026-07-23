@@ -309,6 +309,31 @@ def test_mini_swe_provider_credentials_enter_redaction_map(monkeypatch):
     assert reps.get("xai-secret") == "[REDACTED]"
 
 
+def test_cursor_ambient_api_key_enters_redaction_map(monkeypatch):
+    # cursor-cli forwards ambient CURSOR_API_KEY into the sandbox; it must fold
+    # into the redaction map so its raw value is scrubbed from artifacts.
+    monkeypatch.setenv("CURSOR_API_KEY", "cursor-secret")
+    agent_config = HarborAgentConfig(name="cursor-cli", model_name="cursor/composer")
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    assert runtime_env.get("CURSOR_API_KEY") == "cursor-secret"
+    assert replacements["cursor-secret"] == "[REDACTED]"
+
+
+def test_deployment_redaction_substitutes_public_model_over_redacted():
+    # An AZURE_OPENAI_DEPLOYMENT value must map to the PUBLIC model (not [REDACTED])
+    # when the runtime-model swap supplies the override, even though the key name
+    # also matches the "deployment" sensitive fragment.
+    replacements = harbor_runner._runtime_transport_redactions(
+        {"AZURE_OPENAI_DEPLOYMENT": "priv-deploy-123"},
+        runtime_model="priv-deploy-123",
+        public_model="openai/gpt-5.4",
+    )
+    assert replacements["priv-deploy-123"] == "openai/gpt-5.4"
+
+
 def test_compose_classifier_fails_closed_on_unparseable_task_toml(tmp_path):
     # A Daytona Compose, non-kube task whose task.toml cannot be parsed must fail
     # closed (raise) rather than silently classify as "none" and disable egress

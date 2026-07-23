@@ -861,3 +861,17 @@ def test_bare_bedrock_model_resolves_to_bedrock_provider():
     from oddish.config import infer_model_provider_prefix
 
     assert infer_model_provider_prefix("global.anthropic.claude-sonnet-4") == "bedrock"
+
+
+def test_grok_profile_is_transport_authoritative():
+    # grok-build always fronts xAI; the profile must pin api.x.ai and NOT let a
+    # model id that classifies as another provider substitute a different host.
+    for model in ("grok-4", "xai/grok-4", "openai/gpt-5", "anthropic/claude"):
+        profile = restricted_network_profile_for_config(
+            AgentConfig(
+                import_path="oddish.workers.agents.grok_build:OddishGrokBuild",
+                model_name=model,
+            ),
+            resolved_env={},
+        )
+        assert profile.outbound_hosts == ("api.x.ai",), model
