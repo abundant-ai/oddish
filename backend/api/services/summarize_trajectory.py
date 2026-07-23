@@ -162,15 +162,19 @@ async def _load_summary_prompt(session: AsyncSession) -> tuple[str, int]:
         _, ver = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
     except HTTPException:
         try:
-            await seed_prompts(session)
+            # Keep a lost concurrent-seed race inside a savepoint. Rolling back
+            # the outer transaction would expire ORM instances (including the
+            # caller's TrialModel) that are still needed to build the summary.
+            async with session.begin_nested():
+                await seed_prompts(session)
             await session.commit()
             _, ver = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
         except Exception as e:
             # Two concurrent first-ever requests can both miss and both seed;
             # the loser's commit hits the prompts.key unique constraint. The
-            # prompt exists by then, so roll back and re-read once before
-            # treating this as a genuine failure.
-            await session.rollback()
+            # savepoint has rolled back only the seed attempt, and the prompt
+            # exists by then, so re-read once before treating this as a
+            # genuine failure.
             try:
                 _, ver = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
             except Exception:

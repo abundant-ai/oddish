@@ -459,11 +459,12 @@ async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
     """Two first-ever requests both miss and both seed; the loser's commit
     hits the prompts.key unique constraint. The prompt exists by then, so
     the retry should succeed instead of raising."""
+    from sqlalchemy import select
     from sqlalchemy.exc import IntegrityError
 
     from api.services.summarize_trajectory import _load_summary_prompt
     from oddish.core.prompt_seeds import seed_prompts as real_seed_prompts
-    from oddish.db import get_session
+    from oddish.db import PromptModel, get_session
 
     await _delete_summary_prompt()
 
@@ -477,7 +478,15 @@ async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
     monkeypatch.setattr("api.services.summarize_trajectory.seed_prompts", fake_seed)
 
     async with get_session() as session:
+        sentinel = (
+            await session.execute(
+                select(PromptModel).where(PromptModel.key == "pre_trial_qa")
+            )
+        ).scalar_one()
         content, version = await _load_summary_prompt(session)
+        # Recovering the seed race must not roll back the caller's outer
+        # transaction and expire objects it still needs after prompt loading.
+        assert sentinel.key == "pre_trial_qa"
 
     assert version == 1
     assert "{{taxonomy}}" in content

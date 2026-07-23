@@ -119,7 +119,7 @@ async def get_prompt_usage_core(session: AsyncSession, ref: str) -> dict:
         await session.execute(
             select(
                 AnalyzerBlockModel.prompt_version,
-                func.count().label("count"),
+                func.count().label("usage_count"),
                 func.max(AnalyzerBlockModel.created_at).label("last_used_at"),
             )
             .where(AnalyzerBlockModel.prompt_key == prompt.key)
@@ -128,10 +128,14 @@ async def get_prompt_usage_core(session: AsyncSession, ref: str) -> dict:
         )
     ).all()
     return {
-        "total": sum(r.count for r in rows),
+        "total": sum(r.usage_count for r in rows),
         "last_used_at": max((r.last_used_at for r in rows), default=None),
         "by_version": [
-            {"version": r.prompt_version, "count": r.count, "last_used_at": r.last_used_at}
+            {
+                "version": r.prompt_version,
+                "count": r.usage_count,
+                "last_used_at": r.last_used_at,
+            }
             for r in rows
         ],
     }
