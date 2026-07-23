@@ -153,6 +153,12 @@ def test_live_environment_resources_override_prefork_snapshot() -> None:
     assert resources.cpu_enforcement_mode == "request"
     assert resources.mem_enforcement_mode == "limit"
 
+    # Live capture reads Modal-only accessors: for a non-Modal provider it must
+    # keep the provider-aware fallback untouched, never Modal-derived floors.
+    fb = _fallback()
+    kept = capture_live_sandbox_resources(env, fb, "daytona")
+    assert kept is fb
+
 
 @pytest.mark.asyncio
 async def test_settlement_reuses_hook_boundary_and_adds_verifier_span(

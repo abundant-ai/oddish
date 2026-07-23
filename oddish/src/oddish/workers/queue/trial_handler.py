@@ -1033,7 +1033,7 @@ async def _handle_harbor_event(
                 if cost_state is not None:
                     provider = hook_event.environment_provider or cost_state.provider
                     resources = capture_live_sandbox_resources(
-                        hook_event.environment, cost_state.resources
+                        hook_event.environment, cost_state.resources, provider
                     )
                     cost_state.provider = provider
                     cost_state.resources = resources

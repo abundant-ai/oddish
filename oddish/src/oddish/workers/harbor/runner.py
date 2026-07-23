@@ -209,10 +209,17 @@ def capture_verifier_resources(
 
 
 def capture_live_sandbox_resources(
-    environment: Any | None, fallback: SpanResources
+    environment: Any | None, fallback: SpanResources, provider: str = "modal"
 ) -> SpanResources:
-    """Prefer the live Harbor environment's merged resource configuration."""
-    if environment is None:
+    """Prefer the live Harbor environment's merged resource configuration.
+
+    This reads Modal-only accessors (``_cpu_config`` / ``_memory_config``), so
+    it applies only to Modal sandboxes. For any other provider we keep the
+    ``fallback`` (the provider-aware pre-fork snapshot) rather than relying on
+    an AttributeError to bail out -- otherwise a provider whose env happened to
+    expose those names could overwrite a correct Daytona floor with Modal's.
+    """
+    if environment is None or provider != "modal":
         return fallback
     try:
         env = environment.task_env_config
