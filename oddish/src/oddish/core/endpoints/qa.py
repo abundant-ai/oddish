@@ -16,6 +16,7 @@ from oddish.db import (
     AnalysisStatus,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -259,6 +260,14 @@ async def backfill_task_analysis_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     if org_id is not None and task.org_id != org_id:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    if task.current_version_id is None:
+        task.current_version_id = await session.scalar(
+            select(TaskVersionModel.id)
+            .where(TaskVersionModel.task_id == task_id)
+            .order_by(TaskVersionModel.version.desc())
+            .limit(1)
+        )
 
     if not task.trials:
         raise HTTPException(status_code=400, detail="Task has no trials to QA")

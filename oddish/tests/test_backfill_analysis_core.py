@@ -72,15 +72,16 @@ class _RowsResult:
 
 
 class _FakeSession:
-    def __init__(self, task):
+    def __init__(self, task, *, scalar_values=None):
         self.task = task
+        self.scalar_values = iter(scalar_values) if scalar_values else None
         self.committed = False
 
     async def execute(self, _stmt, _params=None):
         return _Result(self.task)
 
     async def scalar(self, _stmt):  # _count_active_trials
-        return 0
+        return next(self.scalar_values) if self.scalar_values else 0
 
     async def commit(self):
         self.committed = True
@@ -211,6 +212,21 @@ async def test_cancelled_qa_keeps_task_running_while_historical_trial_is_active(
     assert task.status == TaskStatus.RUNNING
     assert task.finished_at is None
     assert session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_backfill_repairs_missing_current_version(_stub_enqueue):
+    task = _task([_trial("tsk-0")])
+    task.current_version_id = None
+    session = _FakeSession(task, scalar_values=("tsk-v1", 0))
+
+    result = await endpoints.backfill_task_analysis_core(
+        session, task_id="tsk", org_id="org-1"
+    )
+
+    assert result["status"] == "queued"
+    assert task.current_version_id == "tsk-v1"
+    assert _stub_enqueue == [("tsk", "org-1", "tsk-v1")]
 
 
 @pytest.mark.asyncio

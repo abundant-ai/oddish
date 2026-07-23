@@ -269,7 +269,7 @@ class QaJobHandler:
             version_mismatch = (
                 task_version_id is not None and current_version_id != task_version_id
             )
-            if not version_mismatch and await _earlier_active_qa_job_exists(
+            if await _earlier_active_qa_job_exists(
                 session,
                 task_id=task_id,
                 exclude_job_id=job.id,
@@ -333,17 +333,13 @@ class QaJobHandler:
                     )
                     task.finished_at = None if active_task_trials else utcnow()
                     return JobOutcome.ok()
-                if await _earlier_active_qa_job_exists(
-                    session,
-                    task_id=task_id,
-                    exclude_job_id=job.id,
-                ):
-                    return JobOutcome.ok()
                 task_version_id = current_version_id
             task_version_id = task_version_id or current_version_id
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
+                task.verdict = None
                 task.verdict_status = VerdictStatus.QUEUED
                 task.verdict_error = None
+                task.verdict_started_at = None
                 task.verdict_finished_at = None
 
         await run_task_qa_job(
@@ -387,6 +383,7 @@ class QaJobHandler:
             if not earlier_qa_active:
                 task.status = TaskStatus.RUNNING
                 task.finished_at = None
+                task.verdict = None
                 task.verdict_status = None
                 task.verdict_error = None
                 task.verdict_started_at = None

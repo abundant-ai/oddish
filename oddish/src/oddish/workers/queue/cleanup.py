@@ -975,7 +975,7 @@ async def _heal_stale_verdict_pending(session) -> int:
     the verdict is already terminal). ``ANALYSIS`` rows are intentionally ignored
     here -- they no longer drive the verdict. Returns the count finalized.
     """
-    from oddish.queue import enqueue_qa_worker_job
+    from oddish.queue import ACTIVE_TRIAL_STATUSES, enqueue_qa_worker_job
 
     stale_verdict_pending = (
         await session.execute(
@@ -1008,9 +1008,16 @@ async def _heal_stale_verdict_pending(session) -> int:
         if not task or task.status != TaskStatus.VERDICT_PENDING:
             continue
         if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-            task.status = TaskStatus.COMPLETED
-            task.finished_at = task.finished_at or utcnow()
-            verdict_pending_completed += 1
+            active_trials = await session.scalar(
+                select(func.count(TrialModel.id)).where(
+                    TrialModel.task_id == task.id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                )
+            )
+            task.status = TaskStatus.RUNNING if active_trials else TaskStatus.COMPLETED
+            task.finished_at = None if active_trials else task.finished_at or utcnow()
+            verdict_pending_completed += int(not active_trials)
         else:
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = None

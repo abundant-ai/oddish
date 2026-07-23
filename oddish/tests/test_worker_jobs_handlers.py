@@ -421,7 +421,7 @@ async def test_qa_handler_releases_stale_job_while_current_trials_run(monkeypatc
     monkeypatch.setattr(
         handlers_module,
         "get_session",
-        _fake_get_session_factory(task_row, scalar_value=1),
+        _fake_get_session_factory(task_row, scalar_values=(0, 1)),
     )
     called = _patch_run(monkeypatch, "run_task_qa_job")
 
@@ -496,7 +496,7 @@ async def test_qa_handler_reuses_exact_current_verdict_for_stale_job(monkeypatch
         "get_session",
         _fake_get_session_factory(
             task_row,
-            scalar_values=(0, 0),
+            scalar_values=(0, 0, 0),
             scalars_value=("task-xyz-9",),
         ),
     )
@@ -528,7 +528,7 @@ async def test_qa_handler_defers_stale_job_to_current_queued_job(monkeypatch):
         "get_session",
         _fake_get_session_factory(
             task_row,
-            scalar_values=(0, 1),
+            scalar_values=(1,),
         ),
     )
     called = _patch_run(monkeypatch, "run_task_qa_job")
