@@ -41,6 +41,7 @@ from oddish.config import (
     zai_bare_model_id,
 )
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
+from .restricted_network import agent_fronts_own_model_service
 
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
@@ -594,7 +595,16 @@ def _build_agent_config(
     _apply_claude_code_moonshot_env(agent_config)
     _apply_claude_code_probe_subagent_model(agent_config, is_probe)
 
-    if _agent_uses_openai_provider(agent_config):
+    # Gate on agent_fronts_own_model_service: a harness that routes the model
+    # through its own service (e.g. Cursor) never talks to the OpenAI/Azure
+    # endpoint, so its model must NOT be rewritten to the private Azure
+    # deployment id (it needs the public model identity). Agents that talk to
+    # OpenAI directly (codex, mini-swe on an openai model -- prefixed or bare)
+    # still get the rewrite. This is the source the runner's runtime-model swap
+    # later undoes for serialization/redaction; both gate the same way.
+    if _agent_uses_openai_provider(agent_config) and not agent_fronts_own_model_service(
+        agent_config
+    ):
         if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
             warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
         else:

@@ -62,6 +62,7 @@ from .restricted_network import (
     _KNOWN_TRANSPORT_BASE_URL_KEYS,
     RestrictedNetworkProfile,
     RestrictedNetworkProfileError,
+    agent_fronts_own_model_service,
     apply_restricted_network_profile,
     assert_no_serialized_restricted_routes,
     consumed_transport_base_url_keys,
@@ -198,7 +199,13 @@ def _runtime_transport_redactions(
 ) -> dict[str, str]:
     """Build exact worker-only replacements for persisted textual output."""
     replacements: dict[str, str] = {}
-    sensitive_fragments = ("key", "token", "secret", "password", "credential")
+    # "deployment" covers the worker-private Azure deployment id
+    # (AZURE_OPENAI_DEPLOYMENT). It is redacted in this agent-independent first
+    # pass so its value is scrubbed even for agents that skip the runtime-model
+    # swap (e.g. Cursor, which keeps the public model and never registers a
+    # deployment->public replacement); for agents that do swap, that later
+    # replacement simply overrides this one.
+    sensitive_fragments = ("key", "token", "secret", "password", "credential", "deployment")
     route_fragments = ("url", "base", "endpoint")
     for key, value in runtime_env.items():
         if not value:
@@ -637,6 +644,20 @@ def _task_has_dynamic_restricted_agent_phase(task_path: Path) -> bool:
     )
 
 
+# Oddish's restricted-Compose classification MUST mirror Harbor's own Compose
+# detection so the two never disagree about whether a task runs as Compose.
+# Harbor's trial-level check keys exclusively on
+# ``environment/docker-compose.yaml`` (harbor/trial/trial.py), and the backends
+# Oddish targets (Daytona, Modal) stage the task's Compose only under that name
+# and pass an explicit ``-f docker-compose.yaml`` (e.g.
+# environments/daytona/environment.py), so Docker Compose never auto-discovers
+# ``docker-compose.yml`` / ``compose.yaml``. Recognising more names here would
+# classify a task as Compose that Harbor runs single-container -- diverging from
+# (not hardening) the egress boundary. Broader Compose-filename support must land
+# in Harbor first, then be mirrored here.
+_HARBOR_COMPOSE_FILENAME = "docker-compose.yaml"
+
+
 def _daytona_compose_restriction_kind(
     *,
     task_path: Path,
@@ -649,7 +670,7 @@ def _daytona_compose_restriction_kind(
         return "none"
 
     environment_dir = task_path / "environment"
-    uses_compose = (environment_dir / "docker-compose.yaml").exists() or bool(
+    uses_compose = (environment_dir / _HARBOR_COMPOSE_FILENAME).exists() or bool(
         environment_config.extra_docker_compose
     )
     if not uses_compose:
@@ -701,7 +722,7 @@ def _supports_auto_restricted_agent_network(
         return False
 
     environment_dir = task_path / "environment"
-    if (environment_dir / "docker-compose.yaml").exists():
+    if (environment_dir / _HARBOR_COMPOSE_FILENAME).exists():
         return False
     if environment_config.extra_docker_compose:
         return False
@@ -1182,6 +1203,7 @@ async def run_harbor_trial_async(
             if (
                 restricted_compose_kind == "dynamic"
                 and uses_openai_provider
+                and not agent_fronts_own_model_service(agent_config)
                 and settings.get_openai_provider() != OPENAI_PROVIDER_OPENAI
                 and agent_config.model_name
                 and openai_model
@@ -1189,7 +1211,11 @@ async def run_harbor_trial_async(
                 # The provider deployment is needed by the running agent but is
                 # worker-private. Keep the submitted model in all serialized
                 # Harbor configs/results and hand the deployment to AgentFactory
-                # through a non-Pydantic runtime attribute.
+                # through a non-Pydantic runtime attribute. This mirrors the gate
+                # on _build_agent_config's deployment rewrite (its source): an
+                # agent that fronts models through its own service (e.g. Cursor)
+                # never had its model rewritten to the deployment, so it is
+                # excluded here too and keeps the public model identity.
                 set_runtime_model_name(agent_config, agent_config.model_name)
                 runtime_transport_replacements.update(
                     _runtime_transport_redactions(

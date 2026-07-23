@@ -21,6 +21,7 @@ from oddish.workers.harbor.restricted_network import (
     RUNTIME_ALLOWED_HOSTS_ATTR,
     RestrictedNetworkProfile,
     RestrictedNetworkProfileError,
+    agent_fronts_own_model_service,
     apply_restricted_network_profile,
     assert_no_serialized_restricted_routes,
     reject_submitted_restricted_routes,
@@ -790,3 +791,22 @@ def test_runner_policy_application_has_no_agent_or_model_branches() -> None:
     assert "agent_config.model_name" not in source
     assert "outbound_hosts_for_model" not in source
     assert "outbound_hosts_for_agent" not in source
+
+
+def test_agent_fronts_own_model_service_identifies_self_fronting_harnesses():
+    # Cursor routes the model through its own service and must keep the public
+    # model identity (never the worker-private Azure deployment id). Agents that
+    # talk to the provider directly (codex, mini-swe -- including a BARE openai
+    # model id like "gpt-4o") do not front their own service, so they still get
+    # the deployment swap.
+    def cfg(name: str, model: str = "openai/gpt-5") -> AgentConfig:
+        return AgentConfig(name=name, model_name=model)
+
+    assert agent_fronts_own_model_service(cfg("cursor-cli")) is True
+    assert agent_fronts_own_model_service(cfg("codex")) is False
+    assert agent_fronts_own_model_service(cfg("mini-swe-agent")) is False
+    assert agent_fronts_own_model_service(cfg("mini-swe-agent", "gpt-4o")) is False
+    assert agent_fronts_own_model_service(cfg("claude-code", "anthropic/claude")) is False
+    assert agent_fronts_own_model_service(cfg("grok-build", "xai/grok")) is False
+    assert agent_fronts_own_model_service(cfg("gemini-cli", "google/gemini")) is False
+    assert agent_fronts_own_model_service(cfg("nop")) is False

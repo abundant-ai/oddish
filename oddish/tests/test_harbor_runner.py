@@ -1622,6 +1622,41 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
     assert "OPENAI_API_KEY" not in agent_config.env
 
 
+def test_build_agent_config_keeps_public_model_for_cursor_on_azure(monkeypatch):
+    # Cursor fronts models through its own service, so _build_agent_config must
+    # NOT rewrite its model to the worker-private Azure deployment id even when
+    # the model prefix resolves to the OpenAI provider. Regression: otherwise the
+    # private deployment id is forced onto the cursor agent and leaks into the
+    # serialized config (Cursor sends it to *.cursor.sh, which cannot resolve it).
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setattr(harbor_runner.settings, "azure_openai_api_key", "az-key")
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_endpoint",
+        "https://example.openai.azure.com",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_api_version",
+        "2025-01-01-preview",
+    )
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "azure_openai_deployments",
+        {"openai/gpt-5.4": "oddish-gpt"},
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="cursor-cli",
+        model="openai/gpt-5.4",
+        raw_harbor_config={},
+    )
+
+    # Public model kept; the private Azure deployment id never appears.
+    assert agent_config.model_name == "openai/gpt-5.4"
+    assert "oddish-gpt" not in agent_config.model_dump_json()
+
+
 def test_build_agent_config_uses_oddish_codex_wrapper_for_public_openai(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
     monkeypatch.setattr(harbor_runner.settings, "openai_api_key", "openai-key")

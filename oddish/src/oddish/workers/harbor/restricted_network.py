@@ -444,6 +444,11 @@ class _RestrictedAgentSpec:
 
     factory: ProfileFactory
     base_url_keys: BaseUrlKeyResolver
+    # True for harnesses that front the model through their own service (e.g.
+    # Cursor): such agents never talk to the model provider's API directly, so
+    # the worker-private provider/Azure deployment id must not be swapped onto
+    # their running model -- they need the public model identity.
+    fronts_own_model_service: bool = False
 
 
 def _consumed_base_url_keys_for_class(
@@ -619,7 +624,7 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
         _codex_profile, _openai_base_url_keys
     ),
     "harbor.agents.installed.cursor_cli:CursorCli": _RestrictedAgentSpec(
-        _cursor_profile, _cursor_base_url_keys
+        _cursor_profile, _cursor_base_url_keys, fronts_own_model_service=True
     ),
     "harbor.agents.installed.mini_swe_agent:MiniSweAgent": _RestrictedAgentSpec(
         _mini_swe_profile, _mini_swe_base_url_keys
@@ -680,6 +685,29 @@ def consumed_transport_base_url_keys(
     if spec is None:
         return None
     return spec.base_url_keys(agent_config)
+
+
+def agent_fronts_own_model_service(agent_config: AgentConfig) -> bool:
+    """Whether the effective agent routes the model through its own service.
+
+    Such harnesses (e.g. Cursor) select the model on their side and talk to
+    their own API, never the model provider's endpoint, so the worker-private
+    provider/Azure deployment id must not be substituted for the running model
+    -- they need the submitted public model identity. Agents that talk to the
+    provider directly (codex, mini-swe) return False here, regardless of whether
+    the model id is written ``openai/gpt-x`` or the bare ``gpt-x`` form.
+
+    Only known stock harnesses can be attested as self-fronting; a custom import
+    path that cannot be resolved (e.g. not importable at build time) is treated
+    as not self-fronting so callers keep their existing behavior rather than
+    crash. This intentionally never imports beyond what resolution requires.
+    """
+    try:
+        agent_class = resolve_effective_agent_class(agent_config)
+    except Exception:
+        return False
+    spec = _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
+    return bool(spec and spec.fronts_own_model_service)
 
 
 def _safe_hook_context(
