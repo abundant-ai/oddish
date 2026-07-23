@@ -24,9 +24,12 @@ async def _get_prompt(
     scope_type: str | None = None,
     scope_id: str | None = None,
 ) -> PromptModel | None:
-    """Resolve by kind first, then by id.
+    """Resolve by kind within the given scope, then by id.
 
     Kind-first ordering means an opaque id can never shadow an existing kind.
+    The id lookup is deliberately NOT scope-filtered: an id already identifies
+    exactly one row including its scope, so filtering it by the caller's scope
+    would make scoped prompts unfetchable by id.
     """
     scope_filter = (
         and_(PromptModel.scope_type.is_(None), PromptModel.scope_id.is_(None))
@@ -42,7 +45,7 @@ async def _get_prompt(
     prompt = result.scalar_one_or_none()
     if prompt is None:
         result = await session.execute(
-            select(PromptModel).where(PromptModel.id == ref, scope_filter)
+            select(PromptModel).where(PromptModel.id == ref)
         )
         prompt = result.scalar_one_or_none()
     return prompt

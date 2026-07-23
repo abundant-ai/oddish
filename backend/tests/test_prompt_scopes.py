@@ -212,6 +212,26 @@ async def test_same_kind_coexists_across_distinct_scopes(scoped_kind):
 
 
 @pytest.mark.asyncio
+async def test_scoped_prompt_is_fetchable_by_id(scoped_kind):
+    async with get_session() as session:
+        ver = await set_prompt_core(
+            session,
+            kind=scoped_kind,
+            content="org content",
+            scope_type="org",
+            scope_id="org_a",
+            org_id="org_a",
+        )
+        prompt_id = ver.prompt_id
+        await session.commit()
+    async with get_session() as session:
+        prompt, got = await get_prompt_core(session, prompt_id)
+    assert got.content == "org content"
+    assert prompt.scope_type == "org"
+    assert prompt.scope_id == "org_a"
+
+
+@pytest.mark.asyncio
 async def test_duplicate_row_at_identical_scope_is_rejected(scoped_kind):
     # set_prompt_core appends a version rather than inserting a second row, so
     # the index is exercised by inserting the ORM row directly.
