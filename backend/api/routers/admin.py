@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import asdict
 from typing import Annotated
@@ -15,6 +14,7 @@ from sqlalchemy.exc import ProgrammingError
 from auth import AuthContext, require_admin
 from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, UserModel
+from operator_access import is_operator_org, require_operator_org
 from pg_errors import is_undefined_table_error
 from slack_alert_settings import (
     AlertSettings,
@@ -49,22 +49,12 @@ _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
-def _is_operator_org(auth: AuthContext) -> bool:
-    operator_org_id = os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
-    return bool(operator_org_id and auth.org_id == operator_org_id)
-
-
-def _require_operator_org(auth: AuthContext) -> None:
-    if not _is_operator_org(auth):
-        raise HTTPException(status_code=403, detail="Operator organization required")
-
-
 @router.get("/slots", response_model=QueueSlotsResponse)
 async def get_queue_slots(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> QueueSlotsResponse:
     """Get current state of queue-key slot leases."""
-    _require_operator_org(auth)
+    require_operator_org(auth)
     async with get_session() as session:
         return await get_queue_slots_core(session)
 
@@ -77,7 +67,7 @@ async def get_queue_status(
     async with get_session() as session:
         return await get_queue_status_core(
             session,
-            org_id=None if _is_operator_org(auth) else auth.org_id,
+            org_id=None if is_operator_org(auth) else auth.org_id,
         )
 
 
@@ -105,7 +95,7 @@ async def get_queue_health(
     Answers "is the queue keeping up?" at a glance -- the panel that lets an
     operator self-diagnose "queued but not running" without psql + Modal logs.
     """
-    is_operator = _is_operator_org(auth)
+    is_operator = is_operator_org(auth)
     async with get_session() as session:
         return await get_queue_health_core(
             session,
@@ -119,7 +109,7 @@ async def update_model_concurrency(
     request: ModelConcurrencyUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ModelConcurrencySetting:
-    _require_operator_org(auth)
+    require_operator_org(auth)
     async with get_session() as session:
         return await update_model_concurrency_core(session, request)
 
@@ -355,7 +345,7 @@ class OperatorAccessResponse(BaseModel):
 async def get_operator_access(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> OperatorAccessResponse:
-    return OperatorAccessResponse(allowed=_is_operator_org(auth))
+    return OperatorAccessResponse(allowed=is_operator_org(auth))
 
 
 class SlackAlertSettingsRequest(BaseModel):
@@ -395,7 +385,7 @@ async def get_slack_alert_settings(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> SlackAlertSettingsResponse:
     """Effective Slack cost-alert thresholds and escalation list."""
-    _require_operator_org(auth)
+    require_operator_org(auth)
     try:
         async with get_session() as session:
             return _settings_response(await get_alert_settings(session))
@@ -409,7 +399,7 @@ async def update_slack_alert_settings(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> SlackAlertSettingsResponse:
     """Override the thresholds and escalation list for every org."""
-    _require_operator_org(auth)
+    require_operator_org(auth)
     try:
         async with get_session() as session:
             settings = await set_alert_settings(
@@ -425,7 +415,7 @@ async def reset_slack_alert_settings(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> SlackAlertSettingsResponse:
     """Drop the override; the deploy-time defaults take over again."""
-    _require_operator_org(auth)
+    require_operator_org(auth)
     try:
         async with get_session() as session:
             return _settings_response(await clear_alert_settings(session))

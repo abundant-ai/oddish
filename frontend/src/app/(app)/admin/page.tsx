@@ -37,6 +37,7 @@ import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { UsagePanel } from "@/components/usage-panel";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
+import { CostExcludedKeysCard } from "@/components/cost-excluded-keys-card";
 import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
@@ -61,7 +62,7 @@ function QueueSlotsCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    },
+    }
   );
 
   const formatTimestamp = (ts: string | null) => {
@@ -176,7 +177,7 @@ function QueueSlotsCard() {
                                         100,
                                         (queueSummary.active_slots /
                                           queueSummary.total_slots) *
-                                          100,
+                                          100
                                       )
                                     : 0
                                 }%`,
@@ -344,13 +345,13 @@ function QueueHealthCard() {
     .filter((row) =>
       `${row.kind} ${row.queueKey}`
         .toLowerCase()
-        .includes(queueFilter.toLowerCase().trim()),
+        .includes(queueFilter.toLowerCase().trim())
     )
     .sort(
       (a, b) =>
         b.queued + b.running - (a.queued + a.running) ||
         a.kind.localeCompare(b.kind) ||
-        a.queueKey.localeCompare(b.queueKey),
+        a.queueKey.localeCompare(b.queueKey)
     )
     .slice(0, 30);
 
@@ -491,7 +492,7 @@ function OrphanedStateCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    },
+    }
   );
 
   const counts = data?.counts;
@@ -751,16 +752,19 @@ function AdminPageContent() {
         <TabsContent value="costs" className="space-y-4">
           <CostBreakdownCard />
           {canManagePlatform && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">
-                  Channel spend escalation
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <SlackAlertSettingsForm />
-              </CardContent>
-            </Card>
+            <>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">
+                    Channel spend escalation
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <SlackAlertSettingsForm />
+                </CardContent>
+              </Card>
+              <CostExcludedKeysCard />
+            </>
           )}
         </TabsContent>
 
