@@ -30,7 +30,10 @@ from oddish.registry_auth import (
 )
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
-from oddish.workers.queue.analyzer_block_handler import run_analyzer_block_job
+from oddish.workers.queue.analyzer_block_handler import (
+    MissingPromptVersionError,
+    run_analyzer_block_job,
+)
 from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.analyzer_handler import (
     default_eval_rows,
@@ -381,6 +384,8 @@ class AnalyzerBlockJobHandler:
 
         try:
             await run_analyzer_block_job(run_id, worker_job_id=job.id)
+        except MissingPromptVersionError as exc:
+            return _fail_permanent(str(exc))
         except Exception:
             pass
 
