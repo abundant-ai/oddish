@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 import oddish.core.custom_qa as custom_qa
 from oddish.db.models import JobStatus, WorkerJobKind
@@ -29,7 +30,7 @@ async def test_custom_qa_enqueues_one_analyzer_block_job(monkeypatch):
 
     async def get_prompt(*args, **kwargs):
         return (
-            SimpleNamespace(id="prompt_1", kind="QA_PRE_TRIAL"),
+            SimpleNamespace(id="prompt_1", kind="QA_PRE_TRIAL", org_id="org_1"),
             SimpleNamespace(id="version_1", version=1, content="Audit this"),
         )
 
@@ -62,3 +63,44 @@ async def test_custom_qa_enqueues_one_analyzer_block_job(monkeypatch):
     assert enqueued[0].payload == {"analyzer_run_id": "run_1"}
     assert responses[0].status == JobStatus.QUEUED.value
     assert responses[0].analyzer_block_id == ""
+
+
+@pytest.mark.asyncio
+async def test_custom_qa_rejects_foreign_org_prompt(monkeypatch):
+    # `variant.kind` is a free-form string with no vocabulary check, so it can
+    # also resolve as another org's prompt id via the unscoped id fallback.
+    class FakeSession:
+        def add(self, row):
+            pass
+
+        async def flush(self):
+            return None
+
+        async def commit(self):
+            return None
+
+    async def validate_scope(*args, **kwargs):
+        return None
+
+    async def get_prompt(*args, **kwargs):
+        return (
+            SimpleNamespace(id="prompt_evil", kind="QA_PRE_TRIAL", org_id="org_2"),
+            SimpleNamespace(id="version_1", version=1, content="Audit this"),
+        )
+
+    monkeypatch.setattr(custom_qa, "_validate_scope", validate_scope)
+    monkeypatch.setattr(custom_qa, "get_prompt_core", get_prompt)
+
+    with pytest.raises(HTTPException) as exc:
+        await custom_qa.run_custom_qa_core(
+            FakeSession(),
+            data=CustomQARunRequest(
+                scope_type="task",
+                scope_id="task_1",
+                variants=[{"kind": "prompt_evil"}],
+                backend="api",
+            ),
+            org_id="org_1",
+            user_id="user_1",
+        )
+    assert exc.value.status_code == 404

@@ -83,6 +83,14 @@ async def _validate_scope(
         )
 
 
+def _assert_prompt_visible(prompt: PromptModel, *, org_id: str | None) -> None:
+    """Mirror ``_assert_org_access`` in the prompts router: ``variant.kind`` is
+    a free-form string that can also resolve as a prompt id, so a row scoped
+    to another org must stay invisible here too."""
+    if prompt.org_id and prompt.org_id != org_id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
+
 async def run_custom_qa_core(
     session: AsyncSession,
     *,
@@ -111,6 +119,7 @@ async def run_custom_qa_core(
         prompt, version = await get_prompt_core(
             session, variant.kind.strip(), version=variant.version
         )
+        _assert_prompt_visible(prompt, org_id=org_id)
         digest = hashlib.sha256(version.content.encode()).hexdigest()
         system_prompt = (
             "You are running an Oddish custom QA check. "

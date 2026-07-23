@@ -179,6 +179,49 @@ async def test_set_rejects_unknown_scope_type(scoped_kind):
 
 
 @pytest.mark.asyncio
+async def test_set_rejects_scoped_row_without_org_id(scoped_kind):
+    # A scoped row with no org_id would pass both _assert_org_access and
+    # resolve_prompt_core's org guard (both treat falsy org_id as global) and
+    # so would resolve for every tenant.
+    async with get_session() as session:
+        with pytest.raises(ValueError):
+            await set_prompt_core(
+                session,
+                kind=scoped_kind,
+                content="x",
+                scope_type="org",
+                scope_id="org_a",
+            )
+
+
+@pytest.mark.asyncio
+async def test_set_by_id_rejects_scope_mismatch(scoped_kind):
+    # The id fallback in _get_prompt is unscoped by design (an id already
+    # names exactly one row), but set_prompt_core must refuse to append a
+    # version to a row at a DIFFERENT scope than the caller asked for --
+    # otherwise any org could rewrite the global row (or another org's row)
+    # just by addressing it by id.
+    await _write(scoped_kind, "global")
+    async with get_session() as session:
+        prompt, _ = await get_prompt_core(session, scoped_kind)
+        prompt_id = prompt.id
+    async with get_session() as session:
+        with pytest.raises(ValueError):
+            await set_prompt_core(
+                session,
+                kind=prompt_id,
+                content="hijacked",
+                scope_type="org",
+                scope_id="org_a",
+                org_id="org_a",
+            )
+    async with get_session() as session:
+        _, ver = await get_prompt_core(session, scoped_kind)
+    assert ver.version == 1
+    assert ver.content == "global"
+
+
+@pytest.mark.asyncio
 async def test_scoped_and_global_versions_increment_independently(scoped_kind):
     await _write(scoped_kind, "g1")
     await _write(scoped_kind, "g2")

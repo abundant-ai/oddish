@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import APIKeyScope, AuthContext, require_auth
+from auth.permissions import require_operator_org
 from oddish.core.prompts import (
     get_prompt_core,
     get_prompt_usage_core,
@@ -56,16 +57,21 @@ def _assert_org_access(prompt, auth: AuthContext) -> None:
         raise HTTPException(status_code=404, detail="Prompt not found")
 
 
-async def _validated_ref(session, ref: str, auth: AuthContext) -> str:
-    """Accept an existing prompt id, otherwise enforce the kind vocabulary."""
+async def _validated_ref(session, ref: str, auth: AuthContext):
+    """Accept an existing prompt id, otherwise enforce the kind vocabulary.
+
+    Returns ``(ref, prompt)`` -- ``prompt`` is the row ``ref`` already names
+    (``None`` for a brand-new kind), so write callers can check its actual
+    scope before mutating it.
+    """
     try:
         prompt, _ = await get_prompt_core(session, ref)
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
-        return _validated_kind(ref)
+        return _validated_kind(ref), None
     _assert_org_access(prompt, auth)
-    return ref
+    return ref, prompt
 
 
 def _latest_of(versions) -> int | None:
@@ -135,7 +141,7 @@ async def get_prompt(
     auth.require_scope(APIKeyScope.READ)
     scope_type, resolved_scope_id = _resolve_scope_params(scope, scope_id, auth)
     async with get_session() as session:
-        ref = await _validated_ref(session, key_or_id, auth)
+        ref, _ = await _validated_ref(session, key_or_id, auth)
         prompt, ver = await get_prompt_core(
             session,
             ref,
@@ -159,7 +165,7 @@ async def get_prompt_versions(
     auth.require_scope(APIKeyScope.READ)
     scope_type, resolved_scope_id = _resolve_scope_params(scope, scope_id, auth)
     async with get_session() as session:
-        ref = await _validated_ref(session, key_or_id, auth)
+        ref, _ = await _validated_ref(session, key_or_id, auth)
         prompt, _ = await get_prompt_core(
             session, ref, scope_type=scope_type, scope_id=resolved_scope_id
         )
@@ -182,14 +188,16 @@ async def set_prompt(
 
     ``org`` and ``user`` infer the current auth identity. Domain scopes require
     an id and are checked against the active organization. ``global`` preserves
-    the legacy installation-wide registry and requires FULL scope.
+    the legacy installation-wide registry, requires FULL scope, and -- since it
+    is shared by every tenant -- is further gated to the platform operator.
     """
     auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
-        ref = await _validated_ref(session, key_or_id, auth)
+        ref, existing_prompt = await _validated_ref(session, key_or_id, auth)
         resolved_scope: str | None
         resolved_scope_id: str | None
         if scope == "global":
+            require_operator_org(auth)
             resolved_scope = resolved_scope_id = None
         elif scope == "org":
             resolved_scope, resolved_scope_id = "org", auth.org_id
@@ -214,16 +222,31 @@ async def set_prompt(
                 status_code=422,
                 detail="scope must be global, org, user, experiment, task, or trial",
             )
-        await set_prompt_core(
-            session,
-            kind=ref,
-            content=data.content,
-            description=data.description,
-            created_by=auth.user_id,
-            scope_type=resolved_scope,
-            scope_id=resolved_scope_id,
-            org_id=auth.org_id if resolved_scope is not None else None,
-        )
+        if (
+            existing_prompt is not None
+            and existing_prompt.kind != ref
+            and (existing_prompt.scope_type, existing_prompt.scope_id)
+            != (resolved_scope, resolved_scope_id)
+        ):
+            # `ref` resolved to an existing row by id (its kind differs from
+            # the ref we looked up), but at a different scope than requested --
+            # e.g. a global/other-scope prompt id combined with ?scope=org.
+            # Appending here would silently mutate that row instead of
+            # creating (or writing to) the requested scope's own row.
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        try:
+            await set_prompt_core(
+                session,
+                kind=ref,
+                content=data.content,
+                description=data.description,
+                created_by=auth.user_id,
+                scope_type=resolved_scope,
+                scope_id=resolved_scope_id,
+                org_id=auth.org_id if resolved_scope is not None else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         await session.commit()
         prompt, ver = await get_prompt_core(
             session,

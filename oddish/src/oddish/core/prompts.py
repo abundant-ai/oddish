@@ -66,9 +66,24 @@ async def set_prompt_core(
         raise ValueError("scope_type and scope_id must be provided together")
     if scope_type is not None and scope_type not in PROMPT_SCOPE_TYPES:
         raise ValueError(f"unsupported prompt scope: {scope_type}")
+    if scope_type is not None and not org_id:
+        raise ValueError("org_id is required when scope_type is set")
     prompt = await _get_prompt(
         session, kind, scope_type=scope_type, scope_id=scope_id
     )
+    if prompt is not None and (prompt.scope_type, prompt.scope_id) != (
+        scope_type,
+        scope_id,
+    ):
+        # `kind` resolved via _get_prompt's unscoped id fallback to a row at a
+        # *different* scope than requested -- appending to it would silently
+        # rewrite someone else's (or the global) prompt instead of creating
+        # the requested scope's own row.
+        raise ValueError(
+            f"prompt '{kind}' resolves to scope "
+            f"({prompt.scope_type!r}, {prompt.scope_id!r}), not the requested "
+            f"({scope_type!r}, {scope_id!r})"
+        )
     if prompt is None:
         prompt = PromptModel(
             kind=kind,

@@ -29,6 +29,8 @@ class _FakePrompt:
     updated_at = __import__("datetime").datetime.now()
     versions = [_V1, _V2]
     org_id = None
+    scope_type = None
+    scope_id = None
 
 
 class _FakeSession:
@@ -207,6 +209,47 @@ async def test_put_accepts_full_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_put_global_scope_requires_operator_org(monkeypatch):
+    # FULL is a per-org key scope; writing the installation-wide registry that
+    # every tenant runs on requires the platform operator, not just FULL.
+    called = False
+
+    async def fake_set(session, **kwargs):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
+    resp = await _call(
+        "PUT",
+        "/prompts/QA_PRE_TRIAL?scope=global",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        json={"content": "x"},
+    )
+    assert resp.status_code == 403
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_put_global_scope_allowed_for_operator_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_1")  # matches _auth()'s org_id
+
+    async def fake_set(session, **kwargs):
+        return None
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
+    resp = await _call(
+        "PUT",
+        "/prompts/QA_PRE_TRIAL?scope=global",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        json={"content": "x"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_activate_route_is_gone(monkeypatch):
     # Latest-wins registry: there is no activation endpoint anymore.
     resp = await _call(
@@ -238,6 +281,31 @@ async def test_put_rejects_foreign_org_prompt_id(monkeypatch):
         monkeypatch,
         scopes=(APIKeyScope.FULL,),
         prompt_org_id="org_2",
+        json={"content": "x"},
+    )
+    assert resp.status_code == 404
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_global_prompt_id_at_a_different_scope(monkeypatch):
+    # `p1` here names the GLOBAL row (scope_type=None, matching _FakePrompt's
+    # defaults). ?scope=org must never let that id-lookup append a version
+    # onto the global row -- it must be rejected before set_prompt_core runs.
+    called = False
+
+    async def fake_set(session, **kwargs):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
+    resp = await _call(
+        "PUT",
+        "/prompts/p1?scope=org",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        prompt_org_id=None,
         json={"content": "x"},
     )
     assert resp.status_code == 404
