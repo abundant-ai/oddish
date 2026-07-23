@@ -267,6 +267,24 @@ def test_claude_code_ambient_credentials_enter_redaction_map(monkeypatch):
         assert replacements[value] == "[REDACTED]"
 
 
+def test_grok_build_ambient_credentials_enter_redaction_map(monkeypatch):
+    # Ambient xAI credentials the grok-build agent forwards into sandbox execs
+    # must fold into the redaction map so their raw values are scrubbed from
+    # live-tail / lifecycle / artifacts.
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+    monkeypatch.setenv("XAI_API_KEYS", "xai-secret-2")
+    agent_config = HarborAgentConfig(name="grok-build", model_name="xai/grok-4")
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    assert runtime_env.get("XAI_API_KEY") == "xai-secret"
+    assert runtime_env.get("XAI_API_KEYS") == "xai-secret-2"
+    assert replacements["xai-secret"] == "[REDACTED]"
+    assert replacements["xai-secret-2"] == "[REDACTED]"
+
+
 def test_compose_classifier_fails_closed_on_unparseable_task_toml(tmp_path):
     # A Daytona Compose, non-kube task whose task.toml cannot be parsed must fail
     # closed (raise) rather than silently classify as "none" and disable egress

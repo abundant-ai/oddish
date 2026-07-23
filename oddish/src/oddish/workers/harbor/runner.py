@@ -145,6 +145,13 @@ _CLAUDE_RUNTIME_SECRET_KEYS = (
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
 )
+# Ambient xAI/grok credentials the stock grok-build agent forwards into sandbox
+# execs; folded into the redaction map for the same reason -- credentials, not
+# routes: redaction coverage only, never transport-host selection.
+_GROK_RUNTIME_SECRET_KEYS = (
+    "XAI_API_KEY",
+    "XAI_API_KEYS",
+)
 _ARTIFACT_REDACTION_CHUNK_BYTES = 1024 * 1024
 
 
@@ -168,6 +175,11 @@ def _resolved_runtime_transport_env(
         )
         if is_claude_code:
             for key in _CLAUDE_RUNTIME_SECRET_KEYS:
+                if key not in runtime_env and (value := os.environ.get(key)):
+                    runtime_env[key] = value
+        is_grok = name == "grok-build" or "agents.grok_build:" in import_path
+        if is_grok:
+            for key in _GROK_RUNTIME_SECRET_KEYS:
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
         # Drop worker-injected model-transport base URLs the effective agent's

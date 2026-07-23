@@ -891,3 +891,17 @@ async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path
 
     assert order == ["patch", "config", "create", "run"]
     assert outcome["error"] is None
+
+
+def test_runtime_fields_patch_is_idempotent():
+    # The AgentFactory wrap must apply at most once even across repeated patch
+    # calls; a nested wrapper would treat an already-swapped deployment id as the
+    # public model. The idempotency marker lives on the AgentFactory class and is
+    # read from the same place, so it cannot be defeated by classmethod attribute
+    # forwarding.
+    harbor_patches._patch_restricted_network_runtime_fields()
+    assert getattr(AgentFactory, "_oddish_runtime_fields_wrapped", False) is True
+    first = AgentFactory.create_agent_from_config.__func__
+    harbor_patches._patch_restricted_network_runtime_fields()
+    harbor_patches._patch_restricted_network_runtime_fields()
+    assert AgentFactory.create_agent_from_config.__func__ is first

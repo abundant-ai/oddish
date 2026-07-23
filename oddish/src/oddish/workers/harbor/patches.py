@@ -103,9 +103,13 @@ def _patch_restricted_network_runtime_fields() -> None:
         )
         network_policy_module.resolve_agent_phase_policy = resolve_agent_phase_policy
 
-    current_factory = AgentFactory.create_agent_from_config
-    if not getattr(current_factory, "_oddish_runtime_fields_wrapped", False):
-        original_factory = current_factory.__func__
+    # Idempotency is primarily the module-level _PATCHED guard in
+    # apply_harbor_patches; this second check keeps re-wrapping impossible even
+    # if this function is invoked directly. Record the marker on the AgentFactory
+    # class and read it from the same place, so the guard cannot be defeated by
+    # classmethod/bound-method attribute forwarding.
+    if not getattr(AgentFactory, "_oddish_runtime_fields_wrapped", False):
+        original_factory = AgentFactory.create_agent_from_config.__func__
 
         def create_agent_from_config(
             cls: type[Any],
@@ -133,12 +137,8 @@ def _patch_restricted_network_runtime_fields() -> None:
                 agent._parsed_model_name = name
             return agent
 
-        setattr(
-            create_agent_from_config,
-            "_oddish_runtime_fields_wrapped",
-            True,
-        )
         AgentFactory.create_agent_from_config = classmethod(create_agent_from_config)
+        AgentFactory._oddish_runtime_fields_wrapped = True
 
 
 async def _collect_dockerd_diagnostics(strategy: Any) -> str:
