@@ -425,6 +425,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             # ``cancel_tasks_runs`` documents (deadlock; a lock wait would
             # also stall the whole sweep). Contended rows are healed by the
             # orphan sweep instead. Raw SQL: soft-delete filter is explicit.
+            task_version_id = (row.get("payload") or {}).get(
+                "task_version_id"
+            ) or getattr(task, "current_version_id", None)
             await session.execute(
                 text(
                     """
@@ -436,6 +439,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                         SELECT id
                         FROM   trials
                         WHERE  task_id = :task_id
+                          AND  task_version_id IS NOT DISTINCT FROM :task_version_id
                           AND  deleted_at IS NULL
                           AND  analysis_status IN
                                    ('PENDING', 'QUEUED', 'RUNNING')
@@ -445,6 +449,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 ),
                 {
                     "task_id": task.id,
+                    "task_version_id": task_version_id,
                     "reason": ORPHANED_ANALYSIS_ERROR_PREFIX
                     + (
                         row["error_message"]
@@ -749,7 +754,8 @@ async def _reap_stale_worker_jobs(
                               max_attempts,
                               error_message,
                               provider,
-                              external_id
+                              external_id,
+                              payload
                                 """
                             ),
                             {
@@ -976,6 +982,7 @@ async def _heal_stale_verdict_pending(session) -> int:
     here -- they no longer drive the verdict. Returns the count finalized.
     """
     from oddish.queue import ACTIVE_TRIAL_STATUSES, enqueue_qa_worker_job
+    from oddish.workers.queue.qa_handler import _qa_trial_filters
 
     stale_verdict_pending = (
         await session.execute(
@@ -1007,7 +1014,21 @@ async def _heal_stale_verdict_pending(session) -> int:
         task = await session.get(TaskModel, str(task_id))
         if not task or task.status != TaskStatus.VERDICT_PENDING:
             continue
-        if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
+        verdict_is_current = task.verdict_status == VerdictStatus.FAILED or (
+            task.verdict_status == VerdictStatus.SUCCESS
+            and isinstance(task.verdict, dict)
+            and task.verdict.get("task_version_id") == task.current_version_id
+            and task.verdict.get("trial_ids")
+            == sorted(
+                str(trial_id)
+                for trial_id in await session.scalars(
+                    select(TrialModel.id).where(
+                        *_qa_trial_filters(task.id, task.current_version_id)
+                    )
+                )
+            )
+        )
+        if verdict_is_current:
             active_trials = await session.scalar(
                 select(func.count(TrialModel.id)).where(
                     TrialModel.task_id == task.id,
@@ -1019,6 +1040,7 @@ async def _heal_stale_verdict_pending(session) -> int:
             task.finished_at = None if active_trials else task.finished_at or utcnow()
             verdict_pending_completed += int(not active_trials)
         else:
+            task.verdict = None
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = None
             task.verdict_started_at = None
