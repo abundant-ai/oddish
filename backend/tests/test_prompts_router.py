@@ -110,7 +110,7 @@ async def test_pinned_get_reports_true_latest(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_prompts_reports_latest_version(monkeypatch):
-    async def fake_list(session):
+    async def fake_list(session, *, org_id=None):
         return [_FakePrompt()]
 
     monkeypatch.setattr(prompts_router, "get_session", lambda: _ctx(None))
@@ -181,7 +181,7 @@ async def test_put_rejects_tasks_scope(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_put_accepts_full_scope(monkeypatch):
-    async def fake_set(session, *, kind, content, description=None, created_by=None):
+    async def fake_set(session, *, kind, content, description=None, created_by=None, scope_type=None, scope_id=None, org_id=None):
         return None
 
     monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
