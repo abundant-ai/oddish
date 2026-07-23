@@ -503,8 +503,8 @@ function MethodologyNote() {
             cost that was estimated.
           </li>
           <li>
-            All first-party spend, across every org. Imported runs and
-            experiment-combine copies are excluded so spend counts once.
+            All first-party spend for the active organization. Imported runs
+            and experiment-combine copies are excluded so spend counts once.
           </li>
           <li>
             Deleted trials, tasks, and experiments remain included because
@@ -605,7 +605,7 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          All first-party trial spend across all organizations, including
+          All first-party trial spend for the active organization, including
           deleted historical spend and unbilled spend that never resolved to a
           registered user — see the info icon for methodology.
         </p>
