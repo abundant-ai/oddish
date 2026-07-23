@@ -100,3 +100,38 @@ async def activate_prompt_version_core(
 async def get_active_prompt_content(session: AsyncSession, key: str) -> str:
     _, ver = await get_prompt_core(session, key)
     return ver.content
+
+
+async def get_prompt_usage_core(session: AsyncSession, ref: str) -> dict:
+    """Aggregate real consumption of a prompt from the analyzer_blocks stamps.
+
+    Zero rows means the prompt is registered but nothing runs it -- the
+    honest signal for seeded-but-unwired keys.
+    """
+    from sqlalchemy import func
+
+    from oddish.db.models import AnalyzerBlockModel
+
+    prompt = await _get_prompt(session, ref)
+    if prompt is None:
+        raise HTTPException(status_code=404, detail=f"Prompt '{ref}' not found")
+    rows = (
+        await session.execute(
+            select(
+                AnalyzerBlockModel.prompt_version,
+                func.count().label("count"),
+                func.max(AnalyzerBlockModel.created_at).label("last_used_at"),
+            )
+            .where(AnalyzerBlockModel.prompt_key == prompt.key)
+            .group_by(AnalyzerBlockModel.prompt_version)
+            .order_by(AnalyzerBlockModel.prompt_version)
+        )
+    ).all()
+    return {
+        "total": sum(r.count for r in rows),
+        "last_used_at": max((r.last_used_at for r in rows), default=None),
+        "by_version": [
+            {"version": r.prompt_version, "count": r.count, "last_used_at": r.last_used_at}
+            for r in rows
+        ],
+    }

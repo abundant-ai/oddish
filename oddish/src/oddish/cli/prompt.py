@@ -65,6 +65,31 @@ def get_prompt(
         console.print(data.get("content", ""))
 
 
+@prompt_app.command("view")
+def view_prompt(
+    key_or_id: Annotated[str, typer.Argument(help="Prompt key, or prompt id.")],
+    api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
+):
+    """Show a prompt's metadata, versions, and real usage (from analyzer blocks)."""
+    url = _resolve(api_url)
+    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+        resp = client.get(f"{url}/prompts/{key_or_id}")
+    if resp.status_code != 200:
+        _fail(resp)
+    p = resp.json()
+    usage = p.get("usage") or {}
+    console.print(f"{p['key']}  (id {p['id']})  active v{p.get('active_version')}")
+    if p.get("description"):
+        console.print(p["description"])
+    total = usage.get("total", 0)
+    console.print(
+        f"usage: {total} block(s)"
+        + (f", last used {usage.get('last_used_at')}" if total else " — not consumed by anything yet")
+    )
+    for v in usage.get("by_version") or []:
+        console.print(f"  v{v['version']}: {v['count']} block(s), last {v['last_used_at']}")
+
+
 @prompt_app.command("upload")
 @prompt_app.command("update", hidden=True)
 @prompt_app.command("set", hidden=True)

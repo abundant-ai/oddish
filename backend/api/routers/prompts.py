@@ -13,6 +13,7 @@ from auth import APIKeyScope, AuthContext, require_auth
 from oddish.core.prompts import (
     activate_prompt_version_core,
     get_prompt_core,
+    get_prompt_usage_core,
     list_prompt_versions_core,
     list_prompts_core,
     set_prompt_core,
@@ -22,6 +23,7 @@ from oddish.schemas import (
     PromptActivateRequest,
     PromptResponse,
     PromptSetRequest,
+    PromptUsage,
     PromptVersionResponse,
 )
 
@@ -50,11 +52,14 @@ async def get_prompt(
     auth: Annotated[AuthContext, Depends(require_auth)],
     version: Annotated[int | None, Query()] = None,
 ) -> PromptResponse:
-    """Fetch a prompt by its ``key`` or its ``id``."""
+    """Fetch a prompt by its ``key`` or its ``id``, with real usage from
+    the analyzer_blocks run-ledger stamps."""
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
         prompt, ver = await get_prompt_core(session, key_or_id, version=version)
-        return _to_response(prompt, ver)
+        resp = _to_response(prompt, ver)
+        resp.usage = PromptUsage(**await get_prompt_usage_core(session, key_or_id))
+        return resp
 
 
 @router.get("/prompts/{key_or_id}/versions", response_model=list[PromptVersionResponse])

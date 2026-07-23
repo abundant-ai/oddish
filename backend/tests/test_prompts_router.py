@@ -51,8 +51,12 @@ async def _call(method, path, monkeypatch, *, scopes=(APIKeyScope.READ,), **kwar
     async def fake_get(session, key, *, version=None):
         return _FakePrompt(), _FakeVersion(1, "hello")
 
+    async def fake_usage(session, ref):
+        return {"total": 0, "last_used_at": None, "by_version": []}
+
     monkeypatch.setattr(prompts_router, "get_session", lambda: _ctx(None))
     monkeypatch.setattr(prompts_router, "get_prompt_core", fake_get)
+    monkeypatch.setattr(prompts_router, "get_prompt_usage_core", fake_usage)
     app = create_app()
     app.dependency_overrides[require_auth] = _auth(list(scopes))
     transport = ASGITransport(app=app)
@@ -67,6 +71,13 @@ async def test_get_prompt_returns_active_content(monkeypatch):
     body = resp.json()
     assert body["key"] == "pre_trial_qa"
     assert body["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_returns_usage(monkeypatch):
+    resp = await _call("GET", "/prompts/pre_trial_qa", monkeypatch)
+    assert resp.status_code == 200
+    assert resp.json()["usage"]["total"] == 0
 
 
 @pytest.mark.asyncio

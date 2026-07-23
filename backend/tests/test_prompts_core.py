@@ -8,10 +8,12 @@ from oddish.core.prompts import (
     activate_prompt_version_core,
     get_active_prompt_content,
     get_prompt_core,
+    get_prompt_usage_core,
     list_prompt_versions_core,
     set_prompt_core,
 )
-from oddish.db import PromptModel, get_session
+from oddish.db import JobStatus, PromptModel, get_session
+from oddish.db.models import AnalyzerBlockModel
 
 
 @pytest_asyncio.fixture
@@ -103,6 +105,42 @@ async def test_get_prompt_core_resolves_by_id(prompt_key):
     async with get_session() as session:
         prompt, got = await get_prompt_core(session, prompt_id)
         assert prompt.key == prompt_key and got.content == "c1"
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_usage_counts_blocks(prompt_key):
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="c")
+        session.add(AnalyzerBlockModel(
+            analyzer_id=f"tr_{prompt_key}", type="trajectory_summary",
+            key_prefix="analyzer/trajectory_summary", llm_client_type="api",
+            status=JobStatus.SUCCESS, prompt_key=prompt_key, prompt_version=1,
+        ))
+        await session.commit()
+    try:
+        async with get_session() as session:
+            usage = await get_prompt_usage_core(session, prompt_key)
+            assert usage["total"] == 1
+            assert usage["by_version"][0]["version"] == 1
+            assert usage["last_used_at"] is not None
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                AnalyzerBlockModel.__table__.delete().where(
+                    AnalyzerBlockModel.prompt_key == prompt_key
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_usage_zero_for_unused(prompt_key):
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="c")
+        await session.commit()
+    async with get_session() as session:
+        usage = await get_prompt_usage_core(session, prompt_key)
+        assert usage == {"total": 0, "last_used_at": None, "by_version": []}
 
 
 @pytest.mark.asyncio
