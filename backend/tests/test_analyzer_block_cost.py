@@ -32,13 +32,16 @@ TRIAL_ROW = SimpleNamespace(
 
 
 ANALYZER_ROW = SimpleNamespace(org_id="org-9", owner_user_id="user-9")
+TASK_ROW = SimpleNamespace(org_id="org-task", created_by_user_id="user-task")
 
 
 class _StopBeforeRun(Exception):
     """Aborts generate() at the construction site, before any real IO."""
 
 
-def _session(monkeypatch, added: list, trial_row=TRIAL_ROW, analyzer_row=None):
+def _session(
+    monkeypatch, added: list, trial_row=TRIAL_ROW, analyzer_row=None, task_row=None
+):
     """Fake session whose SELECTs answer by target table, so the trial lookup
     and the analyzers fallback can be distinguished."""
 
@@ -57,6 +60,8 @@ def _session(monkeypatch, added: list, trial_row=TRIAL_ROW, analyzer_row=None):
             tables = {t.name for t in stmt.get_final_froms()}
             if "trials" in tables:
                 return _Result(trial_row)
+            if "tasks" in tables:
+                return _Result(task_row)
             if "analyzers" in tables:
                 return _Result(analyzer_row)
             raise AssertionError(f"unexpected select against {tables}")
@@ -151,6 +156,23 @@ async def test_cohort_block_is_attributed_via_the_analyzers_table(monkeypatch):
     assert row.job_kind == "trajectory_failure_analysis"
     assert row.org_id == "org-9"
     assert row.billed_user_id == "user-9"
+    assert row.trial_id is None
+
+
+@pytest.mark.asyncio
+async def test_task_qa_block_is_attributed_via_the_tasks_table(monkeypatch):
+    added: list = []
+    _session(monkeypatch, added, trial_row=None, task_row=TASK_ROW)
+    block = _make_block(
+        analyzer_type=AnalyzerType.PRE_TRIAL,
+        analyzer_id="task-9",
+    )
+    block.usage = USAGE
+    await block.record_cost()
+    row = added[0]
+    assert row.job_kind == "pre_trial"
+    assert row.org_id == "org-task"
+    assert row.billed_user_id == "user-task"
     assert row.trial_id is None
     assert row.experiment_id is None
     assert row.cost_usd == 0.42

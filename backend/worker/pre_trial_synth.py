@@ -5,9 +5,9 @@ sandbox that can ``oddish pull`` the task files.
 Registered into core's pre-trial hook (``register_pre_trial_synth``) at worker
 container load. oddish/ can't import backend/, so the sandbox-provisioning
 implementation is injected here the same way the sandbox LLM-client factory is.
-``run_task_qa_job`` invokes the registered hook only when
-``settings.pre_trial_enabled``; unset, this module registers a function that is
-simply never called.
+``run_task_qa_job`` invokes the registered hook and this module resolves the
+organization setting. ``settings.pre_trial_enabled`` remains the default for
+organizations that have not made an explicit choice.
 """
 
 from __future__ import annotations
@@ -29,19 +29,34 @@ from oddish.core.prompts import get_prompt_core
 from oddish.db import get_session
 from oddish.db.models import TaskModel
 from oddish.workers.queue.qa_handler import register_pre_trial_synth
+from models import OrganizationModel
 from worker.pre_trial_sandbox import provision_oddish_sandbox_client
 
 
-async def _resolve_org_id(task_id: str) -> str | None:
+_PRE_TRIAL_ANALYSIS_SETTING = "pre_trial_analysis_enabled"
+
+
+async def _resolve_org_pre_trial(task_id: str) -> tuple[str | None, bool]:
     async with get_session() as session:
-        return await session.scalar(
-            select(TaskModel.org_id).where(TaskModel.id == task_id)
+        row = (
+            await session.execute(
+                select(TaskModel.org_id, OrganizationModel.settings)
+                .outerjoin(OrganizationModel, OrganizationModel.id == TaskModel.org_id)
+                .where(TaskModel.id == task_id)
+            )
+        ).first()
+        if row is None:
+            return None, False
+        org_settings = row.settings or {}
+        enabled = org_settings.get(_PRE_TRIAL_ANALYSIS_SETTING)
+        return row.org_id, (
+            enabled if isinstance(enabled, bool) else settings.pre_trial_enabled
         )
 
 
 async def synthesize_task_pre_trial(
     task_id: str, trial_ids: list[str], timeout: float
-) -> list[ActionItem]:
+) -> list[ActionItem] | None:
     """PreTrialSynthFn implementation backed by PreTrialBlock/AnalyzerBlock.
 
     Self-provisions a sandbox client that can ``oddish pull`` the task's
@@ -50,17 +65,16 @@ async def synthesize_task_pre_trial(
     state -- that boundary lives in ``sync_pre_trial_to_task``, which the
     caller (``run_task_qa_job``) invokes with these items.
     """
+    org_id, enabled = await _resolve_org_pre_trial(task_id)
+    if not enabled:
+        return None
+    if org_id is None:
+        raise RuntimeError(f"Cannot resolve org_id for task {task_id}")
+
     async with get_session() as session:
         _, ver = await get_prompt_core(session, "pre_trial_qa")
         prompt_template = ver.content
         active_version = ver.version
-
-    org_id = await _resolve_org_id(task_id)
-    if org_id is None:
-        # mint_internal_read_key's org_id is typed `str`, not `str | None` --
-        # fail loudly here instead of letting a missing/deleted task's org
-        # surface as a confusing type error (or a None-scoped key) downstream.
-        raise RuntimeError(f"Cannot resolve org_id for task {task_id}")
 
     block_obj = PreTrialBlock(
         task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
@@ -80,6 +94,7 @@ async def synthesize_task_pre_trial(
             analyzer_type=AnalyzerType.PRE_TRIAL,
             llm_client_type=LLMClientType.SANDBOX,
             input=AnalyzerInput(input={"task_id": task_id, "trial_ids": trial_ids}),
+            analyzer_id=task_id,
             prompt=block_obj.build_prompt(),
             model=settings.pre_trial_model,
             output_transform=block_obj.to_action_items,
