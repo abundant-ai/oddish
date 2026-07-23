@@ -28,7 +28,6 @@ from oddish.model_pricing import estimate_cost_usd
 log = logging.getLogger(__name__)
 
 _MAX_LINKS_PER_EVENT = 10
-_TASK_GLYPH_LIMIT = 12
 _MATRIX_TASK_LIMIT = 8
 _MATRIX_COLUMN_LIMIT = 6
 _MATRIX_GLYPH_LIMIT = 48
@@ -187,14 +186,14 @@ def outcome_glyph(trial: TrialSnapshot) -> str:
         value = f"{trial.reward:.2f}"
         return value[1:] if value.startswith("0.") else value
     return {
-        "pass": "✓",
-        "fail": "✗",
-        "error": "⊘",
-        "skipped": "⊘",
-        "scoreless": "–",
-        "queued": "⟳",
-        "running": "⟳",
-        "pending": "◌",
+        "pass": ":white_check_mark:",
+        "fail": ":x:",
+        "error": ":warning:",
+        "skipped": ":no_entry_sign:",
+        "scoreless": ":heavy_minus_sign:",
+        "queued": ":clock3:",
+        "running": ":arrows_counterclockwise:",
+        "pending": ":white_circle:",
     }[outcome]
 
 
@@ -412,19 +411,19 @@ def _outcome_counts(trials: tuple[TrialSnapshot, ...]) -> Counter[str]:
 
 def _result_summary(counts: Counter[str]) -> str:
     parts: list[str] = []
-    for key, label in (
-        ("pass", "✓"),
-        ("partial", "partial"),
-        ("fail", "✗"),
-        ("error", "⊘ error"),
-        ("skipped", "⊘ skipped"),
-        ("scoreless", "–"),
-        ("running", "⟳ running"),
-        ("queued", "⟳ queued"),
-        ("pending", "◌"),
+    for key, icon, label in (
+        ("pass", ":white_check_mark:", "pass"),
+        ("partial", ":large_orange_circle:", "partial"),
+        ("fail", ":x:", "fail"),
+        ("error", ":warning:", "error"),
+        ("skipped", ":no_entry_sign:", "skipped"),
+        ("scoreless", ":heavy_minus_sign:", "scoreless"),
+        ("running", ":arrows_counterclockwise:", "running"),
+        ("queued", ":clock3:", "queued"),
+        ("pending", ":white_circle:", "pending"),
     ):
         if counts[key]:
-            parts.append(f"{label} {counts[key]}")
+            parts.append(f"{icon} {counts[key]} {label}")
     return " · ".join(parts) if parts else "No trials"
 
 
@@ -441,63 +440,65 @@ def _avg_score(summary: Summary) -> float | None:
     return sum(task_scores) / len(task_scores) if task_scores else None
 
 
-def _agent_keys(trials: tuple[TrialSnapshot, ...]) -> dict[int, str]:
-    models_by_agent: dict[str, set[str]] = defaultdict(set)
-    for trial in trials:
-        models_by_agent[trial.agent].add(trial.model or "default")
-    return {
-        index: (
-            f"{trial.agent}/{trial.model or 'default'}"
-            if len(models_by_agent[trial.agent]) > 1
-            else trial.agent
-        )
-        for index, trial in enumerate(trials)
-    }
+def _mrkdwn_label(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("*", "∗")
+        .replace("`", "'")
+    )
 
 
-def _small_matrix(summary: Summary) -> str | None:
+def _compact_result_blocks(summary: Summary) -> list[dict[str, Any]]:
     task_names = sorted({t.task_name for t in summary.trials})
-    keys_by_index = _agent_keys(summary.trials)
-    columns = list(dict.fromkeys(keys_by_index.values()))
+    keys = tuple(
+        f"{trial.agent} · {trial.model}" if trial.model else trial.agent
+        for trial in summary.trials
+    )
+    columns = list(dict.fromkeys(keys))
     if (
-        summary.kind != "experiment"
-        or len(task_names) > _MATRIX_TASK_LIMIT
+        len(task_names) > _MATRIX_TASK_LIMIT
         or len(columns) > _MATRIX_COLUMN_LIMIT
         or len(summary.trials) > _MATRIX_GLYPH_LIMIT
         or not summary.trials
     ):
-        return None
+        return []
 
     cells: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for index, trial in enumerate(summary.trials):
-        cells[(trial.task_name, keys_by_index[index])].append(outcome_glyph(trial))
-    task_width = min(24, max(4, max(len(name) for name in task_names)))
-    col_widths = {
-        col: min(
-            14,
-            max(
-                len(col),
-                max((len("".join(cells[(t, col)])) for t in task_names), default=1),
-            ),
-        )
-        for col in columns
-    }
-    header = (
-        "Task".ljust(task_width)
-        + "  "
-        + "  ".join(col[: col_widths[col]].ljust(col_widths[col]) for col in columns)
-    )
-    lines = [header]
-    for task_name in task_names:
-        lines.append(
-            task_name[:task_width].ljust(task_width)
-            + "  "
-            + "  ".join(
-                "".join(cells[(task_name, col)]).ljust(col_widths[col])
-                for col in columns
-            )
-        )
-    return "```" + "\n".join(lines) + "```"
+    for trial, key in zip(summary.trials, keys, strict=True):
+        cells[(trial.task_name, key)].append(outcome_glyph(trial))
+
+    if summary.kind == "task":
+        return [
+            {
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*{_mrkdwn_label(column)}*\n"
+                        + " ".join(cells[(task_names[0], column)]),
+                    }
+                    for column in columns
+                ],
+            }
+        ]
+
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{_mrkdwn_label(task_name)}*\n"
+                + "   ·   ".join(
+                    f"`{_mrkdwn_label(column)}` "
+                    f"{' '.join(cells[(task_name, column)]) or '—'}"
+                    for column in columns
+                ),
+            },
+        }
+        for task_name in task_names
+    ]
 
 
 def render_blocks(summary: Summary) -> list[dict[str, Any]]:
@@ -510,7 +511,6 @@ def render_blocks(summary: Summary) -> list[dict[str, Any]]:
     score = _avg_score(summary)
     total_trials = summary.total_trials or len(summary.trials)
     sampled = total_trials > len(summary.trials)
-    sample_label = f" (latest {len(summary.trials)})" if sampled else ""
     title_suffix = f" · v{summary.version}" if summary.version is not None else ""
     blocks: list[dict[str, Any]] = [
         {
@@ -521,53 +521,39 @@ def render_blocks(summary: Summary) -> list[dict[str, Any]]:
             },
         }
     ]
-
-    matrix = _small_matrix(summary)
-    if summary.kind == "task" and len(summary.trials) <= _TASK_GLYPH_LIMIT:
-        glyphs = "  ".join(outcome_glyph(trial) for trial in summary.trials)
-        if glyphs:
-            blocks.append(
-                {"type": "section", "text": {"type": "mrkdwn", "text": glyphs}}
-            )
-    elif matrix:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": matrix}})
+    blocks.extend(_compact_result_blocks(summary))
 
     cost_text = f"{'~' if estimated else ''}${cost:,.2f}"
     if unpriced:
         cost_text += f" · {unpriced} unpriced"
-    fields = [
+    completion_text = (
+        f"{terminal}/{len(summary.trials)} sampled · {total_trials} total"
+        if sampled
+        else f"{terminal}/{len(summary.trials)} complete"
+    )
+    metrics = (
+        [f"{summary.task_count} task{'s' if summary.task_count != 1 else ''}"]
+        if summary.kind == "experiment"
+        else []
+    ) + [
+        f"latest {len(summary.trials)}: {completion_text}"
+        if sampled
+        else completion_text,
+        f"{score * 100:.1f}% avg score" if score is not None else "— avg score",
+        f"{cost_text}{' so far' if terminal < len(summary.trials) else ''}",
+    ]
+    result_label = f"Latest {len(summary.trials)} · " if sampled else ""
+    context_elements = [
         {
             "type": "mrkdwn",
-            "text": f"*Results{sample_label}*\n{_result_summary(counts)}",
+            "text": f"*{result_label}Results*  {_result_summary(counts)}",
         },
         {
             "type": "mrkdwn",
-            "text": (
-                f"*Completion{sample_label}*\n{terminal}/{len(summary.trials)} sampled"
-                f" · {total_trials} total"
-                if sampled
-                else f"*Completion*\n{terminal}/{len(summary.trials)} trials"
-            ),
-        },
-        {
-            "type": "mrkdwn",
-            "text": f"*Avg score{sample_label}*\n{score * 100:.1f}%"
-            if score is not None
-            else f"*Avg score{sample_label}*\n—",
-        },
-        {
-            "type": "mrkdwn",
-            "text": (
-                f"*Cost{sample_label}"
-                f"{' so far' if terminal < len(summary.trials) else ''}*\n{cost_text}"
-            ),
+            "text": " · ".join(metrics),
         },
     ]
-    if summary.kind == "experiment":
-        fields.append(
-            {"type": "mrkdwn", "text": f"*Scope*\n{summary.task_count} tasks"}
-        )
-    blocks.append({"type": "section", "fields": fields})
+    blocks.append({"type": "context", "elements": context_elements})
     blocks.append(
         {
             "type": "actions",
