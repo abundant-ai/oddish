@@ -1,7 +1,7 @@
 """seed daytona compute rate rows
 
 Revision ID: modal_costs_002
-Revises: modal_costs_001
+Revises: analyzer_task_cost_001
 Create Date: 2026-07-22 00:00:00.000000
 
 Adds daytona rows to the ``modal_rates`` card so daytona sandbox spans price
@@ -30,7 +30,7 @@ from alembic import op
 from oddish.db import generate_id
 
 revision: str = "modal_costs_002"
-down_revision: Union[str, Sequence[str], None] = "modal_costs_001"
+down_revision: Union[str, Sequence[str], None] = "analyzer_task_cost_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
