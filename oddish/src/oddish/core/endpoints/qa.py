@@ -152,8 +152,22 @@ async def cancel_task_qa_core(
                 trial.analysis_error = USER_CANCELLED_MESSAGE
                 trial.analysis_finished_at = now_value
         if task.status == TaskStatus.VERDICT_PENDING:
-            task.status = TaskStatus.FAILED
-            task.finished_at = now_value
+            active_trials = await session.scalar(
+                select(func.count(TrialModel.id)).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.status.in_(
+                        (
+                            TrialStatus.PENDING,
+                            TrialStatus.QUEUED,
+                            TrialStatus.RUNNING,
+                            TrialStatus.RETRYING,
+                        )
+                    ),
+                )
+            )
+            task.status = TaskStatus.RUNNING if active_trials else TaskStatus.FAILED
+            task.finished_at = None if active_trials else now_value
 
     await session.commit()
     return {

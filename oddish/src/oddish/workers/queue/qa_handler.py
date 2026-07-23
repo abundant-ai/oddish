@@ -664,6 +664,7 @@ async def run_task_qa_job(
             **build_verdict_payload(verdict, classifications),
             "task_version_id": task_version_id,
             "trial_count": len(trials),
+            "trial_ids": sorted(str(trial.id) for trial in trials),
             "experiment_ids": sorted(
                 {
                     experiment_id

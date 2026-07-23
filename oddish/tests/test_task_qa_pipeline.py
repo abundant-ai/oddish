@@ -135,10 +135,11 @@ class _ForUpdateResult:
 
 
 class _StageSession:
-    def __init__(self, *, trial, task, scalar_values):
+    def __init__(self, *, trial, task, scalar_values, qa_trial_ids=()):
         self._trial = trial
         self._task = task
         self._scalar_values = iter(scalar_values)
+        self._qa_trial_ids = qa_trial_ids
         self.scalar_statements = []
         self.flushed = 0
 
@@ -152,6 +153,9 @@ class _StageSession:
         self.scalar_statements.append(_statement)
         return next(self._scalar_values)
 
+    async def scalars(self, _statement):
+        return self._qa_trial_ids
+
     async def flush(self):
         self.flushed += 1
 
@@ -162,12 +166,18 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
     task = SimpleNamespace(
         id="task-1",
         org_id="org-1",
+        current_version_id="task-1-v1",
         status=TaskStatus.RUNNING,
         run_analysis=True,
         verdict_status=None,
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, scalar_values=(0, 1))
+    session = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0,),
+        qa_trial_ids=("task-1-0",),
+    )
 
     verdict_calls: list[str] = []
 
@@ -190,6 +200,7 @@ async def test_stage_completes_when_analysis_disabled(monkeypatch):
     task = SimpleNamespace(
         id="task-2",
         org_id="org-1",
+        current_version_id="task-2-v1",
         status=TaskStatus.RUNNING,
         run_analysis=False,
         verdict_status=None,
@@ -222,12 +233,13 @@ async def test_stage_completes_when_no_qa_eligible_trials(monkeypatch):
     task = SimpleNamespace(
         id="task-3",
         org_id="org-1",
+        current_version_id="task-3-v1",
         status=TaskStatus.RUNNING,
         run_analysis=True,
         verdict_status=None,
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, scalar_values=(0, 0, 0))
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 0))
 
     async def fail_verdict_enqueue(*_args, **_kwargs):
         raise AssertionError("no QA job when there is nothing to classify")
@@ -256,13 +268,14 @@ async def test_stage_clears_stale_verdict_status_on_completion(monkeypatch):
     task = SimpleNamespace(
         id="task-4",
         org_id="org-1",
+        current_version_id="task-4-v1",
         status=TaskStatus.RUNNING,
         run_analysis=True,
         verdict_status=VerdictStatus.QUEUED,  # stale from a prior pass
         verdict_error="left over",
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, scalar_values=(0, 0, 0))
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 0))
 
     async def fail_verdict_enqueue(*_args, **_kwargs):
         raise AssertionError("no QA job when there is nothing to classify")
@@ -290,7 +303,12 @@ async def test_stage_waits_only_for_current_version_before_starting_qa(monkeypat
         verdict_status=None,
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, scalar_values=(0, 1))
+    session = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0,),
+        qa_trial_ids=("task-5-0",),
+    )
     calls = []
 
     async def fake_enqueue(_session, **kwargs):
@@ -321,7 +339,11 @@ async def test_stage_completes_after_historical_trials_finish_without_redoing_qa
         current_version_id="task-6-v2",
         status=TaskStatus.RUNNING,
         run_analysis=True,
-        verdict={"task_version_id": "task-6-v2", "is_good": True},
+        verdict={
+            "task_version_id": "task-6-v2",
+            "trial_ids": ["task-6-0"],
+            "is_good": True,
+        },
         verdict_status=VerdictStatus.SUCCESS,
         finished_at=None,
     )
@@ -335,6 +357,7 @@ async def test_stage_completes_after_historical_trials_finish_without_redoing_qa
         trial=trial,
         task=task,
         scalar_values=(0, 1),
+        qa_trial_ids=("task-6-0",),
     )
     assert await queue_mod.maybe_start_qa_stage(still_running, "task-6-v1-0") is False
     assert task.status == TaskStatus.RUNNING
@@ -343,6 +366,7 @@ async def test_stage_completes_after_historical_trials_finish_without_redoing_qa
         trial=trial,
         task=task,
         scalar_values=(0, 0),
+        qa_trial_ids=("task-6-0",),
     )
     assert await queue_mod.maybe_start_qa_stage(all_done, "task-6-v1-1") is True
     assert task.status == TaskStatus.COMPLETED
@@ -365,7 +389,12 @@ async def test_stage_replaces_legacy_unscoped_verdict_with_version_pinned_qa(
         verdict_status=VerdictStatus.SUCCESS,
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, scalar_values=(0, 1))
+    session = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0,),
+        qa_trial_ids=("task-7-0",),
+    )
     calls = []
 
     async def fake_enqueue(_session, **kwargs):
@@ -377,6 +406,103 @@ async def test_stage_replaces_legacy_unscoped_verdict_with_version_pinned_qa(
     assert calls[0]["task_version_id"] == "task-7-v2"
     assert task.status == TaskStatus.VERDICT_PENDING
     assert task.verdict_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_stage_reruns_qa_when_current_cohort_changed(monkeypatch):
+    trial = SimpleNamespace(task_id="task-8")
+    task = SimpleNamespace(
+        org_id="org-1",
+        current_version_id="task-8-v2",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict={
+            "task_version_id": "task-8-v2",
+            "trial_ids": ["task-8-0"],
+            "is_good": True,
+        },
+        verdict_status=VerdictStatus.SUCCESS,
+    )
+    session = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0,),
+        qa_trial_ids=("task-8-0", "task-8-1"),
+    )
+    calls = []
+
+    async def fake_enqueue(_session, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+
+    assert await queue_mod.maybe_start_qa_stage(session, "task-8-1") is True
+    assert calls[0]["task_version_id"] == "task-8-v2"
+    assert task.status == TaskStatus.VERDICT_PENDING
+
+
+@pytest.mark.asyncio
+async def test_stage_repairs_missing_current_version_before_qa(monkeypatch):
+    trial = SimpleNamespace(task_id="task-9", task_version_id="task-9-v1")
+    task = SimpleNamespace(
+        org_id="org-1",
+        current_version_id=None,
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=None,
+    )
+    session = _StageSession(
+        trial=trial,
+        task=task,
+        # Latest version lookup, then current-version pending count.
+        scalar_values=("task-9-v1", 0),
+        qa_trial_ids=("task-9-0",),
+    )
+    calls = []
+
+    async def fake_enqueue(_session, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+
+    assert await queue_mod.maybe_start_qa_stage(session, "task-9-0") is True
+    assert task.current_version_id == "task-9-v1"
+    assert calls[0]["task_version_id"] == "task-9-v1"
+
+
+@pytest.mark.asyncio
+async def test_stage_finishes_cancelled_qa_after_historical_trials_stop(monkeypatch):
+    trial = SimpleNamespace(task_id="task-10")
+    task = SimpleNamespace(
+        current_version_id="task-10-v2",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=VerdictStatus.FAILED,
+        verdict_error=queue_mod.USER_CANCELLED_MESSAGE,
+    )
+
+    async def fail_enqueue(*_args, **_kwargs):
+        raise AssertionError("cancelled QA must not be restarted automatically")
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fail_enqueue)
+
+    still_running = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0, 1),
+        qa_trial_ids=("task-10-0",),
+    )
+    assert await queue_mod.maybe_start_qa_stage(still_running, "task-10-v1-0") is False
+    assert task.status == TaskStatus.RUNNING
+
+    all_done = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0, 0),
+        qa_trial_ids=("task-10-0",),
+    )
+    assert await queue_mod.maybe_start_qa_stage(all_done, "task-10-v1-1") is True
+    assert task.status == TaskStatus.FAILED
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +665,12 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
     assert task.status == TaskStatus.COMPLETED
     assert task.verdict["is_good"] is False
     assert task.verdict["primary_issue"] == "task issue"
+    assert task.verdict["trial_ids"] == [
+        "task-9-0",
+        "task-9-1",
+        "task-9-2",
+        "task-9-3",
+    ]
 
 
 @pytest.mark.asyncio

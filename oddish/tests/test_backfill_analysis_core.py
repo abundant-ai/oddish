@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 import oddish.queue as queue_mod
 from oddish.core import endpoints
+from oddish.core.endpoints.qa import cancel_task_qa_core
 from oddish.db import AnalysisStatus, TaskStatus, VerdictStatus
 
 
@@ -62,12 +63,20 @@ class _Result:
         return self._scalar
 
 
+class _RowsResult:
+    def mappings(self):
+        return self
+
+    def all(self):
+        return []
+
+
 class _FakeSession:
     def __init__(self, task):
         self.task = task
         self.committed = False
 
-    async def execute(self, _stmt):
+    async def execute(self, _stmt, _params=None):
         return _Result(self.task)
 
     async def scalar(self, _stmt):  # _count_active_trials
@@ -75,6 +84,22 @@ class _FakeSession:
 
     async def commit(self):
         self.committed = True
+
+
+class _CancelSession(_FakeSession):
+    def __init__(self, task, *, active_trial_count):
+        super().__init__(task)
+        self.active_trial_count = active_trial_count
+        self.execute_calls = 0
+
+    async def execute(self, _stmt, _params=None):
+        self.execute_calls += 1
+        if self.execute_calls == 1:
+            return _Result(self.task)
+        return _RowsResult()
+
+    async def scalar(self, _stmt):
+        return self.active_trial_count
 
 
 @pytest.fixture(autouse=True)
@@ -168,6 +193,24 @@ async def test_enable_analysis_flips_flag(_stub_enqueue):
         session, task_id="tsk", org_id="org-1", enable_analysis=True
     )
     assert task.run_analysis is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_qa_keeps_task_running_while_historical_trial_is_active():
+    task = _task(
+        [_trial("tsk-0")],
+        run_analysis=True,
+        verdict_status=VerdictStatus.RUNNING,
+    )
+    task.status = TaskStatus.VERDICT_PENDING
+    session = _CancelSession(task, active_trial_count=1)
+
+    await cancel_task_qa_core(session, task_id="tsk", org_id="org-1")
+
+    assert task.verdict_status == VerdictStatus.FAILED
+    assert task.status == TaskStatus.RUNNING
+    assert task.finished_at is None
+    assert session.committed is True
 
 
 @pytest.mark.asyncio

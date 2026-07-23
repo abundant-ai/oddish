@@ -1350,7 +1350,19 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         return False
 
     current_version_id = getattr(task, "current_version_id", None)
-    pending_count = await session.scalar(
+    if current_version_id is None:
+        current_version_id = await session.scalar(
+            select(TaskVersionModel.id)
+            .where(TaskVersionModel.task_id == task_id)
+            .order_by(TaskVersionModel.version.desc())
+            .limit(1)
+        )
+        if current_version_id is None:
+            current_version_id = getattr(trial, "task_version_id", None)
+        if current_version_id is not None:
+            task.current_version_id = current_version_id
+
+    if await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
@@ -1359,30 +1371,52 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
                 TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
             )
         )
-    )
-
-    if pending_count > 0:
+    ):
         return False
 
-    task_verdict = getattr(task, "verdict", None)
-    verdict = task_verdict if isinstance(task_verdict, dict) else {}
-    # Verdicts written before version-pinned QA have no task_version_id and may
-    # aggregate historical trials. Do not reuse that ambiguous evidence: the
-    # next terminal transition intentionally runs QA once for the exact current
-    # cohort and writes provenance that later transitions can trust.
-    if (
-        task.verdict_status == VerdictStatus.SUCCESS
-        and verdict.get("task_version_id") == current_version_id
-    ):
-        remaining_count = await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                and_(
+    active_trials_query = select(func.count(TrialModel.id)).where(
+        TrialModel.task_id == task_id,
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+    )
+    qa_eligible_ids: list[str] = []
+    if task.run_analysis:
+        qa_eligible_ids = sorted(
+            str(trial_id)
+            for trial_id in await session.scalars(
+                select(TrialModel.id).where(
                     TrialModel.task_id == task_id,
+                    TrialModel.task_version_id == current_version_id,
                     TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                    TrialModel.imported_at.is_(None),
+                    TrialModel.status != TrialStatus.SKIPPED,
+                    func.coalesce(TrialModel.error_message, "").notlike(
+                        f"{GATE_SKIP_PREFIX}%"
+                    ),
                 )
             )
         )
+
+    task_verdict = getattr(task, "verdict", None)
+    verdict = task_verdict if isinstance(task_verdict, dict) else {}
+    if (
+        task.verdict_status == VerdictStatus.FAILED
+        and task.verdict_error == USER_CANCELLED_MESSAGE
+    ):
+        remaining_count = await session.scalar(active_trials_query)
+        if remaining_count > 0:
+            return False
+        task.status = TaskStatus.FAILED
+        task.finished_at = utcnow()
+        await session.flush()
+        return True
+
+    if (
+        task.verdict_status == VerdictStatus.SUCCESS
+        and verdict.get("task_version_id") == current_version_id
+        and verdict.get("trial_ids") == qa_eligible_ids
+    ):
+        remaining_count = await session.scalar(active_trials_query)
         if remaining_count > 0:
             return False
         task.status = TaskStatus.COMPLETED
@@ -1398,24 +1432,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     # QaJobHandler reads back as a retryable failure -> the job burns all its
     # attempts and lands FAILED for what is not an error. Complete the task
     # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
-    qa_eligible = 0
-    if task.run_analysis:
-        qa_eligible = await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                and_(
-                    TrialModel.task_id == task_id,
-                    TrialModel.task_version_id == current_version_id,
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.imported_at.is_(None),
-                    TrialModel.status != TrialStatus.SKIPPED,
-                    func.coalesce(TrialModel.error_message, "").notlike(
-                        f"{GATE_SKIP_PREFIX}%"
-                    ),
-                )
-            )
-        )
-
-    if task.run_analysis and qa_eligible:
+    if qa_eligible_ids:
         task.status = TaskStatus.VERDICT_PENDING
         task.verdict_status = VerdictStatus.QUEUED
         await enqueue_qa_worker_job(
@@ -1425,15 +1442,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
             task_version_id=current_version_id,
         )
     else:
-        remaining_count = await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                and_(
-                    TrialModel.task_id == task_id,
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
-                )
-            )
-        )
+        remaining_count = await session.scalar(active_trials_query)
         task.status = (
             TaskStatus.RUNNING if remaining_count > 0 else TaskStatus.COMPLETED
         )

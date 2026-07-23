@@ -189,6 +189,7 @@ interface TaskVerdict {
   harness_error_count?: number;
   task_version_id?: string | null;
   trial_count?: number;
+  trial_ids?: string[];
   experiment_ids?: string[];
 }
 
