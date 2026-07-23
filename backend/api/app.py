@@ -281,6 +281,7 @@ def create_app() -> FastAPI:
         byok,
         cc_chat,
         clerk_webhooks,
+        cost_excluded_keys,
         dashboard,
         documents,
         github_linkage,
@@ -318,6 +319,7 @@ def create_app() -> FastAPI:
     api.include_router(public.router)
     api.include_router(slack.router)
     api.include_router(admin.router)
+    api.include_router(cost_excluded_keys.router)
     api.include_router(tags.router)
     api.include_router(reports.router)
 
