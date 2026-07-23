@@ -258,8 +258,9 @@ async def test_reconcile_does_not_bill_stale_attempt_through_later_finished_at()
     None
 ):
     # A span left open by attempt 1 must not be closed at the job's terminal
-    # finished_at (which belongs to a later attempt). It closes at its own
-    # started_at instead -- a ~zero-duration floor, never a later attempt's run.
+    # finished_at (which belongs to a later attempt). Its true end is unknown,
+    # so it is recorded unpriced (cost NULL + reason) rather than billed through
+    # the later attempt's runtime or falsely priced at zero.
     ids = await _seed()
     experiment_id, _, trial_id, worker_job_id = ids
     t0 = datetime(2026, 7, 22, tzinfo=timezone.utc)
@@ -293,8 +294,9 @@ async def test_reconcile_does_not_bill_stale_attempt_through_later_finished_at()
                 )
             )
         assert row is not None
-        assert row.finished_at == t0  # its own start, NOT job_finished (t0 + 1h)
-        assert row.cost_usd == Decimal("0.000000")  # zero duration -> zero cost
+        assert row.finished_at == t0  # closed (out of the open set), NOT job_finished
+        assert row.cost_usd is None  # unknown cost -> NULL, never a false 0
+        assert row.unpriced_reason == "stale_attempt"
         assert row.basis == "reconciled"
     finally:
         await _remove(ids)

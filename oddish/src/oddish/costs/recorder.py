@@ -496,21 +496,35 @@ async def reconcile_compute_cost_spans() -> int:
             ).all()
             closed = 0
             for span, job_finished_at, job_attempts, trial_heartbeat_at in rows:
-                # The job's finished_at is the LATEST attempt's end. Only apply
-                # it to a span from that same attempt. A span left open by an
-                # earlier attempt (a hard-killed worker that ran no close path)
-                # must not be billed through the later attempt's finished_at, so
-                # close it at its own started_at -- a ~zero-duration floor is far
-                # safer than over-counting a different attempt's whole runtime.
+                # A span left open by an EARLIER attempt (a hard-killed worker
+                # that ran no close path) has no trustworthy end: the job's
+                # finished_at belongs to a later attempt, and there is no other
+                # signal for when this attempt's container actually stopped. It
+                # did consume compute, so 0 would be a false "cost nothing" --
+                # record it unpriced (cost NULL + reason), the same as any other
+                # span we cannot price, and let it drop out of dashboard totals.
                 is_stale_attempt = (
                     span.worker_job_attempt is not None
                     and job_attempts is not None
                     and span.worker_job_attempt < job_attempts
                 )
                 if is_stale_attempt:
-                    close_at = span.started_at
-                else:
-                    close_at = job_finished_at or trial_heartbeat_at or span.started_at
+                    result = await session.execute(
+                        update(ModalCostSpanModel)
+                        .where(
+                            ModalCostSpanModel.id == span.id,
+                            ModalCostSpanModel.finished_at.is_(None),
+                        )
+                        .values(
+                            finished_at=span.started_at,
+                            cost_usd=None,
+                            unpriced_reason="stale_attempt",
+                            basis="reconciled",
+                        )
+                    )
+                    closed += int(result.rowcount or 0)
+                    continue
+                close_at = job_finished_at or trial_heartbeat_at or span.started_at
                 closed += await _close_rows(
                     session,
                     [span],
