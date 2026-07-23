@@ -40,6 +40,43 @@ class AnalyzerType(str, enum.Enum):
     CUSTOM_QA = "custom_qa"
 
 
+# The backend each analyzer needs, keyed by what the analyzer is permitted to
+# do rather than by what happens to be importable in this process. POST_TRIAL
+# reads two already-downloaded directories through Read/Glob and executes
+# nothing, so a worker-local subprocess is sufficient; PRE_TRIAL runs
+# ``oddish pull`` and the verifier, so isolation is a hard requirement.
+# Anything unlisted has no filesystem to bind to and talks to the provider API.
+_REQUIRED_SUBSTRATE: dict[AnalyzerType, LLMClientType] = {
+    AnalyzerType.POST_TRIAL: LLMClientType.CLAUDE_CLI,
+    AnalyzerType.PRE_TRIAL: LLMClientType.SANDBOX,
+}
+
+
+def resolve_substrate(
+    analyzer_type: AnalyzerType,
+    *,
+    sandbox_available: bool,
+    force_sandbox: bool = False,
+) -> LLMClientType:
+    """Pick the execution backend for an analyzer.
+
+    ``force_sandbox`` is the operator opt-in that lifts a normally worker-local
+    analyzer into isolation; it is a deliberate setting, never inferred from
+    whether the hosted sandbox client was imported. A sandbox that is required
+    but unregistered raises instead of falling back, because the two backends
+    stream different shapes and are read by different output transforms -- a
+    silent downgrade hands the caller output its parser cannot decode.
+    """
+    required = _REQUIRED_SUBSTRATE.get(analyzer_type, LLMClientType.API)
+    wants_sandbox = force_sandbox or required is LLMClientType.SANDBOX
+    if wants_sandbox and not sandbox_available:
+        raise RuntimeError(
+            f"{analyzer_type.value} needs the hosted sandbox backend, which is "
+            "not registered in this process"
+        )
+    return LLMClientType.SANDBOX if wants_sandbox else required
+
+
 @dataclass
 class AnalyzerInput:
     input: Any

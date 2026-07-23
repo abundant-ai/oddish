@@ -403,12 +403,11 @@ class TrialClassifier:
             AnalyzerBlock,
             AnalyzerInput,
             AnalyzerType,
+            resolve_substrate,
         )
         from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
-        from oddish.blocks.analyzer.analyzer_llm_client import (
-            SandboxConfig,
-            sandbox_client_factory_registered,
-        )
+        from oddish.blocks.analyzer import analyzer_llm_client
+        from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
 
         classifier = self
 
@@ -431,11 +430,15 @@ class TrialClassifier:
         async def _client_factory():
             return _ClaudeCliClient()
 
-        use_sandbox = sandbox_client_factory_registered()
+        client_type = resolve_substrate(
+            AnalyzerType.POST_TRIAL,
+            sandbox_available=analyzer_llm_client.sandbox_client_factory_registered(),
+            force_sandbox=settings.post_trial_sandbox_enabled,
+        )
+        use_sandbox = client_type is LLMClientType.SANDBOX
         sandbox_config = None
         block_prompt = prompt
         client_factory = _client_factory
-        client_type = LLMClientType.CLAUDE_CLI
         if use_sandbox:
             archive = io.BytesIO()
             with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
@@ -457,7 +460,6 @@ class TrialClassifier:
                 ),
             )
             client_factory = None
-            client_type = LLMClientType.SANDBOX
 
         metadata = {
             "prompt_key": context.get("prompt_key"),

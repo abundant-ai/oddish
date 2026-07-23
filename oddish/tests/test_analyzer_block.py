@@ -88,8 +88,15 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
 
 
 @pytest.mark.asyncio
-async def test_post_trial_uses_registered_sandbox_factory(monkeypatch, tmp_path):
+async def test_post_trial_sandbox_opt_in_uploads_and_rewrites_paths(
+    monkeypatch, tmp_path
+):
+    """With the sandbox explicitly enabled, artifacts are shipped and the
+    prompt's host paths are rewritten to their in-sandbox locations."""
     from oddish.blocks.analyzer import analyzer_llm_client
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
 
     task_dir = tmp_path / "task-local"
     trial_dir = tmp_path / "trial-local"
