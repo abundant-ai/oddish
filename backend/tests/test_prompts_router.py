@@ -337,6 +337,14 @@ async def test_get_prompt_task_scope_requires_scope_id(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_set_prompt_rejects_unknown_scope(monkeypatch):
+    called = False
+
+    async def fake_set(session, **kwargs):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
     resp = await _call(
         "PUT",
         "/prompts/QA_PRE_TRIAL?scope=galaxy",
@@ -345,10 +353,19 @@ async def test_set_prompt_rejects_unknown_scope(monkeypatch):
         json={"content": "x"},
     )
     assert resp.status_code == 422
+    assert called is False
 
 
 @pytest.mark.asyncio
 async def test_set_prompt_domain_scope_requires_scope_id(monkeypatch):
+    called = False
+
+    async def fake_set(session, **kwargs):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
     resp = await _call(
         "PUT",
         "/prompts/QA_PRE_TRIAL?scope=task",
@@ -358,6 +375,7 @@ async def test_set_prompt_domain_scope_requires_scope_id(monkeypatch):
     )
     assert resp.status_code == 422
     assert "scope_id" in resp.json()["detail"]
+    assert called is False
 
 
 def _capturing_versions_core(seen):
