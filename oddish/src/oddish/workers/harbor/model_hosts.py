@@ -172,7 +172,9 @@ def outbound_hosts_for_model(
     elif model_name:
         raw = model_name.strip().lower()
         head = raw.split("/", 1)[0] if "/" in raw else ""
-        if head == "openrouter":
+        if not hosts and raw.startswith("claude-"):
+            hosts.extend(_ANTHROPIC_HOSTS)
+        elif head == "openrouter":
             hosts.append(
                 _default_host(
                     os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api"

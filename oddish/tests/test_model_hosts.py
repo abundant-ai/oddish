@@ -8,14 +8,15 @@ def test_outbound_hosts_follow_model_not_agent_env_shape():
     assert outbound_hosts_for_model("moonshot/kimi-k2.5") == ["api.moonshot.ai"]
     assert outbound_hosts_for_model("minimax/MiniMax-M3") == ["api.minimax.io"]
     assert outbound_hosts_for_model("xai/grok-4") == ["api.x.ai"]
-    assert outbound_hosts_for_model("anthropic/claude-opus-4-8") == [
-        "api.anthropic.com",
-        "mcp-proxy.anthropic.com",
-    ]
-    assert outbound_hosts_for_model("anthropic-hdo/claude-opus-4-8") == [
-        "api.anthropic.com",
-        "mcp-proxy.anthropic.com",
-    ]
+    for model in (
+        "anthropic/claude-opus-4-8",
+        "anthropic-hdo/claude-opus-4-8",
+        "claude-opus-4-8",
+    ):
+        assert outbound_hosts_for_model(model) == [
+            "api.anthropic.com",
+            "mcp-proxy.anthropic.com",
+        ]
 
 
 def test_outbound_hosts_prefer_routed_base_url_env():
