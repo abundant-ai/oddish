@@ -997,14 +997,21 @@ def _infer_provider_prefix(model_name: str) -> str | None:
 
 
 def infer_model_provider_prefix(model_name: str | None) -> str | None:
-    """Canonical provider prefix for a model id, bare or slash-prefixed.
+    """Canonical provider for a model id, bare or slash-prefixed.
 
     Resolves ``openai/gpt-x`` and bare ``gpt-x`` / ``o3`` alike to their provider
-    so transport-key derivation does not depend on the id being slash-prefixed.
+    so transport-key derivation does not depend on the id being slash-prefixed,
+    and normalizes provider aliases (``claude`` -> ``anthropic``, ``vertex_ai`` /
+    ``palm`` -> ``gemini``, ``moonshotai`` -> ``moonshot``, ...) to their canonical
+    name so key/host maps keyed on the canonical provider match. Falls back to the
+    raw prefix when the provider is unknown to the normalizer.
     """
     if not model_name:
         return None
-    return _infer_provider_prefix(model_name)
+    prefix = _infer_provider_prefix(model_name)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix) or prefix
 
 
 # Canonical deployed-backend API base URLs (single source of truth; the CLI in

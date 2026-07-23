@@ -826,3 +826,17 @@ def test_mini_swe_bare_openai_model_gets_openai_transport():
 
     profile = restricted_network_profile_for_config(config, resolved_env={})
     assert "api.openai.com" in profile.outbound_hosts
+
+
+def test_provider_aliases_resolve_transport_keys():
+    # infer_model_provider_prefix normalizes provider aliases so
+    # _model_transport_base_url_keys resolves them (claude -> anthropic,
+    # vertex_ai / palm -> gemini, moonshotai -> moonshot).
+    from oddish.workers.harbor.restricted_network import (
+        _model_transport_base_url_keys,
+    )
+
+    assert _model_transport_base_url_keys("claude/sonnet") == ("ANTHROPIC_BASE_URL",)
+    assert "GEMINI_API_BASE_URL" in _model_transport_base_url_keys("vertex_ai/gemini")
+    assert "GEMINI_API_BASE_URL" in _model_transport_base_url_keys("palm/x")
+    assert _model_transport_base_url_keys("moonshotai/kimi") == ("MOONSHOT_BASE_URL",)

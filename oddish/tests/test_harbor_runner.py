@@ -285,6 +285,30 @@ def test_grok_build_ambient_credentials_enter_redaction_map(monkeypatch):
     assert replacements["xai-secret-2"] == "[REDACTED]"
 
 
+def test_mini_swe_provider_credentials_enter_redaction_map(monkeypatch):
+    # mini-swe (and other stock agents) authenticate by the model's provider from
+    # ambient os.environ; those provider credentials must fold into the redaction
+    # map even though there is no agent-specific branch for mini-swe.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+    monkeypatch.setenv("XAI_API_KEY", "xai-secret")
+
+    def redactions(model):
+        env = harbor_runner._resolved_runtime_transport_env(
+            {}, agent_config=HarborAgentConfig(name="mini-swe-agent", model_name=model)
+        )
+        return env, harbor_runner._runtime_transport_redactions(env)
+
+    env, reps = redactions("anthropic/claude")
+    assert reps.get("ant-secret") == "[REDACTED]"
+
+    env, reps = redactions("bedrock/claude")
+    assert reps.get("aws-secret") == "[REDACTED]"
+
+    env, reps = redactions("xai/grok-4")
+    assert reps.get("xai-secret") == "[REDACTED]"
+
+
 def test_compose_classifier_fails_closed_on_unparseable_task_toml(tmp_path):
     # A Daytona Compose, non-kube task whose task.toml cannot be parsed must fail
     # closed (raise) rather than silently classify as "none" and disable egress

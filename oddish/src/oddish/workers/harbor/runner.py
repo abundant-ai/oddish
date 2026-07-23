@@ -35,6 +35,7 @@ from harbor.utils.env import resolve_env_vars
 from oddish.config import (
     BEDROCK_ENV_VARS,
     OPENAI_PROVIDER_OPENAI,
+    infer_model_provider_prefix,
     is_anthropic_hdo_model,
     settings,
 )
@@ -152,6 +153,34 @@ _GROK_RUNTIME_SECRET_KEYS = (
     "XAI_API_KEY",
     "XAI_API_KEYS",
 )
+# Provider-driven credential fold for stock agents (notably mini-swe) that
+# authenticate from the worker os.environ by the model's provider rather than a
+# fixed agent harness. Keyed on the CANONICAL provider from
+# infer_model_provider_prefix; values are the ambient credential env vars each
+# provider forwards. Redaction coverage only -- these are never transport routes.
+_PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
+    "openai": ("OPENAI_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+    "anthropic-hdo": (
+        "ANTHROPIC_HDO_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+    ),
+    "bedrock": (
+        "AWS_BEARER_TOKEN_BEDROCK",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+    ),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
+    "meta": ("META_API_KEY", "OPENAI_API_KEY"),
+    "fireworks": ("FIREWORKS_API_KEY",),
+    "zai": ("ZAI_API_KEY",),
+    "minimax": ("MINIMAX_API_KEY",),
+    "moonshot": ("MOONSHOT_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+}
 _ARTIFACT_REDACTION_CHUNK_BYTES = 1024 * 1024
 
 
@@ -182,6 +211,14 @@ def _resolved_runtime_transport_env(
             for key in _GROK_RUNTIME_SECRET_KEYS:
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
+        # General provider-driven fold: a stock agent (e.g. mini-swe) that
+        # authenticates by the model's provider from ambient os.environ, with no
+        # agent-specific branch above. Keyed on the canonical provider so
+        # anthropic / Bedrock / xai / etc. credentials are still redacted.
+        provider = infer_model_provider_prefix(agent_config.model_name)
+        for key in _PROVIDER_RUNTIME_SECRET_KEYS.get(provider or "", ()):
+            if key not in runtime_env and (value := os.environ.get(key)):
+                runtime_env[key] = value
         # Drop worker-injected model-transport base URLs the effective agent's
         # restricted profile does not consume, honoring this function's contract
         # of collecting "only worker routes consumed by the selected effective
