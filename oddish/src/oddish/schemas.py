@@ -1949,7 +1949,7 @@ class CustomQARunRequest(BaseModel):
     model: str = "claude-sonnet-4-6"
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     backend: Literal["api", "sandbox"] = "sandbox"
-    allow_credential_forwarding: bool = False
+    allow_oddish_cli: bool = False
 
 
 class CustomQARunResponse(BaseModel):

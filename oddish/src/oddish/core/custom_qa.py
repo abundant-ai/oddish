@@ -1,20 +1,15 @@
-"""Versioned ad-hoc QA runs backed by AnalyzerBlock."""
+"""Versioned ad-hoc QA runs queued as AnalyzerBlock jobs."""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.blocks.analyzer.analyzer_block import (
-    AnalyzerBlock,
-    AnalyzerInput,
-    AnalyzerType,
-)
-from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType, SandboxConfig
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.config import settings
 from oddish.core.prompts import get_prompt_core
 from oddish.db.models import (
     ExperimentModel,
@@ -26,6 +21,8 @@ from oddish.db.models import (
     TrialModel,
 )
 from oddish.schemas import CustomQARunRequest, CustomQARunResponse
+from oddish.workers.jobs import EnqueueRequest, enqueue_worker_job
+from oddish.db.models import WorkerJobKind
 
 
 def _run_response(
@@ -92,7 +89,6 @@ async def run_custom_qa_core(
     data: CustomQARunRequest,
     org_id: str | None,
     user_id: str | None,
-    oddish_api_key: str | None = None,
     oddish_api_base_url: str | None = None,
 ) -> list[CustomQARunResponse]:
     await _validate_scope(
@@ -101,18 +97,16 @@ async def run_custom_qa_core(
     refs = [(v.kind.strip(), v.version) for v in data.variants]
     if len(set(refs)) != len(refs):
         raise HTTPException(status_code=400, detail="Prompt variants must be unique")
-    if data.allow_credential_forwarding and data.backend != "sandbox":
+    if data.allow_oddish_cli and data.backend != "sandbox":
         raise HTTPException(
             status_code=400,
-            detail="Credential forwarding is only available to the sandbox backend",
+            detail="Oddish CLI access is only available to the sandbox backend",
         )
 
     client_type = (
         LLMClientType.SANDBOX if data.backend == "sandbox" else LLMClientType.API
     )
-    pending: list[
-        tuple[PromptModel, PromptVersionModel, AnalyzerRunModel, AnalyzerBlock]
-    ] = []
+    pending: list[tuple[PromptModel, PromptVersionModel, AnalyzerRunModel]] = []
     for variant in data.variants:
         prompt, version = await get_prompt_core(
             session, variant.kind.strip(), version=variant.version
@@ -123,7 +117,7 @@ async def run_custom_qa_core(
             f"The exact scope is {data.scope_type} {data.scope_id}. "
             "Treat the user prompt as the QA hypothesis and report concrete evidence."
         )
-        if data.allow_credential_forwarding:
+        if data.allow_oddish_cli:
             system_prompt += (
                 " The oddish CLI is installed and authenticated in this ephemeral sandbox. "
                 "You may execute it to inspect or submit runs, including oracle/nop and "
@@ -142,7 +136,10 @@ async def run_custom_qa_core(
             "model": data.model,
             "reasoning_effort": data.reasoning_effort,
             "backend": data.backend,
-            "credential_forwarding": bool(data.allow_credential_forwarding),
+            "oddish_cli_enabled": bool(data.allow_oddish_cli),
+            "oddish_api_base_url": (
+                oddish_api_base_url if data.allow_oddish_cli else None
+            ),
             "system_prompt": system_prompt,
             "command": (
                 f"oddish qa {data.scope_type} {data.scope_id} "
@@ -158,60 +155,25 @@ async def run_custom_qa_core(
             model=data.model,
             reasoning_effort=data.reasoning_effort,
             llm_client_type=client_type.value,
-            # Blocks run synchronously right after this commit; nothing ever
-            # dequeues these rows, so QUEUED would strand them if the process
-            # dies mid-run. RUNNING is the honest resting state.
-            status=JobStatus.RUNNING,
+            status=JobStatus.QUEUED,
             run_config=config,
         )
         session.add(run)
         await session.flush()
-        block = AnalyzerBlock(
-            analyzer_type=AnalyzerType.CUSTOM_QA,
-            llm_client_type=client_type,
-            input=AnalyzerInput(input={"scope": config["scope"], "qa_run_id": run.id}),
-            prompt=version.content,
-            system_prompt=system_prompt,
-            analyzer_id=run.id,
-            model=data.model,
-            triggered_by_user_id=user_id,
-            attribution_org_id=org_id,
-            sandbox_config=(
-                SandboxConfig(
-                    oddish_api_key=(
-                        oddish_api_key if data.allow_credential_forwarding else None
-                    ),
-                    oddish_api_base_url=(
-                        oddish_api_base_url
-                        if data.allow_credential_forwarding
-                        else None
-                    ),
-                    reasoning_effort=data.reasoning_effort,
-                )
-                if client_type == LLMClientType.SANDBOX
-                else None
+        await enqueue_worker_job(
+            session,
+            EnqueueRequest(
+                kind=WorkerJobKind.ANALYZER_BLOCK,
+                queue_key=settings.normalize_queue_key(data.model),
+                payload={"analyzer_run_id": run.id},
+                subject_table="analyzer_runs",
+                subject_id=run.id,
+                org_id=org_id,
             ),
-            block_metadata=config,
         )
-        run.analyzer_block_id = block.id
-        pending.append((prompt, version, run, block))
+        pending.append((prompt, version, run))
     await session.commit()
-
-    # The analyzer calls can run for minutes. Explicitly detach the prepared
-    # rows and release the request session before waiting on external work;
-    # the same AsyncSession can be reused afterwards and the rows reattached
-    # for the short finalization transaction.
-    await session.close()
-    results = await asyncio.gather(
-        *(block.run() for *_, block in pending), return_exceptions=True
-    )
-    responses = []
-    for (prompt, version, run, block), result in zip(pending, results, strict=True):
-        session.add(run)
-        run.status = block.status
-        run.error = block.error
-        if not isinstance(result, BaseException):
-            run.output = result.output
-        responses.append(_run_response(run, prompt=prompt, version=version))
-    await session.commit()
-    return responses
+    return [
+        _run_response(run, prompt=prompt, version=version)
+        for prompt, version, run in pending
+    ]

@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends
 
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.config import api_base_url_for_modal_app, settings
@@ -32,19 +32,10 @@ async def get_run(
 async def run_qa(
     data: CustomQARunRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    authorization: Annotated[str | None, Header()] = None,
 ) -> list[CustomQARunResponse]:
     auth.require_scope(APIKeyScope.TASKS)
-    oddish_api_key = None
     oddish_api_base_url = None
-    if data.allow_credential_forwarding:
-        token = (authorization or "").removeprefix("Bearer ").strip()
-        if not token.startswith("ok_"):
-            raise HTTPException(
-                status_code=400,
-                detail="Credential forwarding requires API-key authentication (ok_...), not a user JWT",
-            )
-        oddish_api_key = token
+    if data.allow_oddish_cli:
         oddish_api_base_url = (
             settings.public_api_base_url or api_base_url_for_modal_app()
         ).rstrip("/")
@@ -54,6 +45,5 @@ async def run_qa(
             data=data,
             org_id=auth.org_id,
             user_id=auth.user_id,
-            oddish_api_key=oddish_api_key,
             oddish_api_base_url=oddish_api_base_url,
         )

@@ -21,9 +21,9 @@ from oddish.blocks.analyzer.analyzer_llm_client import (
     register_sandbox_client_factory,
     resolve_analyzer_api_key,
 )
-from oddish.core.api_keys import mint_internal_read_key
+from oddish.core.api_keys import mint_internal_api_key
 from oddish.db import generate_id, get_session
-from oddish.db.models import APIKeyModel
+from oddish.db.models import APIKeyModel, APIKeyScope
 
 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
 from api.services.cc_chat.daytona_client import (
@@ -120,11 +120,19 @@ async def create_sandbox_llm_client(
                 "install_oddish_cli requires oddish_org_id and oddish_api_base_url"
             )
         async with get_session() as session:
-            internal_api_key_id, internal_api_key = await mint_internal_read_key(
+            try:
+                internal_scope = APIKeyScope(sandbox_config.oddish_api_scope)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Unsupported analyzer Oddish API scope: "
+                    f"{sandbox_config.oddish_api_scope!r}"
+                ) from exc
+            internal_api_key_id, internal_api_key = await mint_internal_api_key(
                 session,
                 org_id=sandbox_config.oddish_org_id,
                 name=f"analyzer:{generate_id()}",
                 ttl_minutes=_ODDISH_KEY_TTL_MINUTES,
+                scope=internal_scope,
             )
 
     daytona_client = RealDaytonaClient(

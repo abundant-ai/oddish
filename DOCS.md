@@ -62,11 +62,12 @@ historical version. Manage them with `oddish prompt list`,
 and `oddish prompt diff KIND 2 3`. Editing appends a new version, which is
 live immediately (latest always wins; there is no activation step).
 
-The default `sandbox` backend is agentic. `--allow-oddish-cli` explicitly
-forwards the current `ODDISH_API_KEY` into the ephemeral sandbox, allowing the
-prompt to run `oddish`, including oracle/nop and lazy-solution experiments.
-The credential is runtime-only and is not persisted in QA metadata. Use
-`--backend api` for a prompt-only provider call without shell execution.
+The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
+authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
+oracle/nop and lazy-solution experiments. The worker mints a short-lived
+internal key when the queued block starts and revokes it during cleanup; the
+caller's credential is never forwarded or persisted. Use `--backend api` for
+a prompt-only provider call without shell execution.
 
 ### Lifecycle
 

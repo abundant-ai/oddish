@@ -194,6 +194,9 @@ class WorkerJobKind(str, Enum):
     # findings and reduces them into four narrative sections. Runs on the QA
     # queue; handled by AnalyzerJobHandler.
     ANALYZER = "ANALYZER"
+    # Execute one declaratively persisted AnalyzerRunModel. The handler
+    # reconstructs an AnalyzerBlock; the block owns its LLM/sandbox lifecycle.
+    ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
 
 class WorkerJobStatus(str, Enum):

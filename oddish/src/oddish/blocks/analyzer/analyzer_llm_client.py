@@ -65,6 +65,7 @@ class SandboxConfig:
     install_oddish_cli: bool = False
     oddish_org_id: str | None = None
     oddish_api_base_url: str | None = None
+    oddish_api_scope: str = "read"
     oddish_api_key: str | None = None
     reasoning_effort: str | None = None
     trajectory_tail_bytes: int | None = None

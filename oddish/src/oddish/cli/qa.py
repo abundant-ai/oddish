@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Annotated, Optional
 
 import httpx
@@ -10,6 +11,7 @@ from rich.table import Table
 from oddish.cli.config import get_api_url, get_auth_headers, print_json
 
 console = Console()
+_TERMINAL_STATUSES = {"success", "failed"}
 
 
 def _load_variants(specs: list[str]) -> list[dict[str, object]]:
@@ -31,6 +33,28 @@ def _load_variants(specs: list[str]) -> list[dict[str, object]]:
     return variants
 
 
+def _wait_for_runs(
+    client: httpx.Client, base: str, rows: list[dict], *, timeout: float = 1800
+) -> list[dict]:
+    """Poll queued analyzer runs while preserving the synchronous CLI UX."""
+    deadline = time.monotonic() + timeout
+    current = {row["id"]: row for row in rows}
+    while any(row["status"] not in _TERMINAL_STATUSES for row in current.values()):
+        if time.monotonic() >= deadline:
+            raise typer.BadParameter("Timed out waiting for queued analyzer runs")
+        time.sleep(2)
+        for run_id, row in list(current.items()):
+            if row["status"] in _TERMINAL_STATUSES:
+                continue
+            response = client.get(f"{base}/qa/runs/{run_id}")
+            if response.status_code != 200:
+                raise typer.BadParameter(
+                    f"Failed to retrieve analyzer run {run_id}: {response.text}"
+                )
+            current[run_id] = response.json()
+    return [current[row["id"]] for row in rows]
+
+
 def qa(
     scope_type: Annotated[str, typer.Argument(help="experiment, task, or trial")],
     scope_id: Annotated[str, typer.Argument(help="ID of the scoped object")],
@@ -43,7 +67,10 @@ def qa(
     backend: Annotated[str, typer.Option("--backend", help="sandbox or api")] = "sandbox",
     allow_oddish_cli: Annotated[
         bool,
-        typer.Option("--allow-oddish-cli", help="Forward this API key into the ephemeral sandbox."),
+        typer.Option(
+            "--allow-oddish-cli",
+            help="Install an authenticated Oddish CLI in the ephemeral sandbox.",
+        ),
     ] = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
@@ -62,14 +89,14 @@ def qa(
     payload = {
         "scope_type": scope_type, "scope_id": scope_id, "variants": loaded,
         "model": model, "reasoning_effort": reasoning_effort, "backend": backend,
-        "allow_credential_forwarding": allow_oddish_cli,
+        "allow_oddish_cli": allow_oddish_cli,
     }
     with httpx.Client(timeout=1800, headers=get_auth_headers(base)) as client:
         response = client.post(f"{base}/qa/runs", json=payload)
-    if response.status_code != 200:
-        console.print(f"[red]QA run failed:[/red] {response.text}")
-        raise typer.Exit(1)
-    rows = response.json()
+        if response.status_code != 200:
+            console.print(f"[red]QA run failed:[/red] {response.text}")
+            raise typer.Exit(1)
+        rows = _wait_for_runs(client, base, response.json())
     if json_output:
         print_json(rows)
         return

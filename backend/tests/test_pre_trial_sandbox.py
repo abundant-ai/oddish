@@ -34,13 +34,13 @@ class _SessionContext:
 
 
 def _wire(monkeypatch, *, provisioner=_FakeProvisioner, runtime=_FakeRuntime):
-    async def mint(session, *, org_id, name, ttl_minutes):
+    async def mint(session, *, org_id, name, ttl_minutes, scope):
         return "key_id", "ok_secret"
 
     monkeypatch.setattr(mod, "Provisioner", provisioner)
     monkeypatch.setattr(mod, "ClaudeCodeRuntime", runtime)
     monkeypatch.setattr(mod, "RealDaytonaClient", lambda **kwargs: object())
-    monkeypatch.setattr(mod, "mint_internal_read_key", mint)
+    monkeypatch.setattr(mod, "mint_internal_api_key", mint)
     monkeypatch.setattr(mod, "get_session", _SessionContext)
     monkeypatch.setenv("DAYTONA_API_KEY", "daytona")
 

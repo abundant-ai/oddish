@@ -192,7 +192,9 @@ back to the packaged `analyze/classify_prompt.txt`.
 `WorkerJobKind` (in `oddish.db.models`):
 
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
-  verdict), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
+  verdict), `ANALYZER` (cross-experiment report orchestration),
+  `ANALYZER_BLOCK` (one declarative `analyzer_runs` execution),
+  `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
   is kept only so in-flight rows survive a deploy) and `VERDICT` (enum value only,
   no handler). Nothing enqueues either anymore.
@@ -200,8 +202,9 @@ back to the packaged `analyze/classify_prompt.txt`.
 
 ### Custom QA runs
 
-`POST /qa/runs` (hosted backend) runs one or more registered prompt variants through
-`AnalyzerBlock`; `GET /qa/runs/{id}` and the `/prompts` endpoints expose durable
+`POST /qa/runs` (hosted backend) creates one `analyzer_runs` row and one
+`ANALYZER_BLOCK` worker job per registered prompt variant, then returns the
+queued runs. `GET /qa/runs/{id}` and the `/prompts` endpoints expose durable
 lineage. The shared `prompts` registry is kind-addressed — built-in UPPERCASE
 kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) plus lowercase-slug custom kinds for
 saved QA variants — `prompt_versions` stores immutable numbered content, and
@@ -213,12 +216,11 @@ activation pointer).
 
 `oddish prompt` manages registry versions. `oddish qa ... --variant KIND` uses
 the latest version and `--variant KIND@N` pins a historical version. Variants in
-one request run concurrently for A/B comparison. The hosted `sandbox` backend can receive
-the caller's `ok_...` credential only with explicit `--allow-oddish-cli`; it is
-injected into the ephemeral sandbox and must never be persisted in prompt,
-block, or run metadata. That mode installs the Oddish CLI so the QA agent can
-execute oracle/nop and submit degenerate test solutions. The `api` backend is
-prompt-only and rejects credential forwarding.
+one request run concurrently for A/B comparison. The hosted `sandbox` backend
+installs the Oddish CLI only with explicit `--allow-oddish-cli`. At worker
+execution time its client factory mints a short-lived internal TASKS-scoped
+key and revokes it during cleanup; the caller's credential is never forwarded
+or persisted. The `api` backend is prompt-only and rejects CLI access.
 
 ## Package Boundaries
 
