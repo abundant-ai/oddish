@@ -509,8 +509,8 @@ ENV_VARS = {
     # slug or internal id (see auth.permissions.is_operator_org). Overridable by
     # the deploy env / backend/.env; defaults to the Abundant org.
     "ODDISH_OPERATOR_ORG_ID": (
-        os.environ.get("ODDISH_OPERATOR_ORG_ID")
-        or LOCAL_DOTENV_VARS.get("ODDISH_OPERATOR_ORG_ID")
+        (os.environ.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
+        or (LOCAL_DOTENV_VARS.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
         or "abundant"
     ),
     "ODDISH_HARBOR_ENVIRONMENT": "modal",
