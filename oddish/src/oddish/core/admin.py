@@ -262,7 +262,7 @@ async def get_queue_status_core(
                     COUNT(*) FILTER (WHERE status::text = 'RUNNING') AS running
                 FROM worker_jobs
                 WHERE status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
-                  AND (:org_id IS NULL OR org_id = :org_id)
+                  AND (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP BY kind, queue_key
                 ORDER BY kind, queue_key
                 """
@@ -340,7 +340,7 @@ async def get_orphaned_state_core(
                         FROM worker_jobs wj
                         WHERE wj.kind::text = 'TRIAL'
                           AND wj.status::text = 'RUNNING'
-                          AND (:org_id IS NULL OR wj.org_id = :org_id)
+                          AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
                           AND (
                               wj.heartbeat_at IS NULL
                               OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -350,7 +350,7 @@ async def get_orphaned_state_core(
                         SELECT COUNT(*)
                         FROM tasks t
                         WHERE t.deleted_at IS NULL
-                          AND (:org_id IS NULL OR t.org_id = :org_id)
+                          AND (CAST(:org_id AS TEXT) IS NULL OR t.org_id = CAST(:org_id AS TEXT))
                           AND (
                             (
                                 t.status = 'RUNNING'
@@ -404,7 +404,7 @@ async def get_orphaned_state_core(
                 JOIN trials tr ON wj.subject_table = 'trials' AND wj.subject_id = tr.id
                 WHERE wj.kind::text = 'TRIAL'
                   AND wj.status::text = 'RUNNING'
-                  AND (:org_id IS NULL OR wj.org_id = :org_id)
+                  AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
                   AND tr.deleted_at IS NULL
                   AND (
                       wj.heartbeat_at IS NULL
@@ -431,7 +431,7 @@ async def get_orphaned_state_core(
                     t.updated_at
                 FROM tasks t
                 WHERE t.deleted_at IS NULL
-                  AND (:org_id IS NULL OR t.org_id = :org_id)
+                  AND (CAST(:org_id AS TEXT) IS NULL OR t.org_id = CAST(:org_id AS TEXT))
                   AND (
                     (
                         t.status = 'RUNNING'
@@ -528,7 +528,7 @@ async def get_worker_jobs_admin_core(
                        status::text AS status,
                        COUNT(*) AS n
                 FROM   worker_jobs
-                WHERE  (:org_id IS NULL OR org_id = :org_id)
+                WHERE  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP  BY kind, status
                 """
             ),
@@ -563,7 +563,7 @@ async def get_worker_jobs_admin_core(
                        org_id
                 FROM   worker_jobs
                 WHERE  status::text = 'RUNNING'
-                  AND  (:org_id IS NULL OR org_id = :org_id)
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  (
                       heartbeat_at IS NULL
                       OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -604,7 +604,7 @@ async def get_worker_jobs_admin_core(
                        org_id
                 FROM   worker_jobs
                 WHERE  status::text IN ('FAILED', 'CANCELLED')
-                  AND  (:org_id IS NULL OR org_id = :org_id)
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 ORDER  BY finished_at DESC NULLS LAST
                 LIMIT  :sample_limit
                 """
@@ -657,7 +657,7 @@ async def get_worker_jobs_admin_core(
                        ) AS p95
                 FROM   worker_jobs
                 WHERE  status::text IN ('SUCCESS', 'FAILED')
-                  AND  (:org_id IS NULL OR org_id = :org_id)
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  claimed_at IS NOT NULL
                   AND  finished_at IS NOT NULL
                   AND  finished_at >= NOW() - INTERVAL '1 hour'
@@ -801,7 +801,7 @@ async def get_queue_health_core(
                        COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '15 minutes') AS finished_15m,
                        COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '60 minutes') AS finished_60m
                 FROM   worker_jobs
-                WHERE  (:org_id IS NULL OR org_id = :org_id)
+                WHERE  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  (
                        started_at  >= NOW() - INTERVAL '60 minutes'
                     OR finished_at >= NOW() - INTERVAL '60 minutes'
@@ -847,7 +847,7 @@ async def get_queue_health_core(
                        ))) AS oldest_queued_age_seconds
                 FROM   worker_jobs
                 WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
-                  AND  (:org_id IS NULL OR org_id = :org_id)
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP  BY queue_key
                 """
             ),
@@ -869,7 +869,7 @@ async def get_queue_health_core(
                        ) AS wait_p95
                 FROM   worker_jobs
                 WHERE  claimed_at IS NOT NULL
-                  AND  (:org_id IS NULL OR org_id = :org_id)
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  claimed_at >= NOW() - INTERVAL '1 hour'
                   AND  claimed_at >= created_at
                 GROUP  BY queue_key
