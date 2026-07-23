@@ -74,3 +74,19 @@ def test_outbound_hosts_read_gemini_custom_endpoint():
         agent_env={"GOOGLE_GEMINI_BASE_URL": "https://gemini-relay.example/v1"},
     )
     assert "gemini-relay.example" in hosts
+
+
+def test_bare_model_inference_is_opt_in_and_does_not_widen_single_container():
+    # The single-container host union (default call) must NOT add a provider's
+    # public default hosts for a bare model id -- only the routed base URL.
+    # Bare-provider inference is opt-in, used solely by restricted-Compose host
+    # inference; without it a bare id + custom *_BASE_URL would wrongly unlock the
+    # public provider hosts.
+    assert outbound_hosts_for_model("gpt-4o") == []
+    assert outbound_hosts_for_model(
+        "gpt-4o", agent_env={"OPENAI_BASE_URL": "https://custom.test/v1"}
+    ) == ["custom.test"]
+    # Opt-in inference resolves the bare provider's default hosts.
+    assert "api.openai.com" in outbound_hosts_for_model(
+        "gpt-4o", infer_bare_provider=True
+    )

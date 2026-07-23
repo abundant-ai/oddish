@@ -380,7 +380,13 @@ def _selected_transport_hosts(
         return tuple(hosts)
 
     inferred = (
-        tuple(outbound_hosts_for_model(agent_config.model_name)) if infer_model else ()
+        tuple(
+            outbound_hosts_for_model(
+                agent_config.model_name, infer_bare_provider=True
+            )
+        )
+        if infer_model
+        else ()
     )
     return inferred or default_hosts
 

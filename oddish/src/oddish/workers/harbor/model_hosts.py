@@ -140,6 +140,7 @@ def outbound_hosts_for_model(
     *,
     agent_env: Mapping[str, str] | None = None,
     agent_kwargs: dict[str, Any] | None = None,
+    infer_bare_provider: bool = False,
 ) -> list[str]:
     """Return API hosts the trial must reach for *model_name*.
 
@@ -191,12 +192,14 @@ def outbound_hosts_for_model(
         hosts.extend(bedrock_domains_for_model(model_name=model_name))
     elif model_name:
         raw = model_name.strip().lower()
-        # Resolve the provider prefix bare-id safe (litellm + heuristic), so an
-        # unprefixed ``gpt-4o`` / ``claude-*`` / ``gemini-*`` still maps to its
-        # provider host instead of an empty inferred set.
-        head = infer_model_provider_prefix(model_name) or (
-            raw.split("/", 1)[0] if "/" in raw else ""
-        )
+        head = raw.split("/", 1)[0] if "/" in raw else ""
+        # Bare-id provider inference is opt-in and used ONLY by restricted-Compose
+        # host inference (which passes just the model, no agent env). It must not
+        # run on the single-container union path: there a bare id plus a custom
+        # routed *_BASE_URL would otherwise also unlock the provider's default
+        # public hosts, widening the allowlist beyond the selected transport.
+        if not head and infer_bare_provider:
+            head = (infer_model_provider_prefix(model_name) or "").strip().lower()
         if head == "openrouter":
             hosts.append(
                 _default_host(
