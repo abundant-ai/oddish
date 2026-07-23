@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from oddish.core.cost_basis import composite_cost_by_trial
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
@@ -197,9 +198,15 @@ async def list_experiment_trials_for_org(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    composite_by_trial = await composite_cost_by_trial(
+        session, [trial.id for trial in trials]
+    )
     return [
         build_trial_response(
-            trial, task_path, queue_info=queue_info_by_trial_id.get(trial.id)
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+            composite=composite_by_trial.get(trial.id),
         )
         for trial, task_path in rows
     ]
@@ -233,11 +240,15 @@ async def list_task_trials_for_task(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    composite_by_trial = await composite_cost_by_trial(
+        session, [trial.id for trial in trials]
+    )
     return [
         build_trial_response(
             trial,
             task_path,
             queue_info=queue_info_by_trial_id.get(trial.id),
+            composite=composite_by_trial.get(trial.id),
         )
         for trial, task_path in rows
     ]
@@ -265,11 +276,15 @@ async def list_task_trials_for_public_experiment(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    composite_by_trial = await composite_cost_by_trial(
+        session, [trial.id for trial in trials]
+    )
     return [
         build_trial_response(
             trial,
             task_path,
             queue_info=queue_info_by_trial_id.get(trial.id),
+            composite=composite_by_trial.get(trial.id),
         )
         for trial, task_path in rows
     ]

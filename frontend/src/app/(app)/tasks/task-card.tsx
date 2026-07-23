@@ -411,7 +411,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               <div className="mt-1 text-sm font-semibold tabular-nums">
                 {(task.total_cost_usd ?? 0) > 0 || task.cost_trial_count > 0 ? (
                   <CostWithBreakdown
-                    total={task.total_cost_usd}
+                    total={task.total_cost_usd ?? task.cost_usd ?? 0}
                     inference={task.cost_usd}
                     qa={task.qa_cost_usd}
                     compute={task.compute_cost_usd}
@@ -434,7 +434,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                     formatCostUsd(0)
                   ) : (
                     <CostWithBreakdown
-                      total={task.billed_total_cost_usd}
+                      total={task.billed_total_cost_usd ?? task.billed_cost_usd ?? 0}
                       inference={task.billed_cost_usd}
                       qa={task.billed_qa_cost_usd}
                       compute={task.billed_compute_cost_usd}
