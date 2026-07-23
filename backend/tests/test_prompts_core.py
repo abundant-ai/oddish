@@ -134,6 +134,37 @@ async def test_get_prompt_usage_counts_blocks(prompt_key):
 
 
 @pytest.mark.asyncio
+async def test_get_prompt_usage_counts_null_version_blocks(prompt_key):
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="c")
+        session.add(AnalyzerBlockModel(
+            analyzer_id=f"tr_{prompt_key}_v", type="trajectory_summary",
+            key_prefix="analyzer/trajectory_summary", llm_client_type="api",
+            status=JobStatus.SUCCESS, prompt_key=prompt_key, prompt_version=1,
+        ))
+        session.add(AnalyzerBlockModel(
+            analyzer_id=f"tr_{prompt_key}_none", type="trajectory_summary",
+            key_prefix="analyzer/trajectory_summary", llm_client_type="api",
+            status=JobStatus.SUCCESS, prompt_key=prompt_key, prompt_version=None,
+        ))
+        await session.commit()
+    try:
+        async with get_session() as session:
+            usage = await get_prompt_usage_core(session, prompt_key)
+            assert usage["total"] == 2
+            versions = {b["version"]: b["count"] for b in usage["by_version"]}
+            assert versions == {1: 1, None: 1}
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                AnalyzerBlockModel.__table__.delete().where(
+                    AnalyzerBlockModel.prompt_key == prompt_key
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
 async def test_get_prompt_usage_zero_for_unused(prompt_key):
     async with get_session() as session:
         await set_prompt_core(session, key=prompt_key, content="c")
