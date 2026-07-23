@@ -75,8 +75,10 @@ jobs:
           UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
           # Paths are repo-relative; the guard runs from oddish/.
           FILES: ${{ steps.changed.outputs.files }}
+        # NOTE: this container's default shell is `sh` (dash), not bash —
+        # keep this POSIX. `${FILES// /}` is a bashism and fails "Bad substitution".
         run: |
-          if [ -z "${FILES// /}" ]; then
+          if [ -z "$(printf '%s' "$FILES" | tr -d '[:space:]')" ]; then
             echo "No migration changes — reporting green."
             exit 0
           fi
