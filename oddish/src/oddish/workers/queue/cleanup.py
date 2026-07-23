@@ -35,6 +35,7 @@ from oddish.config import (
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
+from oddish.costs.recorder import reconcile_compute_cost_spans
 from oddish.db import (
     AnalysisStatus,
     JobStatus,
@@ -531,6 +532,12 @@ async def cleanup_orphaned_queue_state(
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
 
+    try:
+        modal_cost_spans_reconciled = await reconcile_compute_cost_spans()
+    except Exception as exc:
+        console.print(f"[yellow]Modal cost reconciliation failed: {exc}[/yellow]")
+        modal_cost_spans_reconciled = 0
+
     # These run AFTER the outer commit so a rolled-back sweep never tears down
     # remote handles / claim metadata the DB still points at. Best-effort; the
     # provider TTL and the next sweep are the backstops.
@@ -557,6 +564,7 @@ async def cleanup_orphaned_queue_state(
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,
         "tag_projections_reconciled": tag_projections_reconciled,
         "tag_owners_reassigned": tag_owners_reassigned,
+        "modal_cost_spans_reconciled": modal_cost_spans_reconciled,
     }
 
 
