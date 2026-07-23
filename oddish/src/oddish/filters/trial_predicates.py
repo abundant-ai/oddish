@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 from sqlalchemy import Integer, and_, exists, false, func, select
 
-from oddish.db import TrialModel
+from oddish.db import TrialModel, TrialStatus
 from oddish.filters.trial_metrics import TrialMetricFilter, TrialMetricMatch
 
 
@@ -60,6 +60,26 @@ def trial_metric_conditions(metric_filter: TrialMetricFilter) -> list[Any]:
     return conditions
 
 
+def trial_metric_measurement_clauses(
+    metric_filter: TrialMetricFilter,
+) -> list[Any]:
+    """Clauses identifying trials with every requested scalar measurement."""
+    clauses: list[Any] = []
+    if metric_filter.min_steps is not None or metric_filter.max_steps is not None:
+        clauses.append(TrialModel.total_steps.isnot(None))
+    if (
+        metric_filter.min_duration_seconds is not None
+        or metric_filter.max_duration_seconds is not None
+    ):
+        clauses.append(TrialModel.trajectory_duration_seconds.isnot(None))
+    if (
+        metric_filter.min_tool_calls is not None
+        or metric_filter.max_tool_calls is not None
+    ):
+        clauses.append(TrialModel.total_tool_calls.isnot(None))
+    return clauses
+
+
 def build_trial_metric_predicate(
     metric_filter: TrialMetricFilter,
     *,
@@ -73,14 +93,21 @@ def build_trial_metric_predicate(
     if metric_filter.models:
         eligible.append(TrialModel.model.in_(metric_filter.models))
     conditions = trial_metric_conditions(metric_filter)
+    # Only completed trials with every requested scalar measurement participate
+    # in metric matching. Running/unmeasured trials and execution errors are
+    # ignored, while eligible_exists keeps All mode non-vacuous.
+    eligible.extend(
+        [
+            TrialModel.status == TrialStatus.SUCCESS,
+            *trial_metric_measurement_clauses(metric_filter),
+        ]
+    )
     eligible_exists = exists(select(TrialModel.id).where(and_(*eligible)))
     if not conditions:
         return eligible_exists
     if metric_filter.match is TrialMetricMatch.ANY:
         return exists(select(TrialModel.id).where(and_(*eligible, *conditions)))
 
-    # SQL NOT(NULL) remains NULL, so explicitly coalesce the complete metric
-    # conjunction to false: a missing requested metric fails All mode.
     failing_exists = exists(
         select(TrialModel.id).where(
             and_(*eligible, ~func.coalesce(and_(*conditions), false()))

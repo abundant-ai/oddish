@@ -1156,12 +1156,10 @@ class Settings(BaseSettings):
     # branching in either.
     analyzer_sandbox_enabled: bool = True
 
-    # AnalyzerBlock-backed pre-trial QA audit (a task-source audit run before
-    # trials). Off by default: verdict is now always-on through AnalyzerBlock,
-    # but the pre-trial sandbox path (installs the oddish CLI, runs `oddish
-    # pull`) is unproven until the Python-3.13 sandbox smoke test passes, so it
-    # stays gated. When on, backend must have registered the hosted synth via
-    # register_pre_trial_synth(); otherwise it is a no-op.
+    # Default for the org-scoped AnalyzerBlock pre-trial QA setting. An explicit
+    # organizations.settings.pre_trial_analysis_enabled value takes precedence.
+    # The hosted backend must register the synth via register_pre_trial_synth();
+    # standalone oddish remains a no-op even when this default is enabled.
     pre_trial_enabled: bool = False
 
     # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't

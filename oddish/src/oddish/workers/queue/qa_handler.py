@@ -41,6 +41,7 @@ async def synthesize_task_verdict(
     baseline: BaselineValidation | None,
     quality_check_passed: bool,
     timeout: float,
+    task_id: str | None = None,
 ) -> TaskVerdictModel:
     """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
@@ -67,6 +68,7 @@ async def synthesize_task_verdict(
         analyzer_type=AnalyzerType.TASK_VERDICT,
         llm_client_type=LLMClientType.API,
         input=AnalyzerInput(input={"num_trials": len(classifications)}),
+        analyzer_id=task_id,
         # build_prompt() raises rather than sending the degraded placeholder
         # (see VerdictBlock.build_prompt).
         prompt=vb.build_prompt(),
@@ -88,7 +90,7 @@ PreTrialSynthFn = Callable[[str, list[str], float], Awaitable[Any]]
 # via register_pre_trial_synth(). oddish/ can't import backend/, so the sandbox-
 # provisioning implementation is injected here rather than imported -- the same
 # seam analyzer_llm_client.register_sandbox_client_factory uses. None until
-# registered; run_task_qa_job only invokes it when settings.pre_trial_enabled.
+# registered; the hosted hook resolves its organization-level setting.
 _pre_trial_synth_fn: PreTrialSynthFn | None = None
 
 
@@ -279,12 +281,12 @@ async def run_task_qa_job(
 
         # Pre-trial: a task-source audit, independent of trial classification
         # -- runs once, before the per-trial loop, even when there are zero
-        # live trials to classify. Gated off by default (settings.pre_trial_enabled)
-        # and a no-op unless the hosted synth is registered; the `is not None`
+        # live trials to classify. The hosted hook applies the org-level setting
+        # and returns None when disabled; this is a no-op unless it is registered.
         # guard keeps a skipped run from touching any pre_trial column. A pre-trial
         # failure is swallowed here so it can never block the verdict path.
         try:
-            if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
+            if _pre_trial_synth_fn is not None:
                 pre_trial_items = await _pre_trial_synth_fn(
                     task_id,
                     [trial_id for trial_id, _ in live_trials],
@@ -430,7 +432,11 @@ async def run_task_qa_job(
         quality_check_passed = True
         timeout = 180
         verdict = await synthesize_task_verdict(
-            classifications, baseline, quality_check_passed, timeout
+            classifications,
+            baseline,
+            quality_check_passed,
+            timeout,
+            task_id=task_id,
         )
 
         verdict_result = build_verdict_payload(verdict, classifications)

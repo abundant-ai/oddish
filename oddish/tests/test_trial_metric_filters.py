@@ -36,6 +36,15 @@ def test_query_contract_parses_and_serializes_canonically() -> None:
     }
 
 
+def test_query_contract_preserves_zero_threshold() -> None:
+    metric_filter = TrialMetricFilter.from_query(min_steps=0, match="all")
+
+    assert metric_filter.to_query_params() == {
+        "min_steps": "0",
+        "trial_metric_match": "all",
+    }
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -79,8 +88,10 @@ def test_any_predicate_keeps_model_and_metrics_in_one_exists() -> None:
     assert "trials.task_version_id = tasks.current_version_id" in sql
 
 
-def test_all_predicate_is_non_vacuous_and_rejects_missing_metrics() -> None:
+def test_all_predicate_is_non_vacuous_and_ignores_failed_or_unmeasured_trials() -> None:
     sql = _compiled("all")
     assert sql.count("EXISTS") == 2
+    assert "trials.total_steps IS NOT NULL" in sql
+    assert "trials.status = 'SUCCESS'" in sql
     assert "coalesce(trials.total_steps >= 100, false)" in sql
     assert "NOT (EXISTS" in sql

@@ -101,8 +101,8 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
         assert key == "pre_trial_qa"
         return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
-    async def fake_resolve_org_id(task_id):
-        return "org_1"
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", True
 
     fake_client = _FakeSandboxClient()
 
@@ -112,7 +112,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
-    monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
 
@@ -136,8 +136,8 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     async def fake_get_prompt_core(session, key):
         return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
-    async def fake_resolve_org_id(task_id):
-        return "org_1"
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", True
 
     async def fake_provision(**kwargs):
         return _FakeSandboxClient()
@@ -148,7 +148,7 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
-    monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _EmptyAnalyzerBlock)
 
@@ -157,16 +157,30 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_synth_returns_before_provisioning_when_org_disabled(monkeypatch):
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", False
+
+    async def fail_provision(**kwargs):
+        raise AssertionError("disabled org must not provision a sandbox")
+
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
+    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fail_provision)
+
+    assert await synthesize_task_pre_trial("task_1", [], 10) is None
+
+
+@pytest.mark.asyncio
 async def test_synth_raises_when_org_id_unresolved(monkeypatch):
     async def fake_get_prompt_core(session, key):
         return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
-    async def fake_resolve_org_id(task_id):
-        return None
+    async def fake_resolve_org_pre_trial(task_id):
+        return None, True
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
-    monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
 
     with pytest.raises(RuntimeError, match="task_xyz"):
         await synthesize_task_pre_trial("task_xyz", [], timeout=30.0)
