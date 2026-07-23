@@ -1378,7 +1378,7 @@ class ModalCostSpanModel(TimestampedMixin, Base):
     # How the timer boundaries were observed:
     # "hooks" | "phase_timing" | "reaped" | "reconciled" | "backfill"
     basis: Mapped[str] = mapped_column(String(16), nullable=False)
-    # "pinned" | "override" | "modal_default" | "unknown"
+    # "pinned" | "override" | "provider_default" | "unknown"
     spec_source: Mapped[str] = mapped_column(String(16), nullable=False)
     cpu_request: Mapped[float | None] = mapped_column(Float, nullable=True)
     cpu_limit: Mapped[float | None] = mapped_column(Float, nullable=True)

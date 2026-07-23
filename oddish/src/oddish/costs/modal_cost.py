@@ -34,10 +34,29 @@ ESTIMATOR_VERSION = 1
 
 ContainerClass = Literal["function", "sandbox"]
 
-# Modal's default request when a task pins nothing (harbor passes None and
-# Modal applies its minimum request, billed with burst above it).
+# Provider defaults applied when a task pins nothing (harbor passes None and
+# the provider substitutes its own default, billed with burst above it). Modal
+# uses a 0.125-core / 128-MiB minimum request; Daytona defaults to 1 vCPU /
+# 1 GiB. Picking by provider avoids pricing an unpinned Daytona sandbox at
+# Modal's ~8x-smaller minimum.
 MODAL_DEFAULT_CPU_REQUEST = 0.125
 MODAL_DEFAULT_MEM_REQUEST_MB = 128
+DAYTONA_DEFAULT_CPU_REQUEST = 1.0
+DAYTONA_DEFAULT_MEM_REQUEST_MB = 1024
+
+
+def provider_default_request(provider: str) -> tuple[float, int]:
+    """The provider's default/minimum (cpu_cores, mem_mb) request.
+
+    Used both when a task pins nothing and as the LIMIT-enforcement request
+    floor (``min(default, pinned)``): Modal reserves a 0.125-core / 128-MiB
+    minimum, Daytona a 1 vCPU / 1 GiB one, so the floor must follow the
+    provider or an unpinned/LIMIT Daytona sandbox is priced ~8x too small.
+    """
+    if provider == "daytona":
+        return DAYTONA_DEFAULT_CPU_REQUEST, DAYTONA_DEFAULT_MEM_REQUEST_MB
+    return MODAL_DEFAULT_CPU_REQUEST, MODAL_DEFAULT_MEM_REQUEST_MB
+
 
 _MIB_PER_GIB = Decimal(1024)
 _MICROS_PER_SEC = Decimal(1_000_000)
@@ -86,6 +105,17 @@ DEFAULT_RATES: tuple[RateRow, ...] = tuple(
         ("modal", "gpu:A10", "0.000306"),
         ("modal", "gpu:L4", "0.000222"),
         ("modal", "gpu:T4", "0.000164"),
+        # Daytona (seeded by modal_costs_002). Public list prices from
+        # daytona.io/pricing, converted per-hour / 3600 to per-second. Only the
+        # sandbox class exists for daytona (the oddish worker always runs on
+        # Modal); GPU trials route to Modal, so daytona GPU rows are defensive.
+        # Free-tier allowances (20 vCPU-h + 40 GiB-h/day, $200 credit) are not
+        # modeled: this is a gross list-price estimate, like the Modal rows.
+        ("daytona", "sandbox:cpu_core_sec", "0.0000140"),
+        ("daytona", "sandbox:mem_gib_sec", "0.0000045"),
+        ("daytona", "gpu:H200", "0.0012611111"),
+        ("daytona", "gpu:H100", "0.0010972222"),
+        ("daytona", "gpu:RTX_PRO_6000", "0.0008416667"),
     )
 )
 
@@ -107,7 +137,7 @@ class SpanResources:
     gpu_count: int
     price_multiplier: Decimal
     container_class: ContainerClass
-    spec_source: str  # "pinned" | "override" | "modal_default" | "unknown"
+    spec_source: str  # "pinned" | "override" | "provider_default" | "unknown"
     cpu_enforcement_mode: str | None = None
     mem_enforcement_mode: str | None = None
 
@@ -251,9 +281,10 @@ def estimate_span_cost(
     """Price a closed span. Never guesses: a missing GPU rate or an empty
     resource spec yields ``cost_usd=None`` with an ``unpriced_reason``.
 
-    ``spec_source == "modal_default"`` with no cpu/mem/gpu at all prices at
-    Modal's default request (0.125 core, 128 MiB) instead of going unpriced —
-    still a floor, since Modal bills burst above the request.
+    ``spec_source == "provider_default"`` with no cpu/mem/gpu at all prices at
+    the provider's default request (Modal 0.125 core / 128 MiB, Daytona
+    1 vCPU / 1 GiB) instead of going unpriced — still a floor, since the
+    provider bills burst above the request.
     """
     duration = _duration_seconds(started_at, finished_at)
 
@@ -262,9 +293,8 @@ def estimate_span_cost(
     gpu_count = resources.gpu_count or 0
 
     if cpu is None and mem_mb is None and gpu_count <= 0:
-        if resources.spec_source == "modal_default":
-            cpu = MODAL_DEFAULT_CPU_REQUEST
-            mem_mb = MODAL_DEFAULT_MEM_REQUEST_MB
+        if resources.spec_source == "provider_default":
+            cpu, mem_mb = provider_default_request(rate_selection.provider)
         else:
             return EstimateResult(
                 cost_usd=None,
@@ -281,8 +311,9 @@ def estimate_span_cost(
             cost_usd=None, unpriced_reason="unknown_gpu", rate_snapshot=snapshot
         )
 
-    # cpu/mem present but the provider has no rate card (e.g. daytona before
-    # rates exist): record the span, leave it unpriced.
+    # cpu/mem present but the provider has no rate card (e.g. docker/gke, or
+    # a new provider before rates are seeded): record the span, leave it
+    # unpriced rather than guessing a modal/daytona rate.
     if (cpu is not None and rate_selection.cpu is None) or (
         mem_mb is not None and rate_selection.mem is None
     ):

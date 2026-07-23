@@ -35,6 +35,7 @@ from oddish.core.quotas import (
 from oddish.db import (
     AnalysisCostModel,
     ExperimentModel,
+    ModalCostSpanModel,
     TaskModel,
     TrialModel,
     task_experiments,
@@ -1310,6 +1311,12 @@ class CostQaModelBreakdown(BaseModel):
     cost_usd: float
 
 
+class CostComputeProviderBreakdown(BaseModel):
+    provider: str
+    cost_usd: float
+    span_count: int
+
+
 class CostUserBreakdown(BaseModel):
     # Stable grouping key: a user id for billed/submitter rows, else a synthetic
     # ``ghid:``/``ghuser:``/``__unattributed__`` key for label-only fallback rows.
@@ -1403,6 +1410,7 @@ class CostTotals(BaseModel):
     cost_native_usd: float
     cost_estimated_usd: float
     qa_cost_usd: float = 0.0
+    compute_cost_usd: float = 0.0
     prev_cost_usd: float | None = None
     month_cost_usd: float = 0.0
     month_budget_usd: float | None = None
@@ -1416,10 +1424,12 @@ class CostBreakdownResponse(BaseModel):
     series_by_user: CostSeries
     series_by_type: CostSeries
     series_qa_by_model: CostSeries
+    series_compute_by_provider: CostSeries
     totals: CostTotals
     by_user: list[CostUserBreakdown]
     by_model: list[CostModelBreakdown]
     qa_by_model: list[CostQaModelBreakdown] = []
+    compute_by_provider: list[CostComputeProviderBreakdown] = []
     experiments: list[CostExperimentBreakdown]
     timestamp: str
 
@@ -1725,38 +1735,102 @@ async def _qa_cost_time_series(
     )
 
 
-# Stack keys for the inference-vs-QA "type" series.
+# Compute spans are grouped by execution provider. Known providers get their
+# own bucket; anything else folds into "other" so the split stays legible.
+_COMPUTE_PROVIDER_LABELS = {
+    "modal": "Modal",
+    "daytona": "Daytona",
+    "other": "Other",
+}
+_KNOWN_COMPUTE_PROVIDERS = ("modal", "daytona")
+
+
+def _normalize_compute_provider(raw: str | None) -> str:
+    key = (raw or "").strip().lower()
+    return key if key in _KNOWN_COMPUTE_PROVIDERS else "other"
+
+
+async def _compute_cost_time_series(
+    session: AsyncSession,
+    *,
+    since: datetime | None,
+    bucket: str,
+    org_id: str | None = None,
+) -> CostSeries:
+    bucket_col = _utc_date_trunc(bucket, ModalCostSpanModel.finished_at)
+    query = (
+        select(
+            bucket_col.label("bucket"),
+            ModalCostSpanModel.provider.label("provider"),
+            func.coalesce(func.sum(ModalCostSpanModel.cost_usd), 0.0).label("cost_usd"),
+        )
+        .where(
+            ModalCostSpanModel.deleted_at.is_(None),
+            ModalCostSpanModel.finished_at.isnot(None),
+            ModalCostSpanModel.cost_usd.isnot(None),
+        )
+        .group_by(bucket_col, ModalCostSpanModel.provider)
+    )
+    if since is not None:
+        query = query.where(ModalCostSpanModel.finished_at >= since)
+    if org_id is not None:
+        query = query.where(ModalCostSpanModel.org_id == org_id)
+
+    per_bucket: dict[datetime, dict[str, float]] = {}
+    totals: dict[str, float] = {}
+    for row in (await session.execute(query)).all():
+        bstart = row.bucket
+        key = _normalize_compute_provider(row.provider)
+        cost = float(row.cost_usd)
+        bkt = per_bucket.setdefault(bstart, {})
+        bkt[key] = bkt.get(key, 0.0) + cost
+        totals[key] = totals.get(key, 0.0) + cost
+
+    return _build_dimension_series(
+        "provider",
+        bucket_starts=sorted(per_bucket),
+        per_bucket=per_bucket,
+        totals=totals,
+        trials_per_bucket={},
+        labels=_COMPUTE_PROVIDER_LABELS,
+    )
+
+
+# Stack keys for the inference-vs-QA-vs-compute "type" series.
 _TYPE_INFERENCE_KEY = "inference"
 _TYPE_QA_KEY = "qa"
+_TYPE_COMPUTE_KEY = "compute"
 
 
-def _build_type_series(trial_series: CostSeries, qa_series: CostSeries) -> CostSeries:
-    """Cost over time split into two stacks: model inference vs QA.
-
-    Reuses the already-computed trial and QA series -- each of their buckets
-    carries a ``cost_usd`` grand total, so we only fold those two per bucket
-    rather than issuing another query. Bucket starts are the union of both axes
-    (trial spend on ``finished_at``, QA on ``created_at``), so a bucket with QA
-    but no trials -- or vice versa -- still appears.
-    """
+def _build_type_series(
+    trial_series: CostSeries,
+    qa_series: CostSeries,
+    compute_series: CostSeries,
+) -> CostSeries:
     inference_by_bucket = {b.bucket_start: b.cost_usd for b in trial_series.buckets}
     trials_by_bucket = {b.bucket_start: b.trial_count for b in trial_series.buckets}
     qa_by_bucket = {b.bucket_start: b.cost_usd for b in qa_series.buckets}
-    bucket_starts = sorted(set(inference_by_bucket) | set(qa_by_bucket))
+    compute_by_bucket = {b.bucket_start: b.cost_usd for b in compute_series.buckets}
+    bucket_starts = sorted(
+        set(inference_by_bucket) | set(qa_by_bucket) | set(compute_by_bucket)
+    )
 
     buckets: list[CostSeriesBucket] = []
     for bstart in bucket_starts:
         inference = inference_by_bucket.get(bstart, 0.0)
         qa = qa_by_bucket.get(bstart, 0.0)
+        compute = compute_by_bucket.get(bstart, 0.0)
         costs: dict[str, float] = {}
         if inference > 0:
             costs[_TYPE_INFERENCE_KEY] = round(inference, 4)
         if qa > 0:
             costs[_TYPE_QA_KEY] = round(qa, 4)
+        if compute > 0:
+            costs[_TYPE_COMPUTE_KEY] = round(compute, 4)
         buckets.append(
             CostSeriesBucket(
                 bucket_start=bstart,
-                cost_usd=round(inference + qa, 4),
+                cost_usd=round(inference + qa + compute, 4),
                 trial_count=trials_by_bucket.get(bstart, 0),
                 costs=costs,
             )
@@ -1766,6 +1840,7 @@ def _build_type_series(trial_series: CostSeries, qa_series: CostSeries) -> CostS
         keys=[
             CostSeriesKey(key=_TYPE_INFERENCE_KEY, label="Model inference"),
             CostSeriesKey(key=_TYPE_QA_KEY, label="QA"),
+            CostSeriesKey(key=_TYPE_COMPUTE_KEY, label="Compute"),
         ],
         buckets=buckets,
     )
@@ -1952,9 +2027,12 @@ async def get_cost_breakdown_core(
     series_qa_by_model = await _qa_cost_time_series(
         session, since=since, bucket=bucket, org_id=org_id
     )
-    # Two-stack inference-vs-QA view over the same buckets; folds the grand
-    # totals the two series above already carry, so it needs no extra query.
-    series_by_type = _build_type_series(series_by_agent, series_qa_by_model)
+    series_compute_by_provider = await _compute_cost_time_series(
+        session, since=since, bucket=bucket, org_id=org_id
+    )
+    series_by_type = _build_type_series(
+        series_by_agent, series_qa_by_model, series_compute_by_provider
+    )
 
     # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
     # JSON-key bind params match (two inline copies bind as distinct params and
@@ -2339,6 +2417,49 @@ async def get_cost_breakdown_core(
     ]
     qa_cost_total = round(sum(qa_by_model_totals.values()), 4)
 
+    compute_query = (
+        select(
+            ModalCostSpanModel.provider.label("provider"),
+            func.coalesce(func.sum(ModalCostSpanModel.cost_usd), 0.0).label("cost_usd"),
+            func.count(ModalCostSpanModel.id).label("span_count"),
+        )
+        .where(
+            ModalCostSpanModel.deleted_at.is_(None),
+            ModalCostSpanModel.finished_at.isnot(None),
+            ModalCostSpanModel.cost_usd.isnot(None),
+        )
+        .group_by(ModalCostSpanModel.provider)
+    )
+    if since is not None:
+        compute_query = compute_query.where(ModalCostSpanModel.finished_at >= since)
+    if org_id is not None:
+        compute_query = compute_query.where(ModalCostSpanModel.org_id == org_id)
+    compute_rows = (await session.execute(compute_query)).all()
+    compute_cost_total = round(sum(float(row.cost_usd) for row in compute_rows), 4)
+    # Fold raw providers into the modal / daytona / other buckets.
+    compute_by_provider_totals: dict[str, float] = {}
+    compute_by_provider_spans: dict[str, int] = {}
+    for row in compute_rows:
+        provider = _normalize_compute_provider(row.provider)
+        compute_by_provider_totals[provider] = compute_by_provider_totals.get(
+            provider, 0.0
+        ) + float(row.cost_usd)
+        compute_by_provider_spans[provider] = compute_by_provider_spans.get(
+            provider, 0
+        ) + int(row.span_count)
+    compute_by_provider = [
+        CostComputeProviderBreakdown(
+            provider=provider,
+            cost_usd=round(cost, 4),
+            span_count=compute_by_provider_spans[provider],
+        )
+        for provider, cost in sorted(
+            compute_by_provider_totals.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    ]
+
     totals = CostTotals(
         window_days=window_days,
         trial_count=total_trials,
@@ -2356,6 +2477,7 @@ async def get_cost_breakdown_core(
         cost_native_usd=round(total_native, 4),
         cost_estimated_usd=round(total_estimated, 4),
         qa_cost_usd=qa_cost_total,
+        compute_cost_usd=compute_cost_total,
         prev_cost_usd=prev_window_cost,
         month_cost_usd=month_cost,
         month_budget_usd=month_budget,
@@ -2369,10 +2491,12 @@ async def get_cost_breakdown_core(
         series_by_user=series_by_user,
         series_by_type=series_by_type,
         series_qa_by_model=series_qa_by_model,
+        series_compute_by_provider=series_compute_by_provider,
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),
         qa_by_model=qa_by_model,
+        compute_by_provider=compute_by_provider,
         experiments=experiments_out,
         timestamp=now.isoformat(),
     )
