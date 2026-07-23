@@ -127,23 +127,32 @@ async def test_operator_access_is_bound_to_configured_org(monkeypatch):
     assert unconfigured.allowed is False
 
 
-def test_operator_org_matches_slug_or_id(monkeypatch):
+def test_operator_org_slug_prefix(monkeypatch):
     from auth.permissions import is_operator_org
 
-    # Configured with a human-readable slug: the org whose slug matches (any
-    # case) is the operator, regardless of its opaque internal id.
-    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "abundant")
+    # "slug:" prefix matches the org slug (case-insensitive), regardless of the
+    # opaque internal id.
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "slug:abundant")
     assert is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="abundant"))
     assert is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="Abundant"))
     assert not is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="acme"))
     # A SimpleNamespace without org_slug must not blow up (getattr fallback).
     assert not is_operator_org(SimpleNamespace(org_id="org_9f3a"))
 
-    # Configured with an internal id: exact id match still works.
+
+def test_operator_org_bare_value_is_id_only(monkeypatch):
+    from auth.permissions import is_operator_org
+
+    # A bare (unprefixed) value matches the server-issued org id only.
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_9f3a")
-    assert is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="abundant"))
-    assert not is_operator_org(SimpleNamespace(org_id="org_zzzz", org_slug="acme"))
+    assert is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="anything"))
+
+    # Escalation guard: a tenant that claims the operator's id-string as its own
+    # slug must NOT gain operator access (org_id differs).
+    assert not is_operator_org(SimpleNamespace(org_id="org_evil", org_slug="org_9f3a"))
 
     # Blank/unset config grants operator access to no one.
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "   ")
     assert not is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="abundant"))
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "slug:   ")
+    assert not is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug=""))

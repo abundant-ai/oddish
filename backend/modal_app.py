@@ -505,13 +505,14 @@ ENV_VARS = {
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
     #
     # Platform-operator org: its admins get the global admin dashboard (all-org
-    # data + concurrency / queue-slot / Slack-alert controls). Accepts the org
-    # slug or internal id (see auth.permissions.is_operator_org). Overridable by
-    # the deploy env / backend/.env; defaults to the Abundant org.
+    # data + concurrency / queue-slot / Slack-alert controls). A bare value
+    # matches the internal org id; a "slug:" prefix matches the org slug (see
+    # auth.permissions.is_operator_org). Overridable by the deploy env /
+    # backend/.env; defaults to the Abundant org by slug.
     "ODDISH_OPERATOR_ORG_ID": (
         (os.environ.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
         or (LOCAL_DOTENV_VARS.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
-        or "abundant"
+        or "slug:abundant"
     ),
     "ODDISH_HARBOR_ENVIRONMENT": "modal",
     "ODDISH_AUTO_START_WORKERS": "false",
