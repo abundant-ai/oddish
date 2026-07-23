@@ -150,3 +150,6 @@ def test_instructions_seed_template_matches_legacy_text():
     assert "{{taxonomy}}" not in rendered
     assert rendered.startswith("Produce a 2-3 sentence summary")
     assert rendered.rstrip().endswith("Highlights must be ordered by step_id ascending.")
+    # Byte-identity of the seed depends on this file having no trailing newline;
+    # editors auto-append one, so guard against it silently creeping back in.
+    assert not template.endswith("\n")

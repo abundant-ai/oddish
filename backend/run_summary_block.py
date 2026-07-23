@@ -86,8 +86,6 @@ async def run() -> None:
         if trajectory is None:
             raise SystemExit(f"Trial {TRIAL_ID!r} has no fetchable trajectory.")
         task_context = await build_task_context(trial)
-        # Session is still open here, so fetch the real registry template
-        # rather than the dev-script shortcut used when no session exists.
         prompt_template, prompt_version = await _load_summary_prompt(session)
 
     print(f"trial={TRIAL_ID}  task={task_context.task_name!r}  "

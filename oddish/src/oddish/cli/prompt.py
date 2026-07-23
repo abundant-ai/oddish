@@ -114,7 +114,7 @@ def upload_prompt(
         _fail(resp)
     data = resp.json()
     console.print(
-        f"[green]Set {key_or_id}[/green] active_version={data.get('active_version')}"
+        f"[green]Uploaded {key_or_id}[/green] active_version={data.get('active_version')}"
     )
 
 

@@ -455,6 +455,35 @@ async def test_get_or_generate_self_seeds_missing_prompt():
 
 
 @pytest.mark.asyncio
+async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
+    """Two first-ever requests both miss and both seed; the loser's commit
+    hits the prompts.key unique constraint. The prompt exists by then, so
+    the retry should succeed instead of raising."""
+    from sqlalchemy.exc import IntegrityError
+
+    from api.services.summarize_trajectory import _load_summary_prompt
+    from oddish.core.prompt_seeds import seed_prompts as real_seed_prompts
+    from oddish.db import get_session
+
+    await _delete_summary_prompt()
+
+    async def fake_seed(_session):
+        async with get_session() as winner:
+            await real_seed_prompts(winner)
+        raise IntegrityError(
+            "insert", {}, Exception("duplicate key value violates unique constraint")
+        )
+
+    monkeypatch.setattr("api.services.summarize_trajectory.seed_prompts", fake_seed)
+
+    async with get_session() as session:
+        content, version = await _load_summary_prompt(session)
+
+    assert version == 1
+    assert "{{taxonomy}}" in content
+
+
+@pytest.mark.asyncio
 async def test_get_or_generate_hard_fails_when_seed_impossible(monkeypatch):
     from api.services.summarize_trajectory import SummaryGenerationError
     from oddish.db import get_session

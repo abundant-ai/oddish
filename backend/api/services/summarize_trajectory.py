@@ -166,9 +166,17 @@ async def _load_summary_prompt(session: AsyncSession) -> tuple[str, int]:
             await session.commit()
             _, ver = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
         except Exception as e:
-            raise SummaryGenerationError(
-                f"prompt '{SUMMARY_PROMPT_KEY}' is not registered and seeding failed: {e}"
-            ) from e
+            # Two concurrent first-ever requests can both miss and both seed;
+            # the loser's commit hits the prompts.key unique constraint. The
+            # prompt exists by then, so roll back and re-read once before
+            # treating this as a genuine failure.
+            await session.rollback()
+            try:
+                _, ver = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+            except Exception:
+                raise SummaryGenerationError(
+                    f"prompt '{SUMMARY_PROMPT_KEY}' is not registered and seeding failed: {e}"
+                ) from e
     return ver.content, ver.version
 
 
