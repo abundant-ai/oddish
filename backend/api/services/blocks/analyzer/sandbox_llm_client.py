@@ -81,9 +81,11 @@ async def create_sandbox_llm_client(
     *,
     model: str | None = None,
     api_key: str | None = None,
+    runtime_env: dict[str, str] | None = None,
 ) -> AnalyzerLLMClient:
     daytona_client = RealDaytonaClient(api_key=os.environ["DAYTONA_API_KEY"])
     env_vars = {"ANTHROPIC_API_KEY": resolve_analyzer_api_key(api_key) or ""}
+    env_vars.update(runtime_env or {})
     if model:
         env_vars["ANTHROPIC_MODEL"] = model
     sandbox = await Provisioner(client=daytona_client).create(
@@ -95,6 +97,24 @@ async def create_sandbox_llm_client(
     )
     runtime = ClaudeCodeRuntime()
     await runtime.install(daytona_client, sandbox)
+    # Custom QA can opt into the full mutating CLI (the ordinary analyzer
+    # sandbox deliberately has no Oddish credential). Install only for that
+    # explicit path; unlike Harbor's convenience install, failure is fatal
+    # because executing oracle/nop and submitting degenerate trials is the
+    # requested capability, not an optional aid.
+    if runtime_env and runtime_env.get("ODDISH_API_KEY"):
+        exit_code, output = await daytona_client.exec_sync(
+            sandbox,
+            command=(
+                "command -v oddish >/dev/null 2>&1 || "
+                "pip install --user --quiet oddish 2>&1"
+            ),
+        )
+        if exit_code != 0:
+            await delete_sandbox_quietly(daytona_client, sandbox)
+            raise RuntimeError(
+                f"oddish CLI install failed (exit={exit_code}): {output[-500:]}"
+            )
     return SandboxAnalyzerLLMClient(
         sandbox=sandbox, daytona_client=daytona_client, runtime=runtime
     )

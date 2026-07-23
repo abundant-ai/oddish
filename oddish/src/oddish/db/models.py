@@ -654,6 +654,30 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     block_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
 
 
+class QARunModel(TimestampedMixin, Base):
+    """Lineage for one execution of one QA prompt version."""
+
+    __tablename__ = "qa_runs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    prompt_version_id: Mapped[str] = mapped_column(
+        ForeignKey("prompt_versions.id"), nullable=False, index=True
+    )
+    analyzer_block_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    triggered_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    llm_client_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        PGEnum(JobStatus, name="jobstatus", create_type=False), nullable=False
+    )
+    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
 class TaskModel(TimestampedMixin, Base):
     """Task database model (one Harbor task submission)."""
 
@@ -2201,6 +2225,8 @@ register_soft_delete_models(
     ExperimentModel,
     AnalyzerModel,
     AnalyzerBlockModel,
+    PromptModel,
+    QARunModel,
     TaskModel,
     TrialModel,
     TagModel,

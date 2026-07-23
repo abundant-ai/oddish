@@ -69,6 +69,8 @@ reference. The main commands are:
 - `oddish delete` — delete trials (hosted) or tasks/experiments (self-host only).
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
+- `oddish qa` — A/B test versioned QA prompt variants against an experiment, task, or trial.
+- `oddish prompt` — manage the shared prompt registry and its active/immutable versions.
 
 Every command except `oddish logs` supports `--json` for machine-readable output.
 

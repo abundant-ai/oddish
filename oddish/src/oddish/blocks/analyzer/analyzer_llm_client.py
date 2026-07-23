@@ -270,8 +270,11 @@ async def create_llm_client(
     api_key: str | None = None,
     max_tokens: int | None = None,
     response_format: Any | None = None,
+    runtime_env: dict[str, str] | None = None,
 ) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
+        if runtime_env:
+            raise ValueError("runtime_env is only supported by the sandbox backend")
         return ApiAnalyzerLLMClient(
             model=model or _DEFAULT_MODEL,
             max_tokens=max_tokens,
@@ -285,6 +288,8 @@ async def create_llm_client(
                 "SANDBOX llm_client_type needs the hosted sandbox backend; import "
                 "api.services.blocks.analyzer.sandbox_llm_client to register it"
             )
-        return await _sandbox_client_factory(model=model, api_key=api_key)
+        return await _sandbox_client_factory(
+            model=model, api_key=api_key, runtime_env=runtime_env
+        )
 
     raise ValueError(f"unknown llm_client_type: {llm_client_type!r}")

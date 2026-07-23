@@ -109,9 +109,20 @@ async def test_list_prompts_reports_latest_version(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_unknown_kind_is_422(monkeypatch):
-    # kind path params are PromptKind-typed; arbitrary strings never reach core
+    # Neither a built-in PromptKind nor a lowercase-slug custom kind
+    # (underscores/uppercase mixes are rejected) ever reaches core.
     resp = await _call("GET", "/prompts/not_a_kind", monkeypatch)
     assert resp.status_code == 422
+    resp = await _call("GET", "/prompts/NOT_A_KIND", monkeypatch)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_custom_slug_kind_reaches_core(monkeypatch):
+    # Lowercase-slug kinds are the custom-QA namespace (saved `oddish qa`
+    # variants); they pass boundary validation and resolve through core.
+    resp = await _call("GET", "/prompts/oracle-check", monkeypatch)
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
