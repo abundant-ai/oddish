@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.config import settings  # noqa: E402
 from oddish.core.admin import (  # noqa: E402
     _UNATTRIBUTED_KEY,
+    _primary_task_authors,
     _spend_identity,
     get_cost_breakdown_core,
 )
@@ -445,6 +446,32 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
         k for k in result.series_by_user.keys if k.key == "__unattributed__"
     )
     assert unattributed_key.label == "Unattributed"
+
+
+@pytest.mark.asyncio
+async def test_primary_task_authors_ignores_other_org_tasks(seeded_cost_data):
+    foreign_task_id = f"{E8}-task-foreign"
+    async with get_session() as session:
+        session.add(
+            TaskModel(
+                id=foreign_task_id,
+                name=foreign_task_id,
+                user="foreign-org-secret",
+                org_id=ORG_1,
+                task_path="some/path",
+                created_at=utcnow() - timedelta(days=365),
+            )
+        )
+        await session.flush()
+        await session.execute(
+            task_experiments.insert().values(
+                task_id=foreign_task_id,
+                experiment_id=E8,
+            )
+        )
+        authors = await _primary_task_authors(session, [E8], org_id=ORG_2)
+
+    assert authors[E8] == "e8-runner"
 
 
 @pytest.mark.asyncio

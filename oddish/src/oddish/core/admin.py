@@ -1780,35 +1780,37 @@ def _clean_author(value: str | None) -> str | None:
 
 
 async def _primary_task_authors(
-    session: AsyncSession, experiment_ids: list[str]
+    session: AsyncSession,
+    experiment_ids: list[str],
+    *,
+    org_id: str | None = None,
 ) -> dict[str, str]:
     """Get each experiment's oldest-task author, used as a fallback owner name."""
     if not experiment_ids:
         return {}
     github_tag = TaskModel.tags["github_username"].astext
-    rows = (
-        await session.execute(
-            select(
-                task_experiments.c.experiment_id.label("experiment_id"),
-                github_tag.label("github_username"),
-                TaskModel.user.label("user"),
-            )
-            .select_from(
-                task_experiments.join(
-                    TaskModel, TaskModel.id == task_experiments.c.task_id
-                )
-            )
-            .where(task_experiments.c.experiment_id.in_(experiment_ids))
-            .where(task_experiments.c.deleted_at.is_(None))
-            .order_by(
-                task_experiments.c.experiment_id.asc(),
-                TaskModel.created_at.asc(),
-                TaskModel.id.asc(),
-            )
-            .distinct(task_experiments.c.experiment_id)
-            .execution_options(include_deleted=True)
+    query = (
+        select(
+            task_experiments.c.experiment_id.label("experiment_id"),
+            github_tag.label("github_username"),
+            TaskModel.user.label("user"),
         )
-    ).all()
+        .select_from(
+            task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)
+        )
+        .where(task_experiments.c.experiment_id.in_(experiment_ids))
+        .where(task_experiments.c.deleted_at.is_(None))
+        .order_by(
+            task_experiments.c.experiment_id.asc(),
+            TaskModel.created_at.asc(),
+            TaskModel.id.asc(),
+        )
+        .distinct(task_experiments.c.experiment_id)
+        .execution_options(include_deleted=True)
+    )
+    if org_id is not None:
+        query = query.where(TaskModel.org_id == org_id)
+    rows = (await session.execute(query)).all()
     authors: dict[str, str] = {}
     for row in rows:
         name = _clean_author(row.github_username) or _clean_author(row.user)
@@ -2283,7 +2285,9 @@ async def get_cost_breakdown_core(
         experiments.values(), key=lambda e: e["cost_usd"], reverse=True
     )[:experiment_limit]
     task_authors = await _primary_task_authors(
-        session, [str(e["experiment_id"]) for e in experiment_rows]
+        session,
+        [str(e["experiment_id"]) for e in experiment_rows],
+        org_id=org_id,
     )
     experiments_out = [
         CostExperimentBreakdown(
