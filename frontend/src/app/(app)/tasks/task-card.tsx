@@ -10,6 +10,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { CostWithBreakdown } from "@/components/cost-with-breakdown";
 import { ExperimentsList } from "@/components/experiments-list";
 import { TagChip } from "@/components/tag-chip";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
@@ -408,9 +409,17 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                 Cost
               </div>
               <div className="mt-1 text-sm font-semibold tabular-nums">
-                {task.cost_trial_count > 0
-                  ? `${task.cost_has_estimated && !task.cost_has_native ? "~" : ""}${formatCostUsd(task.cost_usd)}`
-                  : "—"}
+                {task.cost_trial_count > 0 ? (
+                  <CostWithBreakdown
+                    total={task.total_cost_usd}
+                    inference={task.cost_usd}
+                    qa={task.qa_cost_usd}
+                    compute={task.compute_cost_usd}
+                    estimated={task.cost_has_estimated && !task.cost_has_native}
+                  />
+                ) : (
+                  "—"
+                )}
               </div>
               {task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">
@@ -420,9 +429,19 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               {task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">
                   spent{" "}
-                  {task.billed_trial_count === 0
-                    ? formatCostUsd(0)
-                    : `${task.billed_has_estimated && !task.billed_has_native ? "~" : ""}${formatCostUsd(task.billed_cost_usd)}`}
+                  {task.billed_trial_count === 0 ? (
+                    formatCostUsd(0)
+                  ) : (
+                    <CostWithBreakdown
+                      total={task.billed_total_cost_usd}
+                      inference={task.billed_cost_usd}
+                      qa={task.billed_qa_cost_usd}
+                      compute={task.billed_compute_cost_usd}
+                      estimated={
+                        task.billed_has_estimated && !task.billed_has_native
+                      }
+                    />
+                  )}
                 </div>
               ) : null}
             </div>

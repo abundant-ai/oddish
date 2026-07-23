@@ -38,6 +38,7 @@ from oddish.core.endpoints.task_detail import (  # noqa: E402
     _aggregate_task_detail_rollups,
     list_task_versions_core,
 )
+from oddish.core.endpoints.tasks_query import browse_tasks_core  # noqa: E402
 from oddish.core.helpers import (  # noqa: E402
     _composite_cost_fields,
     build_trial_response,
@@ -50,6 +51,7 @@ from oddish.db import (  # noqa: E402
     TaskStatus,
     TaskVersionModel,
     TrialModel,
+    TrialOrigin,
     TrialStatus,
     utcnow,
 )
@@ -76,6 +78,8 @@ def _trial(
     superseded_by_trial_id: str | None = None,
     idempotency_key: str | None = None,
     billed_user_id: str | None = None,
+    origin: TrialOrigin = TrialOrigin.ODDISH,
+    is_probe: bool = False,
 ) -> TrialModel:
     return TrialModel(
         id=trial_id,
@@ -87,7 +91,8 @@ def _trial(
         provider="openai",
         queue_key="openai/gpt-5",
         model="gpt-5",
-        is_probe=False,
+        is_probe=is_probe,
+        origin=origin,
         attempts=1,
         max_attempts=6,
         status=TrialStatus.SUCCESS,
@@ -355,3 +360,132 @@ async def test_task_detail_rollup_folds_composite_and_excludes_filtered(session)
     assert v1.billed_qa_cost_usd == pytest.approx(0.15)
     assert v1.billed_compute_cost_usd == pytest.approx(0.50)
     assert v1.billed_total_cost_usd == pytest.approx(1.15)
+
+
+# --- Task-browser list (Slice 3): per-task composite on the /tasks grid --------
+
+# Browser eligibility differs from task-detail: it does NOT apply the first_party
+# filter, so IMPORTED trials are counted. It excludes only superseded retries,
+# probes, and combine copies. The composite (QA + compute) must mirror exactly
+# that inference population: import counted, the excluded three at $0.
+_BR_PLAIN = f"{_TASK}-br-plain"
+_BR_BILLED = f"{_TASK}-br-billed"
+_BR_IMPORT = f"{_TASK}-br-import"
+_BR_SUPERSEDED = f"{_TASK}-br-superseded"
+_BR_COMBINE = f"{_TASK}-br-combine"
+_BR_PROBE = f"{_TASK}-br-probe"
+
+
+@pytest.mark.asyncio
+async def test_browse_tasks_core_folds_composite_and_counts_imports(session):
+    """``browse_tasks_core`` reports per-task QA + compute over exactly the
+    trials whose inference it folds: an IMPORTED trial is counted, while a
+    superseded retry, a probe, and a combine copy contribute $0.
+
+    Runs the real endpoint so the composite fold rides the browser's own trial
+    query (its distinct eligibility rule), not a re-derived filter.
+    """
+    task = TaskModel(
+        id=_TASK,
+        name=_TASK,
+        org_id=_ORG,
+        user="tester",
+        task_path="/tmp/composite-cost-test",
+        status=TaskStatus.COMPLETED,
+    )
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    session.add(task)
+    # tasks.current_version_id <-> task_versions.task_id is a cyclic FK: land the
+    # task, then the version, then point the task at it (the browser folds cost
+    # for current-version trials, so current_version_id must be set).
+    await session.flush()
+    session.add(
+        TaskVersionModel(
+            id=_V1, task_id=_TASK, version=1, task_path="/tmp/composite-cost-test"
+        )
+    )
+    await session.flush()
+    task.current_version_id = _V1
+
+    plain = _trial(_BR_PLAIN, cost_usd=0.25, task_version_id=_V1)
+    billed = _trial(
+        _BR_BILLED, cost_usd=0.50, task_version_id=_V1, billed_user_id=_BILLED_USER
+    )
+    imported = _trial(
+        _BR_IMPORT,
+        cost_usd=0.40,
+        task_version_id=_V1,
+        origin=TrialOrigin.IMPORTED,
+    )
+    session.add_all([plain, billed, imported])
+    # Flush the survivors first so the superseded FK (-> trials.id) resolves.
+    await session.flush()
+
+    superseded = _trial(
+        _BR_SUPERSEDED,
+        cost_usd=1.00,
+        task_version_id=_V1,
+        superseded_by_trial_id=_BR_BILLED,
+    )
+    combine = _trial(
+        _BR_COMBINE,
+        cost_usd=2.00,
+        task_version_id=_V1,
+        idempotency_key=f"{COMBINE_IDEMPOTENCY_PREFIX}{_BR_PLAIN}",
+    )
+    probe = _trial(
+        _BR_PROBE,
+        cost_usd=3.00,
+        task_version_id=_V1,
+        is_probe=True,
+    )
+    session.add_all([superseded, combine, probe])
+    session.add_all(
+        [
+            # plain: QA 0.07; no compute.
+            _qa(_BR_PLAIN, 0.07),
+            # billed: QA 0.10 + 0.05 = 0.15; compute 0.20 + 0.30 = 0.50.
+            _qa(_BR_BILLED, 0.10),
+            _qa(_BR_BILLED, 0.05),
+            _span(_BR_BILLED, Decimal("0.20"), 0),
+            _span(_BR_BILLED, Decimal("0.30"), 1),
+            # imported: QA 0.03; compute 0.11 -- MUST be counted (imports count).
+            _qa(_BR_IMPORT, 0.03),
+            _span(_BR_IMPORT, Decimal("0.11"), 0),
+            # Excluded ledgers -- must NOT reach the card.
+            _qa(_BR_SUPERSEDED, 0.99),
+            _span(_BR_SUPERSEDED, Decimal("0.88"), 0),
+            _qa(_BR_COMBINE, 0.77),
+            _span(_BR_COMBINE, Decimal("0.66"), 0),
+            _qa(_BR_PROBE, 0.55),
+            _span(_BR_PROBE, Decimal("0.44"), 0),
+        ]
+    )
+    await session.flush()
+
+    response = await browse_tasks_core(session, org_id=_ORG)
+    items = [item for item in response.items if item.id == _TASK]
+    assert len(items) == 1
+    item = items[0]
+
+    # Inference: plain + billed + import (0.25 + 0.50 + 0.40); excluded three out.
+    assert item.cost_usd == pytest.approx(1.15)
+    assert item.cost_trial_count == 3
+
+    # QA and compute mirror that same population, IMPORT included.
+    assert item.qa_cost_usd == pytest.approx(0.07 + 0.15 + 0.03)  # 0.25
+    assert item.compute_cost_usd == pytest.approx(0.50 + 0.11)  # 0.61
+    assert item.total_cost_usd == pytest.approx(1.15 + 0.25 + 0.61)  # 2.01
+
+    # Had any excluded trial leaked, these would jump by its 0.99/0.77/0.55 QA or
+    # 0.88/0.66/0.44 compute. Pin the exclusion explicitly.
+    assert item.qa_cost_usd != pytest.approx(0.25 + 0.99)
+    assert item.qa_cost_usd != pytest.approx(0.25 + 0.77)
+    assert item.qa_cost_usd != pytest.approx(0.25 + 0.55)
+    assert item.compute_cost_usd != pytest.approx(0.61 + 0.88)
+
+    # Billed split: only the billed survivor contributes, mirroring billed_cost_usd.
+    assert item.billed_cost_usd == pytest.approx(0.50)
+    assert item.billed_qa_cost_usd == pytest.approx(0.15)
+    assert item.billed_compute_cost_usd == pytest.approx(0.50)
+    assert item.billed_total_cost_usd == pytest.approx(0.50 + 0.15 + 0.50)  # 1.15

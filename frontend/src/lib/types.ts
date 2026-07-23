@@ -275,6 +275,14 @@ export interface TaskBrowseItem {
   billed_trial_count: number;
   billed_has_estimated: boolean;
   billed_has_native: boolean;
+  // Composite spend (additive; cost_usd/billed_cost_usd stay inference-only).
+  // total = inference + qa + compute; billed_* mirror the billed split.
+  qa_cost_usd: number;
+  compute_cost_usd: number;
+  total_cost_usd: number;
+  billed_qa_cost_usd: number;
+  billed_compute_cost_usd: number;
+  billed_total_cost_usd: number;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
