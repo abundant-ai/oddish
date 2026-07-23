@@ -14,7 +14,7 @@ from sqlalchemy.exc import ProgrammingError
 from auth import AuthContext, require_admin
 from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, UserModel
-from operator_access import is_operator_org, require_operator_org
+from auth.permissions import is_operator_org, require_operator_org
 from pg_errors import is_undefined_table_error
 from slack_alert_settings import (
     AlertSettings,

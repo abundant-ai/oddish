@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from auth import AuthContext, can_manage_api_keys, require_admin
-from operator_access import require_operator_org
+from auth.permissions import require_operator_org
 from oddish.core.llm_key_fingerprint import hash_llm_key, key_hint
 from oddish.db import CostExcludedLlmKeyModel, get_session, utcnow
 
