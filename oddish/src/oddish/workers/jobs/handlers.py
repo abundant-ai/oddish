@@ -44,6 +44,7 @@ from oddish.workers.queue.trial_failures import (
 
 class WorkerJobLike:
     id: str
+    attempts: int
     queue_key: str
     subject_id: str | None
     payload: dict
@@ -87,6 +88,7 @@ class TrialJobHandler:
                 queue_slot=job.queue_slot,
                 modal_function_call_id=job.modal_function_call_id,
                 worker_job_id=job.id,
+                worker_job_attempt=job.attempts,
             )
         finally:
             current_registry_credentials.reset(cred_token)
@@ -305,7 +307,9 @@ class AnalyzerJobHandler:
     async def run(self, job) -> JobOutcome:
         analyzer_id = job.subject_id or (job.payload or {}).get("analyzer_id")
         if not analyzer_id:
-            raise ValueError("ANALYZER worker_job missing subject_id / payload.analyzer_id")
+            raise ValueError(
+                "ANALYZER worker_job missing subject_id / payload.analyzer_id"
+            )
         # A retryable failure re-dispatches this handler, but
         # run_analyzer_generation_job early-exits on a terminal analyzer status.
         # Clear a prior terminal state so the retry actually re-runs instead of
@@ -315,7 +319,9 @@ class AnalyzerJobHandler:
                 AnalyzerModel, analyzer_id, with_for_update=True
             )
             if analyzer is None:
-                return JobOutcome.fail("Analyzer vanished before generation", retryable=False)
+                return JobOutcome.fail(
+                    "Analyzer vanished before generation", retryable=False
+                )
             if analyzer.status in (JobStatus.SUCCESS, JobStatus.FAILED):
                 analyzer.status = JobStatus.QUEUED
                 analyzer.error = None
@@ -326,7 +332,9 @@ class AnalyzerJobHandler:
         async with get_session() as session:
             analyzer = await session.get(AnalyzerModel, analyzer_id)
             if analyzer is None:
-                return JobOutcome.fail("Analyzer vanished mid-generation", retryable=False)
+                return JobOutcome.fail(
+                    "Analyzer vanished mid-generation", retryable=False
+                )
             if analyzer.status == JobStatus.SUCCESS:
                 return JobOutcome.ok()
             return JobOutcome.fail(

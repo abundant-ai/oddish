@@ -7,6 +7,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
@@ -21,13 +22,16 @@ from harbor.models.task.config import (
     TaskConfig as HarborTaskConfig,
     normalize_allowed_hosts,
 )
+from harbor.models.task.verifier_mode import resolve_effective_verifier_env_config
 from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from harbor.models.trial.config import EnvironmentConfig as HarborEnvironmentConfig
+from harbor.models.trial.config import ResourceMode
 from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
 from oddish.config import BEDROCK_ENV_VARS, is_anthropic_hdo_model, settings
+from oddish.costs.modal_cost import SpanResources, normalize_gpu_type
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -77,6 +81,165 @@ _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
 # TODO: Temporary workaround; remove once RishiDesai/harbor has the correct fix.
 # Hosts the Claude Code CLI fetches from at agent-setup (curl bootstrap / npm).
 _CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
+
+
+def _resource_bounds(
+    value: int | None,
+    mode: ResourceMode,
+    *,
+    default_request: float,
+    auto_is_request: bool,
+) -> tuple[float | None, float | None]:
+    if value is None or mode == ResourceMode.IGNORE:
+        return None, None
+    if mode == ResourceMode.REQUEST or (mode == ResourceMode.AUTO and auto_is_request):
+        return float(value), None
+    if mode == ResourceMode.LIMIT:
+        return min(default_request, float(value)), float(value)
+    return float(value), float(value)
+
+
+def _unknown_sandbox_resources() -> SpanResources:
+    return SpanResources(
+        cpu_request=None,
+        cpu_limit=None,
+        mem_request_mb=None,
+        mem_limit_mb=None,
+        gpu_type=None,
+        gpu_count=0,
+        price_multiplier=Decimal(1),
+        container_class="sandbox",
+        spec_source="unknown",
+    )
+
+
+def _resources_from_environment_config(env: Any, overrides: Any) -> SpanResources:
+    env = env.model_copy(deep=True)
+    if overrides.override_cpus is not None:
+        env.cpus = overrides.override_cpus
+    if overrides.override_memory_mb is not None:
+        env.memory_mb = overrides.override_memory_mb
+    if overrides.override_gpus is not None:
+        env.gpus = overrides.override_gpus
+
+    cpu_mode = ResourceMode(overrides.cpu_enforcement_policy)
+    mem_mode = ResourceMode(overrides.memory_enforcement_policy)
+    cpu_request, cpu_limit = _resource_bounds(
+        env.cpus,
+        cpu_mode,
+        default_request=0.125,
+        auto_is_request=False,
+    )
+    mem_request, mem_limit = _resource_bounds(
+        env.memory_mb,
+        mem_mode,
+        default_request=128,
+        auto_is_request=True,
+    )
+    has_override = any(
+        value is not None
+        for value in (
+            overrides.override_cpus,
+            overrides.override_memory_mb,
+            overrides.override_gpus,
+        )
+    )
+    pinned = any(value is not None for value in (env.cpus, env.memory_mb, env.gpus))
+    return SpanResources(
+        cpu_request=cpu_request,
+        cpu_limit=cpu_limit,
+        mem_request_mb=int(mem_request) if mem_request is not None else None,
+        mem_limit_mb=int(mem_limit) if mem_limit is not None else None,
+        gpu_type=normalize_gpu_type(env.gpu_types[0] if env.gpu_types else None),
+        gpu_count=env.gpus or 0,
+        price_multiplier=Decimal(1),
+        container_class="sandbox",
+        spec_source=(
+            "override" if has_override else "pinned" if pinned else "modal_default"
+        ),
+        cpu_enforcement_mode=cpu_mode.value,
+        mem_enforcement_mode=mem_mode.value,
+    )
+
+
+def capture_sandbox_resources(
+    task_path: Path, harbor_config: dict[str, Any] | None
+) -> SpanResources:
+    """Snapshot the effective agent resources before an ephemeral fork."""
+    try:
+        task = HarborTaskConfig.model_validate_toml(
+            (task_path / "task.toml").read_text()
+        )
+        hc = HarborConfig.model_validate(harbor_config or {})
+        return _resources_from_environment_config(task.environment, hc.environment)
+    except Exception:
+        return _unknown_sandbox_resources()
+
+
+def capture_verifier_resources(
+    task_path: Path, harbor_config: dict[str, Any] | None
+) -> SpanResources | None:
+    """Return the separate verifier's effective resources, if it has one."""
+    try:
+        task = HarborTaskConfig.model_validate_toml(
+            (task_path / "task.toml").read_text()
+        )
+        hc = HarborConfig.model_validate(harbor_config or {})
+        for step in task.steps or [None]:
+            env = resolve_effective_verifier_env_config(task, step)
+            if env is not None:
+                return _resources_from_environment_config(env, hc.environment)
+        return None
+    except Exception:
+        return None
+
+
+def capture_live_sandbox_resources(
+    environment: Any | None, fallback: SpanResources
+) -> SpanResources:
+    """Prefer the live Harbor environment's merged resource configuration."""
+    if environment is None:
+        return fallback
+    try:
+        env = environment.task_env_config
+        cpu_mode = ResourceMode(environment._cpu_resource_mode)
+        mem_mode = ResourceMode(environment._memory_resource_mode)
+
+        def split(value: Any) -> tuple[float | None, float | None]:
+            if value is None:
+                return None, None
+            if isinstance(value, tuple):
+                return float(value[0]), float(value[1])
+            return float(value), None
+
+        cpu_request, cpu_limit = split(environment._cpu_config())
+        mem_request, mem_limit = split(environment._memory_config())
+        has_override = any(
+            value is not None
+            for value in (
+                environment._override_cpus,
+                environment._override_memory_mb,
+                environment._override_gpus,
+            )
+        )
+        pinned = any(value is not None for value in (env.cpus, env.memory_mb, env.gpus))
+        return SpanResources(
+            cpu_request=cpu_request,
+            cpu_limit=cpu_limit,
+            mem_request_mb=int(mem_request) if mem_request is not None else None,
+            mem_limit_mb=int(mem_limit) if mem_limit is not None else None,
+            gpu_type=normalize_gpu_type(env.gpu_types[0] if env.gpu_types else None),
+            gpu_count=env.gpus or 0,
+            price_multiplier=Decimal(1),
+            container_class="sandbox",
+            spec_source=(
+                "override" if has_override else "pinned" if pinned else "modal_default"
+            ),
+            cpu_enforcement_mode=cpu_mode.value,
+            mem_enforcement_mode=mem_mode.value,
+        )
+    except Exception:
+        return fallback
 
 
 def _sized_environment_build_timeout_multiplier(

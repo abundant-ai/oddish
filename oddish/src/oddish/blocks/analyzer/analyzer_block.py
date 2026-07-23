@@ -14,6 +14,7 @@ from oddish.db.models import (
     AnalyzerBlockModel,
     AnalyzerModel,
     JobStatus,
+    TaskModel,
     TrialModel,
     utcnow,
 )
@@ -192,11 +193,10 @@ class AnalyzerBlock(Block):
     async def _cost_attribution(self, session) -> dict[str, str | None]:
         """Attribution columns for the cost row, resolved from ``analyzer_id``.
 
-        ``analyzer_id`` is polymorphic: a trial id on per-trial blocks
-        (trajectory_summary), an ``analyzers`` row id on cohort blocks (the
-        failure-analysis map/reduce, whose N blocks all share one). Try both,
-        so cohort spend is attributed to the org and user who triggered the
-        report instead of landing unattributed.
+        ``analyzer_id`` is polymorphic: a trial id on per-trial blocks, a task
+        id on task-level QA blocks, or an ``analyzers`` row id on cohort blocks.
+        Resolve those subjects in that order so spend lands on the org and user
+        that caused it instead of becoming unattributed.
 
         ``trial_id`` is left None on the analyzer path rather than pointed at a
         row in a different table; a cohort block spans many trials, so there is
@@ -231,6 +231,22 @@ class AnalyzerBlock(Block):
                 # the trial's owner for internally-driven runs with no request
                 # behind them (workers, the graph builder).
                 "billed_user_id": self.triggered_by_user_id or trial.billed_user_id,
+            }
+
+        task = (
+            await session.execute(
+                select(
+                    TaskModel.org_id,
+                    TaskModel.created_by_user_id,
+                ).where(TaskModel.id == self.analyzer_id)
+            )
+        ).first()
+        if task is not None:
+            return {
+                **blank,
+                "org_id": task.org_id,
+                "billed_user_id": self.triggered_by_user_id
+                or task.created_by_user_id,
             }
 
         analyzer = (

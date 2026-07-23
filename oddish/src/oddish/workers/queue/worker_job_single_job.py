@@ -26,6 +26,11 @@ from typing import Any
 import asyncpg
 
 from oddish.config import settings
+from oddish.costs.recorder import (
+    WorkerBillingSpec,
+    close_worker_span,
+    open_worker_span,
+)
 from oddish.db import WorkerJobKind, WorkerJobStatus
 from oddish.workers.jobs.registry import (
     JobOutcome,
@@ -201,7 +206,7 @@ WHERE  id = (
 )
 RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
           attempts, max_attempts, queue_key, org_id, parent_job_id,
-          harbor_variant_id;
+          harbor_variant_id, claimed_at;
 """
 
 
@@ -230,6 +235,7 @@ class ClaimedWorkerJob:
     worker_id: str | None = None
     queue_slot: int | None = None
     modal_function_call_id: str | None = None
+    claimed_at: datetime | None = None
 
 
 async def _open_connection() -> asyncpg.Connection:
@@ -348,6 +354,7 @@ async def claim_single_worker_job(
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
+        claimed_at=row.get("claimed_at"),
     )
 
 
@@ -521,6 +528,7 @@ async def run_single_worker_job(
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
+    worker_billing_spec: WorkerBillingSpec | None = None,
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
 
@@ -547,6 +555,12 @@ async def run_single_worker_job(
     if job is None:
         return False
 
+    await open_worker_span(
+        job,
+        worker_billing_spec,
+        started_at=job.claimed_at or datetime.now(timezone.utc),
+    )
+
     console.print(
         f"[cyan]Processing worker_job id={job.id} kind={job.kind.value} "
         f"(queue_key={queue_key}, attempt={job.attempts}/{job.max_attempts})[/cyan]"
@@ -557,7 +571,8 @@ async def run_single_worker_job(
     except NoHandlerRegisteredError as exc:
         # Fail the row instead of leaving it in RUNNING so cleanup
         # doesn't have to reap it via the stale-heartbeat sweep.
-        await _record_outcome(
+        outcome_at = datetime.now(timezone.utc)
+        outcome_recorded = await _record_outcome(
             job_id=job.id,
             worker_id=worker_id,
             outcome=JobOutcome.fail(
@@ -570,6 +585,8 @@ async def run_single_worker_job(
             subject_table=job.subject_table,
             subject_id=job.subject_id,
         )
+        if outcome_recorded:
+            await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
         return True
 
     try:
@@ -578,6 +595,12 @@ async def run_single_worker_job(
         outcome = await handler.run(job)  # type: ignore[arg-type]
     except asyncio.CancelledError:
         console.print(f"[yellow]worker_job {job.id} cancelled[/yellow]")
+        # This attempt's compute is over; close its worker span at cancel time
+        # so the reconciler doesn't later close it at the job's (much later)
+        # terminal finished_at. CAS close, so any other close path is a no-op.
+        await close_worker_span(
+            job.id, job.attempts, finished_at=datetime.now(timezone.utc)
+        )
         raise
     except Exception as exc:  # handler-raised exceptions are retryable by default
         console.print(f"[red]worker_job {job.id} handler error: {exc!r}[/red]")
@@ -597,6 +620,7 @@ async def run_single_worker_job(
         f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
     )
 
+    outcome_at = datetime.now(timezone.utc)
     outcome_recorded = await _record_outcome(
         job_id=job.id,
         worker_id=worker_id,
@@ -607,6 +631,8 @@ async def run_single_worker_job(
         subject_table=job.subject_table,
         subject_id=job.subject_id,
     )
+    if outcome_recorded:
+        await close_worker_span(job.id, job.attempts, finished_at=outcome_at)
 
     if (
         outcome_recorded
@@ -636,6 +662,7 @@ async def drain_worker_jobs(
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
+    worker_billing_spec: WorkerBillingSpec | None = None,
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
 ) -> int:
@@ -669,6 +696,7 @@ async def drain_worker_jobs(
             modal_function_call_id=modal_function_call_id,
             post_success_hooks=post_success_hooks,
             harbor_variant_id=harbor_variant_id,
+            worker_billing_spec=worker_billing_spec,
         )
         if not job_found:
             break
