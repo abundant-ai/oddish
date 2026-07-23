@@ -966,6 +966,7 @@ interface CostTotals {
   cost_native_usd: number;
   cost_estimated_usd: number;
   qa_cost_usd?: number;
+  compute_cost_usd?: number;
   prev_cost_usd?: number | null;
   month_cost_usd?: number;
   month_budget_usd?: number | null;
@@ -976,6 +977,12 @@ export interface CostQaModelBreakdown {
   cost_usd: number;
 }
 
+export interface CostComputeProviderBreakdown {
+  provider: string;
+  cost_usd: number;
+  span_count: number;
+}
+
 export interface CostBreakdownResponse {
   window_days: number | null;
   bucket: string;
@@ -984,10 +991,12 @@ export interface CostBreakdownResponse {
   series_by_user: CostSeries;
   series_by_type?: CostSeries;
   series_qa_by_model?: CostSeries;
+  series_compute_by_provider?: CostSeries;
   totals: CostTotals;
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
   qa_by_model?: CostQaModelBreakdown[];
+  compute_by_provider?: CostComputeProviderBreakdown[];
   experiments: CostExperimentBreakdown[];
   timestamp: string;
 }

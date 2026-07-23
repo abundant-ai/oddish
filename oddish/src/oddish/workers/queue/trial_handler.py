@@ -1033,7 +1033,7 @@ async def _handle_harbor_event(
                 if cost_state is not None:
                     provider = hook_event.environment_provider or cost_state.provider
                     resources = capture_live_sandbox_resources(
-                        hook_event.environment, cost_state.resources
+                        hook_event.environment, cost_state.resources, provider
                     )
                     cost_state.provider = provider
                     cost_state.resources = resources
@@ -1462,16 +1462,17 @@ async def run_trial_job(
             agent=prepared_trial.trial_agent,
         )
 
+    span_provider = (
+        prepared_trial.trial_environment or settings.harbor_environment
+    ).lower()
     cost_state = SandboxCostState(
         resources=capture_sandbox_resources(
-            task_path_to_run, prepared_trial.trial_harbor_config
+            task_path_to_run, prepared_trial.trial_harbor_config, span_provider
         ),
         verifier_resources=capture_verifier_resources(
-            task_path_to_run, prepared_trial.trial_harbor_config
+            task_path_to_run, prepared_trial.trial_harbor_config, span_provider
         ),
-        provider=(
-            prepared_trial.trial_environment or settings.harbor_environment
-        ).lower(),
+        provider=span_provider,
         trial_id=trial_id,
         attempt=prepared_trial.trial_attempt,
         experiment_id=prepared_trial.experiment_id or None,
