@@ -131,6 +131,10 @@ export function withOtherSegment(
   segments: Segment[],
   steps: TrajectoryStep[]
 ): Segment[] {
+  // No segments means there is no usable summary yet (still loading, absent,
+  // or failed). Preserve that state instead of presenting every step as Other.
+  if (segments.length === 0) return segments;
+
   const owner = segmentOwners(segments);
   const unclaimed = steps
     .map((s) => Number(s.step_id))
