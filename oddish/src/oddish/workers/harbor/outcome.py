@@ -40,6 +40,9 @@ class HarborOutcome:
     cache_write_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
+    trajectory_duration_seconds: float | None = None
+    total_tool_calls: int | None = None
+    tool_counts: dict[str, int] | None = None
     cost_usd: float | None = None
 
     # Per-phase timing breakdown (seconds)
@@ -157,6 +160,9 @@ def _extract_outcome_from_job_result(
             cache_write_tokens=cache_write_tokens,
             output_tokens=output_tokens,
             total_steps=total_steps,
+            trajectory_duration_seconds=trajectory.trajectory_duration_seconds,
+            total_tool_calls=trajectory.total_tool_calls,
+            tool_counts=trajectory.tool_counts,
             cost_usd=cost_usd,
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
