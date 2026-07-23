@@ -57,6 +57,7 @@ def test_task_status_response_includes_experiment_created_at():
         verdict_status=None,
         verdict=None,
         verdict_error=None,
+        pre_trial=None,
         experiments=[experiment],
         created_at=task_created_at,
         updated_at=task_created_at,
@@ -82,6 +83,47 @@ def test_task_status_response_includes_experiment_created_at():
     assert response.updated_at == task_created_at
     assert response.trial_version is None
     assert response.trial_version_id is None
+
+
+def test_task_status_response_includes_pre_trial_analysis():
+    task = SimpleNamespace(
+        id="task-a",
+        name="demo task",
+        status=TaskStatus.PENDING,
+        priority=Priority.LOW,
+        user="alice",
+        tags={},
+        task_path="/tmp/demo-task",
+        current_version_id=None,
+        run_analysis=False,
+        run_probe=False,
+        verdict_status=None,
+        verdict=None,
+        verdict_error=None,
+        pre_trial={"items": [{"id": "item-1", "file": "foo.py", "line_start": 1, "line_end": 3}]},
+        experiments=[],
+        created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        started_at=None,
+        finished_at=None,
+        link=None,
+    )
+    items = task.pre_trial["items"]
+
+    response = helpers._build_task_status_response(
+        task,
+        total=0,
+        completed=0,
+        failed=0,
+        reward_success=0,
+        reward_sum=0.0,
+        reward_total=0,
+        include_empty_rewards=True,
+        trials=None,
+    )
+
+    assert response.pre_trial_analysis == {"items": items}
+    assert response.pre_trial_analysis["items"] == items
 
 
 def test_get_task_status_trials_filters_to_current_version():

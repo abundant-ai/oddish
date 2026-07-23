@@ -815,6 +815,10 @@ TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.verdict_status,
     TaskModel.verdict,
     TaskModel.verdict_error,
+    # _build_task_status_response serializes this as ``pre_trial_analysis`` on
+    # both the compact and full paths, so it must be eager-loaded here or the
+    # compact /tasks list lazy-loads it outside the request greenlet.
+    TaskModel.pre_trial,
     TaskModel.created_at,
     TaskModel.updated_at,
     TaskModel.started_at,
@@ -916,6 +920,7 @@ def _build_task_status_response(
         verdict_status=task.verdict_status,
         verdict=task.verdict,
         verdict_error=task.verdict_error,
+        pre_trial_analysis=task.pre_trial,
         jobs=list(jobs or []),
         created_at=task.created_at,
         updated_at=task.updated_at,

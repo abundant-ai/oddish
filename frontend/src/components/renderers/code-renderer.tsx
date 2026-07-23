@@ -5,9 +5,14 @@ import { CodeBlock } from "@/components/code-block";
 interface CodeRendererProps {
   content: string;
   language: string;
+  highlightLines?: [number, number] | null;
 }
 
-export function CodeRenderer({ content, language }: CodeRendererProps) {
+export function CodeRenderer({
+  content,
+  language,
+  highlightLines,
+}: CodeRendererProps) {
   return (
     <div className="h-full overflow-auto">
       <CodeBlock
@@ -15,6 +20,7 @@ export function CodeRenderer({ content, language }: CodeRendererProps) {
         language={language}
         maxHeight="none"
         truncateAt={0}
+        highlightLines={highlightLines}
       />
     </div>
   );

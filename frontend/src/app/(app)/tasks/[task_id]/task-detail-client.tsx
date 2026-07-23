@@ -23,6 +23,7 @@ import {
 import { TagEditor } from "@/components/tag-editor";
 import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ProbeLaunchButton } from "@/components/probe-launch-button";
+import { ActionItemsPanel } from "@/components/action-items-panel";
 import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -110,6 +111,25 @@ function writeVersionToQuery(
   } else {
     url.searchParams.set("version", versionId);
   }
+  window.history.replaceState(window.history.state, "", url.toString());
+}
+
+function readFileFromQuery(): { file: string | null; line: number | null } {
+  if (typeof window === "undefined") return { file: null, line: null };
+  const p = new URLSearchParams(window.location.search);
+  const file = p.get("file");
+  const lineRaw = p.get("line");
+  const line = lineRaw ? Number(lineRaw) : null;
+  return { file, line: line != null && Number.isFinite(line) ? line : null };
+}
+
+function writeFileToQuery(file: string | null, line: number | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (file) url.searchParams.set("file", file);
+  else url.searchParams.delete("file");
+  if (line != null) url.searchParams.set("line", String(line));
+  else url.searchParams.delete("line");
   window.history.replaceState(window.history.state, "", url.toString());
 }
 
@@ -661,12 +681,13 @@ function AgentCard({
   );
 }
 
+// orderedTrials/trialGroups are deliberately NOT part of this state -- they're
+// derived from `task` at render time so a drawer opened before `task` loads
+// (e.g. a cold deep-link) still picks up trial-nav once it becomes available.
 type DrawerState = {
   mode: "task" | "trial";
   trial: Trial | null;
   trialIndex: number | null;
-  orderedTrials: Trial[];
-  trialGroups: Array<{ agent: string; model: string | null; trials: Trial[] }>;
 };
 
 interface TaskDetailClientProps {
@@ -854,9 +875,20 @@ export function TaskDetailClient({
     return out;
   }, [trialGroups]);
 
+  const actionItems = useMemo(() => {
+    const pre = task?.pre_trial_analysis?.items ?? [];
+    const post = (task?.trials ?? []).flatMap((t) => t.analysis?.action_items ?? []);
+    return [...pre, ...post];
+  }, [task]);
+
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
   const [drawerShowTask, setDrawerShowTask] = useState(true);
   const [drawerShowTrial, setDrawerShowTrial] = useState(true);
+  const [fileTarget, setFileTarget] = useState<{
+    file: string;
+    line: number | null;
+    lineEnd: number | null;
+  } | null>(null);
 
   const handleSelectTrial = useCallback(
     (trial: Trial) => {
@@ -865,11 +897,9 @@ export function TaskDetailClient({
         mode: "trial",
         trial,
         trialIndex: trialIndex >= 0 ? trialIndex : null,
-        orderedTrials,
-        trialGroups,
       });
     },
-    [orderedTrials, trialGroups]
+    [orderedTrials]
   );
 
   const handleOpenTaskFiles = useCallback(() => {
@@ -877,10 +907,41 @@ export function TaskDetailClient({
       mode: "task",
       trial: null,
       trialIndex: null,
-      orderedTrials,
-      trialGroups,
     });
-  }, [orderedTrials, trialGroups]);
+  }, []);
+
+  // Deep-link a file/line into the task files drawer (e.g. from action
+  // items) and mirror the target into the URL for shareable links. lineEnd
+  // only widens the highlight range -- the URL and scroll target still key
+  // off the start line.
+  const openFileAtLine = useCallback(
+    (file: string, line: number | null, lineEnd?: number | null) => {
+      setFileTarget({ file, line, lineEnd: lineEnd ?? null });
+      setDrawer({
+        mode: "task",
+        trial: null,
+        trialIndex: null,
+      });
+      writeFileToQuery(file, line);
+    },
+    []
+  );
+
+  // Hydrate the drawer + file target from `?file=&line=` on mount. Reading
+  // orderedTrials/trialGroups isn't needed here since the drawer render below
+  // pulls them live off `task`, so this stays correct even when `task` is
+  // still null at mount (e.g. a cold deep-link with no SSR initialDetail).
+  useEffect(() => {
+    const { file, line } = readFileFromQuery();
+    if (file) {
+      setFileTarget({ file, line, lineEnd: null });
+      setDrawer({
+        mode: "task",
+        trial: null,
+        trialIndex: null,
+      });
+    }
+  }, []);
 
   const handleNavigateToTrial = useCallback(
     (trial: Trial, trialIndex: number) => {
@@ -1174,6 +1235,8 @@ export function TaskDetailClient({
           }
         />
 
+        <ActionItemsPanel items={actionItems} onOpenFile={openFileAtLine} />
+
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
             <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
@@ -1209,7 +1272,13 @@ export function TaskDetailClient({
         {drawer && (
           <UnifiedDrawerWrapper
             open={true}
-            onOpenChange={(open) => !open && setDrawer(null)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setDrawer(null);
+                setFileTarget(null);
+                writeFileToQuery(null, null);
+              }
+            }}
             mode={drawer.mode}
             showTask={drawerShowTask}
             showTrial={drawerShowTrial}
@@ -1229,16 +1298,22 @@ export function TaskDetailClient({
             taskContent={
               <TaskFilesPanel
                 isOpen={true}
-                onClose={() => setDrawer(null)}
+                onClose={() => {
+                  setDrawer(null);
+                  setFileTarget(null);
+                  writeFileToQuery(null, null);
+                }}
                 taskId={task.id}
                 task={task}
+                initialFilePath={fileTarget?.file ?? undefined}
+                initialLine={fileTarget?.line ?? undefined}
+                initialLineEnd={fileTarget?.lineEnd ?? undefined}
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={
-                  drawer.trialGroups.length > 0 &&
-                  drawer.trialGroups[0].trials.length > 0
+                  trialGroups.length > 0 && trialGroups[0].trials.length > 0
                     ? () => {
-                        const firstTrial = drawer.trialGroups[0].trials[0];
+                        const firstTrial = trialGroups[0].trials[0];
                         handleSelectTrial(firstTrial);
                       }
                     : undefined
@@ -1254,9 +1329,9 @@ export function TaskDetailClient({
                   onClose={() => setDrawer(null)}
                   trial={drawer.trial}
                   task={task}
-                  orderedTrials={drawer.orderedTrials}
+                  orderedTrials={orderedTrials}
                   trialIndex={drawer.trialIndex}
-                  trialGroups={drawer.trialGroups}
+                  trialGroups={trialGroups}
                   onNavigate={handleNavigateToTrial}
                   onNavigateToTask={() =>
                     setDrawer((prev) =>

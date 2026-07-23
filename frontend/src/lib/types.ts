@@ -93,6 +93,13 @@ export interface TagListResponse {
   items: TagSummary[];
 }
 
+interface TrialExploitationAssessment {
+  links_to: string;
+  exploited: boolean;
+  exploit_evidence?: string | null;
+  causal?: boolean;
+}
+
 interface TrialAnalysis {
   trial_name?: string;
   classification: AnalysisClassification;
@@ -101,6 +108,8 @@ interface TrialAnalysis {
   root_cause?: string;
   recommendation?: string;
   reward?: number | null;
+  action_items?: import("./action-items").ActionItem[];
+  exploitation?: TrialExploitationAssessment[];
 }
 
 interface TrialQueueInfo {
@@ -219,6 +228,7 @@ export interface Task {
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;
+  pre_trial_analysis?: { items: import("./action-items").ActionItem[] } | null;
   jobs?: VisibleWorkerJob[];
   current_version?: number | null;
   current_version_id?: string | null;

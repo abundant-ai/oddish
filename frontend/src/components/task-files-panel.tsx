@@ -114,6 +114,17 @@ interface TaskFilesPanelProps {
    */
   initialFilePath?: string | null;
   /**
+   * Line number to scroll into view (and highlight) once `initialFilePath`
+   * resolves and its content has loaded. Pairs with `initialFilePath` for
+   * deep-linking straight to a line (e.g. from action items).
+   */
+  initialLine?: number | null;
+  /**
+   * End of the highlighted range when the deep-link covers multiple lines.
+   * Scroll target stays `initialLine`; only the highlight widens.
+   */
+  initialLineEnd?: number | null;
+  /**
    * Task id to source the PROBE entry from, for panes that drive file listing
    * via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side "Task
    * definition" pane). Falls back to `taskId` when not set.
@@ -283,6 +294,8 @@ export function TaskFilesPanel({
   filesUrl,
   taskVersion,
   initialFilePath,
+  initialLine,
+  initialLineEnd,
   probeTaskId,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
@@ -823,6 +836,33 @@ export function TaskFilesPanel({
     }
   }, [selectedFile]);
 
+  // Scroll a deep-linked line into view once its file content has loaded.
+  // The `#L{n}` anchor is written by Shiki's async highlighter (see
+  // code-block.tsx), so it may not exist in the DOM yet right after
+  // `fileContent` resolves -- poll a few frames instead of a fixed delay.
+  useEffect(() => {
+    if (!initialLine || !selectedFile) return;
+    let rafId = 0;
+    let cancelled = false;
+    const deadline = Date.now() + 1000;
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = contentRef.current?.querySelector(`#L${initialLine}`);
+      if (el) {
+        el.scrollIntoView({ block: "center" });
+        return;
+      }
+      if (Date.now() < deadline) {
+        rafId = requestAnimationFrame(tryScroll);
+      }
+    };
+    rafId = requestAnimationFrame(tryScroll);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+    };
+  }, [initialLine, selectedFile, fileContent]);
+
   // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
@@ -1044,6 +1084,9 @@ export function TaskFilesPanel({
             content={isBinary ? null : fileContent}
             fileSize={fullFileSize ?? selectedFile.size}
             viewMode={viewMode}
+            highlightLines={
+              initialLine ? [initialLine, initialLineEnd ?? initialLine] : null
+            }
           />
         </div>
         {!isBinary && isTruncated && (
