@@ -148,18 +148,26 @@ function CostBadge({
         breakdown.qa
       )} QA · ${formatCostUsdExact(breakdown.compute)} sandbox.`
     : "";
-  const titleText =
-    trialCount === 0
-      ? "No cost data reported yet"
-      : `Summed across ${trialCount} trial${trialCount === 1 ? "" : "s"}${
+  // `cost` is the composite total (inference + QA + compute). QA/compute spend
+  // can exist on trials that reported no priced inference (trialCount 0), so key
+  // the show/dash decision off the composite total, not the priced-trial count.
+  const hasSpend = Number.isFinite(cost) && cost > 0;
+  const summedAcross =
+    trialCount > 0
+      ? `Summed across ${trialCount} trial${trialCount === 1 ? "" : "s"}${
           hasEstimated && hasNative
             ? ". Mixed native + estimated values; ~ marks estimates."
             : hasEstimated
               ? ". Estimated from token counts × static model pricing."
               : ". Reported by the agent runtime."
-        }${breakdownText}`;
+        }`
+      : "Composite spend from QA + compute (no priced inference trial).";
+  const titleText =
+    trialCount === 0 && !hasSpend
+      ? "No cost data reported yet"
+      : `${summedAcross}${breakdownText}`;
 
-  if (trialCount === 0) {
+  if (trialCount === 0 && !hasSpend) {
     return (
       <span
         className={`font-display ${valueClass} leading-none tracking-[-0.02em] text-[color:var(--paper-ink-3)]`}
@@ -426,8 +434,10 @@ function VersionSwitcher({
           const label = v.is_current
             ? `v${v.version} · default`
             : `v${v.version}`;
+          // Guard on the composite total, not the priced-trial count: a version
+          // with $0 inference but non-zero QA/compute still has spend to show.
           const cost =
-            v.cost_trial_count > 0
+            v.total_cost_usd > 0
               ? `${v.cost_has_estimated && !v.cost_has_native ? "~" : ""}${formatCostUsd(v.total_cost_usd)}`
               : "$0";
           const sub = `${v.trial_count} trial${v.trial_count === 1 ? "" : "s"} · ${cost}${v.message ? ` · ${v.message}` : ""}`;
@@ -543,15 +553,15 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
               {formatRewardPercent(trial.reward)})
             </div>
           )}
-          {trial.cost_usd != null && (
+          {(trial.total_cost_usd != null || trial.cost_usd != null) && (
             <div className="text-muted-foreground">
               {trial.cost_is_estimated ? "~" : ""}
-              {formatCostUsd(trial.total_cost_usd ?? trial.cost_usd)}
+              {formatCostUsd(trial.total_cost_usd ?? trial.cost_usd ?? 0)}
               {(trial.qa_cost_usd != null ||
                 trial.compute_cost_usd != null) && (
                 <span>
                   {" "}
-                  ({formatCostUsdExact(trial.cost_usd)} inf ·{" "}
+                  ({formatCostUsdExact(trial.cost_usd ?? 0)} inf ·{" "}
                   {formatCostUsdExact(trial.qa_cost_usd ?? 0)} QA ·{" "}
                   {formatCostUsdExact(trial.compute_cost_usd ?? 0)} sandbox)
                 </span>
@@ -582,12 +592,12 @@ function AgentCard({
     summary.rewardTotal > 0
       ? (summary.rewardSum / summary.rewardTotal) * 100
       : null;
-  // Composite (inference + QA + compute) mean, matching the adjacent composite
-  // "total cost" so avg × trial count reconciles with the total shown.
+  // Composite (inference + QA + compute) mean over the same population the
+  // composite "total cost" sums (every trial, via summarizeTrials — not just the
+  // inference-priced ones), so avg × trialCount reconciles with the total shown
+  // and a QA/compute-only trial can't inflate a per-priced-trial denominator.
   const avgCostUsd =
-    summary.costTrialCount > 0
-      ? summary.totalCostUsd / summary.costTrialCount
-      : null;
+    summary.trialCount > 0 ? summary.totalCostUsd / summary.trialCount : null;
   const avgDurationSec = useMemo(() => {
     let sum = 0;
     let count = 0;
@@ -658,7 +668,7 @@ function AgentCard({
               }}
             />
           </span>
-          <span title="Mean cost per priced trial">
+          <span title="Mean composite cost per trial">
             <span className="text-[color:var(--paper-ink-3)]">avg cost</span>{" "}
             <span className="text-[color:var(--paper-ink)]">
               {avgCostUsd != null ? formatCostUsd(avgCostUsd) : "—"}

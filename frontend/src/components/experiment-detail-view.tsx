@@ -725,12 +725,14 @@ function ExperimentSummaryBar({
                         ? ". Estimated from token counts × static model pricing."
                         : ". Reported by the agent runtime."
                   }. Composite total ${formatCostUsdExact(summary.totalCostUsd)}: ${formatCostUsdExact(summary.costUsd)} inference · ${formatCostUsdExact(summary.qaCostUsd)} QA · ${formatCostUsdExact(summary.computeCostUsd)} sandbox`
-                : "No cost data reported yet"
+                : summary.totalCostUsd > 0
+                  ? `Composite spend from QA + compute with no priced inference trial. Composite total ${formatCostUsdExact(summary.totalCostUsd)}: ${formatCostUsdExact(summary.costUsd)} inference · ${formatCostUsdExact(summary.qaCostUsd)} QA · ${formatCostUsdExact(summary.computeCostUsd)} sandbox`
+                  : "No cost data reported yet"
           }
         >
           {costPending ? (
             <span className="text-[color:var(--paper-ink-3)]">—</span>
-          ) : summary.costTrialCount > 0 ? (
+          ) : summary.costTrialCount > 0 || summary.totalCostUsd > 0 ? (
             <>
               {summary.costHasEstimated && !summary.costHasNative && (
                 <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">

@@ -44,6 +44,7 @@ from oddish.core.endpoints.task_detail import (  # noqa: E402
 )
 from oddish.core.endpoints.tasks_query import browse_tasks_core  # noqa: E402
 from oddish.core.sharing.public import (  # noqa: E402
+    get_public_task_status_core,
     list_public_experiment_tasks_core,
 )
 from oddish.core.helpers import (  # noqa: E402
@@ -694,6 +695,96 @@ async def test_public_experiment_tasks_emit_composite_per_trial(session):
     # fields are populated (not None) — the endpoint supplies a composite for
     # every trial — so the client aggregator sums a real total, not a fallback.
     bare = trials[_PUB_BARE]
+    assert bare.qa_cost_usd == pytest.approx(0.0)
+    assert bare.compute_cost_usd == pytest.approx(0.0)
+    assert bare.total_cost_usd == pytest.approx(0.10)
+
+
+# --- Public single-task refetch (Bugbot follow-up): composite on refetch -------
+
+# ``get_public_task_status`` is the single-task refetch a share view hits after
+# navigating to one task. It must stamp qa/compute/total per trial exactly as the
+# list path does, or the share view silently drops to inference-only (the fields
+# come back null) after navigation. Pin that the extracted core threads the
+# batched composite into every emitted trial.
+_PUBLIC_TOKEN_ONE = f"composite-share-one-{_RUN}"
+_PT_FULL = f"{_TASK}-pt-full"
+_PT_QA = f"{_TASK}-pt-qa"
+_PT_BARE = f"{_TASK}-pt-bare"
+
+
+@pytest.mark.asyncio
+async def test_get_public_task_status_emits_composite_per_trial(session):
+    """``get_public_task_status_core`` (single public task refetch) stamps
+    qa/compute/total on every emitted trial, mirroring the list path so a share
+    view keeps the composite total after navigating to one task rather than
+    dropping back to inference-only.
+    """
+    session.add(
+        ExperimentModel(
+            id=_EXP,
+            name=_EXP,
+            org_id=_ORG,
+            is_public=True,
+            public_token=_PUBLIC_TOKEN_ONE,
+        )
+    )
+    session.add(
+        TaskModel(
+            id=_TASK,
+            name=_TASK,
+            org_id=_ORG,
+            user="tester",
+            task_path="/tmp/composite-cost-test",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    session.add_all(
+        [
+            _trial(_PT_FULL, cost_usd=0.50),  # inference + QA + compute
+            _trial(_PT_QA, cost_usd=0.25),  # inference + QA only
+            _trial(_PT_BARE, cost_usd=0.10),  # inference only (no ledger rows)
+        ]
+    )
+    await session.flush()
+
+    # Expose the task through the share token via task_experiments membership,
+    # mirroring a real shared experiment (the single-task fetch resolves the task
+    # only through that membership).
+    await session.execute(
+        insert(task_experiments).values([{"task_id": _TASK, "experiment_id": _EXP}])
+    )
+    session.add_all(
+        [
+            _qa(_PT_FULL, 0.20),
+            _span(_PT_FULL, Decimal("0.30"), 0),
+            _qa(_PT_QA, 0.05),
+        ]
+    )
+    await session.flush()
+
+    response = await get_public_task_status_core(session, _PUBLIC_TOKEN_ONE, _TASK)
+
+    trials = {t.id: t for t in (response.trials or [])}
+    assert set(trials) == {_PT_FULL, _PT_QA, _PT_BARE}
+
+    # Full ledger: inference 0.50 + QA 0.20 + compute 0.30 = 1.00.
+    full = trials[_PT_FULL]
+    assert full.cost_usd == pytest.approx(0.50)
+    assert full.qa_cost_usd == pytest.approx(0.20)
+    assert full.compute_cost_usd == pytest.approx(0.30)
+    assert full.total_cost_usd == pytest.approx(1.00)
+
+    # QA only: compute defaults to 0.0; total folds inference + QA (0.25 + 0.05).
+    qa_only = trials[_PT_QA]
+    assert qa_only.qa_cost_usd == pytest.approx(0.05)
+    assert qa_only.compute_cost_usd == pytest.approx(0.0)
+    assert qa_only.total_cost_usd == pytest.approx(0.30)
+
+    # No ledger rows: qa/compute are 0.0 and total == inference. Crucially the
+    # fields are populated (not None) — the refetch supplies a composite for every
+    # trial — so the client aggregator sums a real total, not a fallback.
+    bare = trials[_PT_BARE]
     assert bare.qa_cost_usd == pytest.approx(0.0)
     assert bare.compute_cost_usd == pytest.approx(0.0)
     assert bare.total_cost_usd == pytest.approx(0.10)

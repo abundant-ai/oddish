@@ -314,28 +314,56 @@ async def get_public_task_status(
 ) -> TaskStatusResponse:
     """Get task status for a public experiment."""
     async with get_session() as session:
-        resolved = await get_public_task_for_experiment(session, public_token, task_id)
-        if not resolved:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        exp, task, gathered_ids = resolved
-        queue_info_by_trial_id = await fetch_trial_queue_info(
-            session,
-            trials=task.trials if include_trials else [],
+        return await get_public_task_status_core(
+            session, public_token, task_id, include_trials=include_trials
         )
-        response = build_task_status_response(
-            task,
-            include_trials=include_trials,
-            queue_info_by_trial_id=queue_info_by_trial_id,
-            experiment_context_id=exp.id,
-            gathered_trial_ids=gathered_ids,
-        )
-        user_tags_by_task = await _hydrate_public_user_tags(session, task_ids=[task.id])
-        response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
-        public_exps = await _public_experiment_refs(session, [task.id])
-        _apply_public_experiments(
-            response, public_exps.get(task.id, []), preferred_id=exp.id
-        )
-        return response
+
+
+async def get_public_task_status_core(
+    session: AsyncSession,
+    public_token: str,
+    task_id: str,
+    *,
+    include_trials: bool = True,
+) -> TaskStatusResponse:
+    """Build a single public task's status (with trials) for a share view.
+
+    Extracted from the route so tests can drive it with an injected session.
+    Batches :func:`composite_cost_by_trial` and threads it into the builder so a
+    single-task refetch stamps qa/compute/total per trial exactly as the list
+    path does -- otherwise navigating to one shared task drops its trials back to
+    inference-only (qa/compute/total null).
+    """
+    resolved = await get_public_task_for_experiment(session, public_token, task_id)
+    if not resolved:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    exp, task, gathered_ids = resolved
+    queue_info_by_trial_id = await fetch_trial_queue_info(
+        session,
+        trials=task.trials if include_trials else [],
+    )
+    # Trials here are already filtered to the public-eligible set by
+    # get_public_task_for_experiment, so batch the composite over exactly them.
+    composite_by_trial = (
+        await composite_cost_by_trial(session, [t.id for t in task.trials])
+        if include_trials
+        else None
+    )
+    response = build_task_status_response(
+        task,
+        include_trials=include_trials,
+        queue_info_by_trial_id=queue_info_by_trial_id,
+        experiment_context_id=exp.id,
+        gathered_trial_ids=gathered_ids,
+        composite_by_trial=composite_by_trial,
+    )
+    user_tags_by_task = await _hydrate_public_user_tags(session, task_ids=[task.id])
+    response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+    public_exps = await _public_experiment_refs(session, [task.id])
+    _apply_public_experiments(
+        response, public_exps.get(task.id, []), preferred_id=exp.id
+    )
+    return response
 
 
 @router.get(
