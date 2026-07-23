@@ -319,33 +319,40 @@ def _aggregate_task_detail_rollups(
     for trial in trials:
         totals.total_trials += 1
         is_billed = trial.id in billed_ids
-        if trial.cost_usd is not None:
-            totals.cost_usd += trial.cost_usd
-            totals.cost_trial_count += 1
-            if trial.cost_is_estimated:
-                totals.cost_has_estimated = True
-            else:
-                totals.cost_has_native = True
-            if is_billed:
-                totals.billed_cost_usd += trial.cost_usd
-                totals.billed_trial_count += 1
-                if trial.cost_is_estimated:
-                    totals.billed_has_estimated = True
-                else:
-                    totals.billed_has_native = True
-
         # QA + compute are separate ledgers, not gated on inference being priced:
         # a trial with a token-unpriced ``cost_usd`` can still have real QA and
         # sandbox spend, and folding it here keeps the task total equal to the
         # sum of the per-trial ``total_cost_usd`` values. The billed split mirrors
-        # the ``billed_cost_usd`` logic above -- billed trials only.
+        # the ``billed_cost_usd`` logic below -- billed trials only.
         qa_cost = getattr(trial, "qa_cost_usd", None) or 0.0
         compute_cost = getattr(trial, "compute_cost_usd", None) or 0.0
+        has_inference = trial.cost_usd is not None
+        # A trial counts toward ``cost_trial_count`` when it contributes ANY
+        # composite component -- priced inference OR QA OR compute -- so the count
+        # never contradicts the composite total: a $0-inference trial with real
+        # QA/sandbox spend is both counted here and folded into ``total_cost_usd``.
+        contributes_cost = has_inference or qa_cost > 0 or compute_cost > 0
+        if has_inference:
+            totals.cost_usd += trial.cost_usd
+            if trial.cost_is_estimated:
+                totals.cost_has_estimated = True
+            else:
+                totals.cost_has_native = True
         totals.qa_cost_usd += qa_cost
         totals.compute_cost_usd += compute_cost
+        if contributes_cost:
+            totals.cost_trial_count += 1
         if is_billed:
+            if has_inference:
+                totals.billed_cost_usd += trial.cost_usd
+                if trial.cost_is_estimated:
+                    totals.billed_has_estimated = True
+                else:
+                    totals.billed_has_native = True
             totals.billed_qa_cost_usd += qa_cost
             totals.billed_compute_cost_usd += compute_cost
+            if contributes_cost:
+                totals.billed_trial_count += 1
 
         bucket = summary_by_version_id.get(trial.task_version_id or "")
         if bucket is None:
@@ -373,27 +380,30 @@ def _aggregate_task_detail_rollups(
             # keep the task looking "active").
             bucket.pending_count += 1
 
-        if trial.cost_usd is not None:
+        # Per-version composite fold, mirroring the task-total block above: fold
+        # QA/compute regardless of whether inference was priced, and count a
+        # trial when it contributes any composite component.
+        if has_inference:
             bucket.cost_usd += trial.cost_usd
-            bucket.cost_trial_count += 1
             if trial.cost_is_estimated:
                 bucket.cost_has_estimated = True
             else:
                 bucket.cost_has_native = True
-            if is_billed:
+        bucket.qa_cost_usd += qa_cost
+        bucket.compute_cost_usd += compute_cost
+        if contributes_cost:
+            bucket.cost_trial_count += 1
+        if is_billed:
+            if has_inference:
                 bucket.billed_cost_usd += trial.cost_usd
-                bucket.billed_trial_count += 1
                 if trial.cost_is_estimated:
                     bucket.billed_has_estimated = True
                 else:
                     bucket.billed_has_native = True
-
-        # Per-version composite fold, mirroring the task-total block above.
-        bucket.qa_cost_usd += qa_cost
-        bucket.compute_cost_usd += compute_cost
-        if is_billed:
             bucket.billed_qa_cost_usd += qa_cost
             bucket.billed_compute_cost_usd += compute_cost
+            if contributes_cost:
+                bucket.billed_trial_count += 1
 
         candidate = trial.finished_at or trial.started_at or trial.created_at
         if candidate is not None and (

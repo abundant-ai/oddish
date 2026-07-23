@@ -82,7 +82,7 @@ _T3_INFERENCE = 0.10
 def _trial(
     trial_id: str,
     *,
-    cost_usd: float,
+    cost_usd: float | None,
     task_version_id: str | None = None,
     superseded_by_trial_id: str | None = None,
     idempotency_key: str | None = None,
@@ -788,3 +788,190 @@ async def test_get_public_task_status_emits_composite_per_trial(session):
     assert bare.qa_cost_usd == pytest.approx(0.0)
     assert bare.compute_cost_usd == pytest.approx(0.0)
     assert bare.total_cost_usd == pytest.approx(0.10)
+
+
+# --- Count consistency (Bugbot follow-up): composite-only trials count too ------
+
+# A billed trial with $0 priced inference but real QA/compute must still count
+# toward cost_trial_count AND billed_trial_count in every rollup, so "N (billed)
+# trials" never contradicts a shown composite total. A member trial with no cost
+# at all (no inference, no QA, no compute) must NOT be counted. These pin the fix
+# in all three rollups: task-detail, the browser card, and the experiment tile.
+_CC_BILLED_COMPOSITE = f"{_TASK}-cc-billed-composite"
+_CC_ZERO = f"{_TASK}-cc-zero"
+
+
+def _cc_ledger_rows() -> list:
+    """QA (0.10 + 0.05 = 0.15) + compute (0.20 + 0.30 = 0.50) for the billed,
+    $0-inference trial shared by all three count-consistency tests."""
+    return [
+        _qa(_CC_BILLED_COMPOSITE, 0.10),
+        _qa(_CC_BILLED_COMPOSITE, 0.05),
+        _span(_CC_BILLED_COMPOSITE, Decimal("0.20"), 0),
+        _span(_CC_BILLED_COMPOSITE, Decimal("0.30"), 1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_task_detail_rollup_counts_composite_only_billed_trial(session):
+    """Task-detail: a $0-inference billed trial with QA + compute increments
+    cost_trial_count and billed_trial_count (and feeds total/billed_total), while
+    a no-cost trial is not counted -- so the count never contradicts the total.
+    """
+    task = TaskModel(
+        id=_TASK,
+        name=_TASK,
+        org_id=_ORG,
+        user="tester",
+        task_path="/tmp/composite-cost-test",
+        status=TaskStatus.COMPLETED,
+    )
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    session.add(task)
+    await session.flush()
+    session.add(
+        TaskVersionModel(
+            id=_V1, task_id=_TASK, version=1, task_path="/tmp/composite-cost-test"
+        )
+    )
+    billed_composite = _trial(
+        _CC_BILLED_COMPOSITE,
+        cost_usd=None,
+        task_version_id=_V1,
+        billed_user_id=_BILLED_USER,
+    )
+    zero = _trial(_CC_ZERO, cost_usd=None, task_version_id=_V1)
+    session.add_all([billed_composite, zero])
+    session.add_all(_cc_ledger_rows())
+    await session.flush()
+
+    folded = [billed_composite, zero]
+    composite = await composite_cost_by_trial(session, [t.id for t in folded])
+    responses = [
+        build_trial_response(t, _TASK, composite=composite.get(t.id)) for t in folded
+    ]
+    version_rows = await list_task_versions_core(session, task_id=_TASK, task=task)
+    totals, versions = _aggregate_task_detail_rollups(
+        trials=responses,
+        version_rows=version_rows,
+        current_version_id=_V1,
+        billed_trial_ids={_CC_BILLED_COMPOSITE},
+    )
+
+    # No priced inference at all, but real composite spend.
+    assert totals.cost_usd == pytest.approx(0.0)
+    assert totals.qa_cost_usd == pytest.approx(0.15)
+    assert totals.compute_cost_usd == pytest.approx(0.50)
+    assert totals.total_cost_usd == pytest.approx(0.65)
+    # The composite-only trial is counted; the no-cost trial is not.
+    assert totals.total_trials == 2
+    assert totals.cost_trial_count == 1
+    # Billed count + total include the composite-only billed trial. The bug this
+    # closes: the count stayed 0 while billed_total_cost_usd was 0.65.
+    assert totals.billed_trial_count == 1
+    assert totals.billed_qa_cost_usd == pytest.approx(0.15)
+    assert totals.billed_compute_cost_usd == pytest.approx(0.50)
+    assert totals.billed_total_cost_usd == pytest.approx(0.65)
+    # Per-version bucket mirrors the task totals.
+    v1 = versions[0]
+    assert v1.cost_trial_count == 1
+    assert v1.billed_trial_count == 1
+    assert v1.total_cost_usd == pytest.approx(0.65)
+    assert v1.billed_total_cost_usd == pytest.approx(0.65)
+
+
+@pytest.mark.asyncio
+async def test_browse_tasks_core_counts_composite_only_billed_trial(session):
+    """Browser card: a $0-inference billed trial with QA + compute counts toward
+    cost_trial_count and billed_trial_count (and folds its spend into the card
+    total), while a no-cost trial is not counted.
+    """
+    task = TaskModel(
+        id=_TASK,
+        name=_TASK,
+        org_id=_ORG,
+        user="tester",
+        task_path="/tmp/composite-cost-test",
+        status=TaskStatus.COMPLETED,
+    )
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    session.add(task)
+    await session.flush()
+    session.add(
+        TaskVersionModel(
+            id=_V1, task_id=_TASK, version=1, task_path="/tmp/composite-cost-test"
+        )
+    )
+    await session.flush()
+    task.current_version_id = _V1
+
+    billed_composite = _trial(
+        _CC_BILLED_COMPOSITE,
+        cost_usd=None,
+        task_version_id=_V1,
+        billed_user_id=_BILLED_USER,
+    )
+    zero = _trial(_CC_ZERO, cost_usd=None, task_version_id=_V1)
+    session.add_all([billed_composite, zero])
+    session.add_all(_cc_ledger_rows())
+    await session.flush()
+
+    response = await browse_tasks_core(session, org_id=_ORG)
+    items = [item for item in response.items if item.id == _TASK]
+    assert len(items) == 1
+    item = items[0]
+
+    assert item.cost_usd == pytest.approx(0.0)
+    assert item.qa_cost_usd == pytest.approx(0.15)
+    assert item.compute_cost_usd == pytest.approx(0.50)
+    assert item.total_cost_usd == pytest.approx(0.65)
+    # Composite-only trial counted; no-cost trial excluded.
+    assert item.cost_trial_count == 1
+    assert item.billed_trial_count == 1
+    assert item.billed_qa_cost_usd == pytest.approx(0.15)
+    assert item.billed_compute_cost_usd == pytest.approx(0.50)
+    assert item.billed_total_cost_usd == pytest.approx(0.65)
+
+
+@pytest.mark.asyncio
+async def test_experiment_totals_count_composite_only_billed_trial(session):
+    """Experiment tile: a $0-inference owned+billed member trial with QA + compute
+    increments cost_trial_count, owned_trial_count, and billed_trial_count, so
+    "N trials" never contradicts the composite total; a no-cost member is not
+    counted.
+    """
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    session.add(
+        TaskModel(
+            id=_TASK,
+            name=_TASK,
+            org_id=_ORG,
+            user="tester",
+            task_path="/tmp/composite-cost-test",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    billed_composite = _trial(
+        _CC_BILLED_COMPOSITE, cost_usd=None, billed_user_id=_BILLED_USER
+    )
+    zero = _trial(_CC_ZERO, cost_usd=None)
+    session.add_all([billed_composite, zero])
+    session.add_all(_cc_ledger_rows())
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(session, experiment_id=_EXP, org_id=_ORG)
+
+    # Two members, neither with priced inference; one contributes composite spend.
+    assert totals.total_trials == 2
+    assert totals.cost_usd == pytest.approx(0.0)
+    assert totals.qa_cost_usd == pytest.approx(0.15)
+    assert totals.compute_cost_usd == pytest.approx(0.50)
+    assert totals.total_cost_usd == pytest.approx(0.65)
+    # The composite-only member is counted in all three scopes; the no-cost
+    # member is not. The bug this closes: the counts stayed 0 (priced-only) while
+    # total_cost_usd / billed_total_cost_usd were 0.65.
+    assert totals.cost_trial_count == 1
+    assert totals.owned_trial_count == 1
+    assert totals.billed_trial_count == 1
+    assert totals.owned_total_cost_usd == pytest.approx(0.65)
+    assert totals.billed_total_cost_usd == pytest.approx(0.65)

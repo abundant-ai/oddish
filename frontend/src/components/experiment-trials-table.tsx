@@ -2306,7 +2306,11 @@ export function ExperimentTrialsTable({
                               // prices the row being shown, matching the Cost
                               // tile.
                               const c = sumTaskTrialCost(orderedTrials);
-                              if (c.pricedCount === 0) return null;
+                              // Show the badge whenever any trial contributes a
+                              // composite component (QA/compute can exist with $0
+                              // priced inference), keying off the composite count
+                              // rather than the priced-only one.
+                              if (c.contributingCount === 0) return null;
                               const marks = costEstimateMarks(
                                 c.hasEstimated,
                                 c.hasNative,
@@ -2321,8 +2325,8 @@ export function ExperimentTrialsTable({
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent>
-                                    Total cost across {c.pricedCount} priced trial
-                                    {c.pricedCount === 1 ? "" : "s"} ·{" "}
+                                    Total cost across {c.contributingCount} trial
+                                    {c.contributingCount === 1 ? "" : "s"} ·{" "}
                                     {formatCostUsdExact(c.costUsd)} inference ·{" "}
                                     {formatCostUsdExact(c.qaCostUsd)} QA ·{" "}
                                     {formatCostUsdExact(c.computeCostUsd)} sandbox

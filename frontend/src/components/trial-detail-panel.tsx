@@ -802,6 +802,7 @@ export function TrialDetailPanel({
               </CardContent>
             </Card>
             {(trial.cost_usd != null ||
+              (trial.total_cost_usd ?? 0) > 0 ||
               trial.input_tokens != null ||
               trial.output_tokens != null) && (
               <Card className="min-w-[120px] border">
@@ -812,10 +813,11 @@ export function TrialDetailPanel({
                     </div>
                     <div className="mt-1 flex items-baseline gap-1">
                       <span className="font-mono text-sm leading-none font-bold tabular-nums">
-                        {trial.cost_usd != null ? (
+                        {trial.cost_usd != null ||
+                        (trial.total_cost_usd ?? 0) > 0 ? (
                           <CostWithBreakdown
                             className="inline-flex items-baseline"
-                            total={trial.total_cost_usd ?? trial.cost_usd}
+                            total={trial.total_cost_usd ?? trial.cost_usd ?? 0}
                             inference={trial.cost_usd}
                             qa={trial.qa_cost_usd}
                             compute={trial.compute_cost_usd}
@@ -825,22 +827,24 @@ export function TrialDetailPanel({
                           "—"
                         )}
                       </span>
-                      {trial.cost_usd != null && taskCost.pricedCount > 1 && (
-                        <span className="text-muted-foreground text-[9px] leading-none">
-                          of{" "}
-                          <CostWithBreakdown
-                            className="inline-flex items-baseline"
-                            total={taskCost.totalCostUsd}
-                            inference={taskCost.costUsd}
-                            qa={taskCost.qaCostUsd}
-                            compute={taskCost.computeCostUsd}
-                            estimated={
-                              taskCost.hasEstimated && !taskCost.hasNative
-                            }
-                          />{" "}
-                          task
-                        </span>
-                      )}
+                      {(trial.cost_usd != null ||
+                        (trial.total_cost_usd ?? 0) > 0) &&
+                        taskCost.contributingCount > 1 && (
+                          <span className="text-muted-foreground text-[9px] leading-none">
+                            of{" "}
+                            <CostWithBreakdown
+                              className="inline-flex items-baseline"
+                              total={taskCost.totalCostUsd}
+                              inference={taskCost.costUsd}
+                              qa={taskCost.qaCostUsd}
+                              compute={taskCost.computeCostUsd}
+                              estimated={
+                                taskCost.hasEstimated && !taskCost.hasNative
+                              }
+                            />{" "}
+                            task
+                          </span>
+                        )}
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (

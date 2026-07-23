@@ -793,7 +793,7 @@ function ExperimentSummaryBar({
                     summary.ownedTokenTrialCount > 0
                     ? "No cost data reported yet for this experiment's own trials"
                     : summary.costTrialCount > 0
-                      ? "This experiment ran no trials of its own; every priced trial shown was gathered from another experiment, where its spend is reported."
+                      ? "This experiment ran no trials of its own; every trial with cost shown was gathered from another experiment, where its spend is reported."
                       : "No spend from this experiment yet"
             }
           >

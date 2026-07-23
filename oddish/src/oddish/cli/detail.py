@@ -200,7 +200,12 @@ def print_task_detail(api_url: str, task_id: str, *, json_output: bool) -> None:
     if task.get("progress"):
         console.print(f"[bold]Progress:[/bold] {task['progress']}")
 
-    cost = totals.get("cost_usd")
+    # Composite total (inference + QA + compute); fall back to inference-only for
+    # older servers. Gate on the composite so a task with $0 inference but real
+    # QA/compute spend still prints, and its trial count matches the shown total.
+    cost = totals.get("total_cost_usd")
+    if cost is None:
+        cost = totals.get("cost_usd")
     if cost is not None:
         est = " (incl. estimated)" if totals.get("cost_has_estimated") else ""
         console.print(
@@ -211,7 +216,9 @@ def print_task_detail(api_url: str, task_id: str, *, json_output: bool) -> None:
         # $0.00 across N billed trials still shows (a zero amount is real
         # accounting, not "nothing billed").
         if totals.get("billed_trial_count"):
-            billed = totals.get("billed_cost_usd") or 0.0
+            billed = totals.get("billed_total_cost_usd")
+            if billed is None:
+                billed = totals.get("billed_cost_usd") or 0.0
             console.print(
                 f"[bold]Billed cost:[/bold] ${float(billed):.4f} across "
                 f"{totals.get('billed_trial_count', 0)} trials"
@@ -229,7 +236,11 @@ def print_task_detail(api_url: str, task_id: str, *, json_output: bool) -> None:
             reward_total = int(version.get("reward_total") or 0)
             passes = int(version.get("pass_count") or 0)
             reward_str = f"{passes}/{reward_total}" if reward_total else "-"
-            vcost = version.get("cost_usd")
+            # Composite per-version total (inference + QA + compute); fall back to
+            # inference-only for older servers.
+            vcost = version.get("total_cost_usd")
+            if vcost is None:
+                vcost = version.get("cost_usd")
             # Show a real $0.0000 (a version with only free/zero-cost trials);
             # only "-" when cost is genuinely absent.
             cost_str = f"${float(vcost):.4f}" if vcost is not None else "-"

@@ -1039,7 +1039,7 @@ export function TaskDetailClient({
             label="Total cost (all versions)"
             hint={
               totals && totals.cost_trial_count > 0
-                ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
+                ? `${totals.cost_trial_count} of ${totals.total_trials} trials with cost`
                 : totals && totals.total_trials > 0
                   ? `${totals.total_trials} trials, no cost data`
                   : "no trials yet"

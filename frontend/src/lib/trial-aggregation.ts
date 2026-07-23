@@ -110,43 +110,50 @@ export function accumulateTrial(
       }
     }
   }
-  if (trial.cost_usd != null) {
-    acc.costUsd += trial.cost_usd;
-    acc.costTrialCount += 1;
-    if (trial.cost_is_estimated === true) acc.costHasEstimated = true;
-    else acc.costHasNative = true;
-    if (owned) {
-      acc.ownedCostUsd += trial.cost_usd;
-      acc.ownedTrialCount += 1;
-      if (trial.cost_is_estimated === true) acc.ownedHasEstimated = true;
-      else acc.ownedHasNative = true;
-      if (trial.is_billed) {
-        acc.billedCostUsd += trial.cost_usd;
-        acc.billedTrialCount += 1;
-        if (trial.cost_is_estimated === true) acc.billedHasEstimated = true;
-        else acc.billedHasNative = true;
-      }
-    }
-  }
   // QA + compute are separate ledgers, not gated on inference being priced, so
   // the total folds inference (0 when unpriced) back in per trial. Mirrors the
-  // server-side task-detail composite fold. The owned/billed composite subsets
-  // follow the same gating as the inference split above (owned unless the trial
-  // is rendered under an experiment that doesn't own it; billed within owned).
+  // server-side task-detail composite fold. A trial counts toward costTrialCount
+  // (and the owned/billed variants) when it contributes ANY composite component
+  // -- priced inference OR QA OR compute -- so a $0-inference trial with real
+  // QA/sandbox spend is counted and its spend folded, and the count never
+  // contradicts the composite total. The owned/billed subsets follow the same
+  // gating as the inference split (owned unless rendered under an experiment that
+  // doesn't own it; billed within owned).
+  const inference = trial.cost_usd ?? 0;
   const qaCost = trial.qa_cost_usd ?? 0;
   const computeCost = trial.compute_cost_usd ?? 0;
-  const compositeCost = (trial.cost_usd ?? 0) + qaCost + computeCost;
+  const hasInference = trial.cost_usd != null;
+  const contributesCost = hasInference || qaCost > 0 || computeCost > 0;
+  const compositeCost = inference + qaCost + computeCost;
+  if (hasInference) {
+    acc.costUsd += inference;
+    if (trial.cost_is_estimated === true) acc.costHasEstimated = true;
+    else acc.costHasNative = true;
+  }
   acc.qaCostUsd += qaCost;
   acc.computeCostUsd += computeCost;
   acc.totalCostUsd += compositeCost;
+  if (contributesCost) acc.costTrialCount += 1;
   if (owned) {
+    if (hasInference) {
+      acc.ownedCostUsd += inference;
+      if (trial.cost_is_estimated === true) acc.ownedHasEstimated = true;
+      else acc.ownedHasNative = true;
+    }
     acc.ownedQaCostUsd += qaCost;
     acc.ownedComputeCostUsd += computeCost;
     acc.ownedTotalCostUsd += compositeCost;
+    if (contributesCost) acc.ownedTrialCount += 1;
     if (trial.is_billed) {
+      if (hasInference) {
+        acc.billedCostUsd += inference;
+        if (trial.cost_is_estimated === true) acc.billedHasEstimated = true;
+        else acc.billedHasNative = true;
+      }
       acc.billedQaCostUsd += qaCost;
       acc.billedComputeCostUsd += computeCost;
       acc.billedTotalCostUsd += compositeCost;
+      if (contributesCost) acc.billedTrialCount += 1;
     }
   }
   if (trial.status === "success") acc.completed += 1;

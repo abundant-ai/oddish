@@ -293,6 +293,75 @@ def _experiment_ledger_totals_select(
     return query
 
 
+def _experiment_composite_only_count_select(
+    experiment_id: str, *, org_id: str | None = None
+) -> Select:
+    """Member / owned / billed counts of trials priced ONLY by QA/compute.
+
+    The grouped inference fold already counts every trial with priced inference
+    (native cost, or a token row on a model the pricing table resolves) into
+    ``*_trial_count``. This adds the trials that fold missed but whose QA/compute
+    the ledger sums *did* include: a trial with **no priced inference at all**
+    (``cost_usd IS NULL`` and no estimable token row -- ``~_ESTIMATED_ROW``) that
+    carries non-zero QA or compute. Summed onto the fold's counts, the result is
+    "trials contributing any composite component", so ``cost_trial_count`` never
+    contradicts the composite ``total_*``.
+
+    Excluding ``_ESTIMATED_ROW`` here (rather than a positive priced-ness test) is
+    deliberate: whether a token row actually prices depends on the pricing table,
+    which SQL can't consult, so an estimable-row trial is left to the fold to count
+    (or not, when its model is unpriceable) and is never double-counted here.
+
+    Counts each member trial once: ``trial_in_experiment`` is a predicate and the
+    per-trial QA/compute presence is read via correlated scalar sub-selects (same
+    ``deleted_at`` / NULL-cost filters as :func:`composite_cost_by_trial`), so no
+    join can fan a trial out. ``include_deleted`` matches the inference fold.
+    """
+    billed = TrialModel.billed_user_id.isnot(None)
+    owned = TrialModel.experiment_id == experiment_id
+    member = trial_in_experiment(experiment_id)
+
+    qa_sum = (
+        select(func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0))
+        .where(
+            AnalysisCostModel.trial_id == TrialModel.id,
+            AnalysisCostModel.deleted_at.is_(None),
+        )
+        .correlate(TrialModel)
+        .scalar_subquery()
+    )
+    compute_sum = (
+        select(func.coalesce(func.sum(ModalCostSpanModel.cost_usd), 0.0))
+        .where(
+            ModalCostSpanModel.trial_id == TrialModel.id,
+            ModalCostSpanModel.cost_usd.isnot(None),
+            ModalCostSpanModel.deleted_at.is_(None),
+        )
+        .correlate(TrialModel)
+        .scalar_subquery()
+    )
+    # No priced inference of either kind, but real QA or compute spend.
+    composite_only = and_(
+        TrialModel.cost_usd.is_(None),
+        ~_ESTIMATED_ROW,
+        or_(qa_sum > 0, compute_sum > 0),
+    )
+
+    query = (
+        select(
+            func.count(case((composite_only, 1))).label("total"),
+            func.count(case((and_(owned, composite_only), 1))).label("owned"),
+            func.count(case((and_(owned, billed, composite_only), 1))).label("billed"),
+        )
+        .select_from(TrialModel)
+        .where(member)
+        .execution_options(include_deleted=True)
+    )
+    if org_id is not None:
+        query = query.where(TrialModel.org_id == org_id)
+    return query
+
+
 async def _add_experiment_composite_costs(
     session: AsyncSession,
     totals: ExperimentCostTotals,
@@ -305,7 +374,10 @@ async def _add_experiment_composite_costs(
     Two aggregate queries (one per ledger), each returning the member / owned /
     billed sums the inference fold already produced for inference. ``total_*`` is
     inference + qa + compute at each scope -- the inference components were folded
-    in by :func:`fold_experiment_cost_groups` before this runs.
+    in by :func:`fold_experiment_cost_groups` before this runs. A third query adds
+    the QA/compute-only trials (no priced inference) onto the fold's
+    ``*_trial_count`` columns, so counts cover "any composite component" and stay
+    consistent with the composite totals.
     """
     qa = (
         await session.execute(
@@ -331,12 +403,24 @@ async def _add_experiment_composite_costs(
         )
     ).one()
 
+    composite_only = (
+        await session.execute(
+            _experiment_composite_only_count_select(experiment_id, org_id=org_id)
+        )
+    ).one()
+
     totals.qa_cost_usd = float(qa.total or 0.0)
     totals.owned_qa_cost_usd = float(qa.owned or 0.0)
     totals.billed_qa_cost_usd = float(qa.billed or 0.0)
     totals.compute_cost_usd = float(compute.total or 0.0)
     totals.owned_compute_cost_usd = float(compute.owned or 0.0)
     totals.billed_compute_cost_usd = float(compute.billed or 0.0)
+    # Fold the QA/compute-only trials (no priced inference) into the trial counts
+    # the grouped inference fold already produced, so the counts cover "any
+    # composite component" and never contradict the composite ``total_*``.
+    totals.cost_trial_count += int(composite_only.total or 0)
+    totals.owned_trial_count += int(composite_only.owned or 0)
+    totals.billed_trial_count += int(composite_only.billed or 0)
     totals.total_cost_usd = (
         totals.cost_usd + totals.qa_cost_usd + totals.compute_cost_usd
     )

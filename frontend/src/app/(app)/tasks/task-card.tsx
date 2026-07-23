@@ -409,7 +409,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                 Cost
               </div>
               <div className="mt-1 text-sm font-semibold tabular-nums">
-                {task.cost_trial_count > 0 ? (
+                {(task.total_cost_usd ?? 0) > 0 || task.cost_trial_count > 0 ? (
                   <CostWithBreakdown
                     total={task.total_cost_usd}
                     inference={task.cost_usd}
@@ -421,12 +421,12 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                   "—"
                 )}
               </div>
-              {task.cost_trial_count > 0 ? (
+              {(task.total_cost_usd ?? 0) > 0 || task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">
-                  {task.cost_trial_count} of {task.total_trials} priced
+                  {task.cost_trial_count} of {task.total_trials} with cost
                 </div>
               ) : null}
-              {task.cost_trial_count > 0 ? (
+              {(task.total_cost_usd ?? 0) > 0 || task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">
                   spent{" "}
                   {task.billed_trial_count === 0 ? (

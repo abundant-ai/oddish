@@ -33,24 +33,29 @@ export interface TaskTrialCost {
   // Inference (agent LLM) spend — kept for back-compat as the standalone
   // inference component. ``totalCostUsd`` is the composite headline.
   costUsd: number;
-  // Composite components summed over the same priced trials as ``costUsd``:
+  // Composite components summed over every shown trial (not just priced ones):
   // qa = analysis-classifier spend, compute = Modal sandbox spend, total =
   // inference + qa + compute.
   qaCostUsd: number;
   computeCostUsd: number;
   totalCostUsd: number;
+  // Trials with priced inference (drives the ~/* estimate marks).
   pricedCount: number;
+  // Trials contributing ANY composite component (priced inference OR QA OR
+  // compute) — the denominator for "N trials" alongside ``totalCostUsd``, so a
+  // count never contradicts the shown composite total.
+  contributingCount: number;
   hasEstimated: boolean;
   hasNative: boolean;
 }
 
-// Priced, non-probe, non-superseded trials only — same scope as the experiment
-// header and /tasks rollup, so retries don't double-count. Gathered/shared-task
-// trials count too: like the experiment Cost tile, this prices the work being
-// displayed, wherever it ran. QA + compute are summed over that same priced
-// population (they mirror inference automatically, matching the server-side
-// composite fold), so ``totalCostUsd`` is the full inference + QA + sandbox
-// spend across the task's shown trials.
+// Non-probe, non-superseded trials — same scope as the experiment header and
+// /tasks rollup, so retries don't double-count. Gathered/shared-task trials count
+// too: like the experiment Cost tile, this prices the work being displayed,
+// wherever it ran. QA + compute are summed over EVERY such trial (not just the
+// priced ones), matching the server-side task-detail composite fold, so
+// ``totalCostUsd`` is the full inference + QA + sandbox spend and a trial whose
+// inference was never priced still contributes its real QA/sandbox spend.
 export function sumTaskTrialCost(
   trials: Trial[] | null | undefined,
 ): TaskTrialCost {
@@ -58,18 +63,24 @@ export function sumTaskTrialCost(
   let qaCostUsd = 0;
   let computeCostUsd = 0;
   let pricedCount = 0;
+  let contributingCount = 0;
   let hasEstimated = false;
   let hasNative = false;
   for (const trial of trials ?? []) {
     if (trial.is_probe) continue;
     if (trial.superseded_by_trial_id) continue;
-    if (trial.cost_usd == null) continue;
-    costUsd += trial.cost_usd;
-    qaCostUsd += trial.qa_cost_usd ?? 0;
-    computeCostUsd += trial.compute_cost_usd ?? 0;
-    pricedCount += 1;
-    if (trial.cost_is_estimated) hasEstimated = true;
-    else hasNative = true;
+    const qaCost = trial.qa_cost_usd ?? 0;
+    const computeCost = trial.compute_cost_usd ?? 0;
+    const hasInference = trial.cost_usd != null;
+    if (hasInference) {
+      costUsd += trial.cost_usd ?? 0;
+      pricedCount += 1;
+      if (trial.cost_is_estimated) hasEstimated = true;
+      else hasNative = true;
+    }
+    qaCostUsd += qaCost;
+    computeCostUsd += computeCost;
+    if (hasInference || qaCost > 0 || computeCost > 0) contributingCount += 1;
   }
   return {
     costUsd,
@@ -77,6 +88,7 @@ export function sumTaskTrialCost(
     computeCostUsd,
     totalCostUsd: costUsd + qaCostUsd + computeCostUsd,
     pricedCount,
+    contributingCount,
     hasEstimated,
     hasNative,
   };

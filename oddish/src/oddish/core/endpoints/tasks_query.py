@@ -2077,14 +2077,15 @@ async def browse_tasks_core(
     # but no native cost_usd). Folded into the trials loop below to avoid an
     # extra query. Mirrors the task-detail TaskCostTotals fields.
     cost_by_task: dict[str, dict[str, Any]] = {}
-    # Trials whose inference cost is folded into ``cost_by_task`` below, per task.
-    # This is the exact browser-eligible population (imports counted; probes /
-    # combine copies / superseded retries already excluded by the trial query) we
-    # add QA + compute for, so QA/compute never cover a trial whose inference we
-    # didn't. Collected here so one batched ``composite_cost_by_trial`` call
-    # prices the whole page after the loop.
-    composite_ids_by_task: dict[str, list[str]] = {}
-    billed_composite_ids_by_task: dict[str, list[str]] = {}
+    # Every browser-eligible trial (imports counted; probes / combine copies /
+    # superseded retries already excluded by the trial query; cost-scope model /
+    # time filters applied below), with its resolved inference cost and billed
+    # flag. QA + compute are priced for ALL of them -- not just the ones with
+    # priced inference -- so a $0-inference trial's real QA/sandbox spend is folded
+    # into the task total and counted, exactly as the task-detail and experiment
+    # rollups do. One batched ``composite_cost_by_trial`` call prices the whole
+    # page after the loop, then the fold below decides each trial's contribution.
+    eligible_trials_by_task: dict[str, list[dict[str, Any]]] = {}
     cost_scope_active = sort == "cost_desc"
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
@@ -2250,7 +2251,46 @@ async def browse_tasks_core(
                 ):
                     continue
             resolved_cost, cost_estimated = _resolve_browse_trial_cost(trial_row)
-            if resolved_cost is not None:
+            # Collect EVERY eligible trial (not only priced ones): its QA/compute
+            # is priced in the batched lookup after the loop, and a $0-inference
+            # trial with real QA/sandbox spend must still fold into the total and
+            # be counted.
+            eligible_trials_by_task.setdefault(task_key, []).append(
+                {
+                    "trial_id": str(trial_row["trial_id"]),
+                    "resolved_cost": resolved_cost,
+                    "cost_estimated": cost_estimated,
+                    "is_billed": trial_row["billed_user_id"] is not None,
+                }
+            )
+
+        # Price QA + compute for every eligible trial across the page in one
+        # batched ledger lookup, then fold inference + QA + compute into each
+        # task's aggregate. A trial counts toward ``cost_trial_count`` (and
+        # ``billed_trial_count``) when it contributes ANY composite component --
+        # priced inference OR QA OR compute -- so counts and the derived ``total``
+        # stay consistent and never contradict each other.
+        composite_started_at = now()
+        composite_by_trial = await composite_cost_by_trial(
+            session,
+            [d["trial_id"] for ds in eligible_trials_by_task.values() for d in ds],
+        )
+        if record_timing is not None:
+            record_timing(
+                "browse_composite",
+                elapsed_ms(composite_started_at),
+                "Browse per-task QA + compute ledger",
+            )
+        for task_key, descriptors in eligible_trials_by_task.items():
+            for descriptor in descriptors:
+                composite = composite_by_trial.get(descriptor["trial_id"])
+                qa_cost = composite.qa if composite is not None else 0.0
+                compute_cost = composite.compute if composite is not None else 0.0
+                resolved_cost = descriptor["resolved_cost"]
+                has_inference = resolved_cost is not None
+                contributes_cost = has_inference or qa_cost > 0 or compute_cost > 0
+                if not contributes_cost:
+                    continue
                 cost_agg: dict[str, Any] = cost_by_task.setdefault(
                     task_key,
                     {
@@ -2262,9 +2302,7 @@ async def browse_tasks_core(
                         "billed_trial_count": 0,
                         "billed_has_estimated": False,
                         "billed_has_native": False,
-                        # Composite (QA + compute) sums, folded in after the loop
-                        # from a single batched ledger lookup over the trial ids
-                        # collected below. ``total`` is derived at that point.
+                        # Composite (QA + compute) sums; ``total`` derived below.
                         "qa_cost_usd": 0.0,
                         "compute_cost_usd": 0.0,
                         "total_cost_usd": 0.0,
@@ -2273,66 +2311,35 @@ async def browse_tasks_core(
                         "billed_total_cost_usd": 0.0,
                     },
                 )
-                cost_agg["cost_usd"] += resolved_cost
-                cost_agg["cost_trial_count"] += 1
-                if cost_estimated:
-                    cost_agg["cost_has_estimated"] = True
-                else:
-                    cost_agg["cost_has_native"] = True
-                # Record this trial for the composite fold so QA + compute cover
-                # exactly the inference population (native or token-estimated --
-                # both are real spend).
-                composite_ids_by_task.setdefault(task_key, []).append(
-                    str(trial_row["trial_id"])
-                )
-                if trial_row["billed_user_id"] is not None:
-                    cost_agg["billed_cost_usd"] += resolved_cost
-                    cost_agg["billed_trial_count"] += 1
-                    if cost_estimated:
-                        cost_agg["billed_has_estimated"] = True
+                if has_inference:
+                    cost_agg["cost_usd"] += resolved_cost
+                    if descriptor["cost_estimated"]:
+                        cost_agg["cost_has_estimated"] = True
                     else:
-                        cost_agg["billed_has_native"] = True
-                    billed_composite_ids_by_task.setdefault(task_key, []).append(
-                        str(trial_row["trial_id"])
-                    )
-
-        # Price QA + compute for every folded trial across the page in one
-        # batched ledger lookup, then sum it into each task's aggregate alongside
-        # inference. ``total`` is derived so it always equals the accumulated
-        # inference + QA + compute, at both the all-trials and billed levels.
-        composite_started_at = now()
-        composite_by_trial = await composite_cost_by_trial(
-            session,
-            [tid for ids in composite_ids_by_task.values() for tid in ids],
-        )
-        if record_timing is not None:
-            record_timing(
-                "browse_composite",
-                elapsed_ms(composite_started_at),
-                "Browse per-task QA + compute ledger",
-            )
-        for task_key, composite_trial_ids in composite_ids_by_task.items():
-            agg = cost_by_task[task_key]
-            for trial_id in composite_trial_ids:
-                composite = composite_by_trial.get(trial_id)
-                if composite is None:
-                    continue
-                agg["qa_cost_usd"] += composite.qa
-                agg["compute_cost_usd"] += composite.compute
-            for trial_id in billed_composite_ids_by_task.get(task_key, []):
-                composite = composite_by_trial.get(trial_id)
-                if composite is None:
-                    continue
-                agg["billed_qa_cost_usd"] += composite.qa
-                agg["billed_compute_cost_usd"] += composite.compute
-            agg["total_cost_usd"] = (
-                agg["cost_usd"] + agg["qa_cost_usd"] + agg["compute_cost_usd"]
-            )
-            agg["billed_total_cost_usd"] = (
-                agg["billed_cost_usd"]
-                + agg["billed_qa_cost_usd"]
-                + agg["billed_compute_cost_usd"]
-            )
+                        cost_agg["cost_has_native"] = True
+                cost_agg["qa_cost_usd"] += qa_cost
+                cost_agg["compute_cost_usd"] += compute_cost
+                cost_agg["cost_trial_count"] += 1
+                if descriptor["is_billed"]:
+                    if has_inference:
+                        cost_agg["billed_cost_usd"] += resolved_cost
+                        if descriptor["cost_estimated"]:
+                            cost_agg["billed_has_estimated"] = True
+                        else:
+                            cost_agg["billed_has_native"] = True
+                    cost_agg["billed_qa_cost_usd"] += qa_cost
+                    cost_agg["billed_compute_cost_usd"] += compute_cost
+                    cost_agg["billed_trial_count"] += 1
+            agg = cost_by_task.get(task_key)
+            if agg is not None:
+                agg["total_cost_usd"] = (
+                    agg["cost_usd"] + agg["qa_cost_usd"] + agg["compute_cost_usd"]
+                )
+                agg["billed_total_cost_usd"] = (
+                    agg["billed_cost_usd"]
+                    + agg["billed_qa_cost_usd"]
+                    + agg["billed_compute_cost_usd"]
+                )
 
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
