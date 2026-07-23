@@ -152,17 +152,23 @@ async def summarize_trial(
     from api.services.summarize_trajectory import (
         SCHEMA_VERSION,
         SUMMARY_MAX_TOKENS,
+        _load_summary_prompt,
         build_summary_block,
     )
+    from oddish.db import get_session
     from oddish.db.models import JobStatus
 
     owned = client is None
     llm = None
     try:
-        # Shared with generate() so a dump can't diverge from what prod sends.
+        # Same registry lookup generate() uses, so the dump can't diverge from
+        # what prod sends -- no call site gets a fallback template.
+        async with get_session() as session:
+            prompt_template, prompt_version = await _load_summary_prompt(session)
         llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
         block = build_summary_block(
             trajectory, task_context, analyzer_id=trial.id, model=model, client=llm,
+            prompt_template=prompt_template, prompt_version=prompt_version,
         )
     except asyncio.CancelledError:
         raise

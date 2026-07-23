@@ -57,10 +57,9 @@ async def dump(
 
     trial_ids = [t.strip() for t in trials.split(",") if t.strip()]
     async with get_session() as session:
-        # Self-seed the registered prompt before the cohort runs -- keeps the
-        # registry in the same state prod maintains, even though summarize_trial
-        # (api/services/summary_dump.py) still builds each block against
-        # build_summary_block's own default template.
+        # Self-seed the registered prompt up front -- fail fast before spending
+        # time resolving the cohort. summarize_trial (api/services/summary_dump.py)
+        # also fetches the registry template itself, per trial.
         await _load_summary_prompt(session)
         result = await run_cohort(
             session,

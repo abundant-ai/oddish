@@ -331,6 +331,8 @@ def test_summary_block_carries_the_triggering_user():
         model="claude-opus-4-8",
         client=FakeAnalyzerLLMClient(chunks=["{}"]),
         triggered_by_user_id="viewer-7",
+        prompt_template="INSTRUCTIONS",
+        prompt_version=1,
     )
     assert block.triggered_by_user_id == "viewer-7"
 
@@ -363,6 +365,8 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
             analyzer_id="trial-1",
             client=FakeAnalyzerLLMClient(chunks=["{}"]),
             triggered_by_user_id="viewer-7",
+            prompt_template="INSTRUCTIONS",
+            prompt_version=1,
         )
     except _StopBeforeRun:
         pass

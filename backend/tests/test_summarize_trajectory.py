@@ -147,6 +147,12 @@ def _minimal_ctx() -> TaskContext:
     )
 
 
+# prompt_template/prompt_version are now required (no fallback template), so
+# every direct generate()/build_summary_block() call below supplies these.
+_TEST_PROMPT_TEMPLATE = "INSTRUCTIONS {{taxonomy}}"
+_TEST_PROMPT_VERSION = 1
+
+
 def _fake_llm(payload: str):
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     return FakeAnalyzerLLMClient(chunks=[payload])
@@ -170,6 +176,7 @@ async def test_generate_returns_persistable_summary(monkeypatch):
     })
     result = await generate(
         _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
+        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
     )
     assert result["schema_version"] == SCHEMA_VERSION == "5"
     assert result["summary"].startswith("Agent reproduced")
@@ -190,6 +197,7 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
     })
     result = await generate(
         _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
+        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
     )
     assert [h["step_id"] for h in result["highlights"]] == [1]
 
@@ -201,6 +209,7 @@ async def test_generate_strips_code_fences_around_json(monkeypatch):
     body = json.dumps({"summary": "ok", "highlights": [], "components": []})
     result = await generate(
         _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm(f"```json\n{body}\n```"),
+        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
     )
     assert result["summary"] == "ok"
 
@@ -210,7 +219,10 @@ async def test_generate_raises_on_malformed_json(monkeypatch):
     from api.services.summarize_trajectory import SummaryGenerationError, generate
     _patch_block_persistence(monkeypatch)
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("not json"))
+        await generate(
+            _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("not json"),
+            prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+        )
 
 
 @pytest.mark.asyncio
@@ -218,7 +230,10 @@ async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
     from api.services.summarize_trajectory import SummaryGenerationError, generate
     _patch_block_persistence(monkeypatch)
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("[1,2,3]"))
+        await generate(
+            _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("[1,2,3]"),
+            prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+        )
 
 
 @pytest.mark.asyncio
@@ -228,7 +243,10 @@ async def test_generate_wraps_client_errors(monkeypatch):
     _patch_block_persistence(monkeypatch)
     client = FakeAnalyzerLLMClient(chunks=[], exc=RuntimeError("boom"))
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=client)
+        await generate(
+            _trajectory_with_steps([1]), _minimal_ctx(), client=client,
+            prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+        )
 
 
 @pytest.mark.asyncio
@@ -244,6 +262,7 @@ async def test_generate_returns_components(monkeypatch):
     })
     result = await generate(
         _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
+        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
     )
     assert [c["trajectory_component"] for c in result["components"]] == ["reading_files", "implementing"]
 
@@ -598,7 +617,10 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     )
 
     recorder = _RecordingLLM(_summary_payload())
-    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x", client=recorder)
+    await generate(
+        deepcopy(trajectory), ctx, analyzer_id="tr_x", client=recorder,
+        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+    )
 
     block = build_summary_block(
         deepcopy(trajectory),
@@ -606,6 +628,8 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
         analyzer_id="tr_x",
         model=resolve_summary_model(),
         client=_fake_llm(_summary_payload()),
+        prompt_template=_TEST_PROMPT_TEMPLATE,
+        prompt_version=_TEST_PROMPT_VERSION,
     )
 
     assert recorder.prompt == block.prompt

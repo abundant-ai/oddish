@@ -42,7 +42,12 @@ from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
     TrajectoryBlock,
     TrajectoryInput,
 )
-from api.services.summarize_trajectory import SCHEMA_VERSION, build_task_context
+from api.services.summarize_trajectory import (
+    SCHEMA_VERSION,
+    SUMMARY_PROMPT_KEY,
+    _load_summary_prompt,
+    build_task_context,
+)
 from oddish.config import settings, to_anthropic_api_model_id
 from oddish.core.trial_io import read_trial_trajectory
 from oddish.db import get_session
@@ -81,19 +86,25 @@ async def run() -> None:
         if trajectory is None:
             raise SystemExit(f"Trial {TRIAL_ID!r} has no fetchable trajectory.")
         task_context = await build_task_context(trial)
+        # Session is still open here, so fetch the real registry template
+        # rather than the dev-script shortcut used when no session exists.
+        prompt_template, prompt_version = await _load_summary_prompt(session)
 
     print(f"trial={TRIAL_ID}  task={task_context.task_name!r}  "
           f"reward={task_context.final_reward}  steps={len(trajectory.get('steps') or [])}")
 
     model = _model()
-    tb = TrajectoryBlock(TrajectoryInput(
-        task_name=task_context.task_name,
-        instruction=task_context.instruction,
-        final_reward=task_context.final_reward,
-        model_used=task_context.model_used,
-        verifier_output=task_context.verifier_output,
-        trajectory=trajectory,
-    ))
+    tb = TrajectoryBlock(
+        TrajectoryInput(
+            task_name=task_context.task_name,
+            instruction=task_context.instruction,
+            final_reward=task_context.final_reward,
+            model_used=task_context.model_used,
+            verifier_output=task_context.verifier_output,
+            trajectory=trajectory,
+        ),
+        instructions_template=prompt_template,
+    )
     llm = ApiAnalyzerLLMClient(model=model, max_tokens=2048)
     block = AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
@@ -101,7 +112,12 @@ async def run() -> None:
         input=AnalyzerInput(input={"trial_id": TRIAL_ID, "task_name": task_context.task_name}),
         prompt=tb.build_prompt(),
         analyzer_id=TRIAL_ID,
-        block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
+        block_metadata={
+            "schema_version": SCHEMA_VERSION,
+            "model": model,
+            "prompt_key": SUMMARY_PROMPT_KEY,
+            "prompt_version": prompt_version,
+        },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         client=llm,
     )

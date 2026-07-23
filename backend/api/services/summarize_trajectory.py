@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.core.prompt_seeds import PROMPT_SEEDS, seed_prompts
+from oddish.core.prompt_seeds import seed_prompts
 from oddish.core.prompts import get_prompt_core
 from oddish.core.trial_io import (
     read_trial_instruction,
@@ -37,12 +37,6 @@ TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "5"
 SUMMARY_PROMPT_KEY = "trajectory_summary"
-
-# Backward-compat default for callers not yet wired to the registry (e.g. the
-# offline dump harness's build_summary_block call site). Identical bytes to
-# the registry seed content, so it renders the same prompt until an operator
-# edits the registry copy.
-_DEFAULT_PROMPT_TEMPLATE = PROMPT_SEEDS[SUMMARY_PROMPT_KEY][1]
 
 # Output cap for the summary call. The Anthropic API requires max_tokens, so
 # some value must be set; this one is a ceiling, not a target -- billing is on
@@ -186,15 +180,16 @@ def build_summary_block(
     model: str,
     client,
     triggered_by_user_id: str | None = None,
-    prompt_template: str = _DEFAULT_PROMPT_TEMPLATE,
-    prompt_version: int | None = None,
+    prompt_template: str,
+    prompt_version: int | None,
 ):
     """Build the trajectory-summary ``AnalyzerBlock``.
 
     Single construction site shared by ``generate()`` (the production path)
     and the offline dump harness, so the two cannot drift in prompt, parser,
-    or block metadata. ``prompt_template``/``prompt_version`` default to the
-    built-in seed content for callers that haven't wired up a registry fetch.
+    or block metadata. ``prompt_template``/``prompt_version`` are required --
+    every caller must fetch them from the registry (``_load_summary_prompt``),
+    there is no silent fallback template.
     """
     from oddish.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
@@ -245,8 +240,8 @@ async def generate(
     analyzer_id: str | None = None,
     client=None,
     triggered_by_user_id: str | None = None,
-    prompt_template: str = _DEFAULT_PROMPT_TEMPLATE,
-    prompt_version: int | None = None,
+    prompt_template: str,
+    prompt_version: int | None,
 ) -> dict:
     """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
 
@@ -255,6 +250,8 @@ async def generate(
     S3 -- and returns the parsed ``schema_version=5`` summary. Raises
     ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
     injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
+    ``prompt_template``/``prompt_version`` are required -- callers must fetch
+    them from the registry (``_load_summary_prompt``).
     """
     from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
 
