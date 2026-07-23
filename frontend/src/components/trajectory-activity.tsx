@@ -3,8 +3,17 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Activity, Star } from "lucide-react";
 import type { TrajectoryStep } from "@/lib/types";
-import { phaseColorVars, stepDurationsMs, stepTokens } from "@/lib/trajectory-metrics";
-import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
+import {
+  fmtDurationMs,
+  phaseColorVars,
+  stepDurationsMs,
+  stepTokens,
+} from "@/lib/trajectory-metrics";
+import {
+  segmentOwners,
+  stepIdsLabel,
+  toSegments,
+} from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectoryActivityProps {
@@ -16,7 +25,34 @@ interface TrajectoryActivityProps {
 }
 
 const fmtMs = (ms: number) =>
-  ms >= 1000 ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s` : `${Math.round(ms)}ms`;
+  ms >= 1000
+    ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`
+    : `${Math.round(ms)}ms`;
+
+interface InstanceStat {
+  key: string;
+  label: string;
+  firstStepId: number;
+  rangeLabel: string;
+  stepCount: number;
+  toolCount: number;
+  durationMs: number;
+}
+
+interface KindStat {
+  key: string;
+  label: string;
+  instances: InstanceStat[];
+  stepCount: number;
+  toolCount: number;
+  durationMs: number;
+}
+
+interface MetricValues {
+  stepCount: number;
+  toolCount: number;
+  durationMs: number;
+}
 
 export function TrajectoryActivity({
   trialId,
@@ -42,14 +78,111 @@ export function TrajectoryActivity({
   const tokens = steps.map(stepTokens);
   const maxTok = Math.max(0, ...tokens.map((t) => t ?? 0));
   const hasTokens = maxTok > 0;
+  const totalTools = steps.reduce(
+    (sum, step) => sum + (step.tool_calls?.length ?? 0),
+    0
+  );
+  const stepById = new Map(
+    steps.map((step, index) => [Number(step.step_id), index])
+  );
+
+  // step_ids is the component-membership contract and therefore owns both the
+  // label and step count. Loaded steps supply details only: they are used to
+  // derive tools and duration for pre-v5 summaries that lack persisted values.
+  const instances: InstanceStat[] = segments.map((segment) => {
+    const ids = segment.stepIds.map(Number);
+    const indexes = ids
+      .map((id) => stepById.get(Number(id)))
+      .filter((index): index is number => index !== undefined);
+    return {
+      key: segment.key,
+      label: segment.label,
+      firstStepId: ids[0],
+      rangeLabel: stepIdsLabel(ids),
+      stepCount: ids.length,
+      toolCount:
+        segment.toolCount ??
+        indexes.reduce(
+          (sum, index) => sum + (steps[index].tool_calls?.length ?? 0),
+          0
+        ),
+      // `||` not `??`: v5 summaries persist 0 when the trajectory has no
+      // timestamps (e.g. codex), so 0 must also fall back to live derivation.
+      durationMs:
+        segment.durationMs ||
+        indexes.reduce((sum, index) => sum + durations[index], 0),
+    };
+  });
+
+  // Instances rolled up by taxonomy kind, in first-appearance order (matching
+  // color assignment); a kind's instances stay chronological within its bar.
+  const kinds: KindStat[] = [];
+  const kindByKey = new Map<string, KindStat>();
+  for (const instance of instances) {
+    let kind = kindByKey.get(instance.key);
+    if (!kind) {
+      kind = {
+        key: instance.key,
+        label: instance.label,
+        instances: [],
+        stepCount: 0,
+        toolCount: 0,
+        durationMs: 0,
+      };
+      kindByKey.set(instance.key, kind);
+      kinds.push(kind);
+    }
+    kind.instances.push(instance);
+    kind.stepCount += instance.stepCount;
+    kind.toolCount += instance.toolCount;
+    kind.durationMs += instance.durationMs;
+  }
+  for (const kind of kinds) {
+    kind.instances.sort((a, b) => a.firstStepId - b.firstStepId);
+  }
+
+  // Prefer live-derived total, else the summary's persisted per-component sums.
+  const componentMs = instances.reduce((sum, i) => sum + i.durationMs, 0);
+  const timeTotal = totalMs || componentMs;
+
+  const sections = [
+    {
+      name: "Steps",
+      totalLabel: steps.length.toLocaleString(),
+      value: (m: MetricValues) => m.stepCount,
+      fmt: (n: number) => n.toLocaleString(),
+    },
+    {
+      name: "Tool calls",
+      totalLabel: totalTools.toLocaleString(),
+      value: (m: MetricValues) => m.toolCount,
+      fmt: (n: number) => n.toLocaleString(),
+    },
+    {
+      name: "Time",
+      totalLabel: timeTotal > 0 ? fmtDurationMs(timeTotal) : "—",
+      value: (m: MetricValues) => m.durationMs,
+      fmt: (n: number) => (n > 0 ? fmtDurationMs(n) : "—"),
+    },
+  ];
 
   const widthPct = (i: number) =>
-    totalMs > 0 ? Math.max((durations[i] / totalMs) * 100, 1.5) : 100 / steps.length;
+    totalMs > 0
+      ? Math.max((durations[i] / totalMs) * 100, 1.5)
+      : 100 / steps.length;
 
   const select = (stepId: number) => {
     const idx = stepIdToIndex(stepId);
     if (idx >= 0) onStepSelect(idx);
   };
+
+  const instanceTitle = (instance: InstanceStat) =>
+    [
+      instance.label,
+      instance.rangeLabel,
+      `${instance.toolCount} ${instance.toolCount === 1 ? "tool" : "tools"}`,
+      instance.durationMs > 0 ? fmtDurationMs(instance.durationMs) : "—",
+    ].join(" · ");
 
   return (
     <Card className="my-3">
@@ -60,21 +193,73 @@ export function TrajectoryActivity({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* legend */}
-        <div className="flex flex-wrap gap-x-4 gap-y-1">
-          {[...colorFor.entries()].map(([key, color]) => (
-            <span
-              key={key}
-              className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground"
-            >
-              <span
-                className="h-2.5 w-2.5 rounded-sm"
-                style={{ background: color }}
-              />
-              {labelFor.get(key) ?? key}
-            </span>
-          ))}
-        </div>
+        {/* one mini bar chart per metric; rows double as the timeline legend */}
+        {sections.map((section) => {
+          // Longest kind fills the track; others are proportional to it.
+          const denom = Math.max(
+            0,
+            ...kinds.map((kind) => section.value(kind))
+          );
+          // No timing data at all (e.g. codex trajectories lack timestamps).
+          if (section.name === "Time" && denom <= 0) return null;
+          return (
+          <div key={section.name}>
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs font-medium">{section.name}</span>
+              <span className="text-muted-foreground font-mono text-xs">
+                {section.totalLabel} total
+              </span>
+            </div>
+            <div className="mt-1.5 space-y-1">
+              {kinds.map((kind) => (
+                <div key={kind.key} className="flex items-center gap-2">
+                  <span
+                    className="flex w-36 shrink-0 items-center gap-1.5 text-xs"
+                    title={kind.label}
+                  >
+                    <span
+                      className="h-3 w-1 shrink-0 rounded-sm"
+                      style={{
+                        background:
+                          colorFor.get(kind.key) ?? "var(--phase-other)",
+                      }}
+                    />
+                    <span className="truncate">{kind.label}</span>
+                  </span>
+                  {/* gap between segments = the split between instances */}
+                  <div className="bg-muted/40 flex h-2 flex-1 gap-0.5 overflow-hidden rounded-sm">
+                    {denom > 0 &&
+                      kind.instances.map((instance, i) => {
+                        const pct = Math.min(
+                          100,
+                          (section.value(instance) / denom) * 100
+                        );
+                        if (pct <= 0) return null;
+                        return (
+                          <button
+                            key={`${instance.firstStepId}-${i}`}
+                            type="button"
+                            title={instanceTitle(instance)}
+                            onClick={() => select(instance.firstStepId)}
+                            style={{
+                              width: `${pct}%`,
+                              background:
+                                colorFor.get(kind.key) ?? "var(--phase-other)",
+                            }}
+                            className="h-full min-w-[3px] shrink-0 rounded-sm transition hover:brightness-110"
+                          />
+                        );
+                      })}
+                  </div>
+                  <span className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs">
+                    {section.fmt(section.value(kind))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          );
+        })}
 
         {/* timeline */}
         <div className="overflow-x-auto">
@@ -88,12 +273,14 @@ export function TrajectoryActivity({
                   onClick={() => select(s.step_id)}
                   style={{
                     flex: `${widthPct(i)} 1 0`,
-                    background: colorFor.get(keyByStep(s.step_id) ?? "") ?? "var(--phase-other)",
+                    background:
+                      colorFor.get(keyByStep(s.step_id) ?? "") ??
+                      "var(--phase-other)",
                   }}
-                  className="relative min-w-[6px] rounded-sm outline-offset-2 transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring"
+                  className="focus-visible:outline-ring relative min-w-[6px] rounded-sm outline-offset-2 transition hover:brightness-110 focus-visible:outline focus-visible:outline-2"
                 >
                   {highlightIds.has(s.step_id) && (
-                    <Star className="absolute right-0.5 top-0.5 h-3 w-3 fill-white text-white drop-shadow" />
+                    <Star className="absolute top-0.5 right-0.5 h-3 w-3 fill-white text-white drop-shadow" />
                   )}
                 </button>
               ))}
@@ -121,7 +308,7 @@ export function TrajectoryActivity({
               </div>
             )}
             {hasTokens && (
-              <p className="mt-2 font-mono text-[10.5px] text-muted-foreground">
+              <p className="text-muted-foreground mt-2 font-mono text-[10.5px]">
                 token volume per step — darker = more tokens
               </p>
             )}

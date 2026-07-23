@@ -1015,6 +1015,15 @@ class TrialResponse(BaseModel):
     total_steps: int | None = Field(
         None, description="Total agent trajectory steps, when available"
     )
+    trajectory_duration_seconds: float | None = Field(
+        None, description="Elapsed seconds between the first and last trajectory step"
+    )
+    total_tool_calls: int | None = Field(
+        None, description="Total tool calls in the agent trajectory"
+    )
+    tool_counts: dict[str, int] | None = Field(
+        None, description="Tool-call counts keyed by trajectory function name"
+    )
     cost_usd: float | None = Field(
         None,
         description=(
@@ -1474,6 +1483,9 @@ class ImportedTrialSpec(BaseModel):
     cache_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
+    trajectory_duration_seconds: float | None = None
+    total_tool_calls: int | None = None
+    tool_counts: dict[str, int] | None = None
     cost_usd: float | None = None
     phase_timing: dict | None = Field(
         None,
@@ -1988,3 +2000,32 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PromptVersionResponse(BaseModel):
+    version: int
+    content: str
+    created_at: datetime
+    created_by: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class PromptResponse(BaseModel):
+    id: str
+    key: str
+    description: str
+    active_version: int | None = None
+    created_at: datetime
+    updated_at: datetime
+    content: str | None = None  # resolved active/selected version content
+    model_config = {"from_attributes": True}
+
+
+class PromptSetRequest(BaseModel):
+    content: str
+    description: str | None = None
+    activate: bool = True
+
+
+class PromptActivateRequest(BaseModel):
+    version: int

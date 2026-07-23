@@ -60,6 +60,7 @@ from oddish.core.harbor_artifacts import (
     detect_trajectory,
     extract_ctrf_summary,
     extract_trial_result_fields,
+    extract_trajectory_metrics,
     extract_verifier_metrics,
 )
 from oddish.task_timeouts import (
@@ -1625,6 +1626,9 @@ def trial_result_to_import_spec(
         total_steps = fields.total_steps
     if has_trajectory is None:
         has_trajectory = detect_trajectory(artifact_dir) if artifact_dir else False
+    trajectory_metrics = (
+        extract_trajectory_metrics(artifact_dir) if artifact_dir else None
+    )
 
     result_payload = None
     if artifact_dir is not None:
@@ -1657,6 +1661,15 @@ def trial_result_to_import_spec(
         "cache_tokens": fields.cache_tokens,
         "output_tokens": fields.output_tokens,
         "total_steps": total_steps,
+        "trajectory_duration_seconds": (
+            trajectory_metrics.trajectory_duration_seconds
+            if trajectory_metrics
+            else None
+        ),
+        "total_tool_calls": (
+            trajectory_metrics.total_tool_calls if trajectory_metrics else None
+        ),
+        "tool_counts": trajectory_metrics.tool_counts if trajectory_metrics else None,
         "cost_usd": fields.cost_usd,
         "phase_timing": fields.phase_timing,
         "has_trajectory": has_trajectory,

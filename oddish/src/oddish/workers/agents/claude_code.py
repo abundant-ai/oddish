@@ -80,6 +80,24 @@ def _pinned_harbor_requirement(
         return None
 
 
+def _pinned_oddish_requirement() -> str | None:
+    """The pip requirement that installs an ``oddish`` CLI matching this
+    orchestrator, so the sandbox's ``oddish pull`` speaks the same API/schema
+    the server expects.
+
+    Unlike harbor (a git fork with no PyPI release), oddish is published to
+    PyPI, so pinning the exact installed version is enough -- no git
+    ``direct_url`` resolution needed.
+    """
+    try:
+        return f"oddish=={version('oddish')}"
+    except PackageNotFoundError:
+        logger.warning(
+            "pre-trial: oddish not installed in orchestrator; skipping pin"
+        )
+        return None
+
+
 class OddishClaudeCode(ClaudeCode):
     """Claude Code with task delivery kept off the process command line."""
 
