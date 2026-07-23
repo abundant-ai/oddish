@@ -22,32 +22,9 @@ def outcome_section(final_reward: str, verifier_output: str, model_used: str) ->
     )
 
 
-def instructions_section(taxonomy_values: list[str]) -> str:
-    labels = ", ".join(taxonomy_values)
-    return (
-        "Produce a 2-3 sentence summary covering what the agent set out to do, "
-        "how it ended, and whether the verifier agreed. Then 3-6 pivotal "
-        "'highlights' with their step ids.\n\n"
-        "Each highlight must reference a real `step_id` from the trajectory "
-        "below. Pick steps where something genuinely shifted.\n\n"
-        "Also segment the run into COMPONENTS: assign EVERY step to exactly one "
-        "component whose `trajectory_component` is one of these labels: "
-        f"{labels}. Give each component the step ids it covers and a "
-        "one-sentence summary. Cover all steps in order.\n\n"
-        "Respond with ONLY a JSON object (no preamble, no code fences) matching "
-        "this exact shape:\n"
-        "{\n"
-        '  "summary": "2-3 sentences",\n'
-        '  "highlights": [\n'
-        '    {"step_id": <int>, "title": "<short label>", "why": "<one sentence>"}\n'
-        "  ],\n"
-        '  "components": [\n'
-        '    {"step_ids": [<int>, ...], "trajectory_component": "<label>", '
-        '"summary": "<one sentence>"}\n'
-        "  ]\n"
-        "}\n"
-        "Highlights must be ordered by step_id ascending."
-    )
+def instructions_section(template: str, taxonomy_values: list[str]) -> str:
+    # str.replace, not .format: the template body contains JSON braces.
+    return template.replace("{{taxonomy}}", ", ".join(taxonomy_values))
 
 
 def trajectory_section(trajectory_json: str) -> str:

@@ -33,6 +33,10 @@ PROMPT_SEEDS: dict[str, tuple[str, str]] = {
         "Post-trial QA: exploited/causal assessment + new trajectory action items.",
         _load("post_trial_qa.v1.txt"),
     ),
+    "trajectory_summary": (
+        "Trajectory summary: 2-3 sentence run summary, highlights, taxonomy components.",
+        _load("trajectory_summary.v1.txt"),
+    ),
 }
 
 

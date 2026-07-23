@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -124,3 +125,18 @@ def test_to_summary_is_schema_v5_with_component_metadata():
     assert "step_count" not in d["components"][0]
     assert d["components"][0]["tool_count"] == 3
     assert d["components"][0]["duration_ms"] == 2500
+
+
+def test_instructions_seed_template_matches_legacy_text():
+    from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
+
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    template = (
+        REPO_ROOT / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.v1.txt"
+    ).read_text()
+    labels = ["reading_files", "debugging"]
+    rendered = tp.instructions_section(template, labels)
+    assert "reading_files, debugging" in rendered
+    assert "{{taxonomy}}" not in rendered
+    assert rendered.startswith("Produce a 2-3 sentence summary")
+    assert rendered.rstrip().endswith("Highlights must be ordered by step_id ascending.")
