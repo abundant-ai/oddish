@@ -322,6 +322,5 @@ def create_app() -> FastAPI:
     api.include_router(tags.router)
     api.include_router(reports.router)
     api.include_router(qa.router)
-    api.include_router(prompts.router)
 
     return api

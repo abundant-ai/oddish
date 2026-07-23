@@ -151,7 +151,10 @@ async def run_custom_qa_core(
             model=data.model,
             reasoning_effort=data.reasoning_effort,
             llm_client_type=client_type.value,
-            status=JobStatus.QUEUED,
+            # Blocks run synchronously right after this commit; nothing ever
+            # dequeues these rows, so QUEUED would strand them if the process
+            # dies mid-run. RUNNING is the honest resting state.
+            status=JobStatus.RUNNING,
             run_config=config,
         )
         session.add(run)

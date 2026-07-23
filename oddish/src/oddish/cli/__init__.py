@@ -28,7 +28,6 @@ app = typer.Typer(
 
 app.command()(run)
 app.add_typer(probe_app, name="probe")
-app.add_typer(prompt_app, name="prompt")
 app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
 app.command()(preflight)
