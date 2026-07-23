@@ -83,6 +83,9 @@ def _trial(
     trial_id: str,
     *,
     cost_usd: float | None,
+    model: str = "gpt-5",
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
     task_version_id: str | None = None,
     superseded_by_trial_id: str | None = None,
     idempotency_key: str | None = None,
@@ -100,8 +103,10 @@ def _trial(
         org_id=_ORG,
         agent="codex",
         provider="openai",
-        queue_key="openai/gpt-5",
-        model="gpt-5",
+        queue_key=f"openai/{model}",
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
         is_probe=is_probe,
         origin=origin,
         attempts=1,
@@ -975,3 +980,113 @@ async def test_experiment_totals_count_composite_only_billed_trial(session):
     assert totals.billed_trial_count == 1
     assert totals.owned_total_cost_usd == pytest.approx(0.65)
     assert totals.billed_total_cost_usd == pytest.approx(0.65)
+
+
+# --- Count consistency (Bugbot follow-up): unpriceable-model inference + QA/compute
+
+# The experiment rollup prices inference in pure SQL, which can't do the LiteLLM
+# pricing lookup. A member trial that HAS inference tokens (so ``_ESTIMATED_ROW``)
+# but on a model absent from the pricing table prices to $0: the grouped fold skips
+# it (no priced inference, no priced count), and the composite-only count used to
+# skip it too because it is not ``~_ESTIMATED_ROW``. So when such a trial also
+# carried QA/compute it was counted nowhere while its QA/compute still landed in
+# ``total_*`` -- the count contradicted the total. Pin that it now counts exactly
+# once, that a token-but-unpriceable trial with NO QA/compute still counts as
+# nothing, and that a priced trial with QA/compute is not double-counted.
+_CC_UNPRICEABLE_MODEL = f"totally-unknown-model-{uuid.uuid4().hex[:6]}"
+_CC_UNPRICEABLE_COMPOSITE = f"{_TASK}-cc-unpriceable-composite"
+_CC_UNPRICEABLE_BARE = f"{_TASK}-cc-unpriceable-bare"
+_CC_PRICED_PLUS_LEDGERS = f"{_TASK}-cc-priced-plus-ledgers"
+
+
+@pytest.mark.asyncio
+async def test_experiment_totals_count_unpriceable_estimated_trial_with_qa_compute(
+    session,
+):
+    """A member trial with inference tokens on an UNPRICEABLE model ($0 inference)
+    plus QA + compute counts exactly once, in every scope its billing puts it in,
+    and its QA/compute lands in ``total_*``.
+
+    This is the gap the grouped rollup left: the fold skips the trial (its model
+    doesn't price, so it yields no inference and no priced count), and the
+    composite-only count excluded it too because it *is* an ``_ESTIMATED_ROW``. Its
+    QA/compute still summed into ``total_*``, so ``cost_trial_count`` contradicted
+    the total. Also pinned: a token-but-unpriceable trial with NO QA/compute still
+    counts as nothing, and a priced trial that also has QA/compute counts once.
+    """
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    session.add(
+        TaskModel(
+            id=_TASK,
+            name=_TASK,
+            org_id=_ORG,
+            user="tester",
+            task_path="/tmp/composite-cost-test",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+
+    # Unpriceable model + tokens + QA/compute, billed -> must count in all scopes.
+    unpriceable_composite = _trial(
+        _CC_UNPRICEABLE_COMPOSITE,
+        cost_usd=None,
+        model=_CC_UNPRICEABLE_MODEL,
+        input_tokens=500_000,
+        output_tokens=50_000,
+        billed_user_id=_BILLED_USER,
+    )
+    # Same unpriceable model + tokens, but NO QA/compute -> counts as nothing.
+    unpriceable_bare = _trial(
+        _CC_UNPRICEABLE_BARE,
+        cost_usd=None,
+        model=_CC_UNPRICEABLE_MODEL,
+        input_tokens=500_000,
+        output_tokens=50_000,
+    )
+    # Priced native inference AND QA/compute -> counted once (no double-count).
+    priced_plus_ledgers = _trial(_CC_PRICED_PLUS_LEDGERS, cost_usd=0.40)
+    session.add_all([unpriceable_composite, unpriceable_bare, priced_plus_ledgers])
+    session.add_all(
+        [
+            # unpriceable_composite: QA 0.10 + 0.05 = 0.15; compute 0.20 + 0.30 = 0.50.
+            _qa(_CC_UNPRICEABLE_COMPOSITE, 0.10),
+            _qa(_CC_UNPRICEABLE_COMPOSITE, 0.05),
+            _span(_CC_UNPRICEABLE_COMPOSITE, Decimal("0.20"), 0),
+            _span(_CC_UNPRICEABLE_COMPOSITE, Decimal("0.30"), 1),
+            # priced_plus_ledgers: QA 0.07; compute 0.11.
+            _qa(_CC_PRICED_PLUS_LEDGERS, 0.07),
+            _span(_CC_PRICED_PLUS_LEDGERS, Decimal("0.11"), 0),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(session, experiment_id=_EXP, org_id=_ORG)
+
+    # Three members; only the priced trial has native inference. The two unpriceable
+    # trials price to $0 -- no inference dollars, no estimated flag.
+    assert totals.total_trials == 3
+    assert totals.cost_usd == pytest.approx(0.40)
+    assert totals.cost_has_native is True
+    assert totals.cost_has_estimated is False
+
+    # QA/compute sum over the whole member population, unpriceable trial included.
+    assert totals.qa_cost_usd == pytest.approx(0.15 + 0.07)  # 0.22
+    assert totals.compute_cost_usd == pytest.approx(0.50 + 0.11)  # 0.61
+    assert totals.total_cost_usd == pytest.approx(0.40 + 0.22 + 0.61)  # 1.23
+
+    # The count now mirrors the population feeding total_*: the priced trial AND the
+    # unpriceable-but-QA/compute trial each count once; the bare unpriceable trial
+    # (no QA/compute) counts as nothing. == 2 (not 3) also pins that the priced
+    # trial with QA/compute is not double-counted.
+    assert totals.cost_trial_count == 2
+    assert totals.owned_trial_count == 2
+    # Only unpriceable_composite is billed; it counts despite $0 priced inference.
+    assert totals.billed_trial_count == 1
+
+    # Billed scope: $0 inference (unpriceable) but its QA/compute feed billed_total.
+    assert totals.billed_cost_usd == pytest.approx(0.0)
+    assert totals.billed_qa_cost_usd == pytest.approx(0.15)
+    assert totals.billed_compute_cost_usd == pytest.approx(0.50)
+    assert totals.billed_total_cost_usd == pytest.approx(0.65)
+    # Owned == member here (all three homed in _EXP).
+    assert totals.owned_total_cost_usd == pytest.approx(1.23)

@@ -172,16 +172,26 @@ def experiment_cost_groups_select(
     return query
 
 
+def _priced_model(agent: str | None, model: str | None) -> str | None:
+    """The model string ``estimate_cost_usd`` prices a group on.
+
+    ``_resolve_trial_cost`` prices with ``model_name or trial.model``, falling
+    back to the raw string when ``normalize_trial_model`` returns None. Both the
+    group estimate (:func:`_estimated_group_cost`) and the priceability probe
+    (:func:`_estimate_prices`) resolve the model through here, so "does this model
+    price?" is answered identically wherever it is asked -- the count fold and the
+    cost fold can never disagree about whether a token row prices.
+    """
+    return settings.normalize_trial_model(agent, model) or model
+
+
 def _estimated_group_cost(agent: str | None, model: str | None, row) -> float | None:
     """Price one group's pooled token totals, or ``None`` if the model has no
     pricing (matching ``_resolve_trial_cost``, which yields no cost there)."""
     if not row.estimated_count:
         return None
     return estimate_cost_usd(
-        # ``or model``: _resolve_trial_cost prices with ``model_name or
-        # trial.model``, falling back to the raw string when normalization
-        # returns None. Mirror it so the two never diverge.
-        settings.normalize_trial_model(agent, model) or model,
+        _priced_model(agent, model),
         # Re-derives ``uncached_input_tokens`` under estimate_cost_usd's own
         # clamp, which is a no-op on an already-clamped total.
         row.uncached_input_tokens + row.cached_tokens + row.cache_write_tokens,
@@ -189,6 +199,22 @@ def _estimated_group_cost(agent: str | None, model: str | None, row) -> float | 
         row.cached_tokens,
         row.cache_write_tokens,
     )
+
+
+def _estimate_prices(agent: str | None, model: str | None) -> bool:
+    """Whether an estimated token row on this ``(agent, model)`` resolves to a
+    price -- the exact test :func:`_estimated_group_cost` applies.
+
+    ``estimate_cost_usd`` returns ``None`` for an unpriceable model (and, once any
+    billable bucket is positive, *only* then), so a single positive input token
+    probes priceability without needing the group's pooled totals. The grouped
+    inference fold counts an estimated row iff this holds; the composite-only count
+    adds it (when it carries QA/compute) iff this does NOT. The two are exact
+    complements, so a token-bearing trial on an unpriceable model that also has
+    QA/compute is counted exactly once -- by the composite-only side -- instead of
+    slipping through the gap between them.
+    """
+    return estimate_cost_usd(_priced_model(agent, model), 1, 0, 0, 0) is not None
 
 
 def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
@@ -296,26 +322,36 @@ def _experiment_ledger_totals_select(
 def _experiment_composite_only_count_select(
     experiment_id: str, *, org_id: str | None = None
 ) -> Select:
-    """Member / owned / billed counts of trials priced ONLY by QA/compute.
+    """Per-``(agent, model, billed, owned)`` counts of member trials whose only
+    composite spend is QA/compute -- the trials the grouped inference fold does not
+    price -- split by whether they carry an estimable token row.
 
-    The grouped inference fold already counts every trial with priced inference
-    (native cost, or a token row on a model the pricing table resolves) into
-    ``*_trial_count``. This adds the trials that fold missed but whose QA/compute
-    the ledger sums *did* include: a trial with **no priced inference at all**
-    (``cost_usd IS NULL`` and no estimable token row -- ``~_ESTIMATED_ROW``) that
-    carries non-zero QA or compute. Summed onto the fold's counts, the result is
-    "trials contributing any composite component", so ``cost_trial_count`` never
-    contradicts the composite ``total_*``.
+    The inference fold prices (and counts) a null-native trial iff it is an
+    ``_ESTIMATED_ROW`` on a model the pricing table resolves. Whether the model
+    resolves depends on the LiteLLM pricing table, which SQL can't consult, so this
+    returns two counts per group and lets the caller finish the split with the same
+    priceability test the fold uses (:func:`_estimate_prices`):
 
-    Excluding ``_ESTIMATED_ROW`` here (rather than a positive priced-ness test) is
-    deliberate: whether a token row actually prices depends on the pricing table,
-    which SQL can't consult, so an estimable-row trial is left to the fold to count
-    (or not, when its model is unpriceable) and is never double-counted here.
+    * ``unestimated_count`` -- null native cost, **no** estimable token row
+      (``~_ESTIMATED_ROW``), carrying QA or compute. These never price as inference
+      whatever the model, so the fold never counts them and the caller always adds
+      them.
+    * ``estimated_count`` -- an ``_ESTIMATED_ROW`` (hence null native) carrying QA
+      or compute. The fold already counted these iff the model prices, so the caller
+      adds them only when it does NOT -- closing the gap where a token-bearing trial
+      on an unpriceable model carried QA/compute yet was counted nowhere (the fold
+      skipped it as $0 inference and the old ``~_ESTIMATED_ROW`` filter here skipped
+      it too).
 
-    Counts each member trial once: ``trial_in_experiment`` is a predicate and the
-    per-trial QA/compute presence is read via correlated scalar sub-selects (same
-    ``deleted_at`` / NULL-cost filters as :func:`composite_cost_by_trial`), so no
-    join can fan a trial out. ``include_deleted`` matches the inference fold.
+    Both counts require QA or compute and are mutually exclusive (``_ESTIMATED_ROW``
+    vs its negation), and neither overlaps the inference fold's priced count, so no
+    trial is counted twice. ``owned``/``billed`` are group keys, exactly as in
+    :func:`experiment_cost_groups_select`, so the caller routes each group's counts
+    into the owned/billed scopes the same way the inference fold does. Membership,
+    ``org_id``, and ``include_deleted`` match the inference fold; per-trial QA/compute
+    presence is read via correlated scalar sub-selects (same ``deleted_at`` /
+    NULL-cost filters as :func:`composite_cost_by_trial`), so no join can fan a trial
+    out.
     """
     billed = TrialModel.billed_user_id.isnot(None)
     owned = TrialModel.experiment_id == experiment_id
@@ -340,21 +376,27 @@ def _experiment_composite_only_count_select(
         .correlate(TrialModel)
         .scalar_subquery()
     )
-    # No priced inference of either kind, but real QA or compute spend.
-    composite_only = and_(
-        TrialModel.cost_usd.is_(None),
-        ~_ESTIMATED_ROW,
-        or_(qa_sum > 0, compute_sum > 0),
+    has_qa_or_compute = or_(qa_sum > 0, compute_sum > 0)
+    # An estimable token row (the fold counts it iff its model prices) vs a row
+    # that can never price as inference (the fold never counts it). Both must carry
+    # QA or compute to matter here; ``_ESTIMATED_ROW`` already implies null native.
+    estimated = and_(_ESTIMATED_ROW, has_qa_or_compute)
+    unestimated = and_(
+        TrialModel.cost_usd.is_(None), ~_ESTIMATED_ROW, has_qa_or_compute
     )
 
     query = (
         select(
-            func.count(case((composite_only, 1))).label("total"),
-            func.count(case((and_(owned, composite_only), 1))).label("owned"),
-            func.count(case((and_(owned, billed, composite_only), 1))).label("billed"),
+            TrialModel.agent.label("agent"),
+            TrialModel.model.label("model"),
+            billed.label("billed"),
+            owned.label("owned"),
+            func.count(case((estimated, 1))).label("estimated_count"),
+            func.count(case((unestimated, 1))).label("unestimated_count"),
         )
         .select_from(TrialModel)
         .where(member)
+        .group_by(TrialModel.agent, TrialModel.model, billed, owned)
         .execution_options(include_deleted=True)
     )
     if org_id is not None:
@@ -375,9 +417,11 @@ async def _add_experiment_composite_costs(
     billed sums the inference fold already produced for inference. ``total_*`` is
     inference + qa + compute at each scope -- the inference components were folded
     in by :func:`fold_experiment_cost_groups` before this runs. A third query adds
-    the QA/compute-only trials (no priced inference) onto the fold's
-    ``*_trial_count`` columns, so counts cover "any composite component" and stay
-    consistent with the composite totals.
+    the QA/compute-carrying trials the inference fold did not price onto the fold's
+    ``*_trial_count`` columns (un-estimable rows always, estimable rows only when
+    their model is unpriceable -- :func:`_estimate_prices`, the fold's own test),
+    so counts cover "any composite component" without double-counting a priced
+    trial and never contradict the composite totals.
     """
     qa = (
         await session.execute(
@@ -403,11 +447,11 @@ async def _add_experiment_composite_costs(
         )
     ).one()
 
-    composite_only = (
+    composite_only_rows = (
         await session.execute(
             _experiment_composite_only_count_select(experiment_id, org_id=org_id)
         )
-    ).one()
+    ).all()
 
     totals.qa_cost_usd = float(qa.total or 0.0)
     totals.owned_qa_cost_usd = float(qa.owned or 0.0)
@@ -415,12 +459,25 @@ async def _add_experiment_composite_costs(
     totals.compute_cost_usd = float(compute.total or 0.0)
     totals.owned_compute_cost_usd = float(compute.owned or 0.0)
     totals.billed_compute_cost_usd = float(compute.billed or 0.0)
-    # Fold the QA/compute-only trials (no priced inference) into the trial counts
-    # the grouped inference fold already produced, so the counts cover "any
-    # composite component" and never contradict the composite ``total_*``.
-    totals.cost_trial_count += int(composite_only.total or 0)
-    totals.owned_trial_count += int(composite_only.owned or 0)
-    totals.billed_trial_count += int(composite_only.billed or 0)
+    # Fold the QA/compute-carrying trials the inference fold did not price into the
+    # trial counts it already produced, so the counts cover "any composite
+    # component" and never contradict the composite ``total_*``. Per group: a row
+    # with no estimable inference token (``unestimated_count``) never prices, so it
+    # always adds; an estimable row (``estimated_count``) was already counted by the
+    # fold when its model prices, so add it only when it does NOT -- the exact
+    # complement of the fold's estimated count, keyed on the same priceability test,
+    # so a token-bearing-but-unpriceable trial with QA/compute counts exactly once.
+    for row in composite_only_rows:
+        add = row.unestimated_count
+        if row.estimated_count and not _estimate_prices(row.agent, row.model):
+            add += row.estimated_count
+        if not add:
+            continue
+        totals.cost_trial_count += add
+        if row.owned:
+            totals.owned_trial_count += add
+            if row.billed:
+                totals.billed_trial_count += add
     totals.total_cost_usd = (
         totals.cost_usd + totals.qa_cost_usd + totals.compute_cost_usd
     )

@@ -429,7 +429,8 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               {(task.total_cost_usd ?? 0) > 0 || task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">
                   spent{" "}
-                  {task.billed_trial_count === 0 ? (
+                  {(task.billed_total_cost_usd ?? 0) <= 0 &&
+                  task.billed_trial_count === 0 ? (
                     formatCostUsd(0)
                   ) : (
                     <CostWithBreakdown
