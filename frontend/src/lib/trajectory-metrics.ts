@@ -56,6 +56,8 @@ const COMPONENT_COLOR_VARS: Record<string, string> = {
   testing_custom: "var(--tc-testing-custom)",
   testing_custom_edge_cases: "var(--tc-testing-edge)",
   debugging: "var(--tc-debugging)",
+  // Synthetic bucket for steps no component claims — always neutral gray.
+  other: "var(--phase-other)",
 };
 
 /**
