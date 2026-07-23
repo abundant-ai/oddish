@@ -82,6 +82,18 @@ _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
 # Hosts the Claude Code CLI fetches from at agent-setup (curl bootstrap / npm).
 _CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
 
+# Hosts the grok CLI fetches from at agent-setup. Read from the published
+# installer (https://x.ai/cli/install.sh): BASE_URL_PRIMARY is the
+# Cloudflare-fronted x.ai, with a direct-GCS fallback, plus the auth scopes and
+# the deployment-key proxy it may contact once installed.
+_GROK_INSTALLER_HOSTS = (
+    "x.ai",  # BASE_URL_PRIMARY: install.sh + versioned binary
+    "storage.googleapis.com",  # BASE_URL_FALLBACK: grok-build-public-artifacts/cli
+    "auth.x.ai",  # OIDC scope
+    "accounts.x.ai",  # legacy sign-in scope
+    "cli-chat-proxy.grok.com",  # proxy used when GROK_DEPLOYMENT_KEY is set
+)
+
 
 def _resource_bounds(
     value: int | None,
@@ -747,6 +759,28 @@ async def run_harbor_trial_async(
         if "claude-code" in (agent or "").strip().lower():
             hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
             base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")
+            endpoint_host = urlparse(base_url).hostname if base_url else None
+            if endpoint_host:
+                hosts.append(endpoint_host)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
+        # grok-build downloads its CLI from x.ai at agent-setup, exactly like
+        # Claude Code above, so it needs the same treatment. The hosts must go on
+        # the *environment baseline* (which spans install + run) rather than the
+        # agent phase: on a task whose phases are uniformly closed
+        # (allow_internet = false), adding them to the agent phase instead
+        # creates a NO_NETWORK -> ALLOWLIST transition, and Modal creates such a
+        # sandbox with an empty domain allowlist then refuses to enable
+        # filtering afterwards ("sandbox was created without a domain
+        # allowlist; enabling domain filtering while running is not currently
+        # supported"). Without this, every grok-build trial on a closed-internet
+        # task dies at "curl: (6) Could not resolve host: x.ai".
+        if "grok" in (agent or "").strip().lower():
+            hosts = list(_GROK_INSTALLER_HOSTS)
+            base_url = (agent_config.env or {}).get("GROK_PROXY_URL")
             endpoint_host = urlparse(base_url).hostname if base_url else None
             if endpoint_host:
                 hosts.append(endpoint_host)
