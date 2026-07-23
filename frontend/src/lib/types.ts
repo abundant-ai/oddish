@@ -618,46 +618,6 @@ export interface TrajectoryHighlight {
   why: string;
 }
 
-// Condensed agent-graph summary of a trajectory (GET /trials/{id}/trajectory/graph).
-export type TrajectoryGraphStepStatus = "ok" | "warn" | "error";
-
-export type TrajectoryGraphOutcome =
-  | "success"
-  | "partial"
-  | "failure"
-  | "timeout"
-  | "error"
-  | "scoreless"
-  | "skipped"
-  | "running"
-  | "queued"
-  | "pending";
-
-export interface TrajectoryGraphStep {
-  id: string;
-  title: string;
-  detail: string;
-  status: TrajectoryGraphStepStatus;
-}
-
-export interface TrajectoryGraphTerminal {
-  outcome: TrajectoryGraphOutcome;
-  last_action: string;
-  reason: string;
-}
-
-export interface TrajectoryGraph {
-  headline: string;
-  steps: TrajectoryGraphStep[];
-  terminal: TrajectoryGraphTerminal;
-  source: "summary" | "llm" | "heuristic";
-  model: string | null;
-  num_steps: number | null;
-  schema_version?: string;
-  generated_at?: string;
-}
-
-/** Pre-v4 segmentation. Still present on summaries generated before #790. */
 export interface TrajectoryPhase {
   label: string;
   gist: string;
