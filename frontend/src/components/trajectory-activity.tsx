@@ -9,7 +9,11 @@ import {
   stepDurationsMs,
   stepTokens,
 } from "@/lib/trajectory-metrics";
-import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
+import {
+  segmentOwners,
+  stepIdsLabel,
+  toSegments,
+} from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectoryActivityProps {
@@ -82,21 +86,20 @@ export function TrajectoryActivity({
     steps.map((step, index) => [Number(step.step_id), index])
   );
 
-  // One stat per component instance; v5 fields when present, else derived from
-  // the live steps so older summaries render identically.
+  // step_ids is the component-membership contract and therefore owns both the
+  // label and step count. Loaded steps supply details only: they are used to
+  // derive tools and duration for pre-v5 summaries that lack persisted values.
   const instances: InstanceStat[] = segments.map((segment) => {
-    const indexes = segment.stepIds
+    const ids = segment.stepIds.map(Number);
+    const indexes = ids
       .map((id) => stepById.get(Number(id)))
       .filter((index): index is number => index !== undefined);
-    const ids = segment.stepIds.map(Number);
-    const lo = Math.min(...ids);
-    const hi = Math.max(...ids);
     return {
       key: segment.key,
       label: segment.label,
       firstStepId: ids[0],
-      rangeLabel: lo === hi ? `step ${lo}` : `steps ${lo}–${hi}`,
-      stepCount: indexes.length,
+      rangeLabel: stepIdsLabel(ids),
+      stepCount: ids.length,
       toolCount:
         segment.toolCount ??
         indexes.reduce(
