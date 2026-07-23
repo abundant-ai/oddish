@@ -10,6 +10,7 @@ import uuid
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 
 from oddish.core.prompts import (
     get_prompt_core,
@@ -189,3 +190,43 @@ async def test_scoped_and_global_versions_increment_independently(scoped_kind):
         )
     assert global_ver.version == 2
     assert org_ver.version == 1
+
+
+@pytest.mark.asyncio
+async def test_same_kind_coexists_across_distinct_scopes(scoped_kind):
+    await _write(scoped_kind, "global")
+    await _write(
+        scoped_kind, "a", scope_type="org", scope_id="org_a", org_id="org_a"
+    )
+    await _write(
+        scoped_kind, "b", scope_type="org", scope_id="org_b", org_id="org_b"
+    )
+    async with get_session() as session:
+        _, a = await get_prompt_core(
+            session, scoped_kind, scope_type="org", scope_id="org_a"
+        )
+        _, b = await get_prompt_core(
+            session, scoped_kind, scope_type="org", scope_id="org_b"
+        )
+    assert (a.content, b.content) == ("a", "b")
+
+
+@pytest.mark.asyncio
+async def test_duplicate_row_at_identical_scope_is_rejected(scoped_kind):
+    # set_prompt_core appends a version rather than inserting a second row, so
+    # the index is exercised by inserting the ORM row directly.
+    await _write(
+        scoped_kind, "a", scope_type="org", scope_id="org_a", org_id="org_a"
+    )
+    with pytest.raises(IntegrityError):
+        async with get_session() as session:
+            session.add(
+                PromptModel(
+                    kind=scoped_kind,
+                    description="",
+                    scope_type="org",
+                    scope_id="org_a",
+                    org_id="org_a",
+                )
+            )
+            await session.commit()
