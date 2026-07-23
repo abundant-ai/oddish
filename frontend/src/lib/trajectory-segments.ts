@@ -136,12 +136,34 @@ export function groupStepsBySegment(
   return groups;
 }
 
-/** Range label for a group, computed from the steps actually shown. */
+/**
+ * Label a set of step IDs without implying that sparse IDs are contiguous.
+ * Consecutive runs are compacted, so [1, 2, 4, 7, 8] becomes
+ * "steps 1–2, 4, 7–8".
+ */
+export function stepIdsLabel(stepIds: number[]): string {
+  const ids = [...new Set(stepIds.map(Number))].sort((a, b) => a - b);
+  if (ids.length === 1) return `step ${ids[0]}`;
+
+  const runs: string[] = [];
+  let start = ids[0];
+  let end = start;
+  for (const id of ids.slice(1)) {
+    if (id === end + 1) {
+      end = id;
+      continue;
+    }
+    runs.push(start === end ? `${start}` : `${start}–${end}`);
+    start = id;
+    end = id;
+  }
+  runs.push(start === end ? `${start}` : `${start}–${end}`);
+  return `steps ${runs.join(", ")}`;
+}
+
+/** Step-ID label for a group, computed from the steps actually shown. */
 export function stepRangeLabel(group: StepGroup): string {
-  const ids = group.steps.map((s) => Number(s.step.step_id));
-  const lo = Math.min(...ids);
-  const hi = Math.max(...ids);
-  return lo === hi ? `step ${lo}` : `steps ${lo}–${hi}`;
+  return stepIdsLabel(group.steps.map((s) => Number(s.step.step_id)));
 }
 
 /**
