@@ -2000,3 +2000,32 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PromptVersionResponse(BaseModel):
+    version: int
+    content: str
+    created_at: datetime
+    created_by: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class PromptResponse(BaseModel):
+    id: str
+    key: str
+    description: str
+    active_version: int | None = None
+    created_at: datetime
+    updated_at: datetime
+    content: str | None = None  # resolved active/selected version content
+    model_config = {"from_attributes": True}
+
+
+class PromptSetRequest(BaseModel):
+    content: str
+    description: str | None = None
+    activate: bool = True
+
+
+class PromptActivateRequest(BaseModel):
+    version: int
