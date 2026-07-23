@@ -34,26 +34,44 @@ from oddish.config import (
 )
 from oddish.workers.agents.network import normalize_domain_or_url
 
-_CURSOR_BASE_URL_ENV_KEYS = (
-    "CURSOR_API_BASE_URL",
-    "CURSOR_API_ENDPOINT",
-)
-
-_BASE_URL_ENV_KEYS = (
-    "ANTHROPIC_BASE_URL",
-    "OPENAI_BASE_URL",
-    "OPENAI_API_BASE",
-    "META_BASE_URL",
-    "OPENROUTER_BASE_URL",
-    "FIREWORKS_BASE_URL",
-    "ZAI_BASE_URL",
-    "MINIMAX_BASE_URL",
-    "MOONSHOT_BASE_URL",
+# Transport base-URL env keys, grouped by provider. These are the SINGLE SOURCE
+# for both host discovery (here) and the restricted-egress fail-closed filter
+# (``restricted_network`` imports the derived tuple/set below and never spells
+# the keys out again). A provider key added here is therefore filtered and
+# discovered in both places at once, so the two boundaries can never drift apart
+# -- the failure mode Bugbot flagged when the host tuples, but not the key
+# lists, were deduplicated into this module.
+ANTHROPIC_BASE_URL_KEYS = ("ANTHROPIC_BASE_URL",)
+OPENAI_BASE_URL_KEYS = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
+META_BASE_URL_KEYS = ("META_BASE_URL",)
+OPENROUTER_BASE_URL_KEYS = ("OPENROUTER_BASE_URL",)
+FIREWORKS_BASE_URL_KEYS = ("FIREWORKS_BASE_URL",)
+ZAI_BASE_URL_KEYS = ("ZAI_BASE_URL",)
+MINIMAX_BASE_URL_KEYS = ("MINIMAX_BASE_URL",)
+MOONSHOT_BASE_URL_KEYS = ("MOONSHOT_BASE_URL",)
+GEMINI_BASE_URL_KEYS = (
     "GOOGLE_GEMINI_BASE_URL",
     "GEMINI_API_BASE_URL",
     "GOOGLE_API_BASE_URL",
-    *_CURSOR_BASE_URL_ENV_KEYS,
 )
+CURSOR_BASE_URL_KEYS = ("CURSOR_API_BASE_URL", "CURSOR_API_ENDPOINT")
+
+# Ordered discovery tuple: host discovery iterates the trial env in this order.
+_BASE_URL_ENV_KEYS = (
+    *ANTHROPIC_BASE_URL_KEYS,
+    *OPENAI_BASE_URL_KEYS,
+    *META_BASE_URL_KEYS,
+    *OPENROUTER_BASE_URL_KEYS,
+    *FIREWORKS_BASE_URL_KEYS,
+    *ZAI_BASE_URL_KEYS,
+    *MINIMAX_BASE_URL_KEYS,
+    *MOONSHOT_BASE_URL_KEYS,
+    *GEMINI_BASE_URL_KEYS,
+    *CURSOR_BASE_URL_KEYS,
+)
+
+# Full known-transport key set for the restricted-egress fail-closed filter.
+KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(_BASE_URL_ENV_KEYS)
 
 _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")

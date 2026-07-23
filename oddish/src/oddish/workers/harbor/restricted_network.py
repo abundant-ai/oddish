@@ -37,6 +37,10 @@ from .model_hosts import (
     _GEMINI_HOSTS as _GEMINI_RUNTIME_HOSTS,
     _OPENAI_HOSTS as _OPENAI_RUNTIME_HOSTS,
     _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
+    CURSOR_BASE_URL_KEYS as _CURSOR_BASE_URL_KEYS,
+    GEMINI_BASE_URL_KEYS as _GEMINI_BASE_URL_KEYS,
+    KNOWN_TRANSPORT_BASE_URL_KEYS as _KNOWN_TRANSPORT_BASE_URL_KEYS,
+    OPENAI_BASE_URL_KEYS as _OPENAI_BASE_URL_KEYS,
     outbound_hosts_for_model,
 )
 
@@ -81,35 +85,13 @@ class RestrictedNetworkProfileProvider(Protocol):
     ) -> RestrictedNetworkProfile | Mapping[str, Any] | None: ...
 
 
-# Default runtime allowlist host tuples are the single source in model_hosts and
-# imported above (aliased); only the non-host web-tool constant lives here.
+# Both the runtime allowlist host tuples AND the transport base-URL key groups
+# (``_KNOWN_TRANSPORT_BASE_URL_KEYS`` / ``_OPENAI_BASE_URL_KEYS`` /
+# ``_GEMINI_BASE_URL_KEYS`` / ``_CURSOR_BASE_URL_KEYS``) are the single source in
+# model_hosts and imported above (aliased). Filtering here and host discovery
+# there therefore read the same keys and cannot drift. Only the non-host
+# web-tool constant lives here.
 _CLAUDE_WEB_TOOLS = "WebSearch WebFetch"
-
-_KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(
-    {
-        "ANTHROPIC_BASE_URL",
-        "OPENAI_BASE_URL",
-        "OPENAI_API_BASE",
-        "META_BASE_URL",
-        "OPENROUTER_BASE_URL",
-        "FIREWORKS_BASE_URL",
-        "ZAI_BASE_URL",
-        "MINIMAX_BASE_URL",
-        "MOONSHOT_BASE_URL",
-        "CURSOR_API_BASE_URL",
-        "CURSOR_API_ENDPOINT",
-        "GEMINI_API_BASE_URL",
-        "GOOGLE_API_BASE_URL",
-        "GOOGLE_GEMINI_BASE_URL",
-    }
-)
-_OPENAI_BASE_URL_KEYS = ("OPENAI_BASE_URL", "OPENAI_API_BASE")
-_GEMINI_BASE_URL_KEYS = (
-    "GOOGLE_GEMINI_BASE_URL",
-    "GEMINI_API_BASE_URL",
-    "GOOGLE_API_BASE_URL",
-)
-_CURSOR_BASE_URL_KEYS = ("CURSOR_API_BASE_URL", "CURSOR_API_ENDPOINT")
 
 # These are deliberately ordinary underscore attributes rather than Pydantic
 # fields. Harbor receives the values in memory, while JobConfig/TrialConfig
@@ -118,22 +100,11 @@ _CURSOR_BASE_URL_KEYS = ("CURSOR_API_BASE_URL", "CURSOR_API_ENDPOINT")
 RUNTIME_ALLOWED_HOSTS_ATTR = "_oddish_runtime_allowed_hosts"
 RUNTIME_MODEL_NAME_ATTR = "_oddish_runtime_model_name"
 
-_SAFE_PROFILE_ENV_KEYS = frozenset(
+# The transport base URLs a safe profile may carry are exactly the known
+# transport keys (single-sourced above); the extras are Gemini's non-route OAuth
+# toggles, which select credentials rather than widen egress.
+_SAFE_PROFILE_ENV_KEYS = _KNOWN_TRANSPORT_BASE_URL_KEYS | frozenset(
     {
-        "ANTHROPIC_BASE_URL",
-        "OPENAI_BASE_URL",
-        "OPENAI_API_BASE",
-        "META_BASE_URL",
-        "OPENROUTER_BASE_URL",
-        "FIREWORKS_BASE_URL",
-        "ZAI_BASE_URL",
-        "MINIMAX_BASE_URL",
-        "MOONSHOT_BASE_URL",
-        "CURSOR_API_BASE_URL",
-        "CURSOR_API_ENDPOINT",
-        "GEMINI_API_BASE_URL",
-        "GOOGLE_API_BASE_URL",
-        "GOOGLE_GEMINI_BASE_URL",
         "GEMINI_FORCE_OAUTH",
         "GEMINI_OAUTH_CREDS_PATH",
         "GOOGLE_GENAI_USE_VERTEXAI",
