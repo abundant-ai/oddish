@@ -13,33 +13,41 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Route, Download, ImageOff, Search, X } from "lucide-react";
+import {
+  Route,
+  Download,
+  ImageOff,
+  Search,
+  X,
+  Star,
+  Undo2,
+  Link2,
+  Check,
+} from "lucide-react";
 import {
   StepHeader,
   ToolCallBlock,
   ObservationBlock,
 } from "@/components/trajectory-blocks";
 import { TrajectorySummary } from "@/components/trajectory-summary";
-import { TrajectoryActivity } from "@/components/trajectory-activity";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TrajectoryScrubber } from "@/components/trajectory-scrubber";
 import { fetcher } from "@/lib/api";
 import type {
   Trajectory,
   TrajectoryStep,
-  FinalMetrics,
   MessageContent,
   ObservationContent,
   ContentPart,
 } from "@/lib/types";
-import { phaseColorVars, stepDurationsMs } from "@/lib/trajectory-metrics";
+import {
+  phaseColorVars,
+  stepDurationsMs,
+  stepErrorFlags,
+} from "@/lib/trajectory-metrics";
 import {
   groupStatsLabel,
   groupStepsBySegment,
+  segmentOwners,
   toSegments,
 } from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
@@ -58,17 +66,15 @@ function formatStepDuration(
   return formatMs(diff);
 }
 
-function getOscillatingColor(index: number): string {
-  // Pattern: 1-2-3-4-3-2-1-2-3-4... for visual variety
-  const colors = [
-    "hsl(var(--muted))",
-    "hsl(var(--muted-foreground) / 0.3)",
-    "hsl(var(--muted-foreground) / 0.4)",
-    "hsl(var(--muted-foreground) / 0.5)",
-  ];
-  const position = index % 6;
-  const colorIndex = position <= 3 ? position : 6 - position;
-  return colors[colorIndex];
+/** Nearest ancestor that actually scrolls (the drawer's tab body). */
+function getScrollParent(el: HTMLElement | null): HTMLElement | null {
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const { overflowY } = window.getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+    node = node.parentElement;
+  }
+  return null;
 }
 
 interface ImageError {
@@ -137,8 +143,13 @@ function getStepSearchText(step: TrajectoryStep): string {
   return parts.join("\n").toLowerCase();
 }
 
-function stepMatchesQuery(step: TrajectoryStep, lowerQuery: string): boolean {
+function stepMatchesQuery(
+  step: TrajectoryStep,
+  lowerQuery: string,
+  extraText?: string
+): boolean {
   if (!lowerQuery) return true;
+  if (extraText && extraText.includes(lowerQuery)) return true;
   return getStepSearchText(step).includes(lowerQuery);
 }
 
@@ -274,206 +285,6 @@ function ContentRenderer({
     </div>
   );
 }
-
-// =============================================================================
-// StepDurationBar Component
-// =============================================================================
-
-interface StepDurationInfo {
-  stepId: number;
-  durationMs: number;
-  elapsedMs: number;
-}
-
-function StepDurationBar({
-  steps,
-  onStepClick,
-}: {
-  steps: TrajectoryStep[];
-  onStepClick: (index: number) => void;
-}) {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-
-  if (steps.length === 0) return null;
-
-  const startTime = steps[0].timestamp
-    ? new Date(steps[0].timestamp).getTime()
-    : 0;
-
-  // Calculate durations: each step's duration is time since previous step
-  const stepDurations: StepDurationInfo[] = steps.map((step, idx) => {
-    const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-    const prevStep = idx > 0 ? steps[idx - 1] : null;
-    const prevTime = prevStep?.timestamp
-      ? new Date(prevStep.timestamp).getTime()
-      : stepTime;
-
-    return {
-      stepId: step.step_id,
-      durationMs: Math.max(0, stepTime - prevTime),
-      elapsedMs: stepTime - startTime,
-    };
-  });
-
-  const totalMs = stepDurations.reduce((sum, s) => sum + s.durationMs, 0);
-
-  if (totalMs === 0) {
-    return (
-      <div className="mb-4">
-        <div className="bg-muted h-6 rounded" />
-      </div>
-    );
-  }
-
-  // Calculate widths with minimum width for visibility
-  const minWidthPercent = 2;
-  const rawWidths = stepDurations.map((s) => (s.durationMs / totalMs) * 100);
-  const widths = rawWidths.map((w) => Math.max(w, minWidthPercent));
-
-  // Calculate cumulative widths for tooltip positioning
-  const cumulativeWidths: number[] = [];
-  let cumulative = 0;
-  for (const w of widths) {
-    cumulativeWidths.push(cumulative);
-    cumulative += w;
-  }
-
-  return (
-    <TooltipProvider>
-      <div className="mb-4">
-        <div className="relative">
-          <div className="flex h-6 overflow-hidden rounded">
-            {stepDurations.map((step, idx) => {
-              const widthPercent = widths[idx];
-              const isHovered = hoveredIndex === idx;
-              const isOtherHovered =
-                hoveredIndex !== null && hoveredIndex !== idx;
-
-              return (
-                <Tooltip key={step.stepId} open={isHovered}>
-                  <TooltipTrigger asChild>
-                    <div
-                      className="cursor-pointer transition-all duration-150 hover:brightness-110"
-                      style={{
-                        width: `${widthPercent}%`,
-                        backgroundColor: getOscillatingColor(idx),
-                        opacity: isOtherHovered ? 0.3 : 1,
-                        transform: isHovered ? "scaleY(1.1)" : "scaleY(1)",
-                      }}
-                      onMouseEnter={() => setHoveredIndex(idx)}
-                      onMouseLeave={() => setHoveredIndex(null)}
-                      onClick={() => onStepClick(idx)}
-                    />
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    <div className="flex flex-col gap-1 text-xs">
-                      <div className="font-medium">Step #{step.stepId}</div>
-                      <div className="text-muted-foreground">
-                        Duration: {formatMs(step.durationMs)}
-                      </div>
-                      <div className="text-muted-foreground">
-                        At: {formatMs(step.elapsedMs)}
-                      </div>
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-    </TooltipProvider>
-  );
-}
-
-// =============================================================================
-// Token Usage Bar Component
-// =============================================================================
-
-function TokenUsageBar({ metrics }: { metrics: FinalMetrics | null }) {
-  if (!metrics) return null;
-
-  const cached = metrics.total_cached_tokens ?? 0;
-  const prompt = metrics.total_prompt_tokens ?? 0;
-  const completion = metrics.total_completion_tokens ?? 0;
-
-  // Prompt tokens include cached, so non-cached prompt = prompt - cached
-  const nonCachedPrompt = Math.max(0, prompt - cached);
-  const total = nonCachedPrompt + cached + completion;
-
-  if (total === 0) return null;
-
-  const segments = [
-    { key: "cached", value: cached, color: "bg-emerald-500", label: "Cached" },
-    {
-      key: "prompt",
-      value: nonCachedPrompt,
-      color: "bg-blue-500",
-      label: "Prompt",
-    },
-    {
-      key: "completion",
-      value: completion,
-      color: "bg-purple-500",
-      label: "Output",
-    },
-  ].filter((s) => s.value > 0);
-
-  // Calculate widths with minimum for visibility
-  const minWidthPercent = 8;
-  const widths = segments.map((s) => {
-    const raw = (s.value / total) * 100;
-    return Math.max(raw, minWidthPercent);
-  });
-
-  return (
-    <TooltipProvider>
-      <div className="mb-4">
-        <div className="mb-1.5 flex items-center gap-2">
-          <span className="text-muted-foreground text-[10px] tracking-wider uppercase">
-            Tokens
-          </span>
-          <span className="text-muted-foreground text-xs">
-            {total.toLocaleString()} total
-          </span>
-        </div>
-        <div className="relative">
-          <div className="flex h-3 gap-0.5 overflow-hidden rounded-full">
-            {segments.map((segment, idx) => (
-              <Tooltip key={segment.key}>
-                <TooltipTrigger asChild>
-                  <div
-                    className={`${segment.color} cursor-default`}
-                    style={{
-                      width: `${widths[idx]}%`,
-                    }}
-                  />
-                </TooltipTrigger>
-                <TooltipContent>
-                  {segment.label}: {segment.value.toLocaleString()}
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
-        </div>
-        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1.5">
-          {segments.map((segment) => (
-            <div
-              key={segment.key}
-              className="flex items-center gap-1 text-[10px]"
-            >
-              <div className={`h-2 w-2 rounded-full ${segment.color}`} />
-              <span className="text-muted-foreground">
-                {segment.label}: {segment.value.toLocaleString()}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </TooltipProvider>
-  );
-}
-
 // =============================================================================
 // Step Metrics Bar Component (compact version for individual steps)
 // =============================================================================
@@ -546,10 +357,12 @@ function StepTrigger({
   step,
   prevTimestamp,
   startTimestamp,
+  isHighlight,
 }: {
   step: TrajectoryStep;
   prevTimestamp: string | null;
   startTimestamp: string | null;
+  isHighlight?: boolean;
 }) {
   const stepDuration = formatStepDuration(prevTimestamp, step.timestamp);
   const sinceStart = formatStepDuration(startTimestamp, step.timestamp);
@@ -562,8 +375,14 @@ function StepTrigger({
       model={step.model_name}
       preview={firstLine}
       badges={
-        stepDuration || sinceStart ? (
+        isHighlight || stepDuration || sinceStart ? (
           <>
+            {isHighlight && (
+              <Star
+                aria-label="Key step"
+                className="h-3 w-3 fill-amber-400 text-amber-500"
+              />
+            )}
             {stepDuration && (
               <Badge
                 variant="secondary"
@@ -729,30 +548,46 @@ export function TrajectoryViewer({
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [flashIndex, setFlashIndex] = useState<number | null>(null);
+  // Scroll offset to restore via the "Back" pill after a jump (back-linking).
+  const [returnScroll, setReturnScroll] = useState<number | null>(null);
+  const [copiedStepId, setCopiedStepId] = useState<number | null>(null);
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const overviewRef = useRef<HTMLDivElement | null>(null);
+  const scrubberRef = useRef<HTMLDivElement | null>(null);
   const stepReset = useRef<string | null>(null);
   const appliedHash = useRef<string | null>(null);
+  const flashTimer = useRef<number | null>(null);
+  const copyTimer = useRef<number | null>(null);
 
-  // Reset expanded steps and search when switching to a different trial
+  // Reset per-trial UI state when switching to a different trial
   useEffect(() => {
     if (trialId !== stepReset.current) {
+      const previousTrial = stepReset.current;
       stepReset.current = trialId;
       setExpandedSteps([]);
       setQuery("");
+      setActiveIndex(null);
+      setFlashIndex(null);
+      setReturnScroll(null);
+      setCopiedStepId(null);
       // Otherwise an unchanged hash across trials (e.g. both #step-1) would
       // look "already applied" and the deep link would silently no-op.
       appliedHash.current = null;
+      // A #step-N hash belongs to the trial it was opened for. Drop it when
+      // NAVIGATING to a different trial (not on first mount, where it's the
+      // deep link we're about to apply) so it doesn't re-fire on every trial
+      // the user arrows through.
+      if (previousTrial !== null && /^#step-\d+$/.test(window.location.hash)) {
+        window.history.replaceState(
+          window.history.state,
+          "",
+          `${window.location.pathname}${window.location.search}`
+        );
+      }
     }
   }, [trialId]);
-
-  // Filter steps by keyword, keeping each step's original index so timing,
-  // refs, and duration-bar clicks stay consistent with the full trajectory.
-  const lowerQuery = query.trim().toLowerCase();
-  const visibleSteps = useMemo(() => {
-    const all = (trajectory?.steps ?? []).map((step, idx) => ({ step, idx }));
-    if (!lowerQuery) return all;
-    return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
-  }, [trajectory, lowerQuery]);
 
   // A summary request can trigger paid on-demand generation server-side, so it
   // must not fire for a trial we already know (via shouldFetch) has no trajectory.
@@ -766,6 +601,59 @@ export function TrajectoryViewer({
     () => phaseColorVars(segments.map((s) => s.key)),
     [segments]
   );
+  // step_id → owning segment; drives the scrubber track, the per-step
+  // colored edge, and the segment back-link chip.
+  const ownerByStep = useMemo(() => segmentOwners(segments), [segments]);
+  const highlightById = useMemo(() => {
+    const map = new Map<number, { title: string; why: string }>();
+    for (const h of summary?.highlights ?? [])
+      map.set(Number(h.step_id), { title: h.title, why: h.why });
+    return map;
+  }, [summary]);
+  const errorFlags = useMemo(
+    () => stepErrorFlags(trajectory?.steps ?? []),
+    [trajectory]
+  );
+
+  // Summary-derived text per step (component label + gist, highlight title +
+  // why), folded into the search corpus so e.g. typing "debugging" pulls up
+  // that component's steps even when the raw step text never uses the word.
+  const searchExtraByStep = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const step of trajectory?.steps ?? []) {
+      const id = Number(step.step_id);
+      const seg = ownerByStep.get(id);
+      const h = highlightById.get(id);
+      const extra = [seg?.label, seg?.gist, h?.title, h?.why]
+        .filter(Boolean)
+        .join("\n");
+      if (extra) map.set(id, extra.toLowerCase());
+    }
+    return map;
+  }, [trajectory, ownerByStep, highlightById]);
+
+  // Filter steps by keyword, keeping each step's original index so timing,
+  // refs, and scrubber clicks stay consistent with the full trajectory.
+  const lowerQuery = query.trim().toLowerCase();
+  const visibleSteps = useMemo(() => {
+    const all = (trajectory?.steps ?? []).map((step, idx) => ({ step, idx }));
+    if (!lowerQuery) return all;
+    return all.filter(({ step }) =>
+      stepMatchesQuery(
+        step,
+        lowerQuery,
+        searchExtraByStep.get(Number(step.step_id))
+      )
+    );
+  }, [trajectory, lowerQuery, searchExtraByStep]);
+
+  // While a filter is active the scrubber dims non-matching segments so the
+  // track and the filtered list tell the same story. Null = no filter.
+  const matchedIndices = useMemo(
+    () => (lowerQuery ? new Set(visibleSteps.map(({ idx }) => idx)) : null),
+    [lowerQuery, visibleSteps]
+  );
+
   // Grouping runs over the *filtered* list, so a group whose steps all filtered
   // out is simply never emitted.
   const groups = useMemo(
@@ -778,10 +666,16 @@ export function TrajectoryViewer({
     [trajectory]
   );
 
+  const flashStep = useCallback((index: number) => {
+    setFlashIndex(index);
+    if (flashTimer.current) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlashIndex(null), 1600);
+  }, []);
+
   const handleStepClick = useCallback(
     (index: number) => {
       const stepKey = `step-${index}`;
-      // The duration bar spans every step, so a click may target a step the
+      // The scrubber spans every step, so a click may target a step the
       // active filter is hiding — clear the filter so it can be shown.
       if (lowerQuery && !visibleSteps.some(({ idx }) => idx === index)) {
         setQuery("");
@@ -789,16 +683,93 @@ export function TrajectoryViewer({
       setExpandedSteps((prev) =>
         prev.includes(stepKey) ? prev : [...prev, stepKey]
       );
-      // Scroll to step after a brief delay for accordion animation
+      // Remember where the reader was so the "Back" pill can return there.
+      const scroller = getScrollParent(scrubberRef.current);
+      if (scroller) setReturnScroll(scroller.scrollTop);
+      flashStep(index);
+      // Instant snap once the accordion mounts, plus one re-snap after
+      // content-visibility rows above resolve their real heights. The
+      // playhead + active-row tint carry exact correspondence from there.
       setTimeout(() => {
-        stepRefs.current[index]?.scrollIntoView({
-          behavior: "smooth",
-          block: "start",
-        });
+        stepRefs.current[index]?.scrollIntoView({ block: "start" });
+        window.setTimeout(() => {
+          stepRefs.current[index]?.scrollIntoView({ block: "start" });
+        }, 250);
       }, 50);
     },
-    [lowerQuery, visibleSteps]
+    [lowerQuery, visibleSteps, flashStep]
   );
+
+  const scrollToOverview = useCallback(() => {
+    overviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  const handleBack = useCallback(() => {
+    if (returnScroll == null) return;
+    const scroller = getScrollParent(scrubberRef.current);
+    scroller?.scrollTo({ top: returnScroll, behavior: "smooth" });
+    setReturnScroll(null);
+  }, [returnScroll]);
+
+  const copyStepLink = useCallback((stepId: number) => {
+    const url = `${window.location.origin}${window.location.pathname}${window.location.search}#step-${stepId}`;
+    void navigator.clipboard?.writeText(url).then(() => {
+      setCopiedStepId(stepId);
+      if (copyTimer.current) window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopiedStepId(null), 1600);
+    });
+  }, []);
+
+  // Scroll spy: track which step sits under the sticky scrubber so its
+  // playhead follows the reader (and clicking the track scrubs the list).
+  useEffect(() => {
+    if (!trajectory?.steps?.length) return;
+    const scroller = getScrollParent(scrubberRef.current);
+    const target: HTMLElement | Window = scroller ?? window;
+    let raf = 0;
+
+    const update = () => {
+      raf = 0;
+      const barBottom = scrubberRef.current?.getBoundingClientRect().bottom ?? 0;
+      let current: number | null = null;
+      for (let i = 0; i < stepRefs.current.length; i++) {
+        const el = stepRefs.current[i];
+        if (!el || !el.isConnected) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.top <= barBottom + 16) {
+          current = i;
+        } else {
+          break;
+        }
+      }
+      // At the bottom of the pane the last steps can never reach the top, so
+      // the topmost-row rule would leave the playhead stuck short of the end.
+      // Once the scroller is fully scrolled, point at the last step.
+      if (
+        scroller &&
+        scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2
+      ) {
+        for (let i = stepRefs.current.length - 1; i >= 0; i--) {
+          if (stepRefs.current[i]?.isConnected) {
+            current = i;
+            break;
+          }
+        }
+      }
+      setActiveIndex(current);
+    };
+
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+
+    update();
+    target.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      target.removeEventListener("scroll", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [trajectory, visibleSteps]);
 
   // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
   // carries a step_id, not an array index; handleStepClick takes an index.
@@ -864,33 +835,55 @@ export function TrajectoryViewer({
     );
   }
 
+  const totalTokens =
+    (trajectory.final_metrics?.total_prompt_tokens ?? 0) +
+    (trajectory.final_metrics?.total_completion_tokens ?? 0);
+
   return (
-    <div className="p-4">
-      <TrajectorySummary
-        trialId={trialId}
-        apiBaseUrl={apiBaseUrl}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
-        onStepSelect={handleStepClick}
-      />
-      <TrajectoryActivity
-        trialId={trialId}
-        steps={trajectory.steps}
-        apiBaseUrl={apiBaseUrl}
-        stepIdToIndex={(stepId) =>
-          // step_id is typed number but arrives as a string from some producers;
-          // strict === would return -1 and the scroll would silently no-op.
-          trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId)
-          )
-        }
-        onStepSelect={handleStepClick}
-      />
+    <div className="p-4 pt-0">
+      {/* Sticky scrubber — always in reach while reading the step list. */}
+      <div
+        ref={scrubberRef}
+        className="bg-background/95 supports-[backdrop-filter]:bg-background/80 sticky top-0 z-10 -mx-4 border-b px-4 pt-3 pb-1 backdrop-blur"
+      >
+        <TrajectoryScrubber
+          steps={trajectory.steps}
+          errorFlags={errorFlags}
+          ownerByStep={ownerByStep}
+          colorFor={colorFor}
+          highlights={highlightById}
+          activeIndex={activeIndex}
+          matchedIndices={matchedIndices}
+          onStepSelect={handleStepClick}
+        />
+        {returnScroll != null && (
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={handleBack}
+            className="absolute top-1.5 right-4 z-20 h-6 gap-1 px-2 text-[11px] shadow-sm"
+          >
+            <Undo2 className="h-3 w-3" />
+            Back
+          </Button>
+        )}
+      </div>
+
+      <div ref={overviewRef} className="scroll-mt-16 pt-3">
+        <TrajectorySummary
+          trialId={trialId}
+          apiBaseUrl={apiBaseUrl}
+          stepIdToIndex={(stepId) =>
+            // step_id is typed number but arrives as a string from some producers;
+            // strict === would return -1 and the scroll would silently no-op.
+            trajectory.steps.findIndex(
+              (s) => Number(s.step_id) === Number(stepId)
+            )
+          }
+          onStepSelect={handleStepClick}
+        />
+      </div>
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center justify-between text-sm font-medium">
@@ -903,6 +896,7 @@ export function TrajectoryViewer({
                 {lowerQuery
                   ? `${visibleSteps.length} of ${trajectory.steps.length} steps`
                   : `${trajectory.steps.length} steps`}
+                {totalTokens > 0 && <> · {totalTokens.toLocaleString()} tok</>}
                 {trajectory.final_metrics?.total_cost_usd && (
                   <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
                 )}
@@ -949,15 +943,6 @@ export function TrajectoryViewer({
               </Button>
             )}
           </div>
-
-          {/* Token Usage Bar */}
-          <TokenUsageBar metrics={trajectory.final_metrics} />
-
-          {/* Duration Bar */}
-          <StepDurationBar
-            steps={trajectory.steps}
-            onStepClick={handleStepClick}
-          />
 
           {/* Steps Accordion */}
           {visibleSteps.length === 0 ? (
@@ -1010,36 +995,110 @@ export function TrajectoryViewer({
                       {group.gist}
                     </p>
                   )}
-                  {group.steps.map(({ step, idx }) => (
-                    <AccordionItem
-                      key={step.step_id}
-                      value={`step-${idx}`}
-                      ref={(el: HTMLDivElement | null) => {
-                        stepRefs.current[idx] = el;
-                      }}
-                    >
-                      <AccordionTrigger className="py-3 hover:no-underline">
-                        <StepTrigger
-                          step={step}
-                          prevTimestamp={
-                            idx > 0
-                              ? (trajectory.steps[idx - 1]?.timestamp ?? null)
-                              : null
-                          }
-                          startTimestamp={
-                            trajectory.steps[0]?.timestamp ?? null
-                          }
-                        />
-                      </AccordionTrigger>
-                      <AccordionContent>
-                        <StepContent
-                          step={step}
-                          trialId={trialId}
-                          apiBaseUrl={apiBaseUrl}
-                        />
-                      </AccordionContent>
-                    </AccordionItem>
-                  ))}
+                  {group.steps.map(({ step, idx }) => {
+                    const segment = ownerByStep.get(Number(step.step_id));
+                    const segmentColor = segment
+                      ? (colorFor.get(segment.key) ?? "var(--phase-other)")
+                      : undefined;
+                    const highlight = highlightById.get(Number(step.step_id));
+                    return (
+                      <AccordionItem
+                        key={step.step_id}
+                        value={`step-${idx}`}
+                        ref={(el: HTMLDivElement | null) => {
+                          stepRefs.current[idx] = el;
+                        }}
+                        style={{
+                          borderLeftColor: segmentColor ?? "transparent",
+                        }}
+                        className={
+                          // content-visibility keeps very long trajectories
+                          // cheap: offscreen collapsed rows skip layout/paint.
+                          "scroll-mt-16 border-l-2 pl-2 transition-colors [content-visibility:auto] [contain-intrinsic-size:auto_48px] " +
+                          (flashIndex === idx
+                            ? "ring-primary/50 rounded-md ring-2 "
+                            : "") +
+                          // The step the scrubber's playhead points at — so
+                          // the track and the list stay visibly in sync.
+                          (activeIndex === idx ? "bg-muted" : "")
+                        }
+                      >
+                        <AccordionTrigger className="py-3 hover:no-underline">
+                          <StepTrigger
+                            step={step}
+                            prevTimestamp={
+                              idx > 0
+                                ? (trajectory.steps[idx - 1]?.timestamp ?? null)
+                                : null
+                            }
+                            startTimestamp={
+                              trajectory.steps[0]?.timestamp ?? null
+                            }
+                            isHighlight={!!highlight}
+                          />
+                        </AccordionTrigger>
+                        <AccordionContent>
+                          {/* Back-links: this step's component (→ overview),
+                              the reason the summary flagged it, and a
+                              shareable #step-N link. */}
+                          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+                            {segment && (
+                              <button
+                                type="button"
+                                onClick={scrollToOverview}
+                                title="Show in overview"
+                                className="border-border hover:bg-muted flex items-center gap-1.5 rounded-full border px-2 py-0.5"
+                              >
+                                <span
+                                  className="h-2 w-2 rounded-sm"
+                                  style={{ background: segmentColor }}
+                                />
+                                {segment.label}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                copyStepLink(Number(step.step_id))
+                              }
+                              title="Copy link to this step"
+                              className="border-border text-muted-foreground hover:bg-muted hover:text-foreground flex items-center gap-1.5 rounded-full border px-2 py-0.5"
+                            >
+                              {copiedStepId === Number(step.step_id) ? (
+                                <>
+                                  <Check className="h-3 w-3 text-emerald-500" />
+                                  Copied
+                                </>
+                              ) : (
+                                <>
+                                  <Link2 className="h-3 w-3" />
+                                  Copy link
+                                </>
+                              )}
+                            </button>
+                            {highlight && (
+                              <span className="text-muted-foreground flex w-full items-start gap-1.5">
+                                <Star className="mt-0.5 h-3 w-3 shrink-0 fill-amber-400 text-amber-500" />
+                                {/* Wraps (flex-1 + overflow-wrap), never
+                                    truncates — a clipped "why" is unreadable. */}
+                                <span className="min-w-0 flex-1 leading-snug whitespace-normal [overflow-wrap:anywhere]">
+                                  <span className="text-foreground font-medium">
+                                    {highlight.title}
+                                  </span>
+                                  {highlight.why && <> — {highlight.why}</>}
+                                </span>
+                              </span>
+                            )}
+                          </div>
+                          <StepContent
+                            step={step}
+                            trialId={trialId}
+                            apiBaseUrl={apiBaseUrl}
+                          />
+                        </AccordionContent>
+                      </AccordionItem>
+                    );
+                  })}
                 </div>
               ))}
             </Accordion>

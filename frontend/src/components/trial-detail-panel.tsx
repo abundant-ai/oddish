@@ -44,7 +44,6 @@ import {
   Route,
   Package,
   Trash2,
-  GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
@@ -99,17 +98,6 @@ const TrajectoryViewer = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading trajectory..." />,
-  },
-);
-
-const TrajectoryGraphView = dynamic(
-  () =>
-    import("@/components/trajectory-graph").then(
-      (mod) => mod.TrajectoryGraphView,
-    ),
-  {
-    ssr: false,
-    loading: () => <DrawerPanelLoading label="Loading agent graph..." />,
   },
 );
 
@@ -363,19 +351,8 @@ export function TrialDetailPanel({
   const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
-    () =>
-      new Set([
-        "summary",
-        "live",
-        "files",
-        "trajectory",
-        // Only a valid target when the Agent Graph tab is actually rendered;
-        // otherwise a ?tab=agent-graph link (e.g. public share) would select a
-        // panel that doesn't exist and leave the drawer body blank.
-        ...(showAnalysis ? ["agent-graph"] : []),
-        "artifacts",
-      ]),
-    [showAnalysis],
+    () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
+    [],
   );
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -394,23 +371,39 @@ export function TrialDetailPanel({
 
   const hydratedFromUrl = useRef(false);
 
-  // Hydrate from URL on first open
+  // Hydrate from URL on first open. Read the LIVE query, not the
+  // useSearchParams() snapshot — other components (e.g. the experiment view's
+  // drawer sync) write task/trial via history.replaceState, which the hook
+  // never observes.
   useEffect(() => {
     if (!isOpen || hydratedFromUrl.current) return;
     hydratedFromUrl.current = true;
-    const urlTab = searchParams.get("tab");
-    const urlFile = searchParams.get("file");
-    if (urlTab && validTabs.has(urlTab)) setActiveTab(urlTab);
+    const liveParams = new URLSearchParams(window.location.search);
+    const urlTab = liveParams.get("tab");
+    const urlFile = liveParams.get("file");
+    if (urlTab && validTabs.has(urlTab)) {
+      setActiveTab(urlTab);
+    } else if (/^#step-\d+$/.test(window.location.hash)) {
+      // A #step-N deep link implies the trajectory tab even when the URL
+      // doesn't carry ?tab= — otherwise the viewer never mounts and the
+      // hash is silently ignored.
+      setActiveTab("trajectory");
+    }
     if (urlFile) {
       setFilesTargetPath(urlFile);
       if (!urlTab) setActiveTab("files");
     }
   }, [isOpen, searchParams, validTabs]);
 
-  // Sync tab & file to URL (without triggering Next.js router navigation)
+  // Sync tab & file to URL (without triggering Next.js router navigation).
+  // Build on the LIVE query string: useSearchParams() only updates on router
+  // navigations, so seeding from it here would silently drop params that
+  // sibling components wrote via history.replaceState (this is exactly how
+  // ?task=&trial= used to vanish when switching to the trajectory tab,
+  // producing share links that restored nothing).
   useEffect(() => {
     if (!isOpen || !hydratedFromUrl.current) return;
-    const next = new URLSearchParams(searchParams.toString());
+    const next = new URLSearchParams(window.location.search);
 
     if (activeTab && activeTab !== "summary") {
       next.set("tab", activeTab);
@@ -424,11 +417,13 @@ export function TrialDetailPanel({
       next.delete("file");
     }
 
-    if (next.toString() !== searchParams.toString()) {
-      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+    if (next.toString() !== window.location.search.replace(/^\?/, "")) {
+      // Keep the fragment: replacing with a hash-less URL would strip a
+      // #step-N deep link before the trajectory viewer gets to apply it.
+      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}${window.location.hash}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [isOpen, activeTab, filesTargetPath, searchParams]);
+  }, [isOpen, activeTab, filesTargetPath]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
@@ -960,15 +955,6 @@ export function TrialDetailPanel({
               <Route className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Trajectory
             </TabsTrigger>
-            {showAnalysis && (
-              <TabsTrigger
-                value="agent-graph"
-                className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
-              >
-                <GitBranch className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                Agent Graph
-              </TabsTrigger>
-            )}
             <TabsTrigger
               value="artifacts"
               className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
@@ -1244,19 +1230,6 @@ export function TrialDetailPanel({
               apiBaseUrl={apiBaseUrl}
             />
           </TabsContent>
-
-          {showAnalysis && (
-            <TabsContent
-              value="agent-graph"
-              className="m-0 h-full overflow-auto p-0"
-            >
-              <TrajectoryGraphView
-                trialId={trial.id}
-                hasTrajectory={trial.has_trajectory}
-                apiBaseUrl={apiBaseUrl}
-              />
-            </TabsContent>
-          )}
         </div>
       </Tabs>
     </>

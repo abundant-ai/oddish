@@ -1001,6 +1001,9 @@ export function ExperimentDetailView({
     ExperimentAgentSummary[]
   >([]);
   const hydratedFromUrl = useRef(false);
+  // A ?trial= deep link seen at hydrate time whose trial hadn't streamed in
+  // yet. Resolved (or abandoned) by the trial re-sync effect below.
+  const pendingUrlTrial = useRef<string | null>(null);
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;
   const deferredTasksForDerivedData = useDeferredValue(tasksForExperiment);
 
@@ -1089,7 +1092,23 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!hydratedFromUrl.current) return;
 
-    const next = new URLSearchParams(searchParams.toString());
+    // A ?trial= deep link that arrived before trial pages streamed in is
+    // still resolving (the drawer opened as a task shell meanwhile). Leave
+    // the URL alone until the re-sync effect promotes or abandons it —
+    // otherwise the task-mode branch below would delete trial/tab and
+    // destroy the link before it ever had a chance to apply.
+    if (pendingUrlTrial.current) {
+      if (drawerState?.isOpen && drawerState.mode === "task") return;
+      // The user closed the drawer or opened a trial themselves — the deep
+      // link no longer drives anything.
+      pendingUrlTrial.current = null;
+    }
+
+    // Build on the LIVE query string, not the useSearchParams() snapshot —
+    // the hook only updates on router navigations, so seeding from it would
+    // drop params written by history.replaceState elsewhere (e.g. the trial
+    // drawer's ?tab=/&file= sync).
+    const next = new URLSearchParams(window.location.search);
     if (drawerState?.isOpen) {
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
@@ -1106,12 +1125,12 @@ export function ExperimentDetailView({
       next.delete("file");
     }
 
-    if (next.toString() !== searchParams.toString()) {
-      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
+    if (next.toString() !== window.location.search.replace(/^\?/, "")) {
+      const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}${window.location.hash}`;
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawerState, searchParams]);
+  }, [drawerState]);
 
   useEffect(() => {
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
@@ -1132,7 +1151,10 @@ export function ExperimentDetailView({
     const { trialGroups, orderedTrials } = buildTrialGroups(task);
 
     if (urlTrialId) {
-      const trial = orderedTrials.find((t) => t.id === urlTrialId) ?? null;
+      const trial =
+        orderedTrials.find((t) => t.id === urlTrialId) ??
+        orderedTrials.find((t) => t.name === urlTrialId) ??
+        null;
       if (trial) {
         const trialIndex = orderedTrials.indexOf(trial);
         setDrawerState({
@@ -1148,6 +1170,11 @@ export function ExperimentDetailView({
         });
         return;
       }
+      // On direct loads the drawer opens from lightweight task shells before
+      // trial pages stream in, so the trial usually ISN'T loaded yet. Park
+      // the request; the re-sync effect promotes the drawer to trial mode
+      // when the trials arrive. Fall through to task mode meanwhile.
+      pendingUrlTrial.current = urlTrialId;
     }
 
     setDrawerState({
@@ -1187,14 +1214,34 @@ export function ExperimentDetailView({
     const foundTrialIndex = drawerState.trial
       ? orderedTrials.findIndex((t) => t.id === drawerState.trial!.id)
       : -1;
-    const resolvedTrialIndex = foundTrialIndex >= 0 ? foundTrialIndex : null;
-    const resolvedTrial =
+    let resolvedTrialIndex = foundTrialIndex >= 0 ? foundTrialIndex : null;
+    let resolvedTrial =
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
         : drawerState.trial;
+    let resolvedMode = drawerState.mode;
+
+    // A ?trial= deep link parked at hydrate time (trials hadn't streamed in
+    // yet): promote the task-mode drawer to that trial now that they have.
+    if (pendingUrlTrial.current && orderedTrials.length > 0) {
+      const wanted =
+        orderedTrials.find((t) => t.id === pendingUrlTrial.current) ??
+        orderedTrials.find((t) => t.name === pendingUrlTrial.current) ??
+        null;
+      // Either way the link is resolved — found it, or the trials are here
+      // and it doesn't exist (stale link): stop holding the URL sync.
+      pendingUrlTrial.current = null;
+      if (wanted) {
+        resolvedMode = "trial";
+        resolvedTrial = wanted;
+        resolvedTrialIndex = orderedTrials.indexOf(wanted);
+      }
+    }
+
     const resolvedTaskIndex = tasksForExperiment.indexOf(liveTask);
     setDrawerState({
       ...drawerState,
+      mode: resolvedMode,
       task: liveTask,
       taskIndex:
         resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,

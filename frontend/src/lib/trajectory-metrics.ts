@@ -82,3 +82,53 @@ export function phaseColorVars(labels: string[]): Map<string, string> {
   }
   return map;
 }
+
+function observationText(step: TrajectoryStep): string {
+  const parts: string[] = [];
+  for (const result of step.observation?.results ?? []) {
+    const c = result.content;
+    if (typeof c === "string") {
+      parts.push(c);
+    } else if (Array.isArray(c)) {
+      for (const p of c) if (p.type === "text" && p.text) parts.push(p.text);
+    }
+  }
+  return parts.join("\n");
+}
+
+// Cheap tool-failure sniff over observation output. Word-bounded so e.g.
+// "errors=0" still matches but "terror" doesn't; capped so a huge log dump
+// doesn't stall the render pass.
+const ERROR_RE =
+  /\b(error|errors|exception|traceback|fatal|panic|failed|failure|denied|not found|no such file)\b/i;
+const ERROR_SCAN_CHARS = 4000;
+
+/** Heuristic: does this step's observation output look like a failure? */
+export function stepLooksLikeError(step: TrajectoryStep): boolean {
+  const text = observationText(step);
+  if (!text) return false;
+  return ERROR_RE.test(text.slice(0, ERROR_SCAN_CHARS));
+}
+
+/** Per-step failure sniff (drives the ⚠ ticks on the scrubber). */
+export function stepErrorFlags(steps: TrajectoryStep[]): boolean[] {
+  return steps.map(stepLooksLikeError);
+}
+
+/**
+ * Duration-proportional segment widths (percent, summing to 100) with a
+ * minimum so short steps stay visible. Falls back to equal widths when
+ * timestamps are missing/uniformly zero.
+ */
+export function segmentWidthsPct(
+  durations: number[],
+  minPct: number = 1.25,
+): number[] {
+  const n = durations.length;
+  if (n === 0) return [];
+  const total = durations.reduce((a, b) => a + b, 0);
+  if (total <= 0) return durations.map(() => 100 / n);
+  const clamped = durations.map((d) => Math.max((d / total) * 100, minPct));
+  const sum = clamped.reduce((a, b) => a + b, 0);
+  return clamped.map((w) => (w / sum) * 100);
+}
