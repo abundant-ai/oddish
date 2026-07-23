@@ -30,6 +30,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # `trials` is hot: a pending ACCESS EXCLUSIVE request queues every query on
+    # it behind this ALTER. Bound the wait so a blocked run fails fast and can
+    # be retried, instead of stalling the table. (Only one table is touched
+    # here, so there is no lock-ordering cycle to break.)
+    op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("ALTER TABLE trials ADD COLUMN IF NOT EXISTS llm_key_hash VARCHAR(64)")
     op.execute(
         """
@@ -54,5 +59,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("DROP TABLE IF EXISTS cost_excluded_llm_keys")
     op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS llm_key_hash")
