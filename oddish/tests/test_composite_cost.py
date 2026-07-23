@@ -29,8 +29,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.cost_basis import (  # noqa: E402
+    COMBINE_IDEMPOTENCY_PREFIX,
     CompositeCost,
     composite_cost_by_trial,
+    is_combine_copy,
+)
+from oddish.core.endpoints.task_detail import (  # noqa: E402
+    _aggregate_task_detail_rollups,
+    list_task_versions_core,
 )
 from oddish.core.helpers import (  # noqa: E402
     _composite_cost_fields,
@@ -42,6 +48,7 @@ from oddish.db import (  # noqa: E402
     ModalCostSpanModel,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     utcnow,
@@ -61,7 +68,15 @@ _T2_INFERENCE = 0.25
 _T3_INFERENCE = 0.10
 
 
-def _trial(trial_id: str, *, cost_usd: float) -> TrialModel:
+def _trial(
+    trial_id: str,
+    *,
+    cost_usd: float,
+    task_version_id: str | None = None,
+    superseded_by_trial_id: str | None = None,
+    idempotency_key: str | None = None,
+    billed_user_id: str | None = None,
+) -> TrialModel:
     return TrialModel(
         id=trial_id,
         name=trial_id,
@@ -78,6 +93,10 @@ def _trial(trial_id: str, *, cost_usd: float) -> TrialModel:
         status=TrialStatus.SUCCESS,
         cost_usd=cost_usd,
         has_trajectory=False,
+        task_version_id=task_version_id,
+        superseded_by_trial_id=superseded_by_trial_id,
+        idempotency_key=idempotency_key,
+        billed_user_id=billed_user_id,
     )
 
 
@@ -202,3 +221,137 @@ async def test_composite_cost_by_trial_sums_qa_and_compute(session):
 @pytest.mark.asyncio
 async def test_composite_cost_by_trial_empty_input(session):
     assert await composite_cost_by_trial(session, []) == {}
+
+
+# --- Task-detail rollup (Slice 2): per-task composite fold + exclusion ---------
+
+_V1 = f"{_TASK}-v1"
+_BILLED_USER = f"user-{_RUN}"
+# Two trials the detail view folds in (one billed), plus a superseded retry and a
+# combine copy that get_task_detail_core filters out *before* the composite is
+# batched -- so their ledger rows must contribute $0.
+_KEEP_BILLED = f"{_TASK}-keep-billed"
+_KEEP_PLAIN = f"{_TASK}-keep-plain"
+_SUPERSEDED = f"{_TASK}-superseded"
+_COMBINE = f"{_TASK}-combine"
+
+
+@pytest.mark.asyncio
+async def test_task_detail_rollup_folds_composite_and_excludes_filtered(session):
+    """The task-detail rollup sums QA + compute over the same population as
+    inference, and a filtered-out trial contributes $0 QA/compute.
+
+    Exercises the real flow `get_task_detail_core` runs: filter combine
+    copies / superseded retries, batch `composite_cost_by_trial` over only the
+    survivors, build their `TrialResponse` rows, then fold via
+    `_aggregate_task_detail_rollups`. The excluded trials carry fat ledgers that
+    must never reach the totals.
+    """
+    task = TaskModel(
+        id=_TASK,
+        name=_TASK,
+        org_id=_ORG,
+        user="tester",
+        task_path="/tmp/composite-cost-test",
+        status=TaskStatus.COMPLETED,
+    )
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    session.add(task)
+    # Flush the task before the version: tasks.current_version_id <-> task
+    # _versions.task_id is a cyclic FK, so let the task land first.
+    await session.flush()
+    session.add(
+        TaskVersionModel(
+            id=_V1, task_id=_TASK, version=1, task_path="/tmp/composite-cost-test"
+        )
+    )
+    keep_billed = _trial(
+        _KEEP_BILLED, cost_usd=0.50, task_version_id=_V1, billed_user_id=_BILLED_USER
+    )
+    keep_plain = _trial(_KEEP_PLAIN, cost_usd=0.25, task_version_id=_V1)
+    session.add_all([keep_billed, keep_plain])
+    # Flush the survivors first so the superseded FK (-> trials.id) resolves.
+    await session.flush()
+
+    superseded = _trial(
+        _SUPERSEDED,
+        cost_usd=1.00,
+        task_version_id=_V1,
+        superseded_by_trial_id=_KEEP_BILLED,
+    )
+    combine = _trial(
+        _COMBINE,
+        cost_usd=2.00,
+        task_version_id=_V1,
+        idempotency_key=f"{COMBINE_IDEMPOTENCY_PREFIX}{_KEEP_PLAIN}",
+    )
+    session.add_all([superseded, combine])
+    session.add_all(
+        [
+            # keep_billed: QA 0.10 + 0.05 = 0.15; compute 0.20 + 0.30 = 0.50.
+            _qa(_KEEP_BILLED, 0.10),
+            _qa(_KEEP_BILLED, 0.05),
+            _span(_KEEP_BILLED, Decimal("0.20"), 0),
+            _span(_KEEP_BILLED, Decimal("0.30"), 1),
+            # keep_plain: QA 0.07; no compute.
+            _qa(_KEEP_PLAIN, 0.07),
+            # Excluded ledgers -- must NOT reach the rollup.
+            _qa(_SUPERSEDED, 0.99),
+            _span(_SUPERSEDED, Decimal("0.88"), 0),
+            _qa(_COMBINE, 0.77),
+            _span(_COMBINE, Decimal("0.66"), 0),
+        ]
+    )
+    await session.flush()
+
+    # Mirror get_task_detail_core: drop superseded + combine copies, then batch
+    # the composite over only the survivors and build their responses.
+    all_trials = [keep_billed, keep_plain, superseded, combine]
+    folded = [
+        t
+        for t in all_trials
+        if t.superseded_by_trial_id is None and not is_combine_copy(t)
+    ]
+    assert {t.id for t in folded} == {_KEEP_BILLED, _KEEP_PLAIN}
+    composite = await composite_cost_by_trial(session, [t.id for t in folded])
+    responses = [
+        build_trial_response(t, _TASK, composite=composite.get(t.id)) for t in folded
+    ]
+    billed_ids = {t.id for t in folded if t.billed_user_id is not None}
+    version_rows = await list_task_versions_core(session, task_id=_TASK, task=task)
+
+    totals, versions = _aggregate_task_detail_rollups(
+        trials=responses,
+        version_rows=version_rows,
+        current_version_id=_V1,
+        billed_trial_ids=billed_ids,
+    )
+
+    # Inference fold is unchanged (0.50 + 0.25); QA and compute sum over the same
+    # two survivors -- NOT the excluded 0.99/0.77 QA or 0.88/0.66 compute.
+    assert totals.cost_usd == pytest.approx(0.75)
+    assert totals.qa_cost_usd == pytest.approx(0.22)
+    assert totals.compute_cost_usd == pytest.approx(0.50)
+    assert totals.total_cost_usd == pytest.approx(0.75 + 0.22 + 0.50)  # 1.47
+
+    # Had the filtered trials leaked, QA would be 0.22 + 1.76 and compute
+    # 0.50 + 1.54. Pin the exclusion explicitly.
+    assert totals.qa_cost_usd != pytest.approx(0.22 + 0.99 + 0.77)
+    assert totals.compute_cost_usd != pytest.approx(0.50 + 0.88 + 0.66)
+
+    # Billed split: only the billed survivor contributes, mirroring billed_cost_usd.
+    assert totals.billed_cost_usd == pytest.approx(0.50)
+    assert totals.billed_qa_cost_usd == pytest.approx(0.15)
+    assert totals.billed_compute_cost_usd == pytest.approx(0.50)
+    assert totals.billed_total_cost_usd == pytest.approx(0.50 + 0.15 + 0.50)  # 1.15
+
+    # Per-version bucket: all survivors are v1, so it mirrors the task totals.
+    assert [v.id for v in versions] == [_V1]
+    v1 = versions[0]
+    assert v1.cost_usd == pytest.approx(0.75)
+    assert v1.qa_cost_usd == pytest.approx(0.22)
+    assert v1.compute_cost_usd == pytest.approx(0.50)
+    assert v1.total_cost_usd == pytest.approx(1.47)
+    assert v1.billed_qa_cost_usd == pytest.approx(0.15)
+    assert v1.billed_compute_cost_usd == pytest.approx(0.50)
+    assert v1.billed_total_cost_usd == pytest.approx(1.15)

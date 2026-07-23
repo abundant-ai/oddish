@@ -848,6 +848,18 @@ class TaskVersionSummary(BaseModel):
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    # Composite spend components for this version (additive; ``cost_usd`` stays
+    # inference-only). ``qa`` sums the ``analysis_costs`` ledger, ``compute`` the
+    # ``modal_costs`` ledger, ``total`` = inference + qa + compute. The
+    # ``billed_*`` variants mirror the ``billed_cost_usd`` split (billed trials
+    # only). Same trial population as ``cost_usd`` (non-superseded, non-combine),
+    # so a filtered-out trial contributes $0 here too.
+    qa_cost_usd: float = 0.0
+    compute_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
+    billed_qa_cost_usd: float = 0.0
+    billed_compute_cost_usd: float = 0.0
+    billed_total_cost_usd: float = 0.0
     last_run_at: datetime | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
@@ -869,6 +881,18 @@ class TaskCostTotals(BaseModel):
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    # Composite spend components (additive; ``cost_usd`` stays inference-only).
+    # ``qa`` sums the ``analysis_costs`` ledger, ``compute`` the ``modal_costs``
+    # ledger, ``total`` = inference + qa + compute. The ``billed_*`` variants
+    # mirror the ``billed_cost_usd`` split (billed trials only). Accumulated over
+    # the same trial population as ``cost_usd`` (non-superseded, non-combine), so
+    # a filtered-out trial contributes $0 here too.
+    qa_cost_usd: float = 0.0
+    compute_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
+    billed_qa_cost_usd: float = 0.0
+    billed_compute_cost_usd: float = 0.0
+    billed_total_cost_usd: float = 0.0
     total_trials: int = 0
 
 

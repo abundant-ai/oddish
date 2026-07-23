@@ -120,12 +120,16 @@ function CostBadge({
   hasEstimated,
   hasNative,
   size = "md",
+  breakdown,
 }: {
   cost: number;
   trialCount: number;
   hasEstimated: boolean;
   hasNative: boolean;
   size?: "sm" | "md" | "lg";
+  // When supplied, `cost` is the composite total (inference + QA + compute) and
+  // the exact per-component split is appended to the hover title.
+  breakdown?: { inference: number; qa: number; compute: number } | null;
 }) {
   const valueClass =
     size === "lg"
@@ -139,6 +143,11 @@ function CostBadge({
       : size === "md"
         ? "text-[13px]"
         : "text-[10px]";
+  const breakdownText = breakdown
+    ? ` ${formatCostUsdExact(breakdown.inference)} inference · ${formatCostUsdExact(
+        breakdown.qa
+      )} QA · ${formatCostUsdExact(breakdown.compute)} sandbox.`
+    : "";
   const titleText =
     trialCount === 0
       ? "No cost data reported yet"
@@ -148,7 +157,7 @@ function CostBadge({
             : hasEstimated
               ? ". Estimated from token counts × static model pricing."
               : ". Reported by the agent runtime."
-        }`;
+        }${breakdownText}`;
 
   if (trialCount === 0) {
     return (
@@ -353,6 +362,10 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     costTrialCount: v.cost_trial_count,
     costHasEstimated: v.cost_has_estimated,
     costHasNative: v.cost_has_native,
+    // Prefer the server-computed composite over re-summing trials client-side.
+    qaCostUsd: v.qa_cost_usd,
+    computeCostUsd: v.compute_cost_usd,
+    totalCostUsd: v.total_cost_usd,
     // Task-scoped view: there is no owned-vs-gathered split, so owned == cost.
     ownedCostUsd: v.cost_usd,
     ownedTrialCount: v.cost_trial_count,
@@ -409,7 +422,7 @@ function VersionSwitcher({
             : `v${v.version}`;
           const cost =
             v.cost_trial_count > 0
-              ? `${v.cost_has_estimated && !v.cost_has_native ? "~" : ""}${formatCostUsd(v.cost_usd)}`
+              ? `${v.cost_has_estimated && !v.cost_has_native ? "~" : ""}${formatCostUsd(v.total_cost_usd)}`
               : "$0";
           const sub = `${v.trial_count} trial${v.trial_count === 1 ? "" : "s"} · ${cost}${v.message ? ` · ${v.message}` : ""}`;
           const isActive = v.id === selectedVersionId;
@@ -1010,11 +1023,16 @@ export function TaskDetailClient({
             }
           >
             <CostBadge
-              cost={totals?.cost_usd ?? 0}
+              cost={totals?.total_cost_usd ?? 0}
               trialCount={totals?.cost_trial_count ?? 0}
               hasEstimated={totals?.cost_has_estimated ?? false}
               hasNative={totals?.cost_has_native ?? false}
               size="lg"
+              breakdown={{
+                inference: totals?.cost_usd ?? 0,
+                qa: totals?.qa_cost_usd ?? 0,
+                compute: totals?.compute_cost_usd ?? 0,
+              }}
             />
             {allVersionsSummary.tokenTrialCount > 0 && (
               <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
@@ -1033,11 +1051,16 @@ export function TaskDetailClient({
             }
           >
             <CostBadge
-              cost={totals?.billed_cost_usd ?? 0}
+              cost={totals?.billed_total_cost_usd ?? 0}
               trialCount={totals?.billed_trial_count ?? 0}
               hasEstimated={totals?.billed_has_estimated ?? false}
               hasNative={totals?.billed_has_native ?? false}
               size="lg"
+              breakdown={{
+                inference: totals?.billed_cost_usd ?? 0,
+                qa: totals?.billed_qa_cost_usd ?? 0,
+                compute: totals?.billed_compute_cost_usd ?? 0,
+              }}
             />
           </KpiTile>
           <KpiTile
@@ -1051,11 +1074,16 @@ export function TaskDetailClient({
             }
           >
             <CostBadge
-              cost={versionSummary.costUsd}
+              cost={versionSummary.totalCostUsd}
               trialCount={versionSummary.costTrialCount}
               hasEstimated={versionSummary.costHasEstimated}
               hasNative={versionSummary.costHasNative}
               size="lg"
+              breakdown={{
+                inference: versionSummary.costUsd,
+                qa: versionSummary.qaCostUsd,
+                compute: versionSummary.computeCostUsd,
+              }}
             />
           </KpiTile>
           <KpiTile

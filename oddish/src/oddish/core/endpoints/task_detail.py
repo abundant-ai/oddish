@@ -293,6 +293,15 @@ def _aggregate_task_detail_rollups(
 
     Pulled out so it's unit-testable without standing up the full
     ``get_task_detail_core`` query stack.
+
+    ``trials`` are already-built ``TrialResponse`` rows carrying the per-trial
+    composite (``qa_cost_usd`` / ``compute_cost_usd``) that
+    :func:`get_task_detail_core` populated from a single
+    ``composite_cost_by_trial`` batch. QA and compute are summed here alongside
+    the existing inference ``cost_usd`` fold -- over the *same* filtered
+    population (combine copies and superseded retries are dropped upstream
+    before the composite is batched), so an excluded trial contributes $0 QA and
+    $0 compute for free, no separate ledger predicate needed.
     """
     summary_by_version_id: dict[str, TaskVersionSummary] = {
         v.id: TaskVersionSummary(
@@ -324,6 +333,19 @@ def _aggregate_task_detail_rollups(
                     totals.billed_has_estimated = True
                 else:
                     totals.billed_has_native = True
+
+        # QA + compute are separate ledgers, not gated on inference being priced:
+        # a trial with a token-unpriced ``cost_usd`` can still have real QA and
+        # sandbox spend, and folding it here keeps the task total equal to the
+        # sum of the per-trial ``total_cost_usd`` values. The billed split mirrors
+        # the ``billed_cost_usd`` logic above -- billed trials only.
+        qa_cost = getattr(trial, "qa_cost_usd", None) or 0.0
+        compute_cost = getattr(trial, "compute_cost_usd", None) or 0.0
+        totals.qa_cost_usd += qa_cost
+        totals.compute_cost_usd += compute_cost
+        if is_billed:
+            totals.billed_qa_cost_usd += qa_cost
+            totals.billed_compute_cost_usd += compute_cost
 
         bucket = summary_by_version_id.get(trial.task_version_id or "")
         if bucket is None:
@@ -366,11 +388,38 @@ def _aggregate_task_detail_rollups(
                 else:
                     bucket.billed_has_native = True
 
+        # Per-version composite fold, mirroring the task-total block above.
+        bucket.qa_cost_usd += qa_cost
+        bucket.compute_cost_usd += compute_cost
+        if is_billed:
+            bucket.billed_qa_cost_usd += qa_cost
+            bucket.billed_compute_cost_usd += compute_cost
+
         candidate = trial.finished_at or trial.started_at or trial.created_at
         if candidate is not None and (
             bucket.last_run_at is None or candidate > bucket.last_run_at
         ):
             bucket.last_run_at = candidate
+
+    # Composite totals are derived once at the end so ``total`` is exactly the
+    # sum of its accumulated components at every level.
+    totals.total_cost_usd = (
+        totals.cost_usd + totals.qa_cost_usd + totals.compute_cost_usd
+    )
+    totals.billed_total_cost_usd = (
+        totals.billed_cost_usd
+        + totals.billed_qa_cost_usd
+        + totals.billed_compute_cost_usd
+    )
+    for bucket in summary_by_version_id.values():
+        bucket.total_cost_usd = (
+            bucket.cost_usd + bucket.qa_cost_usd + bucket.compute_cost_usd
+        )
+        bucket.billed_total_cost_usd = (
+            bucket.billed_cost_usd
+            + bucket.billed_qa_cost_usd
+            + bucket.billed_compute_cost_usd
+        )
 
     versions_sorted = sorted(
         summary_by_version_id.values(),
