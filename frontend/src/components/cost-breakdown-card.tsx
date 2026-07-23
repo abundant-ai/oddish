@@ -503,8 +503,8 @@ function MethodologyNote() {
             cost that was estimated.
           </li>
           <li>
-            All first-party spend, across every org. Imported runs and
-            experiment-combine copies are excluded so spend counts once.
+            All first-party spend for the active organization. Imported runs
+            and experiment-combine copies are excluded so spend counts once.
           </li>
           <li>
             Deleted trials, tasks, and experiments remain included because
@@ -614,7 +614,7 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          All first-party trial spend across all organizations, including
+          All first-party trial spend for the active organization, including
           deleted historical spend and unbilled spend that never resolved to a
           registered user — see the info icon for methodology.
         </p>
@@ -887,11 +887,7 @@ function UserTable({
                 {user.owner_user_id ? (
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium">
                     <Link
-                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}${
-                        user.org_id
-                          ? `&org=${encodeURIComponent(user.org_id)}`
-                          : ""
-                      }`}
+                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}`}
                       className="text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
                     >
                       {userLabel(user)}

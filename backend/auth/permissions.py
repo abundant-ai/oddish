@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import os
+
+from fastapi import HTTPException
+
 from auth.types import AuthContext
 from auth.types import AuthMethod
 from models import APIKeyScope
 from models import UserRole
+
+
+def is_operator_org(auth: AuthContext) -> bool:
+    operator_org_id = os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
+    return bool(operator_org_id and auth.org_id == operator_org_id)
+
+
+def require_operator_org(auth: AuthContext) -> None:
+    if not is_operator_org(auth):
+        raise HTTPException(status_code=403, detail="Operator access required")
 
 
 def can_create_api_keys(auth: AuthContext) -> bool:

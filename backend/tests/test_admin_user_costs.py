@@ -435,6 +435,36 @@ async def test_unknown_user_returns_404(costs_fixture):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_user_from_another_org_returns_404(costs_fixture):
+    f = costs_fixture
+    foreign_org_id = f"org_foreign_{uuid.uuid4().hex[:8]}"
+    foreign_user = _member(foreign_org_id, "foreign")
+    try:
+        async with get_session() as session:
+            session.add(
+                OrganizationModel(
+                    id=foreign_org_id, name=foreign_org_id, slug=foreign_org_id
+                )
+            )
+            await session.flush()
+            session.add(foreign_user)
+
+        resp = await _get(f.org_id, f.admin.id, foreign_user.id)
+        assert resp.status_code == 404
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == foreign_user.id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == foreign_org_id
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_non_admin_returns_403(costs_fixture):
     f = costs_fixture
     member_auth = AuthContext(

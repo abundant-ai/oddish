@@ -629,6 +629,9 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     analyzer_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
+    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` is
+    # reserved for the existing AnalyzerModel/report association.
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
     llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1071,6 +1074,12 @@ class TrialModel(TimestampedMixin, Base):
     tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # SHA-256 of the platform provider API key this trial ran on, stamped at
+    # settlement (forward-only; NULL for pre-rollout / unresolved keys). Matched
+    # against ``cost_excluded_llm_keys`` to drop sponsored/free spend from cost
+    # accounting -- see ``oddish.core.cost_basis.first_party_spend_filter``.
+    llm_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
@@ -1242,6 +1251,8 @@ class AnalysisCostModel(TimestampedMixin, Base):
         Index("ix_analysis_costs_trial_id", "trial_id"),
         Index("ix_analysis_costs_experiment_id", "experiment_id"),
         Index("ix_analysis_costs_org_id", "org_id"),
+        Index("ix_analysis_costs_task_id", "task_id"),
+        Index("ix_analysis_costs_analyzer_id", "analyzer_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -1250,6 +1261,10 @@ class AnalysisCostModel(TimestampedMixin, Base):
     experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # AnalyzerModel/report association. Task-level QA and classifiers leave
+    # this NULL and reconcile through task_id/trial_id instead.
+    analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -2297,6 +2312,34 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
+class CostExcludedLlmKeyModel(TimestampedMixin, Base):
+    """An LLM provider API key whose spend is excluded from cost accounting.
+
+    The admin-managed list of sponsored/free keys. Only the one-way ``key_hash``
+    (SHA-256) is stored -- exclusion is pure equality matching against
+    ``trials.llm_key_hash``, never key reuse -- plus a masked ``key_hint`` for
+    display; the plaintext key is never persisted. ``deleted_at`` (soft delete)
+    is the live/removed state, and the partial UNIQUE keeps one live row per hash
+    so a removed key can be re-added.
+    """
+
+    __tablename__ = "cost_excluded_llm_keys"
+    __table_args__ = (
+        Index(
+            "idx_cost_excluded_llm_keys_hash_live",
+            "key_hash",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    key_hint: Mapped[str] = mapped_column(String(8), nullable=False, server_default="")
+    label: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class PromptModel(TimestampedMixin, Base):
     """A named, versioned analyzer prompt. ``active_version`` points at the
     ``prompt_versions.version`` that runs. Editing appends a new version."""
@@ -2367,5 +2410,6 @@ register_soft_delete_models(
     SavedTagFilterModel,
     SkillModel,
     DocumentModel,
+    CostExcludedLlmKeyModel,
     PromptModel,
 )

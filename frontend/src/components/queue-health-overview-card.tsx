@@ -280,9 +280,11 @@ function ConcurrencyLimitCell({
 function CapacityTable({
   rows,
   onSaved,
+  editable,
 }: {
   rows: QueueCapacityStat[];
   onSaved: () => Promise<unknown>;
+  editable: boolean;
 }) {
   // Edited limits, keyed by queue_key. A row without an entry (or whose entry
   // matches the current effective limit) is considered unchanged.
@@ -389,8 +391,12 @@ function CapacityTable({
           <TableRow className="whitespace-nowrap">
             <TableHead className="min-w-72">Queue key</TableHead>
             <TableHead className="w-20 text-right">Queued</TableHead>
-            <TableHead className="min-w-44">Running / limit</TableHead>
-            <TableHead className="min-w-64 text-right">Limit</TableHead>
+            <TableHead className="min-w-44">
+              {editable ? "Running / limit" : "Running"}
+            </TableHead>
+            {editable && (
+              <TableHead className="min-w-64 text-right">Limit</TableHead>
+            )}
             <TableHead className="w-24 text-right">Oldest</TableHead>
             <TableHead className="w-20 text-right">p50</TableHead>
             <TableHead className="w-20 text-right">p95</TableHead>
@@ -399,7 +405,7 @@ function CapacityTable({
         <TableBody>
           {rows.map((row) => {
             const underfilled =
-              row.queued > 0 && row.fill != null && row.fill < 0.85;
+              editable && row.queued > 0 && row.fill != null && row.fill < 0.85;
             return (
               <TableRow key={row.queue_key}>
                 <TableCell>
@@ -426,7 +432,9 @@ function CapacityTable({
                   )}
                 </TableCell>
                 <TableCell>
-                  {underfilled ? (
+                  {!editable ? (
+                    <span className="font-mono text-[11px]">{row.running}</span>
+                  ) : underfilled ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span className="cursor-help">
@@ -442,17 +450,19 @@ function CapacityTable({
                     <FillBar stat={row} />
                   )}
                 </TableCell>
-                <TableCell className="text-right">
-                  <ConcurrencyLimitCell
-                    stat={row}
-                    value={draftFor(row)}
-                    dirty={isDirty(row)}
-                    disabled={saving}
-                    onChange={(value) => setDraft(row.queue_key, value)}
-                    onSave={saveAll}
-                    onReset={() => clearDraft(row.queue_key)}
-                  />
-                </TableCell>
+                {editable && (
+                  <TableCell className="text-right">
+                    <ConcurrencyLimitCell
+                      stat={row}
+                      value={draftFor(row)}
+                      dirty={isDirty(row)}
+                      disabled={saving}
+                      onChange={(value) => setDraft(row.queue_key, value)}
+                      onSave={saveAll}
+                      onReset={() => clearDraft(row.queue_key)}
+                    />
+                  </TableCell>
+                )}
                 <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
                   {formatAgeSeconds(row.oldest_queued_age_seconds)}
                 </TableCell>
@@ -467,22 +477,26 @@ function CapacityTable({
           })}
         </TableBody>
       </Table>
-      <div className="flex items-center justify-end gap-3">
-        {error && <span className="text-destructive text-[11px]">{error}</span>}
-        <span className="text-muted-foreground text-[11px]">
-          {dirtyRows.length > 0
-            ? `${dirtyRows.length} unsaved change${dirtyRows.length === 1 ? "" : "s"}`
-            : "No changes"}
-        </span>
-        <Button
-          size="sm"
-          className="h-7 text-[11px]"
-          disabled={saving || dirtyRows.length === 0}
-          onClick={saveAll}
-        >
-          {saving ? "Saving…" : "Save changes"}
-        </Button>
-      </div>
+      {editable && (
+        <div className="flex items-center justify-end gap-3">
+          {error && (
+            <span className="text-destructive text-[11px]">{error}</span>
+          )}
+          <span className="text-muted-foreground text-[11px]">
+            {dirtyRows.length > 0
+              ? `${dirtyRows.length} unsaved change${dirtyRows.length === 1 ? "" : "s"}`
+              : "No changes"}
+          </span>
+          <Button
+            size="sm"
+            className="h-7 text-[11px]"
+            disabled={saving || dirtyRows.length === 0}
+            onClick={saveAll}
+          >
+            {saving ? "Saving…" : "Save changes"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -549,7 +563,11 @@ function ThroughputTable({
 // Top-level card
 // ---------------------------------------------------------------------------
 
-export function QueueHealthOverviewCard() {
+export function QueueHealthOverviewCard({
+  canManageConcurrency = false,
+}: {
+  canManageConcurrency?: boolean;
+}) {
   const [filter, setFilter] = useState("");
   const { data, error, isLoading, mutate } = useSWR<QueueHealthResponse>(
     "/api/admin/queue-health",
@@ -608,8 +626,9 @@ export function QueueHealthOverviewCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          Is the queue keeping up? Throughput, per-model capacity fill, and the
-          dispatcher / reconciler heartbeats that drive everything.
+          {canManageConcurrency
+            ? "Is the queue keeping up? Throughput, per-model capacity fill, and platform heartbeats."
+            : "Your organization’s queue activity and throughput."}
         </p>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -627,16 +646,22 @@ export function QueueHealthOverviewCard() {
           <p className="text-muted-foreground">Loading...</p>
         ) : (
           <TooltipProvider delayDuration={150}>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <DispatcherTile status={data.dispatcher} />
-              <ReconcilerTile status={data.reconciler} />
-            </div>
+            {canManageConcurrency && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <DispatcherTile status={data.dispatcher} />
+                <ReconcilerTile status={data.reconciler} />
+              </div>
+            )}
 
             <section className="space-y-2">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium">Capacity fill</h3>
+                <h3 className="text-sm font-medium">
+                  {canManageConcurrency ? "Capacity fill" : "Queue activity"}
+                </h3>
                 <span className="text-muted-foreground text-[11px]">
-                  amber = backlog with spare capacity (not being filled)
+                  {canManageConcurrency
+                    ? "amber = backlog with spare capacity (not being filled)"
+                    : "active queue keys for this organization"}
                 </span>
               </div>
               <Input
@@ -645,7 +670,11 @@ export function QueueHealthOverviewCard() {
                 placeholder="Filter by queue key..."
                 className="h-8 text-xs"
               />
-              <CapacityTable rows={capacity} onSaved={mutate} />
+              <CapacityTable
+                rows={capacity}
+                onSaved={mutate}
+                editable={canManageConcurrency}
+              />
             </section>
 
             <section className="space-y-2">
