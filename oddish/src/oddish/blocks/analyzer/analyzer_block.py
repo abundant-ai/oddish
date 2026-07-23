@@ -40,6 +40,66 @@ class AnalyzerType(str, enum.Enum):
     CUSTOM_QA = "custom_qa"
 
 
+# The backend each analyzer needs, keyed by what the analyzer is permitted to
+# do rather than by what happens to be importable in this process. POST_TRIAL
+# reads two already-downloaded directories through Read/Glob and executes
+# nothing, so a worker-local subprocess is sufficient; PRE_TRIAL runs
+# ``oddish pull`` and the verifier, so isolation is a hard requirement.
+# Anything unlisted has no filesystem to bind to and talks to the provider API.
+_REQUIRED_SUBSTRATE: dict[AnalyzerType, LLMClientType] = {
+    AnalyzerType.POST_TRIAL: LLMClientType.CLAUDE_CLI,
+    AnalyzerType.PRE_TRIAL: LLMClientType.SANDBOX,
+}
+
+
+SANDBOX_POLICIES = ("auto", "always", "never")
+
+
+def resolve_substrate(
+    analyzer_type: AnalyzerType,
+    *,
+    sandbox_available: bool,
+    sandbox_policy: str = "auto",
+) -> LLMClientType:
+    """Pick the execution backend for an analyzer.
+
+    An analyzer whose mapped substrate is ``SANDBOX`` needs isolation to do its
+    job at all, so an unregistered backend is a hard error regardless of policy.
+
+    For an analyzer that *can* run worker-local, ``sandbox_policy`` decides:
+    ``auto`` prefers the sandbox and degrades to the local subprocess where none
+    is registered (self-host and local dev never register one), ``always``
+    raises rather than degrading, and ``never`` pins it worker-local. The policy
+    is a declared setting rather than an inference from whether the hosted
+    sandbox module happened to be imported -- that inference made the substrate,
+    and its cost, a side effect of an import line.
+    """
+    if sandbox_policy not in SANDBOX_POLICIES:
+        raise ValueError(
+            f"unknown sandbox_policy {sandbox_policy!r}; "
+            f"expected one of {', '.join(SANDBOX_POLICIES)}"
+        )
+    required = _REQUIRED_SUBSTRATE.get(analyzer_type, LLMClientType.API)
+    if required is LLMClientType.SANDBOX:
+        if not sandbox_available:
+            raise RuntimeError(
+                f"{analyzer_type.value} needs the hosted sandbox backend, which "
+                "is not registered in this process"
+            )
+        return LLMClientType.SANDBOX
+    if required is not LLMClientType.CLAUDE_CLI or sandbox_policy == "never":
+        # Nothing to lift: an API-backed analyzer has no filesystem to bind to.
+        return required
+    if sandbox_available:
+        return LLMClientType.SANDBOX
+    if sandbox_policy == "always":
+        raise RuntimeError(
+            f"sandbox_policy='always' requires the hosted sandbox backend for "
+            f"{analyzer_type.value}, which is not registered in this process"
+        )
+    return required
+
+
 @dataclass
 class AnalyzerInput:
     input: Any

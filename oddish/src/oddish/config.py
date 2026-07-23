@@ -4,7 +4,7 @@ import os
 import re
 from decimal import Decimal
 from enum import Enum
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -1169,6 +1169,15 @@ class Settings(BaseSettings):
     # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
     # import backend/, so this lives here rather than as a shared constant.
     pre_trial_timeout: float = 180.0
+
+    # Where post-trial QA classification runs. ``auto`` (default) uses a Daytona
+    # sandbox wherever the hosted backend registered one and degrades to the
+    # worker-local Claude Code subprocess otherwise, so self-host and local dev
+    # keep working with no sandbox at all. ``always`` refuses to degrade;
+    # ``never`` pins it worker-local, which is the cheap path -- a sandbox costs
+    # provisioning latency and compute on every classified trial, the
+    # highest-volume analysis path there is.
+    post_trial_sandbox: Literal["auto", "always", "never"] = "auto"
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``

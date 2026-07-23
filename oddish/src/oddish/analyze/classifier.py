@@ -403,12 +403,11 @@ class TrialClassifier:
             AnalyzerBlock,
             AnalyzerInput,
             AnalyzerType,
+            resolve_substrate,
         )
         from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
-        from oddish.blocks.analyzer.analyzer_llm_client import (
-            SandboxConfig,
-            sandbox_client_factory_registered,
-        )
+        from oddish.blocks.analyzer import analyzer_llm_client
+        from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
 
         classifier = self
 
@@ -431,11 +430,15 @@ class TrialClassifier:
         async def _client_factory():
             return _ClaudeCliClient()
 
-        use_sandbox = sandbox_client_factory_registered()
+        client_type = resolve_substrate(
+            AnalyzerType.POST_TRIAL,
+            sandbox_available=analyzer_llm_client.sandbox_client_factory_registered(),
+            sandbox_policy=settings.post_trial_sandbox,
+        )
+        use_sandbox = client_type is LLMClientType.SANDBOX
         sandbox_config = None
         block_prompt = prompt
         client_factory = _client_factory
-        client_type = LLMClientType.CLAUDE_CLI
         if use_sandbox:
             archive = io.BytesIO()
             with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
@@ -457,7 +460,6 @@ class TrialClassifier:
                 ),
             )
             client_factory = None
-            client_type = LLMClientType.SANDBOX
 
         metadata = {
             "prompt_key": context.get("prompt_key"),
@@ -484,7 +486,13 @@ class TrialClassifier:
             sandbox_config=sandbox_config,
             client_factory=client_factory,
         )
-        output = await block.run()
+        # Bound the whole block the way every other block caller does
+        # (pre_trial_synth wraps run() in wait_for; the cohort runner uses
+        # asyncio.timeout). Without this a hung sandbox stalls the QA job until
+        # the worker's lease expires; the CLI path bounds only its own
+        # subprocess, inside _run_claude_cli. TimeoutError is what the caller
+        # already catches to emit a degraded-but-valid classification.
+        output = await asyncio.wait_for(block.run(), timeout=self._timeout)
         return output.output
 
     @staticmethod
