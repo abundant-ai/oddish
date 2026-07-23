@@ -41,6 +41,7 @@ def _span(
     created_at,
     finished_at,
     deleted_at=None,
+    org_id=None,
 ) -> ModalCostSpanModel:
     return ModalCostSpanModel(
         id=f"modal-dashboard-{_RUN}-{index}",
@@ -50,6 +51,7 @@ def _span(
         component_role="agent_sandbox",
         span_ordinal=0,
         provider=provider,
+        org_id=org_id,
         external_id=f"modal-dashboard-external-{_RUN}-{index}",
         started_at=finished_at - timedelta(minutes=1),
         finished_at=finished_at,
@@ -182,6 +184,52 @@ async def test_compute_cost_breakdown_uses_finished_at_and_groups_by_provider():
             for bucket in baseline.series_by_type.buckets
         )
         assert round(compute_total - baseline_compute_total, 4) == 1.75
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                ModalCostSpanModel.__table__.delete().where(
+                    ModalCostSpanModel.id.like(f"modal-dashboard-{_RUN}-%")
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_compute_cost_breakdown_scopes_by_org():
+    # #863 scopes the admin dashboard to the active org. Compute spend must
+    # respect that too: an org-scoped view must exclude other orgs' spans.
+    now = utcnow()
+    recent = now - timedelta(hours=1)
+    org_a = f"org-mc-a-{_RUN}"
+    org_b = f"org-mc-b-{_RUN}"
+
+    async with get_session() as session:
+        base_a = await get_cost_breakdown_core(session, window_days=7, org_id=org_a)
+    a_before = base_a.totals.compute_cost_usd
+
+    rows = [
+        _span(10, provider="modal", cost_usd="0.30", created_at=recent,
+              finished_at=recent, org_id=org_a),
+        _span(11, provider="modal", cost_usd="0.70", created_at=recent,
+              finished_at=recent, org_id=org_b),
+    ]
+    async with get_session() as session:
+        session.add_all(rows)
+
+    try:
+        async with get_session() as session:
+            res_a = await get_cost_breakdown_core(session, window_days=7, org_id=org_a)
+        # Only org_a's 0.30 is counted; org_b's 0.70 is excluded entirely.
+        assert round(res_a.totals.compute_cost_usd - a_before, 4) == 0.30
+        providers = {p.provider: p.cost_usd for p in res_a.compute_by_provider}
+        assert providers.get("modal", 0.0) >= 0.30
+        # org_b's span never appears in org_a's provider breakdown span counts.
+        modal_spans = next(
+            (p.span_count for p in res_a.compute_by_provider if p.provider == "modal"),
+            0,
+        )
+        # exactly one new modal span (org_a's) relative to baseline is not
+        # directly asserted here, but the cost delta proves org_b was excluded.
+        assert modal_spans >= 1
     finally:
         async with get_session() as session:
             await session.execute(
