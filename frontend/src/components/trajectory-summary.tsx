@@ -102,21 +102,16 @@ export function TrajectorySummary({
                   >
                     <ChevronRight aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
                     <span className="flex-1">
+                      {/* Unclaimed steps still get an underline, in the same
+                          neutral color the timeline gives them. */}
                       <span
-                        className={
-                          componentKey
-                            ? "font-medium border-b-2 pb-px"
-                            : "font-medium"
-                        }
-                        style={
-                          componentKey
-                            ? {
-                                borderColor:
-                                  colorFor.get(componentKey) ??
-                                  "var(--phase-other)",
-                              }
-                            : undefined
-                        }
+                        className="font-medium border-b-2 pb-px"
+                        style={{
+                          borderColor:
+                            (componentKey
+                              ? colorFor.get(componentKey)
+                              : undefined) ?? "var(--phase-other)",
+                        }}
                       >
                         Step {h.step_id} · {h.title}
                       </span>
