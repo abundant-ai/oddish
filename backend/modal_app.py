@@ -503,6 +503,16 @@ ENV_VARS = {
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
+    #
+    # Platform-operator org: its admins get the global admin dashboard (all-org
+    # data + concurrency / queue-slot / Slack-alert controls). Accepts the org
+    # slug or internal id (see auth.permissions.is_operator_org). Overridable by
+    # the deploy env / backend/.env; defaults to the Abundant org.
+    "ODDISH_OPERATOR_ORG_ID": (
+        os.environ.get("ODDISH_OPERATOR_ORG_ID")
+        or LOCAL_DOTENV_VARS.get("ODDISH_OPERATOR_ORG_ID")
+        or "abundant"
+    ),
     "ODDISH_HARBOR_ENVIRONMENT": "modal",
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",

@@ -11,8 +11,20 @@ from models import UserRole
 
 
 def is_operator_org(auth: AuthContext) -> bool:
-    operator_org_id = os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
-    return bool(operator_org_id and auth.org_id == operator_org_id)
+    """Whether the caller's active org is the platform-operator org.
+
+    ``ODDISH_OPERATOR_ORG_ID`` may be the org's internal id or its (unique,
+    human-readable) slug -- so a deployment can name its operator org
+    ``abundant`` rather than an opaque generated id. Slug matching is
+    case-insensitive; an unset/blank value grants operator access to no one.
+    """
+    configured = os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
+    if not configured:
+        return False
+    if getattr(auth, "org_id", None) == configured:
+        return True
+    slug = (getattr(auth, "org_slug", None) or "").strip()
+    return bool(slug) and slug.lower() == configured.lower()
 
 
 def require_operator_org(auth: AuthContext) -> None:

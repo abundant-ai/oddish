@@ -125,3 +125,25 @@ async def test_operator_access_is_bound_to_configured_org(monkeypatch):
     assert allowed.allowed is True
     assert denied.allowed is False
     assert unconfigured.allowed is False
+
+
+def test_operator_org_matches_slug_or_id(monkeypatch):
+    from auth.permissions import is_operator_org
+
+    # Configured with a human-readable slug: the org whose slug matches (any
+    # case) is the operator, regardless of its opaque internal id.
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "abundant")
+    assert is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="abundant"))
+    assert is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="Abundant"))
+    assert not is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="acme"))
+    # A SimpleNamespace without org_slug must not blow up (getattr fallback).
+    assert not is_operator_org(SimpleNamespace(org_id="org_9f3a"))
+
+    # Configured with an internal id: exact id match still works.
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org_9f3a")
+    assert is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="abundant"))
+    assert not is_operator_org(SimpleNamespace(org_id="org_zzzz", org_slug="acme"))
+
+    # Blank/unset config grants operator access to no one.
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "   ")
+    assert not is_operator_org(SimpleNamespace(org_id="org_9f3a", org_slug="abundant"))
