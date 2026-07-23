@@ -410,6 +410,9 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         task = await _locked_or_missing(session, TaskModel, str(subject_id))
         if task is None:
             return None
+        task_version_id = (row.get("payload") or {}).get("task_version_id") or getattr(
+            task, "current_version_id", None
+        )
         if row["new_status"] == "FAILED":
             task.verdict_status = VerdictStatus.FAILED
             task.verdict_error = row["error_message"]
@@ -425,9 +428,6 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             # ``cancel_tasks_runs`` documents (deadlock; a lock wait would
             # also stall the whole sweep). Contended rows are healed by the
             # orphan sweep instead. Raw SQL: soft-delete filter is explicit.
-            task_version_id = (row.get("payload") or {}).get(
-                "task_version_id"
-            ) or getattr(task, "current_version_id", None)
             await session.execute(
                 text(
                     """
@@ -467,7 +467,11 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             # lock-order rationale as the FAILED arm above.
             from oddish.queue import requeue_inflight_trial_analysis
 
-            await requeue_inflight_trial_analysis(session, task_id=task.id)
+            await requeue_inflight_trial_analysis(
+                session,
+                task_id=task.id,
+                task_version_id=task_version_id,
+            )
         return None
 
     if kind == "ANALYZER":

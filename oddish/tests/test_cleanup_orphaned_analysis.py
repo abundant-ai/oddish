@@ -143,6 +143,7 @@ def _qa_row(new_status: str) -> dict[str, Any]:
         "attempts": 3,
         "max_attempts": 3,
         "error_message": "Worker heartbeat stalled for over 15 minutes.",
+        "payload": {"task_version_id": "task-1-v1"},
     }
 
 
@@ -151,9 +152,7 @@ async def test_qa_reap_retrying_requeues_running_trial_analyses() -> None:
     task = SimpleNamespace(id="task-1", verdict_status=None, verdict_error=None)
     session = _RecordingSession(task=task)
 
-    result = await cleanup._mirror_stale_job_to_domain_row(
-        session, _qa_row("RETRYING")
-    )
+    result = await cleanup._mirror_stale_job_to_domain_row(session, _qa_row("RETRYING"))
 
     assert result is None
     assert task.verdict_status == VerdictStatus.QUEUED
@@ -186,6 +185,7 @@ async def test_qa_reap_failed_finalizes_nonterminal_trial_analyses() -> None:
     assert "deleted_at IS NULL" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
     assert params["task_id"] == "task-1"
+    assert params["task_version_id"] == "task-1-v1"
     # The reason carries the orphaned-analysis sentinel so a later resurrect
     # (append) reopens these rows instead of inheriting a permanent gap.
     assert params["reason"].startswith(ORPHANED_ANALYSIS_ERROR_PREFIX)
@@ -201,7 +201,11 @@ async def test_qa_reap_failed_finalizes_nonterminal_trial_analyses() -> None:
 async def test_requeue_helper_reopens_inflight_and_orphaned_rows() -> None:
     session = _RecordingSession()
 
-    await requeue_inflight_trial_analysis(session, task_id="task-9")
+    await requeue_inflight_trial_analysis(
+        session,
+        task_id="task-9",
+        task_version_id="task-9-v3",
+    )
 
     requeues = session.updates("analysis_status = 'QUEUED'")
     assert len(requeues) == 1
@@ -215,14 +219,17 @@ async def test_requeue_helper_reopens_inflight_and_orphaned_rows() -> None:
     assert "analysis_finished_at = NULL" in sql
     # Never-classifiable rows stay finalized (no oscillation with the sweep).
     assert "superseded_by_trial_id IS NULL" in sql
+    assert "task_version_id IS NOT DISTINCT FROM :task_version_id" in sql
     assert "imported_at IS NULL" in sql
     assert "status <> 'SKIPPED'" in sql
     assert "NOT LIKE :gate_skip_pattern" in sql
+    assert params["task_version_id"] == "task-9-v3"
     # Soft-delete aware, and never waits on a contended trial row.
     assert "deleted_at IS NULL" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
     assert params == {
         "task_id": "task-9",
+        "task_version_id": "task-9-v3",
         "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
         "orphan_pattern": f"{ORPHANED_ANALYSIS_ERROR_PREFIX}%",
     }

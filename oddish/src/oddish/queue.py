@@ -447,7 +447,7 @@ async def enqueue_trial_worker_job(
 
 
 async def requeue_inflight_trial_analysis(
-    session: AsyncSession, *, task_id: str
+    session: AsyncSession, *, task_id: str, task_version_id: str | None
 ) -> None:
     """Reopen analyses a dead or cancelled QA attempt left behind.
 
@@ -477,6 +477,7 @@ async def requeue_inflight_trial_analysis(
                 SELECT id
                 FROM   trials
                 WHERE  task_id = :task_id
+                  AND  task_version_id IS NOT DISTINCT FROM :task_version_id
                   AND  deleted_at IS NULL
                   AND  superseded_by_trial_id IS NULL
                   AND  imported_at IS NULL
@@ -495,6 +496,7 @@ async def requeue_inflight_trial_analysis(
         ),
         {
             "task_id": task_id,
+            "task_version_id": task_version_id,
             "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
             "orphan_pattern": f"{ORPHANED_ANALYSIS_ERROR_PREFIX}%",
         },
@@ -1287,7 +1289,11 @@ async def append_trials_to_task(
         # orphan-finalized FAILED rows, since this append resurrects the task
         # and the fresh QA pass must classify them rather than inherit a
         # permanent gap.
-        await requeue_inflight_trial_analysis(session, task_id=task.id)
+        await requeue_inflight_trial_analysis(
+            session,
+            task_id=task.id,
+            task_version_id=current_version_id,
+        )
 
     # Gate the appended LLM trials on this scope's baselines (the just-added
     # ones and any that already exist), blocking/releasing/cancelling under the
