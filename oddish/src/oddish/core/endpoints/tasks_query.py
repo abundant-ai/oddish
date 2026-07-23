@@ -71,6 +71,12 @@ from oddish.schemas import (
     TaskStatusResponse,
     UserTagRef,
 )
+from oddish.core.cost_basis import not_combine_copy_filter
+from oddish.filters.trial_metrics import TrialMetricFilter
+from oddish.filters.trial_predicates import (
+    EligibleTrialScope,
+    build_trial_metric_predicate,
+)
 from oddish.model_pricing import estimate_cost_usd, get_model_pricing
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
@@ -93,7 +99,9 @@ def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bo
         return None, False
     from oddish.config import settings
 
-    model_name = settings.normalize_trial_model(row["agent"], row["model"], strict=False)
+    model_name = settings.normalize_trial_model(
+        row["agent"], row["model"], strict=False
+    )
     estimated = estimate_cost_usd(
         model_name or row["model"],
         row["input_tokens"],
@@ -200,6 +208,9 @@ async def list_tasks_core(
                 TrialModel.cache_write_tokens,
                 TrialModel.output_tokens,
                 TrialModel.total_steps,
+                TrialModel.trajectory_duration_seconds,
+                TrialModel.total_tool_calls,
+                TrialModel.tool_counts,
                 TrialModel.cost_usd,
                 TrialModel.billed_user_id,
                 TrialModel.superseded_by_trial_id,
@@ -891,6 +902,10 @@ def _agent_compare_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Same scoped trial set as ``_task_metrics_subquery`` — exclude combine
+        # copies so the "A beats B" comparison isn't skewed by re-materialized
+        # duplicates of a subject's trials.
+        not_combine_copy_filter(),
         # NOTE: skipped trials are intentionally INCLUDED in metric denominators
         # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
@@ -912,6 +927,7 @@ def _subject_value_scalar(
         TrialModel.task_version_id == TaskModel.current_version_id,
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        not_combine_copy_filter(),
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -964,6 +980,7 @@ def _top_performer_predicate(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        not_combine_copy_filter(),
         subject_col.isnot(None),
     )
     if org_id is not None:
@@ -1100,6 +1117,10 @@ def _task_metrics_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Combine copies re-materialize an existing execution under another
+        # experiment; excluding them keeps the cost sort / aggregate filters on
+        # the same execution population the card counters and detail view show.
+        not_combine_copy_filter(),
         # NOTE: skipped trials are intentionally INCLUDED in metric denominators
         # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
@@ -1190,6 +1211,13 @@ async def browse_tasks_core(
     max_tokens: int | None = None,
     min_steps: int | None = None,
     max_steps: int | None = None,
+    min_duration_seconds: float | None = None,
+    max_duration_seconds: float | None = None,
+    min_tool_calls: int | None = None,
+    max_tool_calls: int | None = None,
+    tool_names: Sequence[str] | None = None,
+    tool_count_mins: Mapping[str, int] | None = None,
+    trial_metric_match: str = "any",
     reward_min: float | None = None,
     reward_max: float | None = None,
     # --- Phase 1.2-lite aggregate filters / sort (no migration) ---
@@ -1381,19 +1409,33 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(
             _trial_exists(TrialModel.agent.in_(list(agents)))
         )
-    model_and_finished_predicates = []
-    if models:
-        model_and_finished_predicates.append(TrialModel.model.in_(list(models)))
+    trial_finished_predicates = []
+    metric_filter = TrialMetricFilter.from_query(
+        models=models,
+        min_steps=min_steps,
+        max_steps=max_steps,
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
+        min_tool_calls=min_tool_calls,
+        max_tool_calls=max_tool_calls,
+        tool_names=tool_names,
+        tool_count_mins=tool_count_mins,
+        match=trial_metric_match,
+    )
+    # Models always ride the metric predicate (same eligible-trial contract and
+    # deleted_at handling as the dashboard); finished-at bounds join its scope
+    # when it's active so every constraint is checked against the same trial.
+    metric_filter_active = not metric_filter.is_empty
     if trial_finished_after is not None:
-        model_and_finished_predicates.append(
+        trial_finished_predicates.append(
             TrialModel.finished_at >= trial_finished_after
         )
     if trial_finished_before is not None:
-        model_and_finished_predicates.append(
+        trial_finished_predicates.append(
             TrialModel.finished_at <= trial_finished_before
         )
-    if model_and_finished_predicates:
-        ranked_tasks = ranked_tasks.where(_trial_exists(*model_and_finished_predicates))
+    if trial_finished_predicates and not metric_filter_active:
+        ranked_tasks = ranked_tasks.where(_trial_exists(*trial_finished_predicates))
     if agent_models:
         # Each token is "agent:model" (model = everything after the first colon;
         # agent names have no colons) or bare "agent" for a null model. Match a
@@ -1495,13 +1537,19 @@ async def browse_tasks_core(
         if max_tokens is not None:
             token_preds.append(total_tokens <= max_tokens)
         ranked_tasks = ranked_tasks.where(_trial_exists(*token_preds))
-    if min_steps is not None or max_steps is not None:
-        step_preds = [TrialModel.total_steps.isnot(None)]
-        if min_steps is not None:
-            step_preds.append(TrialModel.total_steps >= min_steps)
-        if max_steps is not None:
-            step_preds.append(TrialModel.total_steps <= max_steps)
-        ranked_tasks = ranked_tasks.where(_trial_exists(*step_preds))
+    if metric_filter_active:
+        metric_predicate = build_trial_metric_predicate(
+            metric_filter,
+            scope=EligibleTrialScope(
+                membership=(
+                    TrialModel.task_id == TaskModel.id,
+                    TrialModel.task_version_id == TaskModel.current_version_id,
+                    *trial_finished_predicates,
+                )
+            ),
+        )
+        if metric_predicate is not None:
+            ranked_tasks = ranked_tasks.where(metric_predicate)
     if reward_min is not None or reward_max is not None:
         reward_preds = [TrialModel.reward.isnot(None)]
         if reward_min is not None:
@@ -1936,6 +1984,11 @@ async def browse_tasks_core(
         # Probes have their own tab; keep them out of the browser's counts
         # and out of last_run_at, which drives the page ordering.
         TrialModel.is_probe.isnot(True),
+        # A combine copy's created_at is its materialization time, so counting it
+        # here would freshen last_run_at and jump an old task up the page even
+        # though the card's counters/cost/icons exclude it. The source trial
+        # still supplies the real activity time.
+        not_combine_copy_filter(),
     )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
@@ -2047,6 +2100,10 @@ async def browse_tasks_core(
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.is_probe.isnot(True),
+                # Combine copies double-count an execution already counted under
+                # its source experiment; drop them so the card's trial counts and
+                # cost match the task-detail view (which excludes them too).
+                not_combine_copy_filter(),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -2130,6 +2187,10 @@ async def browse_tasks_core(
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.is_probe.isnot(True),
+                # Combine copies re-materialize the same execution under other
+                # experiments; keeping them rendered as duplicate result icons on
+                # the card. Exclude so each execution shows once.
+                not_combine_copy_filter(),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -2159,6 +2220,8 @@ async def browse_tasks_core(
                     status=trial_row["trial_status"],
                     reward=trial_row["reward"],
                     error_message=trial_row["error_message"],
+                    agent=str(trial_row["agent"]),
+                    model=trial_row["model"],
                 )
             )
             if cost_scope_active:

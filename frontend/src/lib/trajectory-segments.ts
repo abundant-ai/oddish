@@ -1,3 +1,4 @@
+import { fmtDurationMs } from "@/lib/trajectory-metrics";
 import type {
   TrajectoryComponentKind,
   TrajectoryStep,
@@ -35,6 +36,8 @@ export interface Segment {
   label: string;
   gist: string;
   stepIds: number[];
+  toolCount?: number;
+  durationMs?: number;
 }
 
 /** A step paired with its index in the *full* trajectory, which search must not disturb. */
@@ -52,7 +55,7 @@ export interface StepGroup {
 }
 
 export function toSegments(
-  summary: TrajectorySummary | null | undefined,
+  summary: TrajectorySummary | null | undefined
 ): Segment[] {
   if (!summary) return [];
   const sorted = (ids: number[]) => [...ids].sort((a, b) => a - b);
@@ -64,6 +67,8 @@ export function toSegments(
         label: componentLabel(c.trajectory_component),
         gist: c.summary ?? "",
         stepIds: sorted(c.step_ids),
+        toolCount: c.tool_count,
+        durationMs: c.duration_ms,
       }));
   }
   return (summary.phases ?? [])
@@ -106,7 +111,7 @@ export function segmentOwners(segments: Segment[]): Map<number, Segment> {
  */
 export function groupStepsBySegment(
   steps: IndexedStep[],
-  segments: Segment[],
+  segments: Segment[]
 ): StepGroup[] {
   const owner = segmentOwners(segments);
 
@@ -137,4 +142,27 @@ export function stepRangeLabel(group: StepGroup): string {
   const lo = Math.min(...ids);
   const hi = Math.max(...ids);
   return lo === hi ? `step ${lo}` : `steps ${lo}–${hi}`;
+}
+
+/**
+ * Header stats for a group: "steps 12–24 · 9 tools · 1m 12s". Like
+ * `stepRangeLabel`, computed from the steps actually shown; `durations` is
+ * index-aligned with the *full* trajectory (see `stepDurationsMs`), which the
+ * group's `idx` values index into even when the list is filtered.
+ */
+export function groupStatsLabel(group: StepGroup, durations: number[]): string {
+  const tools = group.steps.reduce(
+    (sum, { step }) => sum + (step.tool_calls?.length ?? 0),
+    0
+  );
+  const ms = group.steps.reduce(
+    (sum, { idx }) => sum + (durations[idx] ?? 0),
+    0
+  );
+  const parts = [
+    stepRangeLabel(group),
+    `${tools} ${tools === 1 ? "tool" : "tools"}`,
+  ];
+  if (ms > 0) parts.push(fmtDurationMs(ms));
+  return parts.join(" · ");
 }

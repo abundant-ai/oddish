@@ -142,6 +142,9 @@ export interface Trial {
   cache_tokens?: number | null;
   output_tokens?: number | null;
   total_steps?: number | null;
+  trajectory_duration_seconds?: number | null;
+  total_tool_calls?: number | null;
+  tool_counts?: Record<string, number> | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   is_billed?: boolean;
@@ -240,6 +243,8 @@ interface TaskBrowseTrial {
   status: TrialStatus;
   reward: number | null;
   error_message?: string | null;
+  agent: string;
+  model: string | null;
 }
 
 export interface TaskBrowseItem {
@@ -677,6 +682,9 @@ export interface TrajectoryComponent {
   step_ids: number[];
   trajectory_component: TrajectoryComponentKind;
   summary: string | null;
+  /** Deterministic metadata added in summary schema v5; optional for older summaries. */
+  tool_count?: number;
+  duration_ms?: number;
 }
 
 export interface TrajectorySummary {

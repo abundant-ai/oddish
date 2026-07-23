@@ -171,7 +171,7 @@ async def test_generate_returns_persistable_summary(monkeypatch):
     result = await generate(
         _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
     )
-    assert result["schema_version"] == SCHEMA_VERSION == "4"
+    assert result["schema_version"] == SCHEMA_VERSION == "5"
     assert result["summary"].startswith("Agent reproduced")
     assert [h["step_id"] for h in result["highlights"]] == [1, 3]
     assert result["components"][0]["trajectory_component"] == "debugging"
@@ -273,7 +273,7 @@ def _fake_session():
 
 @pytest.mark.asyncio
 async def test_get_or_generate_returns_block_when_fresh():
-    cached = {"schema_version": "4", "summary": "cached", "highlights": [], "components": []}
+    cached = {"schema_version": "5", "summary": "cached", "highlights": [], "components": []}
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
     with patch(
@@ -305,7 +305,7 @@ async def test_get_or_generate_returns_none_when_no_trajectory():
 async def test_get_or_generate_persists_on_miss():
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
-    fresh = {"schema_version": "4", "summary": "fresh", "highlights": [], "components": []}
+    fresh = {"schema_version": "5", "summary": "fresh", "highlights": [], "components": []}
 
     async def fake_traj(_t):
         return {"steps": [{"step_id": 1}]}
@@ -351,7 +351,7 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
         finished.append("context")
         return _minimal_ctx()
 
-    fresh = {"schema_version": "4", "summary": "ok", "highlights": [], "components": []}
+    fresh = {"schema_version": "5", "summary": "ok", "highlights": [], "components": []}
 
     with patch(
         "api.services.summarize_trajectory._load_fresh_summary_block",
@@ -447,8 +447,8 @@ async def test_build_task_context_falls_back_to_harbor_config_model():
     assert ctx.model_used == "claude-sonnet-4-6"
 
 
-def test_schema_version_is_four():
-    assert SCHEMA_VERSION == "4"
+def test_schema_version_is_five():
+    assert SCHEMA_VERSION == "5"
 
 
 # ---------------------------------------------------------------------------

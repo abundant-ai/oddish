@@ -52,6 +52,8 @@ dependencies = [
     "litellm==1.83.14",
     # YAML parsing for skill frontmatter (skills library).
     "pyyaml>=6.0",
+    # Comment-preserving TOML round-trip for task.toml typography normalization.
+    "tomlkit==0.15.1",
 ]
 
 [project.optional-dependencies]

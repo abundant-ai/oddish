@@ -32,7 +32,7 @@ MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
 # Output cap for the summary call. The Anthropic API requires max_tokens, so
 # some value must be set; this one is a ceiling, not a target -- billing is on
@@ -209,7 +209,7 @@ async def generate(
 
     Builds the block via ``build_summary_block`` (shared with the offline dump
     harness), streams it -- the block self-persists to ``analyzer_blocks`` +
-    S3 -- and returns the parsed ``schema_version=4`` summary. Raises
+    S3 -- and returns the parsed ``schema_version=5`` summary. Raises
     ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
     injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
     """

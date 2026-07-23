@@ -1015,6 +1015,15 @@ class TrialResponse(BaseModel):
     total_steps: int | None = Field(
         None, description="Total agent trajectory steps, when available"
     )
+    trajectory_duration_seconds: float | None = Field(
+        None, description="Elapsed seconds between the first and last trajectory step"
+    )
+    total_tool_calls: int | None = Field(
+        None, description="Total tool calls in the agent trajectory"
+    )
+    tool_counts: dict[str, int] | None = Field(
+        None, description="Tool-call counts keyed by trajectory function name"
+    )
     cost_usd: float | None = Field(
         None,
         description=(
@@ -1298,6 +1307,8 @@ class TaskBrowseTrial(BaseModel):
     status: TrialStatus
     reward: float | None = None
     error_message: str | None = None
+    agent: str = ""
+    model: str | None = None
 
 
 class TaskBrowseItem(BaseModel):
@@ -1472,6 +1483,9 @@ class ImportedTrialSpec(BaseModel):
     cache_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
+    trajectory_duration_seconds: float | None = None
+    total_tool_calls: int | None = None
+    tool_counts: dict[str, int] | None = None
     cost_usd: float | None = None
     phase_timing: dict | None = Field(
         None,

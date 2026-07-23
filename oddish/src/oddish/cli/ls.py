@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
+from oddish.filters.trial_metrics import TrialMetricFilter
 
 console = Console()
 
@@ -237,6 +238,34 @@ def ls(
     max_tokens: Annotated[int | None, typer.Option("--max-tokens", min=0)] = None,
     min_steps: Annotated[int | None, typer.Option("--min-steps", min=0)] = None,
     max_steps: Annotated[int | None, typer.Option("--max-steps", min=0)] = None,
+    min_duration_seconds: Annotated[
+        float | None,
+        typer.Option("--min-duration", min=0, help="Minimum trajectory seconds."),
+    ] = None,
+    max_duration_seconds: Annotated[
+        float | None,
+        typer.Option("--max-duration", min=0, help="Maximum trajectory seconds."),
+    ] = None,
+    min_tool_calls: Annotated[
+        int | None, typer.Option("--min-tool-calls", min=0)
+    ] = None,
+    max_tool_calls: Annotated[
+        int | None, typer.Option("--max-tool-calls", min=0)
+    ] = None,
+    tool: Annotated[
+        list[str] | None,
+        typer.Option("--tool", help="Require a trajectory tool name (repeatable)."),
+    ] = None,
+    tool_min: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tool-min", help="Minimum per-tool count as NAME=N (repeatable)."
+        ),
+    ] = None,
+    trial_match: Annotated[
+        str,
+        typer.Option("--trial-match", help="Metric match mode: any or all."),
+    ] = "any",
     reward_min: Annotated[
         float | None, typer.Option("--reward-min", min=0.0, max=1.0)
     ] = None,
@@ -379,6 +408,34 @@ def ls(
 
     params: dict[str, Any] = {"limit": limit, "offset": offset}
 
+    tool_count_mins: dict[str, int] = {}
+    for item in tool_min or []:
+        name, separator, raw_count = item.partition("=")
+        if not separator or not name.strip():
+            raise typer.BadParameter("must use NAME=N", param_hint="--tool-min")
+        try:
+            tool_count_mins[name.strip()] = int(raw_count)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                "count must be an integer", param_hint="--tool-min"
+            ) from exc
+    try:
+        metric_filter = TrialMetricFilter.from_query(
+            models=model,
+            min_steps=min_steps,
+            max_steps=max_steps,
+            min_duration_seconds=min_duration_seconds,
+            max_duration_seconds=max_duration_seconds,
+            min_tool_calls=min_tool_calls,
+            max_tool_calls=max_tool_calls,
+            tool_names=tool,
+            tool_count_mins=tool_count_mins,
+            match=trial_match,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="trial metric filters") from exc
+    params.update(metric_filter.to_query_params())
+
     def _csv(name: str, values: list[str] | None) -> None:
         if values:
             params[name] = ",".join(values)
@@ -405,7 +462,6 @@ def ls(
     _csv("verdict_statuses", verdict_status)
     _csv("experiment_ids", experiment_id)
     _csv("agents", agent)
-    _csv("models", model)
     _csv("agent_models", agent_model)
     _csv("providers", provider)
     _csv("environments", environment)
@@ -437,8 +493,6 @@ def ls(
     _num("min_attempts", min_attempts)
     _num("min_tokens", min_tokens)
     _num("max_tokens", max_tokens)
-    _num("min_steps", min_steps)
-    _num("max_steps", max_steps)
     _num("reward_min", reward_min)
     _num("reward_max", reward_max)
     _num("avg_score_min", avg_score_min)
