@@ -41,6 +41,7 @@ import {
   groupStatsLabel,
   groupStepsBySegment,
   toSegments,
+  withOtherSegment,
 } from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
@@ -761,7 +762,10 @@ export function TrajectoryViewer({
     apiBaseUrl,
     shouldFetch
   );
-  const segments = useMemo(() => toSegments(summary), [summary]);
+  const segments = useMemo(
+    () => withOtherSegment(toSegments(summary), trajectory?.steps ?? []),
+    [summary, trajectory]
+  );
   const colorFor = useMemo(
     () => phaseColorVars(segments.map((s) => s.key)),
     [segments]
