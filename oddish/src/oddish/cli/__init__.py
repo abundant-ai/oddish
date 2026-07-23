@@ -11,8 +11,9 @@ from oddish.cli.experiment import experiment_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
-from oddish.cli.probe import probe_app
 from oddish.cli.prompt import prompt_app
+from oddish.cli.qa import qa
+from oddish.cli.probe import probe_app
 from oddish.cli.pull import pull
 from oddish.cli.preflight import preflight
 from oddish.cli.report import report_app
@@ -37,6 +38,7 @@ app.command()(cancel)
 app.command()(combine)
 app.command()(costs)
 app.command()(collect)
+app.command()(qa)
 app.command()(delete)
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(report_app, name="report")

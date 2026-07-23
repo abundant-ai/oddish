@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -1937,6 +1937,38 @@ class ReportResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class QAPromptVariant(BaseModel):
+    kind: str = Field(min_length=1, max_length=128)
+    version: int | None = Field(default=None, ge=1)
+
+
+class CustomQARunRequest(BaseModel):
+    scope_type: Literal["experiment", "task", "trial"]
+    scope_id: str = Field(min_length=1, max_length=64)
+    variants: list[QAPromptVariant] = Field(min_length=1)
+    model: str = "claude-sonnet-4-6"
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    backend: Literal["api", "sandbox"] = "sandbox"
+    allow_oddish_cli: bool = False
+
+
+class CustomQARunResponse(BaseModel):
+    id: str
+    prompt_kind: str
+    prompt_version: int
+    prompt_version_id: str
+    analyzer_block_id: str
+    scope_type: str
+    scope_id: str
+    model: str
+    reasoning_effort: str | None
+    backend: str
+    status: str
+    output: Any | None = None
+    error: str | None = None
+    run_config: dict
+
+
 # ---------------------------------------------------------------------------
 # Documents — agent doc-store.
 # ---------------------------------------------------------------------------
@@ -2012,20 +2044,16 @@ class PromptVersionResponse(BaseModel):
 
 class PromptResponse(BaseModel):
     id: str
-    key: str
+    kind: str
     description: str
-    active_version: int | None = None
+    latest_version: int | None = None  # populated by the router, not the ORM
+    version: int | None = None  # the resolved version content belongs to
     created_at: datetime
     updated_at: datetime
-    content: str | None = None  # resolved active/selected version content
+    content: str | None = None  # resolved latest/selected version content
     model_config = {"from_attributes": True}
 
 
 class PromptSetRequest(BaseModel):
     content: str
     description: str | None = None
-    activate: bool = True
-
-
-class PromptActivateRequest(BaseModel):
-    version: int

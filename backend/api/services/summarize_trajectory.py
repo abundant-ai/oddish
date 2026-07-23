@@ -92,8 +92,7 @@ def _process_tool_calls(tool_calls: list[dict] | None) -> list[dict] | None:
         args = new_call.get("arguments")
         if isinstance(args, dict):
             new_call["arguments"] = {
-                k: _truncate(v) if isinstance(v, str) else v
-                for k, v in args.items()
+                k: _truncate(v) if isinstance(v, str) else v for k, v in args.items()
             }
         out.append(new_call)
     return out
@@ -142,10 +141,7 @@ def resolve_summary_model() -> str:
     """
     from oddish.config import settings, to_anthropic_api_model_id
 
-    return (
-        to_anthropic_api_model_id(settings.analysis_model)
-        or settings.analysis_model
-    )
+    return to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
 
 
 def build_summary_block(
@@ -154,7 +150,6 @@ def build_summary_block(
     *,
     analyzer_id: str | None,
     model: str,
-    client,
     triggered_by_user_id: str | None = None,
 ):
     """Build the trajectory-summary ``AnalyzerBlock``.
@@ -174,14 +169,16 @@ def build_summary_block(
         TrajectoryInput,
     )
 
-    tb = TrajectoryBlock(TrajectoryInput(
-        task_name=task_context.task_name,
-        instruction=task_context.instruction,
-        final_reward=task_context.final_reward,
-        model_used=task_context.model_used,
-        verifier_output=task_context.verifier_output,
-        trajectory=trajectory,
-    ))
+    tb = TrajectoryBlock(
+        TrajectoryInput(
+            task_name=task_context.task_name,
+            instruction=task_context.instruction,
+            final_reward=task_context.final_reward,
+            model_used=task_context.model_used,
+            verifier_output=task_context.verifier_output,
+            trajectory=trajectory,
+        )
+    )
     return AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
         llm_client_type=LLMClientType.API,
@@ -192,7 +189,8 @@ def build_summary_block(
         analyzer_id=analyzer_id,
         block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
         output_transform=lambda raw: tb.to_summary(raw, model=model),
-        client=client,
+        model=model,
+        max_tokens=SUMMARY_MAX_TOKENS,
         triggered_by_user_id=triggered_by_user_id,
     )
 
@@ -202,7 +200,6 @@ async def generate(
     task_context: "TaskContext",
     *,
     analyzer_id: str | None = None,
-    client=None,
     triggered_by_user_id: str | None = None,
 ) -> dict:
     """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
@@ -210,29 +207,20 @@ async def generate(
     Builds the block via ``build_summary_block`` (shared with the offline dump
     harness), streams it -- the block self-persists to ``analyzer_blocks`` +
     S3 -- and returns the parsed ``schema_version=5`` summary. Raises
-    ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
-    injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
+    ``SummaryGenerationError`` on any generation/parse failure.
     """
-    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
-
     model = resolve_summary_model()
-    owned = client is None
-    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
     block = build_summary_block(
         trajectory,
         task_context,
         analyzer_id=analyzer_id,
         model=model,
-        client=llm,
         triggered_by_user_id=triggered_by_user_id,
     )
     try:
         out = await block.run()
     except Exception as e:
         raise SummaryGenerationError(f"summary block failed: {e}") from e
-    finally:
-        if owned:
-            await llm.aclose()
     return out.output
 
 

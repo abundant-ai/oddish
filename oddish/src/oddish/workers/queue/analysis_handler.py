@@ -13,7 +13,8 @@ from oddish.analyze.analysis_cost import (
 from oddish.analyze.models import compute_action_item_id
 from oddish.analyze.trajectory_files import parse_trajectory_file_access
 from oddish.config import settings
-from oddish.db import AnalysisStatus, TaskModel, utcnow
+from oddish.core.prompts import get_prompt_core
+from oddish.db import AnalysisStatus, PromptKind, TaskModel, TaskVersionModel, utcnow
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -135,13 +136,37 @@ async def classify_trial_and_store(
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
-        pre_trial_items = (
-            (task.pre_trial or {}).get("items") if task.pre_trial else None
-        ) or None
+        # Pre-trial findings live on the audited task version; prefer the
+        # version this trial ran against, falling back to the task's current
+        # version for older trials that predate version stamping.
+        pre_trial_items = None
+        version_id = trial.task_version_id or task.current_version_id
+        if version_id:
+            version = await session.get(TaskVersionModel, version_id)
+            if version is not None and version.pre_trial:
+                pre_trial_items = (version.pre_trial or {}).get("items") or None
         # Probe trials carry the operator directive in harbor_config; their
         # analysis is the shared probe_summary, not the generic classifier.
         trial_harbor_config = trial.harbor_config or {}
         trial_reward = trial.reward
+
+        # The per-trial log auditor is the post-trial QA stage. Resolve its
+        # latest immutable registry version while this worker already owns a DB
+        # session; local/self-host installs without seeded prompts retain the
+        # packaged classifier prompt as a compatibility fallback.
+        post_trial_prompt: str | None = None
+        post_trial_prompt_version: int | None = None
+        try:
+            _, prompt_version = await get_prompt_core(
+                session, PromptKind.QA_POST_TRIAL.value
+            )
+            post_trial_prompt = prompt_version.content
+            post_trial_prompt_version = prompt_version.version
+        except Exception as exc:
+            console.print(
+                "[yellow]QA_POST_TRIAL prompt unavailable; using packaged "
+                f"classifier prompt: {exc}[/yellow]"
+            )
 
         # Log storage locations for debugging
         console.print(f"[dim]Task S3 key: {task_s3_key or '(not set)'}[/dim]")
@@ -219,6 +244,7 @@ async def classify_trial_and_store(
                 model=settings.analysis_model,
                 verbose=True,
                 timeout=ANALYSIS_TIMEOUT,  # 5 minutes
+                prompt_template=post_trial_prompt,
             )
 
             file_access = [
@@ -236,6 +262,9 @@ async def classify_trial_and_store(
             analysis_usage = classifier.last_usage
 
             classification_result = classification_to_result_dict(classification)
+            if post_trial_prompt_version is not None:
+                classification_result["prompt_kind"] = PromptKind.QA_POST_TRIAL.value
+                classification_result["prompt_version"] = post_trial_prompt_version
 
             # Check if classification is a fallback (indicates Claude SDK issue)
             if "classification failed" in (classification.evidence or "").lower():

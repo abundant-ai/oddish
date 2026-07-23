@@ -23,6 +23,7 @@ from oddish.db.storage import get_storage_client
 from oddish.blocks.analyzer.analyzer_llm_client import (
     AnalyzerLLMClient,
     LLMClientType,
+    SandboxConfig,
     create_llm_client,
 )
 from oddish.blocks.block import Block
@@ -35,6 +36,7 @@ class AnalyzerType(str, enum.Enum):
     TRAJECTORY_SUMMARY = "trajectory_summary"
     TASK_VERDICT = "task_verdict"
     PRE_TRIAL = "pre_trial"
+    CUSTOM_QA = "custom_qa"
 
 
 @dataclass
@@ -91,7 +93,6 @@ class AnalyzerBlock(Block):
         analyzer_id: str | None = None,
         task_id: str | None = None,
         block_metadata: dict | None = None,
-        client: AnalyzerLLMClient | None = None,
         system_prompt: str | None = None,
         model: str | None = None,
         max_tokens: int | None = None,
@@ -99,6 +100,9 @@ class AnalyzerBlock(Block):
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
         triggered_by_user_id: str | None = None,
+        sandbox_config: SandboxConfig | None = None,
+        client_creation_timeout: float | None = None,
+        attribution_org_id: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -111,17 +115,10 @@ class AnalyzerBlock(Block):
         # A trajectory summary generates lazily on view, so the requesting user
         # -- not the trial's runner -- is the one who triggered the LLM call.
         self.triggered_by_user_id = triggered_by_user_id
-        self._client = client
-        if input.files_to_download:
-            if llm_client_type == LLMClientType.API:
-                raise ValueError(
-                    "files_to_download is sandbox-only; the API backend has no filesystem"
-                )
-            if client is None:
-                raise ValueError(
-                    "files_to_download requires an injected client (a self-provisioned "
-                    "block deletes its sandbox before run() can download)"
-                )
+        if input.files_to_download and llm_client_type == LLMClientType.API:
+            raise ValueError(
+                "files_to_download is sandbox-only; the API backend has no filesystem"
+            )
         self._downloaded_files: dict[str, bytes] = {}
         self.system_prompt = system_prompt
         self.model = model
@@ -135,6 +132,10 @@ class AnalyzerBlock(Block):
         self._api_key = api_key
         self._max_tokens = max_tokens
         self._response_format = response_format
+        self._sandbox_config = sandbox_config
+        self._client_creation_timeout = client_creation_timeout
+        self._active_client: AnalyzerLLMClient | None = None
+        self.attribution_org_id = attribution_org_id
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -230,7 +231,9 @@ class AnalyzerBlock(Block):
                     or task.created_by_user_id,
                 }
         if not self.analyzer_id:
-            return blank
+            return {**blank, "org_id": self.attribution_org_id}
+        if self.attribution_org_id is not None:
+            return {**blank, "org_id": self.attribution_org_id}
 
         trial = (
             await session.execute(
@@ -301,30 +304,28 @@ class AnalyzerBlock(Block):
         except Exception:
             self.log.exception("record_cost failed for id=%s", self.id)
 
-    async def stream_output(self):
-        """Yield each output chunk to the caller and accumulate it. Lazily
-        provisions the backend client (or uses the injected one)."""
-        client = self._client or await create_llm_client(
+    async def _create_client(self) -> AnalyzerLLMClient:
+        create = create_llm_client(
             self.llm_client_type,
             model=self.model,
             api_key=self._api_key,
             max_tokens=self._max_tokens,
             response_format=self._response_format,
+            sandbox_config=self._sandbox_config,
         )
-        try:
-            async for chunk in client.stream(
-                self.prompt, system_prompt=self.system_prompt
-            ):
-                self._chunks.append(chunk)
-                self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
-                yield chunk
-        finally:
-            # Read before any aclose(): the tokens are spent whether the stream
-            # finished or blew up, and a closed client need not retain them.
-            self.usage = getattr(client, "last_usage", None)
-            # Only close a client we created; an injected one is the caller's.
-            if self._client is None:
-                await client.aclose()
+        if self._client_creation_timeout is None:
+            return await create
+        return await asyncio.wait_for(create, timeout=self._client_creation_timeout)
+
+    async def stream_output(self):
+        """Yield output through the client owned by this run."""
+        client = self._active_client
+        if client is None:
+            raise RuntimeError("AnalyzerBlock client is unavailable outside run()")
+        async for chunk in client.stream(self.prompt, system_prompt=self.system_prompt):
+            self._chunks.append(chunk)
+            self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
+            yield chunk
 
     async def _download_requested_files(self) -> dict[str, str]:
         """Pull each requested path off the sandbox. A file the agent never
@@ -333,7 +334,8 @@ class AnalyzerBlock(Block):
         files: dict[str, str] = {}
         for path in self.input.files_to_download or []:
             try:
-                raw = await self._client._download_file(path)
+                download_file = getattr(self._active_client, "_download_file")
+                raw = await download_file(path)
             except Exception:
                 self.log.warning("download failed for %s", path, exc_info=True)
                 files[path] = ""
@@ -343,11 +345,12 @@ class AnalyzerBlock(Block):
         return files
 
     async def run(self) -> AnalyzerOutput:
-        """Drive the stream to completion, persisting on every exit path."""
+        """Provision, run, and close this block's backend client."""
         self.job_started_at = utcnow()
         self.status = JobStatus.RUNNING
         self.log.info("block starting (llm_client_type=%s)", self.llm_client_type.value)
         try:
+            self._active_client = await self._create_client()
             async for _ in self.stream_output():
                 pass
             if self.input.files_to_download:
@@ -370,6 +373,14 @@ class AnalyzerBlock(Block):
             self.log.exception("block failed")
             raise
         finally:
+            if self._active_client is not None:
+                self.usage = getattr(self._active_client, "last_usage", None)
+                try:
+                    await self._active_client.aclose()
+                except Exception as exc:  # noqa: BLE001
+                    self.error = self.error or repr(exc)
+                    self.log.exception("client cleanup failed")
+                self._active_client = None
             self.job_ended_at = utcnow()
             if self.job_started_at is not None:
                 self.job_duration_seconds = (

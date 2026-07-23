@@ -35,10 +35,7 @@ from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerInput,
     AnalyzerType,
 )
-from oddish.blocks.analyzer.analyzer_llm_client import (
-    ApiAnalyzerLLMClient,
-    LLMClientType,
-)
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.config import settings, to_anthropic_api_model_id
 from oddish.core.analyzer_inputs import build_analyzer_inputs
 from oddish.core.experiment_membership import trial_in_experiment
@@ -50,7 +47,7 @@ from oddish.evals.analyzer.prompt_builder import build_map_prompt
 
 # ---- configure me -----------------------------------------------------------
 EXPERIMENT_ID = "REPLACE_WITH_AN_EXPERIMENT_ID"
-DRY_RUN = True   # True = don't persist the analyzer_blocks row / S3 object
+DRY_RUN = True  # True = don't persist the analyzer_blocks row / S3 object
 MODEL_OVERRIDE: str | None = None  # None -> settings.analysis_model
 # -----------------------------------------------------------------------------
 
@@ -93,7 +90,9 @@ async def _experiment_inputs(experiment_id: str):
             rows.append((trial, task_path))
 
         if not rows:
-            raise SystemExit(f"Experiment {experiment_id!r} has no SUCCESS/FAILED trials.")
+            raise SystemExit(
+                f"Experiment {experiment_id!r} has no SUCCESS/FAILED trials."
+            )
 
         inputs = await build_analyzer_inputs(rows)
     return inputs, len(rows)
@@ -107,44 +106,53 @@ async def run() -> None:
     by_trial = {b.trial_id: b for b in inputs.bundles}
     selected = [sa for sa in (bad + good) if sa.trial_id in by_trial]
 
-    print(f"experiment={EXPERIMENT_ID}  trials={n_trials}  "
-          f"bad={len(bad)} good={len(good)}  breakdown={json.dumps(breakdown)}")
+    print(
+        f"experiment={EXPERIMENT_ID}  trials={n_trials}  "
+        f"bad={len(bad)} good={len(good)}  breakdown={json.dumps(breakdown)}"
+    )
     if not selected:
-        raise SystemExit("No bad/good-failure trials to map (nothing classified into a cohort).")
+        raise SystemExit(
+            "No bad/good-failure trials to map (nothing classified into a cohort)."
+        )
 
     first = selected[0]
     bundle = by_trial[first.trial_id]
     prompt = build_map_prompt(bundle, first, roster)
-    print(f"mapping first trial={first.trial_id}  "
-          f"{first.classification}/{first.subtype}  prompt_chars={len(prompt)}")
+    print(
+        f"mapping first trial={first.trial_id}  "
+        f"{first.classification}/{first.subtype}  prompt_chars={len(prompt)}"
+    )
 
     model = _model()
-    llm = ApiAnalyzerLLMClient(model=model, max_tokens=6000)
     block = AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
         llm_client_type=LLMClientType.API,
-        input=AnalyzerInput(input={"trial_id": first.trial_id, "experiment_id": EXPERIMENT_ID}),
+        input=AnalyzerInput(
+            input={"trial_id": first.trial_id, "experiment_id": EXPERIMENT_ID}
+        ),
         prompt=prompt,
         analyzer_id=EXPERIMENT_ID,
         block_metadata={"model": model, "trial_id": first.trial_id},
-        client=llm,
+        model=model,
+        max_tokens=6000,
     )
 
     if DRY_RUN:
+
         async def _noop(*_a, **_k):
             return None
+
         block.save_to_s3 = _noop  # type: ignore[method-assign]
         block.save_to_db = _noop  # type: ignore[method-assign]
 
     print(f"model={model}  block_id={block.id}  dry_run={DRY_RUN}")
     print("running analyzer map block ...\n")
-    try:
-        out = await block.run()
-    finally:
-        await llm.aclose()
+    out = await block.run()
 
-    print(f"status={block.status.value}  duration={block.job_duration_seconds:.2f}s  "
-          f"error={block.error}")
+    print(
+        f"status={block.status.value}  duration={block.job_duration_seconds:.2f}s  "
+        f"error={block.error}"
+    )
     print("\n=== map finding (raw block.output.output) ===")
     print(out.output)
 

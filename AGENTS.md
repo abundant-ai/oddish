@@ -178,16 +178,49 @@ the sum of each included step's elapsed time since the preceding trajectory
 step; the first step and steps without two usable timestamps contribute zero.
 The frontend derives the same values for older summaries that lack the fields.
 
+QA analyzer prompts are stored in the versioned `prompts` / `prompt_versions`
+registry. `PromptKind.QA_PRE_TRIAL` drives the source audit and
+`PromptKind.QA_POST_TRIAL` drives the existing per-trial log classifier. Prompt
+updates append immutable versions and the highest version always runs. Workers
+seed missing built-in kinds at startup without overwriting operator edits. A
+trial classification records the post-trial prompt kind and version in
+`trials.analysis`; local/library classification without a registry row falls
+back to the packaged `analyze/classify_prompt.txt`.
+
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):
 
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
-  verdict), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
+  verdict), `ANALYZER` (cross-experiment report orchestration),
+  `ANALYZER_BLOCK` (one declarative `analyzer_runs` execution),
+  `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
   is kept only so in-flight rows survive a deploy) and `VERDICT` (enum value only,
   no handler). Nothing enqueues either anymore.
 - **Reserved**: `QA_REVIEW` (enum value, no handler yet).
+
+### Custom QA runs
+
+`POST /qa/runs` (hosted backend) creates one `analyzer_runs` row and one
+`ANALYZER_BLOCK` worker job per registered prompt variant, then returns the
+queued runs. `GET /qa/runs/{id}` and the `/prompts` endpoints expose durable
+lineage. The shared `prompts` registry is kind-addressed — built-in UPPERCASE
+kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) plus lowercase-slug custom kinds for
+saved QA variants — `prompt_versions` stores immutable numbered content, and
+`analyzer_runs` records the exact version, scope (`experiment` / `task` /
+`trial`), model, reasoning effort, backend, resolved config/command,
+`analyzer_blocks` ID, status, and output. Every prompt edit appends an
+immutable version and the highest version is always the one that runs (no
+activation pointer).
+
+`oddish prompt` manages registry versions. `oddish qa ... --variant KIND` uses
+the latest version and `--variant KIND@N` pins a historical version. Variants in
+one request run concurrently for A/B comparison. The hosted `sandbox` backend
+installs the Oddish CLI only with explicit `--allow-oddish-cli`. At worker
+execution time its client factory mints a short-lived internal TASKS-scoped
+key and revokes it during cleanup; the caller's credential is never forwarded
+or persisted. The `api` backend is prompt-only and rejects CLI access.
 
 ## Package Boundaries
 
@@ -218,7 +251,19 @@ building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
 backends, so verdict synthesis runs in a backend-free worker. The Daytona
 sandbox backend needs cc_chat and stays in
 `backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
-itself into core's client factory on import.
+itself into core's client factory on import. `AnalyzerBlock` owns a
+self-provisioned client's complete lifecycle, including sandbox file downloads
+before close. Hosted callers request sandbox capabilities declaratively; the
+registered Daytona factory owns runtime/CLI installation, short-lived internal
+key minting, and key/sandbox cleanup. Callers must not provision and inject a
+one-off sandbox client for those capabilities.
+
+Hosted failure analysis uses
+`backend/api/services/cc_chat/analyzer_block_runner.py`: it partitions a bucket
+into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
+up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
+host-side, and supplies those artifacts declaratively to a separate reduce
+block. Map/reduce blocks never share or receive a live runtime/client.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.

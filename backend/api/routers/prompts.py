@@ -1,25 +1,27 @@
 """CRUD + versioning endpoints for the analyzer prompt registry.
 
 Thin wrapper over ``oddish.core.prompts``: authenticate, open a session,
-delegate, commit, serialize."""
+delegate, commit, serialize. ``kind`` path params accept a built-in
+``PromptKind`` value (UPPERCASE) or a lowercase-slug custom kind (saved
+prompts for ``oddish qa`` variants); anything else 422s at the boundary
+while the core stays string-typed."""
 
 from __future__ import annotations
 
+import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.core.prompts import (
-    activate_prompt_version_core,
     get_prompt_core,
     list_prompt_versions_core,
     list_prompts_core,
     set_prompt_core,
 )
-from oddish.db import get_session
+from oddish.db import PromptKind, get_session
 from oddish.schemas import (
-    PromptActivateRequest,
     PromptResponse,
     PromptSetRequest,
     PromptVersionResponse,
@@ -27,10 +29,33 @@ from oddish.schemas import (
 
 router = APIRouter()
 
+# Custom kinds are lowercase slugs so they can never collide with (or spoof)
+# the UPPERCASE built-in vocabulary.
+_CUSTOM_KIND_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def _validated_kind(kind: str) -> str:
+    if kind in {k.value for k in PromptKind} or _CUSTOM_KIND_RE.fullmatch(kind):
+        return kind
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "kind must be a built-in prompt kind "
+            f"({', '.join(k.value for k in PromptKind)}) or a lowercase slug"
+        ),
+    )
+
+
+def _latest_of(versions) -> int | None:
+    return max((v.version for v in versions), default=None)
+
 
 def _to_response(prompt, version) -> PromptResponse:
     resp = PromptResponse.model_validate(prompt)
-    resp.content = version.content if version is not None else None
+    resp.latest_version = _latest_of(prompt.versions)
+    if version is not None:
+        resp.version = version.version
+        resp.content = version.content
     return resp
 
 
@@ -41,35 +66,42 @@ async def list_prompts(
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
         prompts = await list_prompts_core(session)
-        return [PromptResponse.model_validate(p) for p in prompts]
+        out = []
+        for p in prompts:
+            resp = PromptResponse.model_validate(p)
+            resp.latest_version = _latest_of(p.versions)
+            out.append(resp)
+        return out
 
 
-@router.get("/prompts/{key}", response_model=PromptResponse)
+@router.get("/prompts/{kind}", response_model=PromptResponse)
 async def get_prompt(
-    key: str,
+    kind: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
     version: Annotated[int | None, Query()] = None,
 ) -> PromptResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        prompt, ver = await get_prompt_core(session, key, version=version)
+        prompt, ver = await get_prompt_core(
+            session, _validated_kind(kind), version=version
+        )
         return _to_response(prompt, ver)
 
 
-@router.get("/prompts/{key}/versions", response_model=list[PromptVersionResponse])
+@router.get("/prompts/{kind}/versions", response_model=list[PromptVersionResponse])
 async def get_prompt_versions(
-    key: str,
+    kind: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[PromptVersionResponse]:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        versions = await list_prompt_versions_core(session, key)
+        versions = await list_prompt_versions_core(session, _validated_kind(kind))
         return [PromptVersionResponse.model_validate(v) for v in versions]
 
 
-@router.put("/prompts/{key}", response_model=PromptResponse)
+@router.put("/prompts/{kind}", response_model=PromptResponse)
 async def set_prompt(
-    key: str,
+    kind: str,
     data: PromptSetRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> PromptResponse:
@@ -80,27 +112,11 @@ async def set_prompt(
     async with get_session() as session:
         await set_prompt_core(
             session,
-            key=key,
+            kind=_validated_kind(kind),
             content=data.content,
             description=data.description,
-            activate=data.activate,
             created_by=auth.user_id,
         )
         await session.commit()
-        prompt, ver = await get_prompt_core(session, key)
-        return _to_response(prompt, ver)
-
-
-@router.post("/prompts/{key}/activate", response_model=PromptResponse)
-async def activate_prompt(
-    key: str,
-    data: PromptActivateRequest,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> PromptResponse:
-    # FULL, not TASKS: see set_prompt above.
-    auth.require_scope(APIKeyScope.FULL)
-    async with get_session() as session:
-        await activate_prompt_version_core(session, key, data.version)
-        await session.commit()
-        prompt, ver = await get_prompt_core(session, key)
+        prompt, ver = await get_prompt_core(session, kind)
         return _to_response(prompt, ver)
