@@ -82,6 +82,25 @@ gpu_types = ["a10g"]
     assert overridden.gpu_count == 1
     assert overridden.spec_source == "override"
 
+    # Same LIMIT-enforced overrides on Daytona: the request floor is Daytona's
+    # own 1 vCPU / 1 GiB minimum, NOT Modal's 0.125 core / 128 MiB.
+    daytona_limit = capture_sandbox_resources(
+        task,
+        {
+            "environment": {
+                "override_cpus": 4,
+                "override_memory_mb": 2048,
+                "cpu_enforcement_policy": "limit",
+                "memory_enforcement_policy": "limit",
+            }
+        },
+        "daytona",
+    )
+    assert daytona_limit.cpu_request == 1.0
+    assert daytona_limit.cpu_limit == 4
+    assert daytona_limit.mem_request_mb == 1024
+    assert daytona_limit.mem_limit_mb == 2048
+
 
 def test_separate_verifier_capture_only_for_separate_environment(make_task) -> None:
     shared = make_task(name="shared")

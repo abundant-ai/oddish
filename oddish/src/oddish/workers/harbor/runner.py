@@ -31,7 +31,11 @@ from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
 
 from oddish.config import BEDROCK_ENV_VARS, is_anthropic_hdo_model, settings
-from oddish.costs.modal_cost import SpanResources, normalize_gpu_type
+from oddish.costs.modal_cost import (
+    SpanResources,
+    normalize_gpu_type,
+    provider_default_request,
+)
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -113,7 +117,9 @@ def _unknown_sandbox_resources() -> SpanResources:
     )
 
 
-def _resources_from_environment_config(env: Any, overrides: Any) -> SpanResources:
+def _resources_from_environment_config(
+    env: Any, overrides: Any, provider: str = "modal"
+) -> SpanResources:
     env = env.model_copy(deep=True)
     if overrides.override_cpus is not None:
         env.cpus = overrides.override_cpus
@@ -122,18 +128,22 @@ def _resources_from_environment_config(env: Any, overrides: Any) -> SpanResource
     if overrides.override_gpus is not None:
         env.gpus = overrides.override_gpus
 
+    # The LIMIT-enforcement request floor is the provider's minimum request,
+    # not Modal's -- a Daytona sandbox reserves 1 vCPU / 1 GiB, not Modal's
+    # 0.125 core / 128 MiB, so a hardcoded Modal floor underprices it.
+    default_cpu, default_mem = provider_default_request(provider)
     cpu_mode = ResourceMode(overrides.cpu_enforcement_policy)
     mem_mode = ResourceMode(overrides.memory_enforcement_policy)
     cpu_request, cpu_limit = _resource_bounds(
         env.cpus,
         cpu_mode,
-        default_request=0.125,
+        default_request=default_cpu,
         auto_is_request=False,
     )
     mem_request, mem_limit = _resource_bounds(
         env.memory_mb,
         mem_mode,
-        default_request=128,
+        default_request=default_mem,
         auto_is_request=True,
     )
     has_override = any(
@@ -163,7 +173,7 @@ def _resources_from_environment_config(env: Any, overrides: Any) -> SpanResource
 
 
 def capture_sandbox_resources(
-    task_path: Path, harbor_config: dict[str, Any] | None
+    task_path: Path, harbor_config: dict[str, Any] | None, provider: str = "modal"
 ) -> SpanResources:
     """Snapshot the effective agent resources before an ephemeral fork."""
     try:
@@ -171,13 +181,15 @@ def capture_sandbox_resources(
             (task_path / "task.toml").read_text()
         )
         hc = HarborConfig.model_validate(harbor_config or {})
-        return _resources_from_environment_config(task.environment, hc.environment)
+        return _resources_from_environment_config(
+            task.environment, hc.environment, provider
+        )
     except Exception:
         return _unknown_sandbox_resources()
 
 
 def capture_verifier_resources(
-    task_path: Path, harbor_config: dict[str, Any] | None
+    task_path: Path, harbor_config: dict[str, Any] | None, provider: str = "modal"
 ) -> SpanResources | None:
     """Return the separate verifier's effective resources, if it has one."""
     try:
@@ -188,7 +200,9 @@ def capture_verifier_resources(
         for step in task.steps or [None]:
             env = resolve_effective_verifier_env_config(task, step)
             if env is not None:
-                return _resources_from_environment_config(env, hc.environment)
+                return _resources_from_environment_config(
+                    env, hc.environment, provider
+                )
         return None
     except Exception:
         return None

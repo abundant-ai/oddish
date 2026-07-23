@@ -45,7 +45,14 @@ DAYTONA_DEFAULT_CPU_REQUEST = 1.0
 DAYTONA_DEFAULT_MEM_REQUEST_MB = 1024
 
 
-def _provider_default_request(provider: str) -> tuple[float, int]:
+def provider_default_request(provider: str) -> tuple[float, int]:
+    """The provider's default/minimum (cpu_cores, mem_mb) request.
+
+    Used both when a task pins nothing and as the LIMIT-enforcement request
+    floor (``min(default, pinned)``): Modal reserves a 0.125-core / 128-MiB
+    minimum, Daytona a 1 vCPU / 1 GiB one, so the floor must follow the
+    provider or an unpinned/LIMIT Daytona sandbox is priced ~8x too small.
+    """
     if provider == "daytona":
         return DAYTONA_DEFAULT_CPU_REQUEST, DAYTONA_DEFAULT_MEM_REQUEST_MB
     return MODAL_DEFAULT_CPU_REQUEST, MODAL_DEFAULT_MEM_REQUEST_MB
@@ -287,7 +294,7 @@ def estimate_span_cost(
 
     if cpu is None and mem_mb is None and gpu_count <= 0:
         if resources.spec_source == "provider_default":
-            cpu, mem_mb = _provider_default_request(rate_selection.provider)
+            cpu, mem_mb = provider_default_request(rate_selection.provider)
         else:
             return EstimateResult(
                 cost_usd=None,
