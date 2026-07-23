@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import tarfile
 from pathlib import Path
 from typing import Any
 import logging
@@ -232,6 +234,7 @@ class TrialClassifier:
         trial_agent: str | None = None,
         pre_trial_items: list[dict] | None = None,
         file_access: list[dict] | None = None,
+        analyzer_block_context: dict[str, Any] | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
         result_path = trial_dir / "result.json"
@@ -329,12 +332,22 @@ class TrialClassifier:
                 print("-" * 60, flush=True)
 
             try:
-                structured_output = await self._run_claude_cli(
-                    prompt,
-                    trial_dir,
-                    task_dir,
-                    extra_dirs=[qa_context_dir] if qa_context_dir else None,
-                )
+                extra_dirs = [qa_context_dir] if qa_context_dir else None
+                if analyzer_block_context is None:
+                    structured_output = await self._run_claude_cli(
+                        prompt,
+                        trial_dir,
+                        task_dir,
+                        extra_dirs=extra_dirs,
+                    )
+                else:
+                    structured_output = await self._run_in_analyzer_block(
+                        prompt=prompt,
+                        trial_dir=trial_dir,
+                        task_dir=task_dir,
+                        extra_dirs=extra_dirs,
+                        context=analyzer_block_context,
+                    )
             except TimeoutError:
                 if self._verbose:
                     print(
@@ -375,6 +388,128 @@ class TrialClassifier:
                 recommendation="Review trial manually or check authentication",
                 reward=reward,
             )
+
+    async def _run_in_analyzer_block(
+        self,
+        *,
+        prompt: str,
+        trial_dir: Path,
+        task_dir: Path,
+        extra_dirs: list[Path] | None,
+        context: dict[str, Any],
+    ) -> Any:
+        """Run the filesystem-aware classifier as a persisted AnalyzerBlock."""
+        from oddish.blocks.analyzer.analyzer_block import (
+            AnalyzerBlock,
+            AnalyzerInput,
+            AnalyzerType,
+        )
+        from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+        from oddish.blocks.analyzer.analyzer_llm_client import (
+            SandboxConfig,
+            sandbox_client_factory_registered,
+        )
+
+        classifier = self
+
+        class _ClaudeCliClient:
+            last_usage = None
+
+            async def stream(self, block_prompt: str, *, system_prompt=None):
+                output = await classifier._run_claude_cli(
+                    block_prompt,
+                    trial_dir,
+                    task_dir,
+                    extra_dirs=extra_dirs,
+                )
+                self.last_usage = classifier.last_usage
+                yield json.dumps(output)
+
+            async def aclose(self) -> None:
+                return None
+
+        async def _client_factory():
+            return _ClaudeCliClient()
+
+        use_sandbox = sandbox_client_factory_registered()
+        sandbox_config = None
+        block_prompt = prompt
+        client_factory = _client_factory
+        client_type = LLMClientType.CLAUDE_CLI
+        if use_sandbox:
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+                bundle.add(task_dir, arcname="task")
+                bundle.add(trial_dir, arcname="trial")
+            sandbox_root = "/home/daytona/workspace/post-trial"
+            sandbox_task_dir = f"{sandbox_root}/task"
+            sandbox_trial_dir = f"{sandbox_root}/trial"
+            block_prompt = block_prompt.replace(str(task_dir), sandbox_task_dir)
+            block_prompt = block_prompt.replace(str(trial_dir), sandbox_trial_dir)
+            sandbox_config = SandboxConfig(
+                session_id="post-trial",
+                files_to_upload={
+                    "/tmp/oddish-post-trial.tar.gz": archive.getvalue(),
+                },
+                setup_commands=(
+                    f"mkdir -p {sandbox_root} && "
+                    f"tar -xzf /tmp/oddish-post-trial.tar.gz -C {sandbox_root}",
+                ),
+            )
+            client_factory = None
+            client_type = LLMClientType.SANDBOX
+
+        metadata = {
+            "prompt_key": context.get("prompt_key"),
+            "prompt_version": context.get("prompt_version"),
+            "model": self._model,
+        }
+        block = AnalyzerBlock(
+            analyzer_type=AnalyzerType.POST_TRIAL,
+            llm_client_type=client_type,
+            input=AnalyzerInput(
+                input={
+                    "trial_id": context.get("trial_id"),
+                    "task_id": context.get("task_id"),
+                }
+            ),
+            prompt=block_prompt,
+            analyzer_id=context.get("trial_id"),
+            task_id=context.get("task_id"),
+            block_metadata=metadata,
+            model=self._model,
+            output_transform=(
+                self._parse_sandbox_block_output if use_sandbox else json.loads
+            ),
+            sandbox_config=sandbox_config,
+            client_factory=client_factory,
+        )
+        output = await block.run()
+        return output.output
+
+    @staticmethod
+    def _parse_sandbox_block_output(raw: str) -> Any:
+        """Extract the final Claude Code result from concatenated stream events."""
+        decoder = json.JSONDecoder()
+        offset = 0
+        events: list[dict] = []
+        while offset < len(raw):
+            event, offset = decoder.raw_decode(raw, offset)
+            if isinstance(event, dict):
+                events.append(event)
+            while offset < len(raw) and raw[offset].isspace():
+                offset += 1
+        for event in reversed(events):
+            if event.get("type") != "result":
+                continue
+            result = event.get("structured_output", event.get("result"))
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, str):
+                from oddish.blocks.block import Block
+
+                return json.loads(Block.strip_code_fences(result))
+        raise RuntimeError("sandbox classifier returned no structured result event")
 
     def _stash_usage(self, payload: dict, model_id: str | None) -> None:
         self.last_usage = parse_cli_usage(payload, model_id)

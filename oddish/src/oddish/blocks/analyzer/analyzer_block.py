@@ -36,6 +36,7 @@ class AnalyzerType(str, enum.Enum):
     TRAJECTORY_SUMMARY = "trajectory_summary"
     TASK_VERDICT = "task_verdict"
     PRE_TRIAL = "pre_trial"
+    POST_TRIAL = "post_trial"
     CUSTOM_QA = "custom_qa"
 
 
@@ -103,6 +104,7 @@ class AnalyzerBlock(Block):
         sandbox_config: SandboxConfig | None = None,
         client_creation_timeout: float | None = None,
         attribution_org_id: str | None = None,
+        client_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -136,6 +138,7 @@ class AnalyzerBlock(Block):
         self._client_creation_timeout = client_creation_timeout
         self._active_client: AnalyzerLLMClient | None = None
         self.attribution_org_id = attribution_org_id
+        self._client_factory = client_factory
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -214,7 +217,9 @@ class AnalyzerBlock(Block):
             "task_id": self.task_id,
             "analyzer_id": None,
         }
-        if self.task_id:
+        # A post-trial block carries task_id for lineage, but its spend belongs
+        # to the individual trial referenced by analyzer_id.
+        if self.task_id and self.analyzer_type is not AnalyzerType.POST_TRIAL:
             task = (
                 await session.execute(
                     select(
@@ -305,6 +310,8 @@ class AnalyzerBlock(Block):
             self.log.exception("record_cost failed for id=%s", self.id)
 
     async def _create_client(self) -> AnalyzerLLMClient:
+        if self._client_factory is not None:
+            return await self._client_factory()
         create = create_llm_client(
             self.llm_client_type,
             model=self.model,

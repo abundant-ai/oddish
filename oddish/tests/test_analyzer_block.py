@@ -1,5 +1,11 @@
+import asyncio
 import logging
+from types import SimpleNamespace
 
+import pytest
+
+from oddish.analyze.classifier import TrialClassifier
+from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
 from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerType,
     AnalyzerInput,
@@ -7,6 +13,11 @@ from oddish.blocks.analyzer.analyzer_block import (
     block_key_prefix,
     block_logger,
 )
+from oddish.blocks.analyzer.analyzer_llm_client import (
+    FakeAnalyzerLLMClient,
+    LLMClientType,
+)
+from oddish.db.models import JobStatus, utcnow
 
 
 def test_key_prefix_uses_enum_value():
@@ -17,6 +28,117 @@ def test_key_prefix_uses_enum_value():
 
 def test_task_verdict_analyzer_type_value():
     assert AnalyzerType.TASK_VERDICT.value == "task_verdict"
+    assert AnalyzerType.POST_TRIAL.value == "post_trial"
+
+
+@pytest.mark.asyncio
+async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
+    monkeypatch, tmp_path
+):
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    captured = {}
+    classifier = TrialClassifier(model="anthropic/test")
+
+    async def fake_cli(prompt, trial_dir, task_dir, *, extra_dirs=None):
+        return {"classification": "GOOD_SUCCESS"}
+
+    async def fake_s3(self, raw):
+        captured["raw"] = raw
+
+    async def fake_db(self):
+        captured["block"] = self
+
+    async def fake_cost(self):
+        return None
+
+    monkeypatch.setattr(classifier, "_run_claude_cli", fake_cli)
+    monkeypatch.setattr(
+        analyzer_llm_client,
+        "sandbox_client_factory_registered",
+        lambda: False,
+    )
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", fake_s3)
+    monkeypatch.setattr(AnalyzerBlock, "save_to_db", fake_db)
+    monkeypatch.setattr(AnalyzerBlock, "record_cost", fake_cost)
+
+    output = await classifier._run_in_analyzer_block(
+        prompt="classify",
+        trial_dir=tmp_path,
+        task_dir=tmp_path,
+        extra_dirs=None,
+        context={
+            "trial_id": "trial-1",
+            "task_id": "task-1",
+            "prompt_key": "QA_POST_TRIAL",
+            "prompt_version": 7,
+            "prompt_id": "prompt-1",
+        },
+    )
+
+    block = captured["block"]
+    assert output == {"classification": "GOOD_SUCCESS"}
+    assert block.analyzer_type is AnalyzerType.POST_TRIAL
+    assert block.analyzer_id == "trial-1"
+    assert block.task_id == "task-1"
+    assert block.llm_client_type is LLMClientType.CLAUDE_CLI
+    assert block.block_metadata["prompt_key"] == "QA_POST_TRIAL"
+    assert block.block_metadata["prompt_version"] == 7
+    assert captured["raw"] == b'{"classification": "GOOD_SUCCESS"}'
+
+
+@pytest.mark.asyncio
+async def test_post_trial_uses_registered_sandbox_factory(monkeypatch, tmp_path):
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    task_dir = tmp_path / "task-local"
+    trial_dir = tmp_path / "trial-local"
+    task_dir.mkdir()
+    trial_dir.mkdir()
+    (task_dir / "README.md").write_text("task")
+    (trial_dir / "result.json").write_text("{}")
+    captured = {}
+
+    monkeypatch.setattr(
+        analyzer_llm_client,
+        "sandbox_client_factory_registered",
+        lambda: True,
+    )
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={"classification": "GOOD_SUCCESS"})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    classifier = TrialClassifier(model="anthropic/test")
+    output = await classifier._run_in_analyzer_block(
+        prompt=f"read {task_dir} and {trial_dir}",
+        trial_dir=trial_dir,
+        task_dir=task_dir,
+        extra_dirs=None,
+        context={"trial_id": "trial-1", "task_id": "task-1"},
+    )
+
+    block = captured["block"]
+    assert output == {"classification": "GOOD_SUCCESS"}
+    assert block.llm_client_type is LLMClientType.SANDBOX
+    assert block._client_factory is None
+    assert block._sandbox_config.files_to_upload
+    assert str(task_dir) not in block.prompt
+    assert str(trial_dir) not in block.prompt
+    assert "/home/daytona/workspace/post-trial/task" in block.prompt
+    assert "/home/daytona/workspace/post-trial/trial" in block.prompt
+
+
+def test_post_trial_parses_sandbox_result_stream():
+    raw = (
+        '{"type":"assistant","message":{"content":[]}}'
+        '{"type":"result","result":"```json\\n'
+        '{\\"classification\\":\\"GOOD_SUCCESS\\"}\\n```"}'
+    )
+    assert TrialClassifier._parse_sandbox_block_output(raw) == {
+        "classification": "GOOD_SUCCESS"
+    }
 
 
 def test_io_dataclasses_accept_any():
@@ -29,14 +151,6 @@ def test_block_logger_prepends_prefix(caplog):
     with caplog.at_level(logging.INFO):
         log.info("hello")
     assert "[analyzer/scaling_analysis] hello" in caplog.text
-
-
-import pytest
-
-from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
-from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
-from oddish.db.models import JobStatus, utcnow
-
 
 def _make_block(**over):
     client = over.pop("client", None)
@@ -134,12 +248,6 @@ async def test_save_to_db_adds_row(monkeypatch):
     assert row.output == "result-text"
     assert row.status == JobStatus.SUCCESS
     assert row.block_metadata == {"k": "v"}
-
-
-import asyncio
-
-from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
-
 
 def _patch_persistence(monkeypatch):
     """Capture save_to_s3 raw + save_to_db without touching S3/DB."""

@@ -49,6 +49,9 @@ def resolve_analyzer_api_key(explicit: str | None = None) -> str | None:
 
 class LLMClientType(str, enum.Enum):
     SANDBOX = "Sandbox"
+    # Filesystem-aware Claude Code process running in the worker that already
+    # downloaded the task and trial artifacts.
+    CLAUDE_CLI = "ClaudeCli"
     # Direct provider API. Speaks Anthropic or OpenAI/Azure, chosen from the
     # model id -- there is no separate OpenAI backend to select.
     API = "Api"
@@ -288,6 +291,11 @@ def register_sandbox_client_factory(factory: SandboxClientFactory) -> None:
     _sandbox_client_factory = factory
 
 
+def sandbox_client_factory_registered() -> bool:
+    """Whether the hosted layer installed its sandbox provisioner."""
+    return _sandbox_client_factory is not None
+
+
 async def create_llm_client(
     llm_client_type: LLMClientType,
     *,
@@ -316,6 +324,12 @@ async def create_llm_client(
         config = sandbox_config or SandboxConfig()
         return await _sandbox_client_factory(
             model=model, api_key=api_key, sandbox_config=config
+        )
+
+    if llm_client_type == LLMClientType.CLAUDE_CLI:
+        raise RuntimeError(
+            "CLAUDE_CLI clients are context-bound and must be supplied by "
+            "the filesystem-aware post-trial classifier"
         )
 
     raise ValueError(f"unknown llm_client_type: {llm_client_type!r}")
