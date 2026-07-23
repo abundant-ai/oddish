@@ -738,6 +738,9 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         <div className="text-muted-foreground text-[10px]">
           Total · inference + QA + compute
         </div>
+        <div className="text-muted-foreground text-[10px] tabular-nums">
+          incl. {formatCostUsd(computeCost)} sandbox · {formatCostUsd(qaCost)} QA
+        </div>
       </div>
       <div className="bg-background/70 flex flex-col justify-center gap-1 rounded-md border border-[#6f88b4]/18 p-2">
         <div className="flex items-baseline justify-between gap-2">
