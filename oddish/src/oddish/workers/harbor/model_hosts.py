@@ -21,6 +21,7 @@ from oddish.config import (
     MOONSHOT_DEFAULT_BASE_URL,
     OPENAI_PROVIDER_AZURE,
     ZAI_DEFAULT_BASE_URL,
+    infer_model_provider_prefix,
     is_anthropic_hdo_model,
     is_fireworks_model,
     is_meta_model,
@@ -190,7 +191,12 @@ def outbound_hosts_for_model(
         hosts.extend(bedrock_domains_for_model(model_name=model_name))
     elif model_name:
         raw = model_name.strip().lower()
-        head = raw.split("/", 1)[0] if "/" in raw else ""
+        # Resolve the provider prefix bare-id safe (litellm + heuristic), so an
+        # unprefixed ``gpt-4o`` / ``claude-*`` / ``gemini-*`` still maps to its
+        # provider host instead of an empty inferred set.
+        head = infer_model_provider_prefix(model_name) or (
+            raw.split("/", 1)[0] if "/" in raw else ""
+        )
         if head == "openrouter":
             hosts.append(
                 _default_host(

@@ -28,6 +28,7 @@ from harbor.models.task.config import normalize_allowed_hosts
 from harbor.models.trial.config import AgentConfig
 from harbor.utils.import_path import import_class
 
+from oddish.config import infer_model_provider_prefix
 from oddish.workers.agents.network import normalize_domain_or_url
 
 from .model_hosts import outbound_hosts_for_model
@@ -385,9 +386,14 @@ def _selected_transport_hosts(
 
 
 def _model_transport_base_url_keys(model_name: str | None) -> tuple[str, ...]:
-    """Base URL aliases consumed by LiteLLM-style model transports."""
-    raw = (model_name or "").strip().lower()
-    provider = raw.partition("/")[0] if "/" in raw else ""
+    """Base URL aliases consumed by LiteLLM-style model transports.
+
+    Provider inference is bare-id safe: ``openai/gpt-x`` and a bare ``gpt-x`` /
+    ``o3`` both resolve to ``openai`` (via litellm + heuristic fallback), so a
+    mini-swe trial on an unprefixed OpenAI model still consumes -- and is granted
+    -- its OpenAI transport rather than an empty key set.
+    """
+    provider = (infer_model_provider_prefix(model_name) or "").strip().lower()
     return {
         "anthropic": ("ANTHROPIC_BASE_URL",),
         "anthropic-hdo": ("ANTHROPIC_BASE_URL",),

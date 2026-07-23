@@ -240,6 +240,33 @@ def test_gemini_ambient_credentials_enter_redaction_map(monkeypatch):
     assert replacements["goog-secret-456"] == "[REDACTED]"
 
 
+def test_claude_code_ambient_credentials_enter_redaction_map(monkeypatch):
+    # Ambient claude-code platform credentials (used when job-scoped injection is
+    # off) must fold into the trial transport env so their raw values are redacted
+    # from live-tail / lifecycle / scrubbed artifacts -- including the full AWS
+    # chain the stock agent forwards in Bedrock mode.
+    ambient = {
+        "ANTHROPIC_API_KEY": "sk-ant-secret",
+        "ANTHROPIC_AUTH_TOKEN": "ant-auth-token",
+        "CLAUDE_CODE_OAUTH_TOKEN": "cc-oauth-token",
+        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+        "AWS_ACCESS_KEY_ID": "AKIA-access-id",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret-value",
+        "AWS_SESSION_TOKEN": "aws-session-value",
+    }
+    for key, value in ambient.items():
+        monkeypatch.setenv(key, value)
+    agent_config = HarborAgentConfig(name="claude-code", model_name="anthropic/claude")
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    for key, value in ambient.items():
+        assert runtime_env.get(key) == value
+        assert replacements[value] == "[REDACTED]"
+
+
 def test_compose_classifier_fails_closed_on_unparseable_task_toml(tmp_path):
     # A Daytona Compose, non-kube task whose task.toml cannot be parsed must fail
     # closed (raise) rather than silently classify as "none" and disable egress

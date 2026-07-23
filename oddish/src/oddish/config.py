@@ -996,6 +996,17 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     return None
 
 
+def infer_model_provider_prefix(model_name: str | None) -> str | None:
+    """Canonical provider prefix for a model id, bare or slash-prefixed.
+
+    Resolves ``openai/gpt-x`` and bare ``gpt-x`` / ``o3`` alike to their provider
+    so transport-key derivation does not depend on the id being slash-prefixed.
+    """
+    if not model_name:
+        return None
+    return _infer_provider_prefix(model_name)
+
+
 # Canonical deployed-backend API base URLs (single source of truth; the CLI in
 # ``oddish.cli.config`` re-exports these). Forks override via the env vars.
 DEFAULT_API_URL = os.environ.get(

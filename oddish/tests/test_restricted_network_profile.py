@@ -810,3 +810,19 @@ def test_agent_fronts_own_model_service_identifies_self_fronting_harnesses():
     assert agent_fronts_own_model_service(cfg("grok-build", "xai/grok")) is False
     assert agent_fronts_own_model_service(cfg("gemini-cli", "google/gemini")) is False
     assert agent_fronts_own_model_service(cfg("nop")) is False
+
+
+def test_mini_swe_bare_openai_model_gets_openai_transport():
+    # A mini-swe trial on a BARE OpenAI model id (no provider prefix) must still
+    # resolve its OpenAI transport keys AND a non-empty inferred host set.
+    # Regression: prefix-only detection granted the restricted agent phase no
+    # model egress at all.
+    from oddish.workers.harbor.restricted_network import (
+        consumed_transport_base_url_keys,
+    )
+
+    config = AgentConfig(name="mini-swe-agent", model_name="gpt-4o")
+    assert "OPENAI_BASE_URL" in (consumed_transport_base_url_keys(config) or ())
+
+    profile = restricted_network_profile_for_config(config, resolved_env={})
+    assert "api.openai.com" in profile.outbound_hosts

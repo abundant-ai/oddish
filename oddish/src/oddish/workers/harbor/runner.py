@@ -127,6 +127,24 @@ _GEMINI_RUNTIME_SECRET_KEYS = (
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
 )
+# Ambient claude-code platform credentials must fold into the redaction map for
+# the same reason: when job-scoped injection is off, the direct/OAuth Anthropic
+# credential or the Bedrock credential chain the stock agent forwards is only in
+# the worker's os.environ, so without this it would never enter
+# _runtime_transport_redactions and could survive raw in live-tail rows,
+# lifecycle payloads, or scrubbed artifacts. Includes the full AWS chain the
+# Bedrock path forwards (bearer token + access-key/secret/session). Credentials,
+# not routes -- redaction coverage only, never transport-host selection; every
+# name contains key/token/secret so the generic matcher redacts them once pulled.
+_CLAUDE_RUNTIME_SECRET_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+)
 _ARTIFACT_REDACTION_CHUNK_BYTES = 1024 * 1024
 
 
@@ -143,6 +161,13 @@ def _resolved_runtime_transport_env(
         is_gemini = name == "gemini-cli" or "agents.gemini_cli:" in import_path
         if is_gemini:
             for key in (*_GEMINI_RUNTIME_ENV_KEYS, *_GEMINI_RUNTIME_SECRET_KEYS):
+                if key not in runtime_env and (value := os.environ.get(key)):
+                    runtime_env[key] = value
+        is_claude_code = (
+            name == "claude-code" or "agents.claude_code:" in import_path
+        )
+        if is_claude_code:
+            for key in _CLAUDE_RUNTIME_SECRET_KEYS:
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
         # Drop worker-injected model-transport base URLs the effective agent's
@@ -1194,11 +1219,6 @@ async def run_harbor_trial_async(
             # post-defaults assert below; both restricted kinds are covered.
             if restricted_compose_kind in ("dynamic", "static"):
                 assert_no_serialized_restricted_routes(agent_config)
-            if restricted_compose_kind == "dynamic":
-                runtime_transport_env = _resolved_runtime_transport_env(
-                    openai_env,
-                    agent_config=agent_config,
-                )
 
             if (
                 restricted_compose_kind == "dynamic"
@@ -1225,6 +1245,18 @@ async def run_harbor_trial_async(
                     )
                 )
                 agent_config.model_name = openai_model
+
+            # Resolve the worker transport env AFTER any deployment->public model
+            # swap so consumption/host selection is computed against the public
+            # model, never the private (bare) Azure deployment id. Running it
+            # before the swap would derive an empty consumed-key set for a
+            # mini-swe Azure/bare-openai trial and wrongly drop OPENAI_BASE_URL
+            # before host selection, leaving the agent phase with no model egress.
+            if restricted_compose_kind == "dynamic":
+                runtime_transport_env = _resolved_runtime_transport_env(
+                    openai_env,
+                    agent_config=agent_config,
+                )
 
             if restricted_compose_kind == "static" and not (
                 is_static_restricted_agent_supported(agent_config)
