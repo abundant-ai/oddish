@@ -24,6 +24,121 @@ def _truncate_trajectory_text(value: Any, *, limit: int) -> str:
     return text[:limit] + " ... [truncated]"
 
 
+class _SessionTimeline:
+    """Per-kind timestamps from the Codex session rollout JSONL.
+
+    ``codex exec --json`` stdout events carry no timestamps, but the session
+    rollout records one per entry, and both logs list shell calls, reasoning,
+    and assistant messages chronologically — so the k-th stdout item of a kind
+    aligns with the k-th rollout entry of that kind. There is no shared id to
+    join on, so a kind is used only when the two logs agree on its count;
+    schema drift degrades to missing timestamps, never wrong ones.
+    """
+
+    def __init__(self) -> None:
+        self.shell_calls: list[tuple[str | None, str | None]] = []  # (ts, call_id)
+        self.output_ts: dict[str, str] = {}  # call_id -> ts
+        self.reasoning_ts: list[str | None] = []
+        self.message_ts: list[str | None] = []
+
+    def command_ts(self, k: int, *, completed: bool) -> str | None:
+        if k >= len(self.shell_calls):
+            return None
+        ts, call_id = self.shell_calls[k]
+        if completed and call_id and call_id in self.output_ts:
+            return self.output_ts[call_id]
+        return ts
+
+
+def _read_session_timeline(
+    sessions_dir: Path | None, thread_id: str | None
+) -> _SessionTimeline | None:
+    if sessions_dir is None or not sessions_dir.is_dir():
+        return None
+
+    candidates = sorted(sessions_dir.rglob("rollout-*.jsonl"))
+    if not candidates:
+        return None
+
+    chosen: Path | None = None
+    for path in candidates:
+        meta_id = _session_file_id(path)
+        if thread_id and meta_id == thread_id:
+            chosen = path
+            break
+    if chosen is None:
+        if len(candidates) != 1:
+            return None
+        chosen = candidates[0]
+
+    timeline = _SessionTimeline()
+    try:
+        with chosen.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped.startswith("{"):
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict) or entry.get("type") != "response_item":
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                timestamp = entry.get("timestamp")
+                if timestamp is not None and not isinstance(timestamp, str):
+                    timestamp = None
+                ptype = payload.get("type")
+                if ptype == "function_call" and "shell" in str(payload.get("name", "")):
+                    call_id = payload.get("call_id")
+                    timeline.shell_calls.append(
+                        (timestamp, call_id if isinstance(call_id, str) else None)
+                    )
+                elif ptype == "local_shell_call":
+                    call_id = payload.get("call_id")
+                    timeline.shell_calls.append(
+                        (timestamp, call_id if isinstance(call_id, str) else None)
+                    )
+                elif ptype == "function_call_output" and timestamp:
+                    call_id = payload.get("call_id")
+                    if isinstance(call_id, str):
+                        timeline.output_ts[call_id] = timestamp
+                elif ptype == "reasoning":
+                    timeline.reasoning_ts.append(timestamp)
+                elif ptype == "message" and payload.get("role") == "assistant":
+                    timeline.message_ts.append(timestamp)
+    except OSError:
+        return None
+    return timeline
+
+
+def _session_file_id(path: Path) -> str | None:
+    """Session id from a rollout file's leading ``session_meta`` entry."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for _ in range(5):
+                line = handle.readline()
+                if not line:
+                    break
+                stripped = line.strip()
+                if not stripped.startswith("{"):
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(entry, dict) and entry.get("type") == "session_meta":
+                    payload = entry.get("payload")
+                    if isinstance(payload, dict):
+                        meta_id = payload.get("session_id") or payload.get("id")
+                        return str(meta_id) if meta_id else None
+    except OSError:
+        return None
+    return None
+
+
 def read_trajectory_step_count(trajectory_path: Path) -> int:
     try:
         data = json.loads(trajectory_path.read_text(encoding="utf-8"))
@@ -39,6 +154,7 @@ def convert_codex_stdout_jsonl_to_trajectory(
     agent_version: str,
     model_name: str | None,
     compute_cost: Callable[..., float | None] | None = None,
+    sessions_dir: Path | None = None,
 ) -> Trajectory | None:
     """Convert ``codex exec --json`` stdout into ATIF.
 
@@ -46,6 +162,10 @@ def convert_codex_stdout_jsonl_to_trajectory(
     ``agent/codex.txt``. Some Codex releases write sparse session JSONL files,
     so this converter lets workers recover a useful trajectory without
     depending on session-internal schemas.
+
+    Stdout events carry no timestamps; when ``sessions_dir`` holds the run's
+    rollout JSONL, steps are stamped from it by ordinal alignment (see
+    ``_SessionTimeline``) so per-step timing survives this fallback path.
     """
     if not output_path.is_file():
         return None
@@ -72,6 +192,20 @@ def convert_codex_stdout_jsonl_to_trajectory(
     thread_id = None
     steps: list[Step] = []
     completed_items: set[str] = set()
+
+    # Alignment bookkeeping for session-timeline timestamps: one meta entry per
+    # step — ("command", ordinal, completed) / ("reasoning", k) / ("message", k)
+    # / None — where command ordinals are per distinct item in first-appearance
+    # order, matching the rollout's chronological shell-call order.
+    step_meta: list[tuple[Any, ...] | None] = []
+    command_ordinals: dict[str, int] = {}
+    reasoning_count = 0
+    message_count = 0
+
+    def command_ordinal(item_id: str) -> int:
+        if item_id not in command_ordinals:
+            command_ordinals[item_id] = len(command_ordinals)
+        return command_ordinals[item_id]
 
     for event in events:
         etype = event.get("type")
@@ -121,6 +255,7 @@ def convert_codex_stdout_jsonl_to_trajectory(
                         },
                     )
                 )
+                step_meta.append(("command", command_ordinal(item_id), True))
                 continue
 
             if item_type == "reasoning":
@@ -138,6 +273,8 @@ def convert_codex_stdout_jsonl_to_trajectory(
                         extra={"source": "codex_stdout_jsonl"},
                     )
                 )
+                step_meta.append(("reasoning", reasoning_count))
+                reasoning_count += 1
                 continue
 
             if item_type == "agent_message":
@@ -154,6 +291,8 @@ def convert_codex_stdout_jsonl_to_trajectory(
                         extra={"source": "codex_stdout_jsonl"},
                     )
                 )
+                step_meta.append(("message", message_count))
+                message_count += 1
                 continue
 
         if etype == "item.started":
@@ -185,6 +324,7 @@ def convert_codex_stdout_jsonl_to_trajectory(
                     },
                 )
             )
+            step_meta.append(("command", command_ordinal(item_id), False))
 
         if etype == "turn.failed":
             error = event.get("error")
@@ -206,9 +346,27 @@ def convert_codex_stdout_jsonl_to_trajectory(
                         extra={"source": "codex_stdout_jsonl", "type": etype},
                     )
                 )
+                step_meta.append(None)
 
     if not steps:
         return None
+
+    timeline = _read_session_timeline(
+        sessions_dir, str(thread_id) if thread_id else None
+    )
+    if timeline is not None:
+        use_commands = len(command_ordinals) == len(timeline.shell_calls)
+        use_reasoning = reasoning_count == len(timeline.reasoning_ts)
+        use_messages = message_count == len(timeline.message_ts)
+        for step, meta in zip(steps, step_meta):
+            if meta is None:
+                continue
+            if meta[0] == "command" and use_commands:
+                step.timestamp = timeline.command_ts(meta[1], completed=meta[2])
+            elif meta[0] == "reasoning" and use_reasoning:
+                step.timestamp = timeline.reasoning_ts[meta[1]]
+            elif meta[0] == "message" and use_messages:
+                step.timestamp = timeline.message_ts[meta[1]]
 
     final_metrics = None
     for event in reversed(events):
@@ -267,12 +425,14 @@ def write_trajectory_if_richer(
     agent_version: str,
     model_name: str | None,
     compute_cost: Callable[..., float | None] | None = None,
+    sessions_dir: Path | None = None,
 ) -> Trajectory | None:
     trajectory = convert_codex_stdout_jsonl_to_trajectory(
         output_path,
         agent_version=agent_version,
         model_name=model_name,
         compute_cost=compute_cost,
+        sessions_dir=sessions_dir,
     )
     if not trajectory:
         return None

@@ -108,6 +108,7 @@ class OddishCodex(Codex):
                 agent_version=self._version or "unknown",
                 model_name=self.model_name,
                 compute_cost=self._compute_cost_from_pricing,
+                sessions_dir=self.logs_dir / "sessions",
             )
         except Exception:
             self.logger.exception("Failed to write Codex stdout trajectory fallback")
