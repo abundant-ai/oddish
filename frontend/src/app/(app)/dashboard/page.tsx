@@ -103,9 +103,15 @@ export default async function DashboardPage({
       ? ([max, min] as const)
       : ([min, max] as const);
   };
-  const [minSteps, maxSteps] = metricRange("minSteps", "maxSteps");
-  const [minTime, maxTime] = metricRange("minTime", "maxTime");
-  const [minTools, maxTools] = metricRange("minTools", "maxTools");
+  const [minSteps, maxSteps] = metricRange("min_steps", "max_steps");
+  const [minTime, maxTime] = metricRange(
+    "min_duration_seconds",
+    "max_duration_seconds"
+  );
+  const [minTools, maxTools] = metricRange(
+    "min_tool_calls",
+    "max_tool_calls"
+  );
   const pageNumber = Math.max(
     1,
     Number.parseInt(firstParam(params.page), 10) || 1
@@ -126,16 +132,16 @@ export default async function DashboardPage({
     experiments_tags_any: parsedQuery.any.join(","),
     experiments_tags_none: parsedQuery.none.join(","),
     experiments_author_query: parsedQuery.authors.join(","),
-    experiments_models: firstParam(params.model) || undefined,
+    experiments_models: firstParam(params.models) || undefined,
     experiments_min_steps: minSteps,
     experiments_max_steps: maxSteps,
     experiments_min_duration_seconds: minTime,
     experiments_max_duration_seconds: maxTime,
     experiments_min_tool_calls: minTools,
     experiments_max_tool_calls: maxTools,
-    experiments_tool_names: firstParam(params.tool) || undefined,
+    experiments_tool_names: firstParam(params.tool_names) || undefined,
     experiments_trial_metric_match:
-      firstParam(params.metricMatch) === "all" ? "all" : "any",
+      firstParam(params.trial_metric_match) === "all" ? "all" : "any",
   });
 
   return (
