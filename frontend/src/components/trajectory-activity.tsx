@@ -106,8 +106,10 @@ export function TrajectoryActivity({
           (sum, index) => sum + (steps[index].tool_calls?.length ?? 0),
           0
         ),
+      // `||` not `??`: v5 summaries persist 0 when the trajectory has no
+      // timestamps (e.g. codex), so 0 must also fall back to live derivation.
       durationMs:
-        segment.durationMs ??
+        segment.durationMs ||
         indexes.reduce((sum, index) => sum + durations[index], 0),
     };
   });
@@ -139,25 +141,26 @@ export function TrajectoryActivity({
     kind.instances.sort((a, b) => a.firstStepId - b.firstStepId);
   }
 
+  // Prefer live-derived total, else the summary's persisted per-component sums.
+  const componentMs = instances.reduce((sum, i) => sum + i.durationMs, 0);
+  const timeTotal = totalMs || componentMs;
+
   const sections = [
     {
       name: "Steps",
-      total: steps.length,
       totalLabel: steps.length.toLocaleString(),
       value: (m: MetricValues) => m.stepCount,
       fmt: (n: number) => n.toLocaleString(),
     },
     {
       name: "Tool calls",
-      total: totalTools,
       totalLabel: totalTools.toLocaleString(),
       value: (m: MetricValues) => m.toolCount,
       fmt: (n: number) => n.toLocaleString(),
     },
     {
       name: "Time",
-      total: totalMs,
-      totalLabel: totalMs > 0 ? fmtDurationMs(totalMs) : "—",
+      totalLabel: timeTotal > 0 ? fmtDurationMs(timeTotal) : "—",
       value: (m: MetricValues) => m.durationMs,
       fmt: (n: number) => (n > 0 ? fmtDurationMs(n) : "—"),
     },
@@ -191,7 +194,15 @@ export function TrajectoryActivity({
       </CardHeader>
       <CardContent className="space-y-4">
         {/* one mini bar chart per metric; rows double as the timeline legend */}
-        {sections.map((section) => (
+        {sections.map((section) => {
+          // Longest kind fills the track; others are proportional to it.
+          const denom = Math.max(
+            0,
+            ...kinds.map((kind) => section.value(kind))
+          );
+          // No timing data at all (e.g. codex trajectories lack timestamps).
+          if (section.name === "Time" && denom <= 0) return null;
+          return (
           <div key={section.name}>
             <div className="flex items-baseline justify-between">
               <span className="text-xs font-medium">{section.name}</span>
@@ -217,11 +228,11 @@ export function TrajectoryActivity({
                   </span>
                   {/* gap between segments = the split between instances */}
                   <div className="bg-muted/40 flex h-2 flex-1 gap-0.5 overflow-hidden rounded-sm">
-                    {section.total > 0 &&
+                    {denom > 0 &&
                       kind.instances.map((instance, i) => {
                         const pct = Math.min(
                           100,
-                          (section.value(instance) / section.total) * 100
+                          (section.value(instance) / denom) * 100
                         );
                         if (pct <= 0) return null;
                         return (
@@ -247,7 +258,8 @@ export function TrajectoryActivity({
               ))}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {/* timeline */}
         <div className="overflow-x-auto">
