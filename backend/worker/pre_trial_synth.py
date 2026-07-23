@@ -94,7 +94,7 @@ async def synthesize_task_pre_trial(
             analyzer_type=AnalyzerType.PRE_TRIAL,
             llm_client_type=LLMClientType.SANDBOX,
             input=AnalyzerInput(input={"task_id": task_id, "trial_ids": trial_ids}),
-            analyzer_id=task_id,
+            task_id=task_id,
             prompt=block_obj.build_prompt(),
             model=settings.pre_trial_model,
             output_transform=block_obj.to_action_items,

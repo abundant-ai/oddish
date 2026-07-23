@@ -629,6 +629,9 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     analyzer_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
+    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` is
+    # reserved for the existing AnalyzerModel/report association.
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
     llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1248,6 +1251,8 @@ class AnalysisCostModel(TimestampedMixin, Base):
         Index("ix_analysis_costs_trial_id", "trial_id"),
         Index("ix_analysis_costs_experiment_id", "experiment_id"),
         Index("ix_analysis_costs_org_id", "org_id"),
+        Index("ix_analysis_costs_task_id", "task_id"),
+        Index("ix_analysis_costs_analyzer_id", "analyzer_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -1256,6 +1261,10 @@ class AnalysisCostModel(TimestampedMixin, Base):
     experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # AnalyzerModel/report association. Task-level QA and classifiers leave
+    # this NULL and reconcile through task_id/trial_id instead.
+    analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
