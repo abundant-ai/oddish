@@ -15,3 +15,15 @@ def test_prompts_003_backfills_pre_trial_before_dropping_task_columns():
     assert backfill < drop
     assert "tasks.current_version_id = task_versions.id" in migration
     assert "COALESCE(task_versions.{col}, tasks.{col})" in migration
+
+
+def test_prompts_003_renames_trajectory_summary_kind():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "prompts_003_prompt_kind_latest_wins.py"
+    ).read_text()
+
+    assert "SET kind = 'TRAJECTORY_SUMMARY'" in migration
+    assert "WHERE kind = 'trajectory_summary'" in migration

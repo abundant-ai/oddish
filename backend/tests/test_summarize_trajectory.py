@@ -20,6 +20,11 @@ from api.services.summarize_trajectory import (
     preprocess,
 )
 
+_PROMPT_KWARGS = {
+    "prompt_template": "INSTRUCTIONS {{taxonomy}}",
+    "prompt_version": 1,
+}
+
 
 def _make_step(step_id: int, **overrides) -> dict:
     base: dict = {
@@ -202,6 +207,7 @@ async def test_generate_returns_persistable_summary(monkeypatch):
     result = await generate(
         _trajectory_with_steps([1, 2, 3]),
         _minimal_ctx(),
+        **_PROMPT_KWARGS,
     )
     assert result["schema_version"] == SCHEMA_VERSION == "5"
     assert result["summary"].startswith("Agent reproduced")
@@ -229,6 +235,7 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
     result = await generate(
         _trajectory_with_steps([1, 2, 3]),
         _minimal_ctx(),
+        **_PROMPT_KWARGS,
     )
     assert [h["step_id"] for h in result["highlights"]] == [1]
 
@@ -243,6 +250,7 @@ async def test_generate_strips_code_fences_around_json(monkeypatch):
     result = await generate(
         _trajectory_with_steps([1]),
         _minimal_ctx(),
+        **_PROMPT_KWARGS,
     )
     assert result["summary"] == "ok"
 
@@ -254,7 +262,7 @@ async def test_generate_raises_on_malformed_json(monkeypatch):
     _patch_block_persistence(monkeypatch)
     _install_fake_llm(monkeypatch, _fake_llm("not json"))
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx())
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), **_PROMPT_KWARGS)
 
 
 @pytest.mark.asyncio
@@ -264,7 +272,7 @@ async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
     _patch_block_persistence(monkeypatch)
     _install_fake_llm(monkeypatch, _fake_llm("[1,2,3]"))
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx())
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), **_PROMPT_KWARGS)
 
 
 @pytest.mark.asyncio
@@ -276,7 +284,7 @@ async def test_generate_wraps_client_errors(monkeypatch):
     client = FakeAnalyzerLLMClient(chunks=[], exc=RuntimeError("boom"))
     _install_fake_llm(monkeypatch, client)
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx())
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), **_PROMPT_KWARGS)
 
 
 @pytest.mark.asyncio
@@ -306,6 +314,7 @@ async def test_generate_returns_components(monkeypatch):
     result = await generate(
         _trajectory_with_steps([1, 2, 3]),
         _minimal_ctx(),
+        **_PROMPT_KWARGS,
     )
     assert [c["trajectory_component"] for c in result["components"]] == [
         "reading_files",
@@ -401,6 +410,11 @@ async def test_get_or_generate_persists_on_miss():
             return_value=None,
         ),
         patch(
+            "api.services.summarize_trajectory._load_summary_prompt",
+            new_callable=AsyncMock,
+            return_value=("INSTRUCTIONS {{taxonomy}}", 1),
+        ),
+        patch(
             "api.services.summarize_trajectory.read_trial_trajectory",
             new=fake_traj,
         ),
@@ -448,6 +462,11 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
             "api.services.summarize_trajectory._load_fresh_summary_block",
             new_callable=AsyncMock,
             return_value=None,
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_summary_prompt",
+            new_callable=AsyncMock,
+            return_value=("INSTRUCTIONS {{taxonomy}}", 1),
         ),
         patch(
             "api.services.summarize_trajectory.read_trial_trajectory",
@@ -640,13 +659,14 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
 
     recorder = _RecordingLLM(_summary_payload())
     _install_fake_llm(monkeypatch, recorder)
-    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x")
+    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x", **_PROMPT_KWARGS)
 
     block = build_summary_block(
         deepcopy(trajectory),
         ctx,
         analyzer_id="tr_x",
         model=resolve_summary_model(),
+        **_PROMPT_KWARGS,
     )
 
     assert recorder.prompt == block.prompt
@@ -654,3 +674,48 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     assert captured["kwargs"]["analyzer_id"] == "tr_x"
     assert captured["block"].block_metadata["schema_version"] == SCHEMA_VERSION
     assert captured["block"].block_metadata["model"] == resolve_summary_model()
+    assert captured["block"].block_metadata["prompt_key"] == "TRAJECTORY_SUMMARY"
+    assert captured["block"].block_metadata["prompt_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
+    """A losing first-seed request must keep the caller's ORM state usable."""
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+
+    from api.services.summarize_trajectory import (
+        SUMMARY_PROMPT_KEY,
+        _load_summary_prompt,
+    )
+    from oddish.core.prompt_seeds import seed_prompts as real_seed_prompts
+    from oddish.db import PromptKind, PromptModel, get_session
+
+    async with get_session() as session:
+        await session.execute(
+            PromptModel.__table__.delete().where(PromptModel.kind == SUMMARY_PROMPT_KEY)
+        )
+        await session.commit()
+
+    async def fake_seed(_session):
+        async with get_session() as winner:
+            await real_seed_prompts(winner)
+        raise IntegrityError(
+            "insert", {}, Exception("duplicate key value violates unique constraint")
+        )
+
+    monkeypatch.setattr("api.services.summarize_trajectory.seed_prompts", fake_seed)
+
+    async with get_session() as session:
+        sentinel = (
+            await session.execute(
+                select(PromptModel).where(
+                    PromptModel.kind == PromptKind.QA_PRE_TRIAL.value
+                )
+            )
+        ).scalar_one()
+        content, version = await _load_summary_prompt(session)
+        assert sentinel.kind == PromptKind.QA_PRE_TRIAL.value
+
+    assert version == 1
+    assert "{{taxonomy}}" in content

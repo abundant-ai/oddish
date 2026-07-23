@@ -179,9 +179,11 @@ step; the first step and steps without two usable timestamps contribute zero.
 The frontend derives the same values for older summaries that lack the fields.
 
 QA analyzer prompts are stored in the versioned `prompts` / `prompt_versions`
-registry. `PromptKind.QA_PRE_TRIAL` drives the source audit and
-`PromptKind.QA_POST_TRIAL` drives the existing per-trial log classifier. Prompt
-updates append immutable versions and the highest version always runs. Workers
+registry. `PromptKind.QA_PRE_TRIAL` drives the source audit,
+`PromptKind.QA_POST_TRIAL` drives the existing per-trial log classifier, and
+`PromptKind.TRAJECTORY_SUMMARY` drives schema-v5 trajectory summaries; its
+template must retain the `{{taxonomy}}` placeholder rendered by the block.
+Prompt updates append immutable versions and the highest version always runs. Workers
 seed missing built-in kinds at startup without overwriting operator edits. A
 trial classification records the post-trial prompt kind and version in
 `trials.analysis`; local/library classification without a registry row falls

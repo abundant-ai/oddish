@@ -2042,6 +2042,18 @@ class PromptVersionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PromptUsageVersion(BaseModel):
+    version: int | None = None
+    count: int
+    last_used_at: datetime
+
+
+class PromptUsage(BaseModel):
+    total: int
+    last_used_at: datetime | None = None
+    by_version: list[PromptUsageVersion] = []
+
+
 class PromptResponse(BaseModel):
     id: str
     kind: str
@@ -2051,6 +2063,7 @@ class PromptResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     content: str | None = None  # resolved latest/selected version content
+    usage: PromptUsage | None = None  # populated on single-get only
     model_config = {"from_attributes": True}
 
 

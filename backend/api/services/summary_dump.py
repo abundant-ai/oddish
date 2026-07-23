@@ -160,14 +160,24 @@ async def summarize_trial(
     """
     from api.services.summarize_trajectory import (
         SCHEMA_VERSION,
+        _load_summary_prompt,
         build_summary_block,
     )
+    from oddish.db import get_session
     from oddish.db.models import JobStatus
 
     try:
-        # Shared with generate() so a dump can't diverge from what prod sends.
+        # Use the same registry lookup as production; there is no baked-in
+        # fallback that can drift from the live prompt.
+        async with get_session() as session:
+            prompt_template, prompt_version = await _load_summary_prompt(session)
         block = build_summary_block(
-            trajectory, task_context, analyzer_id=trial.id, model=model
+            trajectory,
+            task_context,
+            analyzer_id=trial.id,
+            model=model,
+            prompt_template=prompt_template,
+            prompt_version=prompt_version,
         )
     except asyncio.CancelledError:
         raise

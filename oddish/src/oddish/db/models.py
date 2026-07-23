@@ -2349,6 +2349,7 @@ class PromptKind(str, Enum):
 
     QA_PRE_TRIAL = "QA_PRE_TRIAL"
     QA_POST_TRIAL = "QA_POST_TRIAL"
+    TRAJECTORY_SUMMARY = "TRAJECTORY_SUMMARY"
 
 
 class CostExcludedLlmKeyModel(TimestampedMixin, Base):

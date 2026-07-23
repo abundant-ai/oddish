@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.core.prompts import (
     get_prompt_core,
+    get_prompt_usage_core,
     list_prompt_versions_core,
     list_prompts_core,
     set_prompt_core,
@@ -24,6 +25,7 @@ from oddish.db import PromptKind, get_session
 from oddish.schemas import (
     PromptResponse,
     PromptSetRequest,
+    PromptUsage,
     PromptVersionResponse,
 )
 
@@ -44,6 +46,17 @@ def _validated_kind(kind: str) -> str:
             f"({', '.join(k.value for k in PromptKind)}) or a lowercase slug"
         ),
     )
+
+
+async def _validated_ref(session, ref: str) -> str:
+    """Accept an existing prompt id, otherwise enforce the kind vocabulary."""
+    try:
+        await get_prompt_core(session, ref)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        return _validated_kind(ref)
+    return ref
 
 
 def _latest_of(versions) -> int | None:
@@ -74,34 +87,36 @@ async def list_prompts(
         return out
 
 
-@router.get("/prompts/{kind}", response_model=PromptResponse)
+@router.get("/prompts/{key_or_id}", response_model=PromptResponse)
 async def get_prompt(
-    kind: str,
+    key_or_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
     version: Annotated[int | None, Query()] = None,
 ) -> PromptResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        prompt, ver = await get_prompt_core(
-            session, _validated_kind(kind), version=version
-        )
-        return _to_response(prompt, ver)
+        ref = await _validated_ref(session, key_or_id)
+        prompt, ver = await get_prompt_core(session, ref, version=version)
+        response = _to_response(prompt, ver)
+        response.usage = PromptUsage(**await get_prompt_usage_core(session, ref))
+        return response
 
 
-@router.get("/prompts/{kind}/versions", response_model=list[PromptVersionResponse])
+@router.get("/prompts/{key_or_id}/versions", response_model=list[PromptVersionResponse])
 async def get_prompt_versions(
-    kind: str,
+    key_or_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[PromptVersionResponse]:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        versions = await list_prompt_versions_core(session, _validated_kind(kind))
+        ref = await _validated_ref(session, key_or_id)
+        versions = await list_prompt_versions_core(session, ref)
         return [PromptVersionResponse.model_validate(v) for v in versions]
 
 
-@router.put("/prompts/{kind}", response_model=PromptResponse)
+@router.put("/prompts/{key_or_id}", response_model=PromptResponse)
 async def set_prompt(
-    kind: str,
+    key_or_id: str,
     data: PromptSetRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> PromptResponse:
@@ -110,13 +125,14 @@ async def set_prompt(
     # every other org's analysis runs on.
     auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
+        ref = await _validated_ref(session, key_or_id)
         await set_prompt_core(
             session,
-            kind=_validated_kind(kind),
+            kind=ref,
             content=data.content,
             description=data.description,
             created_by=auth.user_id,
         )
         await session.commit()
-        prompt, ver = await get_prompt_core(session, kind)
+        prompt, ver = await get_prompt_core(session, ref)
         return _to_response(prompt, ver)

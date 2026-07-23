@@ -94,6 +94,19 @@ URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not URL, reason="ODDISH_DATABASE_URL not set")
 
 
+@pytest.fixture(autouse=True)
+def _stub_prompt_registry(monkeypatch):
+    """summarize_trial fetches the registry template on every call (its own
+    session, not the caller's) -- stub it so these tests don't need a live
+    Postgres just to exercise the summary path."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "api.services.summarize_trajectory._load_summary_prompt",
+        AsyncMock(return_value=("TEMPLATE", 1)),
+    )
+
+
 @asynccontextmanager
 async def _fresh_db():
     engine = create_async_engine(URL)
@@ -544,7 +557,6 @@ async def test_summarize_trial_records_failure_raised_before_the_block_exists():
     """A trajectory that isn't a dict is rejected by TrajectoryInput inside
     build_summary_block -- before any block exists to carry status/error.
     That must still be a record, not an exception."""
-    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     record = await summarize_trial(
@@ -886,7 +898,13 @@ async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
         verifier_output=None,
     )
 
-    await generate(_traj(), ctx, analyzer_id="tr_x")
+    await generate(
+        _traj(),
+        ctx,
+        analyzer_id="tr_x",
+        prompt_template="TEMPLATE",
+        prompt_version=1,
+    )
     prod_kwargs = _CapturingClient.last_kwargs
 
     await summarize_trial(

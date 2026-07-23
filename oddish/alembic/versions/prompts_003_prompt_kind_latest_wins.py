@@ -26,6 +26,10 @@ def upgrade() -> None:
         op.execute(
             "UPDATE prompts SET kind = 'QA_POST_TRIAL' WHERE kind = 'post_trial_qa'"
         )
+        op.execute(
+            "UPDATE prompts SET kind = 'TRAJECTORY_SUMMARY' "
+            "WHERE kind = 'trajectory_summary'"
+        )
     if "active_version" in cols:
         op.drop_column("prompts", "active_version")
     indexes = {i["name"] for i in sa.inspect(bind).get_indexes("prompts")}
@@ -125,5 +129,9 @@ def downgrade() -> None:
         )
         op.execute(
             "UPDATE prompts SET kind = 'post_trial_qa' WHERE kind = 'QA_POST_TRIAL'"
+        )
+        op.execute(
+            "UPDATE prompts SET kind = 'trajectory_summary' "
+            "WHERE kind = 'TRAJECTORY_SUMMARY'"
         )
         op.alter_column("prompts", "kind", new_column_name="key")

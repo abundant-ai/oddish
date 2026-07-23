@@ -18,21 +18,25 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, MutableMapping
 
+from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.prompt_seeds import seed_prompts
+from oddish.core.prompts import get_prompt_core
 from oddish.core.trial_io import (
     read_trial_instruction,
     read_trial_trajectory,
     read_trial_verifier_output,
 )
-from oddish.db.models import TrialModel
+from oddish.db.models import PromptKind, TrialModel
 
 MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "5"
+SUMMARY_PROMPT_KEY = PromptKind.TRAJECTORY_SUMMARY.value
 
 # Output cap for the summary call. The Anthropic API requires max_tokens, so
 # some value must be set; this one is a ceiling, not a target -- billing is on
@@ -144,6 +148,32 @@ def resolve_summary_model() -> str:
     return to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
 
 
+async def _load_summary_prompt(session: AsyncSession) -> tuple[str, int]:
+    """Load the latest trajectory-summary prompt, seeding built-ins on a miss."""
+    try:
+        _, version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+    except HTTPException:
+        try:
+            # Keep a lost concurrent-seed race inside a savepoint. Rolling back
+            # the outer transaction would expire the caller's TrialModel.
+            async with session.begin_nested():
+                await seed_prompts(session)
+            await session.commit()
+            _, version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+        except Exception as exc:
+            # An immediate unique constraint is raised inside the savepoint.
+            # Its rollback leaves the outer transaction and loaded ORM state
+            # intact, so the winner's row can be read without a full rollback.
+            try:
+                _, version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+            except Exception:
+                raise SummaryGenerationError(
+                    f"prompt '{SUMMARY_PROMPT_KEY}' is not registered and "
+                    f"seeding failed: {exc}"
+                ) from exc
+    return version.content, version.version
+
+
 def build_summary_block(
     trajectory: dict,
     task_context: "TaskContext",
@@ -151,12 +181,15 @@ def build_summary_block(
     analyzer_id: str | None,
     model: str,
     triggered_by_user_id: str | None = None,
+    prompt_template: str,
+    prompt_version: int,
 ):
     """Build the trajectory-summary ``AnalyzerBlock``.
 
     Single construction site shared by ``generate()`` (the production path)
     and the offline dump harness, so the two cannot drift in prompt, parser,
-    or block metadata.
+    or block metadata. The registry template and version are required so no
+    production or offline caller can silently fall back to baked-in text.
     """
     from oddish.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
@@ -177,7 +210,8 @@ def build_summary_block(
             model_used=task_context.model_used,
             verifier_output=task_context.verifier_output,
             trajectory=trajectory,
-        )
+        ),
+        instructions_template=prompt_template,
     )
     return AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
@@ -187,7 +221,12 @@ def build_summary_block(
         ),
         prompt=tb.build_prompt(),
         analyzer_id=analyzer_id,
-        block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
+        block_metadata={
+            "schema_version": SCHEMA_VERSION,
+            "model": model,
+            "prompt_key": SUMMARY_PROMPT_KEY,
+            "prompt_version": prompt_version,
+        },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
         max_tokens=SUMMARY_MAX_TOKENS,
@@ -201,6 +240,8 @@ async def generate(
     *,
     analyzer_id: str | None = None,
     triggered_by_user_id: str | None = None,
+    prompt_template: str,
+    prompt_version: int,
 ) -> dict:
     """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
 
@@ -216,6 +257,8 @@ async def generate(
         analyzer_id=analyzer_id,
         model=model,
         triggered_by_user_id=triggered_by_user_id,
+        prompt_template=prompt_template,
+        prompt_version=prompt_version,
     )
     try:
         out = await block.run()
@@ -339,6 +382,8 @@ async def get_or_generate_summary(
         if fresh is not None:
             return fresh
 
+        prompt_template, prompt_version = await _load_summary_prompt(session)
+
         trajectory, task_context = await asyncio.gather(
             read_trial_trajectory(trial),
             build_task_context(trial),
@@ -351,6 +396,8 @@ async def get_or_generate_summary(
             task_context,
             analyzer_id=trial.id,
             triggered_by_user_id=triggered_by_user_id,
+            prompt_template=prompt_template,
+            prompt_version=prompt_version,
         )
 
         # Mirror into the trials column for the graph builder + analyzer-input

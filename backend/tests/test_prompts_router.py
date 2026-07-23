@@ -1,6 +1,7 @@
 import contextlib
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
@@ -48,17 +49,24 @@ def _auth(scopes):
         return AuthContext(
             method=AuthMethod.API_KEY, org_id="org_1", user_id="u1", scope=scope
         )
+
     return _factory
 
 
 async def _call(method, path, monkeypatch, *, scopes=(APIKeyScope.READ,), **kwargs):
     async def fake_get(session, kind, *, version=None):
+        if kind in {"not_a_kind", "NOT_A_KIND"}:
+            raise HTTPException(status_code=404, detail="not found")
         if version is not None:
             return _FakePrompt(), _V1
         return _FakePrompt(), _V2
 
+    async def fake_usage(session, ref):
+        return {"total": 0, "last_used_at": None, "by_version": []}
+
     monkeypatch.setattr(prompts_router, "get_session", lambda: _ctx(None))
     monkeypatch.setattr(prompts_router, "get_prompt_core", fake_get)
+    monkeypatch.setattr(prompts_router, "get_prompt_usage_core", fake_usage)
     app = create_app()
     app.dependency_overrides[require_auth] = _auth(list(scopes))
     transport = ASGITransport(app=app)
@@ -126,11 +134,21 @@ async def test_custom_slug_kind_reaches_core(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_existing_prompt_id_is_accepted(monkeypatch):
+    resp = await _call("GET", "/prompts/p1", monkeypatch)
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "p1"
+
+
+@pytest.mark.asyncio
 async def test_put_requires_write_scope(monkeypatch):
     # READ-only scope must be rejected on write
     resp = await _call(
-        "PUT", "/prompts/QA_PRE_TRIAL", monkeypatch,
-        scopes=(APIKeyScope.READ,), json={"content": "x"},
+        "PUT",
+        "/prompts/QA_PRE_TRIAL",
+        monkeypatch,
+        scopes=(APIKeyScope.READ,),
+        json={"content": "x"},
     )
     assert resp.status_code in (401, 403)
 
@@ -141,8 +159,11 @@ async def test_put_rejects_tasks_scope(monkeypatch):
     # TASKS key (scoped to one org's tasks/trials) must not be able to
     # rewrite it. Only FULL may write.
     resp = await _call(
-        "PUT", "/prompts/QA_PRE_TRIAL", monkeypatch,
-        scopes=(APIKeyScope.TASKS,), json={"content": "x"},
+        "PUT",
+        "/prompts/QA_PRE_TRIAL",
+        monkeypatch,
+        scopes=(APIKeyScope.TASKS,),
+        json={"content": "x"},
     )
     assert resp.status_code in (401, 403)
 
@@ -154,8 +175,11 @@ async def test_put_accepts_full_scope(monkeypatch):
 
     monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
     resp = await _call(
-        "PUT", "/prompts/QA_PRE_TRIAL", monkeypatch,
-        scopes=(APIKeyScope.FULL,), json={"content": "x"},
+        "PUT",
+        "/prompts/QA_PRE_TRIAL",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        json={"content": "x"},
     )
     assert resp.status_code == 200
 
@@ -164,7 +188,10 @@ async def test_put_accepts_full_scope(monkeypatch):
 async def test_activate_route_is_gone(monkeypatch):
     # Latest-wins registry: there is no activation endpoint anymore.
     resp = await _call(
-        "POST", "/prompts/QA_PRE_TRIAL/activate", monkeypatch,
-        scopes=(APIKeyScope.FULL,), json={"version": 1},
+        "POST",
+        "/prompts/QA_PRE_TRIAL/activate",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        json={"version": 1},
     )
     assert resp.status_code in (404, 405)

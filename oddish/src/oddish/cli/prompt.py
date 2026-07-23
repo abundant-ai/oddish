@@ -40,12 +40,15 @@ def list_prompts(
     if resp.status_code != 200:
         _fail(resp)
     for p in resp.json():
-        console.print(f"{p['kind']:32}  v{p.get('latest_version')}  {p.get('description','')}")
+        console.print(
+            f"{p['kind']:32}  id={p.get('id')}  "
+            f"v{p.get('latest_version')}  {p.get('description', '')}"
+        )
 
 
 @prompt_app.command("get")
 def get_prompt(
-    kind: str,
+    key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
     version: Annotated[Optional[int], typer.Option("--version", "-v")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
@@ -54,7 +57,7 @@ def get_prompt(
     url = _resolve(api_url)
     params = {"version": version} if version is not None else {}
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{kind}", params=params)
+        resp = client.get(f"{url}/prompts/{key_or_id}", params=params)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
@@ -64,40 +67,86 @@ def get_prompt(
         console.print(data.get("content", ""))
 
 
-@prompt_app.command("set")
-def set_prompt(
-    kind: str,
-    file: Annotated[Path, typer.Option("--file", "-f", help="File with prompt content.")],
+@prompt_app.command("view")
+def view_prompt(
+    key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
+    api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
+):
+    """Show prompt metadata, versions, and analyzer-block usage."""
+    url = _resolve(api_url)
+    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+        resp = client.get(f"{url}/prompts/{key_or_id}")
+    if resp.status_code != 200:
+        _fail(resp)
+    prompt = resp.json()
+    usage = prompt.get("usage") or {}
+    console.print(
+        f"{prompt['kind']}  (id {prompt['id']})  latest v{prompt.get('latest_version')}"
+    )
+    if prompt.get("description"):
+        console.print(prompt["description"])
+    total = usage.get("total", 0)
+    suffix = (
+        f", last used {usage.get('last_used_at')}"
+        if total
+        else " — not consumed by anything yet"
+    )
+    console.print(f"usage: {total} block(s){suffix}")
+    for version in usage.get("by_version") or []:
+        console.print(
+            f"  v{version['version']}: {version['count']} block(s), "
+            f"last {version['last_used_at']}"
+        )
+
+
+@prompt_app.command("upload")
+@prompt_app.command("update", hidden=True)
+@prompt_app.command("set", hidden=True)
+def upload_prompt(
+    key_or_id: Annotated[
+        str,
+        typer.Argument(
+            help="Prompt kind or id. An unknown valid kind creates a prompt."
+        ),
+    ],
+    file: Annotated[
+        Path, typer.Option("--file", "-f", help="File with prompt content.")
+    ],
     description: Annotated[Optional[str], typer.Option("--description", "-d")] = None,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
-    """Append a new prompt version from a file (it becomes live immediately — latest always runs)."""
+    """Upload a new prompt version; the latest version becomes live."""
     url = _resolve(api_url)
     content = file.read_text()
     payload: dict = {"content": content}
     if description is not None:
         payload["description"] = description
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.put(f"{url}/prompts/{kind}", json=payload)
+        resp = client.put(f"{url}/prompts/{key_or_id}", json=payload)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
-    console.print(f"[green]Set {kind}[/green] latest_version={data.get('latest_version')}")
+    console.print(
+        f"[green]Uploaded {key_or_id}[/green] "
+        f"latest_version={data.get('latest_version')}"
+    )
 
 
 @prompt_app.command("versions")
 def versions(
-    kind: str,
+    key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """List a prompt's versions."""
     url = _resolve(api_url)
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{kind}/versions")
+        resp = client.get(f"{url}/prompts/{key_or_id}/versions")
     if resp.status_code != 200:
         _fail(resp)
     for v in resp.json():
-        console.print(f"v{v['version']:<4} {v.get('created_at','')}  {v.get('created_by') or ''}")
+        console.print(
+            f"v{v['version']:<4} {v.get('created_at', '')}  {v.get('created_by') or ''}"
+        )
 
 
 @prompt_app.command("seed")
@@ -140,5 +189,7 @@ def diff(
             _fail(r)
     a = ra.json().get("content", "").splitlines(keepends=True)
     b = rb.json().get("content", "").splitlines(keepends=True)
-    for line in difflib.unified_diff(a, b, fromfile=f"{kind}@v{version_a}", tofile=f"{kind}@v{version_b}"):
+    for line in difflib.unified_diff(
+        a, b, fromfile=f"{kind}@v{version_a}", tofile=f"{kind}@v{version_b}"
+    ):
         console.print(line.rstrip("\n"))

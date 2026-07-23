@@ -28,6 +28,10 @@ PROMPT_SEEDS: dict[str, tuple[str, str]] = {
         "Post-trial QA log analysis: classify a trial outcome from its task, trajectory, and verifier artifacts.",
         _load("../classify_prompt.txt"),
     ),
+    PromptKind.TRAJECTORY_SUMMARY.value: (
+        "Trajectory summary: 2-3 sentence run summary, highlights, taxonomy components.",
+        _load("trajectory_summary.v1.txt"),
+    ),
 }
 
 
