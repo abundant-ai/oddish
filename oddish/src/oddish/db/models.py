@@ -1057,6 +1057,11 @@ class TrialModel(TimestampedMixin, Base):
     cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trajectory_duration_seconds: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    total_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)

@@ -31,6 +31,10 @@ def wired(monkeypatch):
 
     monkeypatch.setattr(qa, "_claim_pre_trial_version", fake_claim)
     monkeypatch.setattr(qa, "_release_pre_trial_claim", rec.release)
+    # Other test modules import backend.worker.pre_trial_synth, whose import
+    # side effect registers the org-level enabled check globally; pin it off
+    # so these audits aren't gated by whatever imported first.
+    monkeypatch.setattr(qa, "_pre_trial_enabled_fn", None)
     monkeypatch.setattr(qa.settings, "pre_trial_enabled", True)
     monkeypatch.setattr(qa.settings, "pre_trial_timeout", 5.0)
     return rec
