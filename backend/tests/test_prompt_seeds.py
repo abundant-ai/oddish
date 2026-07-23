@@ -1,16 +1,18 @@
 import pytest
 
 from oddish.core.prompt_seeds import PROMPT_SEEDS, seed_prompts
-from oddish.core.prompts import get_active_prompt_content
-from oddish.db import PromptModel, get_session
+from oddish.core.prompts import get_latest_prompt_content
+from oddish.db import PromptKind, PromptModel, get_session
 
 
 @pytest.mark.asyncio
 async def test_seed_is_idempotent_and_populates_content():
-    # clean slate for the seed keys
+    # clean slate for the seed kinds
     async with get_session() as session:
-        for key in PROMPT_SEEDS:
-            await session.execute(PromptModel.__table__.delete().where(PromptModel.key == key))
+        for kind in PROMPT_SEEDS:
+            await session.execute(
+                PromptModel.__table__.delete().where(PromptModel.kind == kind)
+            )
         await session.commit()
 
     async with get_session() as session:
@@ -25,5 +27,14 @@ async def test_seed_is_idempotent_and_populates_content():
         assert created2 == []
 
     async with get_session() as session:
-        content = await get_active_prompt_content(session, "pre_trial_qa")
+        content = await get_latest_prompt_content(
+            session, PromptKind.QA_PRE_TRIAL.value
+        )
         assert "VERIFIER COMPLETENESS" in content
+
+        post_trial = await get_latest_prompt_content(
+            session, PromptKind.QA_POST_TRIAL.value
+        )
+        from oddish.analyze.classifier import _CLASSIFY_PROMPT
+
+        assert post_trial == _CLASSIFY_PROMPT

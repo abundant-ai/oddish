@@ -45,5 +45,16 @@ class PreTrialBlock(Block):
             raise RuntimeError("pre-trial prompt degraded to fallback sentinel")
         return prompt
 
+    @classmethod
+    def parse_json(cls, text: str):
+        # The registry prompt asks for "the structured list of action items";
+        # models sometimes return a bare JSON array instead of the
+        # {"items": [...]} envelope Block.parse requires. Wrap it rather than
+        # failing a valid audit on shape alone.
+        data = super().parse_json(text)
+        if isinstance(data, list):
+            return {"items": data}
+        return data
+
     def to_action_items(self, raw: str) -> dict:
         return self.parse(raw).model_dump()

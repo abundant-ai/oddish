@@ -793,19 +793,6 @@ class TaskModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # Pre-trial QA analysis (task-source audit; runs before trials)
-    pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    pre_trial_status: Mapped[VerdictStatus | None] = mapped_column(
-        SQLEnum(VerdictStatus), nullable=True
-    )
-    pre_trial_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    pre_trial_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    pre_trial_finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
     # Migration provenance: set when created by the Sauron->Oddish importer,
     # NULL otherwise. Rich provenance lives in ``tags``; this is the clean
     # audit/rollback marker (WHERE imported_at IS NOT NULL).
@@ -899,6 +886,20 @@ class TaskVersionModel(TimestampedMixin, Base):
         nullable=False,
         default=list,
         server_default=text("'{}'::text[]"),
+    )
+
+    # Pre-trial QA analysis (task-source audit; runs once per version since
+    # each version is a distinct source snapshot to audit)
+    pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pre_trial_status: Mapped[VerdictStatus | None] = mapped_column(
+        SQLEnum(VerdictStatus), nullable=True
+    )
+    pre_trial_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pre_trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pre_trial_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Relationships
@@ -1056,11 +1057,6 @@ class TrialModel(TimestampedMixin, Base):
     cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    trajectory_duration_seconds: Mapped[float | None] = mapped_column(
-        Float, nullable=True
-    )
-    total_tool_calls: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    tool_counts: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
@@ -2130,24 +2126,33 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
+class PromptKind(str, Enum):
+    """The slot a prompt fills. Exactly one ``prompts`` row exists per kind;
+    stored as a plain string column so the vocabulary can grow without a
+    Postgres enum migration. Enforced at the API boundary, not the DB."""
+
+    QA_PRE_TRIAL = "QA_PRE_TRIAL"
+    QA_POST_TRIAL = "QA_POST_TRIAL"
+
+
 class PromptModel(TimestampedMixin, Base):
-    """A named, versioned analyzer prompt. ``active_version`` points at the
-    ``prompt_versions.version`` that runs. Editing appends a new version."""
+    """A versioned analyzer prompt, one row per kind. The highest
+    ``prompt_versions.version`` is always the one that runs; editing appends
+    a new version (no activation pointer)."""
 
     __tablename__ = "prompts"
     __table_args__ = (
         Index(
-            "idx_prompts_unique_key",
-            "key",
+            "idx_prompts_unique_kind",
+            "kind",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    active_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     versions: Mapped[list["PromptVersionModel"]] = relationship(  # type: ignore[assignment]
         "PromptVersionModel",

@@ -97,12 +97,12 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     into a list of `ActionItem`. The block/client/session are all faked --
     no real sandbox, LLM, or DB."""
 
-    async def fake_get_prompt_core(session, key):
-        assert key == "pre_trial_qa"
+    async def fake_get_prompt_core(session, kind):
+        assert kind == "QA_PRE_TRIAL"
         return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
-    async def fake_resolve_org_id(task_id):
-        return "org_1"
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", True
 
     fake_client = _FakeSandboxClient()
 
@@ -112,16 +112,22 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
-    monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
 
-    items = await synthesize_task_pre_trial("task_xyz", ["t1", "t2"], timeout=30.0)
+    items = await synthesize_task_pre_trial(
+        "task_xyz", "task_xyz-v1", ["t1", "t2"], timeout=30.0
+    )
 
     prompt = _FakeAnalyzerBlock.last_kwargs["prompt"]
     assert prompt == "Audit task_xyz. Trials: t1, t2"
+    # The audited version is recorded on the block input for attribution.
+    assert _FakeAnalyzerBlock.last_kwargs["input"].input["task_version_id"] == (
+        "task_xyz-v1"
+    )
     assert _FakeAnalyzerBlock.last_kwargs["block_metadata"] == {
-        "prompt_key": "pre_trial_qa",
+        "prompt_key": "QA_PRE_TRIAL",
         "prompt_version": 7,
     }
 
@@ -136,8 +142,8 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     async def fake_get_prompt_core(session, key):
         return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
-    async def fake_resolve_org_id(task_id):
-        return "org_1"
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", True
 
     async def fake_provision(**kwargs):
         return _FakeSandboxClient()
@@ -148,12 +154,26 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
-    monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _EmptyAnalyzerBlock)
 
-    items = await synthesize_task_pre_trial("task_xyz", [], timeout=30.0)
+    items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
     assert items == []
+
+
+@pytest.mark.asyncio
+async def test_synth_returns_before_provisioning_when_org_disabled(monkeypatch):
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", False
+
+    async def fail_provision(**kwargs):
+        raise AssertionError("disabled org must not provision a sandbox")
+
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
+    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fail_provision)
+
+    assert await synthesize_task_pre_trial("task_1", "task_1-v1", [], 10) is None
 
 
 @pytest.mark.asyncio
@@ -161,12 +181,40 @@ async def test_synth_raises_when_org_id_unresolved(monkeypatch):
     async def fake_get_prompt_core(session, key):
         return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
-    async def fake_resolve_org_id(task_id):
-        return None
+    async def fake_resolve_org_pre_trial(task_id):
+        return None, True
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
-    monkeypatch.setattr(mod, "_resolve_org_id", fake_resolve_org_id)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
 
     with pytest.raises(RuntimeError, match="task_xyz"):
-        await synthesize_task_pre_trial("task_xyz", [], timeout=30.0)
+        await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
+
+
+@pytest.mark.asyncio
+async def test_provisioning_is_time_bounded(monkeypatch):
+    """Sandbox provisioning runs before the block-run wait_for, but it must
+    not be unbounded: the claim lease is sized as pre_trial_timeout +
+    PRE_TRIAL_LEASE_MARGIN_SECONDS, so a provisioning hang longer than the
+    margin would let the wall clock outrun the lease. A hang must surface as
+    TimeoutError (-> recorded as pre-trial failure), not run forever."""
+    import asyncio
+
+    async def fake_get_prompt_core(session, kind):
+        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", True
+
+    async def hanging_provision(**kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
+    monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
+    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", hanging_provision)
+    monkeypatch.setattr(mod, "_PROVISION_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(TimeoutError):
+        await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", ["t1"], timeout=30.0)

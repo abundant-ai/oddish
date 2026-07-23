@@ -6,7 +6,15 @@ from typing import Any, Awaitable, Callable
 from sqlalchemy import select
 
 from oddish.analyze import Classification, TrialClassification
-from oddish.db import TaskModel, TaskStatus, TrialModel, VerdictStatus, get_session, utcnow
+from oddish.db import (
+    TaskModel,
+    TaskStatus,
+    TaskVersionModel,
+    TrialModel,
+    VerdictStatus,
+    get_session,
+    utcnow,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +96,8 @@ async def sync_verdict_to_task(
 
 
 def build_pre_trial_payload(items: list) -> dict:
-    """Render the dict stored on ``tasks.pre_trial``. Computes each item's
-    stable id server-side (the LLM output omits it)."""
+    """Render the dict stored on ``task_versions.pre_trial``. Computes each
+    item's stable id server-side (the LLM output omits it)."""
     from oddish.analyze.models import compute_action_item_id
 
     out = []
@@ -99,43 +107,70 @@ def build_pre_trial_payload(items: list) -> dict:
     return {"items": out}
 
 
-async def sync_pre_trial_to_task(
-    task_id: str,
+async def sync_pre_trial_to_task_version(
+    task_version_id: str,
     *,
     payload: dict | None,
     error: BaseException | str | None,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
-) -> None:
-    """Write the pre-trial columns. Unlike :func:`sync_verdict_to_task`, this
-    never completes the task and never touches a verdict column -- pre-trial
-    is a task-source audit that runs independently of trial classification.
+) -> str | None:
+    """Write the pre-trial columns on the audited task version. Unlike
+    :func:`sync_verdict_to_task`, this never completes the task and never
+    touches a verdict column -- pre-trial is a per-version source audit that
+    runs independently of trial classification.
+
+    Returns the terminal ``VerdictStatus`` value written, or ``None`` when
+    the write was skipped (version gone, or ``should_store`` vetoed it) so
+    the caller can release its claim on the version.
     """
     async with get_session() as session:
-        task = await session.get(TaskModel, task_id, with_for_update=True)
-        if task is None:
-            return
+        version = await session.get(
+            TaskVersionModel, task_version_id, with_for_update=True
+        )
+        if version is None:
+            return None
 
         if should_store is not None and not await should_store(session):
-            return
+            return None
 
         if error is None:
-            task.pre_trial = payload
-            task.pre_trial_status = VerdictStatus.SUCCESS
-            task.pre_trial_error = None
+            version.pre_trial = payload
+            version.pre_trial_status = VerdictStatus.SUCCESS
+            version.pre_trial_error = None
         else:
-            task.pre_trial_status = VerdictStatus.FAILED
-            task.pre_trial_error = str(error)
+            # Cleared so a payload is only ever paired with SUCCESS. The claim
+            # makes SUCCESS terminal, so nothing good is being thrown away.
+            version.pre_trial = None
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = str(error)
 
-        task.pre_trial_finished_at = utcnow()
+        version.pre_trial_finished_at = utcnow()
+        return version.pre_trial_status.value
 
 
 async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
-    """Stamp exploited=true (+ evidence) onto ``task.pre_trial`` items whose id
-    was exploited in any trial. The "doubly note" elevation. Idempotent.
+    """Stamp exploited=true (+ evidence) onto ``task_versions.pre_trial`` items
+    whose id was exploited in any trial. The "doubly note" elevation.
+    Idempotent.
+
+    Item ids are content hashes computed per audit, so each exploited
+    ``links_to`` id matches at most one version's items; ids that match no
+    version at all are logged.
     """
     async with get_session() as session:
-        task = await session.get(TaskModel, task_id, with_for_update=True)
-        if task is None or not task.pre_trial:
+        versions = (
+            (
+                await session.execute(
+                    select(TaskVersionModel)
+                    .where(TaskVersionModel.task_id == task_id)
+                    .where(TaskVersionModel.pre_trial.isnot(None))
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not versions:
             return
 
         # Intentionally reads ALL trials, unlike the verdict path which filters
@@ -152,7 +187,11 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
                 if a.get("exploited") and a.get("links_to"):
                     exploited.setdefault(a["links_to"], a.get("exploit_evidence") or "")
 
-        known_ids = {item.get("id") for item in task.pre_trial.get("items", [])}
+        known_ids = {
+            item.get("id")
+            for version in versions
+            for item in (version.pre_trial or {}).get("items", [])
+        }
         unmatched = sorted(set(exploited) - known_ids)
         if unmatched:
             logger.warning(
@@ -161,30 +200,35 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
                 unmatched,
             )
 
-        # Build fresh item dicts rather than mutating in place: the loaded
-        # ``task.pre_trial`` dict is the very object SQLAlchemy diffs the
-        # reassignment against, so mutating it before reassigning leaves the
-        # "old" and "new" values equal by content and the UPDATE gets
-        # skipped even though the column is reassigned.
-        changed = False
-        new_items = []
-        for item in task.pre_trial.get("items", []):
-            item_id = item.get("id")
-            if item_id not in exploited:
-                new_items.append(item)
-                continue
-            evidence = exploited[item_id]
-            new_item = dict(item)
-            if not new_item.get("exploited"):
-                changed = True
-            new_item["exploited"] = True
-            if evidence and new_item.get("exploit_evidence") != evidence:
-                new_item["exploit_evidence"] = evidence
-                changed = True
-            new_items.append(new_item)
+        any_changed = False
+        for version in versions:
+            # Build fresh item dicts rather than mutating in place: the loaded
+            # ``pre_trial`` dict is the very object SQLAlchemy diffs the
+            # reassignment against, so mutating it before reassigning leaves the
+            # "old" and "new" values equal by content and the UPDATE gets
+            # skipped even though the column is reassigned.
+            changed = False
+            new_items = []
+            for item in (version.pre_trial or {}).get("items", []):
+                item_id = item.get("id")
+                if item_id not in exploited:
+                    new_items.append(item)
+                    continue
+                evidence = exploited[item_id]
+                new_item = dict(item)
+                if not new_item.get("exploited"):
+                    changed = True
+                new_item["exploited"] = True
+                if evidence and new_item.get("exploit_evidence") != evidence:
+                    new_item["exploit_evidence"] = evidence
+                    changed = True
+                new_items.append(new_item)
 
-        if changed:
-            # In-place mutation of a JSONB dict is NOT auto-detected by
-            # SQLAlchemy; reassigning the column is what marks it dirty.
-            task.pre_trial = {**task.pre_trial, "items": new_items}
+            if changed:
+                # In-place mutation of a JSONB dict is NOT auto-detected by
+                # SQLAlchemy; reassigning the column is what marks it dirty.
+                version.pre_trial = {**version.pre_trial, "items": new_items}
+                any_changed = True
+
+        if any_changed:
             await session.commit()

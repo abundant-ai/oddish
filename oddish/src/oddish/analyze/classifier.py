@@ -152,13 +152,15 @@ def build_classify_prompt(
     trial_agent_context: str,
     pre_trial_context: str | None = None,
     file_access_context: str | None = None,
+    template: str | None = None,
 ) -> str:
     """Render the classification prompt.
 
     Extracted so the pre-trial/file-access placeholder wiring is unit-testable
-    without spawning the Claude CLI subprocess.
+    without spawning the Claude CLI subprocess. ``template`` overrides the
+    packaged prompt (cloud QA passes the latest QA_POST_TRIAL registry version).
     """
-    return _CLASSIFY_PROMPT.format(
+    return (template or _CLASSIFY_PROMPT).format(
         result=result_str,
         task_dir=str(task_dir),
         trial_dir=str(trial_dir),
@@ -198,10 +200,14 @@ class TrialClassifier:
         model: str = ANALYSIS_MODEL,
         verbose: bool = False,
         timeout: int = 300,
+        prompt_template: str | None = None,
     ):
         self._model = model
         self._verbose = verbose
         self._timeout = timeout
+        # Cloud QA supplies the latest QA_POST_TRIAL registry version. Keep the
+        # packaged prompt as a fallback for local/library callers without a DB.
+        self._prompt_template = prompt_template or _CLASSIFY_PROMPT
         # Usage/cost of the most recent successful CLI classification, or None.
         self.last_usage: AnalysisUsage | None = None
         self._setup_authentication()
@@ -297,6 +303,7 @@ class TrialClassifier:
         )
 
         prompt = build_classify_prompt(
+            template=self._prompt_template,
             result_str=result_str,
             task_dir=task_dir,
             trial_dir=trial_dir,

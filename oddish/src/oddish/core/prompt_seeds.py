@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.prompts import set_prompt_core
-from oddish.db import PromptModel
+from oddish.db import PromptKind, PromptModel
 
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "analyze" / "prompts"
 
@@ -20,32 +20,27 @@ def _load(name: str) -> str:
 
 
 PROMPT_SEEDS: dict[str, tuple[str, str]] = {
-    "pre_trial_qa": (
+    PromptKind.QA_PRE_TRIAL.value: (
         "Pre-trial QA auditor: verifier completeness, oracle correctness, info leakage.",
         _load("pre_trial_qa.v1.txt"),
     ),
-    # NOTE: seeded for the registry, but not currently wired up -- the live
-    # classifier (analyze/classifier.py) sends the post-trial instructions
-    # inlined in analyze/classify_prompt.txt, not this registry entry.
-    # Editing this key's content via the registry has no runtime effect
-    # until the classifier is switched to fetch from the registry.
-    "post_trial_qa": (
-        "Post-trial QA: exploited/causal assessment + new trajectory action items.",
-        _load("post_trial_qa.v1.txt"),
+    PromptKind.QA_POST_TRIAL.value: (
+        "Post-trial QA log analysis: classify a trial outcome from its task, trajectory, and verifier artifacts.",
+        _load("../classify_prompt.txt"),
     ),
 }
 
 
 async def seed_prompts(session: AsyncSession) -> list[str]:
     created: list[str] = []
-    for key, (description, content) in PROMPT_SEEDS.items():
+    for kind, (description, content) in PROMPT_SEEDS.items():
         existing = await session.execute(
-            select(PromptModel.id).where(PromptModel.key == key)
+            select(PromptModel.id).where(PromptModel.kind == kind)
         )
         if existing.scalar_one_or_none() is not None:
             continue
         await set_prompt_core(
-            session, key=key, content=content, description=description
+            session, kind=kind, content=content, description=description
         )
-        created.append(key)
+        created.append(kind)
     return created
