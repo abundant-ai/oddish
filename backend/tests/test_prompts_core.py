@@ -92,3 +92,26 @@ async def test_activate_missing_version_raises_404(prompt_key):
         with pytest.raises(HTTPException) as exc:
             await activate_prompt_version_core(session, prompt_key, 99)
         assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_core_resolves_by_id(prompt_key):
+    async with get_session() as session:
+        ver = await set_prompt_core(session, key=prompt_key, content="c1")
+        prompt_id = ver.prompt_id
+        await session.commit()
+    async with get_session() as session:
+        prompt, got = await get_prompt_core(session, prompt_id)
+        assert prompt.key == prompt_key and got.content == "c1"
+
+
+@pytest.mark.asyncio
+async def test_set_prompt_core_appends_by_id(prompt_key):
+    async with get_session() as session:
+        ver = await set_prompt_core(session, key=prompt_key, content="c1")
+        prompt_id = ver.prompt_id
+        await session.commit()
+    async with get_session() as session:
+        v2 = await set_prompt_core(session, key=prompt_id, content="c2")
+        await session.commit()
+        assert v2.version == 2  # appended to prompt_key, did NOT create a prompt keyed by the id

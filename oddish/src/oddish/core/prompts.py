@@ -10,9 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.db import PromptModel, PromptVersionModel
 
 
-async def _get_prompt(session: AsyncSession, key: str) -> PromptModel | None:
-    result = await session.execute(select(PromptModel).where(PromptModel.key == key))
-    return result.scalar_one_or_none()
+async def _get_prompt(session: AsyncSession, ref: str) -> PromptModel | None:
+    """Resolve by key first, then by id. Only an unknown key can fall through,
+    so an id can never shadow an existing key."""
+    result = await session.execute(select(PromptModel).where(PromptModel.key == ref))
+    prompt = result.scalar_one_or_none()
+    if prompt is None:
+        result = await session.execute(select(PromptModel).where(PromptModel.id == ref))
+        prompt = result.scalar_one_or_none()
+    return prompt
 
 
 async def set_prompt_core(

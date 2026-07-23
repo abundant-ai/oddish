@@ -44,35 +44,40 @@ async def list_prompts(
         return [PromptResponse.model_validate(p) for p in prompts]
 
 
-@router.get("/prompts/{key}", response_model=PromptResponse)
+@router.get("/prompts/{key_or_id}", response_model=PromptResponse)
 async def get_prompt(
-    key: str,
+    key_or_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
     version: Annotated[int | None, Query()] = None,
 ) -> PromptResponse:
+    """Fetch a prompt by its ``key`` or its ``id``."""
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        prompt, ver = await get_prompt_core(session, key, version=version)
+        prompt, ver = await get_prompt_core(session, key_or_id, version=version)
         return _to_response(prompt, ver)
 
 
-@router.get("/prompts/{key}/versions", response_model=list[PromptVersionResponse])
+@router.get("/prompts/{key_or_id}/versions", response_model=list[PromptVersionResponse])
 async def get_prompt_versions(
-    key: str,
+    key_or_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[PromptVersionResponse]:
+    """List all versions of a prompt, addressed by ``key`` or ``id``."""
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        versions = await list_prompt_versions_core(session, key)
+        versions = await list_prompt_versions_core(session, key_or_id)
         return [PromptVersionResponse.model_validate(v) for v in versions]
 
 
-@router.put("/prompts/{key}", response_model=PromptResponse)
+@router.put("/prompts/{key_or_id}", response_model=PromptResponse)
 async def set_prompt(
-    key: str,
+    key_or_id: str,
     data: PromptSetRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> PromptResponse:
+    """Append (and by default activate) a new version. An unknown key_or_id
+    creates a brand-new prompt keyed by that value; a known key or id appends
+    to the existing prompt."""
     # FULL, not TASKS: prompts are a single global registry that drives QA
     # for every org, so any org's TASKS key must not be able to rewrite what
     # every other org's analysis runs on.
@@ -80,27 +85,28 @@ async def set_prompt(
     async with get_session() as session:
         await set_prompt_core(
             session,
-            key=key,
+            key=key_or_id,
             content=data.content,
             description=data.description,
             activate=data.activate,
             created_by=auth.user_id,
         )
         await session.commit()
-        prompt, ver = await get_prompt_core(session, key)
+        prompt, ver = await get_prompt_core(session, key_or_id)
         return _to_response(prompt, ver)
 
 
-@router.post("/prompts/{key}/activate", response_model=PromptResponse)
+@router.post("/prompts/{key_or_id}/activate", response_model=PromptResponse)
 async def activate_prompt(
-    key: str,
+    key_or_id: str,
     data: PromptActivateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> PromptResponse:
+    """Point the active version at an existing version, addressed by ``key`` or ``id``."""
     # FULL, not TASKS: see set_prompt above.
     auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
-        await activate_prompt_version_core(session, key, data.version)
+        await activate_prompt_version_core(session, key_or_id, data.version)
         await session.commit()
-        prompt, ver = await get_prompt_core(session, key)
+        prompt, ver = await get_prompt_core(session, key_or_id)
         return _to_response(prompt, ver)

@@ -39,12 +39,14 @@ def list_prompts(
     if resp.status_code != 200:
         _fail(resp)
     for p in resp.json():
-        console.print(f"{p['key']:32}  v{p.get('active_version')}  {p.get('description','')}")
+        console.print(
+            f"{p['key']:32}  id={p.get('id')}  v{p.get('active_version')}  {p.get('description','')}"
+        )
 
 
 @prompt_app.command("get")
 def get_prompt(
-    key: str,
+    key_or_id: Annotated[str, typer.Argument(help="Prompt key, or prompt id.")],
     version: Annotated[Optional[int], typer.Option("--version", "-v")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
@@ -53,7 +55,7 @@ def get_prompt(
     url = _resolve(api_url)
     params = {"version": version} if version is not None else {}
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{key}", params=params)
+        resp = client.get(f"{url}/prompts/{key_or_id}", params=params)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
@@ -63,27 +65,31 @@ def get_prompt(
         console.print(data.get("content", ""))
 
 
-@prompt_app.command("set")
-def set_prompt(
-    key: str,
+@prompt_app.command("upload")
+@prompt_app.command("update", hidden=True)
+@prompt_app.command("set", hidden=True)
+def upload_prompt(
+    key_or_id: Annotated[str, typer.Argument(help="Prompt key, or prompt id. An unknown key creates a new prompt.")],
     file: Annotated[Path, typer.Option("--file", "-f", help="File with prompt content.")],
     description: Annotated[Optional[str], typer.Option("--description", "-d")] = None,
     no_activate: Annotated[bool, typer.Option("--no-activate", help="Append without activating.")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
-    """Append a new prompt version from a file (activates it by default)."""
+    """Upload a prompt version from a file: creates a new prompt (v1, activated)
+    if key_or_id is unknown, else appends (and by default activates) a new
+    version on the resolved prompt."""
     url = _resolve(api_url)
     content = file.read_text()
     payload: dict = {"content": content, "activate": not no_activate}
     if description is not None:
         payload["description"] = description
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.put(f"{url}/prompts/{key}", json=payload)
+        resp = client.put(f"{url}/prompts/{key_or_id}", json=payload)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
     console.print(
-        f"[green]Set {key}[/green] active_version={data.get('active_version')}"
+        f"[green]Set {key_or_id}[/green] active_version={data.get('active_version')}"
     )
 
 
