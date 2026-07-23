@@ -31,7 +31,14 @@ from harbor.utils.import_path import import_class
 from oddish.config import infer_model_provider_prefix
 from oddish.workers.agents.network import normalize_domain_or_url
 
-from .model_hosts import outbound_hosts_for_model
+from .model_hosts import (
+    _ANTHROPIC_HOSTS as _ANTHROPIC_RUNTIME_HOSTS,
+    _CURSOR_RUNTIME_HOSTS,
+    _GEMINI_HOSTS as _GEMINI_RUNTIME_HOSTS,
+    _OPENAI_HOSTS as _OPENAI_RUNTIME_HOSTS,
+    _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
+    outbound_hosts_for_model,
+)
 
 
 class RestrictedNetworkProfileError(ValueError):
@@ -74,12 +81,9 @@ class RestrictedNetworkProfileProvider(Protocol):
     ) -> RestrictedNetworkProfile | Mapping[str, Any] | None: ...
 
 
-_ANTHROPIC_RUNTIME_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
-_OPENAI_RUNTIME_HOSTS = ("api.openai.com", "ab.chatgpt.com")
+# Default runtime allowlist host tuples are the single source in model_hosts and
+# imported above (aliased); only the non-host web-tool constant lives here.
 _CLAUDE_WEB_TOOLS = "WebSearch WebFetch"
-_CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
-_GEMINI_RUNTIME_HOSTS = ("generativelanguage.googleapis.com",)
-_XAI_RUNTIME_HOSTS = ("api.x.ai",)
 
 _KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(
     {

@@ -58,6 +58,7 @@ _BASE_URL_ENV_KEYS = (
 _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")
 _GEMINI_HOSTS = ("generativelanguage.googleapis.com",)
+_XAI_HOSTS = ("api.x.ai",)
 # Cursor CLI fronts every selectable model through Cursor's own API. Its
 # bootstrap endpoint returns the agent-stream URL at runtime (currently under
 # api5), and the installer is intentionally unpinned. Use Cursor's official
@@ -193,7 +194,7 @@ def outbound_hosts_for_model(
         if host:
             hosts.append(host)
     elif is_xai_model(model_name):
-        hosts.append("api.x.ai")
+        hosts.extend(_XAI_HOSTS)
     elif is_meta_model(model_name):
         host = _default_host(settings.meta_base_url or META_DEFAULT_BASE_URL)
         if host:
