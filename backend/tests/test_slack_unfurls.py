@@ -68,15 +68,23 @@ def test_parse_oddish_links_are_origin_and_route_scoped():
 
 
 def test_outcome_symbols_match_oddish_matrix_semantics():
-    assert outcome_glyph(_trial()) == "✓"
+    assert outcome_glyph(_trial()) == ":white_check_mark:"
     assert outcome_glyph(_trial(reward=0.5)) == ".50"
-    assert outcome_glyph(_trial(reward=0.0)) == "✗"
-    assert outcome_glyph(_trial(status="success", reward=None)) == "–"
-    assert outcome_glyph(_trial(status="queued", reward=None)) == "⟳"
-    assert outcome_glyph(_trial(status="running", reward=None)) == "⟳"
-    assert outcome_glyph(_trial(status="retrying", reward=None)) == "◌"
-    assert outcome_glyph(_trial(status="skipped", error_message="gated")) == "⊘"
-    assert trial_outcome(_trial(status="failed", error_message="boom")) == "error"
+    assert outcome_glyph(_trial(reward=0.0)) == ":x:"
+    assert outcome_glyph(_trial(status="success", reward=None)) == ":heavy_minus_sign:"
+    assert outcome_glyph(_trial(status="queued", reward=None)) == ":clock3:"
+    assert (
+        outcome_glyph(_trial(status="running", reward=None))
+        == ":arrows_counterclockwise:"
+    )
+    assert outcome_glyph(_trial(status="retrying", reward=None)) == ":white_circle:"
+    assert (
+        outcome_glyph(_trial(status="skipped", error_message="gated"))
+        == ":no_entry_sign:"
+    )
+    failed = _trial(status="failed", error_message="boom")
+    assert trial_outcome(failed) == "error"
+    assert outcome_glyph(failed) == ":warning:"
 
     timeout_with_reward = _trial(
         status="failed",
@@ -86,37 +94,47 @@ def test_outcome_symbols_match_oddish_matrix_semantics():
     assert trial_outcome(timeout_with_reward) == "partial"
 
 
-def test_task_card_uses_glyph_row_and_collapses_after_limit():
+def test_task_card_groups_trials_by_agent_and_collapses_after_limit():
     small = Summary(
         "task",
         "checkout",
         "https://www.oddish.app/tasks/task-1",
-        (_trial(), _trial(reward=0.5), _trial(reward=0.0)),
+        (
+            _trial(),
+            _trial(reward=0.5),
+            _trial(agent="claude", model="anthropic/claude-opus", reward=0.0),
+        ),
         1,
         4,
     )
     blocks = render_blocks(small)
     assert blocks[0]["text"]["text"] == "checkout · v4"
-    assert blocks[1]["text"]["text"] == "✓  .50  ✗"
+    assert blocks[1]["fields"] == [
+        {
+            "type": "mrkdwn",
+            "text": ("*codex · openai/gpt-5*\n:white_check_mark: .50"),
+        },
+        {
+            "type": "mrkdwn",
+            "text": "*claude · anthropic/claude-opus*\n:x:",
+        },
+    ]
 
     large = Summary(
         "task",
         "checkout",
         small.url,
-        tuple(_trial() for _ in range(13)),
+        tuple(_trial() for _ in range(49)),
         1,
         4,
     )
     large_blocks = render_blocks(large)
-    assert not any(
-        block.get("text", {}).get("text", "").startswith("✓  ✓")
-        for block in large_blocks
-    )
-    results = large_blocks[1]["fields"][0]["text"]
-    assert "✓ 13" in results
+    assert not any("fields" in block for block in large_blocks)
+    results = large_blocks[1]["elements"][0]["text"]
+    assert ":white_check_mark: 49 pass" in results
 
 
-def test_small_experiment_gets_matrix_but_large_one_does_not():
+def test_small_experiment_gets_compact_task_rows_but_large_one_does_not():
     trials = (
         _trial(task_id="a", task_name="checkout", agent="codex"),
         _trial(task_id="a", task_name="checkout", agent="claude", reward=0.0),
@@ -131,17 +149,26 @@ def test_small_experiment_gets_matrix_but_large_one_does_not():
         2,
     )
     small_blocks = render_blocks(small)
-    matrix = small_blocks[1]["text"]["text"]
-    assert matrix.startswith("```Task")
-    assert "checkout" in matrix and "tax" in matrix
-    assert "✓" in matrix and "✗" in matrix and ".50" in matrix
+    rows = [block["text"]["text"] for block in small_blocks[1:3]]
+    assert rows == [
+        (
+            "*checkout*\n"
+            "`codex · openai/gpt-5` :white_check_mark:   ·   "
+            "`claude · openai/gpt-5` :x:"
+        ),
+        (
+            "*tax*\n"
+            "`codex · openai/gpt-5` .50   ·   "
+            "`claude · openai/gpt-5` :white_check_mark:"
+        ),
+    ]
 
     large_trials = tuple(
         _trial(task_id=str(i), task_name=f"task-{i}") for i in range(9)
     )
     large = Summary("experiment", "large", small.url, large_trials, 9)
     assert not any(
-        block.get("text", {}).get("text", "").startswith("```")
+        block.get("type") == "section" and "text" in block
         for block in render_blocks(large)
     )
 
@@ -163,10 +190,12 @@ def test_experiment_score_includes_non_successful_trials_with_rewards():
         2,
     )
 
-    fields = next(
-        block["fields"] for block in render_blocks(summary) if "fields" in block
+    context = next(
+        block["elements"]
+        for block in render_blocks(summary)
+        if block["type"] == "context"
     )
-    assert fields[2]["text"] == "*Avg score*\n75.0%"
+    assert "75.0% avg score" in context[1]["text"]
 
 
 def test_sampled_summary_labels_bounded_trial_window():
@@ -179,13 +208,15 @@ def test_sampled_summary_labels_bounded_trial_window():
         total_trials=5000,
     )
 
-    fields = next(
-        block["fields"] for block in render_blocks(summary) if "fields" in block
+    context = next(
+        block["elements"]
+        for block in render_blocks(summary)
+        if block["type"] == "context"
     )
-    assert fields[0]["text"].startswith("*Results (latest 2)*")
-    assert fields[1]["text"] == "*Completion (latest 2)*\n2/2 sampled · 5000 total"
-    assert fields[2]["text"].startswith("*Avg score (latest 2)*")
-    assert fields[3]["text"].startswith("*Cost (latest 2)*")
+    assert context[0]["text"].startswith("*Latest 2 · Results*")
+    assert context[1]["text"] == (
+        "100 tasks · latest 2: 2/2 sampled · 5000 total · 100.0% avg score · $2.50"
+    )
 
 
 def test_slack_signature_verification_checks_hmac_and_age():
