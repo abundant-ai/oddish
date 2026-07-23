@@ -371,6 +371,16 @@ async def list_tasks_core(
                 elapsed_ms(queue_info_started_at),
                 "Trial queue info",
             )
+        # Batch composite (inference + QA + compute) once for every trial shown,
+        # so the compact/full experiment-list rows carry qa/compute/total. The UI
+        # sums these via sumTaskTrialCost/accumulateTrial, which treat missing
+        # fields as $0 -- leaving them null here silently drops QA/compute from
+        # the client-side task totals. Per-trial display, so no per-task
+        # eligibility filter is needed (a trial shows its own composite).
+        composite_by_trial = await composite_cost_by_trial(
+            session,
+            [trial.id for task in tasks for trial in task.trials],
+        )
         if compact_trials:
             # The analysis summary fields (classification / subtype /
             # evidence) are now loaded inline on the trials selectinload
@@ -389,6 +399,7 @@ async def list_tasks_core(
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
                     gathered_trial_ids=gathered_trial_ids,
+                    composite_by_trial=composite_by_trial,
                 )
                 for task in tasks
             ]
@@ -408,6 +419,7 @@ async def list_tasks_core(
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
                 gathered_trial_ids=gathered_trial_ids,
+                composite_by_trial=composite_by_trial,
             )
             for task in tasks
         ]
@@ -2706,11 +2718,15 @@ async def get_task_status_core(
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session, trials=task.trials
         )
+        composite_by_trial = await composite_cost_by_trial(
+            session, [trial.id for trial in task.trials]
+        )
         return build_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,
             queue_info_by_trial_id=queue_info_by_trial_id,
             jobs_by_subject=jobs_by_subject,
+            composite_by_trial=composite_by_trial,
         )
 
     jobs_by_subject = await fetch_visible_worker_jobs(session, task_ids=[task.id])
