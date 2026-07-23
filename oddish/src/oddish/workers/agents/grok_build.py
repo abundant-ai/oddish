@@ -169,7 +169,9 @@ class OddishGrokBuild(BaseInstalledAgent):
             await self.exec_as_root(
                 environment,
                 command=(
-                    f"install -m 0755 {_BUNDLED_GROK_UPLOAD_PATH} /usr/local/bin/grok"
+                    "mkdir -p /usr/local/bin && "
+                    f"cp {_BUNDLED_GROK_UPLOAD_PATH} /usr/local/bin/grok && "
+                    "chmod 0755 /usr/local/bin/grok"
                 ),
             )
         else:

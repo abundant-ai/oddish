@@ -47,7 +47,9 @@ async def test_install_uses_bundled_cli_without_network(tmp_path, monkeypatch):
         str(bundled), _BUNDLED_GROK_UPLOAD_PATH
     )
     assert root.await_args.kwargs["command"] == (
-        f"install -m 0755 {_BUNDLED_GROK_UPLOAD_PATH} /usr/local/bin/grok"
+        "mkdir -p /usr/local/bin && "
+        f"cp {_BUNDLED_GROK_UPLOAD_PATH} /usr/local/bin/grok && "
+        "chmod 0755 /usr/local/bin/grok"
     )
     commands = [
         call.kwargs["command"] for call in root.await_args_list + agent.await_args_list
