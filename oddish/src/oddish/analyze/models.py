@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
@@ -82,6 +83,14 @@ class TrialClassificationModel(BaseModel):
     recommendation: str = Field(
         description="How to fix the task (if BAD_FAILURE or BAD_SUCCESS), or 'N/A' if task is fine"
     )
+    action_items: list[ActionItem] = Field(
+        default_factory=list,
+        description="New trajectory-derived action items (source=post_trial)",
+    )
+    exploitation: list[ExploitationAssessment] = Field(
+        default_factory=list,
+        description="Assessment of each provided pre-trial action item",
+    )
 
 
 class TaskVerdictModel(BaseModel):
@@ -114,6 +123,8 @@ class TrialClassification:
     root_cause: str
     recommendation: str
     reward: float | None = None
+    action_items: list[ActionItem] = field(default_factory=list)
+    exploitation: list[ExploitationAssessment] = field(default_factory=list)
 
     @property
     def is_task_problem(self) -> bool:
@@ -134,6 +145,8 @@ class TrialClassification:
             root_cause=model.root_cause,
             recommendation=model.recommendation,
             reward=reward,
+            action_items=list(model.action_items),
+            exploitation=list(model.exploitation),
         )
 
 
@@ -200,3 +213,96 @@ class TaskVerdict:
         if self.is_good:
             return self.reasoning or f"GOOD TASK (confidence: {self.confidence})"
         return f"NEEDS REVIEW: {self.primary_issue}"
+
+
+class ActionItemSource(str, Enum):
+    PRE_TRIAL = "pre_trial"
+    POST_TRIAL = "post_trial"
+
+
+class ProblemType(str, Enum):
+    INCOMPLETENESS = "incompleteness"
+    MISMATCH = "mismatch"
+
+
+class Dimension(str, Enum):
+    VERIFIER = "verifier"
+    ORACLE = "oracle"
+    INFO_LEAKAGE = "info_leakage"
+
+
+class ActionTier(str, Enum):
+    MUST_FIX = "must_fix"
+    SHOULD_FIX = "should_fix"
+    OPTIONAL = "optional"
+
+
+class ActionItem(BaseModel):
+    """A single QA finding with a file/line anchor. Emitted by both the
+    pre-trial and post-trial analyzers; the ``id`` is computed server-side
+    (LLM output omits it)."""
+
+    id: str | None = Field(
+        default=None, description="Stable id; computed server-side, leave null"
+    )
+    source: ActionItemSource = Field(description="Which analyzer produced this item")
+    problem_type: ProblemType = Field(description="incompleteness or mismatch")
+    dimension: Dimension = Field(
+        description="verifier, oracle, or info_leakage"
+    )
+    file: str = Field(description="Task-relative path, e.g. 'verifier.py'")
+    line_start: int = Field(description="1-indexed first line")
+    line_end: int = Field(description="1-indexed last line (== line_start if one line)")
+    title: str = Field(description="Short one-line summary")
+    detail: str = Field(description="What is wrong")
+    recommendation: str = Field(description="Concrete fix")
+    tier: ActionTier = Field(description="must_fix, should_fix, or optional")
+
+    # post_trial-only linkage fields (defaults keep pre_trial items clean)
+    links_to: str | None = Field(
+        default=None, description="pre_trial ActionItem.id this relates to"
+    )
+    exploited: bool = Field(
+        default=False, description="Did the trajectory exploit this weakness?"
+    )
+    exploit_evidence: str | None = Field(
+        default=None, description="Quote or step reference showing exploitation"
+    )
+    causal: bool = Field(
+        default=False, description="Did trajectory behavior result from this weakness?"
+    )
+
+
+class ExploitationAssessment(BaseModel):
+    """Whether a pre-trial action item was exploited by this trial."""
+
+    links_to: str = Field(description="Pre-trial ActionItem.id this assesses")
+    exploited: bool = Field(description="Did the trajectory exploit this weakness?")
+    exploit_evidence: str | None = Field(
+        default=None, description="Quote or step index showing exploitation"
+    )
+    causal: bool = Field(
+        default=False, description="Did trajectory behavior result from this weakness?"
+    )
+
+
+def compute_action_item_id(item: ActionItem) -> str:
+    """Deterministic id from the item's identity fields (not its linkage state)."""
+    raw = "|".join(
+        [
+            item.source.value,
+            item.dimension.value,
+            item.problem_type.value,
+            item.file,
+            str(item.line_start),
+            str(item.line_end),
+            item.title.strip(),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+class PreTrialActionItems(BaseModel):
+    """List wrapper so the block's output_schema is a dict-shaped model."""
+
+    items: list[ActionItem] = Field(default_factory=list, description="Pre-trial QA findings")
