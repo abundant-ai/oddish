@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import uuid4
@@ -16,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     SmallInteger,
     String,
     Table,
@@ -561,7 +563,9 @@ class AnalyzerModel(TimestampedMixin, Base):
 
     bad_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     good_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    universal_capabilities_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    universal_capabilities_content: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Per-model insights payload. NULL = pre-analyzers_008 report; the report UI
@@ -622,7 +626,9 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    analyzer_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
     llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -651,7 +657,9 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
 
     # ``metadata`` is reserved on the declarative Base, so the attribute is
     # ``block_metadata`` while the DB column is literally named ``metadata``.
-    block_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    block_metadata: Mapped[dict | None] = mapped_column(
+        "metadata", JSONB, nullable=True
+    )
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -1074,9 +1082,7 @@ class TrialModel(TimestampedMixin, Base):
     # LLM-generated summary of the trajectory; populated lazily on first
     # request to GET /trials/{id}/trajectory/summary. Replaces the prior
     # S3-cached `agent/trajectory_summary.json` sibling file.
-    trajectory_summary: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
-    )
+    trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Condensed agent step-graph of the trajectory (general phases + terminal
     # outcome node), populated on explicit request to
@@ -1238,9 +1244,7 @@ class AnalysisCostModel(TimestampedMixin, Base):
         Index("ix_analysis_costs_org_id", "org_id"),
     )
 
-    id: Mapped[str] = mapped_column(
-        String(64), primary_key=True, default=generate_id
-    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     job_kind: Mapped[str] = mapped_column(String(64), nullable=False)
     trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -1255,6 +1259,169 @@ class AnalysisCostModel(TimestampedMixin, Base):
     # "native" = harness-reported (CLI total_cost_usd); "estimated" = priced
     # via model_pricing. Job A is always "native".
     cost_source: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class ModalCostSpanModel(TimestampedMixin, Base):
+    """Append-only ledger of per-trial Modal compute spend, one row per
+    billable container span.
+
+    Compute sibling of ``analysis_costs`` (LLM spend): a span is one billable
+    container — the Modal worker function babysitting a job
+    (``worker_function``), the harbor agent sandbox (``agent_sandbox``), or a
+    separate verifier sandbox (``verifier_sandbox``). Scope columns are plain
+    indexed strings with no FKs (clone of ``analysis_costs``). ``finished_at``
+    is NULL while the span is open; every close is a CAS update
+    (``UPDATE ... SET finished_at = ... WHERE id = ... AND finished_at IS
+    NULL``) so late hooks, settlement, and the reconciliation sweep cannot
+    double-close. Pricing lives in :mod:`oddish.costs.modal_cost`.
+    """
+
+    __tablename__ = "modal_costs"
+    __table_args__ = (
+        # One row per (job attempt, role, open-ordinal). ``span_ordinal`` is a
+        # per-key open counter so harbor-internal retries and failed starts
+        # each get their own row. Rows with NULL ``worker_job_id`` (sandbox
+        # spans recorded outside a known job context) never conflict.
+        UniqueConstraint(
+            "worker_job_id",
+            "worker_job_attempt",
+            "component_role",
+            "span_ordinal",
+            name="uq_modal_costs_job_attempt_role_ordinal",
+        ),
+        # One row per provider-visible container id. Partial: spans recorded
+        # before the provider id is known carry NULL ``external_id``.
+        Index(
+            "uq_modal_costs_provider_external_id",
+            "provider",
+            "external_id",
+            unique=True,
+            postgresql_where=text("external_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "finished_at IS NULL OR finished_at >= started_at",
+            name="ck_modal_costs_span_order",
+        ),
+        CheckConstraint(
+            "cpu_request IS NULL OR cpu_request >= 0",
+            name="ck_modal_costs_cpu_request_nonneg",
+        ),
+        CheckConstraint(
+            "cpu_limit IS NULL OR cpu_limit >= 0",
+            name="ck_modal_costs_cpu_limit_nonneg",
+        ),
+        CheckConstraint(
+            "mem_request_mb IS NULL OR mem_request_mb >= 0",
+            name="ck_modal_costs_mem_request_nonneg",
+        ),
+        CheckConstraint(
+            "mem_limit_mb IS NULL OR mem_limit_mb >= 0",
+            name="ck_modal_costs_mem_limit_nonneg",
+        ),
+        CheckConstraint(
+            "gpu_count IS NULL OR gpu_count >= 0",
+            name="ck_modal_costs_gpu_count_nonneg",
+        ),
+        Index("ix_modal_costs_trial_id", "trial_id"),
+        Index("ix_modal_costs_experiment_id", "experiment_id"),
+        Index("ix_modal_costs_org_id", "org_id"),
+        # Dashboard bucket/window axis: the settled view groups on
+        # ``finished_at`` (matching inference), not ``created_at``.
+        Index("ix_modal_costs_finished_at", "finished_at"),
+        # Open spans awaiting close — the reconciliation sweep scans these and
+        # joins ``worker_jobs`` on ``worker_job_id`` to find terminal jobs.
+        Index(
+            "ix_modal_costs_open_spans",
+            "worker_job_id",
+            postgresql_where=text("finished_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    trial_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Normally set; NULL only for sandbox spans recorded outside a known job
+    # context. Text because worker-side job ids are unbounded today.
+    worker_job_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    worker_job_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``trials.attempts`` at span open — informational only (worker spans for
+    # non-trial jobs have no trial attempt at all).
+    attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # "worker_function" | "agent_sandbox" | "verifier_sandbox"
+    component_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    span_ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # How the timer boundaries were observed:
+    # "hooks" | "phase_timing" | "reaped" | "reconciled" | "backfill"
+    basis: Mapped[str] = mapped_column(String(16), nullable=False)
+    # "pinned" | "override" | "modal_default" | "unknown"
+    spec_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    cpu_request: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpu_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mem_request_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mem_limit_mb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cpu_enforcement_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    mem_enforcement_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Modal billing name (post-normalization), e.g. "H100", "A100-80GB".
+    gpu_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    gpu_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Nonpreemptible surcharge: 3 for the worker function, 1 for sandboxes.
+    # Applies only to the cpu+mem terms, never GPU.
+    price_multiplier: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
+    # usd_per_sec values actually used, as strings (Decimal-exact).
+    rate_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # sku -> modal_rates.id of the chosen rate rows (None for code fallback).
+    rate_ids: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(14, 6), nullable=True)
+    # Set when cost_usd is NULL: "unknown_gpu" | "no_resources" | "no_rate".
+    unpriced_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cost_source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="estimated"
+    )
+    estimator_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ModalRateModel(TimestampedMixin, Base):
+    """Append-only compute rate card: usd-per-second by provider and sku.
+
+    A price change appends a new row with a later ``effective_at``; pricing
+    picks the newest row with ``effective_at <= span.started_at`` so old
+    estimates stay reproducible. Seeded by migration ``modal_costs_001`` from
+    modal.com/pricing; :data:`oddish.costs.modal_cost.DEFAULT_RATES` is the
+    code-constant fallback mirroring those seed rows.
+    """
+
+    __tablename__ = "modal_rates"
+    __table_args__ = (
+        # Also the lookup index for (provider, sku, effective_at) selection.
+        UniqueConstraint(
+            "provider",
+            "sku",
+            "effective_at",
+            name="uq_modal_rates_provider_sku_effective",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    # "function:cpu_core_sec" | "function:mem_gib_sec" |
+    # "sandbox:cpu_core_sec" | "sandbox:mem_gib_sec" | "gpu:<TYPE>"
+    sku: Mapped[str] = mapped_column(String(64), nullable=False)
+    usd_per_sec: Mapped[Decimal] = mapped_column(Numeric(16, 10), nullable=False)
+    effective_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # Provenance, e.g. "modal.com/pricing 2026-07-22".
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
 
 class TrialEventModel(Base):

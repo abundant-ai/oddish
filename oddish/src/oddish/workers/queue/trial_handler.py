@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 import json
 import os
@@ -18,6 +18,13 @@ from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
 from oddish.config import settings
+from oddish.costs.modal_cost import SpanResources
+from oddish.costs.recorder import (
+    close_agent_sandboxes,
+    price_unpriced_spans,
+    record_verifier_span,
+    transition_agent_sandbox,
+)
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -46,7 +53,13 @@ from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.outcome import merged_trial_result
-from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
+from oddish.workers.harbor.runner import (
+    HarborOutcome,
+    capture_live_sandbox_resources,
+    capture_sandbox_resources,
+    capture_verifier_resources,
+    run_harbor_trial_async,
+)
 from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -148,6 +161,8 @@ class PreparedTrialRun:
     # Trial owner for BYOK resolution: the task submitter, falling back to the
     # experiment owner. None means BYOK never applies.
     created_by_user_id: str | None = None
+    billed_user_id: str | None = None
+    trial_attempt: int = 1
 
 
 @dataclass(slots=True)
@@ -155,6 +170,21 @@ class TrialExecutionResult:
     outcome: HarborOutcome | None
     execution_error: str | None
     tailed_attempt: int | None = None
+
+
+@dataclass(slots=True)
+class SandboxCostState:
+    resources: SpanResources
+    verifier_resources: SpanResources | None
+    provider: str
+    trial_id: str
+    attempt: int
+    experiment_id: str | None
+    org_id: str | None
+    billed_user_id: str | None
+    worker_job_id: str | None
+    worker_job_attempt: int | None
+    terminal_at: datetime | None = None
 
 
 def _is_agent_timeout_exception(exc: object | None) -> bool:
@@ -532,6 +562,8 @@ async def _prepare_trial_run(
             attempt_number=_extract_trial_index(trial_id, task_id) + 1,  # 1-indexed
             task_tags=task_tags,
             org_id=trial.org_id,
+            billed_user_id=trial.billed_user_id,
+            trial_attempt=trial.attempts,
             created_by_user_id=(
                 (task.created_by_user_id if task else None) or experiment_owner_user_id
             ),
@@ -864,10 +896,36 @@ async def _handle_harbor_event(
     probe_task_dir: Path | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
+    worker_job_attempt: int | None = None,
+    cost_state: SandboxCostState | None = None,
 ) -> None:
     """Update a trial from Harbor lifecycle events."""
     event = hook_event.event
     live_tail_spawn: tuple[int, str, str | None] | None = None
+    sandbox_transition: tuple[str, str, SpanResources] | None = None
+    observed_at = getattr(hook_event, "timestamp", None)
+    if not isinstance(observed_at, datetime):
+        observed_at = utcnow()
+    elif observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+
+    if event in (TrialEvent.END, TrialEvent.CANCEL) and cost_state is not None:
+        cost_state.terminal_at = observed_at
+        # Harbor emits CANCEL before its finally block stops the environment,
+        # then normally emits END after stop. Keep CANCEL as the settlement
+        # fallback, but only persist END immediately so the CAS close cannot
+        # freeze the earlier, undercounting boundary.
+        if event == TrialEvent.END and worker_job_id and worker_job_attempt is not None:
+            try:
+                await close_agent_sandboxes(
+                    worker_job_id,
+                    worker_job_attempt,
+                    finished_at=observed_at,
+                )
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Trial {trial_id} compute-cost close failed: {exc}[/yellow]"
+                )
 
     try:
         should_upload_probe_dir = (
@@ -960,6 +1018,18 @@ async def _handle_harbor_event(
                         sandbox_creating_at=utcnow(),
                     )
                 )
+                if cost_state is not None:
+                    provider = hook_event.environment_provider or cost_state.provider
+                    resources = capture_live_sandbox_resources(
+                        hook_event.environment, cost_state.resources
+                    )
+                    cost_state.provider = provider
+                    cost_state.resources = resources
+                    sandbox_transition = (
+                        provider,
+                        hook_event.environment_external_id,
+                        resources,
+                    )
 
             if event == TrialEvent.START:
                 trial.harbor_stage = "trial_started"
@@ -1036,6 +1106,32 @@ async def _handle_harbor_event(
                 trial.finished_at = utcnow()
                 console.print(f"[yellow]Trial {trial_id} cancelled[/yellow]")
 
+        if (
+            sandbox_transition is not None
+            and cost_state is not None
+            and worker_job_id
+            and worker_job_attempt is not None
+        ):
+            provider, external_id, resources = sandbox_transition
+            try:
+                await transition_agent_sandbox(
+                    worker_job_id=worker_job_id,
+                    worker_job_attempt=worker_job_attempt,
+                    trial_id=trial_id,
+                    attempt=cost_state.attempt,
+                    experiment_id=cost_state.experiment_id,
+                    org_id=cost_state.org_id,
+                    billed_user_id=cost_state.billed_user_id,
+                    provider=provider,
+                    external_id=external_id,
+                    resources=resources,
+                    observed_at=observed_at,
+                )
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Trial {trial_id} compute-cost open failed: {exc}[/yellow]"
+                )
+
         if live_tail_spawn is not None and hook_event.environment is not None:
             live_tail.start(
                 trial_id=trial_id,
@@ -1060,6 +1156,8 @@ async def _execute_trial(
     worker_id: str | None,
     queue_slot: int | None,
     worker_job_id: str | None = None,
+    worker_job_attempt: int | None = None,
+    cost_state: SandboxCostState | None = None,
     extra_agent_env: dict[str, str] | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
@@ -1102,6 +1200,8 @@ async def _execute_trial(
                 probe_task_dir=task_path_to_run if is_probe else None,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+                cost_state=cost_state,
             ),
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
@@ -1158,6 +1258,54 @@ def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
     return (harbor_config or {}).get("variant_id") == "ephemeral"
 
 
+def _phase_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+async def _settle_compute_costs(
+    state: SandboxCostState, outcome: HarborOutcome | None
+) -> None:
+    if state.worker_job_id is None or state.worker_job_attempt is None:
+        return
+    try:
+        if state.terminal_at is not None:
+            await close_agent_sandboxes(
+                state.worker_job_id,
+                state.worker_job_attempt,
+                finished_at=state.terminal_at,
+            )
+
+        verifier = (outcome.phase_timing or {}).get("verifier") if outcome else None
+        if state.verifier_resources is not None and isinstance(verifier, dict):
+            started_at = _phase_timestamp(verifier.get("started_at"))
+            finished_at = _phase_timestamp(verifier.get("finished_at"))
+            if started_at is not None and finished_at is not None:
+                await record_verifier_span(
+                    worker_job_id=state.worker_job_id,
+                    worker_job_attempt=state.worker_job_attempt,
+                    trial_id=state.trial_id,
+                    attempt=state.attempt,
+                    experiment_id=state.experiment_id,
+                    org_id=state.org_id,
+                    billed_user_id=state.billed_user_id,
+                    provider=state.provider,
+                    resources=state.verifier_resources,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
+        await price_unpriced_spans(state.worker_job_id, state.worker_job_attempt)
+    except Exception as exc:
+        console.print(
+            f"[yellow]Trial {state.trial_id} compute-cost settlement failed: {exc}[/yellow]"
+        )
+
+
 async def run_trial_job(
     trial_id: str,
     queue_key: str,
@@ -1166,6 +1314,7 @@ async def run_trial_job(
     queue_slot: int | None = None,
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
+    worker_job_attempt: int | None = None,
 ) -> None:
     """
     Execute a claimed trial.
@@ -1301,6 +1450,25 @@ async def run_trial_job(
             agent=prepared_trial.trial_agent,
         )
 
+    cost_state = SandboxCostState(
+        resources=capture_sandbox_resources(
+            task_path_to_run, prepared_trial.trial_harbor_config
+        ),
+        verifier_resources=capture_verifier_resources(
+            task_path_to_run, prepared_trial.trial_harbor_config
+        ),
+        provider=(
+            prepared_trial.trial_environment or settings.harbor_environment
+        ).lower(),
+        trial_id=trial_id,
+        attempt=prepared_trial.trial_attempt,
+        experiment_id=prepared_trial.experiment_id or None,
+        org_id=prepared_trial.org_id,
+        billed_user_id=prepared_trial.billed_user_id,
+        worker_job_id=worker_job_id,
+        worker_job_attempt=worker_job_attempt,
+    )
+
     execution: TrialExecutionResult | None = None
     trial_terminal = False
     try:
@@ -1325,6 +1493,8 @@ async def run_trial_job(
             worker_id=worker_id,
             queue_slot=queue_slot,
             worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+            cost_state=cost_state,
             extra_agent_env=job_tokens.merge_agent_env(
                 job_scoped_bundle,
                 byok.merge_byok_env(
@@ -1333,6 +1503,7 @@ async def run_trial_job(
                 ),
             ),
         )
+        await _settle_compute_costs(cost_state, execution.outcome)
 
         # Upload trial results to S3.
         trial_s3_key = None
