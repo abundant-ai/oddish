@@ -23,11 +23,19 @@ each row through ``settled_cost_parts`` / ``settled_cost_from_row`` /
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.db import CostExcludedLlmKeyModel, TrialModel, TrialOrigin
+from oddish.db import (
+    AnalysisCostModel,
+    CostExcludedLlmKeyModel,
+    ModalCostSpanModel,
+    TrialModel,
+    TrialOrigin,
+)
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
@@ -234,3 +242,90 @@ def settled_cost_from_row(row) -> float:
 def sum_settled_cost(rows: Iterable) -> float:
     """Total settled cost across model-grouped rows."""
     return sum(settled_cost_from_row(row) for row in rows)
+
+
+@dataclass(frozen=True)
+class CompositeCost:
+    """The three spend components that make up a trial's full cost.
+
+    ``inference`` is the solving agent's LLM spend (``trials.cost_usd`` or its
+    token estimate), ``qa`` is the analysis-classifier LLM spend recorded in
+    ``analysis_costs``, and ``compute`` is the Modal container spend recorded in
+    ``modal_costs``. ``total`` is their sum.
+    """
+
+    inference: float = 0.0
+    qa: float = 0.0
+    compute: float = 0.0
+
+    @property
+    def total(self) -> float:
+        return self.inference + self.qa + self.compute
+
+
+async def composite_cost_by_trial(
+    session: AsyncSession, trial_ids: list[str]
+) -> dict[str, CompositeCost]:
+    """Batched QA + compute spend per trial id.
+
+    Two grouped queries -- one over ``analysis_costs`` (QA), one over
+    ``modal_costs`` (compute) -- so a table of ``N`` trials costs two queries,
+    not ``2N``. Returns a :class:`CompositeCost` for *every* requested id, with
+    ``qa`` / ``compute`` defaulting to ``0.0`` when a ledger has no rows.
+
+    ``inference`` is deliberately left ``0.0``: the caller already holds the
+    trial's resolved ``cost_usd`` (native or token estimate) and combines it at
+    the emit site, so re-deriving the estimate from a bare id would duplicate
+    :func:`oddish.core.helpers._resolve_trial_cost`. Do not read ``.total`` on
+    the returned objects -- add ``qa``/``compute`` to the trial's own
+    ``cost_usd`` instead.
+
+    Soft-deleted ledger rows (``deleted_at IS NULL``) and open/unpriced compute
+    spans (``modal_costs.cost_usd IS NOT NULL``) are excluded, matching the
+    admin cost dashboard's sums.
+    """
+    ordered_ids = list(dict.fromkeys(trial_ids))
+    if not ordered_ids:
+        return {}
+
+    qa: dict[str, float] = {}
+    qa_rows = await session.execute(
+        select(
+            AnalysisCostModel.trial_id,
+            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0),
+        )
+        .where(
+            AnalysisCostModel.trial_id.in_(ordered_ids),
+            AnalysisCostModel.deleted_at.is_(None),
+        )
+        .group_by(AnalysisCostModel.trial_id)
+    )
+    for trial_id, amount in qa_rows:
+        if trial_id is not None:
+            qa[trial_id] = float(amount or 0.0)
+
+    compute: dict[str, float] = {}
+    compute_rows = await session.execute(
+        select(
+            ModalCostSpanModel.trial_id,
+            func.coalesce(func.sum(ModalCostSpanModel.cost_usd), 0.0),
+        )
+        .where(
+            ModalCostSpanModel.trial_id.in_(ordered_ids),
+            ModalCostSpanModel.cost_usd.isnot(None),
+            ModalCostSpanModel.deleted_at.is_(None),
+        )
+        .group_by(ModalCostSpanModel.trial_id)
+    )
+    for trial_id, amount in compute_rows:
+        if trial_id is not None:
+            compute[trial_id] = float(amount or 0.0)
+
+    return {
+        trial_id: CompositeCost(
+            inference=0.0,
+            qa=qa.get(trial_id, 0.0),
+            compute=compute.get(trial_id, 0.0),
+        )
+        for trial_id in ordered_ids
+    }

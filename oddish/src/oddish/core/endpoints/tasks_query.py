@@ -71,7 +71,7 @@ from oddish.schemas import (
     TaskStatusResponse,
     UserTagRef,
 )
-from oddish.core.cost_basis import not_combine_copy_filter
+from oddish.core.cost_basis import composite_cost_by_trial, not_combine_copy_filter
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -601,12 +601,17 @@ async def list_experiment_slim_tasks(
     )
 
     build_started_at = now()
+    composite_by_trial = await composite_cost_by_trial(
+        session,
+        [trial.id for task in tasks for trial in task.trials],
+    )
     response = [
         build_slim_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
+            composite_by_trial=composite_by_trial,
         )
         for task in tasks
     ]

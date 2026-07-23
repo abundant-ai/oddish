@@ -49,6 +49,7 @@ import {
 import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
+import { CostWithBreakdown } from "@/components/cost-with-breakdown";
 import type { Trial, Task } from "@/lib/types";
 import {
   costEstimateMarks,
@@ -817,10 +818,14 @@ export function TrialDetailPanel({
                     <div className="mt-1 flex items-baseline gap-1">
                       <span className="font-mono text-sm leading-none font-bold tabular-nums">
                         {trial.cost_usd != null ? (
-                          <>
-                            {trial.cost_is_estimated ? "~" : ""}
-                            {formatCostUsd(trial.cost_usd)}
-                          </>
+                          <CostWithBreakdown
+                            className="inline-flex items-baseline"
+                            total={trial.total_cost_usd ?? trial.cost_usd}
+                            inference={trial.cost_usd}
+                            qa={trial.qa_cost_usd}
+                            compute={trial.compute_cost_usd}
+                            estimated={trial.cost_is_estimated}
+                          />
                         ) : (
                           "—"
                         )}

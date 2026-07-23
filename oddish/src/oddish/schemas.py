@@ -1041,6 +1041,28 @@ class TrialResponse(BaseModel):
             "the runtime. Null when no cost is available."
         ),
     )
+    qa_cost_usd: float | None = Field(
+        None,
+        description=(
+            "Analysis/QA LLM spend attributed to this trial (summed from the "
+            "``analysis_costs`` ledger). Null when not computed by the caller."
+        ),
+    )
+    compute_cost_usd: float | None = Field(
+        None,
+        description=(
+            "Modal compute (sandbox/container) spend attributed to this trial "
+            "(summed from the ``modal_costs`` ledger). Null when not computed "
+            "by the caller."
+        ),
+    )
+    total_cost_usd: float | None = Field(
+        None,
+        description=(
+            "Composite trial cost: ``cost_usd`` (inference) + ``qa_cost_usd`` + "
+            "``compute_cost_usd``. Null when the composite was not computed."
+        ),
+    )
     is_billed: bool = Field(
         False,
         description=(

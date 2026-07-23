@@ -24,7 +24,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
-from oddish.core.cost_basis import is_combine_copy
+from oddish.core.cost_basis import CompositeCost, is_combine_copy
 from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
@@ -85,6 +85,25 @@ def _resolve_trial_cost(
     if estimated is None:
         return None, None
     return estimated, True
+
+
+def _composite_cost_fields(
+    cost_usd: float | None, composite: CompositeCost | None
+) -> tuple[float | None, float | None, float | None]:
+    """Emit-site ``(qa, compute, total)`` for a trial response.
+
+    ``total`` combines the trial's own resolved inference ``cost_usd`` with the
+    batched ``qa``/``compute`` (see :func:`composite_cost_by_trial`, whose
+    ``inference`` field is intentionally 0.0). All three are ``None`` when no
+    composite was supplied, keeping the fields purely additive.
+    """
+    if composite is None:
+        return None, None, None
+    return (
+        composite.qa,
+        composite.compute,
+        (cost_usd or 0.0) + composite.qa + composite.compute,
+    )
 
 
 def _has_fetchable_trajectory(trial: TrialModel) -> bool:
@@ -421,11 +440,15 @@ def build_trial_response(
     *,
     queue_info: TrialQueueInfo | None = None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
+    composite: CompositeCost | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
+    qa_cost_usd, compute_cost_usd, total_cost_usd = _composite_cost_fields(
+        cost_usd, composite
+    )
     return TrialResponse(
         id=trial.id,
         name=trial.name,
@@ -460,6 +483,9 @@ def build_trial_response(
         tool_counts=trial.tool_counts,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
+        qa_cost_usd=qa_cost_usd,
+        compute_cost_usd=compute_cost_usd,
+        total_cost_usd=total_cost_usd,
         is_billed=trial.billed_user_id is not None,
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
@@ -482,6 +508,7 @@ def build_compact_trial_response(
     analysis_summary: dict[str, str | None] | None | object = _ANALYSIS_SUMMARY_UNSET,
     queue_info: TrialQueueInfo | None = None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
+    composite: CompositeCost | None = None,
 ) -> TrialResponse:
     """Build a compact TrialResponse for table views.
 
@@ -502,6 +529,9 @@ def build_compact_trial_response(
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
+    qa_cost_usd, compute_cost_usd, total_cost_usd = _composite_cost_fields(
+        cost_usd, composite
+    )
 
     return TrialResponse(
         id=trial.id,
@@ -537,6 +567,9 @@ def build_compact_trial_response(
         tool_counts=trial.tool_counts,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
+        qa_cost_usd=qa_cost_usd,
+        compute_cost_usd=compute_cost_usd,
+        total_cost_usd=total_cost_usd,
         is_billed=trial.billed_user_id is not None,
         phase_timing=trial.phase_timing,
         has_trajectory=_has_fetchable_trajectory(trial),
@@ -935,6 +968,7 @@ def build_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     exclude_combine_copies: bool = False,
+    composite_by_trial: Mapping[str, CompositeCost] | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -984,6 +1018,11 @@ def build_task_status_response(
                     if jobs_by_subject is not None
                     else None
                 ),
+                composite=(
+                    composite_by_trial.get(t.id)
+                    if composite_by_trial is not None
+                    else None
+                ),
             )
             for t in task_trials
         ]
@@ -1023,6 +1062,7 @@ def build_task_status_response_compact(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    composite_by_trial: Mapping[str, CompositeCost] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -1061,6 +1101,9 @@ def build_task_status_response_compact(
                 jobs_by_subject.get(("trials", t.id), [])
                 if jobs_by_subject is not None
                 else None
+            ),
+            composite=(
+                composite_by_trial.get(t.id) if composite_by_trial is not None else None
             ),
         )
         for t in task_trials
@@ -1119,7 +1162,12 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
 )
 
 
-def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+def build_slim_trial_response(
+    trial: TrialModel,
+    task_path: str,
+    *,
+    composite: CompositeCost | None = None,
+) -> TrialResponse:
     """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
     if isinstance(trial.analysis, dict):
@@ -1131,6 +1179,9 @@ def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialRespons
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
+    qa_cost_usd, compute_cost_usd, total_cost_usd = _composite_cost_fields(
+        cost_usd, composite
+    )
 
     return TrialResponse(
         id=trial.id,
@@ -1156,6 +1207,9 @@ def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialRespons
         output_tokens=trial.output_tokens,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
+        qa_cost_usd=qa_cost_usd,
+        compute_cost_usd=compute_cost_usd,
+        total_cost_usd=total_cost_usd,
         is_billed=trial.billed_user_id is not None,
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
@@ -1173,6 +1227,7 @@ def build_slim_task_status_response(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    composite_by_trial: Mapping[str, CompositeCost] | None = None,
 ) -> TaskStatusResponse:
     """Build a task status response with slim per-trial payloads."""
     if effective_version_id is _VERSION_ID_UNSET:
@@ -1189,7 +1244,16 @@ def build_slim_task_status_response(
     reward_success = sum(1 for t in task_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
-    trials = [build_slim_trial_response(t, task.task_path) for t in task_trials]
+    trials = [
+        build_slim_trial_response(
+            t,
+            task.task_path,
+            composite=(
+                composite_by_trial.get(t.id) if composite_by_trial is not None else None
+            ),
+        )
+        for t in task_trials
+    ]
 
     return _build_task_status_response(
         task,

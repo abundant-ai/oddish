@@ -147,6 +147,11 @@ export interface Trial {
   tool_counts?: Record<string, number> | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  // Composite cost components (inference = cost_usd). Populated per-trial by the
+  // API when computed; null on surfaces that don't request the composite.
+  qa_cost_usd?: number | null;
+  compute_cost_usd?: number | null;
+  total_cost_usd?: number | null;
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;

@@ -8,6 +8,18 @@ export function formatCostUsd(value: number): string {
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
+// Full-precision variant for breakdown tooltips. Unlike formatCostUsd it never
+// rounds large values to whole dollars, so a $1,234.5 component still reads its
+// cents; sub-cent values keep four decimals.
+export function formatCostUsdExact(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 export function formatTokenCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0 tokens";
   const rounded = Math.round(value);

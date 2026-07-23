@@ -35,6 +35,7 @@ import {
 } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
+  formatCostUsdExact,
   formatDurationSec,
   formatTokenCount,
   trialDurationSec,
@@ -526,7 +527,16 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
           {trial.cost_usd != null && (
             <div className="text-muted-foreground">
               {trial.cost_is_estimated ? "~" : ""}
-              {formatCostUsd(trial.cost_usd)}
+              {formatCostUsd(trial.total_cost_usd ?? trial.cost_usd)}
+              {(trial.qa_cost_usd != null ||
+                trial.compute_cost_usd != null) && (
+                <span>
+                  {" "}
+                  ({formatCostUsdExact(trial.cost_usd)} inf ·{" "}
+                  {formatCostUsdExact(trial.qa_cost_usd ?? 0)} QA ·{" "}
+                  {formatCostUsdExact(trial.compute_cost_usd ?? 0)} sandbox)
+                </span>
+              )}
             </div>
           )}
         </div>
