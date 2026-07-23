@@ -1,7 +1,4 @@
-from oddish.workers.harbor.model_hosts import (
-    outbound_hosts_for_agent,
-    outbound_hosts_for_model,
-)
+from oddish.workers.harbor.model_hosts import outbound_hosts_for_model
 
 
 def test_outbound_hosts_follow_model_not_agent_env_shape():
@@ -64,20 +61,10 @@ def test_bare_claude_id_does_not_override_routed_base_url():
     ) == ["api.fireworks.ai"]
 
 
-def test_outbound_hosts_for_cursor_model_and_harness():
+def test_outbound_hosts_for_cursor_model():
     cursor_hosts = ["*.cursor.sh"]
 
     assert outbound_hosts_for_model("cursor/composer") == cursor_hosts
-    # Cursor transports every selectable model through its own service, even
-    # when the model id itself has another provider prefix.
-    assert outbound_hosts_for_agent("cursor-cli") == cursor_hosts
-    assert (
-        outbound_hosts_for_agent(
-            None, import_path="harbor.agents.installed.cursor_cli:CursorCli"
-        )
-        == cursor_hosts
-    )
-    assert outbound_hosts_for_agent("codex") == []
 
 
 def test_outbound_hosts_read_cursor_custom_endpoint():
@@ -86,11 +73,6 @@ def test_outbound_hosts_read_cursor_custom_endpoint():
         agent_env={"CURSOR_API_BASE_URL": "https://cursor-proxy.example/v1"},
     )
     assert hosts == ["cursor-proxy.example"]
-
-    assert outbound_hosts_for_agent(
-        "cursor-cli",
-        agent_env={"CURSOR_API_BASE_URL": "https://cursor-proxy.example/v1"},
-    ) == ["*.cursor.sh", "cursor-proxy.example"]
 
 
 def test_outbound_hosts_read_gemini_custom_endpoint():

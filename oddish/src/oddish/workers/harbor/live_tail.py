@@ -968,16 +968,21 @@ class LiveTailer:
         return len(rows)
 
     def _sanitize_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        payload = _redact_exact_value(event.get("payload"), self.runtime_redactions)
+        original_payload = event.get("payload")
+        payload = _redact_exact_value(original_payload, self.runtime_redactions)
+        # _redact_exact_value scrubs known runtime secrets. Its effect must be counted
+        # here too: if it redacted something but the general sanitizer reports no further
+        # change, returning the original event would persist the raw secret.
+        exact_redacted = payload != original_payload
         safe_payload = sanitize_transcript_value(
             payload if isinstance(payload, dict) else {}
         )
         clipped_payload, truncated = _clip_payload_strings(safe_payload.value)
-        if not safe_payload.changed and not truncated:
+        if not exact_redacted and not safe_payload.changed and not truncated:
             return event
         normalized = dict(event)
         normalized["payload"] = dict(clipped_payload)
-        if safe_payload.changed:
+        if exact_redacted or safe_payload.changed:
             normalized["payload"]["sanitized"] = True
         if truncated:
             normalized["payload"]["truncated"] = True

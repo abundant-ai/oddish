@@ -133,32 +133,6 @@ def _default_host(url: str) -> str | None:
     return _host_from_url(url)
 
 
-def outbound_hosts_for_agent(
-    agent_name: str | None,
-    *,
-    import_path: str | None = None,
-    agent_env: Mapping[str, str] | None = None,
-    agent_kwargs: dict[str, Any] | None = None,
-) -> list[str]:
-    """Return API hosts required by an agent harness itself.
-
-    Most harnesses call the provider named by ``model_name`` directly. Cursor
-    CLI is different: all model choices are transported through Cursor's API,
-    so its runtime hosts must be allowed even when the selected model id has a
-    non-Cursor provider prefix.
-    """
-    name = (agent_name or "").strip().lower()
-    path = (import_path or "").strip().lower()
-    if name == "cursor-cli" or name.startswith("cursor-cli-") or "cursor_cli" in path:
-        hosts = list(_CURSOR_RUNTIME_HOSTS)
-        hosts.extend(_hosts_from_env(agent_env, keys=_CURSOR_BASE_URL_ENV_KEYS))
-        extra_env = (agent_kwargs or {}).get("extra_env")
-        if isinstance(extra_env, dict):
-            hosts.extend(_hosts_from_env(extra_env, keys=_CURSOR_BASE_URL_ENV_KEYS))
-        return list(dict.fromkeys(hosts))
-    return []
-
-
 def outbound_hosts_for_model(
     model_name: str | None,
     *,
