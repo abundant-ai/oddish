@@ -528,9 +528,15 @@ function MethodologyNote() {
 // Top-level card
 // =============================================================================
 
-type ChartDimension = "agent" | "model" | "user" | "type";
+type ChartDimension = "agent" | "model" | "user" | "type" | "analysis_type";
 
-const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user", "type"];
+const CHART_DIMENSIONS: ChartDimension[] = [
+  "agent",
+  "model",
+  "user",
+  "type",
+  "analysis_type",
+];
 
 // "type" stacks model inference vs QA — labels the toggle without the generic
 // word "type", which reads as meaningless next to agent/model/user.
@@ -539,6 +545,7 @@ const DIMENSION_LABELS: Record<ChartDimension, string> = {
   model: "Model",
   user: "User",
   type: "Model vs QA",
+  analysis_type: "Analysis type",
 };
 
 export function CostBreakdownCard() {
@@ -560,7 +567,9 @@ export function CostBreakdownCard() {
         ? data.series_by_model
         : dimension === "user"
           ? data.series_by_user
-          : (data.series_by_type ?? data.series_by_agent)
+          : dimension === "type"
+            ? (data.series_by_type ?? data.series_by_agent)
+            : (data.series_by_analysis_type ?? data.series_by_agent)
     : null;
 
   return (

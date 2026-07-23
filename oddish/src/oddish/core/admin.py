@@ -1374,6 +1374,7 @@ class CostBreakdownResponse(BaseModel):
     series_by_user: CostSeries
     series_by_type: CostSeries
     series_qa_by_model: CostSeries
+    series_by_analysis_type: CostSeries
     totals: CostTotals
     by_user: list[CostUserBreakdown]
     by_model: list[CostModelBreakdown]
@@ -1633,8 +1634,8 @@ async def _qa_cost_time_series(
     *,
     since: datetime | None,
     bucket: str,
-) -> CostSeries:
-    """QA/analysis spend over time, stacked by model.
+) -> tuple[CostSeries, CostSeries]:
+    """QA/analysis spend over time, stacked by model and analysis type.
 
     Recorded as a direct native ``cost_usd`` on ``analysis_costs`` (no settled
     decomposition), on the job's ``created_at`` axis.
@@ -1644,17 +1645,20 @@ async def _qa_cost_time_series(
         select(
             bucket_col.label("bucket"),
             AnalysisCostModel.model.label("model"),
+            AnalysisCostModel.job_kind.label("job_kind"),
             func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0).label("cost_usd"),
             func.count(AnalysisCostModel.id).label("job_count"),
         )
         .where(AnalysisCostModel.deleted_at.is_(None))
-        .group_by(bucket_col, AnalysisCostModel.model)
+        .group_by(bucket_col, AnalysisCostModel.model, AnalysisCostModel.job_kind)
     )
     if since is not None:
         query = query.where(AnalysisCostModel.created_at >= since)
 
     per_bucket: dict[datetime, dict[str, float]] = {}
     totals: dict[str, float] = {}
+    type_per_bucket: dict[datetime, dict[str, float]] = {}
+    type_totals: dict[str, float] = {}
     jobs_per_bucket: dict[datetime, int] = {}
     for row in (await session.execute(query)).all():
         bstart = row.bucket
@@ -1663,15 +1667,32 @@ async def _qa_cost_time_series(
         slot = per_bucket.setdefault(bstart, {})
         slot[key] = slot.get(key, 0.0) + cost
         totals[key] = totals.get(key, 0.0) + cost
+        type_key = row.job_kind or "unknown"
+        type_slot = type_per_bucket.setdefault(bstart, {})
+        type_slot[type_key] = type_slot.get(type_key, 0.0) + cost
+        type_totals[type_key] = type_totals.get(type_key, 0.0) + cost
         jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(row.job_count or 0)
 
-    return _build_dimension_series(
-        "model",
-        bucket_starts=sorted(jobs_per_bucket.keys()),
-        per_bucket=per_bucket,
-        totals=totals,
-        trials_per_bucket=jobs_per_bucket,
-        labels={},
+    bucket_starts = sorted(jobs_per_bucket.keys())
+    return (
+        _build_dimension_series(
+            "model",
+            bucket_starts=bucket_starts,
+            per_bucket=per_bucket,
+            totals=totals,
+            trials_per_bucket=jobs_per_bucket,
+            labels={},
+        ),
+        _build_dimension_series(
+            "analysis_type",
+            bucket_starts=bucket_starts,
+            per_bucket=type_per_bucket,
+            totals=type_totals,
+            trials_per_bucket=jobs_per_bucket,
+            labels={
+                key: key.replace("_", " ").title() for key in type_totals
+            },
+        ),
     )
 
 
@@ -1889,7 +1910,7 @@ async def get_cost_breakdown_core(
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
         session, since=since, bucket=bucket, resolve_github_users=resolve_github_users
     )
-    series_qa_by_model = await _qa_cost_time_series(
+    series_qa_by_model, series_by_analysis_type = await _qa_cost_time_series(
         session, since=since, bucket=bucket
     )
     # Two-stack inference-vs-QA view over the same buckets; folds the grand
@@ -2292,6 +2313,7 @@ async def get_cost_breakdown_core(
         series_by_user=series_by_user,
         series_by_type=series_by_type,
         series_qa_by_model=series_qa_by_model,
+        series_by_analysis_type=series_by_analysis_type,
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),

@@ -886,6 +886,16 @@ async def test_cost_breakdown_includes_qa_analysis_cost():
         type_qa_total = sum(b.costs.get("qa", 0.0) for b in type_series.buckets)
         qa_series_grand_total = sum(b.cost_usd for b in qa_series.buckets)
         assert _approx(type_qa_total, qa_series_grand_total)
+        analysis_type_series = result.series_by_analysis_type
+        assert analysis_type_series.dimension == "analysis_type"
+        assert "trial_classifier" in {
+            key.key for key in analysis_type_series.keys
+        }
+        classifier_total = sum(
+            bucket.costs.get("trial_classifier", 0.0)
+            for bucket in analysis_type_series.buckets
+        )
+        assert classifier_total >= 1.0
     finally:
         async with get_session() as session:
             await session.execute(
