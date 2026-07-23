@@ -18,7 +18,11 @@ import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
 import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
-import { formatCostUsd, formatTokenCount } from "@/lib/format";
+import {
+  formatCostUsd,
+  formatCostUsdExact,
+  formatTokenCount,
+} from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
@@ -176,6 +180,17 @@ type ExperimentSummary = {
   billedHasNative: boolean;
   billedTokenCount: number;
   billedTokenTrialCount: number;
+  // Composite spend (additive; costUsd/ownedCostUsd/billedCostUsd stay
+  // inference-only). total = inference + qa + compute; owned/billed mirror the
+  // inference split. The Cost tile shows the member-wide total, New spend the
+  // owned total, and its billed sub-note the billed total.
+  qaCostUsd: number;
+  computeCostUsd: number;
+  totalCostUsd: number;
+  ownedQaCostUsd: number;
+  ownedComputeCostUsd: number;
+  ownedTotalCostUsd: number;
+  billedTotalCostUsd: number;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -264,6 +279,13 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     billedHasNative: acc.billedHasNative,
     billedTokenCount: acc.billedTokenCount,
     billedTokenTrialCount: acc.billedTokenTrialCount,
+    qaCostUsd: acc.qaCostUsd,
+    computeCostUsd: acc.computeCostUsd,
+    totalCostUsd: acc.totalCostUsd,
+    ownedQaCostUsd: acc.ownedQaCostUsd,
+    ownedComputeCostUsd: acc.ownedComputeCostUsd,
+    ownedTotalCostUsd: acc.ownedTotalCostUsd,
+    billedTotalCostUsd: acc.billedTotalCostUsd,
   };
 }
 
@@ -702,7 +724,7 @@ function ExperimentSummaryBar({
                       : summary.costHasEstimated
                         ? ". Estimated from token counts × static model pricing."
                         : ". Reported by the agent runtime."
-                  }`
+                  }. Composite total ${formatCostUsdExact(summary.totalCostUsd)}: ${formatCostUsdExact(summary.costUsd)} inference · ${formatCostUsdExact(summary.qaCostUsd)} QA · ${formatCostUsdExact(summary.computeCostUsd)} sandbox`
                 : "No cost data reported yet"
           }
         >
@@ -715,7 +737,7 @@ function ExperimentSummaryBar({
                   ~
                 </span>
               )}
-              {formatCostUsd(summary.costUsd)}
+              {formatCostUsd(summary.totalCostUsd)}
               {summary.costHasEstimated && summary.costHasNative && (
                 <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
                   *
@@ -750,7 +772,7 @@ function ExperimentSummaryBar({
                       // what the experiment did; surface it here rather than
                       // in the headline.
                       summary.billedTrialCount > 0
-                        ? `. ${formatCostUsd(summary.billedCostUsd)} of this was billed to user quotas`
+                        ? `. ${formatCostUsd(summary.billedTotalCostUsd)} of this was billed to user quotas`
                         : ". None of it was billed to a user quota"
                     }${
                       costIsSpend
@@ -762,7 +784,7 @@ function ExperimentSummaryBar({
                         : summary.ownedHasEstimated
                           ? ". Estimated from token counts × static model pricing."
                           : ". Reported by the agent runtime."
-                    }`
+                    }. Composite total ${formatCostUsdExact(summary.ownedTotalCostUsd)}: ${formatCostUsdExact(summary.ownedCostUsd)} inference · ${formatCostUsdExact(summary.ownedQaCostUsd)} QA · ${formatCostUsdExact(summary.ownedComputeCostUsd)} sandbox`
                   : // Owned usage first: an experiment whose own trials
                     // reported tokens but no priced cost DID run work — it
                     // must not read as a pure collection.
@@ -782,7 +804,7 @@ function ExperimentSummaryBar({
                     ~
                   </span>
                 )}
-                {formatCostUsd(summary.ownedCostUsd)}
+                {formatCostUsd(summary.ownedTotalCostUsd)}
                 {summary.ownedHasEstimated && summary.ownedHasNative && (
                   <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
                     *
@@ -1236,6 +1258,19 @@ export function ExperimentDetailView({
       billedHasNative: costTotals.billed_has_native,
       billedTokenCount: costTotals.billed_token_count,
       billedTokenTrialCount: costTotals.billed_token_trial_count,
+      // Composite (QA + compute) folds over the same member population as the
+      // inference scopes above. ?? base.*: deploy-skew guard — a backend that
+      // predates these fields omits them, so fall back to the client fold.
+      qaCostUsd: costTotals.qa_cost_usd ?? base.qaCostUsd,
+      computeCostUsd: costTotals.compute_cost_usd ?? base.computeCostUsd,
+      totalCostUsd: costTotals.total_cost_usd ?? base.totalCostUsd,
+      ownedQaCostUsd: costTotals.owned_qa_cost_usd ?? base.ownedQaCostUsd,
+      ownedComputeCostUsd:
+        costTotals.owned_compute_cost_usd ?? base.ownedComputeCostUsd,
+      ownedTotalCostUsd:
+        costTotals.owned_total_cost_usd ?? base.ownedTotalCostUsd,
+      billedTotalCostUsd:
+        costTotals.billed_total_cost_usd ?? base.billedTotalCostUsd,
     };
   }, [deferredTasksForDerivedData, costTotals]);
 

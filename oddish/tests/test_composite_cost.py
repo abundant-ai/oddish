@@ -25,6 +25,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from sqlalchemy import insert
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -33,6 +34,9 @@ from oddish.core.cost_basis import (  # noqa: E402
     CompositeCost,
     composite_cost_by_trial,
     is_combine_copy,
+)
+from oddish.core.endpoints.experiment_cost import (  # noqa: E402
+    get_experiment_cost_totals,
 )
 from oddish.core.endpoints.task_detail import (  # noqa: E402
     _aggregate_task_detail_rollups,
@@ -55,6 +59,7 @@ from oddish.db import (  # noqa: E402
     TrialStatus,
     utcnow,
 )
+from oddish.db.models import experiment_trials  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
 _ORG = f"composite-org-{_RUN}"
@@ -80,12 +85,14 @@ def _trial(
     billed_user_id: str | None = None,
     origin: TrialOrigin = TrialOrigin.ODDISH,
     is_probe: bool = False,
+    experiment_id: str = _EXP,
+    deleted_at=None,
 ) -> TrialModel:
     return TrialModel(
         id=trial_id,
         name=trial_id,
         task_id=_TASK,
-        experiment_id=_EXP,
+        experiment_id=experiment_id,
         org_id=_ORG,
         agent="codex",
         provider="openai",
@@ -102,6 +109,7 @@ def _trial(
         superseded_by_trial_id=superseded_by_trial_id,
         idempotency_key=idempotency_key,
         billed_user_id=billed_user_id,
+        deleted_at=deleted_at,
     )
 
 
@@ -489,3 +497,111 @@ async def test_browse_tasks_core_folds_composite_and_counts_imports(session):
     assert item.billed_qa_cost_usd == pytest.approx(0.15)
     assert item.billed_compute_cost_usd == pytest.approx(0.50)
     assert item.billed_total_cost_usd == pytest.approx(0.50 + 0.15 + 0.50)  # 1.15
+
+
+# --- Whole-experiment rollup (Slice 4): composite fold over membership ----------
+
+# Experiment eligibility differs from task-detail AND the browser: the population
+# is trial_in_experiment MEMBERSHIP under include_deleted (no probe/superseded
+# filter), split owned (homed here) vs gathered, with billed a subset of owned.
+# QA + compute must fold over exactly that inference population: a deleted-but-
+# member trial still contributes (its inference is counted under include_deleted),
+# a gathered trial counts toward cost but not owned, and only owned+billed feeds
+# the billed subset.
+_EXP_OTHER = f"composite-exp-other-{_RUN}"
+_XP_OWNED_BILLED = f"{_TASK}-xp-owned-billed"
+_XP_OWNED_PLAIN = f"{_TASK}-xp-owned-plain"
+_XP_OWNED_DELETED = f"{_TASK}-xp-owned-deleted"
+_XP_GATHERED = f"{_TASK}-xp-gathered"
+
+
+@pytest.mark.asyncio
+async def test_experiment_totals_fold_composite_over_membership(session):
+    """``get_experiment_cost_totals`` folds QA + compute over the same member
+    population as inference, with the owned/billed split and include_deleted
+    membership mirrored exactly.
+
+    Members: two owned trials (one billed), an owned trial that was soft-deleted
+    (still counted, like its inference under include_deleted), and a trial homed
+    in another experiment but gathered in (counts toward cost, not owned). Each
+    carries analysis_costs + modal_costs; a soft-deleted QA row and an open
+    (NULL-cost) compute span on the billed trial must be excluded.
+    """
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    session.add(ExperimentModel(id=_EXP_OTHER, name=_EXP_OTHER, org_id=_ORG))
+    session.add(
+        TaskModel(
+            id=_TASK,
+            name=_TASK,
+            org_id=_ORG,
+            user="tester",
+            task_path="/tmp/composite-cost-test",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+
+    owned_billed = _trial(_XP_OWNED_BILLED, cost_usd=0.50, billed_user_id=_BILLED_USER)
+    owned_plain = _trial(_XP_OWNED_PLAIN, cost_usd=0.25)
+    owned_deleted = _trial(_XP_OWNED_DELETED, cost_usd=0.40, deleted_at=utcnow())
+    gathered = _trial(_XP_GATHERED, cost_usd=0.60, experiment_id=_EXP_OTHER)
+    session.add_all([owned_billed, owned_plain, owned_deleted, gathered])
+    await session.flush()
+
+    # Gather the other experiment's trial into _EXP (membership, not re-home).
+    await session.execute(
+        insert(experiment_trials).values(
+            [{"experiment_id": _EXP, "trial_id": gathered.id}]
+        )
+    )
+
+    session.add_all(
+        [
+            # owned_billed: QA 0.10 + 0.05 = 0.15 (one deleted row excluded);
+            # compute 0.20 + 0.30 = 0.50 (one open/unpriced span excluded).
+            _qa(_XP_OWNED_BILLED, 0.10),
+            _qa(_XP_OWNED_BILLED, 0.05),
+            _qa(_XP_OWNED_BILLED, 0.99, deleted=True),
+            _span(_XP_OWNED_BILLED, Decimal("0.20"), 0),
+            _span(_XP_OWNED_BILLED, Decimal("0.30"), 1),
+            _span(_XP_OWNED_BILLED, None, 2),
+            # owned_plain: QA 0.07; compute 0.11.
+            _qa(_XP_OWNED_PLAIN, 0.07),
+            _span(_XP_OWNED_PLAIN, Decimal("0.11"), 0),
+            # owned_deleted: QA 0.03; compute 0.09 -- counted (member under
+            # include_deleted), owned, but not billed.
+            _qa(_XP_OWNED_DELETED, 0.03),
+            _span(_XP_OWNED_DELETED, Decimal("0.09"), 0),
+            # gathered: QA 0.02; compute 0.08 -- counted toward cost, NOT owned.
+            _qa(_XP_GATHERED, 0.02),
+            _span(_XP_GATHERED, Decimal("0.08"), 0),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(session, experiment_id=_EXP, org_id=_ORG)
+
+    # Inference (unchanged): every member trial, deleted + gathered included.
+    assert totals.cost_usd == pytest.approx(0.50 + 0.25 + 0.40 + 0.60)  # 1.75
+    assert totals.total_trials == 4
+
+    # Member-wide composite folds QA/compute over that same population.
+    assert totals.qa_cost_usd == pytest.approx(0.15 + 0.07 + 0.03 + 0.02)  # 0.27
+    assert totals.compute_cost_usd == pytest.approx(0.50 + 0.11 + 0.09 + 0.08)  # 0.78
+    assert totals.total_cost_usd == pytest.approx(1.75 + 0.27 + 0.78)  # 2.80
+
+    # Owned (homed here) excludes the gathered trial's QA/compute.
+    assert totals.owned_cost_usd == pytest.approx(0.50 + 0.25 + 0.40)  # 1.15
+    assert totals.owned_qa_cost_usd == pytest.approx(0.15 + 0.07 + 0.03)  # 0.25
+    assert totals.owned_compute_cost_usd == pytest.approx(0.50 + 0.11 + 0.09)  # 0.70
+    assert totals.owned_total_cost_usd == pytest.approx(1.15 + 0.25 + 0.70)  # 2.10
+
+    # Billed is the subset of owned carrying a billed_user_id (only owned_billed).
+    assert totals.billed_cost_usd == pytest.approx(0.50)
+    assert totals.billed_qa_cost_usd == pytest.approx(0.15)
+    assert totals.billed_compute_cost_usd == pytest.approx(0.50)
+    assert totals.billed_total_cost_usd == pytest.approx(0.50 + 0.15 + 0.50)  # 1.15
+
+    # Had the excluded ledger rows leaked, QA would carry the deleted 0.99 and
+    # compute the open span. Pin the exclusion.
+    assert totals.qa_cost_usd != pytest.approx(0.27 + 0.99)
+    assert totals.owned_compute_cost_usd == pytest.approx(0.70)

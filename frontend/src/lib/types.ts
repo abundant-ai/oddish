@@ -397,6 +397,18 @@ export interface ExperimentCostTotals {
   billed_has_native: boolean;
   billed_token_count: number;
   billed_token_trial_count: number;
+  // Composite spend (additive; cost_usd/owned_cost_usd/billed_cost_usd stay
+  // inference-only). total = inference + qa + compute; owned_*/billed_* mirror
+  // the same owned/billed split as the inference scopes.
+  qa_cost_usd: number;
+  compute_cost_usd: number;
+  total_cost_usd: number;
+  owned_qa_cost_usd: number;
+  owned_compute_cost_usd: number;
+  owned_total_cost_usd: number;
+  billed_qa_cost_usd: number;
+  billed_compute_cost_usd: number;
+  billed_total_cost_usd: number;
   total_trials: number;
 }
 

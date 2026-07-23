@@ -63,6 +63,14 @@ Each group is therefore priced exactly once and the result equals the
 per-trial sum. Feeding the pre-clamped totals back through
 ``estimate_cost_usd`` re-derives the same split (its clamp is idempotent on
 already-clamped inputs), so pricing lives in exactly one place.
+
+On top of that inference number, ``get_experiment_cost_totals`` adds the trial's
+two other spend components -- QA (the ``analysis_costs`` ledger) and compute (the
+``modal_costs`` ledger) -- so the tile can show a composite ``total_*`` =
+inference + qa + compute. Those are two aggregate sums (``_experiment_ledger
+_totals_select``) over the *same* member population, under the same
+membership/``include_deleted``/``org_id`` predicate and split into the same
+``owned``/``billed`` scopes, so every composite total agrees with its parts.
 """
 
 from __future__ import annotations
@@ -72,7 +80,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.experiment_membership import trial_in_experiment
-from oddish.db.models import TrialModel
+from oddish.db.models import AnalysisCostModel, ModalCostSpanModel, TrialModel
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
 
@@ -232,11 +240,130 @@ def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
     return totals
 
 
+def _experiment_ledger_totals_select(
+    ledger_model: type,
+    cost_column,
+    experiment_id: str,
+    *,
+    org_id: str | None = None,
+    extra_filter=None,
+) -> Select:
+    """Total / owned / billed sums of a per-trial cost ledger over the member trials.
+
+    The composite twin of :func:`experiment_cost_groups_select` for the QA
+    (``analysis_costs``) and compute (``modal_costs``) ledgers. It prices the
+    *same* member trials the inference fold does -- same ``trial_in_experiment``
+    membership, same ``include_deleted``, same optional ``org_id`` -- split into
+    the same three scopes (``owned`` = homed here, ``billed`` = the billed subset
+    of owned). Adding qa/compute for exactly the trials whose inference is
+    counted is what keeps the composite total consistent with its parts.
+
+    Inner-joining the ledger to its trial counts each ledger row once even when
+    the trial is both homed and gathered (the join keys on ``trial_id``), so this
+    never needs a ``GROUP BY trial_id``. ``include_deleted`` keeps a soft-deleted
+    member trial's ledger rows -- its inference is counted under the same option,
+    so its qa/compute must be too. The ledger's own ``deleted_at`` is filtered
+    explicitly: these models are not soft-delete-registered, and under
+    ``include_deleted`` nothing would filter them otherwise -- mirroring
+    :func:`oddish.core.cost_basis.composite_cost_by_trial`.
+    """
+    billed = TrialModel.billed_user_id.isnot(None)
+    owned = TrialModel.experiment_id == experiment_id
+    member = trial_in_experiment(experiment_id)
+
+    query = (
+        select(
+            func.coalesce(func.sum(cost_column), 0.0).label("total"),
+            func.coalesce(func.sum(case((owned, cost_column), else_=0.0)), 0.0).label(
+                "owned"
+            ),
+            func.coalesce(
+                func.sum(case((and_(owned, billed), cost_column), else_=0.0)), 0.0
+            ).label("billed"),
+        )
+        .select_from(ledger_model)
+        .join(TrialModel, ledger_model.trial_id == TrialModel.id)
+        .where(member, ledger_model.deleted_at.is_(None))
+        .execution_options(include_deleted=True)
+    )
+    if extra_filter is not None:
+        query = query.where(extra_filter)
+    if org_id is not None:
+        query = query.where(TrialModel.org_id == org_id)
+    return query
+
+
+async def _add_experiment_composite_costs(
+    session: AsyncSession,
+    totals: ExperimentCostTotals,
+    *,
+    experiment_id: str,
+    org_id: str | None,
+) -> None:
+    """Fold QA + compute ledger spend into ``totals`` over the inference population.
+
+    Two aggregate queries (one per ledger), each returning the member / owned /
+    billed sums the inference fold already produced for inference. ``total_*`` is
+    inference + qa + compute at each scope -- the inference components were folded
+    in by :func:`fold_experiment_cost_groups` before this runs.
+    """
+    qa = (
+        await session.execute(
+            _experiment_ledger_totals_select(
+                AnalysisCostModel,
+                AnalysisCostModel.cost_usd,
+                experiment_id,
+                org_id=org_id,
+            )
+        )
+    ).one()
+    compute = (
+        await session.execute(
+            _experiment_ledger_totals_select(
+                ModalCostSpanModel,
+                ModalCostSpanModel.cost_usd,
+                experiment_id,
+                org_id=org_id,
+                # Open/unpriced spans (NULL cost) are excluded, matching
+                # composite_cost_by_trial and the admin cost dashboard.
+                extra_filter=ModalCostSpanModel.cost_usd.isnot(None),
+            )
+        )
+    ).one()
+
+    totals.qa_cost_usd = float(qa.total or 0.0)
+    totals.owned_qa_cost_usd = float(qa.owned or 0.0)
+    totals.billed_qa_cost_usd = float(qa.billed or 0.0)
+    totals.compute_cost_usd = float(compute.total or 0.0)
+    totals.owned_compute_cost_usd = float(compute.owned or 0.0)
+    totals.billed_compute_cost_usd = float(compute.billed or 0.0)
+    totals.total_cost_usd = (
+        totals.cost_usd + totals.qa_cost_usd + totals.compute_cost_usd
+    )
+    totals.owned_total_cost_usd = (
+        totals.owned_cost_usd + totals.owned_qa_cost_usd + totals.owned_compute_cost_usd
+    )
+    totals.billed_total_cost_usd = (
+        totals.billed_cost_usd
+        + totals.billed_qa_cost_usd
+        + totals.billed_compute_cost_usd
+    )
+
+
 async def get_experiment_cost_totals(
     session: AsyncSession, *, experiment_id: str, org_id: str | None = None
 ) -> ExperimentCostTotals:
-    """Cost rollup over every member trial, independent of paging."""
+    """Cost rollup over every member trial, independent of paging.
+
+    Inference is priced by the grouped fold; QA + compute are then summed over
+    the identical member population (and owned/billed subsets) so the composite
+    ``total_*`` fields agree with their inference parts.
+    """
     result = await session.execute(
         experiment_cost_groups_select(experiment_id, org_id=org_id)
     )
-    return fold_experiment_cost_groups(result.all())
+    totals = fold_experiment_cost_groups(result.all())
+    await _add_experiment_composite_costs(
+        session, totals, experiment_id=experiment_id, org_id=org_id
+    )
+    return totals

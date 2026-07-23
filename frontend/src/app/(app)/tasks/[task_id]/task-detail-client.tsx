@@ -371,6 +371,12 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     ownedTrialCount: v.cost_trial_count,
     ownedHasEstimated: v.cost_has_estimated,
     ownedHasNative: v.cost_has_native,
+    ownedQaCostUsd: v.qa_cost_usd,
+    ownedComputeCostUsd: v.compute_cost_usd,
+    ownedTotalCostUsd: v.total_cost_usd,
+    billedQaCostUsd: v.billed_qa_cost_usd,
+    billedComputeCostUsd: v.billed_compute_cost_usd,
+    billedTotalCostUsd: v.billed_total_cost_usd,
     tokenCount: 0,
     tokenTrialCount: 0,
     ownedTokenCount: 0,
@@ -638,11 +644,16 @@ function AgentCard({
           <span>
             <span className="text-[color:var(--paper-ink-3)]">total cost</span>{" "}
             <CostBadge
-              cost={summary.costUsd}
+              cost={summary.totalCostUsd}
               trialCount={summary.costTrialCount}
               hasEstimated={summary.costHasEstimated}
               hasNative={summary.costHasNative}
               size="sm"
+              breakdown={{
+                inference: summary.costUsd,
+                qa: summary.qaCostUsd,
+                compute: summary.computeCostUsd,
+              }}
             />
           </span>
           <span title="Mean cost per priced trial">

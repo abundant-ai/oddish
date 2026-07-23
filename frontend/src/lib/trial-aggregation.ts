@@ -17,10 +17,17 @@ export type TrialAggregate = {
   costHasEstimated: boolean;
   costHasNative: boolean;
   // Composite spend (additive; costUsd stays inference-only). qa = analysis
-  // ledger, compute = modal ledger, total = inference + qa + compute.
+  // ledger, compute = modal ledger, total = inference + qa + compute. The
+  // owned_*/billed_* variants mirror the owned/billed inference split below.
   qaCostUsd: number;
   computeCostUsd: number;
   totalCostUsd: number;
+  ownedQaCostUsd: number;
+  ownedComputeCostUsd: number;
+  ownedTotalCostUsd: number;
+  billedQaCostUsd: number;
+  billedComputeCostUsd: number;
+  billedTotalCostUsd: number;
   ownedCostUsd: number;
   ownedTrialCount: number;
   ownedHasEstimated: boolean;
@@ -57,6 +64,12 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   qaCostUsd: 0,
   computeCostUsd: 0,
   totalCostUsd: 0,
+  ownedQaCostUsd: 0,
+  ownedComputeCostUsd: 0,
+  ownedTotalCostUsd: 0,
+  billedQaCostUsd: 0,
+  billedComputeCostUsd: 0,
+  billedTotalCostUsd: 0,
   ownedCostUsd: 0,
   ownedTrialCount: 0,
   ownedHasEstimated: false,
@@ -117,13 +130,25 @@ export function accumulateTrial(
   }
   // QA + compute are separate ledgers, not gated on inference being priced, so
   // the total folds inference (0 when unpriced) back in per trial. Mirrors the
-  // server-side task-detail composite fold.
-  acc.qaCostUsd += trial.qa_cost_usd ?? 0;
-  acc.computeCostUsd += trial.compute_cost_usd ?? 0;
-  acc.totalCostUsd +=
-    (trial.cost_usd ?? 0) +
-    (trial.qa_cost_usd ?? 0) +
-    (trial.compute_cost_usd ?? 0);
+  // server-side task-detail composite fold. The owned/billed composite subsets
+  // follow the same gating as the inference split above (owned unless the trial
+  // is rendered under an experiment that doesn't own it; billed within owned).
+  const qaCost = trial.qa_cost_usd ?? 0;
+  const computeCost = trial.compute_cost_usd ?? 0;
+  const compositeCost = (trial.cost_usd ?? 0) + qaCost + computeCost;
+  acc.qaCostUsd += qaCost;
+  acc.computeCostUsd += computeCost;
+  acc.totalCostUsd += compositeCost;
+  if (owned) {
+    acc.ownedQaCostUsd += qaCost;
+    acc.ownedComputeCostUsd += computeCost;
+    acc.ownedTotalCostUsd += compositeCost;
+    if (trial.is_billed) {
+      acc.billedQaCostUsd += qaCost;
+      acc.billedComputeCostUsd += computeCost;
+      acc.billedTotalCostUsd += compositeCost;
+    }
+  }
   if (trial.status === "success") acc.completed += 1;
   else if (trial.status === "failed") acc.failed += 1;
   else if (trial.status === "skipped") acc.skipped += 1;

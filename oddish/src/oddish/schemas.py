@@ -935,6 +935,22 @@ class ExperimentCostTotals(BaseModel):
     billed_has_native: bool = False
     billed_token_count: int = 0
     billed_token_trial_count: int = 0
+    # Composite spend components (additive; ``cost_usd`` / ``owned_cost_usd`` /
+    # ``billed_cost_usd`` stay inference-only). ``qa`` sums the ``analysis_costs``
+    # ledger, ``compute`` the ``modal_costs`` ledger, ``total`` = inference + qa
+    # + compute. The ``owned_*`` / ``billed_*`` variants mirror the inference
+    # scopes exactly: qa/compute are summed over the SAME member trials (and the
+    # same owned/billed subsets) the inference fold prices, under the same
+    # membership + ``include_deleted`` predicate.
+    qa_cost_usd: float = 0.0
+    compute_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
+    owned_qa_cost_usd: float = 0.0
+    owned_compute_cost_usd: float = 0.0
+    owned_total_cost_usd: float = 0.0
+    billed_qa_cost_usd: float = 0.0
+    billed_compute_cost_usd: float = 0.0
+    billed_total_cost_usd: float = 0.0
     total_trials: int = 0
 
 
