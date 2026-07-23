@@ -9,15 +9,19 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock, AnalyzerInput, AnalyzerType
-from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.blocks.analyzer.analyzer_block import (
+    AnalyzerBlock,
+    AnalyzerInput,
+    AnalyzerType,
+)
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType, SandboxConfig
 from oddish.core.prompts import get_prompt_core
 from oddish.db.models import (
     ExperimentModel,
     JobStatus,
     PromptModel,
     PromptVersionModel,
-    QARunModel,
+    AnalyzerRunModel,
     TaskModel,
     TrialModel,
 )
@@ -25,7 +29,7 @@ from oddish.schemas import CustomQARunRequest, CustomQARunResponse
 
 
 def _run_response(
-    run: QARunModel, *, prompt: PromptModel, version: PromptVersionModel
+    run: AnalyzerRunModel, *, prompt: PromptModel, version: PromptVersionModel
 ) -> CustomQARunResponse:
     return CustomQARunResponse(
         id=run.id,
@@ -38,9 +42,7 @@ def _run_response(
         model=run.model,
         reasoning_effort=run.reasoning_effort,
         backend=(
-            "sandbox"
-            if run.llm_client_type == LLMClientType.SANDBOX.value
-            else "api"
+            "sandbox" if run.llm_client_type == LLMClientType.SANDBOX.value else "api"
         ),
         status=run.status.value,
         output=run.output,
@@ -54,13 +56,13 @@ async def get_custom_qa_run_core(
 ) -> CustomQARunResponse:
     row = (
         await session.execute(
-            select(QARunModel, PromptVersionModel, PromptModel)
+            select(AnalyzerRunModel, PromptVersionModel, PromptModel)
             .join(
                 PromptVersionModel,
-                PromptVersionModel.id == QARunModel.prompt_version_id,
+                PromptVersionModel.id == AnalyzerRunModel.prompt_version_id,
             )
             .join(PromptModel, PromptModel.id == PromptVersionModel.prompt_id)
-            .where(QARunModel.id == run_id, QARunModel.org_id == org_id)
+            .where(AnalyzerRunModel.id == run_id, AnalyzerRunModel.org_id == org_id)
         )
     ).first()
     if row is None:
@@ -72,7 +74,9 @@ async def get_custom_qa_run_core(
 async def _validate_scope(
     session: AsyncSession, *, kind: str, id: str, org_id: str | None
 ) -> None:
-    model = {"experiment": ExperimentModel, "task": TaskModel, "trial": TrialModel}[kind]
+    model = {"experiment": ExperimentModel, "task": TaskModel, "trial": TrialModel}[
+        kind
+    ]
     exists = await session.scalar(
         select(model.id).where(model.id == id, model.org_id == org_id)
     )
@@ -88,7 +92,8 @@ async def run_custom_qa_core(
     data: CustomQARunRequest,
     org_id: str | None,
     user_id: str | None,
-    runtime_env: dict[str, str] | None = None,
+    oddish_api_key: str | None = None,
+    oddish_api_base_url: str | None = None,
 ) -> list[CustomQARunResponse]:
     await _validate_scope(
         session, kind=data.scope_type, id=data.scope_id, org_id=org_id
@@ -105,7 +110,9 @@ async def run_custom_qa_core(
     client_type = (
         LLMClientType.SANDBOX if data.backend == "sandbox" else LLMClientType.API
     )
-    pending: list[tuple[PromptModel, PromptVersionModel, QARunModel, AnalyzerBlock]] = []
+    pending: list[
+        tuple[PromptModel, PromptVersionModel, AnalyzerRunModel, AnalyzerBlock]
+    ] = []
     for variant in data.variants:
         prompt, version = await get_prompt_core(
             session, variant.kind.strip(), version=variant.version
@@ -142,7 +149,7 @@ async def run_custom_qa_core(
                 f"--variant {ref} --model {data.model}"
             ),
         }
-        run = QARunModel(
+        run = AnalyzerRunModel(
             org_id=org_id,
             prompt_version_id=version.id,
             triggered_by_user_id=user_id,
@@ -159,9 +166,6 @@ async def run_custom_qa_core(
         )
         session.add(run)
         await session.flush()
-        env = dict(runtime_env or {}) if data.allow_credential_forwarding else {}
-        if data.reasoning_effort and data.backend == "sandbox":
-            env["CLAUDE_CODE_EFFORT_LEVEL"] = data.reasoning_effort
         block = AnalyzerBlock(
             analyzer_type=AnalyzerType.CUSTOM_QA,
             llm_client_type=client_type,
@@ -172,18 +176,38 @@ async def run_custom_qa_core(
             model=data.model,
             triggered_by_user_id=user_id,
             attribution_org_id=org_id,
-            runtime_env=env or None,
+            sandbox_config=(
+                SandboxConfig(
+                    oddish_api_key=(
+                        oddish_api_key if data.allow_credential_forwarding else None
+                    ),
+                    oddish_api_base_url=(
+                        oddish_api_base_url
+                        if data.allow_credential_forwarding
+                        else None
+                    ),
+                    reasoning_effort=data.reasoning_effort,
+                )
+                if client_type == LLMClientType.SANDBOX
+                else None
+            ),
             block_metadata=config,
         )
         run.analyzer_block_id = block.id
         pending.append((prompt, version, run, block))
     await session.commit()
 
+    # The analyzer calls can run for minutes. Explicitly detach the prepared
+    # rows and release the request session before waiting on external work;
+    # the same AsyncSession can be reused afterwards and the rows reattached
+    # for the short finalization transaction.
+    await session.close()
     results = await asyncio.gather(
         *(block.run() for *_, block in pending), return_exceptions=True
     )
     responses = []
     for (prompt, version, run, block), result in zip(pending, results, strict=True):
+        session.add(run)
         run.status = block.status
         run.error = block.error
         if not isinstance(result, BaseException):

@@ -2,9 +2,10 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException
 
 from auth import APIKeyScope, AuthContext, require_auth
+from oddish.config import api_base_url_for_modal_app, settings
 from oddish.core.custom_qa import (
     get_custom_qa_run_core,
     run_custom_qa_core,
@@ -19,7 +20,9 @@ router = APIRouter(tags=["QA"])
 
 
 @router.get("/qa/runs/{run_id}", response_model=CustomQARunResponse)
-async def get_run(run_id: str, auth: Annotated[AuthContext, Depends(require_auth)]) -> CustomQARunResponse:
+async def get_run(
+    run_id: str, auth: Annotated[AuthContext, Depends(require_auth)]
+) -> CustomQARunResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
         return await get_custom_qa_run_core(session, run_id=run_id, org_id=auth.org_id)
@@ -28,12 +31,12 @@ async def get_run(run_id: str, auth: Annotated[AuthContext, Depends(require_auth
 @router.post("/qa/runs", response_model=list[CustomQARunResponse])
 async def run_qa(
     data: CustomQARunRequest,
-    request: Request,
     auth: Annotated[AuthContext, Depends(require_auth)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> list[CustomQARunResponse]:
     auth.require_scope(APIKeyScope.TASKS)
-    runtime_env = None
+    oddish_api_key = None
+    oddish_api_base_url = None
     if data.allow_credential_forwarding:
         token = (authorization or "").removeprefix("Bearer ").strip()
         if not token.startswith("ok_"):
@@ -41,12 +44,16 @@ async def run_qa(
                 status_code=400,
                 detail="Credential forwarding requires API-key authentication (ok_...), not a user JWT",
             )
-        runtime_env = {
-            "ODDISH_API_KEY": token,
-            "ODDISH_API_URL": str(request.base_url).rstrip("/"),
-        }
+        oddish_api_key = token
+        oddish_api_base_url = (
+            settings.public_api_base_url or api_base_url_for_modal_app()
+        ).rstrip("/")
     async with get_session() as session:
         return await run_custom_qa_core(
-            session, data=data, org_id=auth.org_id, user_id=auth.user_id,
-            runtime_env=runtime_env,
+            session,
+            data=data,
+            org_id=auth.org_id,
+            user_id=auth.user_id,
+            oddish_api_key=oddish_api_key,
+            oddish_api_base_url=oddish_api_base_url,
         )

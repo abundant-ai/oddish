@@ -1948,7 +1948,7 @@ class CustomQARunRequest(BaseModel):
     variants: list[QAPromptVariant] = Field(min_length=1)
     model: str = "claude-sonnet-4-6"
     reasoning_effort: Literal["low", "medium", "high"] | None = None
-    backend: Literal["api", "sandbox"] = "api"
+    backend: Literal["api", "sandbox"] = "sandbox"
     allow_credential_forwarding: bool = False
 
 
@@ -1967,7 +1967,6 @@ class CustomQARunResponse(BaseModel):
     output: Any | None = None
     error: str | None = None
     run_config: dict
-
 
 
 # ---------------------------------------------------------------------------

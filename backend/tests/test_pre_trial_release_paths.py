@@ -21,6 +21,22 @@ class _Recorder:
         self.released.append(task_version_id)
 
 
+@pytest.mark.asyncio
+async def test_global_flag_skips_registered_synth_before_claim(monkeypatch):
+    async def fail_claim(task_id):
+        raise AssertionError("disabled pre-trial must not claim a version")
+
+    async def fake_synth(task_id, version_id, trial_ids, timeout):
+        raise AssertionError("disabled pre-trial must not run synthesis")
+
+    monkeypatch.setattr(qa.settings, "pre_trial_enabled", False)
+    monkeypatch.setattr(qa, "_pre_trial_synth_fn", fake_synth)
+    monkeypatch.setattr(qa, "_pre_trial_enabled_fn", None)
+    monkeypatch.setattr(qa, "_claim_pre_trial_version", fail_claim)
+
+    await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+
+
 @pytest.fixture
 def wired(monkeypatch):
     """Wire a claimed version + enabled pre-trial; return the release recorder."""

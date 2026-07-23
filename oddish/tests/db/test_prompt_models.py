@@ -1,4 +1,4 @@
-from oddish.db import PromptModel, PromptVersionModel
+from oddish.db import AnalyzerRunModel, PromptModel, PromptVersionModel
 
 
 def test_models_expose_expected_columns():
@@ -16,6 +16,10 @@ def test_models_expose_expected_columns():
         "created_at",
         "created_by",
     } <= vcols
+
+
+def test_analyzer_run_uses_general_lineage_table_name():
+    assert AnalyzerRunModel.__tablename__ == "analyzer_runs"
 
 
 def test_unique_constraint_on_prompt_id_version():

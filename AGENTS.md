@@ -205,7 +205,7 @@ back to the packaged `analyze/classify_prompt.txt`.
 lineage. The shared `prompts` registry is kind-addressed — built-in UPPERCASE
 kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) plus lowercase-slug custom kinds for
 saved QA variants — `prompt_versions` stores immutable numbered content, and
-`qa_runs` records the exact version, scope (`experiment` / `task` /
+`analyzer_runs` records the exact version, scope (`experiment` / `task` /
 `trial`), model, reasoning effort, backend, resolved config/command,
 `analyzer_blocks` ID, status, and output. Every prompt edit appends an
 immutable version and the highest version is always the one that runs (no
@@ -249,7 +249,19 @@ building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
 backends, so verdict synthesis runs in a backend-free worker. The Daytona
 sandbox backend needs cc_chat and stays in
 `backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
-itself into core's client factory on import.
+itself into core's client factory on import. `AnalyzerBlock` owns a
+self-provisioned client's complete lifecycle, including sandbox file downloads
+before close. Hosted callers request sandbox capabilities declaratively; the
+registered Daytona factory owns runtime/CLI installation, short-lived internal
+key minting, and key/sandbox cleanup. Callers must not provision and inject a
+one-off sandbox client for those capabilities.
+
+Hosted failure analysis uses
+`backend/api/services/cc_chat/analyzer_block_runner.py`: it partitions a bucket
+into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
+up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
+host-side, and supplies those artifacts declaratively to a separate reduce
+block. Map/reduce blocks never share or receive a live runtime/client.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.

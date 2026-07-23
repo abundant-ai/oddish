@@ -111,13 +111,13 @@ from .byok_resolver import install_byok_resolver
 
 install_byok_resolver()
 
-# Swap the core ANALYZER handler for the sandbox-per-cohort one (bad + good
-# each get their own Daytona agent). Gated by settings.analyzer_sandbox_enabled;
-# off -> the core API path, unchanged.
+# Swap the core ANALYZER handler for the multi-block sandbox runner. Each map
+# batch gets an independent AnalyzerBlock/sandbox, bounded by map_concurrency,
+# followed by a reduce block.
 from .analyzer_sandbox import install_sandbox_analyzer_handler
 
 if install_sandbox_analyzer_handler():
-    console.print("[dim]analyzer: sandbox-per-cohort handler registered[/dim]")
+    console.print("[dim]analyzer: multi-block sandbox handler registered[/dim]")
 
 # Register the Daytona-sandbox analyzer backend into core's client factory.
 # Import for the side effect; core runs every non-sandbox block without it.

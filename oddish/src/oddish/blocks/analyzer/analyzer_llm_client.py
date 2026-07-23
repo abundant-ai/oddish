@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import warnings
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, runtime_checkable
 
 from anthropic import AsyncAnthropic
@@ -51,6 +52,29 @@ class LLMClientType(str, enum.Enum):
     # Direct provider API. Speaks Anthropic or OpenAI/Azure, chosen from the
     # model id -- there is no separate OpenAI backend to select.
     API = "Api"
+
+
+@dataclass(frozen=True)
+class SandboxConfig:
+    """Hosted sandbox capabilities requested by an AnalyzerBlock.
+
+    Core treats this as declarative data. The registered hosted factory owns
+    credential minting, CLI/runtime installation, and cleanup.
+    """
+
+    install_oddish_cli: bool = False
+    oddish_org_id: str | None = None
+    oddish_api_base_url: str | None = None
+    oddish_api_key: str | None = None
+    reasoning_effort: str | None = None
+    trajectory_tail_bytes: int | None = None
+    session_id: str = "analyzer"
+    labels: dict[str, str] = field(default_factory=dict)
+    files_to_upload: dict[str, bytes] = field(default_factory=dict)
+    setup_commands: tuple[str, ...] = ()
+    auto_stop_minutes: int | None = None
+    auto_delete_minutes: int | None = None
+    snapshot: str | None = None
 
 
 @runtime_checkable
@@ -270,11 +294,11 @@ async def create_llm_client(
     api_key: str | None = None,
     max_tokens: int | None = None,
     response_format: Any | None = None,
-    runtime_env: dict[str, str] | None = None,
+    sandbox_config: SandboxConfig | None = None,
 ) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
-        if runtime_env:
-            raise ValueError("runtime_env is only supported by the sandbox backend")
+        if sandbox_config:
+            raise ValueError("sandbox_config is only supported by the sandbox backend")
         return ApiAnalyzerLLMClient(
             model=model or _DEFAULT_MODEL,
             max_tokens=max_tokens,
@@ -288,8 +312,9 @@ async def create_llm_client(
                 "SANDBOX llm_client_type needs the hosted sandbox backend; import "
                 "api.services.blocks.analyzer.sandbox_llm_client to register it"
             )
+        config = sandbox_config or SandboxConfig()
         return await _sandbox_client_factory(
-            model=model, api_key=api_key, runtime_env=runtime_env
+            model=model, api_key=api_key, sandbox_config=config
         )
 
     raise ValueError(f"unknown llm_client_type: {llm_client_type!r}")

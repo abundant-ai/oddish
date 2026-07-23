@@ -40,14 +40,6 @@ class _FakePromptVersion:
         self.version = version
 
 
-class _FakeSandboxClient:
-    def __init__(self) -> None:
-        self.closed = False
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
 class _FakeAnalyzerResult:
     def __init__(self, output: dict) -> None:
         self.output = output
@@ -104,16 +96,9 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     async def fake_resolve_org_pre_trial(task_id):
         return "org_1", True
 
-    fake_client = _FakeSandboxClient()
-
-    async def fake_provision(**kwargs):
-        assert kwargs["org_id"] == "org_1"
-        return fake_client
-
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
-    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
 
     items = await synthesize_task_pre_trial(
@@ -130,11 +115,17 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
         "prompt_key": "QA_PRE_TRIAL",
         "prompt_version": 7,
     }
+    sandbox_config = _FakeAnalyzerBlock.last_kwargs["sandbox_config"]
+    assert sandbox_config.install_oddish_cli is True
+    assert sandbox_config.oddish_org_id == "org_1"
+    assert sandbox_config.session_id == "pre-trial"
+    assert _FakeAnalyzerBlock.last_kwargs["client_creation_timeout"] == (
+        mod.PRE_TRIAL_LEASE_MARGIN_SECONDS
+    )
 
     assert len(items) == 1
     assert items[0].file == "verifier.py"
     assert items[0].line_start == 3
-    assert fake_client.closed is True
 
 
 @pytest.mark.asyncio
@@ -145,9 +136,6 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     async def fake_resolve_org_pre_trial(task_id):
         return "org_1", True
 
-    async def fake_provision(**kwargs):
-        return _FakeSandboxClient()
-
     class _EmptyAnalyzerBlock(_FakeAnalyzerBlock):
         async def run(self) -> _FakeAnalyzerResult:
             return _FakeAnalyzerResult({"items": []})
@@ -155,7 +143,6 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
     monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
-    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fake_provision)
     monkeypatch.setattr(mod, "AnalyzerBlock", _EmptyAnalyzerBlock)
 
     items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
@@ -167,11 +154,14 @@ async def test_synth_returns_before_provisioning_when_org_disabled(monkeypatch):
     async def fake_resolve_org_pre_trial(task_id):
         return "org_1", False
 
-    async def fail_provision(**kwargs):
-        raise AssertionError("disabled org must not provision a sandbox")
-
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
-    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", fail_provision)
+    monkeypatch.setattr(
+        mod,
+        "AnalyzerBlock",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("disabled org must not construct a block")
+        ),
+    )
 
     assert await synthesize_task_pre_trial("task_1", "task_1-v1", [], 10) is None
 
@@ -190,31 +180,3 @@ async def test_synth_raises_when_org_id_unresolved(monkeypatch):
 
     with pytest.raises(RuntimeError, match="task_xyz"):
         await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
-
-
-@pytest.mark.asyncio
-async def test_provisioning_is_time_bounded(monkeypatch):
-    """Sandbox provisioning runs before the block-run wait_for, but it must
-    not be unbounded: the claim lease is sized as pre_trial_timeout +
-    PRE_TRIAL_LEASE_MARGIN_SECONDS, so a provisioning hang longer than the
-    margin would let the wall clock outrun the lease. A hang must surface as
-    TimeoutError (-> recorded as pre-trial failure), not run forever."""
-    import asyncio
-
-    async def fake_get_prompt_core(session, kind):
-        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
-
-    async def fake_resolve_org_pre_trial(task_id):
-        return "org_1", True
-
-    async def hanging_provision(**kwargs):
-        await asyncio.sleep(60)
-
-    monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
-    monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
-    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
-    monkeypatch.setattr(mod, "provision_oddish_sandbox_client", hanging_provision)
-    monkeypatch.setattr(mod, "_PROVISION_TIMEOUT_SECONDS", 0.05)
-
-    with pytest.raises(TimeoutError):
-        await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", ["t1"], timeout=30.0)

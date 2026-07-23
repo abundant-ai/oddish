@@ -175,6 +175,10 @@ async def _worker_job_is_running(
 # considered abandoned: sandbox provisioning + CLI install happen outside the
 # block-run timeout, so the lease must outlive both.
 PRE_TRIAL_LEASE_MARGIN_SECONDS = 900
+# Scheduling and transaction overhead sits outside both the provisioning and
+# block timeouts. Keep an additional buffer so a healthy audit cannot be
+# reclaimed at the exact sum of those two limits.
+PRE_TRIAL_LEASE_JITTER_SECONDS = 60
 
 
 async def _claim_pre_trial_version(task_id: str) -> str | None:
@@ -197,9 +201,7 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
         )
         if version_id is None:
             return None
-        version = await session.get(
-            TaskVersionModel, version_id, with_for_update=True
-        )
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
         if version is None:
             return None
         if version.pre_trial_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
@@ -208,7 +210,11 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
             version.pre_trial_status == VerdictStatus.RUNNING
             and version.pre_trial_started_at is not None
             and (utcnow() - version.pre_trial_started_at).total_seconds()
-            < settings.pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS
+            < (
+                settings.pre_trial_timeout
+                + PRE_TRIAL_LEASE_MARGIN_SECONDS
+                + PRE_TRIAL_LEASE_JITTER_SECONDS
+            )
         ):
             return None
         version.pre_trial_status = VerdictStatus.RUNNING
@@ -267,8 +273,10 @@ async def _run_pre_trial_audit(
     pre_trial_version_id: str | None = None
     pre_trial_stored: str | None = None
     try:
-        if _pre_trial_synth_fn is not None and (
-            _pre_trial_enabled_fn is None or await _pre_trial_enabled_fn(task_id)
+        if (
+            settings.pre_trial_enabled
+            and _pre_trial_synth_fn is not None
+            and (_pre_trial_enabled_fn is None or await _pre_trial_enabled_fn(task_id))
         ):
             pre_trial_version_id = await _claim_pre_trial_version(task_id)
         if pre_trial_version_id is not None:

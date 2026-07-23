@@ -79,6 +79,7 @@ def _session(
 
 
 def _make_block(**over):
+    client = over.pop("client", None)
     kw = dict(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
         llm_client_type=LLMClientType.API,
@@ -87,7 +88,14 @@ def _make_block(**over):
         analyzer_id="trial-1",
     )
     kw.update(over)
-    return AnalyzerBlock(**kw)
+    block = AnalyzerBlock(**kw)
+    if client is not None:
+
+        async def _create_client():
+            return client
+
+        block._create_client = _create_client
+    return block
 
 
 @pytest.mark.asyncio
@@ -343,7 +351,6 @@ def test_summary_block_carries_the_triggering_user():
         ),
         analyzer_id="trial-1",
         model="claude-opus-4-8",
-        client=FakeAnalyzerLLMClient(chunks=["{}"]),
         triggered_by_user_id="viewer-7",
     )
     assert block.triggered_by_user_id == "viewer-7"
@@ -375,7 +382,6 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
                 verifier_output=None,
             ),
             analyzer_id="trial-1",
-            client=FakeAnalyzerLLMClient(chunks=["{}"]),
             triggered_by_user_id="viewer-7",
         )
     except _StopBeforeRun:

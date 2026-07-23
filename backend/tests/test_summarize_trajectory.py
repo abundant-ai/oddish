@@ -79,7 +79,10 @@ def test_preprocess_strips_image_content_parts():
                 {
                     "source_call_id": "c1",
                     "content": [
-                        {"type": "image", "source": {"media_type": "image/png", "path": "y.png"}},
+                        {
+                            "type": "image",
+                            "source": {"media_type": "image/png", "path": "y.png"},
+                        },
                     ],
                 }
             ]
@@ -115,7 +118,9 @@ def test_preprocess_truncates_tool_call_argument_values():
 
 def test_preprocess_truncates_observation_string_content():
     huge = "L" * (MAX_TEXT_CHARS + 1000)
-    step = _make_step(1, observation={"results": [{"source_call_id": "c1", "content": huge}]})
+    step = _make_step(
+        1, observation={"results": [{"source_call_id": "c1", "content": huge}]}
+    )
     out = preprocess({"steps": [step]})
     content = out["steps"][0]["observation"]["results"][0]["content"]
     assert "[...truncated" in content
@@ -142,18 +147,32 @@ def _trajectory_with_steps(step_ids: list[int]) -> dict:
 
 def _minimal_ctx() -> TaskContext:
     return TaskContext(
-        task_name="test_task", instruction=None, final_reward=None,
-        model_used=None, verifier_output=None,
+        task_name="test_task",
+        instruction=None,
+        final_reward=None,
+        model_used=None,
+        verifier_output=None,
     )
 
 
 def _fake_llm(payload: str):
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+
     return FakeAnalyzerLLMClient(chunks=[payload])
+
+
+def _install_fake_llm(monkeypatch, client):
+    async def create(*args, **kwargs):
+        return client
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", create
+    )
 
 
 def _patch_block_persistence(monkeypatch):
     from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
 
@@ -161,15 +180,28 @@ def _patch_block_persistence(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_returns_persistable_summary(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
-    payload = json.dumps({
-        "summary": "Agent reproduced and fixed a flaky test.",
-        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."},
-                       {"step_id": 3, "title": "Fix", "why": "Patch."}],
-        "components": [{"step_ids": [1, 2], "trajectory_component": "debugging", "summary": "d"}],
-    })
+    payload = json.dumps(
+        {
+            "summary": "Agent reproduced and fixed a flaky test.",
+            "highlights": [
+                {"step_id": 1, "title": "Repro", "why": "First."},
+                {"step_id": 3, "title": "Fix", "why": "Patch."},
+            ],
+            "components": [
+                {
+                    "step_ids": [1, 2],
+                    "trajectory_component": "debugging",
+                    "summary": "d",
+                }
+            ],
+        }
+    )
+    _install_fake_llm(monkeypatch, _fake_llm(payload))
     result = await generate(
-        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
+        _trajectory_with_steps([1, 2, 3]),
+        _minimal_ctx(),
     )
     assert result["schema_version"] == SCHEMA_VERSION == "5"
     assert result["summary"].startswith("Agent reproduced")
@@ -181,15 +213,22 @@ async def test_generate_returns_persistable_summary(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
-    payload = json.dumps({
-        "summary": "x",
-        "highlights": [{"step_id": 1, "title": "ok", "why": "ok"},
-                       {"step_id": 999, "title": "bogus", "why": "hallucinated"}],
-        "components": [],
-    })
+    payload = json.dumps(
+        {
+            "summary": "x",
+            "highlights": [
+                {"step_id": 1, "title": "ok", "why": "ok"},
+                {"step_id": 999, "title": "bogus", "why": "hallucinated"},
+            ],
+            "components": [],
+        }
+    )
+    _install_fake_llm(monkeypatch, _fake_llm(payload))
     result = await generate(
-        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
+        _trajectory_with_steps([1, 2, 3]),
+        _minimal_ctx(),
     )
     assert [h["step_id"] for h in result["highlights"]] == [1]
 
@@ -197,10 +236,13 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_strips_code_fences_around_json(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
     body = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    _install_fake_llm(monkeypatch, _fake_llm(f"```json\n{body}\n```"))
     result = await generate(
-        _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm(f"```json\n{body}\n```"),
+        _trajectory_with_steps([1]),
+        _minimal_ctx(),
     )
     assert result["summary"] == "ok"
 
@@ -208,44 +250,67 @@ async def test_generate_strips_code_fences_around_json(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_raises_on_malformed_json(monkeypatch):
     from api.services.summarize_trajectory import SummaryGenerationError, generate
+
     _patch_block_persistence(monkeypatch)
+    _install_fake_llm(monkeypatch, _fake_llm("not json"))
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("not json"))
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
 async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
     from api.services.summarize_trajectory import SummaryGenerationError, generate
+
     _patch_block_persistence(monkeypatch)
+    _install_fake_llm(monkeypatch, _fake_llm("[1,2,3]"))
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("[1,2,3]"))
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
 async def test_generate_wraps_client_errors(monkeypatch):
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summarize_trajectory import SummaryGenerationError, generate
+
     _patch_block_persistence(monkeypatch)
     client = FakeAnalyzerLLMClient(chunks=[], exc=RuntimeError("boom"))
+    _install_fake_llm(monkeypatch, client)
     with pytest.raises(SummaryGenerationError):
-        await generate(_trajectory_with_steps([1]), _minimal_ctx(), client=client)
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
 
 
 @pytest.mark.asyncio
 async def test_generate_returns_components(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
-    payload = json.dumps({
-        "summary": "s", "highlights": [],
-        "components": [
-            {"step_ids": [1, 2], "trajectory_component": "reading_files", "summary": "look"},
-            {"step_ids": [3], "trajectory_component": "implementing", "summary": "code"},
-        ],
-    })
-    result = await generate(
-        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
+    payload = json.dumps(
+        {
+            "summary": "s",
+            "highlights": [],
+            "components": [
+                {
+                    "step_ids": [1, 2],
+                    "trajectory_component": "reading_files",
+                    "summary": "look",
+                },
+                {
+                    "step_ids": [3],
+                    "trajectory_component": "implementing",
+                    "summary": "code",
+                },
+            ],
+        }
     )
-    assert [c["trajectory_component"] for c in result["components"]] == ["reading_files", "implementing"]
+    _install_fake_llm(monkeypatch, _fake_llm(payload))
+    result = await generate(
+        _trajectory_with_steps([1, 2, 3]),
+        _minimal_ctx(),
+    )
+    assert [c["trajectory_component"] for c in result["components"]] == [
+        "reading_files",
+        "implementing",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -273,15 +338,25 @@ def _fake_session():
 
 @pytest.mark.asyncio
 async def test_get_or_generate_returns_block_when_fresh():
-    cached = {"schema_version": "5", "summary": "cached", "highlights": [], "components": []}
+    cached = {
+        "schema_version": "5",
+        "summary": "cached",
+        "highlights": [],
+        "components": [],
+    }
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
-    with patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=cached,
-    ), patch(
-        "api.services.summarize_trajectory.generate", new_callable=AsyncMock,
-    ) as gen:
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=cached,
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+        ) as gen,
+    ):
         result = await get_or_generate_summary(session, trial)
     assert result == cached
     gen.assert_not_awaited()
@@ -294,7 +369,8 @@ async def test_get_or_generate_returns_none_when_no_trajectory():
     session = _fake_session()
     with patch(
         "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=None,
+        new_callable=AsyncMock,
+        return_value=None,
     ):
         result = await get_or_generate_summary(session, trial)
     assert result is None
@@ -305,7 +381,12 @@ async def test_get_or_generate_returns_none_when_no_trajectory():
 async def test_get_or_generate_persists_on_miss():
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
-    fresh = {"schema_version": "5", "summary": "fresh", "highlights": [], "components": []}
+    fresh = {
+        "schema_version": "5",
+        "summary": "fresh",
+        "highlights": [],
+        "components": [],
+    }
 
     async def fake_traj(_t):
         return {"steps": [{"step_id": 1}]}
@@ -313,20 +394,29 @@ async def test_get_or_generate_persists_on_miss():
     async def fake_ctx(_t):
         return _minimal_ctx()
 
-    with patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=None,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_trajectory", new=fake_traj,
-    ), patch(
-        "api.services.summarize_trajectory.build_task_context", new=fake_ctx,
-    ), patch(
-        "api.services.summarize_trajectory.generate",
-        new_callable=AsyncMock, return_value=fresh,
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new=fake_traj,
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new=fake_ctx,
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=fresh,
+        ),
     ):
         result = await get_or_generate_summary(session, trial)
     assert result == fresh
-    session.execute.assert_awaited_once()   # the mirror UPDATE
+    session.execute.assert_awaited_once()  # the mirror UPDATE
     session.commit.assert_awaited_once()
 
 
@@ -353,16 +443,25 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
 
     fresh = {"schema_version": "5", "summary": "ok", "highlights": [], "components": []}
 
-    with patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=None,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_trajectory", new=slow_trajectory,
-    ), patch(
-        "api.services.summarize_trajectory.build_task_context", new=slow_context,
-    ), patch(
-        "api.services.summarize_trajectory.generate",
-        new_callable=AsyncMock, return_value=fresh,
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new=slow_trajectory,
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new=slow_context,
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=fresh,
+        ),
     ):
         await get_or_generate_summary(session, trial)
 
@@ -377,15 +476,21 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
 
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
     return SimpleNamespace(
-        id="t-1", name="trial-0", trial_s3_key="trials/t-1/",
-        reward=reward, model=model, harbor_config=harbor_config,
+        id="t-1",
+        name="trial-0",
+        trial_s3_key="trials/t-1/",
+        reward=reward,
+        model=model,
+        harbor_config=harbor_config,
         task=SimpleNamespace(name=task_name),
     )
 
 
 @pytest.mark.asyncio
 async def test_build_task_context_pulls_all_fields():
-    trial = _trial_with_task(task_name="solve_x", reward=0.75, model="claude-sonnet-4-6")
+    trial = _trial_with_task(
+        task_name="solve_x", reward=0.75, model="claude-sonnet-4-6"
+    )
 
     async def fake_instruction(_t):
         return "Solve the puzzle."
@@ -393,16 +498,24 @@ async def test_build_task_context_pulls_all_fields():
     async def fake_verifier(_t):
         return "PASS\n"
 
-    with patch(
-        "api.services.summarize_trajectory.read_trial_instruction", new=fake_instruction,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_verifier,
+    with (
+        patch(
+            "api.services.summarize_trajectory.read_trial_instruction",
+            new=fake_instruction,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_verifier_output",
+            new=fake_verifier,
+        ),
     ):
         ctx = await build_task_context(trial)
 
     assert ctx == TaskContext(
-        task_name="solve_x", instruction="Solve the puzzle.", final_reward=0.75,
-        model_used="claude-sonnet-4-6", verifier_output="PASS\n",
+        task_name="solve_x",
+        instruction="Solve the puzzle.",
+        final_reward=0.75,
+        model_used="claude-sonnet-4-6",
+        verifier_output="PASS\n",
     )
 
 
@@ -413,10 +526,15 @@ async def test_build_task_context_handles_missing_fields():
     async def fake_none(_t):
         return None
 
-    with patch(
-        "api.services.summarize_trajectory.read_trial_instruction", new=fake_none,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_none,
+    with (
+        patch(
+            "api.services.summarize_trajectory.read_trial_instruction",
+            new=fake_none,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_verifier_output",
+            new=fake_none,
+        ),
     ):
         ctx = await build_task_context(trial)
 
@@ -430,17 +548,24 @@ async def test_build_task_context_handles_missing_fields():
 @pytest.mark.asyncio
 async def test_build_task_context_falls_back_to_harbor_config_model():
     trial = _trial_with_task(
-        task_name="solve_x", reward=None, model=None,
+        task_name="solve_x",
+        reward=None,
+        model=None,
         harbor_config={"agent": {"model": "claude-sonnet-4-6"}},
     )
 
     async def fake_none(_t):
         return None
 
-    with patch(
-        "api.services.summarize_trajectory.read_trial_instruction", new=fake_none,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_none,
+    with (
+        patch(
+            "api.services.summarize_trajectory.read_trial_instruction",
+            new=fake_none,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_verifier_output",
+            new=fake_none,
+        ),
     ):
         ctx = await build_task_context(trial)
 
@@ -472,11 +597,15 @@ class _RecordingLLM:
 
 
 def _summary_payload() -> str:
-    return json.dumps({
-        "summary": "Agent fixed the bug.",
-        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
-        "components": [{"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}],
-    })
+    return json.dumps(
+        {
+            "summary": "Agent fixed the bug.",
+            "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
+            "components": [
+                {"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}
+            ],
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -510,14 +639,14 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     )
 
     recorder = _RecordingLLM(_summary_payload())
-    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x", client=recorder)
+    _install_fake_llm(monkeypatch, recorder)
+    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x")
 
     block = build_summary_block(
         deepcopy(trajectory),
         ctx,
         analyzer_id="tr_x",
         model=resolve_summary_model(),
-        client=_fake_llm(_summary_payload()),
     )
 
     assert recorder.prompt == block.prompt

@@ -665,16 +665,18 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     )
 
 
-class QARunModel(TimestampedMixin, Base):
-    """Lineage for one execution of one QA prompt version."""
+class AnalyzerRunModel(TimestampedMixin, Base):
+    """Lineage for one execution of one analyzer prompt version."""
 
-    __tablename__ = "qa_runs"
+    __tablename__ = "analyzer_runs"
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     prompt_version_id: Mapped[str] = mapped_column(
         ForeignKey("prompt_versions.id"), nullable=False, index=True
     )
-    analyzer_block_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    analyzer_block_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     triggered_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -2407,7 +2409,9 @@ class PromptVersionModel(Base):
 
     __tablename__ = "prompt_versions"
     __table_args__ = (
-        UniqueConstraint("prompt_id", "version", name="uq_prompt_versions_prompt_version"),
+        UniqueConstraint(
+            "prompt_id", "version", name="uq_prompt_versions_prompt_version"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -2436,7 +2440,7 @@ register_soft_delete_models(
     AnalyzerModel,
     AnalyzerBlockModel,
     PromptModel,
-    QARunModel,
+    AnalyzerRunModel,
     TaskModel,
     TrialModel,
     TagModel,
