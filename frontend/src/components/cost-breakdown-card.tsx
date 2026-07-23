@@ -736,10 +736,19 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
           {formatCostUsd(grandTotal)}
         </div>
         <div className="text-muted-foreground text-[10px]">
-          Total · inference + QA + compute
-        </div>
-        <div className="text-muted-foreground text-[10px] tabular-nums">
-          incl. {formatCostUsd(computeCost)} sandbox · {formatCostUsd(qaCost)} QA
+          Total
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="text-muted-foreground ml-1 inline h-3 w-3 cursor-help align-text-top" />
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[280px]">
+              <span className="tabular-nums">
+                {formatCostUsd(totals.cost_usd)} inference ·{" "}
+                {formatCostUsd(qaCost)} QA · {formatCostUsd(computeCost)} sandbox
+                (compute)
+              </span>
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
       <div className="bg-background/70 flex flex-col justify-center gap-1 rounded-md border border-[#6f88b4]/18 p-2">
