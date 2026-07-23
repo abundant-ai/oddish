@@ -127,3 +127,32 @@ async def test_install_failure_deletes_sandbox_and_revokes_key(monkeypatch):
         )
 
     assert cleaned == {"sandbox": sandbox, "key": "key_id"}
+
+
+@pytest.mark.asyncio
+async def test_factory_creates_nested_upload_directory_before_upload(monkeypatch):
+    events = []
+
+    class _Client:
+        async def exec_sync(self, sandbox, *, command):
+            events.append(("exec", command))
+            return 0, ""
+
+        async def upload_file(self, sandbox, *, dest_path, content):
+            events.append(("upload", dest_path, content))
+
+    _wire(monkeypatch)
+    monkeypatch.setattr(mod, "RealDaytonaClient", lambda **kwargs: _Client())
+
+    await mod.create_sandbox_llm_client(
+        sandbox_config=SandboxConfig(
+            files_to_upload={"out/findings-1.jsonl": b'{"trial_id":"t1"}\n'},
+            setup_commands=("mkdir -p out",),
+        )
+    )
+
+    assert events == [
+        ("exec", "mkdir -p -- out"),
+        ("upload", "out/findings-1.jsonl", b'{"trial_id":"t1"}\n'),
+        ("exec", "mkdir -p out"),
+    ]

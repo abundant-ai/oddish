@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
+import shlex
 from typing import AsyncIterator
 
 from oddish.analyze.analysis_cost import AnalysisUsage
@@ -177,6 +179,16 @@ async def create_sandbox_llm_client(
         runtime = ClaudeCodeRuntime()
         await runtime.install(daytona_client, sandbox)
         for path, content in sandbox_config.files_to_upload.items():
+            parent = posixpath.dirname(path)
+            if parent:
+                exit_code, output = await daytona_client.exec_sync(
+                    sandbox, command=f"mkdir -p -- {shlex.quote(parent)}"
+                )
+                if exit_code != 0:
+                    raise RuntimeError(
+                        "analyzer sandbox upload directory setup failed "
+                        f"(exit={exit_code}, path={parent!r}): {output[-500:]}"
+                    )
             await daytona_client.upload_file(sandbox, dest_path=path, content=content)
         for command in sandbox_config.setup_commands:
             exit_code, output = await daytona_client.exec_sync(sandbox, command=command)
