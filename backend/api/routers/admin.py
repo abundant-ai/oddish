@@ -75,7 +75,10 @@ async def get_queue_status(
 ) -> QueueStatusResponse:
     """Get queue status from the trials/tasks tables (the source of truth)."""
     async with get_session() as session:
-        return await get_queue_status_core(session, org_id=auth.org_id)
+        return await get_queue_status_core(
+            session,
+            org_id=None if _is_operator_org(auth) else auth.org_id,
+        )
 
 
 @router.get("/orphaned-state", response_model=OrphanedStateResponse)
@@ -102,11 +105,12 @@ async def get_queue_health(
     Answers "is the queue keeping up?" at a glance -- the panel that lets an
     operator self-diagnose "queued but not running" without psql + Modal logs.
     """
+    is_operator = _is_operator_org(auth)
     async with get_session() as session:
         return await get_queue_health_core(
             session,
-            org_id=auth.org_id,
-            include_global_details=_is_operator_org(auth),
+            org_id=None if is_operator else auth.org_id,
+            include_global_details=is_operator,
         )
 
 

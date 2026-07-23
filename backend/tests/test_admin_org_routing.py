@@ -15,6 +15,7 @@ async def _session():
 @pytest.mark.asyncio
 async def test_admin_diagnostics_pass_active_org(monkeypatch):
     auth = SimpleNamespace(org_id="org-a")
+    monkeypatch.delenv("ODDISH_OPERATOR_ORG_ID", raising=False)
     monkeypatch.setattr(admin, "get_session", _session)
 
     calls = []
@@ -92,19 +93,24 @@ async def test_admin_costs_pass_active_org(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_operator_queue_health_includes_global_details(monkeypatch):
-    seen = {}
+async def test_operator_queue_diagnostics_include_global_details(monkeypatch):
+    calls = []
     monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-a")
     monkeypatch.setattr(admin, "get_session", _session)
 
     async def fake(session, **kwargs):
-        seen.update(kwargs)
+        calls.append(kwargs)
         return object()
 
     monkeypatch.setattr(admin, "get_queue_health_core", fake)
+    monkeypatch.setattr(admin, "get_queue_status_core", fake)
     await admin.get_queue_health(auth=SimpleNamespace(org_id="org-a"))
+    await admin.get_queue_status(auth=SimpleNamespace(org_id="org-a"))
 
-    assert seen == {"org_id": "org-a", "include_global_details": True}
+    assert calls == [
+        {"org_id": None, "include_global_details": True},
+        {"org_id": None},
+    ]
 
 
 @pytest.mark.asyncio
