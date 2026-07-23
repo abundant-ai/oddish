@@ -40,6 +40,17 @@ _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
 
 
+def _classification_schema_json() -> str:
+    """Claude Code ``--json-schema`` payload for the classification output.
+
+    Both classifier backends constrain generation with it: the prompt's example
+    object shows only the five narrative fields, so without the schema the model
+    silently drops ``action_items`` / ``exploitation`` and post-trial linkage
+    comes back empty.
+    """
+    return json.dumps(TrialClassificationModel.model_json_schema())
+
+
 def _resolve_analysis_model_and_env(
     model: str, base_env: dict[str, str]
 ) -> tuple[str, dict[str, str]]:
@@ -118,6 +129,11 @@ def _write_qa_context(
     Returns ``(qa_context_dir, pre_trial_context, file_access_context)``. The
     dir and each context string are ``None`` when the corresponding input was
     not provided, so absent inputs never touch disk or the prompt.
+
+    Each context string cites the file by absolute path. The sandbox classifier
+    rewrites ``trial_dir`` to its in-sandbox location, and only an absolute path
+    rides along with that rewrite -- a relative ``.qa_context/...`` reference
+    would resolve against the sandbox's own cwd, where nothing exists.
     """
     if pre_trial_items is None and file_access is None:
         return None, None, None
@@ -130,8 +146,8 @@ def _write_qa_context(
         (qa_context_dir / "pre_trial.json").write_text(json.dumps(pre_trial_items, indent=2))
         pre_trial_context = (
             f"{len(pre_trial_items)} pre-trial action item(s) were identified for this "
-            "task. See .qa_context/pre_trial.json for the full list (id, file, line "
-            "range, title, detail)."
+            f"task. See {qa_context_dir}/pre_trial.json for the full list (id, file, "
+            "line range, title, detail)."
         )
 
     file_access_context = None
@@ -139,7 +155,7 @@ def _write_qa_context(
         (qa_context_dir / "file_access.json").write_text(json.dumps(file_access, indent=2))
         file_access_context = (
             f"File-access metadata for {len(file_access)} trajectory step(s) is "
-            "available. See .qa_context/file_access.json for per-step "
+            f"available. See {qa_context_dir}/file_access.json for per-step "
             "files_read/files_written/commands."
         )
 
@@ -455,6 +471,7 @@ class TrialClassifier:
                     f"mkdir -p {sandbox_root} && "
                     f"tar -xzf /tmp/oddish-post-trial.tar.gz -C {sandbox_root}",
                 ),
+                json_schema=_classification_schema_json(),
             )
             client_factory = None
             client_type = LLMClientType.SANDBOX
@@ -484,7 +501,13 @@ class TrialClassifier:
             sandbox_config=sandbox_config,
             client_factory=client_factory,
         )
-        output = await block.run()
+        if use_sandbox:
+            # The CLAUDE_CLI path already bounds itself inside _run_claude_cli.
+            # The sandbox path has no inner deadline, so a wedged Daytona
+            # session would hold the QA job open for as long as it stayed alive.
+            output = await asyncio.wait_for(block.run(), timeout=self._timeout)
+        else:
+            output = await block.run()
         return output.output
 
     @staticmethod
@@ -524,7 +547,7 @@ class TrialClassifier:
     ) -> Any:
         """Run Claude Code in print mode and return structured output."""
         self.last_usage = None
-        schema = json.dumps(TrialClassificationModel.model_json_schema())
+        schema = _classification_schema_json()
         claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
         logger.info(f"choosing model: {self._model}")
         model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))

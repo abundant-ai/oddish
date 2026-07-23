@@ -72,6 +72,10 @@ class SandboxConfig:
     oddish_api_key: str | None = None
     reasoning_effort: str | None = None
     trajectory_tail_bytes: int | None = None
+    # Serialized JSON Schema handed to claude-code's ``--json-schema``, which
+    # constrains generation and surfaces the object as ``structured_output`` on
+    # the final stream-json event. None leaves the run unconstrained.
+    json_schema: str | None = None
     session_id: str = "analyzer"
     labels: dict[str, str] = field(default_factory=dict)
     files_to_upload: dict[str, bytes] = field(default_factory=dict)

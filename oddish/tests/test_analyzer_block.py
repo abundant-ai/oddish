@@ -130,6 +130,105 @@ async def test_post_trial_uses_registered_sandbox_factory(monkeypatch, tmp_path)
     assert "/home/daytona/workspace/post-trial/trial" in block.prompt
 
 
+@pytest.mark.asyncio
+async def test_post_trial_sandbox_rewrites_qa_context_refs(monkeypatch, tmp_path):
+    """The prompt cites `.qa_context/*.json` by absolute path so the sandbox
+    rewrite carries it; a relative ref would resolve against the sandbox cwd."""
+    from oddish.analyze.classifier import _write_qa_context
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    task_dir = tmp_path / "task-local"
+    trial_dir = tmp_path / "trial-local"
+    task_dir.mkdir()
+    trial_dir.mkdir()
+    qa_dir, pre_trial_context, file_access_context = _write_qa_context(
+        trial_dir, [{"id": "a1"}], [{"step": 0}]
+    )
+    assert str(qa_dir) in pre_trial_context
+    assert str(qa_dir) in file_access_context
+
+    captured = {}
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
+        prompt=f"{pre_trial_context}\n{file_access_context}",
+        trial_dir=trial_dir,
+        task_dir=task_dir,
+        extra_dirs=[qa_dir],
+        context={"trial_id": "trial-1", "task_id": "task-1"},
+    )
+
+    prompt = captured["block"].prompt
+    assert str(qa_dir) not in prompt
+    assert "/home/daytona/workspace/post-trial/trial/.qa_context/pre_trial.json" in prompt
+    assert (
+        "/home/daytona/workspace/post-trial/trial/.qa_context/file_access.json" in prompt
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_trial_sandbox_constrains_output_to_schema(monkeypatch, tmp_path):
+    """Without --json-schema the model follows the prompt's example object,
+    which omits action_items/exploitation -- the post-trial linkage payload."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    captured = {}
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
+        prompt="classify",
+        trial_dir=tmp_path,
+        task_dir=tmp_path,
+        extra_dirs=None,
+        context={"trial_id": "trial-1", "task_id": "task-1"},
+    )
+
+    schema = captured["block"]._sandbox_config.json_schema
+    assert schema
+    assert "action_items" in schema
+    assert "exploitation" in schema
+
+
+@pytest.mark.asyncio
+async def test_post_trial_sandbox_run_is_bounded_by_classifier_timeout(
+    monkeypatch, tmp_path
+):
+    """A wedged Daytona session must not hold the QA job open indefinitely."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+
+    async def never_returns(self):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(AnalyzerBlock, "run", never_returns)
+    classifier = TrialClassifier(model="anthropic/test", timeout=0)
+    with pytest.raises(TimeoutError):
+        await classifier._run_in_analyzer_block(
+            prompt="classify",
+            trial_dir=tmp_path,
+            task_dir=tmp_path,
+            extra_dirs=None,
+            context={"trial_id": "trial-1", "task_id": "task-1"},
+        )
+
+
 def test_post_trial_parses_sandbox_result_stream():
     raw = (
         '{"type":"assistant","message":{"content":[]}}'
