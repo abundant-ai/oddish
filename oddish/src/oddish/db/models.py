@@ -697,39 +697,6 @@ class AnalyzerRunModel(TimestampedMixin, Base):
     output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    qa_assignment_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("qa_assignments.id", ondelete="SET NULL"), nullable=True
-    )
-    stage_event_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-
-class QAAssignmentModel(TimestampedMixin, Base):
-    """A reusable prompt job attached to a QA lifecycle scope."""
-
-    __tablename__ = "qa_assignments"
-    __table_args__ = (
-        Index("ix_qa_assignments_org_scope", "org_id", "scope_type", "scope_id"),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    prompt_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("prompts.id", ondelete="CASCADE"), nullable=False
-    )
-    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    stage: Mapped[str] = mapped_column(String(32), nullable=False)
-    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    scope_id: Mapped[str] = mapped_column(String(160), nullable=False)
-    model: Mapped[str] = mapped_column(String(255), nullable=False)
-    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    llm_client_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    allow_oddish_cli: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("false")
-    )
-    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("true")
-    )
 
 
 class TaskModel(TimestampedMixin, Base):
