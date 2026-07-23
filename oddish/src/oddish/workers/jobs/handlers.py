@@ -19,10 +19,13 @@ from oddish.db import (
     AnalyzerRunModel,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
     WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
     get_session,
 )
 from oddish.db.models import JobStatus, AnalyzerModel
@@ -180,6 +183,34 @@ class AnalysisJobHandler:
             )
 
 
+async def _other_active_qa_job_exists(
+    session,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    exclude_job_id: str,
+) -> bool:
+    if task_version_id is None:
+        return False
+    return bool(
+        await session.scalar(
+            select(func.count(WorkerJobModel.id)).where(
+                WorkerJobModel.kind == WorkerJobKind.QA,
+                WorkerJobModel.subject_id == task_id,
+                WorkerJobModel.id != exclude_job_id,
+                WorkerJobModel.status.in_(
+                    (
+                        WorkerJobStatus.QUEUED,
+                        WorkerJobStatus.RUNNING,
+                        WorkerJobStatus.RETRYING,
+                    )
+                ),
+                WorkerJobModel.payload["task_version_id"].astext == task_version_id,
+            )
+        )
+    )
+
+
 class QaJobHandler:
     """Classify one task-version cohort, then synthesize the task verdict."""
 
@@ -199,10 +230,20 @@ class QaJobHandler:
         task_version_id = payload.get("task_version_id")
 
         async with get_session() as session:
-            task = await session.get(TaskModel, task_id)
+            task = await session.get(TaskModel, task_id, with_for_update=True)
             if task is None:
                 return _fail_permanent(f"Task {task_id} vanished before QA")
             current_version_id = getattr(task, "current_version_id", None)
+            if current_version_id is None:
+                current_version_id = await session.scalar(
+                    select(TaskVersionModel.id)
+                    .where(TaskVersionModel.task_id == task_id)
+                    .order_by(TaskVersionModel.version.desc())
+                    .limit(1)
+                )
+                current_version_id = current_version_id or task_version_id
+                if current_version_id is not None:
+                    task.current_version_id = current_version_id
             if task_version_id is not None and current_version_id != task_version_id:
                 active_trials = await session.scalar(
                     select(func.count(TrialModel.id)).where(
@@ -228,6 +269,13 @@ class QaJobHandler:
                     task.verdict_started_at = None
                     task.verdict_finished_at = None
                     return JobOutcome.ok()
+                if await _other_active_qa_job_exists(
+                    session,
+                    task_id=task_id,
+                    task_version_id=current_version_id,
+                    exclude_job_id=job.id,
+                ):
+                    return JobOutcome.ok()
                 task_version_id = current_version_id
             task_version_id = task_version_id or current_version_id
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
@@ -244,15 +292,47 @@ class QaJobHandler:
         )
 
         async with get_session() as session:
-            task = await session.get(TaskModel, task_id)
+            task = await session.get(TaskModel, task_id, with_for_update=True)
             if task is None:
                 return _fail_permanent(f"Task {task_id} vanished mid-QA")
             if task.verdict_status == VerdictStatus.SUCCESS:
                 return JobOutcome.ok()
             if task.verdict_status == VerdictStatus.FAILED:
                 return _fail_retryable(task.verdict_error or f"QA {task_id} FAILED")
+
+            current_version_id = getattr(task, "current_version_id", None)
+            active_trials = await session.scalar(
+                select(func.count(TrialModel.id)).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.task_version_id == current_version_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.status.in_(
+                        (
+                            TrialStatus.PENDING,
+                            TrialStatus.QUEUED,
+                            TrialStatus.RUNNING,
+                            TrialStatus.RETRYING,
+                        )
+                    ),
+                )
+            )
+            other_qa_active = await _other_active_qa_job_exists(
+                session,
+                task_id=task_id,
+                task_version_id=current_version_id,
+                exclude_job_id=job.id,
+            )
+            if not other_qa_active:
+                task.status = TaskStatus.RUNNING
+                task.finished_at = None
+                task.verdict_status = None
+                task.verdict_error = None
+                task.verdict_started_at = None
+                task.verdict_finished_at = None
+            if active_trials or other_qa_active:
+                return JobOutcome.ok()
             return _fail_retryable(
-                f"QA {task_id} left in non-terminal status {task.verdict_status!r}"
+                f"QA {task_id} result was rejected after its cohort changed"
             )
 
 

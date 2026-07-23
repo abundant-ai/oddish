@@ -37,16 +37,19 @@ from oddish.workers.jobs.handlers import (  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
 
 
-def _fake_get_session_factory(domain_row, *, scalar_value=0):
+def _fake_get_session_factory(domain_row, *, scalar_value=0, scalar_values=None):
     """Build a ``get_session``-compatible context manager for tests."""
+    values = iter(scalar_values) if scalar_values is not None else None
 
     class _Session:
-        async def get(self, model, obj_id):
+        async def get(self, model, obj_id, **_kwargs):
             if domain_row is None:
                 return None
             return domain_row
 
         async def scalar(self, _statement):
+            if values is not None:
+                return next(values)
             return scalar_value
 
     @asynccontextmanager
@@ -427,6 +430,109 @@ async def test_qa_handler_releases_stale_job_while_current_trials_run(monkeypatc
     assert task_row.status == TaskStatus.RUNNING
     assert task_row.finished_at is None
     assert task_row.verdict is None
+    assert task_row.verdict_status is None
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_repairs_null_current_version_before_adopting_job(
+    monkeypatch,
+):
+    task_row = SimpleNamespace(
+        current_version_id=None,
+        verdict_status=VerdictStatus.SUCCESS,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "get_session",
+        _fake_get_session_factory(
+            task_row,
+            scalar_values=("task-xyz-v9", 0, 0),
+        ),
+    )
+    called = {"task_version_id": None}
+
+    async def _stub_run(*args, **kwargs):
+        called["task_version_id"] = kwargs["task_version_id"]
+        task_row.verdict_status = VerdictStatus.SUCCESS
+
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
+
+    outcome = await QaJobHandler().run(
+        _verdict_claim(
+            payload={
+                "task_id": "task-xyz",
+                "task_version_id": "task-xyz-v8",
+            }
+        )
+    )
+
+    assert outcome.success is not None
+    assert task_row.current_version_id == "task-xyz-v9"
+    assert called["task_version_id"] == "task-xyz-v9"
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_defers_stale_job_to_current_queued_job(monkeypatch):
+    task_row = SimpleNamespace(
+        current_version_id="task-xyz-v9",
+        verdict_status=VerdictStatus.QUEUED,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "get_session",
+        _fake_get_session_factory(
+            task_row,
+            scalar_values=(0, 1),
+        ),
+    )
+    called = _patch_run(monkeypatch, "run_task_qa_job")
+
+    outcome = await QaJobHandler().run(
+        _verdict_claim(
+            payload={
+                "task_id": "task-xyz",
+                "task_version_id": "task-xyz-v8",
+            }
+        )
+    )
+
+    assert outcome.success is not None
+    assert called["args"] is None
+    assert task_row.verdict_status == VerdictStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_releases_rejected_claim_for_retry(monkeypatch):
+    task_row = SimpleNamespace(
+        current_version_id="task-xyz-v9",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "get_session",
+        _fake_get_session_factory(
+            task_row,
+            scalar_values=(0, 0),
+        ),
+    )
+
+    async def _rejected_run(*_args, **_kwargs):
+        task_row.verdict_status = VerdictStatus.RUNNING
+
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", _rejected_run)
+
+    outcome = await QaJobHandler().run(
+        _verdict_claim(
+            payload={
+                "task_id": "task-xyz",
+                "task_version_id": "task-xyz-v9",
+            }
+        )
+    )
+
+    assert outcome.failure is not None and outcome.failure.retryable is True
+    assert task_row.status == TaskStatus.RUNNING
     assert task_row.verdict_status is None
 
 
