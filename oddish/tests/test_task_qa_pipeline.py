@@ -507,6 +507,59 @@ async def test_stage_finishes_cancelled_qa_after_historical_trials_stop(monkeypa
     assert task.status == TaskStatus.FAILED
 
 
+@pytest.mark.asyncio
+async def test_stage_does_not_requeue_failed_qa_while_history_runs(monkeypatch):
+    trial = SimpleNamespace(task_id="task-11")
+    task = SimpleNamespace(
+        current_version_id="task-11-v2",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict_status=VerdictStatus.FAILED,
+        verdict_error="synthesis failed",
+    )
+
+    async def fail_enqueue(*_args, **_kwargs):
+        raise AssertionError("failed QA must require an explicit rerun")
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fail_enqueue)
+
+    session = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0, 1),
+        qa_trial_ids=("task-11-0",),
+    )
+    assert await queue_mod.maybe_start_qa_stage(session, "task-11-v1-0") is False
+    assert task.status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_legacy_analyzing_waits_only_for_current_version(monkeypatch):
+    trial = SimpleNamespace(task_id="task-12")
+    task = SimpleNamespace(
+        org_id="org-1",
+        current_version_id="task-12-v2",
+        status=TaskStatus.ANALYZING,
+    )
+    session = _StageSession(trial=trial, task=task, scalar_values=(0,))
+    calls = []
+
+    async def fake_enqueue(_session, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+
+    assert (
+        await queue_mod.maybe_advance_legacy_analyzing_task(session, "task-12-v1-0")
+        is True
+    )
+    pending_sql = str(
+        session.scalar_statements[0].compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "trials.task_version_id = 'task-12-v2'" in pending_sql
+    assert calls[0]["task_version_id"] == "task-12-v2"
+
+
 # ---------------------------------------------------------------------------
 # run_task_qa_job: one job classifies all trials, then synthesizes the verdict
 # ---------------------------------------------------------------------------

@@ -1399,14 +1399,15 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
     task_verdict = getattr(task, "verdict", None)
     verdict = task_verdict if isinstance(task_verdict, dict) else {}
-    if (
-        task.verdict_status == VerdictStatus.FAILED
-        and task.verdict_error == USER_CANCELLED_MESSAGE
-    ):
+    if task.verdict_status == VerdictStatus.FAILED:
         remaining_count = await session.scalar(active_trials_query)
         if remaining_count > 0:
             return False
-        task.status = TaskStatus.FAILED
+        task.status = (
+            TaskStatus.FAILED
+            if task.verdict_error == USER_CANCELLED_MESSAGE
+            else TaskStatus.COMPLETED
+        )
         task.finished_at = utcnow()
         await session.flush()
         return True
@@ -1806,10 +1807,22 @@ async def maybe_advance_legacy_analyzing_task(
     if task.status != TaskStatus.ANALYZING:
         return False
 
-    pending_count = await session.scalar(
+    current_version_id = getattr(task, "current_version_id", None)
+    if current_version_id is None:
+        current_version_id = await session.scalar(
+            select(TaskVersionModel.id)
+            .where(TaskVersionModel.task_id == task_id)
+            .order_by(TaskVersionModel.version.desc())
+            .limit(1)
+        )
+        if current_version_id is not None:
+            task.current_version_id = current_version_id
+
+    if await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.task_version_id == current_version_id,
                 TrialModel.superseded_by_trial_id.is_(None),
                 # SKIPPED trials are never analyzed (analysis_status stays NULL),
                 # so they must not count as pending or the task would never
@@ -1827,18 +1840,20 @@ async def maybe_advance_legacy_analyzing_task(
                 ),
             )
         )
-    )
-
-    if pending_count > 0:
+    ):
         return False
 
     task.status = TaskStatus.VERDICT_PENDING
+    task.verdict = None
     task.verdict_status = VerdictStatus.QUEUED
+    task.verdict_error = None
+    task.verdict_started_at = None
+    task.verdict_finished_at = None
     await enqueue_qa_worker_job(
         session,
         task_id=task_id,
         org_id=task.org_id,
-        task_version_id=getattr(task, "current_version_id", None),
+        task_version_id=current_version_id,
     )
     await session.flush()
 
