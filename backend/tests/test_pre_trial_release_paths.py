@@ -23,7 +23,7 @@ class _Recorder:
 
 @pytest.mark.asyncio
 async def test_global_flag_skips_registered_synth_before_claim(monkeypatch):
-    async def fail_claim(task_id):
+    async def fail_claim(task_id, task_version_id):
         raise AssertionError("disabled pre-trial must not claim a version")
 
     async def fake_synth(task_id, version_id, trial_ids, timeout):
@@ -34,7 +34,7 @@ async def test_global_flag_skips_registered_synth_before_claim(monkeypatch):
     monkeypatch.setattr(qa, "_pre_trial_enabled_fn", None)
     monkeypatch.setattr(qa, "_claim_pre_trial_version", fail_claim)
 
-    await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+    await qa._run_pre_trial_audit("task1", "tv1", "job1", ["t1"])
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def wired(monkeypatch):
     """Wire a claimed version + enabled pre-trial; return the release recorder."""
     rec = _Recorder()
 
-    async def fake_claim(task_id):
+    async def fake_claim(task_id, task_version_id):
         return "tv1"
 
     monkeypatch.setattr(qa, "_claim_pre_trial_version", fake_claim)
@@ -64,7 +64,7 @@ async def test_cancelled_synth_releases_claim(wired, monkeypatch):
     monkeypatch.setattr(qa, "_pre_trial_synth_fn", cancelled_synth)
 
     with pytest.raises(asyncio.CancelledError):
-        await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+        await qa._run_pre_trial_audit("task1", "tv1", "job1", ["t1"])
     # CancelledError must still propagate (the job IS being cancelled),
     # but not before the claim is rolled back.
     assert wired.released == ["tv1"]
@@ -82,7 +82,7 @@ async def test_failure_sync_double_fault_still_releases(wired, monkeypatch):
     monkeypatch.setattr(qa, "sync_pre_trial_to_task_version", failing_sync)
 
     # Swallowed (pre-trial must never block the verdict path) …
-    await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+    await qa._run_pre_trial_audit("task1", "tv1", "job1", ["t1"])
     # … but the claim is released even though recording the failure failed.
     assert wired.released == ["tv1"]
 
@@ -98,7 +98,7 @@ async def test_stored_result_keeps_claim(wired, monkeypatch):
     monkeypatch.setattr(qa, "_pre_trial_synth_fn", ok_synth)
     monkeypatch.setattr(qa, "sync_pre_trial_to_task_version", ok_sync)
 
-    await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+    await qa._run_pre_trial_audit("task1", "tv1", "job1", ["t1"])
     # A persisted terminal status must NOT be rolled back to unclaimed.
     assert wired.released == []
 
@@ -114,13 +114,13 @@ async def test_vetoed_store_releases(wired, monkeypatch):
     monkeypatch.setattr(qa, "_pre_trial_synth_fn", ok_synth)
     monkeypatch.setattr(qa, "sync_pre_trial_to_task_version", vetoed_sync)
 
-    await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+    await qa._run_pre_trial_audit("task1", "tv1", "job1", ["t1"])
     assert wired.released == ["tv1"]
 
 
 @pytest.mark.asyncio
 async def test_no_claim_no_release(wired, monkeypatch):
-    async def no_claim(task_id):
+    async def no_claim(task_id, task_version_id):
         return None
 
     monkeypatch.setattr(qa, "_claim_pre_trial_version", no_claim)
@@ -130,5 +130,5 @@ async def test_no_claim_no_release(wired, monkeypatch):
 
     monkeypatch.setattr(qa, "_pre_trial_synth_fn", exploding_synth)
 
-    await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+    await qa._run_pre_trial_audit("task1", "tv1", "job1", ["t1"])
     assert wired.released == []

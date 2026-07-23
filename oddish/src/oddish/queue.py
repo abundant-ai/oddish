@@ -1320,12 +1320,10 @@ async def append_trials_to_task(
 
 
 async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
-    """Check if all trials for a task are done and transition task status.
+    """Transition QA once the selected current-version trials are terminal.
 
-    If run_analysis (the QA opt-in) is enabled -> enqueue the single
-    task-level QA job (which classifies every trial then synthesizes the
-    verdict) and move the task to VERDICT_PENDING.
-    If it is disabled -> status becomes COMPLETED.
+    Historical-version trials do not delay the current-version QA job. They do
+    keep the aggregate task status RUNNING until they finish.
 
     There is only one QA job: it handles both per-trial classification and
     the task verdict, so a task goes straight from RUNNING to
@@ -1351,25 +1349,42 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
         return False
 
+    current_version_id = getattr(task, "current_version_id", None)
     pending_count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.task_version_id == current_version_id,
                 TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(
-                    [
-                        TrialStatus.PENDING,
-                        TrialStatus.QUEUED,
-                        TrialStatus.RUNNING,
-                        TrialStatus.RETRYING,
-                    ]
-                ),
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
             )
         )
     )
 
     if pending_count > 0:
         return False
+
+    task_verdict = getattr(task, "verdict", None)
+    verdict = task_verdict if isinstance(task_verdict, dict) else {}
+    if (
+        task.verdict_status == VerdictStatus.SUCCESS
+        and verdict.get("task_version_id") == current_version_id
+    ):
+        remaining_count = await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                and_(
+                    TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                )
+            )
+        )
+        if remaining_count > 0:
+            return False
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = utcnow()
+        await session.flush()
+        return True
 
     # Only enqueue QA when there is actually something to classify. A task can
     # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
@@ -1381,7 +1396,6 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
     qa_eligible = 0
     if task.run_analysis:
-        current_version_id = getattr(task, "current_version_id", None)
         qa_eligible = await session.scalar(
             select(func.count(TrialModel.id)).where(
                 and_(
@@ -1407,8 +1421,19 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
             task_version_id=current_version_id,
         )
     else:
-        task.status = TaskStatus.COMPLETED
-        task.finished_at = utcnow()
+        remaining_count = await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                and_(
+                    TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+                )
+            )
+        )
+        task.status = (
+            TaskStatus.RUNNING if remaining_count > 0 else TaskStatus.COMPLETED
+        )
+        task.finished_at = None if remaining_count > 0 else utcnow()
         # No QA job runs for this task (analysis off, or nothing QA-eligible),
         # so clear any verdict bookkeeping left over from an earlier
         # VERDICT_PENDING pass -- otherwise the task can end COMPLETED while

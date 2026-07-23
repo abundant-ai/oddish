@@ -3,8 +3,17 @@ from datetime import timedelta
 
 import pytest
 
-from oddish.analyze.models import ActionItem, ActionItemSource, ActionTier, Dimension, ProblemType
-from oddish.core.verdict_sync import build_pre_trial_payload, sync_pre_trial_to_task_version
+from oddish.analyze.models import (
+    ActionItem,
+    ActionItemSource,
+    ActionTier,
+    Dimension,
+    ProblemType,
+)
+from oddish.core.verdict_sync import (
+    build_pre_trial_payload,
+    sync_pre_trial_to_task_version,
+)
 from oddish.db import get_session
 from oddish.db.models import JobStatus, TaskModel, TaskStatus, TaskVersionModel, utcnow
 from oddish.workers.queue.qa_handler import (
@@ -30,7 +39,9 @@ def _item():
     )
 
 
-async def _make_task_with_version(*, with_current_version: bool = True) -> tuple[str, str]:
+async def _make_task_with_version(
+    *, with_current_version: bool = True
+) -> tuple[str, str]:
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     version_id = f"{task_id}-v1"
     async with get_session() as session:
@@ -119,7 +130,7 @@ async def test_sync_records_failure_without_touching_verdict():
 async def test_claim_marks_current_version_running():
     task_id, version_id = await _make_task_with_version()
     try:
-        claimed = await _claim_pre_trial_version(task_id)
+        claimed = await _claim_pre_trial_version(task_id, version_id)
         assert claimed == version_id
         async with get_session() as session:
             version = await session.get(TaskVersionModel, version_id)
@@ -133,7 +144,21 @@ async def test_claim_marks_current_version_running():
 async def test_claim_skips_task_without_current_version():
     task_id, _ = await _make_task_with_version(with_current_version=False)
     try:
-        assert await _claim_pre_trial_version(task_id) is None
+        assert await _claim_pre_trial_version(task_id, None) is None
+    finally:
+        await _cleanup(task_id)
+
+
+@pytest.mark.asyncio
+async def test_claim_skips_version_that_is_no_longer_current():
+    task_id, version_id = await _make_task_with_version()
+    try:
+        assert (
+            await _claim_pre_trial_version(task_id, f"{task_id}-stale-version") is None
+        )
+        async with get_session() as session:
+            version = await session.get(TaskVersionModel, version_id)
+            assert version.pre_trial_status is None
     finally:
         await _cleanup(task_id)
 
@@ -149,7 +174,7 @@ async def test_claim_skips_already_audited_version(terminal):
             version = await session.get(TaskVersionModel, version_id)
             version.pre_trial_status = terminal
             await session.commit()
-        assert await _claim_pre_trial_version(task_id) is None
+        assert await _claim_pre_trial_version(task_id, version_id) is None
     finally:
         await _cleanup(task_id)
 
@@ -165,7 +190,7 @@ async def test_claim_skips_running_version_within_lease():
             version.pre_trial_status = JobStatus.RUNNING
             version.pre_trial_started_at = utcnow()
             await session.commit()
-        assert await _claim_pre_trial_version(task_id) is None
+        assert await _claim_pre_trial_version(task_id, version_id) is None
     finally:
         await _cleanup(task_id)
 
@@ -185,7 +210,7 @@ async def test_claim_reclaims_stale_running_version():
                 seconds=settings.pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS + 60
             )
             await session.commit()
-        assert await _claim_pre_trial_version(task_id) == version_id
+        assert await _claim_pre_trial_version(task_id, version_id) == version_id
     finally:
         await _cleanup(task_id)
 
@@ -194,7 +219,7 @@ async def test_claim_reclaims_stale_running_version():
 async def test_release_resets_running_claim_only():
     task_id, version_id = await _make_task_with_version()
     try:
-        assert await _claim_pre_trial_version(task_id) == version_id
+        assert await _claim_pre_trial_version(task_id, version_id) == version_id
         await _release_pre_trial_claim(version_id)
         async with get_session() as session:
             version = await session.get(TaskVersionModel, version_id)
@@ -224,7 +249,9 @@ async def test_store_vetoed_when_version_no_longer_current():
         async with get_session() as session:
             session.add(
                 TaskVersionModel(
-                    id=v2_id, task_id=task_id, version=2,
+                    id=v2_id,
+                    task_id=task_id,
+                    version=2,
                     task_path="/tmp/does-not-matter",
                 )
             )
@@ -238,10 +265,7 @@ async def test_store_vetoed_when_version_no_longer_current():
                 await _pre_trial_store_allowed(session, None, task_id, version_id)
                 is False
             )
-            assert (
-                await _pre_trial_store_allowed(session, None, task_id, v2_id)
-                is True
-            )
+            assert await _pre_trial_store_allowed(session, None, task_id, v2_id) is True
 
         stored = await sync_pre_trial_to_task_version(
             version_id,

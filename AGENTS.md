@@ -128,8 +128,10 @@ High-level flow:
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
 4. Trajectory analysis uses one **task-level, version-pinned** `QA` job when
-   the trials of a `run_analysis` task are terminal. That job classifies every
-   QA-eligible trial on the task's selected version (written to
+   the selected current-version trials of a `run_analysis` task are terminal.
+   Historical-version trials may still run; they keep the aggregate task status
+   running but do not delay current-version QA. The job classifies every
+   QA-eligible trial on the selected version (written to
    `trials.analysis`) and synthesizes `tasks.verdict` from that same cohort.
    It discards its output if the selected version or eligible trial set changes
    while it runs. A sweep of `T` tasks × `N` trials therefore enqueues `T` QA

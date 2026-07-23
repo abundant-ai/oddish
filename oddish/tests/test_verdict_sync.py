@@ -1,5 +1,11 @@
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
+import pytest
+
 from oddish.analyze import Classification, TrialClassification
-from oddish.core.verdict_sync import build_verdict_payload
+from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
+from oddish.db import TaskStatus, VerdictStatus
 
 
 class _Verdict:
@@ -52,3 +58,42 @@ def test_counts_ignore_model_supplied_values():
 
     payload = build_verdict_payload(_Lying(), [_c(Classification.GOOD_SUCCESS)])
     assert payload["task_problem_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_stores_verdict_but_keeps_task_running_when_trials_remain(
+    monkeypatch,
+):
+    task = SimpleNamespace(
+        verdict=None,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_finished_at=None,
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at=None,
+    )
+
+    class _Session:
+        async def get(self, _model, _task_id, **_kwargs):
+            return task
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield _Session()
+
+    async def should_complete(_session):
+        return False
+
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+
+    status = await sync_verdict_to_task(
+        "task-1",
+        payload={"is_good": True, "task_version_id": "task-1-v2"},
+        error=None,
+        should_complete=should_complete,
+    )
+
+    assert status == VerdictStatus.SUCCESS.value
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.status == TaskStatus.RUNNING
+    assert task.finished_at is None

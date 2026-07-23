@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import (  # noqa: E402
     AnalysisStatus,
+    TaskStatus,
     TrialStatus,
     VerdictStatus,
     WorkerJobKind,
@@ -36,7 +37,7 @@ from oddish.workers.jobs.handlers import (  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
 
 
-def _fake_get_session_factory(domain_row):
+def _fake_get_session_factory(domain_row, *, scalar_value=0):
     """Build a ``get_session``-compatible context manager for tests."""
 
     class _Session:
@@ -44,6 +45,9 @@ def _fake_get_session_factory(domain_row):
             if domain_row is None:
                 return None
             return domain_row
+
+        async def scalar(self, _statement):
+            return scalar_value
 
     @asynccontextmanager
     async def _get_session():
@@ -358,7 +362,7 @@ async def test_qa_handler_resets_terminal_state_on_retry(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_qa_handler_discards_job_for_superseded_task_version(monkeypatch):
+async def test_qa_handler_adopts_current_terminal_task_version(monkeypatch):
     task_row = SimpleNamespace(
         current_version_id="task-xyz-v9",
         verdict_status=VerdictStatus.SUCCESS,
@@ -367,6 +371,45 @@ async def test_qa_handler_discards_job_for_superseded_task_version(monkeypatch):
     )
     monkeypatch.setattr(
         handlers_module, "get_session", _fake_get_session_factory(task_row)
+    )
+    called = {"task_version_id": None}
+
+    async def _stub_run(*args, **kwargs):
+        called["task_version_id"] = kwargs["task_version_id"]
+        task_row.verdict_status = VerdictStatus.SUCCESS
+
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
+
+    outcome = await QaJobHandler().run(
+        _verdict_claim(
+            payload={
+                "task_id": "task-xyz",
+                "task_version_id": "task-xyz-v8",
+            }
+        )
+    )
+
+    assert outcome.success is not None
+    assert called["task_version_id"] == "task-xyz-v9"
+    assert task_row.verdict_status == VerdictStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_releases_stale_job_while_current_trials_run(monkeypatch):
+    task_row = SimpleNamespace(
+        current_version_id="task-xyz-v9",
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at="2026-07-23",
+        verdict={"task_version_id": "task-xyz-v8"},
+        verdict_status=VerdictStatus.QUEUED,
+        verdict_error=None,
+        verdict_started_at="2026-07-23",
+        verdict_finished_at=None,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "get_session",
+        _fake_get_session_factory(task_row, scalar_value=1),
     )
     called = _patch_run(monkeypatch, "run_task_qa_job")
 
@@ -381,7 +424,10 @@ async def test_qa_handler_discards_job_for_superseded_task_version(monkeypatch):
 
     assert outcome.success is not None
     assert called["args"] is None
-    assert task_row.verdict_status == VerdictStatus.SUCCESS
+    assert task_row.status == TaskStatus.RUNNING
+    assert task_row.finished_at is None
+    assert task_row.verdict is None
+    assert task_row.verdict_status is None
 
 
 # ---------------------------------------------------------------------------

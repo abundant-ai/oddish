@@ -62,14 +62,12 @@ async def sync_verdict_to_task(
     payload: dict | None,
     error: str | None,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
+    should_complete: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
-    """Write verdict state and complete the task. The only writer of a
-    *synthesized* verdict, so the legacy and block paths cannot diverge.
-    Cleanup and gate-failure paths elsewhere still set ``verdict_status``
-    directly; they never produce a payload.
+    """Write synthesized verdict state and settle the task when allowed.
 
-    Returns the terminal ``VerdictStatus`` value written, or ``None`` when the
-    write was skipped (task gone, or the job was cancelled).
+    ``should_complete`` may keep the aggregate task running after its
+    current-version verdict is stored.
     """
     async with get_session() as session:
         task = await session.get(TaskModel, task_id, with_for_update=True)
@@ -88,10 +86,9 @@ async def sync_verdict_to_task(
             task.verdict_error = error or "Verdict synthesis failed with exception"
 
         task.verdict_finished_at = utcnow()
-        # The task completes either way: a failed verdict must not leave the
-        # task hanging in a non-terminal state.
-        task.status = TaskStatus.COMPLETED
-        task.finished_at = utcnow()
+        complete = should_complete is None or await should_complete(session)
+        task.status = TaskStatus.COMPLETED if complete else TaskStatus.RUNNING
+        task.finished_at = utcnow() if complete else None
         return task.verdict_status.value
 
 
@@ -178,8 +175,14 @@ async def aggregate_exploited_into_pre_trial(task_id: str) -> None:
         # exploited the weakness is still valid evidence the task-source flaw is
         # exploitable. This is a task-level audit, not the current-trial verdict.
         trials = (
-            await session.execute(select(TrialModel).where(TrialModel.task_id == task_id))
-        ).scalars().all()
+            (
+                await session.execute(
+                    select(TrialModel).where(TrialModel.task_id == task_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         exploited: dict[str, str] = {}
         for trial in trials:

@@ -181,8 +181,10 @@ PRE_TRIAL_LEASE_MARGIN_SECONDS = 900
 PRE_TRIAL_LEASE_JITTER_SECONDS = 60
 
 
-async def _claim_pre_trial_version(task_id: str) -> str | None:
-    """Resolve the task's current version and claim it for the pre-trial audit.
+async def _claim_pre_trial_version(
+    task_id: str, task_version_id: str | None
+) -> str | None:
+    """Claim the QA job's pinned version for the pre-trial audit.
 
     Pre-trial runs once per task *version* (each version is a distinct source
     snapshot), so a sweep-append QA re-run must not re-audit unchanged source:
@@ -196,12 +198,14 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
     audited, or an audit in flight.
     """
     async with get_session() as session:
-        version_id = await session.scalar(
+        current_version_id = await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
         )
-        if version_id is None:
+        if task_version_id is None or current_version_id != task_version_id:
             return None
-        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        version = await session.get(
+            TaskVersionModel, task_version_id, with_for_update=True
+        )
         if version is None:
             return None
         if version.pre_trial_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
@@ -219,7 +223,7 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
             return None
         version.pre_trial_status = VerdictStatus.RUNNING
         version.pre_trial_started_at = utcnow()
-    return str(version_id)
+    return task_version_id
 
 
 async def _release_pre_trial_claim(task_version_id: str) -> None:
@@ -255,7 +259,10 @@ async def _pre_trial_store_allowed(
 
 
 async def _run_pre_trial_audit(
-    task_id: str, worker_job_id: str | None, live_trial_ids: list[str]
+    task_id: str,
+    task_version_id: str | None,
+    worker_job_id: str | None,
+    live_trial_ids: list[str],
 ) -> None:
     """Claim, run, and persist the per-version pre-trial audit.
 
@@ -278,7 +285,9 @@ async def _run_pre_trial_audit(
             and _pre_trial_synth_fn is not None
             and (_pre_trial_enabled_fn is None or await _pre_trial_enabled_fn(task_id))
         ):
-            pre_trial_version_id = await _claim_pre_trial_version(task_id)
+            pre_trial_version_id = await _claim_pre_trial_version(
+                task_id, task_version_id
+            )
         if pre_trial_version_id is not None:
             pre_trial_items = await _pre_trial_synth_fn(
                 task_id,
@@ -433,6 +442,23 @@ async def _qa_store_allowed(
     )
 
 
+async def _task_has_no_active_trials(session, task_id: str) -> bool:
+    return not await session.scalar(
+        select(func.count(TrialModel.id)).where(
+            TrialModel.task_id == task_id,
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(
+                (
+                    TrialStatus.PENDING,
+                    TrialStatus.QUEUED,
+                    TrialStatus.RUNNING,
+                    TrialStatus.RETRYING,
+                )
+            ),
+        )
+    )
+
+
 async def run_task_qa_job(
     task_id: str,
     queue_key: str,
@@ -498,7 +524,10 @@ async def run_task_qa_job(
         # synth hook is registered. Failures are swallowed inside so it can
         # never block the verdict path; cancellation propagates.
         await _run_pre_trial_audit(
-            task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
+            task_id,
+            task_version_id,
+            worker_job_id,
+            [trial_id for trial_id, _ in live_trials],
         )
 
         if not live_trials:
@@ -526,12 +555,15 @@ async def run_task_qa_job(
                     task_version_id,
                     live_trial_ids,
                 ):
+                    complete = await _task_has_no_active_trials(session, task_id)
                     task.verdict = None
                     task.verdict_status = VerdictStatus.SUCCESS
                     task.verdict_error = None
                     task.verdict_finished_at = utcnow()
-                    task.status = TaskStatus.COMPLETED
-                    task.finished_at = utcnow()
+                    task.status = (
+                        TaskStatus.COMPLETED if complete else TaskStatus.RUNNING
+                    )
+                    task.finished_at = utcnow() if complete else None
             console.print(
                 f"[yellow]QA {task_id} skipped: no QA-eligible trials "
                 "(all bulk-imported)[/yellow]"
@@ -672,13 +704,16 @@ async def run_task_qa_job(
                 task_version_id,
                 live_trial_ids,
             ),
+            should_complete=lambda session: _task_has_no_active_trials(
+                session, task_id
+            ),
         )
     )
     if status is None:
         console.print(f"[dim]QA {task_id} result ignored; job was cancelled[/dim]")
     elif verdict_result:
-        console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
+        console.print(f"[green]Verdict {task_id} SUCCESS - result stored[/green]")
     else:
         console.print(
-            f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
+            f"[yellow]Verdict {task_id} FAILED - result stored (no verdict)[/yellow]"
         )

@@ -12,10 +12,13 @@ the queue execution code.
 
 from __future__ import annotations
 
+from sqlalchemy import func, select
+
 from oddish.db import (
     AnalysisStatus,
     AnalyzerRunModel,
     TaskModel,
+    TaskStatus,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -201,7 +204,31 @@ class QaJobHandler:
                 return _fail_permanent(f"Task {task_id} vanished before QA")
             current_version_id = getattr(task, "current_version_id", None)
             if task_version_id is not None and current_version_id != task_version_id:
-                return JobOutcome.ok()
+                active_trials = await session.scalar(
+                    select(func.count(TrialModel.id)).where(
+                        TrialModel.task_id == task_id,
+                        TrialModel.task_version_id == current_version_id,
+                        TrialModel.superseded_by_trial_id.is_(None),
+                        TrialModel.status.in_(
+                            (
+                                TrialStatus.PENDING,
+                                TrialStatus.QUEUED,
+                                TrialStatus.RUNNING,
+                                TrialStatus.RETRYING,
+                            )
+                        ),
+                    )
+                )
+                if active_trials:
+                    task.status = TaskStatus.RUNNING
+                    task.finished_at = None
+                    task.verdict = None
+                    task.verdict_status = None
+                    task.verdict_error = None
+                    task.verdict_started_at = None
+                    task.verdict_finished_at = None
+                    return JobOutcome.ok()
+                task_version_id = current_version_id
             task_version_id = task_version_id or current_version_id
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 task.verdict_status = VerdictStatus.QUEUED

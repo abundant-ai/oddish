@@ -1,8 +1,8 @@
 """Tests for the unified task-level QA pipeline.
 
-Trajectory analysis is now a single task-scoped job: when every trial in a
-task finishes, one ``QA`` worker job classifies all live trials and then
-synthesizes the task verdict. These tests cover:
+Trajectory analysis is one version-pinned task job: when the selected version's
+trials finish, one ``QA`` worker job classifies that cohort and synthesizes the
+task verdict. These tests cover:
 
 * the candidate-selection + verdict-reconstruction helpers,
 * the stage transition that enqueues exactly one QA job (and no per-trial
@@ -135,25 +135,11 @@ class _ForUpdateResult:
 
 
 class _StageSession:
-    """Minimal session for ``maybe_start_qa_stage``.
-
-    The function issues its counting queries in a fixed order:
-
-    1. ``pending_count``  -- non-terminal trials; gates "are all trials done?"
-    2. ``qa_eligible``    -- QA-eligible live trials (only when run_analysis is
-       on); gates "is there anything to classify?" Zero means every live trial
-       is excluded (bulk-migrated import / gate-skipped), so no QA job is
-       enqueued and the task completes instead.
-
-    ``scalar`` therefore answers positionally rather than returning one canned
-    number for every query.
-    """
-
-    def __init__(self, *, trial, task, pending_count, qa_eligible=1):
+    def __init__(self, *, trial, task, scalar_values):
         self._trial = trial
         self._task = task
-        self._counts = [pending_count, qa_eligible]
-        self._scalar_calls = 0
+        self._scalar_values = iter(scalar_values)
+        self.scalar_statements = []
         self.flushed = 0
 
     async def get(self, _model, _key):
@@ -163,9 +149,8 @@ class _StageSession:
         return _ForUpdateResult(self._task)
 
     async def scalar(self, _statement):
-        index = self._scalar_calls
-        self._scalar_calls += 1
-        return self._counts[index] if index < len(self._counts) else 0
+        self.scalar_statements.append(_statement)
+        return next(self._scalar_values)
 
     async def flush(self):
         self.flushed += 1
@@ -182,7 +167,7 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
         verdict_status=None,
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, pending_count=0)
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 1))
 
     verdict_calls: list[str] = []
 
@@ -210,7 +195,7 @@ async def test_stage_completes_when_analysis_disabled(monkeypatch):
         verdict_status=None,
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, pending_count=0)
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 0))
 
     async def fail_verdict_enqueue(*_args, **_kwargs):
         raise AssertionError("no QA job when run_analysis is disabled")
@@ -242,7 +227,7 @@ async def test_stage_completes_when_no_qa_eligible_trials(monkeypatch):
         verdict_status=None,
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, pending_count=0, qa_eligible=0)
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 0, 0))
 
     async def fail_verdict_enqueue(*_args, **_kwargs):
         raise AssertionError("no QA job when there is nothing to classify")
@@ -277,7 +262,7 @@ async def test_stage_clears_stale_verdict_status_on_completion(monkeypatch):
         verdict_error="left over",
         finished_at=None,
     )
-    session = _StageSession(trial=trial, task=task, pending_count=0, qa_eligible=0)
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 0, 0))
 
     async def fail_verdict_enqueue(*_args, **_kwargs):
         raise AssertionError("no QA job when there is nothing to classify")
@@ -290,6 +275,77 @@ async def test_stage_clears_stale_verdict_status_on_completion(monkeypatch):
     assert task.status == TaskStatus.COMPLETED
     assert task.verdict_status is None
     assert task.verdict_error is None
+
+
+@pytest.mark.asyncio
+async def test_stage_waits_only_for_current_version_before_starting_qa(monkeypatch):
+    trial = SimpleNamespace(task_id="task-5")
+    task = SimpleNamespace(
+        id="task-5",
+        org_id="org-1",
+        current_version_id="task-5-v2",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict=None,
+        verdict_status=None,
+        finished_at=None,
+    )
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 1))
+    calls = []
+
+    async def fake_enqueue(_session, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+
+    assert await queue_mod.maybe_start_qa_stage(session, "task-5-v1-0") is True
+    pending_sql = str(
+        session.scalar_statements[0].compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "trials.task_version_id = 'task-5-v2'" in pending_sql
+    assert calls[0]["task_version_id"] == "task-5-v2"
+    assert task.status == TaskStatus.VERDICT_PENDING
+
+
+@pytest.mark.asyncio
+async def test_stage_completes_after_historical_trials_finish_without_redoing_qa(
+    monkeypatch,
+):
+    trial = SimpleNamespace(task_id="task-6")
+    task = SimpleNamespace(
+        id="task-6",
+        org_id="org-1",
+        current_version_id="task-6-v2",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict={"task_version_id": "task-6-v2", "is_good": True},
+        verdict_status=VerdictStatus.SUCCESS,
+        finished_at=None,
+    )
+
+    async def fail_enqueue(*_args, **_kwargs):
+        raise AssertionError("current-version QA must not be duplicated")
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fail_enqueue)
+
+    still_running = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0, 1),
+    )
+    assert await queue_mod.maybe_start_qa_stage(still_running, "task-6-v1-0") is False
+    assert task.status == TaskStatus.RUNNING
+
+    all_done = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0, 0),
+    )
+    assert await queue_mod.maybe_start_qa_stage(all_done, "task-6-v1-1") is True
+    assert task.status == TaskStatus.COMPLETED
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +390,9 @@ class _QASession:
         return _ScalarsResult(self._trials)
 
     async def scalar(self, _statement):
+        entity = _statement.column_descriptions[0].get("entity")
+        if entity is TrialModel:
+            return 0
         if len(self._worker_statuses) > 1:
             return self._worker_statuses.pop(0)
         return self._worker_statuses[0]
@@ -614,7 +673,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
             )
         ]
 
-    async def fake_claim(_task_id):
+    async def fake_claim(_task_id, _task_version_id):
         return version.id
 
     async def fake_store_allowed(_session, _worker_job_id, _task_id, _version_id):
@@ -699,7 +758,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def boom_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         raise RuntimeError("sandbox exploded")
 
-    async def fake_claim(_task_id):
+    async def fake_claim(_task_id, _task_version_id):
         return version.id
 
     async def fake_store_allowed(_session, _worker_job_id, _task_id, _version_id):
@@ -781,7 +840,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
     async def stub_pre_trial_synth(task_id, task_version_id, trial_ids, timeout):
         return []
 
-    async def fake_claim(_task_id):
+    async def fake_claim(_task_id, _task_version_id):
         return version.id
 
     async def veto_store(_session, _worker_job_id, _task_id, _version_id):
