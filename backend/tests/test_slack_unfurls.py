@@ -68,23 +68,18 @@ def test_parse_oddish_links_are_origin_and_route_scoped():
 
 
 def test_outcome_symbols_match_oddish_matrix_semantics():
-    assert outcome_glyph(_trial()) == ":white_check_mark:"
-    assert outcome_glyph(_trial(reward=0.5)) == ".50"
-    assert outcome_glyph(_trial(reward=0.0)) == ":x:"
-    assert outcome_glyph(_trial(status="success", reward=None)) == ":heavy_minus_sign:"
-    assert outcome_glyph(_trial(status="queued", reward=None)) == ":clock3:"
-    assert (
-        outcome_glyph(_trial(status="running", reward=None))
-        == ":arrows_counterclockwise:"
-    )
-    assert outcome_glyph(_trial(status="retrying", reward=None)) == ":white_circle:"
-    assert (
-        outcome_glyph(_trial(status="skipped", error_message="gated"))
-        == ":no_entry_sign:"
-    )
+    glyph = outcome_glyph
+    assert glyph(_trial()) == ":white_check_mark:"
+    assert glyph(_trial(reward=0.5)) == ".50"
+    assert glyph(_trial(reward=0.0)) == ":x:"
+    assert glyph(_trial(status="success", reward=None)) == ":heavy_minus_sign:"
+    assert glyph(_trial(status="queued", reward=None)) == ":clock3:"
+    assert glyph(_trial(status="running", reward=None)) == ":arrows_counterclockwise:"
+    assert glyph(_trial(status="retrying", reward=None)) == ":white_circle:"
+    assert glyph(_trial(status="skipped", error_message="gated")) == ":no_entry_sign:"
     failed = _trial(status="failed", error_message="boom")
     assert trial_outcome(failed) == "error"
-    assert outcome_glyph(failed) == ":warning:"
+    assert glyph(failed) == ":warning:"
 
     timeout_with_reward = _trial(
         status="failed",
@@ -112,7 +107,7 @@ def test_task_card_groups_trials_by_agent_and_collapses_after_limit():
     assert blocks[1]["fields"] == [
         {
             "type": "mrkdwn",
-            "text": ("*codex · openai/gpt-5*\n:white_check_mark: .50"),
+            "text": "*codex · openai/gpt-5*\n:white_check_mark: .50",
         },
         {
             "type": "mrkdwn",
@@ -148,8 +143,7 @@ def test_small_experiment_gets_compact_task_rows_but_large_one_does_not():
         trials,
         2,
     )
-    small_blocks = render_blocks(small)
-    rows = [block["text"]["text"] for block in small_blocks[1:3]]
+    rows = [block["text"]["text"] for block in render_blocks(small)[1:3]]
     assert rows == [
         (
             "*checkout*\n"
@@ -162,6 +156,8 @@ def test_small_experiment_gets_compact_task_rows_but_large_one_does_not():
             "`claude · openai/gpt-5` :white_check_mark:"
         ),
     ]
+    singular = Summary("experiment", "one", small.url, trials[:2], 1)
+    assert render_blocks(singular)[-2]["elements"][1]["text"].startswith("1 task · ")
 
     large_trials = tuple(
         _trial(task_id=str(i), task_name=f"task-{i}") for i in range(9)
@@ -190,11 +186,7 @@ def test_experiment_score_includes_non_successful_trials_with_rewards():
         2,
     )
 
-    context = next(
-        block["elements"]
-        for block in render_blocks(summary)
-        if block["type"] == "context"
-    )
+    context = render_blocks(summary)[-2]["elements"]
     assert "75.0% avg score" in context[1]["text"]
 
 
@@ -208,11 +200,7 @@ def test_sampled_summary_labels_bounded_trial_window():
         total_trials=5000,
     )
 
-    context = next(
-        block["elements"]
-        for block in render_blocks(summary)
-        if block["type"] == "context"
-    )
+    context = render_blocks(summary)[-2]["elements"]
     assert context[0]["text"].startswith("*Latest 2 · Results*")
     assert context[1]["text"] == (
         "100 tasks · latest 2: 2/2 sampled · 5000 total · 100.0% avg score · $2.50"

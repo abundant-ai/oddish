@@ -440,13 +440,6 @@ def _avg_score(summary: Summary) -> float | None:
     return sum(task_scores) / len(task_scores) if task_scores else None
 
 
-def _agent_keys(trials: tuple[TrialSnapshot, ...]) -> dict[int, str]:
-    return {
-        index: f"{trial.agent} · {trial.model}" if trial.model else trial.agent
-        for index, trial in enumerate(trials)
-    }
-
-
 def _mrkdwn_label(value: str) -> str:
     return (
         value.replace("&", "&amp;")
@@ -459,8 +452,11 @@ def _mrkdwn_label(value: str) -> str:
 
 def _compact_result_blocks(summary: Summary) -> list[dict[str, Any]]:
     task_names = sorted({t.task_name for t in summary.trials})
-    keys_by_index = _agent_keys(summary.trials)
-    columns = list(dict.fromkeys(keys_by_index.values()))
+    keys = tuple(
+        f"{trial.agent} · {trial.model}" if trial.model else trial.agent
+        for trial in summary.trials
+    )
+    columns = list(dict.fromkeys(keys))
     if (
         len(task_names) > _MATRIX_TASK_LIMIT
         or len(columns) > _MATRIX_COLUMN_LIMIT
@@ -470,8 +466,8 @@ def _compact_result_blocks(summary: Summary) -> list[dict[str, Any]]:
         return []
 
     cells: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for index, trial in enumerate(summary.trials):
-        cells[(trial.task_name, keys_by_index[index])].append(outcome_glyph(trial))
+    for trial, key in zip(summary.trials, keys, strict=True):
+        cells[(trial.task_name, key)].append(outcome_glyph(trial))
 
     if summary.kind == "task":
         return [
@@ -480,10 +476,8 @@ def _compact_result_blocks(summary: Summary) -> list[dict[str, Any]]:
                 "fields": [
                     {
                         "type": "mrkdwn",
-                        "text": (
-                            f"*{_mrkdwn_label(column)}*\n"
-                            + " ".join(cells[(task_names[0], column)])
-                        ),
+                        "text": f"*{_mrkdwn_label(column)}*\n"
+                        + " ".join(cells[(task_names[0], column)]),
                     }
                     for column in columns
                 ],
@@ -495,13 +489,11 @@ def _compact_result_blocks(summary: Summary) -> list[dict[str, Any]]:
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": (
-                    f"*{_mrkdwn_label(task_name)}*\n"
-                    + "   ·   ".join(
-                        f"`{_mrkdwn_label(column)}` "
-                        + (" ".join(cells[(task_name, column)]) or "—")
-                        for column in columns
-                    )
+                "text": f"*{_mrkdwn_label(task_name)}*\n"
+                + "   ·   ".join(
+                    f"`{_mrkdwn_label(column)}` "
+                    f"{' '.join(cells[(task_name, column)]) or '—'}"
+                    for column in columns
                 ),
             },
         }
@@ -539,8 +531,11 @@ def render_blocks(summary: Summary) -> list[dict[str, Any]]:
         if sampled
         else f"{terminal}/{len(summary.trials)} complete"
     )
-    metrics = [
-        f"{summary.task_count} tasks" if summary.kind == "experiment" else None,
+    metrics = (
+        [f"{summary.task_count} task{'s' if summary.task_count != 1 else ''}"]
+        if summary.kind == "experiment"
+        else []
+    ) + [
         f"latest {len(summary.trials)}: {completion_text}"
         if sampled
         else completion_text,
@@ -555,7 +550,7 @@ def render_blocks(summary: Summary) -> list[dict[str, Any]]:
         },
         {
             "type": "mrkdwn",
-            "text": " · ".join(value for value in metrics if value is not None),
+            "text": " · ".join(metrics),
         },
     ]
     blocks.append({"type": "context", "elements": context_elements})
