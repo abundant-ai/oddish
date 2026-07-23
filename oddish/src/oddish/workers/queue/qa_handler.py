@@ -69,7 +69,7 @@ async def synthesize_task_verdict(
         analyzer_type=AnalyzerType.TASK_VERDICT,
         llm_client_type=LLMClientType.API,
         input=AnalyzerInput(input={"num_trials": len(classifications)}),
-        analyzer_id=task_id,
+        task_id=task_id,
         # build_prompt() raises rather than sending the degraded placeholder
         # (see VerdictBlock.build_prompt).
         prompt=vb.build_prompt(),

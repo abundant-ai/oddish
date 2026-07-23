@@ -522,6 +522,14 @@ async def test_quota_limit_uses_same_org_as_enforcement(global_costs_fixture):
         assert foreign_row.inflight_trial_count == 1
 
         assert result.totals.user_count - f.baseline.user_count == 2
+
+        async with get_session() as session:
+            scoped = await get_cost_breakdown_core(
+                session, org_id=f.org_id, window_days=7
+            )
+        assert {row.org_id for row in scoped.by_user} == {f.org_id}
+        assert all(exp.org_id == f.org_id for exp in scoped.experiments)
+        assert scoped.totals.cost_usd == pytest.approx(3.50)
     finally:
         async with get_session() as session:
             await session.execute(

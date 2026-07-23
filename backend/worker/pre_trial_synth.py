@@ -129,7 +129,7 @@ async def synthesize_task_pre_trial(
                     "trial_ids": trial_ids,
                 }
             ),
-            analyzer_id=task_id,
+            task_id=task_id,
             prompt=block_obj.build_prompt(),
             model=settings.pre_trial_model,
             output_transform=block_obj.to_action_items,

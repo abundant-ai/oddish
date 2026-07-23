@@ -1,7 +1,7 @@
-"""merge custom-qa and modal-costs heads
+"""merge custom-qa and cost-tracking heads
 
 Revision ID: custom_qa_merge_001
-Revises: custom_qa_001, modal_costs_001
+Revises: custom_qa_001, analyzer_task_cost_001
 Create Date: 2026-07-22 12:00:00.000000
 
 """
@@ -10,7 +10,7 @@ from typing import Sequence, Union
 
 # revision identifiers, used by Alembic.
 revision: str = 'custom_qa_merge_001'
-down_revision: Union[str, Sequence[str], None] = ('custom_qa_001', 'modal_costs_001')
+down_revision: Union[str, Sequence[str], None] = ('custom_qa_001', 'analyzer_task_cost_001')
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

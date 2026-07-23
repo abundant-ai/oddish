@@ -90,6 +90,7 @@ class AnalyzerBlock(Block):
         input: AnalyzerInput,
         prompt: str,
         analyzer_id: str | None = None,
+        task_id: str | None = None,
         block_metadata: dict | None = None,
         client: AnalyzerLLMClient | None = None,
         system_prompt: str | None = None,
@@ -108,6 +109,7 @@ class AnalyzerBlock(Block):
         self.input = input
         self.prompt = prompt
         self.analyzer_id = analyzer_id
+        self.task_id = task_id
         # Who caused this spend, when that differs from who owns the subject.
         # A trajectory summary generates lazily on view, so the requesting user
         # -- not the trial's runner -- is the one who triggered the LLM call.
@@ -177,6 +179,7 @@ class AnalyzerBlock(Block):
                             block_metadata=self.block_metadata,
                             id=self.id,
                             analyzer_id=self.analyzer_id,
+                            task_id=self.task_id,
                             type=self.analyzer_type.value,
                             key_prefix=self.key_prefix,
                             llm_client_type=self.llm_client_type.value,
@@ -196,12 +199,11 @@ class AnalyzerBlock(Block):
             self.log.exception("save_to_db failed for id=%s", self.id)
 
     async def _cost_attribution(self, session) -> dict[str, str | None]:
-        """Attribution columns for the cost row, resolved from ``analyzer_id``.
+        """Resolve the subject columns copied onto the immutable cost row.
 
-        ``analyzer_id`` is polymorphic: a trial id on per-trial blocks, a task
-        id on task-level QA blocks, or an ``analyzers`` row id on cohort blocks.
-        Resolve those subjects in that order so spend lands on the org and user
-        that caused it instead of becoming unattributed.
+        Task-level blocks use the explicit ``task_id`` link. Legacy block types
+        use ``analyzer_id`` as their existing trial or AnalyzerModel association.
+        Cost rows copy that association; task-level QA leaves it NULL.
 
         ``trial_id`` is left None on the analyzer path rather than pointed at a
         row in a different table; a cohort block spans many trials, so there is
@@ -213,7 +215,25 @@ class AnalyzerBlock(Block):
             "org_id": None,
             "experiment_id": None,
             "billed_user_id": self.triggered_by_user_id,
+            "task_id": self.task_id,
+            "analyzer_id": None,
         }
+        if self.task_id:
+            task = (
+                await session.execute(
+                    select(
+                        TaskModel.org_id,
+                        TaskModel.created_by_user_id,
+                    ).where(TaskModel.id == self.task_id)
+                )
+            ).first()
+            if task is not None:
+                return {
+                    **blank,
+                    "org_id": task.org_id,
+                    "billed_user_id": self.triggered_by_user_id
+                    or task.created_by_user_id,
+                }
         if not self.analyzer_id:
             return {**blank, "org_id": self.attribution_org_id}
         if self.attribution_org_id is not None:
@@ -231,6 +251,7 @@ class AnalyzerBlock(Block):
         ).first()
         if trial is not None:
             return {
+                **blank,
                 "trial_id": trial.id,
                 "org_id": trial.org_id,
                 "experiment_id": trial.experiment_id,
@@ -238,22 +259,6 @@ class AnalyzerBlock(Block):
                 # the trial's owner for internally-driven runs with no request
                 # behind them (workers, the graph builder).
                 "billed_user_id": self.triggered_by_user_id or trial.billed_user_id,
-            }
-
-        task = (
-            await session.execute(
-                select(
-                    TaskModel.org_id,
-                    TaskModel.created_by_user_id,
-                ).where(TaskModel.id == self.analyzer_id)
-            )
-        ).first()
-        if task is not None:
-            return {
-                **blank,
-                "org_id": task.org_id,
-                "billed_user_id": self.triggered_by_user_id
-                or task.created_by_user_id,
             }
 
         analyzer = (
@@ -269,6 +274,7 @@ class AnalyzerBlock(Block):
             **blank,
             "org_id": analyzer.org_id,
             "billed_user_id": self.triggered_by_user_id or analyzer.owner_user_id,
+            "analyzer_id": self.analyzer_id,
         }
 
     async def record_cost(self) -> None:

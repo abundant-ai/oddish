@@ -1,4 +1,4 @@
-from oddish.db.models import AnalyzerBlockModel, JobStatus
+from oddish.db.models import AnalyzerBlockModel
 
 
 def test_tablename_and_columns():
@@ -8,10 +8,24 @@ def test_tablename_and_columns():
     assert "metadata" in cols
     assert "block_metadata" not in cols
     expected = {
-        "id", "created_at", "updated_at", "deleted_at",
-        "analyzer_id", "type", "key_prefix", "llm_client_type",
-        "prompt", "input", "output", "status", "error",
-        "job_started_at", "job_ended_at", "job_duration_seconds", "metadata",
+        "id",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+        "analyzer_id",
+        "task_id",
+        "type",
+        "key_prefix",
+        "llm_client_type",
+        "prompt",
+        "input",
+        "output",
+        "status",
+        "error",
+        "job_started_at",
+        "job_ended_at",
+        "job_duration_seconds",
+        "metadata",
     }
     assert expected <= cols
 
@@ -30,4 +44,5 @@ def test_status_reuses_jobstatus_enum():
 
 def test_importable_from_db_package():
     from oddish.db import AnalyzerBlockModel as Exported
+
     assert Exported is AnalyzerBlockModel
