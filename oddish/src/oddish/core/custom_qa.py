@@ -126,6 +126,7 @@ async def run_custom_qa_core(
         ref = f"{prompt.kind}@{version.version}"
         config = {
             "scope": {"type": data.scope_type, "id": data.scope_id},
+            "prompt_id": prompt.id,
             "prompt": {
                 "id": prompt.id,
                 "kind": prompt.kind,

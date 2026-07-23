@@ -14,10 +14,12 @@ from sqlalchemy.exc import IntegrityError
 
 from oddish.core.prompts import (
     get_prompt_core,
+    get_prompt_usage_core,
     resolve_prompt_core,
     set_prompt_core,
 )
-from oddish.db import PromptModel, get_session
+from oddish.db import JobStatus, PromptModel, get_session
+from oddish.db.models import AnalyzerBlockModel
 
 
 @pytest_asyncio.fixture
@@ -247,6 +249,52 @@ async def test_duplicate_row_at_identical_scope_is_rejected(scoped_kind):
                     scope_type="org",
                     scope_id="org_a",
                     org_id="org_a",
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_usage_is_attributed_per_scope(scoped_kind):
+    async with get_session() as session:
+        g = await set_prompt_core(session, kind=scoped_kind, content="g")
+        o = await set_prompt_core(
+            session,
+            kind=scoped_kind,
+            content="o",
+            scope_type="org",
+            scope_id="org_a",
+            org_id="org_a",
+        )
+        await session.commit()
+        global_id, org_id_ = g.prompt_id, o.prompt_id
+    async with get_session() as session:
+        # Two stamped global, one stamped org, and one UNSTAMPED row standing in
+        # for pre-column history. The unstamped row must attribute to the global
+        # prompt and must never be counted against the org override.
+        for prompt_id in (global_id, global_id, org_id_, None):
+            session.add(
+                AnalyzerBlockModel(
+                    analyzer_id=f"blk_{uuid.uuid4().hex[:8]}",
+                    type="trajectory_summary",
+                    key_prefix="analyzer/trajectory_summary",
+                    llm_client_type="api",
+                    status=JobStatus.SUCCESS,
+                    prompt_key=scoped_kind,
+                    prompt_version=1,
+                    prompt_id=prompt_id,
+                )
+            )
+        await session.commit()
+    try:
+        async with get_session() as session:
+            assert (await get_prompt_usage_core(session, global_id))["total"] == 3
+            assert (await get_prompt_usage_core(session, org_id_))["total"] == 1
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                AnalyzerBlockModel.__table__.delete().where(
+                    AnalyzerBlockModel.prompt_key == scoped_kind
                 )
             )
             await session.commit()

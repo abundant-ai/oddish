@@ -642,6 +642,11 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Which prompts row produced this block. prompt_key/prompt_version alone
+    # cannot attribute usage once the same kind exists at several scopes.
+    prompt_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     # input/output are arbitrary JSON (the block's I/O are typed ``any``).
     input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)

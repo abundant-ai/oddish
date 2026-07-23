@@ -198,6 +198,19 @@ async def get_prompt_usage_core(session: AsyncSession, ref: str) -> dict:
     prompt = await _get_prompt(session, ref)
     if prompt is None:
         raise HTTPException(status_code=404, detail=f"Prompt '{ref}' not found")
+    # Prefer the explicit prompt_id stamp. Unstamped rows — history written
+    # before this column, plus any block path not yet passing prompt_id —
+    # fall back to matching on kind, but ONLY for the global prompt, so an
+    # unstamped block can never be counted against a scoped override.
+    attribution = AnalyzerBlockModel.prompt_id == prompt.id
+    if prompt.scope_type is None:
+        attribution = or_(
+            attribution,
+            and_(
+                AnalyzerBlockModel.prompt_id.is_(None),
+                AnalyzerBlockModel.prompt_key == prompt.kind,
+            ),
+        )
     rows = (
         await session.execute(
             select(
@@ -205,7 +218,7 @@ async def get_prompt_usage_core(session: AsyncSession, ref: str) -> dict:
                 func.count().label("usage_count"),
                 func.max(AnalyzerBlockModel.created_at).label("last_used_at"),
             )
-            .where(AnalyzerBlockModel.prompt_key == prompt.kind)
+            .where(attribution)
             .group_by(AnalyzerBlockModel.prompt_version)
             .order_by(AnalyzerBlockModel.prompt_version)
         )
