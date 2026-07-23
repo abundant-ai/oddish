@@ -79,6 +79,7 @@ _OPENAI_RUNTIME_HOSTS = ("api.openai.com", "ab.chatgpt.com")
 _CLAUDE_WEB_TOOLS = "WebSearch WebFetch"
 _CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
 _GEMINI_RUNTIME_HOSTS = ("generativelanguage.googleapis.com",)
+_XAI_RUNTIME_HOSTS = ("api.x.ai",)
 
 _KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(
     {
@@ -530,6 +531,10 @@ def _grok_profile(
             agent_config,
             resolved_env,
             base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
+            # grok-build always fronts xAI; fall back to its API host so the agent
+            # phase is never left with an empty allowlist (e.g. a bare model id
+            # whose transport route is not explicitly configured).
+            default_hosts=_XAI_RUNTIME_HOSTS,
         ),
         kwarg_overrides={"disable_web_search": True},
         server_web_disabled=True,

@@ -840,3 +840,24 @@ def test_provider_aliases_resolve_transport_keys():
     assert "GEMINI_API_BASE_URL" in _model_transport_base_url_keys("vertex_ai/gemini")
     assert "GEMINI_API_BASE_URL" in _model_transport_base_url_keys("palm/x")
     assert _model_transport_base_url_keys("moonshotai/kimi") == ("MOONSHOT_BASE_URL",)
+
+
+def test_grok_profile_falls_back_to_xai_host():
+    # grok-build always fronts xAI; the profile must never leave an empty
+    # allowlist even when the model's transport route is not explicitly resolved.
+    profile = restricted_network_profile_for_config(
+        AgentConfig(
+            import_path="oddish.workers.agents.grok_build:OddishGrokBuild",
+            model_name="",
+        ),
+        resolved_env={},
+    )
+    assert profile.outbound_hosts == ("api.x.ai",)
+
+
+def test_bare_bedrock_model_resolves_to_bedrock_provider():
+    # Bare Bedrock ids (global.anthropic.*) must resolve to the bedrock provider
+    # so the provider-driven credential fold covers the ambient AWS keys.
+    from oddish.config import infer_model_provider_prefix
+
+    assert infer_model_provider_prefix("global.anthropic.claude-sonnet-4") == "bedrock"

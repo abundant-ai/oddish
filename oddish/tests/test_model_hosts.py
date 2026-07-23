@@ -90,3 +90,11 @@ def test_bare_model_inference_is_opt_in_and_does_not_widen_single_container():
     assert "api.openai.com" in outbound_hosts_for_model(
         "gpt-4o", infer_bare_provider=True
     )
+
+
+def test_bare_classifier_only_provider_infers_host_opt_in_only():
+    # A bare classifier-only-provider id (e.g. xai "grok-4") resolves to its host
+    # under opt-in restricted-Compose inference, but the single-container union
+    # path leaves it empty (no widening).
+    assert outbound_hosts_for_model("grok-4", infer_bare_provider=True) == ["api.x.ai"]
+    assert outbound_hosts_for_model("grok-4") == []

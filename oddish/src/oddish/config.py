@@ -1008,6 +1008,11 @@ def infer_model_provider_prefix(model_name: str | None) -> str | None:
     """
     if not model_name:
         return None
+    # Bare Bedrock ids (e.g. ``global.anthropic.*``) carry no slash prefix and
+    # are not litellm-classifiable, so resolve them explicitly the way
+    # _get_provider_from_model does before falling through to prefix inference.
+    if looks_like_bedrock_model_id(model_name):
+        return "bedrock"
     prefix = _infer_provider_prefix(model_name)
     if not prefix:
         return None
