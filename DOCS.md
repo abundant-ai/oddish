@@ -34,8 +34,40 @@ export ODDISH_API_KEY="ok_..."
 - `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
+- `oddish qa` - run and compare versioned QA prompt variants for an experiment, task, or trial
 
 Every command except `oddish logs` accepts `--json` for machine-readable output (CI / scripts / agents).
+
+### Custom QA prompt runs
+
+Run two prompt variants concurrently and retain the exact prompt version,
+model, scope, command/config, AnalyzerBlock ID, and output for each run:
+
+```bash
+oddish qa task <task_id> \
+  --variant oracle-check \
+  --variant degenerate-check@2 \
+  --model claude-opus-4-6 \
+  --reasoning-effort high \
+  --allow-oddish-cli
+```
+
+Variants reference prompts saved in the shared registry, addressed by kind:
+the built-in UPPERCASE kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) or your own
+lowercase-slug custom kinds (like `oracle-check` above), created with
+`oddish prompt set`. With no `@VERSION`, the latest
+version is resolved and pinned into the run; `KIND@2` selects an exact
+historical version. Manage them with `oddish prompt list`,
+`oddish prompt set KIND --file prompt.md`, `oddish prompt versions KIND`,
+and `oddish prompt diff KIND 2 3`. Editing appends a new version, which is
+live immediately (latest always wins; there is no activation step).
+
+The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
+authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
+oracle/nop and lazy-solution experiments. The worker mints a short-lived
+internal key when the queued block starts and revokes it during cleanup; the
+caller's credential is never forwarded or persisted. Use `--backend api` for
+a prompt-only provider call without shell execution.
 
 ### Lifecycle
 

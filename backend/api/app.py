@@ -291,6 +291,7 @@ def create_app() -> FastAPI:
         notifications,
         orgs,
         prompts,
+        qa,
         reports,
         skills,
         public,
@@ -322,5 +323,6 @@ def create_app() -> FastAPI:
     api.include_router(cost_excluded_keys.router)
     api.include_router(tags.router)
     api.include_router(reports.router)
+    api.include_router(qa.router)
 
     return api

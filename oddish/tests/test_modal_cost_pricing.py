@@ -201,6 +201,28 @@ def test_sandbox_prices_at_sandbox_rates_without_multiplier() -> None:
     )
 
 
+DAYTONA_CPU = Decimal("0.0000140")
+DAYTONA_MEM = Decimal("0.0000045")
+
+
+def test_daytona_sandbox_prices_at_daytona_rates() -> None:
+    # daytona spans are always sandbox-class (the worker is always Modal) and
+    # never nonpreemptible, so no 3x multiplier.
+    sel = select_rates(DEFAULT_RATES, "daytona", "sandbox", None, T0)
+    assert sel.cpu is not None and sel.cpu.sku == "sandbox:cpu_core_sec"
+    assert sel.cpu.usd_per_sec == DAYTONA_CPU
+    assert sel.mem is not None and sel.mem.usd_per_sec == DAYTONA_MEM
+    res = estimate_span_cost(
+        T0,
+        T0 + timedelta(seconds=60),
+        _sandbox(),
+        sel,
+    )
+    assert res.cost_usd == Decimal(60) * (
+        Decimal(2) * DAYTONA_CPU + Decimal(4) * DAYTONA_MEM
+    )
+
+
 def test_mem_mib_to_gib_is_exact_divide_by_1024() -> None:
     sel = select_rates(DEFAULT_RATES, "modal", "sandbox", None, T0)
     res = estimate_span_cost(
@@ -262,14 +284,14 @@ def test_no_resources_reason_when_spec_empty() -> None:
     assert res.unpriced_reason == "no_resources"
 
 
-def test_modal_default_prices_at_default_request() -> None:
-    # Unpinned task: harbor passes None -> Modal's default request of
+def test_provider_default_prices_at_modal_default_request() -> None:
+    # Unpinned Modal task: harbor passes None -> Modal's default request of
     # 0.125 core / 128 MiB (= 0.125 GiB) is the billing floor.
     sel = select_rates(DEFAULT_RATES, "modal", "sandbox", None, T0)
     res = estimate_span_cost(
         T0,
         T0 + timedelta(hours=1),
-        _sandbox(cpu_request=None, mem_request_mb=None, spec_source="modal_default"),
+        _sandbox(cpu_request=None, mem_request_mb=None, spec_source="provider_default"),
         sel,
     )
     expected = Decimal(3600) * (
@@ -281,8 +303,26 @@ def test_modal_default_prices_at_default_request() -> None:
     assert res.rate_snapshot["billed_mem_gib"] == "0.125"
 
 
-def test_unrated_provider_records_no_rate() -> None:
+def test_provider_default_uses_daytona_defaults_for_daytona_span() -> None:
+    # Unpinned Daytona task must price at Daytona's 1 vCPU / 1 GiB default,
+    # NOT Modal's 8x-smaller 0.125 core / 128 MiB minimum.
     sel = select_rates(DEFAULT_RATES, "daytona", "sandbox", None, T0)
+    res = estimate_span_cost(
+        T0,
+        T0 + timedelta(hours=1),
+        _sandbox(cpu_request=None, mem_request_mb=None, spec_source="provider_default"),
+        sel,
+    )
+    expected = Decimal(3600) * (Decimal("1") * DAYTONA_CPU + Decimal("1") * DAYTONA_MEM)
+    assert res.cost_usd == expected
+    assert res.rate_snapshot["billed_cpu_cores"] == "1.0"
+    assert res.rate_snapshot["billed_mem_gib"] == "1"
+
+
+def test_unrated_provider_records_no_rate() -> None:
+    # docker/gke have no rate card: record the span, but never guess a rate.
+    # (modal and daytona are both rated -- see the sku/rate tests above.)
+    sel = select_rates(DEFAULT_RATES, "docker", "sandbox", None, T0)
     res = estimate_span_cost(T0, T0 + timedelta(seconds=30), _sandbox(), sel)
     assert res.cost_usd is None
     assert res.unpriced_reason == "no_rate"
@@ -400,13 +440,8 @@ def test_close_span_values_shape() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_default_rates_mirror_migration_seed_exactly() -> None:
-    migration = (
-        Path(__file__).resolve().parents[1]
-        / "alembic"
-        / "versions"
-        / "modal_costs_001_add_modal_costs.py"
-    )
+def _migration_seed_rates(filename: str) -> list[tuple[str, str, str]]:
+    migration = Path(__file__).resolve().parents[1] / "alembic" / "versions" / filename
     tree = ast.parse(migration.read_text())
     seed = None
     for node in ast.walk(tree):
@@ -421,10 +456,18 @@ def test_default_rates_mirror_migration_seed_exactly() -> None:
             continue
         if "SEED_RATES" in names and value is not None:
             seed = ast.literal_eval(value)
-    assert seed is not None, "SEED_RATES not found in migration"
-    expected = tuple(
-        (row.provider, row.sku, str(row.usd_per_sec)) for row in DEFAULT_RATES
-    )
-    assert tuple(tuple(entry) for entry in seed) == expected
+    assert seed is not None, f"SEED_RATES not found in {filename}"
+    return [tuple(entry) for entry in seed]
+
+
+def test_default_rates_mirror_migration_seed_exactly() -> None:
+    # DEFAULT_RATES is the code mirror of the union of every modal_costs_*
+    # rate seed (modal in 001, daytona in 002). Compare as sets so a later
+    # migration can append rows without pinning DEFAULT_RATES' ordering.
+    seed = _migration_seed_rates("modal_costs_001_add_modal_costs.py")
+    seed += _migration_seed_rates("modal_costs_002_seed_daytona_rates.py")
+    expected = {(row.provider, row.sku, str(row.usd_per_sec)) for row in DEFAULT_RATES}
+    assert set(seed) == expected
+    assert len(seed) == len(DEFAULT_RATES), "duplicate or missing seed row"
     # Fallback rows are code constants: no DB row id to reference.
     assert all(row.id is None for row in DEFAULT_RATES)

@@ -13,7 +13,6 @@ a stale summary instead of exercising a revised taxonomy.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -28,9 +27,15 @@ def validate_scope(
     *, trials: list[str] | None, task: str | None, experiment: str | None
 ) -> None:
     """Require exactly one scope. Raises before any query runs."""
-    supplied = [name for name, value in
-                (("--trials", trials), ("--task", task), ("--experiment", experiment))
-                if value]
+    supplied = [
+        name
+        for name, value in (
+            ("--trials", trials),
+            ("--task", task),
+            ("--experiment", experiment),
+        )
+        if value
+    ]
     if len(supplied) != 1:
         raise ValueError(
             f"Supply exactly one of --trials/--task/--experiment (got: {supplied or 'none'})"
@@ -67,7 +72,11 @@ async def resolve_cohort(
     stmt = select(TrialModel).options(selectinload(TrialModel.task))
 
     if trials:
-        rows = (await session.execute(stmt.where(TrialModel.id.in_(trials)))).scalars().all()
+        rows = (
+            (await session.execute(stmt.where(TrialModel.id.in_(trials))))
+            .scalars()
+            .all()
+        )
         by_id = {t.id: t for t in rows}
         return [by_id[tid] for tid in trials if tid in by_id]
 
@@ -85,12 +94,14 @@ async def resolve_cohort(
         # experiment_trials is a Core Table, not a mapped class, so the
         # soft-delete auto-filter (register_soft_delete_models, ORM-only)
         # never touches it; deleted_at is filtered explicitly here.
-        member_ids = select(TrialModel.id).where(
-            TrialModel.experiment_id == experiment
-        ).union(
-            select(experiment_trials.c.trial_id).where(
-                experiment_trials.c.experiment_id == experiment,
-                experiment_trials.c.deleted_at.is_(None),
+        member_ids = (
+            select(TrialModel.id)
+            .where(TrialModel.experiment_id == experiment)
+            .union(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == experiment,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
             )
         )
         stmt = stmt.where(TrialModel.id.in_(member_ids))
@@ -140,7 +151,6 @@ async def summarize_trial(
     *,
     model: str,
     persist: bool,
-    client=None,
 ) -> dict:
     """Run the summary block for one trial and return its full record.
 
@@ -148,41 +158,39 @@ async def summarize_trial(
     yields a record carrying ``status``, ``error``, and whatever ``raw``
     accumulated -- including failures raised before a block even exists.
     """
-    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
     from api.services.summarize_trajectory import (
         SCHEMA_VERSION,
-        SUMMARY_MAX_TOKENS,
         _load_summary_prompt,
         build_summary_block,
     )
     from oddish.db import get_session
     from oddish.db.models import JobStatus
 
-    owned = client is None
-    llm = None
     try:
-        # Same registry lookup generate() uses, so the dump can't diverge from
-        # what prod sends -- no call site gets a fallback template.
+        # Use the same registry lookup as production; there is no baked-in
+        # fallback that can drift from the live prompt.
         async with get_session() as session:
             prompt_template, prompt_version = await _load_summary_prompt(session)
-        llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=SUMMARY_MAX_TOKENS)
         block = build_summary_block(
-            trajectory, task_context, analyzer_id=trial.id, model=model, client=llm,
-            prompt_template=prompt_template, prompt_version=prompt_version,
+            trajectory,
+            task_context,
+            analyzer_id=trial.id,
+            model=model,
+            prompt_template=prompt_template,
+            prompt_version=prompt_version,
         )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         # A malformed trajectory raises in build_prompt(), before any block
         # exists to carry the error -- synthesize the record instead.
-        if owned and llm is not None:
-            with contextlib.suppress(Exception):
-                await llm.aclose()
         return failed_record(trial, task_context, model=model, error=repr(exc))
 
     if not persist:
+
         async def _noop(*_a, **_k):
             return None
+
         block.save_to_s3 = _noop  # type: ignore[method-assign]
         block.save_to_db = _noop  # type: ignore[method-assign]
 
@@ -199,14 +207,6 @@ async def summarize_trial(
         # when its own finally raised (e.g. _persist's utf-8 encode on a lone
         # surrogate) -- keep the exception so that case is not reported clean.
         harness_error = repr(exc)
-    finally:
-        if owned:
-            try:
-                await llm.aclose()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                harness_error = harness_error or repr(exc)
 
     error = block.error or harness_error
     status = block.status
@@ -257,12 +257,19 @@ async def run_cohort(
     Trajectories and task context are read inside the caller's session; the
     blocks then run outside it, bounded by ``MAX_CONCURRENCY``.
     """
-    from api.services.summarize_trajectory import build_task_context, resolve_summary_model
+    from api.services.summarize_trajectory import (
+        build_task_context,
+        resolve_summary_model,
+    )
     from oddish.core.trial_io import read_trial_trajectory
 
     model = model or resolve_summary_model()
     cohort = await resolve_cohort(
-        session, trials=trials, task=task, experiment=experiment, limit=limit,
+        session,
+        trials=trials,
+        task=task,
+        experiment=experiment,
+        limit=limit,
     )
     print(f"resolved {len(cohort)} trials: {', '.join(t.id for t in cohort)}")
 
@@ -273,7 +280,8 @@ async def run_cohort(
         resolved_ids = {t.id for t in cohort}
         skipped.extend(
             {"trial_id": tid, "reason": "no such trial"}
-            for tid in trials if tid not in resolved_ids
+            for tid in trials
+            if tid not in resolved_ids
         )
 
     # One slot per attempted trial, filled in cohort order. A prep failure
@@ -286,7 +294,9 @@ async def run_cohort(
             # None means "no trajectory" -- skip, but still report it.
             if trajectory is None:
                 print(f"  skip {trial.id}: no fetchable trajectory")
-                skipped.append({"trial_id": trial.id, "reason": "no fetchable trajectory"})
+                skipped.append(
+                    {"trial_id": trial.id, "reason": "no fetchable trajectory"}
+                )
                 continue
             ctx = await build_task_context(trial)
         except asyncio.CancelledError:
@@ -303,7 +313,11 @@ async def run_cohort(
     async def _one(_idx, trial, trajectory, ctx) -> dict:
         async with sem:
             record = await summarize_trial(
-                trial, trajectory, ctx, model=model, persist=persist,
+                trial,
+                trajectory,
+                ctx,
+                model=model,
+                persist=persist,
             )
             print(f"  {record['trial_id']}: {record['status']}")
             return record

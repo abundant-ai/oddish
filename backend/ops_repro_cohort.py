@@ -7,7 +7,8 @@
 Why this exists: the prod worker drops every analyzer `logger.info` (no
 basicConfig anywhere in backend/, so the root logger sits at WARNING). This
 calls logging.basicConfig(level=INFO) in our own container FIRST, then drives
-run_cohort() directly -- so the per-event agent stream that analyzer_cohort.py
+run_analyzer_blocks() directly, so the per-event agent stream from
+analyzer_block_runner.py
 logs and prod discards prints straight to `modal run` stdout, along with the
 final [result:...] event that names the stop reason.
 
@@ -53,17 +54,15 @@ async def repro(analyzer_id: str, bucket: str, limit: int) -> None:
 
     from sqlalchemy import text
 
-    from api.services.cc_chat.analyzer_cohort import run_cohort
+    from api.services.cc_chat.analyzer_block_runner import run_analyzer_blocks
     from oddish.db import get_session
     from oddish.evals.analyzer.bucketing import bucket_subanalyses
     from oddish.evals.analyzer.core import build_roster
     from oddish.workers.queue.analyzer_handler import _gather_trial_rows
     from worker.analyzer_sandbox import (
-        _daytona_client,
         _gather,
         _read_cli_source,
         _resolve_api_creds,
-        _runtime,
     )
     from oddish.config import settings
     from oddish.worker.probe_creds import revoke_probe_creds
@@ -90,28 +89,39 @@ async def repro(analyzer_id: str, bucket: str, limit: int) -> None:
         cohort = cohort[:limit]
 
     print(f"counts={counts} breakdown={breakdown}")
-    print(f"driving bucket={bucket!r} with {len(cohort)} trial(s)"
-          f"{' (TRUNCATED)' if limit else ' (full cohort)'}\n")
+    print(
+        f"driving bucket={bucket!r} with {len(cohort)} trial(s)"
+        f"{' (TRUNCATED)' if limit else ' (full cohort)'}\n"
+    )
 
     anthropic_key = settings.anthropic_api_key
     if not anthropic_key:
         raise RuntimeError("anthropic_api_key unset")
-    client, runtime, cli_src = _daytona_client(), _runtime(), _read_cli_source()
+    cli_src = _read_cli_source()
     key_id, api_base, api_key = await _resolve_api_creds(rows, analyzer_id)
     try:
-        findings, sections, _by_model = await run_cohort(
-            client, runtime, bucket=bucket, cohort=cohort, roster=roster,
-            counts=counts, oracle_by_trial=oracle_by_trial,
+        findings, sections, _by_model = await run_analyzer_blocks(
+            bucket=bucket,
+            cohort=cohort,
+            roster=roster,
+            counts=counts,
+            oracle_by_trial=oracle_by_trial,
             host_by_trial=host_by_trial,
-            analyzer_id=analyzer_id, anthropic_key=anthropic_key,
-            api_base=api_base, api_key=api_key, cli_src=cli_src,
+            analyzer_id=analyzer_id,
+            anthropic_key=anthropic_key,
+            api_base=api_base,
+            api_key=api_key,
+            cli_src=cli_src,
+            parallelism=16,
         )
     except Exception as exc:
         print(f"\n=== COHORT FAILED: {type(exc).__name__}: {exc}")
         raise
     else:
-        print(f"\n=== COHORT OK: {len(findings)} findings, "
-              f"sections={ {k: len(v) for k, v in sections.items()} }")
+        print(
+            f"\n=== COHORT OK: {len(findings)} findings, "
+            f"sections={ {k: len(v) for k, v in sections.items()} }"
+        )
     finally:
         await revoke_probe_creds(key_id, analyzer_id)
 

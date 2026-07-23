@@ -13,6 +13,7 @@ import {
   segmentOwners,
   stepIdsLabel,
   toSegments,
+  withOtherSegment,
 } from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
@@ -63,7 +64,7 @@ export function TrajectoryActivity({
 }: TrajectoryActivityProps) {
   const { data } = useTrajectorySummary(trialId, apiBaseUrl);
 
-  const segments = toSegments(data);
+  const segments = withOtherSegment(toSegments(data), steps);
   if (!steps.length || segments.length === 0) return null;
 
   const colorFor = phaseColorVars(segments.map((s) => s.key));

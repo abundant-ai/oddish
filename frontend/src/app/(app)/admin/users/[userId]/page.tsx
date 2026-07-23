@@ -293,18 +293,16 @@ export default function AdminUserCostPage({
   searchParams,
 }: {
   params: Promise<{ userId: string }>;
-  searchParams: Promise<{ org?: string; window_days?: string }>;
+  searchParams: Promise<{ window_days?: string }>;
 }) {
   const { userId } = use(params);
-  const { org, window_days: windowParam } = use(searchParams);
+  const { window_days: windowParam } = use(searchParams);
   const [windowDays, setWindowDays] = useState(() =>
     WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7"
   );
 
   const { data, error, isLoading } = useSWR<UserCostBreakdownResponse>(
-    `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}${
-      org ? `&org_id=${encodeURIComponent(org)}` : ""
-    }`,
+    `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}`,
     fetcher,
     { refreshInterval: 30000 }
   );

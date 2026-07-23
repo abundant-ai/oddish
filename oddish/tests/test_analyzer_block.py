@@ -39,6 +39,7 @@ from oddish.db.models import JobStatus, utcnow
 
 
 def _make_block(**over):
+    client = over.pop("client", None)
     kw = dict(
         analyzer_type=AnalyzerType.HEADROOM_ANALYSIS,
         llm_client_type=LLMClientType.API,
@@ -46,7 +47,13 @@ def _make_block(**over):
         prompt="do the thing",
     )
     kw.update(over)
-    return AnalyzerBlock(**kw)
+    block = AnalyzerBlock(**kw)
+    if client is not None:
+        async def _create_client():
+            return client
+
+        block._create_client = _create_client
+    return block
 
 
 def test_block_init_sets_prefix_and_ids():
@@ -322,7 +329,7 @@ async def test_files_to_download_idempotent(monkeypatch):
     b.status = JobStatus.RUNNING
     for p in b.input.files_to_download:
         if p not in b._downloaded_files:
-            b._downloaded_files[p] = await b._client._download_file(p)
+            b._downloaded_files[p] = await fake._download_file(p)
     assert calls["n"] == 1  # second pass fetched nothing new
 
 
@@ -335,10 +342,57 @@ def test_files_to_download_rejected_on_api_backend():
         )
 
 
-def test_files_to_download_requires_injected_client():
-    with pytest.raises(ValueError, match="injected client"):
-        _make_block(
-            llm_client_type=LLMClientType.SANDBOX,
-            client=None,
-            input=AnalyzerInput(input={}, files_to_download=["out/reduce.json"]),
-        )
+@pytest.mark.asyncio
+async def test_self_provisioned_client_stays_open_through_file_download(
+    monkeypatch,
+):
+    _patch_persistence(monkeypatch)
+
+    class _Client(FakeAnalyzerLLMClient):
+        def __init__(self):
+            super().__init__(chunks=["stream"], files={"out/reduce.json": b"result"})
+            self.closed = False
+
+        async def _download_file(self, path):
+            assert self.closed is False
+            return await super()._download_file(path)
+
+        async def aclose(self):
+            self.closed = True
+
+    client = _Client()
+
+    async def create(*args, **kwargs):
+        return client
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", create
+    )
+    block = _make_block(
+        llm_client_type=LLMClientType.SANDBOX,
+        input=AnalyzerInput(input={}, files_to_download=["out/reduce.json"]),
+    )
+
+    output = await block.run()
+
+    assert output.output == {"out/reduce.json": "result"}
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_self_provisioning_honors_creation_timeout(monkeypatch):
+    _patch_persistence(monkeypatch)
+
+    async def hanging_create(*args, **kwargs):
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", hanging_create
+    )
+    block = _make_block(
+        llm_client_type=LLMClientType.SANDBOX,
+        client_creation_timeout=0.01,
+    )
+
+    with pytest.raises(TimeoutError):
+        await block.run()

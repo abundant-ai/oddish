@@ -194,6 +194,9 @@ class WorkerJobKind(str, Enum):
     # findings and reduces them into four narrative sections. Runs on the QA
     # queue; handled by AnalyzerJobHandler.
     ANALYZER = "ANALYZER"
+    # Execute one declaratively persisted AnalyzerRunModel. The handler
+    # reconstructs an AnalyzerBlock; the block owns its LLM/sandbox lifecycle.
+    ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
 
 class WorkerJobStatus(str, Enum):
@@ -629,6 +632,9 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     analyzer_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
+    # Task-level QA blocks use this explicit subject link. ``analyzer_id`` is
+    # reserved for the existing AnalyzerModel/report association.
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     key_prefix: Mapped[str] = mapped_column(Text, nullable=False)
     llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -660,6 +666,32 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     block_metadata: Mapped[dict | None] = mapped_column(
         "metadata", JSONB, nullable=True
     )
+
+
+class AnalyzerRunModel(TimestampedMixin, Base):
+    """Lineage for one execution of one analyzer prompt version."""
+
+    __tablename__ = "analyzer_runs"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    prompt_version_id: Mapped[str] = mapped_column(
+        ForeignKey("prompt_versions.id"), nullable=False, index=True
+    )
+    analyzer_block_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    triggered_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    llm_client_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[JobStatus] = mapped_column(
+        PGEnum(JobStatus, name="jobstatus", create_type=False), nullable=False
+    )
+    output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    run_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -801,19 +833,6 @@ class TaskModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # Pre-trial QA analysis (task-source audit; runs before trials)
-    pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    pre_trial_status: Mapped[VerdictStatus | None] = mapped_column(
-        SQLEnum(VerdictStatus), nullable=True
-    )
-    pre_trial_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    pre_trial_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    pre_trial_finished_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
     # Migration provenance: set when created by the Sauron->Oddish importer,
     # NULL otherwise. Rich provenance lives in ``tags``; this is the clean
     # audit/rollback marker (WHERE imported_at IS NOT NULL).
@@ -907,6 +926,20 @@ class TaskVersionModel(TimestampedMixin, Base):
         nullable=False,
         default=list,
         server_default=text("'{}'::text[]"),
+    )
+
+    # Pre-trial QA analysis (task-source audit; runs once per version since
+    # each version is a distinct source snapshot to audit)
+    pre_trial: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pre_trial_status: Mapped[VerdictStatus | None] = mapped_column(
+        SQLEnum(VerdictStatus), nullable=True
+    )
+    pre_trial_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pre_trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    pre_trial_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Relationships
@@ -1248,6 +1281,8 @@ class AnalysisCostModel(TimestampedMixin, Base):
         Index("ix_analysis_costs_trial_id", "trial_id"),
         Index("ix_analysis_costs_experiment_id", "experiment_id"),
         Index("ix_analysis_costs_org_id", "org_id"),
+        Index("ix_analysis_costs_task_id", "task_id"),
+        Index("ix_analysis_costs_analyzer_id", "analyzer_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -1256,6 +1291,10 @@ class AnalysisCostModel(TimestampedMixin, Base):
     experiment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # AnalyzerModel/report association. Task-level QA and classifiers leave
+    # this NULL and reconcile through task_id/trial_id instead.
+    analyzer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1369,7 +1408,7 @@ class ModalCostSpanModel(TimestampedMixin, Base):
     # How the timer boundaries were observed:
     # "hooks" | "phase_timing" | "reaped" | "reconciled" | "backfill"
     basis: Mapped[str] = mapped_column(String(16), nullable=False)
-    # "pinned" | "override" | "modal_default" | "unknown"
+    # "pinned" | "override" | "provider_default" | "unknown"
     spec_source: Mapped[str] = mapped_column(String(16), nullable=False)
     cpu_request: Mapped[float | None] = mapped_column(Float, nullable=True)
     cpu_limit: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -2303,6 +2342,16 @@ class TagProjectionSweepStateModel(Base):
     )
 
 
+class PromptKind(str, Enum):
+    """The slot a prompt fills. Exactly one ``prompts`` row exists per kind;
+    stored as a plain string column so the vocabulary can grow without a
+    Postgres enum migration. Enforced at the API boundary, not the DB."""
+
+    QA_PRE_TRIAL = "QA_PRE_TRIAL"
+    QA_POST_TRIAL = "QA_POST_TRIAL"
+    TRAJECTORY_SUMMARY = "TRAJECTORY_SUMMARY"
+
+
 class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     """An LLM provider API key whose spend is excluded from cost accounting.
 
@@ -2332,23 +2381,23 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
 
 
 class PromptModel(TimestampedMixin, Base):
-    """A named, versioned analyzer prompt. ``active_version`` points at the
-    ``prompt_versions.version`` that runs. Editing appends a new version."""
+    """A versioned analyzer prompt, one row per kind. The highest
+    ``prompt_versions.version`` is always the one that runs; editing appends
+    a new version (no activation pointer)."""
 
     __tablename__ = "prompts"
     __table_args__ = (
         Index(
-            "idx_prompts_unique_key",
-            "key",
+            "idx_prompts_unique_kind",
+            "kind",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    active_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     versions: Mapped[list["PromptVersionModel"]] = relationship(  # type: ignore[assignment]
         "PromptVersionModel",
@@ -2364,7 +2413,9 @@ class PromptVersionModel(Base):
 
     __tablename__ = "prompt_versions"
     __table_args__ = (
-        UniqueConstraint("prompt_id", "version", name="uq_prompt_versions_prompt_version"),
+        UniqueConstraint(
+            "prompt_id", "version", name="uq_prompt_versions_prompt_version"
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -2392,6 +2443,8 @@ register_soft_delete_models(
     ExperimentModel,
     AnalyzerModel,
     AnalyzerBlockModel,
+    PromptModel,
+    AnalyzerRunModel,
     TaskModel,
     TrialModel,
     TagModel,

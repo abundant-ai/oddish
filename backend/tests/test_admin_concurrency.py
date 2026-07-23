@@ -26,8 +26,13 @@ async def _fake_session(session):
 
 def _app():
     app = create_app()
-    app.dependency_overrides[require_admin] = lambda: object()
+    app.dependency_overrides[require_admin] = lambda: SimpleNamespace(org_id="org-1")
     return app
+
+
+@pytest.fixture(autouse=True)
+def operator_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-1")
 
 
 @pytest.mark.asyncio
@@ -128,3 +133,17 @@ async def test_admin_concurrency_requires_admin():
         )
 
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_admin_concurrency_rejects_other_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-2")
+    async with AsyncClient(
+        transport=ASGITransport(app=_app()), base_url="http://test"
+    ) as client:
+        response = await client.put(
+            "/admin/concurrency",
+            json={"queue_key": "minimax/minimax-m3", "limit": 96},
+        )
+
+    assert response.status_code == 403

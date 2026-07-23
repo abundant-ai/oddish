@@ -36,7 +36,7 @@ _SELECT_CANDIDATES = text(
         OR COALESCE(t.output_tokens, 0) > 0
         OR COALESCE(t.cache_write_tokens, 0) > 0
       )
-      AND (:model IS NULL OR t.model = :model)
+      AND (CAST(:model AS TEXT) IS NULL OR t.model = CAST(:model AS TEXT))
       AND t.id > :after
     ORDER BY t.id
     LIMIT :page

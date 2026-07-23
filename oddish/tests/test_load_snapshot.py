@@ -201,6 +201,30 @@ async def test_scheduled_only_queue_is_inactive(monkeypatch):
     assert capacity.queued_scheduled == 3
     assert not capacity.active
 
+    async def unexpected_global_read(session):
+        raise AssertionError("tenant view read global queue state")
+
+    monkeypatch.setattr(
+        admin, "get_model_concurrency_overrides", unexpected_global_read
+    )
+    monkeypatch.setattr(
+        "oddish.workers.queue.runtime_status.get_queue_runtime_statuses",
+        unexpected_global_read,
+    )
+
+    tenant_health = await admin.get_queue_health_core(
+        Session(), org_id="org-a", include_global_details=False
+    )
+    tenant_capacity = next(
+        c for c in tenant_health.capacity if c.queue_key == queue_key
+    )
+    assert tenant_capacity.limit == 0
+    assert tenant_capacity.deploy_limit == 0
+    assert tenant_capacity.override_limit is None
+    assert tenant_capacity.fill is None
+    assert tenant_health.dispatcher is None
+    assert tenant_health.reconciler is None
+
 
 def _stub_snapshot() -> LoadSnapshot:
     return LoadSnapshot(

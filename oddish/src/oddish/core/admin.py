@@ -35,6 +35,7 @@ from oddish.core.quotas import (
 from oddish.db import (
     AnalysisCostModel,
     ExperimentModel,
+    ModalCostSpanModel,
     TaskModel,
     TrialModel,
     task_experiments,
@@ -239,7 +240,9 @@ async def get_queue_slots_core(session: AsyncSession) -> QueueSlotsResponse:
     )
 
 
-async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
+async def get_queue_status_core(
+    session: AsyncSession, *, org_id: str | None = None
+) -> QueueStatusResponse:
     """Get queue status grouped by worker-job kind and queue key."""
     now = utcnow()
 
@@ -259,10 +262,12 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
                     COUNT(*) FILTER (WHERE status::text = 'RUNNING') AS running
                 FROM worker_jobs
                 WHERE status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP BY kind, queue_key
                 ORDER BY kind, queue_key
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -310,6 +315,7 @@ async def get_orphaned_state_core(
     session: AsyncSession,
     *,
     stale_after_minutes: int = 15,
+    org_id: str | None = None,
 ) -> OrphanedStateResponse:
     """Summarize stale queue/pipeline state.
 
@@ -334,6 +340,7 @@ async def get_orphaned_state_core(
                         FROM worker_jobs wj
                         WHERE wj.kind::text = 'TRIAL'
                           AND wj.status::text = 'RUNNING'
+                          AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
                           AND (
                               wj.heartbeat_at IS NULL
                               OR wj.heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -343,6 +350,7 @@ async def get_orphaned_state_core(
                         SELECT COUNT(*)
                         FROM tasks t
                         WHERE t.deleted_at IS NULL
+                          AND (CAST(:org_id AS TEXT) IS NULL OR t.org_id = CAST(:org_id AS TEXT))
                           AND (
                             (
                                 t.status = 'RUNNING'
@@ -369,7 +377,7 @@ async def get_orphaned_state_core(
                     ) AS active_tasks_without_active_trials
                 """
             ),
-            {"stale_after_minutes": stale_after_minutes},
+            {"stale_after_minutes": stale_after_minutes, "org_id": org_id},
         )
     ).one()
 
@@ -396,6 +404,7 @@ async def get_orphaned_state_core(
                 JOIN trials tr ON wj.subject_table = 'trials' AND wj.subject_id = tr.id
                 WHERE wj.kind::text = 'TRIAL'
                   AND wj.status::text = 'RUNNING'
+                  AND (CAST(:org_id AS TEXT) IS NULL OR wj.org_id = CAST(:org_id AS TEXT))
                   AND tr.deleted_at IS NULL
                   AND (
                       wj.heartbeat_at IS NULL
@@ -405,7 +414,7 @@ async def get_orphaned_state_core(
                 LIMIT 20
                 """
             ),
-            {"stale_after_minutes": stale_after_minutes},
+            {"stale_after_minutes": stale_after_minutes, "org_id": org_id},
         )
     ).all()
 
@@ -422,6 +431,7 @@ async def get_orphaned_state_core(
                     t.updated_at
                 FROM tasks t
                 WHERE t.deleted_at IS NULL
+                  AND (CAST(:org_id AS TEXT) IS NULL OR t.org_id = CAST(:org_id AS TEXT))
                   AND (
                     (
                         t.status = 'RUNNING'
@@ -448,7 +458,8 @@ async def get_orphaned_state_core(
                 ORDER BY t.updated_at ASC NULLS FIRST
                 LIMIT 20
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -496,6 +507,7 @@ async def get_worker_jobs_admin_core(
     *,
     stale_after_minutes: int = 15,
     sample_limit: int = 25,
+    org_id: str | None = None,
 ) -> WorkerJobsResponse:
     """Summarize the unified ``worker_jobs`` table for the admin page.
 
@@ -516,9 +528,11 @@ async def get_worker_jobs_admin_core(
                        status::text AS status,
                        COUNT(*) AS n
                 FROM   worker_jobs
+                WHERE  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP  BY kind, status
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
     counts: dict[str, dict[str, int]] = {}
@@ -549,6 +563,7 @@ async def get_worker_jobs_admin_core(
                        org_id
                 FROM   worker_jobs
                 WHERE  status::text = 'RUNNING'
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  (
                       heartbeat_at IS NULL
                       OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -560,6 +575,7 @@ async def get_worker_jobs_admin_core(
             {
                 "stale_after_minutes": stale_after_minutes,
                 "sample_limit": sample_limit,
+                "org_id": org_id,
             },
         )
     ).all()
@@ -588,11 +604,12 @@ async def get_worker_jobs_admin_core(
                        org_id
                 FROM   worker_jobs
                 WHERE  status::text IN ('FAILED', 'CANCELLED')
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 ORDER  BY finished_at DESC NULLS LAST
                 LIMIT  :sample_limit
                 """
             ),
-            {"sample_limit": sample_limit},
+            {"sample_limit": sample_limit, "org_id": org_id},
         )
     ).all()
 
@@ -640,6 +657,7 @@ async def get_worker_jobs_admin_core(
                        ) AS p95
                 FROM   worker_jobs
                 WHERE  status::text IN ('SUCCESS', 'FAILED')
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  claimed_at IS NOT NULL
                   AND  finished_at IS NOT NULL
                   AND  finished_at >= NOW() - INTERVAL '1 hour'
@@ -647,7 +665,8 @@ async def get_worker_jobs_admin_core(
                 HAVING COUNT(*) >= 3
                 ORDER  BY kind, queue_key
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -760,7 +779,12 @@ async def update_model_concurrency_core(
     )
 
 
-async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
+async def get_queue_health_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    include_global_details: bool = True,
+) -> QueueHealthResponse:
     """Aggregate throughput, per-queue-key capacity fill, and component health."""
     now = utcnow()
 
@@ -777,12 +801,16 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
                        COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '15 minutes') AS finished_15m,
                        COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '60 minutes') AS finished_60m
                 FROM   worker_jobs
-                WHERE  started_at  >= NOW() - INTERVAL '60 minutes'
-                   OR  finished_at >= NOW() - INTERVAL '60 minutes'
+                WHERE  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
+                  AND  (
+                       started_at  >= NOW() - INTERVAL '60 minutes'
+                    OR finished_at >= NOW() - INTERVAL '60 minutes'
+                  )
                 GROUP  BY kind
                 ORDER  BY kind
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
     throughput = [
@@ -819,9 +847,11 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
                        ))) AS oldest_queued_age_seconds
                 FROM   worker_jobs
                 WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                 GROUP  BY queue_key
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
 
@@ -839,12 +869,14 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
                        ) AS wait_p95
                 FROM   worker_jobs
                 WHERE  claimed_at IS NOT NULL
+                  AND  (CAST(:org_id AS TEXT) IS NULL OR org_id = CAST(:org_id AS TEXT))
                   AND  claimed_at >= NOW() - INTERVAL '1 hour'
                   AND  claimed_at >= created_at
                 GROUP  BY queue_key
                 HAVING COUNT(*) >= 3
                 """
-            )
+            ),
+            {"org_id": org_id},
         )
     ).all()
     wait_by_key: dict[str, tuple[float | None, float | None]] = {}
@@ -877,17 +909,26 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
             current = bucket["oldest"]
             bucket["oldest"] = age if current is None else max(current, age)
 
-    overrides = await get_model_concurrency_overrides(session)
-    for key in settings.get_known_queue_keys() | overrides.keys():
-        merged.setdefault(
-            key,
-            {"queued": 0, "queued_scheduled": 0, "running": 0, "oldest": None},
-        )
+    overrides: dict[str, int] = {}
+    if include_global_details:
+        overrides = await get_model_concurrency_overrides(session)
+        for key in settings.get_known_queue_keys() | overrides.keys():
+            merged.setdefault(
+                key,
+                {
+                    "queued": 0,
+                    "queued_scheduled": 0,
+                    "running": 0,
+                    "oldest": None,
+                },
+            )
 
     capacity: list[QueueCapacityStat] = []
     for key, bucket in merged.items():
-        deploy_limit = settings.get_model_concurrency(key)
-        override_limit = overrides.get(key)
+        deploy_limit = (
+            settings.get_model_concurrency(key) if include_global_details else 0
+        )
+        override_limit = overrides.get(key) if include_global_details else None
         limit = override_limit if override_limit is not None else deploy_limit
         running = int(bucket["running"] or 0)
         wait_p50, wait_p95 = wait_by_key.get(key, (None, None))
@@ -923,7 +964,9 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
         get_queue_runtime_statuses,
     )
 
-    statuses = await get_queue_runtime_statuses(session)
+    statuses = (
+        await get_queue_runtime_statuses(session) if include_global_details else {}
+    )
 
     def _component(name: str) -> QueueRuntimeComponentStatus | None:
         row = statuses.get(name)
@@ -1098,7 +1141,7 @@ async def get_cached_load_snapshot(ttl: float = LOAD_CACHE_TTL_SECONDS) -> LoadS
 
 
 # ---------------------------------------------------------------------------
-# Cost breakdown: global admin spend view over billable trials only.
+# Cost breakdown: admin spend view over billable trials, optionally org-scoped.
 # ---------------------------------------------------------------------------
 
 _MAX_MODELS_PER_USER = 6
@@ -1268,6 +1311,12 @@ class CostQaModelBreakdown(BaseModel):
     cost_usd: float
 
 
+class CostComputeProviderBreakdown(BaseModel):
+    provider: str
+    cost_usd: float
+    span_count: int
+
+
 class CostUserBreakdown(BaseModel):
     # Stable grouping key: a user id for billed/submitter rows, else a synthetic
     # ``ghid:``/``ghuser:``/``__unattributed__`` key for label-only fallback rows.
@@ -1361,6 +1410,7 @@ class CostTotals(BaseModel):
     cost_native_usd: float
     cost_estimated_usd: float
     qa_cost_usd: float = 0.0
+    compute_cost_usd: float = 0.0
     prev_cost_usd: float | None = None
     month_cost_usd: float = 0.0
     month_budget_usd: float | None = None
@@ -1374,10 +1424,13 @@ class CostBreakdownResponse(BaseModel):
     series_by_user: CostSeries
     series_by_type: CostSeries
     series_qa_by_model: CostSeries
+    series_by_analysis_type: CostSeries
+    series_compute_by_provider: CostSeries
     totals: CostTotals
     by_user: list[CostUserBreakdown]
     by_model: list[CostModelBreakdown]
     qa_by_model: list[CostQaModelBreakdown] = []
+    compute_by_provider: list[CostComputeProviderBreakdown] = []
     experiments: list[CostExperimentBreakdown]
     timestamp: str
 
@@ -1511,6 +1564,7 @@ async def _cost_time_series(
     *,
     since: datetime | None,
     bucket: str,
+    org_id: str | None = None,
     resolve_github_users: GithubUserResolver | None = None,
 ) -> tuple[CostSeries, CostSeries, CostSeries]:
     """Billable cost over time, stacked three ways: by agent, model, and user.
@@ -1553,6 +1607,8 @@ async def _cost_time_series(
         )
     )
     query = query.where(_real_spend_filter(), TrialModel.finished_at.isnot(None))
+    if org_id is not None:
+        query = query.where(TrialModel.org_id == org_id)
     if since is not None:
         query = query.where(TrialModel.finished_at >= since)
 
@@ -1633,8 +1689,9 @@ async def _qa_cost_time_series(
     *,
     since: datetime | None,
     bucket: str,
-) -> CostSeries:
-    """QA/analysis spend over time, stacked by model.
+      org_id: str | None = None,
+) -> tuple[CostSeries, CostSeries]:
+    """QA/analysis spend over time, stacked by model and analysis type.
 
     Recorded as a direct native ``cost_usd`` on ``analysis_costs`` (no settled
     decomposition), on the job's ``created_at`` axis.
@@ -1644,17 +1701,22 @@ async def _qa_cost_time_series(
         select(
             bucket_col.label("bucket"),
             AnalysisCostModel.model.label("model"),
+            AnalysisCostModel.job_kind.label("job_kind"),
             func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0).label("cost_usd"),
             func.count(AnalysisCostModel.id).label("job_count"),
         )
         .where(AnalysisCostModel.deleted_at.is_(None))
-        .group_by(bucket_col, AnalysisCostModel.model)
+        .group_by(bucket_col, AnalysisCostModel.model, AnalysisCostModel.job_kind)
     )
     if since is not None:
         query = query.where(AnalysisCostModel.created_at >= since)
+    if org_id is not None:
+        query = query.where(AnalysisCostModel.org_id == org_id)
 
     per_bucket: dict[datetime, dict[str, float]] = {}
     totals: dict[str, float] = {}
+    type_per_bucket: dict[datetime, dict[str, float]] = {}
+    type_totals: dict[str, float] = {}
     jobs_per_bucket: dict[datetime, int] = {}
     for row in (await session.execute(query)).all():
         bstart = row.bucket
@@ -1663,50 +1725,131 @@ async def _qa_cost_time_series(
         slot = per_bucket.setdefault(bstart, {})
         slot[key] = slot.get(key, 0.0) + cost
         totals[key] = totals.get(key, 0.0) + cost
+        type_key = row.job_kind or "unknown"
+        type_slot = type_per_bucket.setdefault(bstart, {})
+        type_slot[type_key] = type_slot.get(type_key, 0.0) + cost
+        type_totals[type_key] = type_totals.get(type_key, 0.0) + cost
         jobs_per_bucket[bstart] = jobs_per_bucket.get(bstart, 0) + int(row.job_count or 0)
 
-    return _build_dimension_series(
-        "model",
-        bucket_starts=sorted(jobs_per_bucket.keys()),
-        per_bucket=per_bucket,
-        totals=totals,
-        trials_per_bucket=jobs_per_bucket,
-        labels={},
+    bucket_starts = sorted(jobs_per_bucket.keys())
+    return (
+        _build_dimension_series(
+            "model",
+            bucket_starts=bucket_starts,
+            per_bucket=per_bucket,
+            totals=totals,
+            trials_per_bucket=jobs_per_bucket,
+            labels={},
+        ),
+        _build_dimension_series(
+            "analysis_type",
+            bucket_starts=bucket_starts,
+            per_bucket=type_per_bucket,
+            totals=type_totals,
+            trials_per_bucket=jobs_per_bucket,
+            labels={
+                key: key.replace("_", " ").title() for key in type_totals
+            },
+        ),
     )
 
 
-# Stack keys for the inference-vs-QA "type" series.
+# Compute spans are grouped by execution provider. Known providers get their
+# own bucket; anything else folds into "other" so the split stays legible.
+_COMPUTE_PROVIDER_LABELS = {
+    "modal": "Modal",
+    "daytona": "Daytona",
+    "other": "Other",
+}
+_KNOWN_COMPUTE_PROVIDERS = ("modal", "daytona")
+
+
+def _normalize_compute_provider(raw: str | None) -> str:
+    key = (raw or "").strip().lower()
+    return key if key in _KNOWN_COMPUTE_PROVIDERS else "other"
+
+
+async def _compute_cost_time_series(
+    session: AsyncSession,
+    *,
+    since: datetime | None,
+    bucket: str,
+    org_id: str | None = None,
+) -> CostSeries:
+    bucket_col = _utc_date_trunc(bucket, ModalCostSpanModel.finished_at)
+    query = (
+        select(
+            bucket_col.label("bucket"),
+            ModalCostSpanModel.provider.label("provider"),
+            func.coalesce(func.sum(ModalCostSpanModel.cost_usd), 0.0).label("cost_usd"),
+        )
+        .where(
+            ModalCostSpanModel.deleted_at.is_(None),
+            ModalCostSpanModel.finished_at.isnot(None),
+            ModalCostSpanModel.cost_usd.isnot(None),
+        )
+        .group_by(bucket_col, ModalCostSpanModel.provider)
+    )
+    if since is not None:
+        query = query.where(ModalCostSpanModel.finished_at >= since)
+    if org_id is not None:
+        query = query.where(ModalCostSpanModel.org_id == org_id)
+
+    per_bucket: dict[datetime, dict[str, float]] = {}
+    totals: dict[str, float] = {}
+    for row in (await session.execute(query)).all():
+        bstart = row.bucket
+        key = _normalize_compute_provider(row.provider)
+        cost = float(row.cost_usd)
+        bkt = per_bucket.setdefault(bstart, {})
+        bkt[key] = bkt.get(key, 0.0) + cost
+        totals[key] = totals.get(key, 0.0) + cost
+
+    return _build_dimension_series(
+        "provider",
+        bucket_starts=sorted(per_bucket),
+        per_bucket=per_bucket,
+        totals=totals,
+        trials_per_bucket={},
+        labels=_COMPUTE_PROVIDER_LABELS,
+    )
+
+
+# Stack keys for the inference-vs-QA-vs-compute "type" series.
 _TYPE_INFERENCE_KEY = "inference"
 _TYPE_QA_KEY = "qa"
+_TYPE_COMPUTE_KEY = "compute"
 
 
-def _build_type_series(trial_series: CostSeries, qa_series: CostSeries) -> CostSeries:
-    """Cost over time split into two stacks: model inference vs QA.
-
-    Reuses the already-computed trial and QA series -- each of their buckets
-    carries a ``cost_usd`` grand total, so we only fold those two per bucket
-    rather than issuing another query. Bucket starts are the union of both axes
-    (trial spend on ``finished_at``, QA on ``created_at``), so a bucket with QA
-    but no trials -- or vice versa -- still appears.
-    """
+def _build_type_series(
+    trial_series: CostSeries,
+    qa_series: CostSeries,
+    compute_series: CostSeries,
+) -> CostSeries:
     inference_by_bucket = {b.bucket_start: b.cost_usd for b in trial_series.buckets}
     trials_by_bucket = {b.bucket_start: b.trial_count for b in trial_series.buckets}
     qa_by_bucket = {b.bucket_start: b.cost_usd for b in qa_series.buckets}
-    bucket_starts = sorted(set(inference_by_bucket) | set(qa_by_bucket))
+    compute_by_bucket = {b.bucket_start: b.cost_usd for b in compute_series.buckets}
+    bucket_starts = sorted(
+        set(inference_by_bucket) | set(qa_by_bucket) | set(compute_by_bucket)
+    )
 
     buckets: list[CostSeriesBucket] = []
     for bstart in bucket_starts:
         inference = inference_by_bucket.get(bstart, 0.0)
         qa = qa_by_bucket.get(bstart, 0.0)
+        compute = compute_by_bucket.get(bstart, 0.0)
         costs: dict[str, float] = {}
         if inference > 0:
             costs[_TYPE_INFERENCE_KEY] = round(inference, 4)
         if qa > 0:
             costs[_TYPE_QA_KEY] = round(qa, 4)
+        if compute > 0:
+            costs[_TYPE_COMPUTE_KEY] = round(compute, 4)
         buckets.append(
             CostSeriesBucket(
                 bucket_start=bstart,
-                cost_usd=round(inference + qa, 4),
+                cost_usd=round(inference + qa + compute, 4),
                 trial_count=trials_by_bucket.get(bstart, 0),
                 costs=costs,
             )
@@ -1716,6 +1859,7 @@ def _build_type_series(trial_series: CostSeries, qa_series: CostSeries) -> CostS
         keys=[
             CostSeriesKey(key=_TYPE_INFERENCE_KEY, label="Model inference"),
             CostSeriesKey(key=_TYPE_QA_KEY, label="QA"),
+            CostSeriesKey(key=_TYPE_COMPUTE_KEY, label="Compute"),
         ],
         buckets=buckets,
     )
@@ -1730,35 +1874,37 @@ def _clean_author(value: str | None) -> str | None:
 
 
 async def _primary_task_authors(
-    session: AsyncSession, experiment_ids: list[str]
+    session: AsyncSession,
+    experiment_ids: list[str],
+    *,
+    org_id: str | None = None,
 ) -> dict[str, str]:
     """Get each experiment's oldest-task author, used as a fallback owner name."""
     if not experiment_ids:
         return {}
     github_tag = TaskModel.tags["github_username"].astext
-    rows = (
-        await session.execute(
-            select(
-                task_experiments.c.experiment_id.label("experiment_id"),
-                github_tag.label("github_username"),
-                TaskModel.user.label("user"),
-            )
-            .select_from(
-                task_experiments.join(
-                    TaskModel, TaskModel.id == task_experiments.c.task_id
-                )
-            )
-            .where(task_experiments.c.experiment_id.in_(experiment_ids))
-            .where(task_experiments.c.deleted_at.is_(None))
-            .order_by(
-                task_experiments.c.experiment_id.asc(),
-                TaskModel.created_at.asc(),
-                TaskModel.id.asc(),
-            )
-            .distinct(task_experiments.c.experiment_id)
-            .execution_options(include_deleted=True)
+    query = (
+        select(
+            task_experiments.c.experiment_id.label("experiment_id"),
+            github_tag.label("github_username"),
+            TaskModel.user.label("user"),
         )
-    ).all()
+        .select_from(
+            task_experiments.join(TaskModel, TaskModel.id == task_experiments.c.task_id)
+        )
+        .where(task_experiments.c.experiment_id.in_(experiment_ids))
+        .where(task_experiments.c.deleted_at.is_(None))
+        .order_by(
+            task_experiments.c.experiment_id.asc(),
+            TaskModel.created_at.asc(),
+            TaskModel.id.asc(),
+        )
+        .distinct(task_experiments.c.experiment_id)
+        .execution_options(include_deleted=True)
+    )
+    if org_id is not None:
+        query = query.where(TaskModel.org_id == org_id)
+    rows = (await session.execute(query)).all()
     authors: dict[str, str] = {}
     for row in rows:
         name = _clean_author(row.github_username) or _clean_author(row.user)
@@ -1772,6 +1918,7 @@ async def _prev_window_costs(
     *,
     prev_start: datetime,
     prev_end: datetime,
+    org_id: str | None = None,
     resolve_github_users: GithubUserResolver | None = None,
 ) -> tuple[dict[tuple[str | None, str], float], float]:
     """Per-(org, payer) spend and total spend for the prior adjacent window.
@@ -1808,6 +1955,8 @@ async def _prev_window_costs(
         )
         .execution_options(include_deleted=True)
     )
+    if org_id is not None:
+        query = query.where(TrialModel.org_id == org_id)
     rows = (await session.execute(query)).all()
     github_users = await _github_users_for_rows(session, rows, resolve_github_users)
 
@@ -1871,6 +2020,7 @@ async def _billed_cost_since(
 async def get_cost_breakdown_core(
     session: AsyncSession,
     *,
+    org_id: str | None = None,
     window_days: int | None = 7,
     experiment_limit: int = 100,
     user_limit: int = 100,
@@ -1887,14 +2037,21 @@ async def get_cost_breakdown_core(
 
     bucket = _series_bucket(window_days)
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
-        session, since=since, bucket=bucket, resolve_github_users=resolve_github_users
+        session,
+        since=since,
+        bucket=bucket,
+        org_id=org_id,
+        resolve_github_users=resolve_github_users,
     )
-    series_qa_by_model = await _qa_cost_time_series(
-        session, since=since, bucket=bucket
+    series_qa_by_model, series_by_analysis_type = await _qa_cost_time_series(
+        session, since=since, bucket=bucket, org_id=org_id
     )
-    # Two-stack inference-vs-QA view over the same buckets; folds the grand
-    # totals the two series above already carry, so it needs no extra query.
-    series_by_type = _build_type_series(series_by_agent, series_qa_by_model)
+    series_compute_by_provider = await _compute_cost_time_series(
+        session, since=since, bucket=bucket, org_id=org_id
+    )
+    series_by_type = _build_type_series(
+        series_by_agent, series_qa_by_model, series_compute_by_provider
+    )
 
     # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
     # JSON-key bind params match (two inline copies bind as distinct params and
@@ -1957,6 +2114,8 @@ async def get_cost_breakdown_core(
     detail_query = detail_query.where(
         _real_spend_filter(), TrialModel.finished_at.isnot(None)
     )
+    if org_id is not None:
+        detail_query = detail_query.where(TrialModel.org_id == org_id)
     if since is not None:
         detail_query = detail_query.where(TrialModel.finished_at >= since)
 
@@ -2109,29 +2268,30 @@ async def get_cost_breakdown_core(
             session,
             prev_start=since - window_span,
             prev_end=since,
+            org_id=org_id,
             resolve_github_users=resolve_github_users,
         )
 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    month_org_ids = (
-        await session.scalars(
-            select(TrialModel.org_id)
-            .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
-            .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
-            .where(
-                _real_spend_filter(),
-                TrialModel.finished_at >= month_start,
-            )
-            .distinct()
-            .execution_options(include_deleted=True)
+    month_org_query = (
+        select(TrialModel.org_id)
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
+        .where(
+            _real_spend_filter(),
+            TrialModel.finished_at >= month_start,
         )
-    ).all()
+        .distinct()
+        .execution_options(include_deleted=True)
+    )
+    if org_id is not None:
+        month_org_query = month_org_query.where(TrialModel.org_id == org_id)
+    month_org_ids = (await session.scalars(month_org_query)).all()
     month_limits_by_org = {
-        org_id: await get_effective_org_limit(session, org_id)
-        for org_id in month_org_ids
+        org: await get_effective_org_limit(session, org) for org in month_org_ids
     }
     budgeted_month_org_ids = {
-        org_id for org_id, limit in month_limits_by_org.items() if limit is not None
+        org for org, limit in month_limits_by_org.items() if limit is not None
     }
     month_limits = [
         limit for limit in month_limits_by_org.values() if limit is not None
@@ -2140,13 +2300,23 @@ async def get_cost_breakdown_core(
     month_cost = await _billed_cost_since(
         session,
         since=month_start,
-        org_ids=budgeted_month_org_ids if month_budget is not None else None,
+        org_ids=(
+            {org_id}
+            if org_id is not None
+            else budgeted_month_org_ids
+            if month_budget is not None
+            else None
+        ),
     )
 
     quota_start = quota_window_start(now)
     quota_spent = await sum_cost_usd_by_org_user_all_orgs(session, quota_start)
     quota_limits = await effective_limits_by_org_user_all_orgs(session)
     inflight_counts = await inflight_trial_count_by_org_user_all_orgs(session)
+    if org_id is not None:
+        quota_spent = {k: v for k, v in quota_spent.items() if k[0] == org_id}
+        quota_limits = {k: v for k, v in quota_limits.items() if k[0] == org_id}
+        inflight_counts = {k: v for k, v in inflight_counts.items() if k[0] == org_id}
 
     user_rows = sorted(by_user.values(), key=lambda u: u["cost_usd"], reverse=True)[
         :user_limit
@@ -2211,7 +2381,9 @@ async def get_cost_breakdown_core(
         experiments.values(), key=lambda e: e["cost_usd"], reverse=True
     )[:experiment_limit]
     task_authors = await _primary_task_authors(
-        session, [str(e["experiment_id"]) for e in experiment_rows]
+        session,
+        [str(e["experiment_id"]) for e in experiment_rows],
+        org_id=org_id,
     )
     experiments_out = [
         CostExperimentBreakdown(
@@ -2248,6 +2420,8 @@ async def get_cost_breakdown_core(
     )
     if since is not None:
         qa_query = qa_query.where(AnalysisCostModel.created_at >= since)
+    if org_id is not None:
+        qa_query = qa_query.where(AnalysisCostModel.org_id == org_id)
     qa_by_model_totals: dict[str, float] = {}
     for row in (await session.execute(qa_query)).all():
         label = _model_label(row.model)
@@ -2261,6 +2435,49 @@ async def get_cost_breakdown_core(
         )
     ]
     qa_cost_total = round(sum(qa_by_model_totals.values()), 4)
+
+    compute_query = (
+        select(
+            ModalCostSpanModel.provider.label("provider"),
+            func.coalesce(func.sum(ModalCostSpanModel.cost_usd), 0.0).label("cost_usd"),
+            func.count(ModalCostSpanModel.id).label("span_count"),
+        )
+        .where(
+            ModalCostSpanModel.deleted_at.is_(None),
+            ModalCostSpanModel.finished_at.isnot(None),
+            ModalCostSpanModel.cost_usd.isnot(None),
+        )
+        .group_by(ModalCostSpanModel.provider)
+    )
+    if since is not None:
+        compute_query = compute_query.where(ModalCostSpanModel.finished_at >= since)
+    if org_id is not None:
+        compute_query = compute_query.where(ModalCostSpanModel.org_id == org_id)
+    compute_rows = (await session.execute(compute_query)).all()
+    compute_cost_total = round(sum(float(row.cost_usd) for row in compute_rows), 4)
+    # Fold raw providers into the modal / daytona / other buckets.
+    compute_by_provider_totals: dict[str, float] = {}
+    compute_by_provider_spans: dict[str, int] = {}
+    for row in compute_rows:
+        provider = _normalize_compute_provider(row.provider)
+        compute_by_provider_totals[provider] = compute_by_provider_totals.get(
+            provider, 0.0
+        ) + float(row.cost_usd)
+        compute_by_provider_spans[provider] = compute_by_provider_spans.get(
+            provider, 0
+        ) + int(row.span_count)
+    compute_by_provider = [
+        CostComputeProviderBreakdown(
+            provider=provider,
+            cost_usd=round(cost, 4),
+            span_count=compute_by_provider_spans[provider],
+        )
+        for provider, cost in sorted(
+            compute_by_provider_totals.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+    ]
 
     totals = CostTotals(
         window_days=window_days,
@@ -2279,6 +2496,7 @@ async def get_cost_breakdown_core(
         cost_native_usd=round(total_native, 4),
         cost_estimated_usd=round(total_estimated, 4),
         qa_cost_usd=qa_cost_total,
+        compute_cost_usd=compute_cost_total,
         prev_cost_usd=prev_window_cost,
         month_cost_usd=month_cost,
         month_budget_usd=month_budget,
@@ -2292,10 +2510,13 @@ async def get_cost_breakdown_core(
         series_by_user=series_by_user,
         series_by_type=series_by_type,
         series_qa_by_model=series_qa_by_model,
+        series_by_analysis_type=series_by_analysis_type,
+        series_compute_by_provider=series_compute_by_provider,
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),
         qa_by_model=qa_by_model,
+        compute_by_provider=compute_by_provider,
         experiments=experiments_out,
         timestamp=now.isoformat(),
     )

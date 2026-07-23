@@ -20,6 +20,11 @@ from api.services.summarize_trajectory import (
     preprocess,
 )
 
+_PROMPT_KWARGS = {
+    "prompt_template": "INSTRUCTIONS {{taxonomy}}",
+    "prompt_version": 1,
+}
+
 
 def _make_step(step_id: int, **overrides) -> dict:
     base: dict = {
@@ -79,7 +84,10 @@ def test_preprocess_strips_image_content_parts():
                 {
                     "source_call_id": "c1",
                     "content": [
-                        {"type": "image", "source": {"media_type": "image/png", "path": "y.png"}},
+                        {
+                            "type": "image",
+                            "source": {"media_type": "image/png", "path": "y.png"},
+                        },
                     ],
                 }
             ]
@@ -115,7 +123,9 @@ def test_preprocess_truncates_tool_call_argument_values():
 
 def test_preprocess_truncates_observation_string_content():
     huge = "L" * (MAX_TEXT_CHARS + 1000)
-    step = _make_step(1, observation={"results": [{"source_call_id": "c1", "content": huge}]})
+    step = _make_step(
+        1, observation={"results": [{"source_call_id": "c1", "content": huge}]}
+    )
     out = preprocess({"steps": [step]})
     content = out["steps"][0]["observation"]["results"][0]["content"]
     assert "[...truncated" in content
@@ -142,24 +152,32 @@ def _trajectory_with_steps(step_ids: list[int]) -> dict:
 
 def _minimal_ctx() -> TaskContext:
     return TaskContext(
-        task_name="test_task", instruction=None, final_reward=None,
-        model_used=None, verifier_output=None,
+        task_name="test_task",
+        instruction=None,
+        final_reward=None,
+        model_used=None,
+        verifier_output=None,
     )
-
-
-# prompt_template/prompt_version are now required (no fallback template), so
-# every direct generate()/build_summary_block() call below supplies these.
-_TEST_PROMPT_TEMPLATE = "INSTRUCTIONS {{taxonomy}}"
-_TEST_PROMPT_VERSION = 1
 
 
 def _fake_llm(payload: str):
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+
     return FakeAnalyzerLLMClient(chunks=[payload])
+
+
+def _install_fake_llm(monkeypatch, client):
+    async def create(*args, **kwargs):
+        return client
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", create
+    )
 
 
 def _patch_block_persistence(monkeypatch):
     from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
 
@@ -167,16 +185,29 @@ def _patch_block_persistence(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_returns_persistable_summary(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
-    payload = json.dumps({
-        "summary": "Agent reproduced and fixed a flaky test.",
-        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."},
-                       {"step_id": 3, "title": "Fix", "why": "Patch."}],
-        "components": [{"step_ids": [1, 2], "trajectory_component": "debugging", "summary": "d"}],
-    })
+    payload = json.dumps(
+        {
+            "summary": "Agent reproduced and fixed a flaky test.",
+            "highlights": [
+                {"step_id": 1, "title": "Repro", "why": "First."},
+                {"step_id": 3, "title": "Fix", "why": "Patch."},
+            ],
+            "components": [
+                {
+                    "step_ids": [1, 2],
+                    "trajectory_component": "debugging",
+                    "summary": "d",
+                }
+            ],
+        }
+    )
+    _install_fake_llm(monkeypatch, _fake_llm(payload))
     result = await generate(
-        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
-        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+        _trajectory_with_steps([1, 2, 3]),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
     )
     assert result["schema_version"] == SCHEMA_VERSION == "5"
     assert result["summary"].startswith("Agent reproduced")
@@ -188,16 +219,23 @@ async def test_generate_returns_persistable_summary(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
-    payload = json.dumps({
-        "summary": "x",
-        "highlights": [{"step_id": 1, "title": "ok", "why": "ok"},
-                       {"step_id": 999, "title": "bogus", "why": "hallucinated"}],
-        "components": [],
-    })
+    payload = json.dumps(
+        {
+            "summary": "x",
+            "highlights": [
+                {"step_id": 1, "title": "ok", "why": "ok"},
+                {"step_id": 999, "title": "bogus", "why": "hallucinated"},
+            ],
+            "components": [],
+        }
+    )
+    _install_fake_llm(monkeypatch, _fake_llm(payload))
     result = await generate(
-        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
-        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+        _trajectory_with_steps([1, 2, 3]),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
     )
     assert [h["step_id"] for h in result["highlights"]] == [1]
 
@@ -205,11 +243,14 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_strips_code_fences_around_json(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
     body = json.dumps({"summary": "ok", "highlights": [], "components": []})
+    _install_fake_llm(monkeypatch, _fake_llm(f"```json\n{body}\n```"))
     result = await generate(
-        _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm(f"```json\n{body}\n```"),
-        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+        _trajectory_with_steps([1]),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
     )
     assert result["summary"] == "ok"
 
@@ -217,54 +258,68 @@ async def test_generate_strips_code_fences_around_json(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_raises_on_malformed_json(monkeypatch):
     from api.services.summarize_trajectory import SummaryGenerationError, generate
+
     _patch_block_persistence(monkeypatch)
+    _install_fake_llm(monkeypatch, _fake_llm("not json"))
     with pytest.raises(SummaryGenerationError):
-        await generate(
-            _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("not json"),
-            prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
-        )
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), **_PROMPT_KWARGS)
 
 
 @pytest.mark.asyncio
 async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
     from api.services.summarize_trajectory import SummaryGenerationError, generate
+
     _patch_block_persistence(monkeypatch)
+    _install_fake_llm(monkeypatch, _fake_llm("[1,2,3]"))
     with pytest.raises(SummaryGenerationError):
-        await generate(
-            _trajectory_with_steps([1]), _minimal_ctx(), client=_fake_llm("[1,2,3]"),
-            prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
-        )
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), **_PROMPT_KWARGS)
 
 
 @pytest.mark.asyncio
 async def test_generate_wraps_client_errors(monkeypatch):
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summarize_trajectory import SummaryGenerationError, generate
+
     _patch_block_persistence(monkeypatch)
     client = FakeAnalyzerLLMClient(chunks=[], exc=RuntimeError("boom"))
+    _install_fake_llm(monkeypatch, client)
     with pytest.raises(SummaryGenerationError):
-        await generate(
-            _trajectory_with_steps([1]), _minimal_ctx(), client=client,
-            prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
-        )
+        await generate(_trajectory_with_steps([1]), _minimal_ctx(), **_PROMPT_KWARGS)
 
 
 @pytest.mark.asyncio
 async def test_generate_returns_components(monkeypatch):
     from api.services.summarize_trajectory import generate
+
     _patch_block_persistence(monkeypatch)
-    payload = json.dumps({
-        "summary": "s", "highlights": [],
-        "components": [
-            {"step_ids": [1, 2], "trajectory_component": "reading_files", "summary": "look"},
-            {"step_ids": [3], "trajectory_component": "implementing", "summary": "code"},
-        ],
-    })
-    result = await generate(
-        _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
-        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
+    payload = json.dumps(
+        {
+            "summary": "s",
+            "highlights": [],
+            "components": [
+                {
+                    "step_ids": [1, 2],
+                    "trajectory_component": "reading_files",
+                    "summary": "look",
+                },
+                {
+                    "step_ids": [3],
+                    "trajectory_component": "implementing",
+                    "summary": "code",
+                },
+            ],
+        }
     )
-    assert [c["trajectory_component"] for c in result["components"]] == ["reading_files", "implementing"]
+    _install_fake_llm(monkeypatch, _fake_llm(payload))
+    result = await generate(
+        _trajectory_with_steps([1, 2, 3]),
+        _minimal_ctx(),
+        **_PROMPT_KWARGS,
+    )
+    assert [c["trajectory_component"] for c in result["components"]] == [
+        "reading_files",
+        "implementing",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -292,15 +347,25 @@ def _fake_session():
 
 @pytest.mark.asyncio
 async def test_get_or_generate_returns_block_when_fresh():
-    cached = {"schema_version": "5", "summary": "cached", "highlights": [], "components": []}
+    cached = {
+        "schema_version": "5",
+        "summary": "cached",
+        "highlights": [],
+        "components": [],
+    }
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
-    with patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=cached,
-    ), patch(
-        "api.services.summarize_trajectory.generate", new_callable=AsyncMock,
-    ) as gen:
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=cached,
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+        ) as gen,
+    ):
         result = await get_or_generate_summary(session, trial)
     assert result == cached
     gen.assert_not_awaited()
@@ -313,7 +378,8 @@ async def test_get_or_generate_returns_none_when_no_trajectory():
     session = _fake_session()
     with patch(
         "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=None,
+        new_callable=AsyncMock,
+        return_value=None,
     ):
         result = await get_or_generate_summary(session, trial)
     assert result is None
@@ -324,7 +390,12 @@ async def test_get_or_generate_returns_none_when_no_trajectory():
 async def test_get_or_generate_persists_on_miss():
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
-    fresh = {"schema_version": "5", "summary": "fresh", "highlights": [], "components": []}
+    fresh = {
+        "schema_version": "5",
+        "summary": "fresh",
+        "highlights": [],
+        "components": [],
+    }
 
     async def fake_traj(_t):
         return {"steps": [{"step_id": 1}]}
@@ -332,23 +403,34 @@ async def test_get_or_generate_persists_on_miss():
     async def fake_ctx(_t):
         return _minimal_ctx()
 
-    with patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=None,
-    ), patch(
-        "api.services.summarize_trajectory._load_summary_prompt",
-        new_callable=AsyncMock, return_value=("TEMPLATE", 1),
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_trajectory", new=fake_traj,
-    ), patch(
-        "api.services.summarize_trajectory.build_task_context", new=fake_ctx,
-    ), patch(
-        "api.services.summarize_trajectory.generate",
-        new_callable=AsyncMock, return_value=fresh,
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_summary_prompt",
+            new_callable=AsyncMock,
+            return_value=("INSTRUCTIONS {{taxonomy}}", 1),
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new=fake_traj,
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new=fake_ctx,
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=fresh,
+        ),
     ):
         result = await get_or_generate_summary(session, trial)
     assert result == fresh
-    session.execute.assert_awaited_once()   # the mirror UPDATE
+    session.execute.assert_awaited_once()  # the mirror UPDATE
     session.commit.assert_awaited_once()
 
 
@@ -375,144 +457,35 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
 
     fresh = {"schema_version": "5", "summary": "ok", "highlights": [], "components": []}
 
-    with patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=None,
-    ), patch(
-        "api.services.summarize_trajectory._load_summary_prompt",
-        new_callable=AsyncMock, return_value=("TEMPLATE", 1),
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_trajectory", new=slow_trajectory,
-    ), patch(
-        "api.services.summarize_trajectory.build_task_context", new=slow_context,
-    ), patch(
-        "api.services.summarize_trajectory.generate",
-        new_callable=AsyncMock, return_value=fresh,
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_summary_prompt",
+            new_callable=AsyncMock,
+            return_value=("INSTRUCTIONS {{taxonomy}}", 1),
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new=slow_trajectory,
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new=slow_context,
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=fresh,
+        ),
     ):
         await get_or_generate_summary(session, trial)
 
     assert {started[0], started[1]} == {"trajectory", "context"}
     assert len(finished) == 2
-
-
-async def _delete_summary_prompt() -> None:
-    from oddish.db import PromptModel, get_session
-
-    async with get_session() as session:
-        await session.execute(
-            PromptModel.__table__.delete().where(PromptModel.key == "trajectory_summary")
-        )
-        await session.commit()
-
-
-@pytest.mark.asyncio
-async def test_get_or_generate_self_seeds_missing_prompt():
-    from oddish.db import PromptModel, get_session
-
-    await _delete_summary_prompt()
-
-    trial = _fake_trial(has_trajectory=True)
-    fresh = {"schema_version": "5", "summary": "seeded", "highlights": [], "components": []}
-
-    async def fake_traj(_t):
-        return {"steps": [{"step_id": 1}]}
-
-    async def fake_ctx(_t):
-        return _minimal_ctx()
-
-    captured: dict = {}
-
-    async def fake_generate(*_args, **kwargs):
-        captured.update(kwargs)
-        return fresh
-
-    async with get_session() as session:
-        with patch(
-            "api.services.summarize_trajectory._load_fresh_summary_block",
-            new_callable=AsyncMock, return_value=None,
-        ), patch(
-            "api.services.summarize_trajectory.read_trial_trajectory", new=fake_traj,
-        ), patch(
-            "api.services.summarize_trajectory.build_task_context", new=fake_ctx,
-        ), patch(
-            "api.services.summarize_trajectory.generate", new=fake_generate,
-        ):
-            result = await get_or_generate_summary(session, trial)
-
-    assert result == fresh
-    assert captured["prompt_version"] == 1
-    assert "{{taxonomy}}" in captured["prompt_template"]
-
-    from sqlalchemy import select
-
-    async with get_session() as session:
-        row = (
-            await session.execute(
-                select(PromptModel).where(PromptModel.key == "trajectory_summary")
-            )
-        ).scalar_one_or_none()
-        assert row is not None
-
-
-@pytest.mark.asyncio
-async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
-    """Two first-ever requests both miss and both seed; the loser's commit
-    hits the prompts.key unique constraint. The prompt exists by then, so
-    the retry should succeed instead of raising."""
-    from sqlalchemy import select
-    from sqlalchemy.exc import IntegrityError
-
-    from api.services.summarize_trajectory import _load_summary_prompt
-    from oddish.core.prompt_seeds import seed_prompts as real_seed_prompts
-    from oddish.db import PromptModel, get_session
-
-    await _delete_summary_prompt()
-
-    async def fake_seed(_session):
-        async with get_session() as winner:
-            await real_seed_prompts(winner)
-        raise IntegrityError(
-            "insert", {}, Exception("duplicate key value violates unique constraint")
-        )
-
-    monkeypatch.setattr("api.services.summarize_trajectory.seed_prompts", fake_seed)
-
-    async with get_session() as session:
-        sentinel = (
-            await session.execute(
-                select(PromptModel).where(PromptModel.key == "pre_trial_qa")
-            )
-        ).scalar_one()
-        content, version = await _load_summary_prompt(session)
-        # Recovering the seed race must not roll back the caller's outer
-        # transaction and expire objects it still needs after prompt loading.
-        assert sentinel.key == "pre_trial_qa"
-
-    assert version == 1
-    assert "{{taxonomy}}" in content
-
-
-@pytest.mark.asyncio
-async def test_get_or_generate_hard_fails_when_seed_impossible(monkeypatch):
-    from api.services.summarize_trajectory import SummaryGenerationError
-    from oddish.db import get_session
-
-    await _delete_summary_prompt()
-
-    trial = _fake_trial(has_trajectory=True)
-
-    async def _raise(_session):
-        raise RuntimeError("seed boom")
-
-    monkeypatch.setattr("api.services.summarize_trajectory.seed_prompts", _raise)
-
-    with patch(
-        "api.services.summarize_trajectory._load_fresh_summary_block",
-        new_callable=AsyncMock, return_value=None,
-    ):
-        async with get_session() as session:
-            with pytest.raises(SummaryGenerationError):
-                await get_or_generate_summary(session, trial)
 
 
 # ---------------------------------------------------------------------------
@@ -522,15 +495,21 @@ async def test_get_or_generate_hard_fails_when_seed_impossible(monkeypatch):
 
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
     return SimpleNamespace(
-        id="t-1", name="trial-0", trial_s3_key="trials/t-1/",
-        reward=reward, model=model, harbor_config=harbor_config,
+        id="t-1",
+        name="trial-0",
+        trial_s3_key="trials/t-1/",
+        reward=reward,
+        model=model,
+        harbor_config=harbor_config,
         task=SimpleNamespace(name=task_name),
     )
 
 
 @pytest.mark.asyncio
 async def test_build_task_context_pulls_all_fields():
-    trial = _trial_with_task(task_name="solve_x", reward=0.75, model="claude-sonnet-4-6")
+    trial = _trial_with_task(
+        task_name="solve_x", reward=0.75, model="claude-sonnet-4-6"
+    )
 
     async def fake_instruction(_t):
         return "Solve the puzzle."
@@ -538,16 +517,24 @@ async def test_build_task_context_pulls_all_fields():
     async def fake_verifier(_t):
         return "PASS\n"
 
-    with patch(
-        "api.services.summarize_trajectory.read_trial_instruction", new=fake_instruction,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_verifier,
+    with (
+        patch(
+            "api.services.summarize_trajectory.read_trial_instruction",
+            new=fake_instruction,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_verifier_output",
+            new=fake_verifier,
+        ),
     ):
         ctx = await build_task_context(trial)
 
     assert ctx == TaskContext(
-        task_name="solve_x", instruction="Solve the puzzle.", final_reward=0.75,
-        model_used="claude-sonnet-4-6", verifier_output="PASS\n",
+        task_name="solve_x",
+        instruction="Solve the puzzle.",
+        final_reward=0.75,
+        model_used="claude-sonnet-4-6",
+        verifier_output="PASS\n",
     )
 
 
@@ -558,10 +545,15 @@ async def test_build_task_context_handles_missing_fields():
     async def fake_none(_t):
         return None
 
-    with patch(
-        "api.services.summarize_trajectory.read_trial_instruction", new=fake_none,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_none,
+    with (
+        patch(
+            "api.services.summarize_trajectory.read_trial_instruction",
+            new=fake_none,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_verifier_output",
+            new=fake_none,
+        ),
     ):
         ctx = await build_task_context(trial)
 
@@ -575,17 +567,24 @@ async def test_build_task_context_handles_missing_fields():
 @pytest.mark.asyncio
 async def test_build_task_context_falls_back_to_harbor_config_model():
     trial = _trial_with_task(
-        task_name="solve_x", reward=None, model=None,
+        task_name="solve_x",
+        reward=None,
+        model=None,
         harbor_config={"agent": {"model": "claude-sonnet-4-6"}},
     )
 
     async def fake_none(_t):
         return None
 
-    with patch(
-        "api.services.summarize_trajectory.read_trial_instruction", new=fake_none,
-    ), patch(
-        "api.services.summarize_trajectory.read_trial_verifier_output", new=fake_none,
+    with (
+        patch(
+            "api.services.summarize_trajectory.read_trial_instruction",
+            new=fake_none,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_verifier_output",
+            new=fake_none,
+        ),
     ):
         ctx = await build_task_context(trial)
 
@@ -617,11 +616,15 @@ class _RecordingLLM:
 
 
 def _summary_payload() -> str:
-    return json.dumps({
-        "summary": "Agent fixed the bug.",
-        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
-        "components": [{"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}],
-    })
+    return json.dumps(
+        {
+            "summary": "Agent fixed the bug.",
+            "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
+            "components": [
+                {"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}
+            ],
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -655,19 +658,15 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     )
 
     recorder = _RecordingLLM(_summary_payload())
-    await generate(
-        deepcopy(trajectory), ctx, analyzer_id="tr_x", client=recorder,
-        prompt_template=_TEST_PROMPT_TEMPLATE, prompt_version=_TEST_PROMPT_VERSION,
-    )
+    _install_fake_llm(monkeypatch, recorder)
+    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x", **_PROMPT_KWARGS)
 
     block = build_summary_block(
         deepcopy(trajectory),
         ctx,
         analyzer_id="tr_x",
         model=resolve_summary_model(),
-        client=_fake_llm(_summary_payload()),
-        prompt_template=_TEST_PROMPT_TEMPLATE,
-        prompt_version=_TEST_PROMPT_VERSION,
+        **_PROMPT_KWARGS,
     )
 
     assert recorder.prompt == block.prompt
@@ -675,20 +674,48 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     assert captured["kwargs"]["analyzer_id"] == "tr_x"
     assert captured["block"].block_metadata["schema_version"] == SCHEMA_VERSION
     assert captured["block"].block_metadata["model"] == resolve_summary_model()
+    assert captured["block"].block_metadata["prompt_key"] == "TRAJECTORY_SUMMARY"
+    assert captured["block"].block_metadata["prompt_version"] == 1
 
 
-def test_summary_block_metadata_stamps_prompt_version():
-    from api.services.summarize_trajectory import build_summary_block
+@pytest.mark.asyncio
+async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
+    """A losing first-seed request must keep the caller's ORM state usable."""
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
 
-    block = build_summary_block(
-        _trajectory_with_steps([]),
-        _minimal_ctx(),
-        analyzer_id="tr_1",
-        model="m",
-        client=_fake_llm("{}"),
-        prompt_template="INSTRUCTIONS {{taxonomy}}",
-        prompt_version=3,
+    from api.services.summarize_trajectory import (
+        SUMMARY_PROMPT_KEY,
+        _load_summary_prompt,
     )
-    assert block.block_metadata["prompt_key"] == "trajectory_summary"
-    assert block.block_metadata["prompt_version"] == 3
-    assert "INSTRUCTIONS" in block.prompt
+    from oddish.core.prompt_seeds import seed_prompts as real_seed_prompts
+    from oddish.db import PromptKind, PromptModel, get_session
+
+    async with get_session() as session:
+        await session.execute(
+            PromptModel.__table__.delete().where(PromptModel.kind == SUMMARY_PROMPT_KEY)
+        )
+        await session.commit()
+
+    async def fake_seed(_session):
+        async with get_session() as winner:
+            await real_seed_prompts(winner)
+        raise IntegrityError(
+            "insert", {}, Exception("duplicate key value violates unique constraint")
+        )
+
+    monkeypatch.setattr("api.services.summarize_trajectory.seed_prompts", fake_seed)
+
+    async with get_session() as session:
+        sentinel = (
+            await session.execute(
+                select(PromptModel).where(
+                    PromptModel.kind == PromptKind.QA_PRE_TRIAL.value
+                )
+            )
+        ).scalar_one()
+        content, version = await _load_summary_prompt(session)
+        assert sentinel.kind == PromptKind.QA_PRE_TRIAL.value
+
+    assert version == 1
+    assert "{{taxonomy}}" in content

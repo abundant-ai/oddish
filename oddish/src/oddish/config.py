@@ -1156,9 +1156,8 @@ class Settings(BaseSettings):
     def analyzer_snapshot(self) -> str:
         return self.agent_daytona_snapshot or self.cc_chat_daytona_snapshot
 
-    # Kill switch for the sandbox-per-cohort analyzer. Gates registration, not
-    # handler internals, so unsetting it reverts to the core API path with no
-    # branching in either.
+    # Kill switch for the hosted multi-block sandbox analyzer. Gates
+    # registration, so unsetting it reverts to the core API path.
     analyzer_sandbox_enabled: bool = True
 
     # Default for the org-scoped AnalyzerBlock pre-trial QA setting. An explicit
