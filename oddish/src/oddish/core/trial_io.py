@@ -695,7 +695,7 @@ def _graph_is_fresh(graph: dict | None) -> bool:
 # Keep in sync with backend api.services.summarize_trajectory.SCHEMA_VERSION: a
 # persisted trajectory_summary from an OLDER schema must not drive the graph's
 # components (its shape may differ), so we only reuse a fresh one as the fallback.
-_SUMMARY_SCHEMA_VERSION = "4"
+_SUMMARY_SCHEMA_VERSION = "5"
 
 
 def _fresh_persisted_summary(trial: TrialModel) -> dict | None:

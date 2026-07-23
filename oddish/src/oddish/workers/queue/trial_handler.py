@@ -486,6 +486,9 @@ async def _prepare_trial_run(
         trial.cache_write_tokens = None
         trial.output_tokens = None
         trial.total_steps = None
+        trial.trajectory_duration_seconds = None
+        trial.total_tool_calls = None
+        trial.tool_counts = None
         trial.cost_usd = None
         trial.phase_timing = None
         trial.has_trajectory = False
@@ -724,6 +727,9 @@ async def _store_trial_results(
             trial.cache_write_tokens = outcome.cache_write_tokens
             trial.output_tokens = outcome.output_tokens
             trial.total_steps = outcome.total_steps
+            trial.trajectory_duration_seconds = outcome.trajectory_duration_seconds
+            trial.total_tool_calls = outcome.total_tool_calls
+            trial.tool_counts = outcome.tool_counts
             provider = settings.get_provider_for_trial(
                 getattr(trial, "agent", ""), trial.model
             )

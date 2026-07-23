@@ -482,6 +482,7 @@ def _run_trial_import(
             path_option,
             register=True,
             user=user,
+            quiet=quiet or json_output,
         )
         resolved_task_id = upload_result.get("task_id")
         if not resolved_task_id:

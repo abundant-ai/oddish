@@ -125,6 +125,10 @@ from api.services.blocks.analyzer import (
     sandbox_llm_client as _sandbox_llm_client,
 )  # noqa: F401
 
+# Register the hosted pre-trial synth hook (invoked by qa_handler only when
+# settings.pre_trial_enabled). Import for the side effect.
+from . import pre_trial_synth as _pre_trial_synth  # noqa: F401
+
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
 # The QA hook refreshes the whole PR comment (per-trial classifications +

@@ -54,6 +54,7 @@ ANALYSIS_MODEL = "claude-sonnet-5"
 # TrialClassifier model. Normalized to a direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
 VERDICT_MODEL = "gpt-5.4"
+PRE_TRIAL_MODEL = ANALYSIS_MODEL
 
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
@@ -1160,6 +1161,17 @@ class Settings(BaseSettings):
     # branching in either.
     analyzer_sandbox_enabled: bool = True
 
+    # AnalyzerBlock-backed pre-trial QA audit (a task-source audit run before
+    # trials). Off by default: verdict is now always-on through AnalyzerBlock,
+    # but the pre-trial sandbox path (installs the oddish CLI, runs `oddish
+    # pull`) is unproven until the Python-3.13 sandbox smoke test passes, so it
+    # stays gated. When on, backend must have registered the hosted synth via
+    # register_pre_trial_synth(); otherwise it is a no-op.
+    pre_trial_enabled: bool = False
+
+    # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
+    # import backend/, so this lives here rather than as a shared constant.
+    pre_trial_timeout: float = 180.0
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``
@@ -1237,6 +1249,7 @@ class Settings(BaseSettings):
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
+    pre_trial_model: str = PRE_TRIAL_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
     agent_to_provider: ClassVar[dict[str, str]] = _build_agent_provider_map()
