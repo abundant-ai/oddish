@@ -118,6 +118,35 @@ export function segmentOwners(segments: Segment[]): Map<number, Segment> {
   return owner;
 }
 
+/** Key of the synthetic segment holding steps no component claims. */
+export const OTHER_SEGMENT_KEY = "other";
+
+/**
+ * Append a synthetic gray "Other" segment covering every loaded step that no
+ * component claims even after gap-fill, so coverage is complete by
+ * construction for every stored summary (no regeneration). Returns the input
+ * array untouched when coverage is already complete.
+ */
+export function withOtherSegment(
+  segments: Segment[],
+  steps: TrajectoryStep[]
+): Segment[] {
+  const owner = segmentOwners(segments);
+  const unclaimed = steps
+    .map((s) => Number(s.step_id))
+    .filter((id) => !owner.has(id));
+  if (unclaimed.length === 0) return segments;
+  return [
+    ...segments,
+    {
+      key: OTHER_SEGMENT_KEY,
+      label: "Other",
+      gist: "Steps not attributed to any component",
+      stepIds: unclaimed,
+    },
+  ];
+}
+
 /**
  * Cut `steps` into contiguous runs by owning segment, preserving step order.
  * Unclaimed runs come back with `key: null`, and an interleaved segment yields
