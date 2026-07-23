@@ -1147,6 +1147,8 @@ def _task_metrics_subquery(
         .where(
             ModalCostSpanModel.trial_id.isnot(None),
             ModalCostSpanModel.cost_usd.isnot(None),
+            # Closed spans only, matching the card fold / helper / admin.
+            ModalCostSpanModel.finished_at.isnot(None),
             ModalCostSpanModel.deleted_at.is_(None),
         )
         .group_by(ModalCostSpanModel.trial_id)

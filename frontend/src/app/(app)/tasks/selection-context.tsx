@@ -9,10 +9,16 @@ import {
   type ReactNode,
 } from "react";
 import { Button } from "@/components/ui/button";
-import { formatCostUsd } from "@/lib/format";
+import { CostWithBreakdown } from "@/components/cost-with-breakdown";
 import type { TaskBrowseItem } from "@/lib/types";
 
-type Entry = { name: string; cost: number; estimated: boolean };
+type Entry = {
+  name: string;
+  inference: number;
+  qa: number;
+  compute: number;
+  estimated: boolean;
+};
 
 type SelectionContextValue = {
   isSelected: (id: string) => boolean;
@@ -43,9 +49,12 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       } else {
         next.set(task.id, {
           name: task.name,
-          // Composite total (inference + QA + compute), matching the dollar the
-          // card headlines -- the selection "Total" must not sum inference alone.
-          cost: task.total_cost_usd,
+          // Composite components (inference + QA + compute), matching the dollar
+          // the card headlines. The selection "Total" sums the composite (not
+          // inference alone) and the footer shows the same ⓘ breakdown.
+          inference: task.cost_usd ?? 0,
+          qa: task.qa_cost_usd ?? 0,
+          compute: task.compute_cost_usd ?? 0,
           estimated: task.cost_has_estimated && !task.cost_has_native,
         });
       }
@@ -54,13 +63,24 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const total = useMemo(() => {
-    let cost = 0;
+    let inference = 0;
+    let qa = 0;
+    let compute = 0;
     let anyEstimated = false;
     for (const entry of selected.values()) {
-      cost += entry.cost;
+      inference += entry.inference;
+      qa += entry.qa;
+      compute += entry.compute;
       if (entry.estimated) anyEstimated = true;
     }
-    return { count: selected.size, cost, anyEstimated };
+    return {
+      count: selected.size,
+      inference,
+      qa,
+      compute,
+      cost: inference + qa + compute,
+      anyEstimated,
+    };
   }, [selected]);
 
   const value = useMemo<SelectionContextValue>(
@@ -78,10 +98,14 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
           </span>
           <span className="text-sm">
             <span className="text-muted-foreground">Total: </span>
-            <span className="font-semibold tabular-nums">
-              {total.anyEstimated ? "~" : ""}
-              {formatCostUsd(total.cost)}
-            </span>
+            <CostWithBreakdown
+              total={total.cost}
+              inference={total.inference}
+              qa={total.qa}
+              compute={total.compute}
+              estimated={total.anyEstimated}
+              className="font-semibold tabular-nums"
+            />
           </span>
           <Button
             type="button"
