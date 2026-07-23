@@ -371,6 +371,8 @@ def _experiment_composite_only_count_select(
         .where(
             ModalCostSpanModel.trial_id == TrialModel.id,
             ModalCostSpanModel.cost_usd.isnot(None),
+            # Closed spans only, matching the admin dashboard + composite helper.
+            ModalCostSpanModel.finished_at.isnot(None),
             ModalCostSpanModel.deleted_at.is_(None),
         )
         .correlate(TrialModel)
@@ -440,9 +442,13 @@ async def _add_experiment_composite_costs(
                 ModalCostSpanModel.cost_usd,
                 experiment_id,
                 org_id=org_id,
-                # Open/unpriced spans (NULL cost) are excluded, matching
-                # composite_cost_by_trial and the admin cost dashboard.
-                extra_filter=ModalCostSpanModel.cost_usd.isnot(None),
+                # Open/unpriced spans (NULL cost) and still-open spans (NULL
+                # finished_at) are excluded, matching composite_cost_by_trial
+                # and the admin cost dashboard (closed spans only).
+                extra_filter=and_(
+                    ModalCostSpanModel.cost_usd.isnot(None),
+                    ModalCostSpanModel.finished_at.isnot(None),
+                ),
             )
         )
     ).one()

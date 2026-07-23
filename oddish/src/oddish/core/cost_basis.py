@@ -313,6 +313,11 @@ async def composite_cost_by_trial(
         .where(
             ModalCostSpanModel.trial_id.in_(ordered_ids),
             ModalCostSpanModel.cost_usd.isnot(None),
+            # Only CLOSED spans count, matching the admin cost dashboard.
+            # cost_usd is stamped at close so this is normally implied, but the
+            # explicit filter keeps per-trial/task/experiment composite totals
+            # consistent with admin accounting if a priced-but-open span exists.
+            ModalCostSpanModel.finished_at.isnot(None),
             ModalCostSpanModel.deleted_at.is_(None),
         )
         .group_by(ModalCostSpanModel.trial_id)
