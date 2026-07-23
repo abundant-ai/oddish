@@ -2191,11 +2191,10 @@ async def get_cost_breakdown_core(
         month_org_query = month_org_query.where(TrialModel.org_id == org_id)
     month_org_ids = (await session.scalars(month_org_query)).all()
     month_limits_by_org = {
-        org_id: await get_effective_org_limit(session, org_id)
-        for org_id in month_org_ids
+        org: await get_effective_org_limit(session, org) for org in month_org_ids
     }
     budgeted_month_org_ids = {
-        org_id for org_id, limit in month_limits_by_org.items() if limit is not None
+        org for org, limit in month_limits_by_org.items() if limit is not None
     }
     month_limits = [
         limit for limit in month_limits_by_org.values() if limit is not None
