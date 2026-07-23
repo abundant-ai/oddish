@@ -333,3 +333,60 @@ async def test_get_prompt_rejects_unknown_scope(monkeypatch):
 async def test_get_prompt_task_scope_requires_scope_id(monkeypatch):
     resp = await _call("GET", "/prompts/QA_PRE_TRIAL?scope=task", monkeypatch)
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_set_prompt_rejects_unknown_scope(monkeypatch):
+    resp = await _call(
+        "PUT",
+        "/prompts/QA_PRE_TRIAL?scope=galaxy",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        json={"content": "x"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_set_prompt_domain_scope_requires_scope_id(monkeypatch):
+    resp = await _call(
+        "PUT",
+        "/prompts/QA_PRE_TRIAL?scope=task",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        json={"content": "x"},
+    )
+    assert resp.status_code == 422
+    assert "scope_id" in resp.json()["detail"]
+
+
+def _capturing_versions_core(seen):
+    async def fake_versions(session, ref, *, scope_type=None, scope_id=None):
+        seen.append({"scope_type": scope_type, "scope_id": scope_id})
+        return [_V1, _V2]
+
+    return fake_versions
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_versions_passes_scope_to_core(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        prompts_router, "list_prompt_versions_core", _capturing_versions_core(seen)
+    )
+    resp = await _call(
+        "GET", "/prompts/QA_PRE_TRIAL/versions?scope=task&scope_id=task_a", monkeypatch
+    )
+    assert resp.status_code == 200
+    assert seen[-1] == {"scope_type": "task", "scope_id": "task_a"}
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_versions_defaults_to_global_scope(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        prompts_router, "list_prompt_versions_core", _capturing_versions_core(seen)
+    )
+    resp = await _call("GET", "/prompts/QA_PRE_TRIAL/versions", monkeypatch)
+    assert resp.status_code == 200
+    assert seen[-1] == {"scope_type": None, "scope_id": None}
