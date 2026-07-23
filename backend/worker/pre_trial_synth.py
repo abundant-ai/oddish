@@ -31,6 +31,7 @@ from oddish.db import PromptKind, get_session
 from oddish.db.models import TaskModel
 from oddish.workers.queue.qa_handler import (
     PRE_TRIAL_LEASE_MARGIN_SECONDS,
+    register_pre_trial_enabled_check,
     register_pre_trial_synth,
 )
 from models import OrganizationModel
@@ -128,6 +129,7 @@ async def synthesize_task_pre_trial(
                     "trial_ids": trial_ids,
                 }
             ),
+            analyzer_id=task_id,
             prompt=block_obj.build_prompt(),
             model=settings.pre_trial_model,
             output_transform=block_obj.to_action_items,
@@ -147,5 +149,12 @@ async def synthesize_task_pre_trial(
     return [ActionItem(**it) for it in data.get("items", [])]
 
 
-# Importing this module (from backend.worker.functions) installs the hook.
+async def _pre_trial_enabled(task_id: str) -> bool:
+    """Org-level gate, checked by core before it claims a task version."""
+    _, enabled = await _resolve_org_pre_trial(task_id)
+    return enabled
+
+
+# Importing this module (from backend.worker.functions) installs the hooks.
 register_pre_trial_synth(synthesize_task_pre_trial)
+register_pre_trial_enabled_check(_pre_trial_enabled)

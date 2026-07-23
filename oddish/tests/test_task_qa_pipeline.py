@@ -1128,12 +1128,13 @@ async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypa
     captured: dict = {}
 
     async def stub_verdict_synth(
-        classifications, baseline, quality_check_passed, timeout
+        classifications, baseline, quality_check_passed, timeout, task_id=None
     ):
         captured["classifications"] = classifications
         captured["baseline"] = baseline
         captured["quality_check_passed"] = quality_check_passed
         captured["timeout"] = timeout
+        captured["task_id"] = task_id
         return SimpleNamespace(
             is_good=True,
             confidence="stub-confidence",
@@ -1152,6 +1153,7 @@ async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypa
     await qa_handler.run_task_qa_job("task-20", queue_key="qa")
 
     assert len(captured["classifications"]) == 1
+    assert captured["task_id"] == "task-20"
     # Threaded through from run_task_qa_job, not re-derived by the stub.
     assert captured["baseline"] is None
     assert captured["quality_check_passed"] is True

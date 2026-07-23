@@ -829,18 +829,25 @@ const TRIAL_FILTER_GROUPS: {
   keys: [string] | [string, string];
   placeholder?: string;
 }[] = [
-  { label: "Model", keys: ["model"], placeholder: "e.g. openai/gpt-5" },
-  { label: "Trajectory length", keys: ["minSteps", "maxSteps"] },
-  { label: "Trajectory time (s)", keys: ["minTime", "maxTime"] },
-  { label: "Tool calls", keys: ["minTools", "maxTools"] },
-  { label: "Tool names", keys: ["tool"], placeholder: "bash, read_file" },
+  { label: "Model", keys: ["models"], placeholder: "e.g. openai/gpt-5" },
+  { label: "Trajectory length", keys: ["min_steps", "max_steps"] },
+  {
+    label: "Trajectory time (s)",
+    keys: ["min_duration_seconds", "max_duration_seconds"],
+  },
+  { label: "Tool calls", keys: ["min_tool_calls", "max_tool_calls"] },
+  {
+    label: "Tool names",
+    keys: ["tool_names"],
+    placeholder: "bash, read_file",
+  },
 ];
 
 // Every URL param the trial filters own; the Suspense key and empty-state
 // checks read these so metric-filter changes behave like any other filter.
 const TRIAL_FILTER_PARAM_KEYS = [
   ...TRIAL_FILTER_GROUPS.flatMap((group) => group.keys),
-  "metricMatch",
+  "trial_metric_match",
 ];
 
 function ExperimentTrialFilters() {
@@ -876,7 +883,8 @@ function ExperimentTrialFilters() {
     router.push(queryString ? `${pathname}?${queryString}` : pathname);
   };
 
-  const mode = searchParams.get("metricMatch") === "all" ? "all" : "any";
+  const mode =
+    searchParams.get("trial_metric_match") === "all" ? "all" : "any";
   const groupActive = (keys: readonly string[]) =>
     keys.some((key) => searchParams.get(key));
   const activeCount =
@@ -912,7 +920,7 @@ function ExperimentTrialFilters() {
           className="h-8 border-[#6f88b4]/20"
         >
           <Filter className="mr-1 h-3.5 w-3.5" />
-          Filters
+          Trial filters
           {activeCount > 0 ? (
             <span className="text-muted-foreground ml-1 text-[11px]">
               ({activeCount})
@@ -940,7 +948,7 @@ function ExperimentTrialFilters() {
                   Object.fromEntries(
                     [
                       ...TRIAL_FILTER_GROUPS.flatMap((group) => group.keys),
-                      "metricMatch",
+                      "trial_metric_match",
                     ].map((key) => [key, ""])
                   )
                 )
@@ -988,7 +996,7 @@ function ExperimentTrialFilters() {
                   type="button"
                   aria-label="Clear match mode filter"
                   className="text-muted-foreground hover:text-foreground"
-                  onClick={() => commit({ metricMatch: "" })}
+                  onClick={() => commit({ trial_metric_match: "" })}
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -1004,7 +1012,9 @@ function ExperimentTrialFilters() {
                     mode === value && "bg-primary text-primary-foreground"
                   )}
                   onClick={() =>
-                    commit({ metricMatch: value === "all" ? "all" : "" })
+                    commit({
+                      trial_metric_match: value === "all" ? "all" : "",
+                    })
                   }
                 >
                   {value} trial{value === "all" ? "s" : ""}

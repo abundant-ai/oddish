@@ -42,6 +42,7 @@ async def synthesize_task_verdict(
     baseline: BaselineValidation | None,
     quality_check_passed: bool,
     timeout: float,
+    task_id: str | None = None,
 ) -> TaskVerdictModel:
     """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
@@ -68,6 +69,7 @@ async def synthesize_task_verdict(
         analyzer_type=AnalyzerType.TASK_VERDICT,
         llm_client_type=LLMClientType.API,
         input=AnalyzerInput(input={"num_trials": len(classifications)}),
+        analyzer_id=task_id,
         # build_prompt() raises rather than sending the degraded placeholder
         # (see VerdictBlock.build_prompt).
         prompt=vb.build_prompt(),
@@ -90,7 +92,7 @@ PreTrialSynthFn = Callable[[str, str, list[str], float], Awaitable[Any]]
 # via register_pre_trial_synth(). oddish/ can't import backend/, so the sandbox-
 # provisioning implementation is injected here rather than imported -- the same
 # seam analyzer_llm_client.register_sandbox_client_factory uses. None until
-# registered; run_task_qa_job only invokes it when settings.pre_trial_enabled.
+# registered; the hosted hook resolves its organization-level setting.
 _pre_trial_synth_fn: PreTrialSynthFn | None = None
 
 
@@ -98,6 +100,19 @@ def register_pre_trial_synth(fn: PreTrialSynthFn) -> None:
     """Install the hosted pre-trial-synthesis implementation."""
     global _pre_trial_synth_fn
     _pre_trial_synth_fn = fn
+
+
+# Optional org-level enablement check (task_id -> enabled), registered by the
+# hosted layer alongside the synth. Checked BEFORE claiming a version so a
+# disabled org's QA runs don't churn claim/release writes on task_versions.
+# The synth itself re-checks and returns None as a backstop.
+_pre_trial_enabled_fn: Callable[[str], Awaitable[bool]] | None = None
+
+
+def register_pre_trial_enabled_check(fn: Callable[[str], Awaitable[bool]]) -> None:
+    """Install the hosted org-level pre-trial enablement check."""
+    global _pre_trial_enabled_fn
+    _pre_trial_enabled_fn = fn
 
 
 async def _heartbeat_qa_worker_job(
@@ -238,8 +253,9 @@ async def _run_pre_trial_audit(
 ) -> None:
     """Claim, run, and persist the per-version pre-trial audit.
 
-    Gated off by default (settings.pre_trial_enabled) and a no-op unless the
-    hosted synth is registered; _claim_pre_trial_version keeps it to once per
+    A no-op unless the hosted synth is registered; the registered org-level
+    enablement check (default: settings.pre_trial_enabled) gates it before any
+    claim is taken, and _claim_pre_trial_version keeps it to once per
     task version. Exceptions are swallowed (pre-trial must never fail the
     verdict path) EXCEPT cancellation, which propagates. The ``finally``
     guarantees the release invariant for every exit -- success-but-vetoed
@@ -251,7 +267,9 @@ async def _run_pre_trial_audit(
     pre_trial_version_id: str | None = None
     pre_trial_stored: str | None = None
     try:
-        if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
+        if _pre_trial_synth_fn is not None and (
+            _pre_trial_enabled_fn is None or await _pre_trial_enabled_fn(task_id)
+        ):
             pre_trial_version_id = await _claim_pre_trial_version(task_id)
         if pre_trial_version_id is not None:
             pre_trial_items = await _pre_trial_synth_fn(
@@ -434,8 +452,10 @@ async def run_task_qa_job(
 
         # Pre-trial: a per-version task-source audit, independent of trial
         # classification -- runs before the per-trial loop, even when there are
-        # zero live trials to classify. Failures are swallowed inside so it
-        # can never block the verdict path; cancellation propagates.
+        # zero live trials to classify. The hosted hooks apply the org-level
+        # setting (default: settings.pre_trial_enabled); a no-op unless the
+        # synth hook is registered. Failures are swallowed inside so it can
+        # never block the verdict path; cancellation propagates.
         await _run_pre_trial_audit(
             task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
         )
@@ -544,7 +564,11 @@ async def run_task_qa_job(
         quality_check_passed = True
         timeout = 180
         verdict = await synthesize_task_verdict(
-            classifications, baseline, quality_check_passed, timeout
+            classifications,
+            baseline,
+            quality_check_passed,
+            timeout,
+            task_id=task_id,
         )
 
         verdict_result = build_verdict_payload(verdict, classifications)
