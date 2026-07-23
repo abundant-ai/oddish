@@ -267,6 +267,56 @@ def test_claude_code_ambient_credentials_enter_redaction_map(monkeypatch):
         assert replacements[value] == "[REDACTED]"
 
 
+def test_stock_harbor_claude_code_import_path_folds_ambient_credentials(monkeypatch):
+    # A trial can run the STOCK Harbor Claude class -- a supported restricted
+    # profile -- with ``name`` cleared, so only ``import_path`` identifies it.
+    # The fold must match on the ``claude_code:`` module boundary; an
+    # ``agents.claude_code:`` fragment would miss ``installed.claude_code:`` and
+    # leak CLAUDE_CODE_OAUTH_TOKEN (and the AWS chain) into live-tail / lifecycle
+    # / artifacts.
+    ambient = {
+        "ANTHROPIC_API_KEY": "sk-ant-secret",
+        "ANTHROPIC_AUTH_TOKEN": "ant-auth-token",
+        "CLAUDE_CODE_OAUTH_TOKEN": "cc-oauth-token",
+        "AWS_BEARER_TOKEN_BEDROCK": "bedrock-token",
+        "AWS_ACCESS_KEY_ID": "AKIA-access-id",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret-value",
+        "AWS_SESSION_TOKEN": "aws-session-value",
+    }
+    for key, value in ambient.items():
+        monkeypatch.setenv(key, value)
+    agent_config = HarborAgentConfig(
+        import_path="harbor.agents.installed.claude_code:ClaudeCode",
+        model_name="anthropic/claude",
+    )
+    assert agent_config.name is None
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+    for key, value in ambient.items():
+        assert runtime_env.get(key) == value
+        assert replacements[value] == "[REDACTED]"
+
+
+def test_unrelated_agent_import_path_does_not_fold_claude_credentials(monkeypatch):
+    # The ``claude_code:`` module boundary must not over-match an unrelated
+    # harness: a stock mini-swe trial on an OpenAI model never forwards the
+    # Claude-only ambient secrets, so they must stay out of its redaction map.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "ant-auth-token")
+    agent_config = HarborAgentConfig(
+        import_path="harbor.agents.installed.mini_swe_agent:MiniSweAgent",
+        model_name="openai/gpt-4o",
+    )
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {}, agent_config=agent_config
+    )
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in runtime_env
+    assert "ANTHROPIC_AUTH_TOKEN" not in runtime_env
+
+
 def test_grok_build_ambient_credentials_enter_redaction_map(monkeypatch):
     # Ambient xAI credentials the grok-build agent forwards into sandbox execs
     # must fold into the redaction map so their raw values are scrubbed from
@@ -290,6 +340,7 @@ def test_mini_swe_provider_credentials_enter_redaction_map(monkeypatch):
     # ambient os.environ; those provider credentials must fold into the redaction
     # map even though there is no agent-specific branch for mini-swe.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-secret")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-secret")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
     monkeypatch.setenv("XAI_API_KEY", "xai-secret")
 
@@ -301,6 +352,10 @@ def test_mini_swe_provider_credentials_enter_redaction_map(monkeypatch):
 
     env, reps = redactions("anthropic/claude")
     assert reps.get("ant-secret") == "[REDACTED]"
+    # Defense-in-depth: the anthropic provider backstop scrubs the OAuth token
+    # for a non-Claude harness too, so coverage does not rest solely on the
+    # is_claude_code class-name branch.
+    assert reps.get("cc-oauth-secret") == "[REDACTED]"
 
     env, reps = redactions("bedrock/claude")
     assert reps.get("aws-secret") == "[REDACTED]"
@@ -320,6 +375,26 @@ def test_cursor_ambient_api_key_enters_redaction_map(monkeypatch):
     replacements = harbor_runner._runtime_transport_redactions(runtime_env)
     assert runtime_env.get("CURSOR_API_KEY") == "cursor-secret"
     assert replacements["cursor-secret"] == "[REDACTED]"
+
+
+def test_gemini_runtime_env_keys_are_single_sourced_from_model_hosts():
+    # The runner's Gemini fold must derive its base-URL + OAuth key names from the
+    # model_hosts single source rather than re-listing them, so it cannot drift
+    # from the host boundary / fail-closed filter that read the same source.
+    from oddish.workers.harbor import model_hosts
+    from oddish.workers.harbor import restricted_network
+
+    assert harbor_runner._GEMINI_RUNTIME_ENV_KEYS == (
+        *model_hosts.GEMINI_BASE_URL_KEYS,
+        *model_hosts.GEMINI_OAUTH_ENV_KEYS,
+    )
+    # The OAuth toggles select credentials, not routes: they must NOT be part of
+    # the transport base-URL boundary...
+    assert model_hosts.KNOWN_TRANSPORT_BASE_URL_KEYS.isdisjoint(
+        model_hosts.GEMINI_OAUTH_ENV_KEYS
+    )
+    # ...but they must ride in the safe-profile allowlist from that same source.
+    assert set(model_hosts.GEMINI_OAUTH_ENV_KEYS) <= restricted_network._SAFE_PROFILE_ENV_KEYS
 
 
 def test_deployment_redaction_substitutes_public_model_over_redacted():

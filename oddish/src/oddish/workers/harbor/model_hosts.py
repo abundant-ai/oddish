@@ -56,6 +56,18 @@ GEMINI_BASE_URL_KEYS = (
 )
 CURSOR_BASE_URL_KEYS = ("CURSOR_API_BASE_URL", "CURSOR_API_ENDPOINT")
 
+# Gemini's non-route OAuth toggles. They select credentials rather than widen
+# egress, so they are NOT transport base-URL keys and never enter the discovery
+# tuple / KNOWN_TRANSPORT_BASE_URL_KEYS below. They do travel with the Gemini
+# base-URL keys through the safe-profile allowlist (restricted_network) and the
+# runtime credential fold (runner), both of which import this single source
+# instead of re-listing the names.
+GEMINI_OAUTH_ENV_KEYS = (
+    "GEMINI_FORCE_OAUTH",
+    "GEMINI_OAUTH_CREDS_PATH",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+)
+
 # Ordered discovery tuple: host discovery iterates the trial env in this order.
 _BASE_URL_ENV_KEYS = (
     *ANTHROPIC_BASE_URL_KEYS,

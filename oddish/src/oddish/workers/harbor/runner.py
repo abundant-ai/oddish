@@ -57,7 +57,11 @@ from .agent_config import (
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
-from .model_hosts import outbound_hosts_for_model
+from .model_hosts import (
+    GEMINI_BASE_URL_KEYS,
+    GEMINI_OAUTH_ENV_KEYS,
+    outbound_hosts_for_model,
+)
 from .redaction import redact_exact_text, redact_exact_value
 from .restricted_network import (
     _KNOWN_TRANSPORT_BASE_URL_KEYS,
@@ -108,14 +112,11 @@ _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
 # Compose agent-phase bridge below and remains unchanged for Modal and
 # single-container trials.
 _CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
-_GEMINI_RUNTIME_ENV_KEYS = (
-    "GOOGLE_GEMINI_BASE_URL",
-    "GEMINI_API_BASE_URL",
-    "GOOGLE_API_BASE_URL",
-    "GEMINI_FORCE_OAUTH",
-    "GEMINI_OAUTH_CREDS_PATH",
-    "GOOGLE_GENAI_USE_VERTEXAI",
-)
+# Gemini env the stock gemini-cli agent forwards: its transport base-URL keys
+# and its OAuth toggles. Both are single-sourced in model_hosts (the same source
+# the restricted-egress filter and host discovery read), so this fold cannot
+# drift from the host boundary the way a re-listed copy would.
+_GEMINI_RUNTIME_ENV_KEYS = (*GEMINI_BASE_URL_KEYS, *GEMINI_OAUTH_ENV_KEYS)
 # Ambient Gemini credentials must fold into the trial's redaction map the same
 # way get_openai_agent_env folds OpenAI provider secrets, so a worker key used
 # when job-scoped injection is off never survives raw in live-tail, lifecycle
@@ -162,13 +163,23 @@ _CURSOR_RUNTIME_SECRET_KEYS = ("CURSOR_API_KEY",)
 # fixed agent harness. Keyed on the CANONICAL provider from
 # infer_model_provider_prefix; values are the ambient credential env vars each
 # provider forwards. Redaction coverage only -- these are never transport routes.
+# CLAUDE_CODE_OAUTH_TOKEN rides in the anthropic providers as defense-in-depth:
+# it keeps OAuth-token redaction from resting solely on the is_claude_code
+# class-name branch, so an anthropic-provider trial still scrubs it even if a
+# future supported Claude profile were named without "claude_code". Folding a key
+# absent from os.environ is a no-op, so this never over-redacts.
 _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
-    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+    "anthropic": (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ),
     "anthropic-hdo": (
         "ANTHROPIC_HDO_API_KEY",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
     ),
     "bedrock": (
         "AWS_BEARER_TOKEN_BEDROCK",
@@ -198,19 +209,33 @@ def _resolved_runtime_transport_env(
     if agent_config is not None:
         name = (agent_config.name or "").strip().lower()
         import_path = (agent_config.import_path or "").strip().lower()
-        is_gemini = name == "gemini-cli" or "agents.gemini_cli:" in import_path
+        # Match the harness on the ``<module>:`` class-path boundary, not an
+        # ``agents.<module>:`` fragment. A trial can run the STOCK Harbor class
+        # (``harbor.agents.installed.claude_code:ClaudeCode``, a supported
+        # restricted profile) with ``name`` cleared, and that path contains
+        # ``installed.claude_code:`` -- so an ``agents.claude_code:`` fragment
+        # misses it, leaving CLAUDE_CODE_OAUTH_TOKEN and the other Claude-only
+        # ambient secrets out of the redaction map. The boundary form matches the
+        # stock class, every Oddish wrapper, and the claude-code-family
+        # derivatives (glm/kimi/minimax_claude_code, all ClaudeCode subclasses
+        # that forward the same credentials, so folding them is correct). The
+        # trailing ``:`` anchors on the module->class boundary, so it does not
+        # match a same-prefix-but-different module (e.g. a future
+        # ``claude_code_v2``) or any module whose name lacks ``claude_code``.
+        # Folding is redaction-coverage only -- it never adds a base-URL key, so
+        # it cannot touch host selection or the fail-closed consumed-route guard.
+        # This mirrors the cursor branch below.
+        is_gemini = name == "gemini-cli" or "gemini_cli:" in import_path
         if is_gemini:
             for key in (*_GEMINI_RUNTIME_ENV_KEYS, *_GEMINI_RUNTIME_SECRET_KEYS):
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
-        is_claude_code = (
-            name == "claude-code" or "agents.claude_code:" in import_path
-        )
+        is_claude_code = name == "claude-code" or "claude_code:" in import_path
         if is_claude_code:
             for key in _CLAUDE_RUNTIME_SECRET_KEYS:
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
-        is_grok = name == "grok-build" or "agents.grok_build:" in import_path
+        is_grok = name == "grok-build" or "grok_build:" in import_path
         if is_grok:
             for key in _GROK_RUNTIME_SECRET_KEYS:
                 if key not in runtime_env and (value := os.environ.get(key)):

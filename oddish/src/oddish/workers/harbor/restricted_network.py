@@ -39,6 +39,7 @@ from .model_hosts import (
     _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
     CURSOR_BASE_URL_KEYS as _CURSOR_BASE_URL_KEYS,
     GEMINI_BASE_URL_KEYS as _GEMINI_BASE_URL_KEYS,
+    GEMINI_OAUTH_ENV_KEYS as _GEMINI_OAUTH_ENV_KEYS,
     KNOWN_TRANSPORT_BASE_URL_KEYS as _KNOWN_TRANSPORT_BASE_URL_KEYS,
     OPENAI_BASE_URL_KEYS as _OPENAI_BASE_URL_KEYS,
     outbound_hosts_for_model,
@@ -101,14 +102,12 @@ RUNTIME_ALLOWED_HOSTS_ATTR = "_oddish_runtime_allowed_hosts"
 RUNTIME_MODEL_NAME_ATTR = "_oddish_runtime_model_name"
 
 # The transport base URLs a safe profile may carry are exactly the known
-# transport keys (single-sourced above); the extras are Gemini's non-route OAuth
-# toggles, which select credentials rather than widen egress.
+# transport keys; the extras are Gemini's non-route OAuth toggles, which select
+# credentials rather than widen egress. Both groups are single-sourced in
+# model_hosts (imported above), so this allowlist cannot drift from the runner's
+# Gemini fold or the host boundary.
 _SAFE_PROFILE_ENV_KEYS = _KNOWN_TRANSPORT_BASE_URL_KEYS | frozenset(
-    {
-        "GEMINI_FORCE_OAUTH",
-        "GEMINI_OAUTH_CREDS_PATH",
-        "GOOGLE_GENAI_USE_VERTEXAI",
-    }
+    _GEMINI_OAUTH_ENV_KEYS
 )
 
 _CURSOR_ENV_OVERRIDES: dict[str, str] = {
