@@ -37,7 +37,13 @@ from oddish.workers.jobs.handlers import (  # noqa: E402
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
 
 
-def _fake_get_session_factory(domain_row, *, scalar_value=0, scalar_values=None):
+def _fake_get_session_factory(
+    domain_row,
+    *,
+    scalar_value=0,
+    scalar_values=None,
+    scalars_value=(),
+):
     """Build a ``get_session``-compatible context manager for tests."""
     values = iter(scalar_values) if scalar_values is not None else None
 
@@ -51,6 +57,9 @@ def _fake_get_session_factory(domain_row, *, scalar_value=0, scalar_values=None)
             if values is not None:
                 return next(values)
             return scalar_value
+
+        async def scalars(self, _statement):
+            return scalars_value
 
     @asynccontextmanager
     async def _get_session():
@@ -472,6 +481,43 @@ async def test_qa_handler_repairs_null_current_version_before_adopting_job(
 
 
 @pytest.mark.asyncio
+async def test_qa_handler_reuses_exact_current_verdict_for_stale_job(monkeypatch):
+    task_row = SimpleNamespace(
+        current_version_id="task-xyz-v9",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict={
+            "task_version_id": "task-xyz-v9",
+            "trial_ids": ["task-xyz-9"],
+        },
+        verdict_status=VerdictStatus.SUCCESS,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "get_session",
+        _fake_get_session_factory(
+            task_row,
+            scalar_values=(0, 0),
+            scalars_value=("task-xyz-9",),
+        ),
+    )
+    called = _patch_run(monkeypatch, "run_task_qa_job")
+
+    outcome = await QaJobHandler().run(
+        _verdict_claim(
+            payload={
+                "task_id": "task-xyz",
+                "task_version_id": "task-xyz-v8",
+            }
+        )
+    )
+
+    assert outcome.success is not None
+    assert called["args"] is None
+    assert task_row.status == TaskStatus.COMPLETED
+    assert task_row.verdict_status == VerdictStatus.SUCCESS
+
+
+@pytest.mark.asyncio
 async def test_qa_handler_defers_stale_job_to_current_queued_job(monkeypatch):
     task_row = SimpleNamespace(
         current_version_id="task-xyz-v9",
@@ -513,7 +559,7 @@ async def test_qa_handler_releases_rejected_claim_for_retry(monkeypatch):
         "get_session",
         _fake_get_session_factory(
             task_row,
-            scalar_values=(0, 0),
+            scalar_values=(0, 0, 0),
         ),
     )
 

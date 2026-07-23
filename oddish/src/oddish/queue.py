@@ -1434,7 +1434,11 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
     if qa_eligible_ids:
         task.status = TaskStatus.VERDICT_PENDING
+        task.verdict = None
         task.verdict_status = VerdictStatus.QUEUED
+        task.verdict_error = None
+        task.verdict_started_at = None
+        task.verdict_finished_at = None
         await enqueue_qa_worker_job(
             session,
             task_id=task_id,

@@ -439,6 +439,8 @@ async def test_stage_reruns_qa_when_current_cohort_changed(monkeypatch):
     assert await queue_mod.maybe_start_qa_stage(session, "task-8-1") is True
     assert calls[0]["task_version_id"] == "task-8-v2"
     assert task.status == TaskStatus.VERDICT_PENDING
+    assert task.verdict is None
+    assert task.verdict_status == VerdictStatus.QUEUED
 
 
 @pytest.mark.asyncio

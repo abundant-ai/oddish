@@ -840,7 +840,8 @@ async def _advance_running_tasks_to_analysis(
                   AND tr.superseded_by_trial_id IS NULL
                 GROUP BY t.id
                 HAVING COUNT(*) FILTER (
-                    WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                    WHERE tr.task_version_id IS NOT DISTINCT FROM t.current_version_id
+                      AND tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
                 ) = 0
                 """
             )
