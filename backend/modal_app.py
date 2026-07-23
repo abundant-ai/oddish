@@ -486,6 +486,10 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '"zai/glm-5.2": 64}',
 )
 
+# Operator org fallback: the Abundant org's immutable internal id. Named so the
+# hardcoded default can be asserted in tests independently of the deploy env.
+DEFAULT_OPERATOR_ORG_ID = "8ebde5d0"
+
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
     # Claude CLI refuses --dangerously-skip-permissions when running as root (Modal default).
@@ -514,7 +518,7 @@ ENV_VARS = {
     "ODDISH_OPERATOR_ORG_ID": (
         (os.environ.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
         or (LOCAL_DOTENV_VARS.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
-        or "8ebde5d0"
+        or DEFAULT_OPERATOR_ORG_ID
     ),
     "ODDISH_HARBOR_ENVIRONMENT": "modal",
     "ODDISH_AUTO_START_WORKERS": "false",
