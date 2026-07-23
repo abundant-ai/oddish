@@ -29,6 +29,37 @@ def _fail(resp: httpx.Response) -> None:
     raise typer.Exit(1)
 
 
+def resolve_scope_flags(
+    *,
+    org: bool = False,
+    user: bool = False,
+    task: Optional[str] = None,
+    experiment: Optional[str] = None,
+    trial: Optional[str] = None,
+    global_scope: bool = False,
+) -> tuple[str, Optional[str]]:
+    """Map mutually exclusive scope flags onto (scope, scope_id).
+
+    Shared verbatim with the ``qa-jobs`` command group; the flag duplication
+    across groups is intentional.
+    """
+    selected = [
+        item
+        for item in (
+            ("org", None) if org else None,
+            ("user", None) if user else None,
+            ("task", task) if task else None,
+            ("experiment", experiment) if experiment else None,
+            ("trial", trial) if trial else None,
+            ("global", None) if global_scope else None,
+        )
+        if item is not None
+    ]
+    if len(selected) > 1:
+        raise typer.BadParameter("Choose exactly one prompt scope.")
+    return selected[0] if selected else ("org", None)
+
+
 @prompt_app.command("list")
 def list_prompts(
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
@@ -131,19 +162,14 @@ def upload_prompt(
 ):
     """Upload a new scoped prompt version; organization scope is the default."""
     url = _resolve(api_url)
-    selected = [
-        ("org", None) if org else None,
-        ("user", None) if user else None,
-        ("task", task) if task else None,
-        ("experiment", experiment) if experiment else None,
-        ("trial", trial) if trial else None,
-        ("global", None) if global_scope else None,
-    ]
-    selected = [item for item in selected if item is not None]
-    if len(selected) > 1:
-        console.print("[red]Choose exactly one prompt scope.[/red]")
-        raise typer.Exit(2)
-    scope, scope_id = selected[0] if selected else ("org", None)
+    scope, scope_id = resolve_scope_flags(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     content = file.read_text()
     payload: dict = {"content": content}
     if description is not None:
