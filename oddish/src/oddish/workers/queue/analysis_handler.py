@@ -13,7 +13,7 @@ from oddish.analyze.analysis_cost import (
 from oddish.analyze.models import compute_action_item_id
 from oddish.analyze.trajectory_files import parse_trajectory_file_access
 from oddish.config import settings
-from oddish.core.prompts import get_prompt_core
+from oddish.core.prompts import resolve_prompt_core
 from oddish.db import AnalysisStatus, PromptKind, TaskModel, TaskVersionModel, utcnow
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
 from oddish.workers.queue.db_helpers import _trial_session
@@ -136,6 +136,9 @@ async def classify_trial_and_store(
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
+        trial_experiment_id = trial.experiment_id
+        trial_org_id = trial.org_id
+        trial_user_id = trial.billed_user_id
         # Pre-trial findings live on the audited task version; prefer the
         # version this trial ran against, falling back to the task's current
         # version for older trials that predate version stamping.
@@ -156,12 +159,24 @@ async def classify_trial_and_store(
         # packaged classifier prompt as a compatibility fallback.
         post_trial_prompt: str | None = None
         post_trial_prompt_version: int | None = None
+        post_trial_prompt_id: str | None = None
+        post_trial_prompt_scope: str | None = None
+        post_trial_prompt_scope_id: str | None = None
         try:
-            _, prompt_version = await get_prompt_core(
-                session, PromptKind.QA_POST_TRIAL.value
+            prompt, prompt_version = await resolve_prompt_core(
+                session,
+                PromptKind.QA_POST_TRIAL.value,
+                org_id=trial_org_id,
+                user_id=trial_user_id,
+                experiment_id=trial_experiment_id,
+                task_id=task_id,
+                trial_id=trial_id,
             )
             post_trial_prompt = prompt_version.content
             post_trial_prompt_version = prompt_version.version
+            post_trial_prompt_id = prompt.id
+            post_trial_prompt_scope = prompt.scope_type or "global"
+            post_trial_prompt_scope_id = prompt.scope_id
         except Exception as exc:
             console.print(
                 "[yellow]QA_POST_TRIAL prompt unavailable; using packaged "
@@ -265,6 +280,9 @@ async def classify_trial_and_store(
             if post_trial_prompt_version is not None:
                 classification_result["prompt_kind"] = PromptKind.QA_POST_TRIAL.value
                 classification_result["prompt_version"] = post_trial_prompt_version
+                classification_result["prompt_id"] = post_trial_prompt_id
+                classification_result["prompt_scope"] = post_trial_prompt_scope
+                classification_result["prompt_scope_id"] = post_trial_prompt_scope_id
 
             # Check if classification is a fallback (indicates Claude SDK issue)
             if "classification failed" in (classification.evidence or "").lower():

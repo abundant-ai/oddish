@@ -113,21 +113,53 @@ def upload_prompt(
         Path, typer.Option("--file", "-f", help="File with prompt content.")
     ],
     description: Annotated[Optional[str], typer.Option("--description", "-d")] = None,
+    org: Annotated[
+        bool, typer.Option("--org", help="Override for the current organization (default).")
+    ] = False,
+    user: Annotated[
+        bool, typer.Option("--user", help="Override for the authenticated user.")
+    ] = False,
+    task: Annotated[Optional[str], typer.Option("--task", help="Override for a task id.")] = None,
+    experiment: Annotated[
+        Optional[str], typer.Option("--experiment", help="Override for an experiment id.")
+    ] = None,
+    trial: Annotated[Optional[str], typer.Option("--trial", help="Override for a trial id.")] = None,
+    global_scope: Annotated[
+        bool, typer.Option("--global", help="Update the installation-wide fallback.")
+    ] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
-    """Upload a new prompt version; the latest version becomes live."""
+    """Upload a new scoped prompt version; organization scope is the default."""
     url = _resolve(api_url)
+    selected = [
+        ("org", None) if org else None,
+        ("user", None) if user else None,
+        ("task", task) if task else None,
+        ("experiment", experiment) if experiment else None,
+        ("trial", trial) if trial else None,
+        ("global", None) if global_scope else None,
+    ]
+    selected = [item for item in selected if item is not None]
+    if len(selected) > 1:
+        console.print("[red]Choose exactly one prompt scope.[/red]")
+        raise typer.Exit(2)
+    scope, scope_id = selected[0] if selected else ("org", None)
     content = file.read_text()
     payload: dict = {"content": content}
     if description is not None:
         payload["description"] = description
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.put(f"{url}/prompts/{key_or_id}", json=payload)
+        params = {"scope": scope}
+        if scope_id:
+            params["scope_id"] = scope_id
+        resp = client.put(f"{url}/prompts/{key_or_id}", params=params, json=payload)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
     console.print(
         f"[green]Uploaded {key_or_id}[/green] "
+        f"scope={data.get('scope_type') or 'global'}"
+        f"{':' + data['scope_id'] if data.get('scope_id') else ''} "
         f"latest_version={data.get('latest_version')}"
     )
 

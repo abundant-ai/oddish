@@ -21,7 +21,7 @@ from oddish.core.prompts import (
     list_prompts_core,
     set_prompt_core,
 )
-from oddish.db import PromptKind, get_session
+from oddish.db import ExperimentModel, PromptKind, TaskModel, TrialModel, get_session
 from oddish.schemas import (
     PromptResponse,
     PromptSetRequest,
@@ -78,7 +78,7 @@ async def list_prompts(
 ) -> list[PromptResponse]:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        prompts = await list_prompts_core(session)
+        prompts = await list_prompts_core(session, org_id=auth.org_id)
         out = []
         for p in prompts:
             resp = PromptResponse.model_validate(p)
@@ -119,20 +119,60 @@ async def set_prompt(
     key_or_id: str,
     data: PromptSetRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    scope: Annotated[str, Query()] = "org",
+    scope_id: Annotated[str | None, Query()] = None,
 ) -> PromptResponse:
-    # FULL, not TASKS: prompts are a single global registry that drives QA
-    # for every org, so any org's TASKS key must not be able to rewrite what
-    # every other org's analysis runs on.
+    """Append a scoped prompt version.
+
+    ``org`` and ``user`` infer the current auth identity. Domain scopes require
+    an id and are checked against the active organization. ``global`` preserves
+    the legacy installation-wide registry and requires FULL scope.
+    """
     auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
         ref = await _validated_ref(session, key_or_id)
+        resolved_scope: str | None
+        resolved_scope_id: str | None
+        if scope == "global":
+            resolved_scope = resolved_scope_id = None
+        elif scope == "org":
+            resolved_scope, resolved_scope_id = "org", auth.org_id
+        elif scope == "user":
+            if not auth.user_id:
+                raise HTTPException(status_code=422, detail="user scope requires user auth")
+            resolved_scope, resolved_scope_id = "user", auth.user_id
+        elif scope in {"experiment", "task", "trial"}:
+            if not scope_id:
+                raise HTTPException(status_code=422, detail=f"{scope} scope requires scope_id")
+            model = {
+                "experiment": ExperimentModel,
+                "task": TaskModel,
+                "trial": TrialModel,
+            }[scope]
+            target = await session.get(model, scope_id)
+            if target is None or target.org_id != auth.org_id:
+                raise HTTPException(status_code=404, detail=f"{scope} not found")
+            resolved_scope, resolved_scope_id = scope, scope_id
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="scope must be global, org, user, experiment, task, or trial",
+            )
         await set_prompt_core(
             session,
             kind=ref,
             content=data.content,
             description=data.description,
             created_by=auth.user_id,
+            scope_type=resolved_scope,
+            scope_id=resolved_scope_id,
+            org_id=auth.org_id if resolved_scope is not None else None,
         )
         await session.commit()
-        prompt, ver = await get_prompt_core(session, ref)
+        prompt, ver = await get_prompt_core(
+            session,
+            ref,
+            scope_type=resolved_scope,
+            scope_id=resolved_scope_id,
+        )
         return _to_response(prompt, ver)

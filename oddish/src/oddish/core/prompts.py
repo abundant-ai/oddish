@@ -8,21 +8,42 @@ kinds. Callers own the transaction; these functions never commit (they
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import PromptModel, PromptVersionModel
 
 
-async def _get_prompt(session: AsyncSession, ref: str) -> PromptModel | None:
+PROMPT_SCOPE_TYPES = frozenset({"org", "user", "experiment", "task", "trial"})
+
+
+async def _get_prompt(
+    session: AsyncSession,
+    ref: str,
+    *,
+    scope_type: str | None = None,
+    scope_id: str | None = None,
+) -> PromptModel | None:
     """Resolve by kind first, then by id.
 
     Kind-first ordering means an opaque id can never shadow an existing kind.
     """
-    result = await session.execute(select(PromptModel).where(PromptModel.kind == ref))
+    scope_filter = (
+        and_(PromptModel.scope_type.is_(None), PromptModel.scope_id.is_(None))
+        if scope_type is None
+        else and_(
+            PromptModel.scope_type == scope_type,
+            PromptModel.scope_id == scope_id,
+        )
+    )
+    result = await session.execute(
+        select(PromptModel).where(PromptModel.kind == ref, scope_filter)
+    )
     prompt = result.scalar_one_or_none()
     if prompt is None:
-        result = await session.execute(select(PromptModel).where(PromptModel.id == ref))
+        result = await session.execute(
+            select(PromptModel).where(PromptModel.id == ref, scope_filter)
+        )
         prompt = result.scalar_one_or_none()
     return prompt
 
@@ -34,10 +55,25 @@ async def set_prompt_core(
     content: str,
     description: str | None = None,
     created_by: str | None = None,
+    scope_type: str | None = None,
+    scope_id: str | None = None,
+    org_id: str | None = None,
 ) -> PromptVersionModel:
-    prompt = await _get_prompt(session, kind)
+    if (scope_type is None) != (scope_id is None):
+        raise ValueError("scope_type and scope_id must be provided together")
+    if scope_type is not None and scope_type not in PROMPT_SCOPE_TYPES:
+        raise ValueError(f"unsupported prompt scope: {scope_type}")
+    prompt = await _get_prompt(
+        session, kind, scope_type=scope_type, scope_id=scope_id
+    )
     if prompt is None:
-        prompt = PromptModel(kind=kind, description=description or "")
+        prompt = PromptModel(
+            kind=kind,
+            description=description or "",
+            scope_type=scope_type,
+            scope_id=scope_id,
+            org_id=org_id,
+        )
         session.add(prompt)
         await session.flush()
         next_version = 1
@@ -58,8 +94,19 @@ async def set_prompt_core(
     return version
 
 
-async def list_prompts_core(session: AsyncSession) -> list[PromptModel]:
-    result = await session.execute(select(PromptModel).order_by(PromptModel.kind))
+async def list_prompts_core(
+    session: AsyncSession, *, org_id: str | None = None
+) -> list[PromptModel]:
+    stmt = select(PromptModel)
+    if org_id is None:
+        stmt = stmt.where(PromptModel.scope_type.is_(None))
+    else:
+        stmt = stmt.where(
+            or_(PromptModel.scope_type.is_(None), PromptModel.org_id == org_id)
+        )
+    result = await session.execute(
+        stmt.order_by(PromptModel.kind, PromptModel.scope_type, PromptModel.scope_id)
+    )
     return list(result.scalars().all())
 
 
@@ -74,9 +121,16 @@ async def list_prompt_versions_core(
 
 
 async def get_prompt_core(
-    session: AsyncSession, kind: str, *, version: int | None = None
+    session: AsyncSession,
+    kind: str,
+    *,
+    version: int | None = None,
+    scope_type: str | None = None,
+    scope_id: str | None = None,
 ) -> tuple[PromptModel, PromptVersionModel]:
-    prompt = await _get_prompt(session, kind)
+    prompt = await _get_prompt(
+        session, kind, scope_type=scope_type, scope_id=scope_id
+    )
     if prompt is None:
         raise HTTPException(status_code=404, detail=f"Prompt '{kind}' not found")
     versions = await prompt.awaitable_attrs.versions
@@ -95,6 +149,37 @@ async def get_prompt_core(
 async def get_latest_prompt_content(session: AsyncSession, kind: str) -> str:
     _, ver = await get_prompt_core(session, kind)
     return ver.content
+
+
+async def resolve_prompt_core(
+    session: AsyncSession,
+    kind: str,
+    *,
+    org_id: str | None,
+    user_id: str | None,
+    experiment_id: str | None,
+    task_id: str | None,
+    trial_id: str | None,
+) -> tuple[PromptModel, PromptVersionModel]:
+    """Resolve the narrowest available override, then the global default."""
+    candidates = [
+        ("trial", trial_id),
+        ("task", task_id),
+        ("experiment", experiment_id),
+        ("user", user_id),
+        ("org", org_id),
+    ]
+    for scope_type, scope_id in candidates:
+        if not scope_id:
+            continue
+        prompt = await _get_prompt(
+            session, kind, scope_type=scope_type, scope_id=scope_id
+        )
+        if prompt is not None and (prompt.org_id is None or prompt.org_id == org_id):
+            versions = await prompt.awaitable_attrs.versions
+            if versions:
+                return prompt, max(versions, key=lambda v: v.version)
+    return await get_prompt_core(session, kind)
 
 
 async def get_prompt_usage_core(session: AsyncSession, ref: str) -> dict:
