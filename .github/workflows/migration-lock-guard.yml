@@ -53,6 +53,22 @@ jobs:
           # Full history so we can diff HEAD against the PR base commit.
           fetch-depth: 0
 
+      - name: Sync oddish dependencies
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+        run: uv sync --frozen --extra server
+
+      # Always run, even when the PR touches no migrations. The repo's only
+      # pytest job covers tests/e2e, so without this the guard's own logic
+      # would never be exercised in CI -- and a guard that silently stops
+      # detecting is worse than no guard.
+      - name: Verify guard logic
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+        run: uv run pytest tests/test_migration_lock_guard.py -q
+
       - name: Collect added/modified migrations
         id: changed
         run: |
