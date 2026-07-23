@@ -611,7 +611,7 @@ def test_lifecycle_redaction_strips_worker_only_agent_attributes() -> None:
         "private-runtime-deployment",
     )
 
-    redacted = harbor_runner._redact_runtime_transport_value(
+    redacted = harbor_runner.redact_exact_value(
         config,
         {
             "private-runtime-route.test": "runtime-model-endpoint.invalid",

@@ -15,6 +15,7 @@ from oddish.db import TrialEventModel, TrialModel
 from oddish.db.connection import get_session
 from oddish.model_pricing import estimate_cost_usd
 from oddish.transcript_safety import sanitize_transcript_text, sanitize_transcript_value
+from oddish.workers.harbor.redaction import redact_exact_bytes, redact_exact_value
 from oddish.workers.queue.shared import console
 
 # Keep the same ~51 KiB/s drain capacity as the original 256 KiB / 5s
@@ -37,35 +38,6 @@ def configure_runtime_redactions(trial_id: str, replacements: dict[str, str]) ->
 
 def clear_runtime_redactions(trial_id: str) -> None:
     _runtime_redactions.pop(trial_id, None)
-
-
-def _redact_exact_text(text: str, replacements: dict[str, str]) -> str:
-    for value in sorted(replacements, key=len, reverse=True):
-        text = text.replace(value, replacements[value])
-    return text
-
-
-def _redact_exact_value(value: Any, replacements: dict[str, str]) -> Any:
-    if isinstance(value, str):
-        return _redact_exact_text(value, replacements)
-    if isinstance(value, dict):
-        return {
-            _redact_exact_value(key, replacements): _redact_exact_value(
-                item, replacements
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_exact_value(item, replacements) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_exact_value(item, replacements) for item in value)
-    return value
-
-
-def _redact_exact_bytes(data: bytes, replacements: dict[str, str]) -> bytes:
-    for value in sorted(replacements, key=len, reverse=True):
-        data = data.replace(value.encode("utf-8"), replacements[value].encode("utf-8"))
-    return data
 
 
 class TailExecError(RuntimeError):
@@ -814,7 +786,7 @@ class LiveTailer:
                 with contextlib.suppress(Exception):
                     self._buffer_events(
                         self.fold.feed_line(
-                            _redact_exact_bytes(self.carry, self.runtime_redactions)
+                            redact_exact_bytes(self.carry, self.runtime_redactions)
                         )
                     )
             with contextlib.suppress(Exception):
@@ -857,7 +829,7 @@ class LiveTailer:
             if snapshot_raw:
                 self._buffer_events(
                     self.fold.feed_line(
-                        _redact_exact_bytes(snapshot_raw, self.runtime_redactions)
+                        redact_exact_bytes(snapshot_raw, self.runtime_redactions)
                     )
                 )
         else:
@@ -916,7 +888,7 @@ class LiveTailer:
         self.offset += len(raw)
         for line in lines:
             self._buffer_events(
-                self.fold.feed_line(_redact_exact_bytes(line, self.runtime_redactions))
+                self.fold.feed_line(redact_exact_bytes(line, self.runtime_redactions))
             )
 
     def _buffer_events(self, rendered: list[dict[str, Any]]) -> None:
@@ -969,8 +941,8 @@ class LiveTailer:
 
     def _sanitize_event(self, event: dict[str, Any]) -> dict[str, Any]:
         original_payload = event.get("payload")
-        payload = _redact_exact_value(original_payload, self.runtime_redactions)
-        # _redact_exact_value scrubs known runtime secrets. Its effect must be counted
+        payload = redact_exact_value(original_payload, self.runtime_redactions)
+        # redact_exact_value scrubs known runtime secrets. Its effect must be counted
         # here too: if it redacted something but the general sanitizer reports no further
         # change, returning the original event would persist the raw secret.
         exact_redacted = payload != original_payload

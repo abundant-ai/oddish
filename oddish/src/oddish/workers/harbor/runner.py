@@ -14,8 +14,6 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, SecretBytes, SecretStr
-
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
 from harbor.environments.kube_ops import kube_chart_present
 from harbor.models.environment_type import EnvironmentType
@@ -59,10 +57,9 @@ from .agent_config import (
     _trial_uses_openai_provider,
 )
 from .model_hosts import outbound_hosts_for_model
+from .redaction import redact_exact_text, redact_exact_value
 from .restricted_network import (
     _KNOWN_TRANSPORT_BASE_URL_KEYS,
-    RUNTIME_ALLOWED_HOSTS_ATTR,
-    RUNTIME_MODEL_NAME_ATTR,
     RestrictedNetworkProfile,
     RestrictedNetworkProfileError,
     apply_restricted_network_profile,
@@ -219,77 +216,6 @@ def _runtime_transport_redactions(
     return replacements
 
 
-def _redact_runtime_transport_text(text: str, replacements: dict[str, str]) -> str:
-    for value in sorted(replacements, key=len, reverse=True):
-        text = text.replace(value, replacements[value])
-    return text
-
-
-def _redact_runtime_transport_value(
-    value: Any,
-    replacements: dict[str, str],
-    *,
-    _depth: int = 0,
-) -> Any:
-    """Copy a lifecycle payload while replacing trial-private exact values."""
-    if isinstance(value, str):
-        return _redact_runtime_transport_text(value, replacements)
-    if isinstance(value, SecretStr):
-        return SecretStr(
-            _redact_runtime_transport_text(value.get_secret_value(), replacements)
-        )
-    if isinstance(value, SecretBytes):
-        raw = value.get_secret_value()
-        for exact, replacement in sorted(
-            replacements.items(), key=lambda item: len(item[0]), reverse=True
-        ):
-            raw = raw.replace(exact.encode(), replacement.encode())
-        return SecretBytes(raw)
-    if _depth > 32:
-        return (
-            "[REDACTION_DEPTH_LIMIT]"
-            if isinstance(value, (BaseModel, Mapping, list, tuple, set, frozenset))
-            else value
-        )
-    if isinstance(value, BaseModel):
-        updates = {
-            name: _redact_runtime_transport_value(
-                getattr(value, name), replacements, _depth=_depth + 1
-            )
-            for name in type(value).model_fields
-            if name != "environment"
-        }
-        redacted_model = value.model_copy(update=updates)
-        for attribute in (RUNTIME_ALLOWED_HOSTS_ATTR, RUNTIME_MODEL_NAME_ATTR):
-            if hasattr(redacted_model, attribute):
-                object.__delattr__(redacted_model, attribute)
-        return redacted_model
-    if isinstance(value, Mapping):
-        return {
-            _redact_runtime_transport_value(key, replacements, _depth=_depth + 1): (
-                _redact_runtime_transport_value(item, replacements, _depth=_depth + 1)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [
-            _redact_runtime_transport_value(item, replacements, _depth=_depth + 1)
-            for item in value
-        ]
-    if isinstance(value, tuple):
-        return tuple(
-            _redact_runtime_transport_value(item, replacements, _depth=_depth + 1)
-            for item in value
-        )
-    if isinstance(value, (set, frozenset)):
-        redacted = {
-            _redact_runtime_transport_value(item, replacements, _depth=_depth + 1)
-            for item in value
-        }
-        return frozenset(redacted) if isinstance(value, frozenset) else redacted
-    return value
-
-
 def _redact_trial_hook_event(
     event: TrialHookEvent,
     replacements: dict[str, str],
@@ -298,7 +224,7 @@ def _redact_trial_hook_event(
     if not replacements:
         return event
     updates = {
-        name: _redact_runtime_transport_value(
+        name: redact_exact_value(
             getattr(event, name), replacements, _depth=1
         )
         for name in type(event).model_fields
@@ -1455,7 +1381,7 @@ async def run_harbor_trial_async(
         if outcome.error:
             outcome = replace(
                 outcome,
-                error=_redact_runtime_transport_text(
+                error=redact_exact_text(
                     _maybe_add_modal_debug_hint(outcome.error, modal_debug_log_path),
                     runtime_transport_replacements,
                 ),
@@ -1468,7 +1394,7 @@ async def run_harbor_trial_async(
             "Harbor trial cancelled by the runtime. This usually means the worker "
             "was restarted or the sandbox failed during startup. Check worker logs."
         )
-        error_message = _redact_runtime_transport_text(
+        error_message = redact_exact_text(
             _maybe_add_modal_debug_hint(error_message, modal_debug_log_path),
             runtime_transport_replacements,
         )
@@ -1496,7 +1422,7 @@ async def run_harbor_trial_async(
     except Exception as e:
         duration = time.time() - start
         error_message = f"Harbor job execution failed: {_format_exception_message(e)}"
-        error_message = _redact_runtime_transport_text(
+        error_message = redact_exact_text(
             _maybe_add_modal_debug_hint(error_message, modal_debug_log_path),
             runtime_transport_replacements,
         )
