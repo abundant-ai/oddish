@@ -325,6 +325,12 @@ async def get_dashboard(
             "org members + their aliases and ANDed with the owner/tag filters."
         ),
     ),
+    min_steps: int | None = Query(
+        None,
+        ge=0,
+        description="Only experiments containing a trial with at least this many steps.",
+    ),
+    metric_match: str = Query("any", pattern="^(any|all)$"),
     usage_minutes: int | None = Query(None, ge=1, le=86400),
     include_queues: bool = Query(True),
     include_tasks: bool = Query(True),
@@ -391,6 +397,8 @@ async def get_dashboard(
             experiments_search_author_user_ids=search_author_user_ids,
             experiments_search_author_github_usernames=search_author_github_usernames,
             experiments_search_author_emails=search_author_emails,
+            min_steps=min_steps,
+            metric_match=metric_match,
             usage_minutes=usage_minutes,
             include_queues=include_queues,
             include_tasks=include_tasks,

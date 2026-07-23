@@ -746,6 +746,7 @@ async def browse_tasks(
     max_tokens: int | None = Query(None, ge=0),
     min_steps: int | None = Query(None, ge=0),
     max_steps: int | None = Query(None, ge=0),
+    metric_match: str = Query("any", pattern="^(any|all)$"),
     reward_min: float | None = Query(None, ge=0.0, le=1.0),
     reward_max: float | None = Query(None, ge=0.0, le=1.0),
     # --- Phase 1.2-lite aggregate filters / sort (computed on the fly) ---
@@ -912,6 +913,7 @@ async def browse_tasks(
             max_tokens=max_tokens,
             min_steps=min_steps,
             max_steps=max_steps,
+            metric_match=metric_match,
             reward_min=reward_min,
             reward_max=reward_max,
             avg_score_min=avg_score_min,

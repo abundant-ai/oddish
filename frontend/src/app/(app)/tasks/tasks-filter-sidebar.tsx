@@ -333,7 +333,7 @@ export function TasksFilterSidebar() {
         <div className="mb-2 flex items-center justify-between">
           <span className="flex items-center gap-1.5 text-sm font-medium">
             <Filter className="h-3.5 w-3.5" />
-            Filters
+            Trial filters
             {activeCount > 0 ? (
               <span className="text-muted-foreground text-[11px]">
                 ({activeCount})

@@ -815,6 +815,8 @@ type DashboardClientProps = {
   initialAuthor?: string;
   initialStatus?: string;
   initialQuery?: string;
+  initialMinSteps?: number | null;
+  initialMetricMatch?: "any" | "all";
   initialOffset?: number;
 };
 
@@ -823,6 +825,8 @@ export function DashboardClient({
   initialAuthor = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   initialStatus = "all",
   initialQuery = "",
+  initialMinSteps = null,
+  initialMetricMatch = "any",
   initialOffset = 0,
 }: DashboardClientProps) {
   const router = useRouter();
@@ -844,7 +848,7 @@ export function DashboardClient({
 
   // Keying the Suspense boundary on the committed (server) params makes it
   // re-suspend — and show the skeleton — on every content change.
-  const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${experimentsOffset}`;
+  const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${initialMinSteps}|${initialMetricMatch}|${experimentsOffset}`;
 
   // Build a dashboard URL for the given selection/page, preserving the current
   // search. Defaults are omitted so the clean view stays "/dashboard".
@@ -866,6 +870,12 @@ export function DashboardClient({
     }
     if (query) {
       params.set("q", query);
+    }
+    if (initialMinSteps !== null) {
+      params.set("min_steps", String(initialMinSteps));
+    }
+    if (initialMetricMatch === "all") {
+      params.set("metric_match", "all");
     }
     if (page > 1) {
       params.set("page", String(page));

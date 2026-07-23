@@ -1201,6 +1201,7 @@ async def browse_tasks_core(
     max_tokens: int | None = None,
     min_steps: int | None = None,
     max_steps: int | None = None,
+    metric_match: str = "any",
     reward_min: float | None = None,
     reward_max: float | None = None,
     # --- Phase 1.2-lite aggregate filters / sort (no migration) ---
@@ -1512,7 +1513,23 @@ async def browse_tasks_core(
             step_preds.append(TrialModel.total_steps >= min_steps)
         if max_steps is not None:
             step_preds.append(TrialModel.total_steps <= max_steps)
-        ranked_tasks = ranked_tasks.where(_trial_exists(*step_preds))
+        if metric_match == "all":
+            eligible_step_trial = [
+                TrialModel.total_steps.isnot(None),
+                TrialModel.status != TrialStatus.FAILED,
+            ]
+            measured_trial = _trial_exists(*eligible_step_trial)
+            threshold_violations = []
+            if min_steps is not None:
+                threshold_violations.append(TrialModel.total_steps < min_steps)
+            if max_steps is not None:
+                threshold_violations.append(TrialModel.total_steps > max_steps)
+            ranked_tasks = ranked_tasks.where(
+                measured_trial,
+                ~_trial_exists(*eligible_step_trial, or_(*threshold_violations)),
+            )
+        else:
+            ranked_tasks = ranked_tasks.where(_trial_exists(*step_preds))
     if reward_min is not None or reward_max is not None:
         reward_preds = [TrialModel.reward.isnot(None)]
         if reward_min is not None:

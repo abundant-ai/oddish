@@ -10,6 +10,8 @@ type DashboardRequestParams = {
   experiments_tags_none?: string;
   experiments_author?: string;
   experiments_author_query?: string;
+  min_steps?: number | null;
+  metric_match?: "any" | "all";
   usage_minutes?: number | null;
   include_queues?: boolean;
   include_tasks?: boolean;
@@ -79,6 +81,13 @@ function buildDashboardSearchParams(
   const trimmedAuthorQuery = input.experiments_author_query?.trim();
   if (trimmedAuthorQuery) {
     params.set("experiments_author_query", trimmedAuthorQuery);
+  }
+
+  if (input.min_steps !== undefined && input.min_steps !== null) {
+    params.set("min_steps", String(input.min_steps));
+  }
+  if (input.metric_match === "all") {
+    params.set("metric_match", "all");
   }
 
   for (const name of [

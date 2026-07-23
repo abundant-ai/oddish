@@ -1016,6 +1016,8 @@ async def load_dashboard_experiments(
     experiments_search_author_user_ids: Sequence[str] | None = None,
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
+    min_steps: int | None = None,
+    metric_match: str = "any",
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -1119,6 +1121,63 @@ async def load_dashboard_experiments(
             emails=experiments_search_author_emails,
         )
         page_query = page_query.where(search_author_filter)
+    if min_steps is not None:
+        measured_trial = (
+            select(1)
+            .select_from(
+                experiment_trials.join(
+                    TrialModel, TrialModel.id == experiment_trials.c.trial_id
+                )
+            )
+            .where(
+                experiment_trials.c.experiment_id == ExperimentModel.id,
+                experiment_trials.c.deleted_at.is_(None),
+                TrialModel.deleted_at.is_(None),
+                TrialModel.is_probe.is_(False),
+                TrialModel.total_steps.isnot(None),
+                TrialModel.status != TrialStatus.FAILED,
+            )
+            .exists()
+        )
+        threshold_trial = (
+            select(1)
+            .select_from(
+                experiment_trials.join(
+                    TrialModel, TrialModel.id == experiment_trials.c.trial_id
+                )
+            )
+            .where(
+                experiment_trials.c.experiment_id == ExperimentModel.id,
+                experiment_trials.c.deleted_at.is_(None),
+                TrialModel.deleted_at.is_(None),
+                TrialModel.is_probe.is_(False),
+                TrialModel.total_steps.isnot(None),
+                TrialModel.total_steps >= min_steps,
+            )
+            .exists()
+        )
+        if metric_match == "all":
+            below_threshold_trial = (
+                select(1)
+                .select_from(
+                    experiment_trials.join(
+                        TrialModel, TrialModel.id == experiment_trials.c.trial_id
+                    )
+                )
+                .where(
+                    experiment_trials.c.experiment_id == ExperimentModel.id,
+                    experiment_trials.c.deleted_at.is_(None),
+                    TrialModel.deleted_at.is_(None),
+                    TrialModel.is_probe.is_(False),
+                    TrialModel.total_steps.isnot(None),
+                    TrialModel.status != TrialStatus.FAILED,
+                    TrialModel.total_steps < min_steps,
+                )
+                .exists()
+            )
+            page_query = page_query.where(measured_trial, ~below_threshold_trial)
+        else:
+            page_query = page_query.where(threshold_trial)
     tag_ast = TagFilterAST(
         all=[t.strip() for t in (experiments_tags or "").split(",") if t.strip()],
         any_=[t.strip() for t in (experiments_tags_any or "").split(",") if t.strip()],
@@ -1756,6 +1815,8 @@ async def get_dashboard_core(
     experiments_search_author_user_ids: Sequence[str] | None = None,
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
+    min_steps: int | None = None,
+    metric_match: str = "any",
     usage_minutes: int | None = None,
     include_queues: bool = True,
     include_tasks: bool = True,
@@ -1797,7 +1858,8 @@ async def get_dashboard_core(
         f"{','.join(experiments_search_author_user_ids or ())}:"
         f"{','.join(experiments_search_author_github_usernames or ())}:"
         f"{','.join(experiments_search_author_emails or ())}:"
-        f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
+        f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}:"
+        f"{min_steps}:{metric_match}"
     )
 
     async def _fetch_primary():
@@ -1934,6 +1996,8 @@ async def get_dashboard_core(
                 experiments_search_author_user_ids=experiments_search_author_user_ids,
                 experiments_search_author_github_usernames=experiments_search_author_github_usernames,
                 experiments_search_author_emails=experiments_search_author_emails,
+                min_steps=min_steps,
+                metric_match=metric_match,
                 record_timing=record_timing,
             )
         if record_timing is not None:

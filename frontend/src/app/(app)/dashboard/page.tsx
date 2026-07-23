@@ -89,6 +89,12 @@ export default async function DashboardPage({
     firstParam(params.author) || DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
   const initialStatus = firstParam(params.status) || "all";
   const initialQuery = firstParam(params.q);
+  const initialMinSteps = Math.max(
+    0,
+    Number.parseInt(firstParam(params.min_steps), 10) || 0,
+  );
+  const initialMetricMatch =
+    firstParam(params.metric_match) === "all" ? "all" : "any";
   const pageNumber = Math.max(
     1,
     Number.parseInt(firstParam(params.page), 10) || 1,
@@ -109,6 +115,8 @@ export default async function DashboardPage({
     experiments_tags_any: parsedQuery.any.join(","),
     experiments_tags_none: parsedQuery.none.join(","),
     experiments_author_query: parsedQuery.authors.join(","),
+    min_steps: initialMinSteps || null,
+    metric_match: initialMetricMatch,
   });
 
   return (
@@ -117,6 +125,8 @@ export default async function DashboardPage({
       initialAuthor={initialAuthor}
       initialStatus={initialStatus}
       initialQuery={initialQuery}
+      initialMinSteps={initialMinSteps || null}
+      initialMetricMatch={initialMetricMatch}
       initialOffset={initialOffset}
     />
   );
