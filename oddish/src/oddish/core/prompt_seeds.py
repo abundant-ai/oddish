@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.core.prompts import set_prompt_core
+from oddish.core.prompts import get_prompt_core, set_prompt_core
 from oddish.db import PromptKind, PromptModel
 
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "analyze" / "prompts"
@@ -31,6 +31,17 @@ PROMPT_SEEDS: dict[str, tuple[str, str]] = {
 }
 
 
+# The original QA_POST_TRIAL seed: a linkage-only stub that was never consumed
+# at runtime (the classifier inlined classify_prompt.txt). DBs seeded while it
+# shipped hold it as their latest version; self-heal by appending the full
+# classify prompt, since running post-trial QA with only the stub would drop
+# the entire log-analysis instruction set. Latest-wins makes the append safe,
+# and operator edits (any other content) are never clobbered.
+_LEGACY_POST_TRIAL_STUB_OPENING = (
+    "You are auditing a single trial trajectory of a Harbor task."
+)
+
+
 async def seed_prompts(session: AsyncSession) -> list[str]:
     created: list[str] = []
     for kind, (description, content) in PROMPT_SEEDS.items():
@@ -43,4 +54,14 @@ async def seed_prompts(session: AsyncSession) -> list[str]:
             session, kind=kind, content=content, description=description
         )
         created.append(kind)
+
+    post_trial_kind = PromptKind.QA_POST_TRIAL.value
+    if post_trial_kind not in created:
+        _, latest = await get_prompt_core(session, post_trial_kind)
+        if latest.content.lstrip().startswith(_LEGACY_POST_TRIAL_STUB_OPENING):
+            description, content = PROMPT_SEEDS[post_trial_kind]
+            await set_prompt_core(
+                session, kind=post_trial_kind, content=content, description=description
+            )
+            created.append(f"{post_trial_kind} (stub upgraded)")
     return created
