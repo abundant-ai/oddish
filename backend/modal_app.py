@@ -137,22 +137,12 @@ WORKER_BUFFER_CONTAINERS = _env_int(
 WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
     "ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS", 300
 )  # Keep idle workers warm for 5 minutes
-# Global cap on concurrent worker containers. Workers use NullPool (see
-# worker/functions.py), so they hold ~0 idle DB connections during the long
-# Harbor run -- a pooler client connection is opened only for the brief
-# claim / heartbeat / finalize writes. So this cap is NOT bound by the pooler
-# client limit anymore; the binding constraints are Modal cost, per-model
-# provider rate limits, the per-poll claim burst (MAX_WORKERS_PER_POLL), and DB
-# CPU. On the 4XL Supabase tier (3000 max pooler clients, 480 Postgres
-# max_connections, 16 dedicated cores) 2688 workers still fit below the client
-# cap: worst-case concurrent client connections are roughly 2688 transient
-# worker writes + 192 API pool connections + the two singleton scheduled
-# functions (= 2882, leaving ~118 client slots). Concurrent transaction
-# *execution* is gated by the transaction pool size (~150-200 backends on 4XL),
-# not this count.
+# Modal applies this cap independently to the default worker and each blessed
+# variant. Leave enough Supavisor headroom for synchronized heartbeat and claim
+# bursts instead of treating it as a global connection ceiling.
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    2688,
+    384,
 )
 
 # Mark single-job worker containers as non-preemptible so Modal does not
@@ -176,21 +166,8 @@ DISPATCHER_MEMORY_MB = _env_int("ODDISH_MODAL_DISPATCHER_MEMORY_MB", 1024)
 RECONCILER_CPU = _env_float("ODDISH_MODAL_RECONCILER_CPU", 1.0)
 RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
 
-# Max number of workers spawned per poll cycle (rate limiter, global across all
-# queue_keys). This is the dominant throughput ceiling: long agent trials hold a
-# slot for their full duration (often 10-30+ min), so the steady-state pool of
-# running workers is roughly (spawns_per_poll * trial_duration / poll_interval).
-# At 64/180s the global rate could not fill the per-model concurrency limits
-# (which sum into the hundreds), leaving most models far below their caps. The
-# per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
-# real safety bounds; this just stops the dispatcher from starving them.
-#
-# 256 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
-# per-poll spawn burst is also the per-poll claim burst (each spawned worker
-# runs one claim query), but claims are short and the 4XL box (16 dedicated
-# cores, transaction pool ~150) absorbs ~256 concurrent short claims per
-# 180s tick comfortably.
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
+# Limit each synchronized claim burst as well as the steady-state fleet.
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 128)
 
 # Wall-clock budget for how long one worker container keeps claiming and running
 # jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
