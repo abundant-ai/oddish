@@ -5,7 +5,6 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, model_validator
@@ -14,12 +13,6 @@ from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
 from oddish.blocks.block import Block
 
 logger = logging.getLogger("oddish.trajectory_block")
-
-# TODO(task-4): replace with a registry fetch of the "trajectory_summary" prompt.
-_INSTRUCTIONS_TEMPLATE = (
-    Path(__file__).resolve().parents[6]
-    / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.v1.txt"
-).read_text()
 
 
 class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
@@ -141,8 +134,9 @@ class TrajectoryBlock(Block):
 
     output_schema = TrajectoryOutput
 
-    def __init__(self, trajectory_input: TrajectoryInput) -> None:
+    def __init__(self, trajectory_input: TrajectoryInput, *, instructions_template: str) -> None:
         self.trajectory_input = trajectory_input
+        self._instructions_template = instructions_template
 
     # ---- prompt sections (build_prompt is inherited) ----
     def sections(self) -> list[dict]:
@@ -160,7 +154,7 @@ class TrajectoryBlock(Block):
              "schema": _OutcomeIn, "formatter": self._fmt_outcome},
             {"name": "instructions", "raw_input": {}, "schema": _InstructionsIn,
              "formatter": lambda _d: tp.instructions_section(
-                 _INSTRUCTIONS_TEMPLATE, taxonomy_values)},
+                 self._instructions_template, taxonomy_values)},
             {"name": "trajectory", "raw_input": {"trajectory": ti.trajectory},
              "schema": _TrajectoryIn, "formatter": self._fmt_trajectory},
         ]

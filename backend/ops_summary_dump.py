@@ -51,11 +51,17 @@ async def dump(
     # Short-lived read-mostly job; avoid adding a warm pooler connection.
     Settings.db_use_null_pool = True
 
+    from api.services.summarize_trajectory import _load_summary_prompt
     from api.services.summary_dump import run_cohort
     from oddish.db import get_session
 
     trial_ids = [t.strip() for t in trials.split(",") if t.strip()]
     async with get_session() as session:
+        # Self-seed the registered prompt before the cohort runs -- keeps the
+        # registry in the same state prod maintains, even though summarize_trial
+        # (api/services/summary_dump.py) still builds each block against
+        # build_summary_block's own default template.
+        await _load_summary_prompt(session)
         result = await run_cohort(
             session,
             trials=trial_ids or None,
