@@ -991,6 +991,7 @@ export interface CostBreakdownResponse {
   series_by_user: CostSeries;
   series_by_type?: CostSeries;
   series_qa_by_model?: CostSeries;
+  series_by_analysis_type?: CostSeries;
   series_compute_by_provider?: CostSeries;
   totals: CostTotals;
   by_user: CostUserBreakdown[];

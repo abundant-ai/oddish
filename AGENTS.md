@@ -263,6 +263,11 @@ that contract. Each row also carries its spend rank so the rare row with no
 safe display label (e.g. a payer outside the auth org) drops without
 renumbering everyone else.
 
+The admin `GET /admin/costs` response includes analysis spend time series both
+by model (`series_qa_by_model`) and by analyzer job kind
+(`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
+`Analyzer` stack; analyzer spend does not belong on the people leaderboard.
+
 ### Task Identity
 
 `tasks.name` is the human-readable lookup key within an org. Live task names

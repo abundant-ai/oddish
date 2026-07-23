@@ -529,13 +529,20 @@ function MethodologyNote() {
 // Top-level card
 // =============================================================================
 
-type ChartDimension = "agent" | "model" | "user" | "type" | "compute";
+type ChartDimension =
+  | "agent"
+  | "model"
+  | "user"
+  | "type"
+  | "analysis_type"
+  | "compute";
 
 const CHART_DIMENSIONS: ChartDimension[] = [
   "agent",
   "model",
   "user",
   "type",
+  "analysis_type",
   "compute",
 ];
 
@@ -544,6 +551,7 @@ const DIMENSION_LABELS: Record<ChartDimension, string> = {
   model: "Model",
   user: "User",
   type: "Cost type",
+  analysis_type: "Analyzer",
   compute: "Compute",
 };
 
@@ -572,9 +580,11 @@ export function CostBreakdownCard() {
         ? data.series_by_model
         : dimension === "user"
           ? data.series_by_user
-          : dimension === "compute"
-            ? (data.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES)
-            : (data.series_by_type ?? data.series_by_agent)
+          : dimension === "type"
+            ? (data.series_by_type ?? data.series_by_agent)
+            : dimension === "analysis_type"
+              ? (data.series_by_analysis_type ?? data.series_by_agent)
+              : (data.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES)
     : null;
 
   return (
