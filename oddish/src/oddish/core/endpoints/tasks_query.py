@@ -52,7 +52,9 @@ from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
 from oddish.db import (
+    AnalysisCostModel,
     ExperimentModel,
+    ModalCostSpanModel,
     TagModel,
     TagState,
     TaskModel,
@@ -1094,40 +1096,121 @@ def _task_metrics_subquery(
     scoped_trial_cost = (
         case((and_(*cost_scope), trial_cost), else_=0.0) if cost_scope else trial_cost
     )
-    stmt = select(
-        TrialModel.task_id.label("task_id"),
-        TrialModel.task_version_id.label("task_version_id"),
-        func.avg(TrialModel.reward).label("avg_reward"),
-        func.sum(total_tokens).label("total_tokens"),
-        func.sum(scoped_trial_cost).label("cost_usd"),
-        func.count(TrialModel.id).label("total_trials"),
-        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-            "completed_trials"
-        ),
-        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-            "failed_trials"
-        ),
-        func.count(case((bucket == "pass", 1))).label("pass_count"),
-        func.count(case((bucket == "partial", 1))).label("partial_count"),
-        func.count(case((bucket == "fail", 1))).label("fail_count"),
-        func.count(case((bucket == "harness", 1))).label("harness_count"),
-        # Pass rate = pass-bucket count ÷ scoped trials, as a percent (0-100).
-        (
-            func.count(case((bucket == "pass", 1)))
-            * 100.0
-            / func.nullif(func.count(TrialModel.id), 0)
-        ).label("pass_rate"),
-        func.sum(runtime_seconds).label("runtime_total"),
-        func.avg(runtime_seconds).label("runtime_avg"),
-    ).where(
-        TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.is_probe.isnot(True),
-        # Combine copies re-materialize an existing execution under another
-        # experiment; excluding them keeps the cost sort / aggregate filters on
-        # the same execution population the card counters and detail view show.
-        not_combine_copy_filter(),
-        # NOTE: skipped trials are intentionally INCLUDED in metric denominators
-        # (a non-pass, like a harness error), so pass_rate reflects "N launched".
+    # Composite cost: QA (analysis_costs) + compute (modal_costs), summed over the
+    # SAME eligible trial set as the inference term so ``cost_desc`` ranks by the
+    # composite dollar the task cards headline -- not inference alone (the Bugbot
+    # defect: the card showed inference + QA + compute but the sort ranked by the
+    # inference sum). Each ledger is pre-aggregated to ONE row per trial_id, then
+    # LEFT JOINed 1:1, so a trial with several QA rows or several compute spans
+    # never fans out its trial row (which would inflate the other aggregates) and
+    # never double-counts -- the browser groups by (task, version) so a trial that
+    # is homed in one experiment and gathered into another still contributes its
+    # ledgers exactly once here. Eligibility mirrors ``composite_cost_by_trial``
+    # and the admin dashboard: analysis_costs.deleted_at IS NULL; modal_costs
+    # cost_usd IS NOT NULL AND deleted_at IS NULL.
+    #
+    # BOUND (accepted, pre-existing): SQL cannot run the LiteLLM token-price
+    # ESTIMATE, so the composite's inference term stays native ``cost_usd`` (plus
+    # the per-filtered-model estimate ``_trial_cost_sort_expression`` already
+    # applied) -- exactly what the pre-fix sort ranked by. This ADDS the native
+    # QA + compute ledgers (the actual defect) to the ranking; it does not fold
+    # token-estimated inference into the sort, and never did.
+    qa_by_trial = (
+        select(
+            AnalysisCostModel.trial_id.label("trial_id"),
+            func.sum(AnalysisCostModel.cost_usd).label("qa_cost"),
+        )
+        .where(
+            AnalysisCostModel.trial_id.isnot(None),
+            AnalysisCostModel.deleted_at.is_(None),
+        )
+        .group_by(AnalysisCostModel.trial_id)
+        .subquery()
+    )
+    compute_by_trial = (
+        select(
+            ModalCostSpanModel.trial_id.label("trial_id"),
+            func.sum(ModalCostSpanModel.cost_usd).label("compute_cost"),
+        )
+        .where(
+            ModalCostSpanModel.trial_id.isnot(None),
+            ModalCostSpanModel.cost_usd.isnot(None),
+            ModalCostSpanModel.deleted_at.is_(None),
+        )
+        .group_by(ModalCostSpanModel.trial_id)
+        .subquery()
+    )
+    # Gate QA/compute by the SAME cost scope (model / finished-at window) the
+    # inference term uses, so a model- or time-filtered ``cost_desc`` ranks by the
+    # in-scope composite the card fold shows -- out-of-scope trials contribute $0
+    # to every term, exactly as the Python fold drops them entirely.
+    per_trial_qa = func.coalesce(qa_by_trial.c.qa_cost, 0.0)
+    per_trial_compute = func.coalesce(compute_by_trial.c.compute_cost, 0.0)
+    scoped_qa = (
+        case((and_(*cost_scope), per_trial_qa), else_=0.0)
+        if cost_scope
+        else per_trial_qa
+    )
+    scoped_compute = (
+        case((and_(*cost_scope), per_trial_compute), else_=0.0)
+        if cost_scope
+        else per_trial_compute
+    )
+    stmt = (
+        select(
+            TrialModel.task_id.label("task_id"),
+            TrialModel.task_version_id.label("task_version_id"),
+            func.avg(TrialModel.reward).label("avg_reward"),
+            func.sum(total_tokens).label("total_tokens"),
+            func.sum(scoped_trial_cost).label("cost_usd"),
+            # Composite ranking key for ``cost_desc`` = inference + QA + compute, all
+            # over the same eligible, cost-scoped trial set (see the note above).
+            (
+                func.sum(scoped_trial_cost)
+                + func.sum(scoped_qa)
+                + func.sum(scoped_compute)
+            ).label("cost_total_usd"),
+            func.count(TrialModel.id).label("total_trials"),
+            func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+                "completed_trials"
+            ),
+            func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+                "failed_trials"
+            ),
+            func.count(case((bucket == "pass", 1))).label("pass_count"),
+            func.count(case((bucket == "partial", 1))).label("partial_count"),
+            func.count(case((bucket == "fail", 1))).label("fail_count"),
+            func.count(case((bucket == "harness", 1))).label("harness_count"),
+            # Pass rate = pass-bucket count ÷ scoped trials, as a percent (0-100).
+            (
+                func.count(case((bucket == "pass", 1)))
+                * 100.0
+                / func.nullif(func.count(TrialModel.id), 0)
+            ).label("pass_rate"),
+            func.sum(runtime_seconds).label("runtime_total"),
+            func.avg(runtime_seconds).label("runtime_avg"),
+        )
+        .select_from(TrialModel)
+        .outerjoin(
+            # 1:1 (pre-aggregated per trial_id) so the composite sums fold in without
+            # fanning out the trial rows the other aggregates count.
+            qa_by_trial,
+            qa_by_trial.c.trial_id == TrialModel.id,
+        )
+        .outerjoin(
+            compute_by_trial,
+            compute_by_trial.c.trial_id == TrialModel.id,
+        )
+        .where(
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
+            # Combine copies re-materialize an existing execution under another
+            # experiment; excluding them keeps the cost sort / aggregate filters on
+            # the same execution population the card counters and detail view show.
+            not_combine_copy_filter(),
+            # NOTE: skipped trials are intentionally INCLUDED in metric denominators
+            # (a non-pass, like a harness error), so pass_rate reflects "N launched".
+        )
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -1137,7 +1220,8 @@ def _task_metrics_subquery(
 # Aggregate sort tokens -> (metrics column label added to ranked_tasks, descending).
 # The column labels must match the ``add_columns`` labels in browse_tasks_core.
 _AGGREGATE_SORTS: dict[str, tuple[str, bool]] = {
-    "cost_desc": ("cost_usd", True),
+    # Composite (inference + QA + compute), matching the dollar the cards headline.
+    "cost_desc": ("cost_total_usd", True),
     "avg_score_desc": ("avg_reward", True),
     "avg_score_asc": ("avg_reward", False),
     "total_tokens_desc": ("total_tokens", True),
@@ -1284,7 +1368,11 @@ async def browse_tasks_core(
       GROUP BY over the same scoped trial set — and applied as HAVING-equivalent
       predicates before pagination. There is NO supporting index or roll-up; this
       is the deliberately-slow path that full Phase 1.2 will denormalize. Cost sort
-      uses persisted costs plus the same token estimates shown on task cards.
+      (``cost_desc``) ranks by the COMPOSITE ``cost_total_usd`` = inference (persisted
+      cost plus the per-filtered-model token estimate) + QA (``analysis_costs``) +
+      compute (``modal_costs``), matching the dollar the cards headline. SQL cannot
+      run the LiteLLM estimate, so the inference term stays native-plus-filtered-
+      model-estimate (an accepted pre-existing bound), while QA/compute are native.
     """
 
     current_version = aliased(TaskVersionModel)
@@ -1432,9 +1520,7 @@ async def browse_tasks_core(
     # when it's active so every constraint is checked against the same trial.
     metric_filter_active = not metric_filter.is_empty
     if trial_finished_after is not None:
-        trial_finished_predicates.append(
-            TrialModel.finished_at >= trial_finished_after
-        )
+        trial_finished_predicates.append(TrialModel.finished_at >= trial_finished_after)
     if trial_finished_before is not None:
         trial_finished_predicates.append(
             TrialModel.finished_at <= trial_finished_before
@@ -1617,6 +1703,8 @@ async def browse_tasks_core(
             task_metrics.c.avg_reward.label("avg_reward"),
             task_metrics.c.total_tokens.label("total_tokens"),
             task_metrics.c.cost_usd.label("cost_usd"),
+            # Composite ranking key for ``cost_desc`` (inference + QA + compute).
+            task_metrics.c.cost_total_usd.label("cost_total_usd"),
             task_metrics.c.total_trials.label("agg_total_trials"),
             task_metrics.c.completed_trials.label("agg_completed_trials"),
             task_metrics.c.failed_trials.label("agg_failed_trials"),

@@ -43,7 +43,9 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       } else {
         next.set(task.id, {
           name: task.name,
-          cost: task.cost_usd,
+          // Composite total (inference + QA + compute), matching the dollar the
+          // card headlines -- the selection "Total" must not sum inference alone.
+          cost: task.total_cost_usd,
           estimated: task.cost_has_estimated && !task.cost_has_native,
         });
       }

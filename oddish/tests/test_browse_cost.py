@@ -108,8 +108,16 @@ def test_cost_desc_scopes_persisted_and_estimated_cost_to_model_and_finish_time(
         )
     ).lower()
 
-    assert _AGGREGATE_SORTS["cost_desc"] == ("cost_usd", True)
+    # cost_desc ranks by the COMPOSITE total (inference + QA + compute), not the
+    # inference-only ``cost_usd`` sum -- so the ranking matches the dollar the cards
+    # headline. The inference term is still model/finish-time scoped as before.
+    assert _AGGREGATE_SORTS["cost_desc"] == ("cost_total_usd", True)
     assert "trials.model in ('gpt-5.5-codex')" in sql
     assert "trials.finished_at >= '2026-07-02" in sql
     assert "trials.cost_usd is not null" in sql
     assert "trials.cache_write_tokens" in sql
+    # QA + compute ledgers entered the ordering subquery (the fix): both are summed
+    # into cost_total_usd, each pre-aggregated per trial and LEFT JOINed 1:1.
+    assert "analysis_costs" in sql
+    assert "modal_costs" in sql
+    assert "cost_total_usd" in sql

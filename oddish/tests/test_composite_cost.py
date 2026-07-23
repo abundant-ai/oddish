@@ -86,6 +86,7 @@ def _trial(
     model: str = "gpt-5",
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    task_id: str = _TASK,
     task_version_id: str | None = None,
     superseded_by_trial_id: str | None = None,
     idempotency_key: str | None = None,
@@ -98,7 +99,7 @@ def _trial(
     return TrialModel(
         id=trial_id,
         name=trial_id,
-        task_id=_TASK,
+        task_id=task_id,
         experiment_id=experiment_id,
         org_id=_ORG,
         agent="codex",
@@ -1090,3 +1091,95 @@ async def test_experiment_totals_count_unpriceable_estimated_trial_with_qa_compu
     assert totals.billed_total_cost_usd == pytest.approx(0.65)
     # Owned == member here (all three homed in _EXP).
     assert totals.owned_total_cost_usd == pytest.approx(1.23)
+
+
+# --- Browse ordering (Bugbot follow-up): cost_desc ranks by composite total -----
+
+# The card headlines the composite total (inference + QA + compute), but the
+# ``cost_desc`` sort ranked by the inference-only sum, so the ranking disagreed
+# with the shown dollar. Two tasks pin the fix: A has the higher INFERENCE, B the
+# higher COMPOSITE (its QA + compute dominate). Under the old sort A outranked B;
+# with the composite ranking key B (higher total) must sort before A.
+_ORD_A = f"{_TASK}-ord-a"
+_ORD_B = f"{_TASK}-ord-b"
+_ORD_VA = f"{_ORD_A}-v1"
+_ORD_VB = f"{_ORD_B}-v1"
+
+
+@pytest.mark.asyncio
+async def test_browse_tasks_core_cost_desc_ranks_by_composite_total(session):
+    """``browse_tasks_core(sort="cost_desc")`` orders by the composite dollar the
+    cards headline, not inference alone: task B (lower inference, higher QA +
+    compute) outranks task A (higher inference, no QA/compute).
+
+    Runs the real endpoint so the SQL ordering subquery -- not a Python re-sort --
+    is what flips the two tasks; a post-fold re-sort would break pagination, so the
+    QA + compute sums must ride the ordering subquery itself.
+    """
+    session.add(ExperimentModel(id=_EXP, name=_EXP, org_id=_ORG))
+    task_a = TaskModel(
+        id=_ORD_A,
+        name=_ORD_A,
+        org_id=_ORG,
+        user="tester",
+        task_path="/tmp/composite-cost-test",
+        status=TaskStatus.COMPLETED,
+    )
+    task_b = TaskModel(
+        id=_ORD_B,
+        name=_ORD_B,
+        org_id=_ORG,
+        user="tester",
+        task_path="/tmp/composite-cost-test",
+        status=TaskStatus.COMPLETED,
+    )
+    session.add_all([task_a, task_b])
+    # tasks.current_version_id <-> task_versions.task_id is a cyclic FK: land the
+    # tasks, then the versions, then point each task at its version (the metrics
+    # subquery joins costs on the task's current_version_id).
+    await session.flush()
+    session.add_all(
+        [
+            TaskVersionModel(
+                id=_ORD_VA,
+                task_id=_ORD_A,
+                version=1,
+                task_path="/tmp/composite-cost-test",
+            ),
+            TaskVersionModel(
+                id=_ORD_VB,
+                task_id=_ORD_B,
+                version=1,
+                task_path="/tmp/composite-cost-test",
+            ),
+        ]
+    )
+    await session.flush()
+    task_a.current_version_id = _ORD_VA
+    task_b.current_version_id = _ORD_VB
+
+    # A: high inference (1.00), no QA/compute -> composite 1.00.
+    session.add(_trial(f"{_ORD_A}-0", task_id=_ORD_A, task_version_id=_ORD_VA, cost_usd=1.00))
+    # B: low inference (0.10) but QA 0.50 + compute 0.60 -> composite 1.20 > A.
+    session.add(_trial(f"{_ORD_B}-0", task_id=_ORD_B, task_version_id=_ORD_VB, cost_usd=0.10))
+    session.add_all(
+        [
+            _qa(f"{_ORD_B}-0", 0.50),
+            _span(f"{_ORD_B}-0", Decimal("0.60"), 0),
+        ]
+    )
+    await session.flush()
+
+    response = await browse_tasks_core(session, org_id=_ORG, sort="cost_desc")
+    order = [item.id for item in response.items if item.id in {_ORD_A, _ORD_B}]
+    # The flip: B's composite (1.20) beats A's (1.00) despite A's higher inference.
+    assert order == [_ORD_B, _ORD_A]
+
+    by_id = {item.id: item for item in response.items}
+    # Inference alone would rank A first; the composite totals reverse them.
+    assert by_id[_ORD_A].cost_usd == pytest.approx(1.00)
+    assert by_id[_ORD_B].cost_usd == pytest.approx(0.10)
+    assert by_id[_ORD_A].total_cost_usd == pytest.approx(1.00)
+    assert by_id[_ORD_B].total_cost_usd == pytest.approx(1.20)
+    assert by_id[_ORD_B].cost_usd < by_id[_ORD_A].cost_usd
+    assert by_id[_ORD_B].total_cost_usd > by_id[_ORD_A].total_cost_usd
