@@ -3,6 +3,8 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Sparkles, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
+import { phaseColorVars } from "@/lib/trajectory-metrics";
+import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectorySummaryProps {
@@ -64,6 +66,12 @@ export function TrajectorySummary({
 
   if (!data) return null;
 
+  // Same segment → color assignment as the Activity card and step groups, so
+  // a highlight's underline matches its component everywhere.
+  const segments = toSegments(data);
+  const colorFor = phaseColorVars(segments.map((s) => s.key));
+  const owner = segmentOwners(segments);
+
   return (
     <Card className="my-3">
       <CardHeader className="pb-2">
@@ -83,6 +91,7 @@ export function TrajectorySummary({
             {data.highlights.map((h) => {
               const index = stepIdToIndex(h.step_id);
               const disabled = index < 0;
+              const componentKey = owner.get(Number(h.step_id))?.key;
               return (
                 <li key={h.step_id}>
                   <button
@@ -94,7 +103,21 @@ export function TrajectorySummary({
                     <ChevronRight aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
                     <span className="flex-1">
                       <span className="font-medium">
-                        Step {h.step_id} · {h.title}
+                        <span
+                          className={componentKey ? "border-b-2 pb-px" : undefined}
+                          style={
+                            componentKey
+                              ? {
+                                  borderColor:
+                                    colorFor.get(componentKey) ??
+                                    "var(--phase-other)",
+                                }
+                              : undefined
+                          }
+                        >
+                          Step {h.step_id}
+                        </span>{" "}
+                        · {h.title}
                       </span>
                       {h.why && (
                         <span className="block text-xs text-muted-foreground">

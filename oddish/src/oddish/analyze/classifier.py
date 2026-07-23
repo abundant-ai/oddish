@@ -106,6 +106,68 @@ def _get_trial_agent_context(trial_agent: str | None) -> str:
     return ""
 
 
+def _write_qa_context(
+    trial_dir: Path,
+    pre_trial_items: list[dict] | None,
+    file_access: list[dict] | None,
+) -> tuple[Path | None, str | None, str | None]:
+    """Write post-trial-linkage inputs to ``<trial_dir>/.qa_context/*.json``.
+
+    Returns ``(qa_context_dir, pre_trial_context, file_access_context)``. The
+    dir and each context string are ``None`` when the corresponding input was
+    not provided, so absent inputs never touch disk or the prompt.
+    """
+    if pre_trial_items is None and file_access is None:
+        return None, None, None
+
+    qa_context_dir = trial_dir / ".qa_context"
+    qa_context_dir.mkdir(parents=True, exist_ok=True)
+
+    pre_trial_context = None
+    if pre_trial_items is not None:
+        (qa_context_dir / "pre_trial.json").write_text(json.dumps(pre_trial_items, indent=2))
+        pre_trial_context = (
+            f"{len(pre_trial_items)} pre-trial action item(s) were identified for this "
+            "task. See .qa_context/pre_trial.json for the full list (id, file, line "
+            "range, title, detail)."
+        )
+
+    file_access_context = None
+    if file_access is not None:
+        (qa_context_dir / "file_access.json").write_text(json.dumps(file_access, indent=2))
+        file_access_context = (
+            f"File-access metadata for {len(file_access)} trajectory step(s) is "
+            "available. See .qa_context/file_access.json for per-step "
+            "files_read/files_written/commands."
+        )
+
+    return qa_context_dir, pre_trial_context, file_access_context
+
+
+def build_classify_prompt(
+    *,
+    result_str: str,
+    task_dir: str | Path,
+    trial_dir: str | Path,
+    trial_agent_context: str,
+    pre_trial_context: str | None = None,
+    file_access_context: str | None = None,
+) -> str:
+    """Render the classification prompt.
+
+    Extracted so the pre-trial/file-access placeholder wiring is unit-testable
+    without spawning the Claude CLI subprocess.
+    """
+    return _CLASSIFY_PROMPT.format(
+        result=result_str,
+        task_dir=str(task_dir),
+        trial_dir=str(trial_dir),
+        trial_agent_context=trial_agent_context,
+        pre_trial_context=pre_trial_context or "(none)",
+        file_access_context=file_access_context or "(none)",
+    )
+
+
 def classify_trial(
     trial_dir: str | Path,
     task_dir: str | Path,
@@ -114,11 +176,17 @@ def classify_trial(
     model: str = ANALYSIS_MODEL,
     verbose: bool = False,
     timeout: int = 300,
+    pre_trial_items: list[dict] | None = None,
+    file_access: list[dict] | None = None,
 ) -> TrialClassification:
     """Classify a single trial outcome."""
     classifier = TrialClassifier(model=model, verbose=verbose, timeout=timeout)
     return classifier.classify_trial_sync(
-        Path(trial_dir), Path(task_dir), trial_agent=trial_agent
+        Path(trial_dir),
+        Path(task_dir),
+        trial_agent=trial_agent,
+        pre_trial_items=pre_trial_items,
+        file_access=file_access,
     )
 
 
@@ -156,6 +224,8 @@ class TrialClassifier:
         task_dir: Path,
         *,
         trial_agent: str | None = None,
+        pre_trial_items: list[dict] | None = None,
+        file_access: list[dict] | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
         result_path = trial_dir / "result.json"
@@ -222,11 +292,17 @@ class TrialClassifier:
         else:
             result_str = "unknown"
 
-        prompt = _CLASSIFY_PROMPT.format(
-            result=result_str,
-            task_dir=str(task_dir),
-            trial_dir=str(trial_dir),
+        qa_context_dir, pre_trial_context, file_access_context = _write_qa_context(
+            trial_dir, pre_trial_items, file_access
+        )
+
+        prompt = build_classify_prompt(
+            result_str=result_str,
+            task_dir=task_dir,
+            trial_dir=trial_dir,
             trial_agent_context=_get_trial_agent_context(trial_agent),
+            pre_trial_context=pre_trial_context,
+            file_access_context=file_access_context,
         )
 
         try:
@@ -247,7 +323,10 @@ class TrialClassifier:
 
             try:
                 structured_output = await self._run_claude_cli(
-                    prompt, trial_dir, task_dir
+                    prompt,
+                    trial_dir,
+                    task_dir,
+                    extra_dirs=[qa_context_dir] if qa_context_dir else None,
                 )
             except TimeoutError:
                 if self._verbose:
@@ -298,6 +377,8 @@ class TrialClassifier:
         prompt: str,
         trial_dir: Path,
         task_dir: Path,
+        *,
+        extra_dirs: list[Path] | None = None,
     ) -> Any:
         """Run Claude Code in print mode and return structured output."""
         self.last_usage = None
@@ -327,6 +408,8 @@ class TrialClassifier:
             "--add-dir",
             str(task_dir),
         ]
+        for extra_dir in extra_dirs or []:
+            command += ["--add-dir", str(extra_dir)]
 
         if self._verbose:
             print(
@@ -446,9 +529,17 @@ class TrialClassifier:
         task_dir: Path,
         *,
         trial_agent: str | None = None,
+        pre_trial_items: list[dict] | None = None,
+        file_access: list[dict] | None = None,
     ) -> TrialClassification:
         return asyncio.run(
-            self.classify_trial(trial_dir, task_dir, trial_agent=trial_agent)
+            self.classify_trial(
+                trial_dir,
+                task_dir,
+                trial_agent=trial_agent,
+                pre_trial_items=pre_trial_items,
+                file_access=file_access,
+            )
         )
 
 

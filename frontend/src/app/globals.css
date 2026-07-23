@@ -199,7 +199,25 @@
     --phase-6: #e34948;
     --phase-7: #e87ba4;
     --phase-8: #eb6834;
-    --phase-other: #868c96;
+    --phase-other: #5e78a8;
+
+    /*
+     * Trajectory component taxonomy: cool hues = thinking/analysis, warm hues
+     * = building/testing. Both modes validated (lightness band, chroma, CVD
+     * separation) against the app card surfaces; consumed via phaseColorVars
+     * in trajectory-metrics.ts.
+     */
+    --tc-reading-files: #008300;
+    --tc-thinking-recall: #1baf7a;
+    --tc-thinking-understand: #2a78d6;
+    --tc-thinking-hypothesize: #a184ea;
+    --tc-thinking-diagnose: #4a3aa7;
+    --tc-implementing: #eb6834;
+    --tc-writing-tests: #eda100;
+    --tc-testing-public: #e87ba4;
+    --tc-testing-custom: #c94592;
+    --tc-testing-edge: #852c5e;
+    --tc-debugging: #a87400;
   }
 
   .dark {
@@ -253,7 +271,19 @@
     --phase-6: #e66767;
     --phase-7: #d55181;
     --phase-8: #d95926;
-    --phase-other: #6f757f;
+    --phase-other: #8ea3c9;
+
+    --tc-reading-files: #008300;
+    --tc-thinking-recall: #199e70;
+    --tc-thinking-understand: #3987e5;
+    --tc-thinking-hypothesize: #9085e9;
+    --tc-thinking-diagnose: #7a68d8;
+    --tc-implementing: #d95926;
+    --tc-writing-tests: #c98500;
+    --tc-testing-public: #ce6b98;
+    --tc-testing-custom: #d55181;
+    --tc-testing-edge: #9d3973;
+    --tc-debugging: #b5820a;
   }
 }
 
