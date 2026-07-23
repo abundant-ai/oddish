@@ -1,0 +1,84 @@
+name: Migration Lock Guard
+
+# Fails a PR whose new/changed migrations take a heavy lock on a hot table
+# (tasks, trials, experiments, task_versions) without bounding the wait with
+# `lock_timeout`.
+#
+# supabase-db-migrations.yml runs `alembic upgrade head` against PRODUCTION on
+# every push to main, while the app serves traffic. An unbounded ACCESS
+# EXCLUSIVE lock there either deadlocks against live queries or parks a pending
+# lock request that queues every subsequent query on that table behind it.
+# prod_schema_repair_001 (#891) deadlocked three consecutive pushes to main this
+# way, at `ALTER TABLE tasks DROP COLUMN pre_trial_finished_at`.
+#
+# Why migration-upgrade-check.yml can't catch this: it replays migrations
+# against a FRESH database. Fresh databases have no drifted columns, so guarded
+# branches (`if column in existing_columns`) never execute and the dangerous DDL
+# is never reached — that job was green for all three failing prod runs. And an
+# uncontended migration never deadlocks, so replaying it alone proves nothing
+# about lock behaviour under load.
+#
+# Changed-files only: the ~130 existing migrations predate this rule and would
+# produce hundreds of violations. The guard is a ratchet on new work, not a
+# repo-wide audit.
+#
+# Always-run + internal skip: no `paths:` filter, so this can be marked a
+# REQUIRED status check. A path-filtered workflow never reports a status on PRs
+# that miss the paths, leaving a required check stuck "pending" forever (same
+# rationale as migration-upgrade-check.yml).
+
+on:
+  pull_request:
+
+concurrency:
+  group: migration-lock-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Bounded lock wait on hot-table DDL
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so we can diff HEAD against the PR base commit.
+          fetch-depth: 0
+
+      - name: Collect added/modified migrations
+        id: changed
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          # --diff-filter=d drops deletions: a removed migration has no file to
+          # inspect and is not a production risk.
+          files="$(git diff --name-only --diff-filter=d "$base" HEAD \
+            | grep -E '^(oddish|backend)/alembic/versions/.*\.py$' || true)"
+          if [ -z "$files" ]; then
+            echo "No added/modified migrations — nothing to check."
+          else
+            echo "Checking:"; echo "$files" | sed 's/^/  /'
+          fi
+          # Newline-delimited -> single line for the run step below.
+          echo "files=$(echo "$files" | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Check bounded lock wait
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+          # Paths are repo-relative; the guard runs from oddish/.
+          FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          if [ -z "${FILES// /}" ]; then
+            echo "No migration changes — reporting green."
+            exit 0
+          fi
+          # shellcheck disable=SC2086
+          (cd .. && uv run --project oddish python oddish/scripts/migration_lock_guard.py $FILES)
