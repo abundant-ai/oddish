@@ -10,7 +10,7 @@ import {
 } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -77,12 +82,14 @@ import {
   Clock,
   Copy,
   ExternalLink,
+  Filter,
   GitPullRequest,
   Trash2,
   Globe,
   Key,
   Terminal,
   Users,
+  X,
 } from "lucide-react";
 
 // =============================================================================
@@ -153,7 +160,7 @@ function CommandSnippet({ command }: { command: string }) {
   };
 
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border/80 bg-muted/35 px-3 py-2">
+    <div className="border-border/80 bg-muted/35 flex items-center gap-2 rounded-md border px-3 py-2">
       <code className="min-w-0 flex-1 overflow-x-auto font-mono text-xs">
         {command}
       </code>
@@ -177,14 +184,14 @@ function CommandSnippet({ command }: { command: string }) {
 
 function EmptyExperimentsState() {
   return (
-    <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 p-6">
+    <div className="bg-card/60 rounded-lg border border-dashed border-[#6f88b4]/30 p-6">
       <div className="flex flex-col items-center text-center">
-        <Clock className="mb-3 h-11 w-11 text-muted-foreground/70" />
+        <Clock className="text-muted-foreground/70 mb-3 h-11 w-11" />
         <p className="text-base font-medium">No experiments yet</p>
       </div>
 
       <div className="mt-5 grid gap-3 lg:grid-cols-3">
-        <div className="rounded-lg border border-[#85b85c]/20 bg-background/80 p-4">
+        <div className="bg-background/80 rounded-lg border border-[#85b85c]/20 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium">
             <Terminal className="h-4 w-4 text-[#5c8e43]" />
             Install the CLI
@@ -192,7 +199,7 @@ function EmptyExperimentsState() {
           <CommandSnippet command="uv pip install oddish" />
         </div>
 
-        <div className="rounded-lg border border-[#6f88b4]/20 bg-background/80 p-4">
+        <div className="bg-background/80 rounded-lg border border-[#6f88b4]/20 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium">
             <Key className="h-4 w-4 text-[#6f88b4]" />
             Add an API key
@@ -200,7 +207,7 @@ function EmptyExperimentsState() {
           <CommandSnippet command={'export ODDISH_API_KEY="ok_..."'} />
         </div>
 
-        <div className="rounded-lg border border-[#85b85c]/20 bg-background/80 p-4">
+        <div className="bg-background/80 rounded-lg border border-[#85b85c]/20 p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium">
             <ArrowRight className="h-4 w-4 text-[#5c8e43]" />
             Submit your first job
@@ -218,11 +225,11 @@ function MineEmptyExperimentsState({
   onViewOrgExperiments: () => void;
 }) {
   return (
-    <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 p-6">
+    <div className="bg-card/60 rounded-lg border border-dashed border-[#6f88b4]/30 p-6">
       <div className="flex flex-col items-center text-center">
-        <Users className="mb-3 h-11 w-11 text-muted-foreground/70" />
+        <Users className="text-muted-foreground/70 mb-3 h-11 w-11" />
         <p className="text-base font-medium">No experiments of yours yet</p>
-        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+        <p className="text-muted-foreground mt-1 max-w-md text-sm">
           Your organization may have other experiments. Switch to the org view
           to browse everything, or submit a new job to get started.
         </p>
@@ -276,9 +283,16 @@ function ExperimentsTableBody({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const searchParams = useSearchParams();
+  const trialFiltersActive = TRIAL_FILTER_PARAM_KEYS.some((key) =>
+    searchParams.get(key)
+  );
   const isMemberSelected = authorFilter !== "all" && authorFilter !== "me";
   const hasFilters =
-    searchQuery.trim().length > 0 || statusFilter !== "all" || isMemberSelected;
+    searchQuery.trim().length > 0 ||
+    statusFilter !== "all" ||
+    isMemberSelected ||
+    trialFiltersActive;
 
   const handleDeleteExperiment = async () => {
     if (!deleteTarget || isDeleting) return;
@@ -288,13 +302,13 @@ function ExperimentsTableBody({
     try {
       const res = await fetch(
         `/api/experiments/${encodeExperimentRouteParam(deleteTarget.id)}`,
-        { method: "DELETE" },
+        { method: "DELETE" }
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to delete experiment",
+          errorData.detail || errorData.error || "Failed to delete experiment"
         );
       }
 
@@ -302,7 +316,7 @@ function ExperimentsTableBody({
       setDeleteTarget(null);
     } catch (error) {
       setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete experiment",
+        error instanceof Error ? error.message : "Failed to delete experiment"
       );
     } finally {
       setIsDeleting(false);
@@ -311,7 +325,7 @@ function ExperimentsTableBody({
 
   return (
     <>
-      <div className="mb-3 text-[11px] text-muted-foreground">
+      <div className="text-muted-foreground mb-3 text-[11px]">
         Showing {experiments.length}
         {" • "}
         Page {currentExperimentsPage}
@@ -332,7 +346,7 @@ function ExperimentsTableBody({
           <EmptyExperimentsState />
         )
       ) : experiments.length === 0 ? (
-        <div className="py-8 text-center text-muted-foreground">
+        <div className="text-muted-foreground py-8 text-center">
           <p>No experiments match the current filters.</p>
         </div>
       ) : (
@@ -370,7 +384,7 @@ function ExperimentsTableBody({
                       <div className="flex items-center gap-1.5">
                         <Link
                           href={`/experiments/${encodeExperimentRouteParam(
-                            experiment.id,
+                            experiment.id
                           )}`}
                           className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
                         >
@@ -378,7 +392,7 @@ function ExperimentsTableBody({
                         </Link>
                         {experiment.is_public && (
                           <Globe
-                            className="h-3.5 w-3.5 text-muted-foreground"
+                            className="text-muted-foreground h-3.5 w-3.5"
                             aria-label="Published experiment"
                           />
                         )}
@@ -391,21 +405,21 @@ function ExperimentsTableBody({
                         </div>
                       )}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
                       <span className="text-foreground/80">
                         {formatTaskAuthor(
-                          experiment.author ?? experiment.last_author,
+                          experiment.author ?? experiment.last_author
                         )}
                       </span>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-xs whitespace-nowrap">
                       <span className="text-foreground/80">
                         {formatTaskAuthor(
-                          experiment.last_runner ?? experiment.last_author,
+                          experiment.last_runner ?? experiment.last_author
                         )}
                       </span>
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-xs">
+                    <TableCell className="text-xs whitespace-nowrap">
                       {experiment.last_pr_url ? (
                         <Link
                           href={experiment.last_pr_url}
@@ -418,7 +432,7 @@ function ExperimentsTableBody({
                           }
                           className={cn(
                             badgeVariants({ variant: "outline" }),
-                            "max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+                            "hover:bg-accent max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors"
                           )}
                         >
                           <GitPullRequest
@@ -428,7 +442,7 @@ function ExperimentsTableBody({
                           {(() => {
                             const { label, number } = prBadge(
                               experiment.last_pr_url,
-                              experiment.last_pr_number,
+                              experiment.last_pr_number
                             );
                             return (
                               <span className="min-w-0 truncate">
@@ -452,7 +466,7 @@ function ExperimentsTableBody({
                       )}
                     </TableCell>
                     <TableCell>{experiment.task_count}</TableCell>
-                    <TableCell className="whitespace-nowrap font-mono text-xs">
+                    <TableCell className="font-mono text-xs whitespace-nowrap">
                       {/* done = terminal (success + failed + skipped), so a
                           finished experiment reads N/N, not "2/5". The (R)/(F)/(S)
                           suffixes break down the composition. */}
@@ -496,7 +510,7 @@ function ExperimentsTableBody({
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-right text-xs whitespace-nowrap">
                       {experiment.last_created_at
                         ? formatShortDateTime(experiment.last_created_at)
                         : "—"}
@@ -517,7 +531,7 @@ function ExperimentsTableBody({
                           experiment.id === "uncategorized" ||
                           experiment.name === "Uncategorized"
                         }
-                        className="h-8 w-8 text-destructive hover:text-destructive"
+                        className="text-destructive hover:text-destructive h-8 w-8"
                         aria-label={`Delete ${experiment.name}`}
                       >
                         <Trash2 className="h-4 w-4" />
@@ -568,7 +582,7 @@ function ExperimentsTableBody({
             <AlertDialogTitle>Delete this experiment?</AlertDialogTitle>
             <AlertDialogDescription>
               This permanently deletes{" "}
-              <span className="font-medium text-foreground">
+              <span className="text-foreground font-medium">
                 {deleteTarget?.name}
               </span>{" "}
               and removes {deleteTarget?.taskCount ?? 0} tasks and{" "}
@@ -705,7 +719,7 @@ function RecentTasksCard({
                           {memberDisplayName(member)}
                         </span>
                         {member.github_username && (
-                          <span className="truncate text-[10px] text-muted-foreground">
+                          <span className="text-muted-foreground truncate text-[10px]">
                             @{member.github_username}
                           </span>
                         )}
@@ -746,7 +760,7 @@ function RecentTasksCard({
               <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
               <p className="text-muted-foreground">
                 Filters stack (AND) and are case-insensitive, e.g.{" "}
-                <code className="rounded bg-muted px-1 font-mono">
+                <code className="bg-muted rounded px-1 font-mono">
                   github:alice tag:smoke
                 </code>
               </p>
@@ -785,6 +799,7 @@ function RecentTasksCard({
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+          <ExperimentTrialFilters />
         </div>
       </CardHeader>
       <CardContent>
@@ -806,6 +821,213 @@ function RecentTasksCard({
   );
 }
 
+// Trial filter groups managed by the popover, keyed by their URL params.
+// Mirrors the tasks sidebar's Trial group (label + per-group clear + h-8
+// controls) so both surfaces read as the same filter system.
+const TRIAL_FILTER_GROUPS: {
+  label: string;
+  keys: [string] | [string, string];
+  placeholder?: string;
+}[] = [
+  { label: "Model", keys: ["models"], placeholder: "e.g. openai/gpt-5" },
+  { label: "Trajectory length", keys: ["min_steps", "max_steps"] },
+  {
+    label: "Trajectory time (s)",
+    keys: ["min_duration_seconds", "max_duration_seconds"],
+  },
+  { label: "Tool calls", keys: ["min_tool_calls", "max_tool_calls"] },
+  {
+    label: "Tool names",
+    keys: ["tool_names"],
+    placeholder: "bash, read_file",
+  },
+];
+
+// Every URL param the trial filters own; the Suspense key and empty-state
+// checks read these so metric-filter changes behave like any other filter.
+const TRIAL_FILTER_PARAM_KEYS = [
+  ...TRIAL_FILTER_GROUPS.flatMap((group) => group.keys),
+  "trial_metric_match",
+];
+
+function ExperimentTrialFilters() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const commit = (patch: Record<string, string>) => {
+    const next = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(patch)) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    // Keep committed ranges ordered — the server rejects min > max.
+    for (const group of TRIAL_FILTER_GROUPS) {
+      if (group.keys.length !== 2) continue;
+      const [minKey, maxKey] = group.keys;
+      const min = Number(next.get(minKey));
+      const max = Number(next.get(maxKey));
+      if (
+        next.get(minKey) &&
+        next.get(maxKey) &&
+        Number.isFinite(min) &&
+        Number.isFinite(max) &&
+        min > max
+      ) {
+        next.set(minKey, String(max));
+        next.set(maxKey, String(min));
+      }
+    }
+    next.delete("page");
+    const queryString = next.toString();
+    router.push(queryString ? `${pathname}?${queryString}` : pathname);
+  };
+
+  const mode =
+    searchParams.get("trial_metric_match") === "all" ? "all" : "any";
+  const groupActive = (keys: readonly string[]) =>
+    keys.some((key) => searchParams.get(key));
+  const activeCount =
+    TRIAL_FILTER_GROUPS.filter((group) => groupActive(group.keys)).length +
+    (mode === "all" ? 1 : 0);
+  const clearGroup = (keys: readonly string[]) =>
+    commit(Object.fromEntries(keys.map((key) => [key, ""])));
+  const help =
+    "Any trial matches when one selected-model trial meets every metric constraint. All trials requires every selected-model trial to meet every constraint.";
+
+  const field = (key: string, placeholder: string, numeric: boolean) => (
+    <Input
+      key={`${key}-${searchParams.get(key) ?? ""}`}
+      defaultValue={searchParams.get(key) ?? ""}
+      placeholder={placeholder}
+      type={numeric ? "number" : "text"}
+      min={numeric ? 0 : undefined}
+      className="h-8 text-xs"
+      onBlur={(event) => commit({ [key]: event.target.value.trim() })}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
+  );
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 border-[#6f88b4]/20"
+        >
+          <Filter className="mr-1 h-3.5 w-3.5" />
+          Trial filters
+          {activeCount > 0 ? (
+            <span className="text-muted-foreground ml-1 text-[11px]">
+              ({activeCount})
+            </span>
+          ) : null}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-3">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-sm font-medium">
+            <Filter className="h-3.5 w-3.5" />
+            Trial filters
+            {activeCount > 0 ? (
+              <span className="text-muted-foreground text-[11px]">
+                ({activeCount})
+              </span>
+            ) : null}
+          </span>
+          {activeCount > 0 ? (
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground text-[11px]"
+              onClick={() =>
+                commit(
+                  Object.fromEntries(
+                    [
+                      ...TRIAL_FILTER_GROUPS.flatMap((group) => group.keys),
+                      "trial_metric_match",
+                    ].map((key) => [key, ""])
+                  )
+                )
+              }
+            >
+              Clear all
+            </button>
+          ) : null}
+        </div>
+        <div className="space-y-3">
+          {TRIAL_FILTER_GROUPS.map((group) => (
+            <div
+              key={group.label}
+              className="border-b border-[#6f88b4]/10 pb-3"
+            >
+              <div className="mb-1.5 flex items-center justify-between">
+                <span className="text-xs font-medium">{group.label}</span>
+                {groupActive(group.keys) ? (
+                  <button
+                    type="button"
+                    aria-label={`Clear ${group.label} filter`}
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => clearGroup(group.keys)}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                ) : null}
+              </div>
+              {group.keys.length === 2 ? (
+                <div className="flex items-center gap-1">
+                  {field(group.keys[0], "min", true)}
+                  <span className="text-muted-foreground text-xs">–</span>
+                  {field(group.keys[1], "max", true)}
+                </div>
+              ) : (
+                field(group.keys[0], group.placeholder ?? "", false)
+              )}
+            </div>
+          ))}
+          <div title={help}>
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-xs font-medium">Match metrics across</span>
+              {mode === "all" ? (
+                <button
+                  type="button"
+                  aria-label="Clear match mode filter"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => commit({ trial_metric_match: "" })}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              ) : null}
+            </div>
+            <div className="grid grid-cols-2 rounded-md border p-0.5">
+              {(["any", "all"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={cn(
+                    "rounded px-2 py-1.5 text-xs capitalize",
+                    mode === value && "bg-primary text-primary-foreground"
+                  )}
+                  onClick={() =>
+                    commit({
+                      trial_metric_match: value === "all" ? "all" : "",
+                    })
+                  }
+                >
+                  {value} trial{value === "all" ? "s" : ""}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 // =============================================================================
 // Main Dashboard
 // =============================================================================
@@ -815,8 +1037,6 @@ type DashboardClientProps = {
   initialAuthor?: string;
   initialStatus?: string;
   initialQuery?: string;
-  initialMinSteps?: number | null;
-  initialMetricMatch?: "any" | "all";
   initialOffset?: number;
 };
 
@@ -825,12 +1045,11 @@ export function DashboardClient({
   initialAuthor = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   initialStatus = "all",
   initialQuery = "",
-  initialMinSteps = null,
-  initialMetricMatch = "any",
   initialOffset = 0,
 }: DashboardClientProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
 
   // Selection filters (Org/Mine, member, status) and the page come from the
@@ -848,10 +1067,14 @@ export function DashboardClient({
 
   // Keying the Suspense boundary on the committed (server) params makes it
   // re-suspend — and show the skeleton — on every content change.
-  const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${initialMinSteps}|${initialMetricMatch}|${experimentsOffset}`;
+  const trialFilterKey = TRIAL_FILTER_PARAM_KEYS.map(
+    (key) => searchParams.get(key) ?? ""
+  ).join(",");
+  const paramsKey = `${authorFilter}|${statusFilter}|${initialQuery}|${experimentsOffset}|${trialFilterKey}`;
 
   // Build a dashboard URL for the given selection/page, preserving the current
-  // search. Defaults are omitted so the clean view stays "/dashboard".
+  // search and any params this helper doesn't manage (e.g. trial metric
+  // filters). Defaults are omitted so the clean view stays "/dashboard".
   const buildFilterHref = (overrides: {
     author?: string;
     status?: string;
@@ -861,7 +1084,11 @@ export function DashboardClient({
     const status = overrides.status ?? statusFilter;
     const page = overrides.page ?? 1;
     const query = searchQuery.trim();
-    const params = new URLSearchParams();
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("author");
+    params.delete("status");
+    params.delete("q");
+    params.delete("page");
     if (author !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR) {
       params.set("author", author);
     }
@@ -870,12 +1097,6 @@ export function DashboardClient({
     }
     if (query) {
       params.set("q", query);
-    }
-    if (initialMinSteps !== null) {
-      params.set("min_steps", String(initialMinSteps));
-    }
-    if (initialMetricMatch === "all") {
-      params.set("metric_match", "all");
     }
     if (page > 1) {
       params.set("page", String(page));
@@ -892,7 +1113,7 @@ export function DashboardClient({
     page?: number;
   }) => {
     startTransition(() =>
-      router.push(buildFilterHref(overrides), { scroll: false }),
+      router.push(buildFilterHref(overrides), { scroll: false })
     );
   };
 

@@ -5,12 +5,13 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import (
     and_,
     case,
+    exists,
     false,
     func,
     not_,
@@ -23,6 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from oddish.core.cost_basis import settled_cost_columns, settled_cost_parts
+from oddish.filters.trial_metrics import TrialMetricFilter
+from oddish.filters.trial_predicates import (
+    EligibleTrialScope,
+    build_trial_metric_predicate,
+)
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     escape_like,
@@ -1010,14 +1016,22 @@ async def load_dashboard_experiments(
     experiments_tags: str | None = None,
     experiments_tags_any: str | None = None,
     experiments_tags_none: str | None = None,
+    experiments_models: Sequence[str] | None = None,
+    experiments_min_steps: int | None = None,
+    experiments_max_steps: int | None = None,
+    experiments_min_duration_seconds: float | None = None,
+    experiments_max_duration_seconds: float | None = None,
+    experiments_min_tool_calls: int | None = None,
+    experiments_max_tool_calls: int | None = None,
+    experiments_tool_names: Sequence[str] | None = None,
+    experiments_tool_count_mins: Mapping[str, int] | None = None,
+    experiments_trial_metric_match: str = "any",
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
     experiments_search_author_user_ids: Sequence[str] | None = None,
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
-    min_steps: int | None = None,
-    metric_match: str = "any",
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -1121,63 +1135,6 @@ async def load_dashboard_experiments(
             emails=experiments_search_author_emails,
         )
         page_query = page_query.where(search_author_filter)
-    if min_steps is not None:
-        measured_trial = (
-            select(1)
-            .select_from(
-                experiment_trials.join(
-                    TrialModel, TrialModel.id == experiment_trials.c.trial_id
-                )
-            )
-            .where(
-                experiment_trials.c.experiment_id == ExperimentModel.id,
-                experiment_trials.c.deleted_at.is_(None),
-                TrialModel.deleted_at.is_(None),
-                TrialModel.is_probe.is_(False),
-                TrialModel.total_steps.isnot(None),
-                TrialModel.status != TrialStatus.FAILED,
-            )
-            .exists()
-        )
-        threshold_trial = (
-            select(1)
-            .select_from(
-                experiment_trials.join(
-                    TrialModel, TrialModel.id == experiment_trials.c.trial_id
-                )
-            )
-            .where(
-                experiment_trials.c.experiment_id == ExperimentModel.id,
-                experiment_trials.c.deleted_at.is_(None),
-                TrialModel.deleted_at.is_(None),
-                TrialModel.is_probe.is_(False),
-                TrialModel.total_steps.isnot(None),
-                TrialModel.total_steps >= min_steps,
-            )
-            .exists()
-        )
-        if metric_match == "all":
-            below_threshold_trial = (
-                select(1)
-                .select_from(
-                    experiment_trials.join(
-                        TrialModel, TrialModel.id == experiment_trials.c.trial_id
-                    )
-                )
-                .where(
-                    experiment_trials.c.experiment_id == ExperimentModel.id,
-                    experiment_trials.c.deleted_at.is_(None),
-                    TrialModel.deleted_at.is_(None),
-                    TrialModel.is_probe.is_(False),
-                    TrialModel.total_steps.isnot(None),
-                    TrialModel.status != TrialStatus.FAILED,
-                    TrialModel.total_steps < min_steps,
-                )
-                .exists()
-            )
-            page_query = page_query.where(measured_trial, ~below_threshold_trial)
-        else:
-            page_query = page_query.where(threshold_trial)
     tag_ast = TagFilterAST(
         all=[t.strip() for t in (experiments_tags or "").split(",") if t.strip()],
         any_=[t.strip() for t in (experiments_tags_any or "").split(",") if t.strip()],
@@ -1191,6 +1148,37 @@ async def load_dashboard_experiments(
             return [], False
         for clause in _experiment_tag_predicates(resolved):
             page_query = page_query.where(clause)
+    metric_filter = TrialMetricFilter.from_query(
+        models=experiments_models,
+        min_steps=experiments_min_steps,
+        max_steps=experiments_max_steps,
+        min_duration_seconds=experiments_min_duration_seconds,
+        max_duration_seconds=experiments_max_duration_seconds,
+        min_tool_calls=experiments_min_tool_calls,
+        max_tool_calls=experiments_max_tool_calls,
+        tool_names=experiments_tool_names,
+        tool_count_mins=experiments_tool_count_mins,
+        match=experiments_trial_metric_match,
+    )
+    # Gate on is_empty, not has_metric_constraints: a model-only filter still
+    # needs the predicate (models are folded into the eligible-trial scope).
+    if not metric_filter.is_empty:
+        membership = or_(
+            TrialModel.experiment_id == ExperimentModel.id,
+            exists(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == ExperimentModel.id,
+                    experiment_trials.c.trial_id == TrialModel.id,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
+            ),
+        )
+        metric_predicate = build_trial_metric_predicate(
+            metric_filter,
+            scope=EligibleTrialScope(membership=(membership,)),
+        )
+        if metric_predicate is not None:
+            page_query = page_query.where(metric_predicate)
     page_query = (
         page_query.order_by(
             nulls_last(ExperimentModel.last_activity_at.desc()),
@@ -1671,9 +1659,7 @@ async def get_model_usage_core(
         agg["total_steps"] = int(agg["total_steps"]) + int(row.total_steps or 0)
         native_cost, estimated_cost = settled_cost_parts(row)
         agg["cost_usd"] = float(agg["cost_usd"]) + native_cost + estimated_cost
-        agg["cost_estimated_usd"] = (
-            float(agg["cost_estimated_usd"]) + estimated_cost
-        )
+        agg["cost_estimated_usd"] = float(agg["cost_estimated_usd"]) + estimated_cost
         agg["running"] = int(agg["running"]) + int(row.running or 0)
         agg["retrying"] = int(agg["retrying"]) + int(row.retrying or 0)
         agg["queued"] = int(agg["queued"]) + int(row.queued or 0)
@@ -1809,14 +1795,22 @@ async def get_dashboard_core(
     experiments_tags: str | None = None,
     experiments_tags_any: str | None = None,
     experiments_tags_none: str | None = None,
+    experiments_models: Sequence[str] | None = None,
+    experiments_min_steps: int | None = None,
+    experiments_max_steps: int | None = None,
+    experiments_min_duration_seconds: float | None = None,
+    experiments_max_duration_seconds: float | None = None,
+    experiments_min_tool_calls: int | None = None,
+    experiments_max_tool_calls: int | None = None,
+    experiments_tool_names: Sequence[str] | None = None,
+    experiments_tool_count_mins: Mapping[str, int] | None = None,
+    experiments_trial_metric_match: str = "any",
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
     experiments_search_author_user_ids: Sequence[str] | None = None,
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
-    min_steps: int | None = None,
-    metric_match: str = "any",
     usage_minutes: int | None = None,
     include_queues: bool = True,
     include_tasks: bool = True,
@@ -1858,8 +1852,11 @@ async def get_dashboard_core(
         f"{','.join(experiments_search_author_user_ids or ())}:"
         f"{','.join(experiments_search_author_github_usernames or ())}:"
         f"{','.join(experiments_search_author_emails or ())}:"
-        f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}:"
-        f"{min_steps}:{metric_match}"
+        f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
+        f":{','.join(experiments_models or ())}:{experiments_min_steps}:{experiments_max_steps}"
+        f":{experiments_min_duration_seconds}:{experiments_max_duration_seconds}"
+        f":{experiments_min_tool_calls}:{experiments_max_tool_calls}:{experiments_trial_metric_match}"
+        f":{','.join(experiments_tool_names or ())}:{sorted((experiments_tool_count_mins or {}).items())}"
     )
 
     async def _fetch_primary():
@@ -1990,14 +1987,22 @@ async def get_dashboard_core(
                 experiments_tags=experiments_tags,
                 experiments_tags_any=experiments_tags_any,
                 experiments_tags_none=experiments_tags_none,
+                experiments_models=experiments_models,
+                experiments_min_steps=experiments_min_steps,
+                experiments_max_steps=experiments_max_steps,
+                experiments_min_duration_seconds=experiments_min_duration_seconds,
+                experiments_max_duration_seconds=experiments_max_duration_seconds,
+                experiments_min_tool_calls=experiments_min_tool_calls,
+                experiments_max_tool_calls=experiments_max_tool_calls,
+                experiments_tool_names=experiments_tool_names,
+                experiments_tool_count_mins=experiments_tool_count_mins,
+                experiments_trial_metric_match=experiments_trial_metric_match,
                 experiments_author_user_id=experiments_author_user_id,
                 experiments_author_github_usernames=experiments_author_github_usernames,
                 experiments_author_emails=experiments_author_emails,
                 experiments_search_author_user_ids=experiments_search_author_user_ids,
                 experiments_search_author_github_usernames=experiments_search_author_github_usernames,
                 experiments_search_author_emails=experiments_search_author_emails,
-                min_steps=min_steps,
-                metric_match=metric_match,
                 record_timing=record_timing,
             )
         if record_timing is not None:

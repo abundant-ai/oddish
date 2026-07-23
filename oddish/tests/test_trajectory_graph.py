@@ -113,7 +113,7 @@ def test_no_trajectory_still_returns_graph():
 
 def test_graph_from_summary_reuses_components_and_flags_trouble():
     summary = {
-        "schema_version": "4",
+        "schema_version": "5",
         "summary": "Agent explored, patched, and the tests failed.",
         "components": [
             {"trajectory_component": "reading_files", "step_ids": [1, 2], "summary": "read the repo"},
@@ -204,7 +204,7 @@ def test_summary_without_components_falls_back():
             _traj(),
             {"status": "success", "reward": 1.0, "task_name": "t", "agent_name": "a"},
             model=None,
-            summary={"schema_version": "4", "summary": "x", "components": []},
+            summary={"schema_version": "5", "summary": "x", "components": []},
         )
     )
     # empty components -> not usable -> heuristic path
@@ -349,7 +349,7 @@ def test_generate_falls_back_to_persisted_summary(monkeypatch):
         id="trial-3", status="success", reward=1.0, error_message=None,
         name="t", agent="a", trajectory_graph=None,
         trajectory_summary={
-            "schema_version": "4",
+            "schema_version": "5",
             "components": [{"trajectory_component": "reading_files", "step_ids": [1], "summary": "looked"}],
             "highlights": [],
         },
@@ -469,7 +469,7 @@ def test_fresh_persisted_summary_helper():
     assert trial_io._fresh_persisted_summary(
         SimpleNamespace(trajectory_summary={"schema_version": "2", "phases": []})
     ) is None
-    fresh = {"schema_version": "4", "components": [{"trajectory_component": "implementing"}]}
+    fresh = {"schema_version": "5", "components": [{"trajectory_component": "implementing"}]}
     assert trial_io._fresh_persisted_summary(SimpleNamespace(trajectory_summary=fresh)) == fresh
 
 
@@ -488,7 +488,7 @@ def test_empty_components_summary_uses_heuristic_not_llm(monkeypatch):
             _traj(),
             {"status": "success", "reward": 1.0, "task_name": "t", "agent_name": "a"},
             model="some-model",
-            summary={"schema_version": "4", "summary": "x", "components": []},
+            summary={"schema_version": "5", "summary": "x", "components": []},
         )
     )
     assert g["source"] == "heuristic"

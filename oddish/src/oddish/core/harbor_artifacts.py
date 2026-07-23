@@ -13,6 +13,9 @@ class HarborTrajectoryMetrics:
     cache_tokens: int | None = None
     cache_write_tokens: int | None = None
     total_steps: int | None = None
+    trajectory_duration_seconds: float | None = None
+    total_tool_calls: int | None = None
+    tool_counts: dict[str, int] | None = None
     cost_usd: float | None = None
 
 
@@ -259,6 +262,32 @@ def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
         if total_steps is None and isinstance(steps, list):
             total_steps = len(steps)
 
+        tool_counts: dict[str, int] = {}
+        timestamps: list[float] = []
+        if isinstance(steps, list):
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                raw_timestamp = step.get("timestamp")
+                if isinstance(raw_timestamp, str):
+                    try:
+                        from datetime import datetime
+
+                        timestamps.append(
+                            datetime.fromisoformat(
+                                raw_timestamp.replace("Z", "+00:00")
+                            ).timestamp()
+                        )
+                    except ValueError:
+                        pass
+                for call in step.get("tool_calls") or []:
+                    if not isinstance(call, dict):
+                        continue
+                    name = call.get("function_name") or call.get("name")
+                    if name:
+                        key = str(name)
+                        tool_counts[key] = tool_counts.get(key, 0) + 1
+
         cache_write_tokens: int | None = None
         if isinstance(steps, list):
             cache_write_tokens = _sum_cache_write_from_steps(steps)
@@ -283,6 +312,11 @@ def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
             ),
             cache_write_tokens=cache_write_tokens,
             total_steps=total_steps,
+            trajectory_duration_seconds=(
+                max(timestamps) - min(timestamps) if len(timestamps) >= 2 else None
+            ),
+            total_tool_calls=sum(tool_counts.values()),
+            tool_counts=tool_counts,
             cost_usd=(
                 _as_float(final_metrics.get("total_cost_usd"))
                 if isinstance(final_metrics, dict)

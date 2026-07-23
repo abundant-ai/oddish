@@ -83,6 +83,8 @@ const NUMRANGE_FIELD: Record<string, [keyof FilterValues, keyof FilterValues]> =
   {
     tokens: ["minTokens", "maxTokens"],
     steps: ["minSteps", "maxSteps"],
+    trajectoryDuration: ["minDurationSeconds", "maxDurationSeconds"],
+    toolCalls: ["minToolCalls", "maxToolCalls"],
     avgScore: ["avgScoreMin", "avgScoreMax"],
     totalTokens: ["totalTokensMin", "totalTokensMax"],
     runtime: ["runtimeTotalMin", "runtimeTotalMax"],
@@ -162,7 +164,7 @@ export function TasksFilterSidebar() {
   // Suspense skeleton shows) whenever a filter changes — and links are shareable.
   const values = useMemo(
     () => searchParamsToFilters(new URLSearchParams(searchParams.toString())),
-    [searchParams],
+    [searchParams]
   );
 
   const onChange = (next: FilterValues) => {
@@ -238,12 +240,12 @@ export function TasksFilterSidebar() {
         !def.hidden &&
         (def.pinned ||
           addedKeys.includes(def.key) ||
-          isFilterActive(def.key, values)),
+          isFilterActive(def.key, values))
     );
   }, [addedKeys, values]);
 
   const inactiveDefs = FILTER_DEFS.filter(
-    (def) => !def.hidden && !visibleDefs.some((v) => v.key === def.key),
+    (def) => !def.hidden && !visibleDefs.some((v) => v.key === def.key)
   );
 
   const clearKey = (key: string) => {
@@ -333,7 +335,7 @@ export function TasksFilterSidebar() {
         <div className="mb-2 flex items-center justify-between">
           <span className="flex items-center gap-1.5 text-sm font-medium">
             <Filter className="h-3.5 w-3.5" />
-            Trial filters
+            Filters
             {activeCount > 0 ? (
               <span className="text-muted-foreground text-[11px]">
                 ({activeCount})
@@ -602,6 +604,24 @@ function FilterControl({
       return <TopPerformerControl values={values} set={set} facets={facets} />;
     case "matchany":
       return <MatchAnyControl values={values} set={set} facets={facets} />;
+    case "metricmatch":
+      return <MetricMatchControl values={values} set={set} />;
+    case "toolnames":
+      return (
+        <Input
+          value={values.toolNames.join(", ")}
+          placeholder="bash, read_file"
+          className="h-8 text-xs"
+          onChange={(event) =>
+            set({
+              toolNames: event.target.value
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+      );
     case "num":
       return <NumControl fieldKey={def.key} values={values} set={set} />;
     case "tags":
@@ -611,6 +631,35 @@ function FilterControl({
     default:
       return null;
   }
+}
+
+function MetricMatchControl({
+  values,
+  set,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+}) {
+  const help =
+    "Any trial matches when one selected-model trial meets every metric constraint. All trials requires every selected-model trial to meet every constraint.";
+  return (
+    <div className="grid grid-cols-2 rounded-md border p-0.5" title={help}>
+      {(["any", "all"] as const).map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          className={cn(
+            "rounded px-2 py-1.5 text-xs capitalize",
+            values.trialMetricMatch === mode &&
+              "bg-primary text-primary-foreground"
+          )}
+          onClick={() => set({ trialMetricMatch: mode })}
+        >
+          {mode} trial{mode === "all" ? "s" : ""}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function pairToken(agent: string, model: string | null): string {
@@ -643,7 +692,7 @@ function AgentModelControl({
     ? pairs.filter((p) =>
         `${p.agent} ${p.model ?? ""}`
           .toLowerCase()
-          .includes(search.toLowerCase()),
+          .includes(search.toLowerCase())
       )
     : pairs;
 
@@ -728,11 +777,11 @@ function TagsControl({
   const { data, error, isLoading, mutate } = useSWR<TagListResponse>(
     "/api/tags",
     fetcher,
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false }
   );
   const tags = useMemo(
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
-    [data],
+    [data]
   );
   const [mode, setMode] = useState<"all" | "any" | "none">("all");
   const [search, setSearch] = useState("");
@@ -765,7 +814,7 @@ function TagsControl({
 
   const filtered = search
     ? tags.filter((t) =>
-        tagToken(t).toLowerCase().includes(search.toLowerCase()),
+        tagToken(t).toLowerCase().includes(search.toLowerCase())
       )
     : tags;
 
@@ -857,7 +906,7 @@ function MultiSelect({
   };
   const filtered = search
     ? options.filter((o) =>
-        o.label.toLowerCase().includes(search.toLowerCase()),
+        o.label.toLowerCase().includes(search.toLowerCase())
       )
     : options;
   const label =
@@ -977,7 +1026,7 @@ function Segmented({
             "flex-1 px-2 py-1 text-[11px]",
             value === o.value
               ? "bg-primary/10 text-foreground"
-              : "text-muted-foreground hover:bg-muted/60",
+              : "text-muted-foreground hover:bg-muted/60"
           )}
         >
           {o.label}
@@ -1047,7 +1096,7 @@ const DATE_INPUT_CLASS = cn(
   "[&::-webkit-calendar-picker-indicator]:right-2",
   "[&::-webkit-calendar-picker-indicator]:top-1/2",
   "[&::-webkit-calendar-picker-indicator]:-translate-y-1/2",
-  "[&::-webkit-calendar-picker-indicator]:cursor-pointer",
+  "[&::-webkit-calendar-picker-indicator]:cursor-pointer"
 );
 
 function DateRange({
@@ -1075,7 +1124,7 @@ function DateRange({
   const hasCustom = after !== null || before !== null;
   const hasValue = hasCustom || within !== null;
   const [mode, setMode] = useState<DateMode>(
-    within ?? (hasCustom ? "custom" : ""),
+    within ?? (hasCustom ? "custom" : "")
   );
 
   // Drop a stale preset highlight if the dates were cleared elsewhere (e.g.
@@ -1112,7 +1161,7 @@ function DateRange({
       "flex-1 px-2 py-1 text-[11px]",
       active
         ? "bg-primary/10 text-foreground"
-        : "text-muted-foreground hover:bg-muted/60",
+        : "text-muted-foreground hover:bg-muted/60"
     );
 
   // Custom From/To follow the same draft-then-apply rule as the number ranges:
@@ -1237,7 +1286,7 @@ function SortControl({
 function useDraft<T>(
   applied: T,
   commit: (draft: T) => void,
-  validate?: (draft: T) => string | null,
+  validate?: (draft: T) => string | null
 ) {
   const appliedKey = JSON.stringify(applied);
   const [draft, setDraft] = useState<T>(applied);
@@ -1286,7 +1335,7 @@ type NumRangeDraft = { min: number | null; max: number | null };
 // --- Phase 2.2 "Match any of…" OR block ------------------------------------
 
 const CONDITION_BY_ID: Record<string, GroupConditionDef> = Object.fromEntries(
-  CONDITION_DEFS.map((d) => [d.id, d]),
+  CONDITION_DEFS.map((d) => [d.id, d])
 );
 
 // Which condition rows a group shows. Stored under the UI-meta key ``_c``
@@ -1296,7 +1345,7 @@ function groupShownIds(group: OrGroup): string[] {
   const meta = group._c;
   if (Array.isArray(meta)) return meta as string[];
   return CONDITION_DEFS.filter((d) =>
-    d.keys.some((k) => group[k] !== undefined),
+    d.keys.some((k) => group[k] !== undefined)
   ).map((d) => d.id);
 }
 
@@ -1555,7 +1604,7 @@ function MatchAnyControl({
   };
   const { draft, setDraft, dirty, error, apply } = useDraft<OrGroup[]>(
     applied,
-    commit,
+    commit
   );
 
   const replaceGroup = (i: number, next: OrGroup) =>
@@ -1574,7 +1623,7 @@ function MatchAnyControl({
   const addGroup = () => setDraft([...draft, { _c: [] }]);
   const removeGroup = (i: number) =>
     setDraft(
-      draft.length > 1 ? draft.filter((_, idx) => idx !== i) : [{ _c: [] }],
+      draft.length > 1 ? draft.filter((_, idx) => idx !== i) : [{ _c: [] }]
     );
 
   const summaries = draft.map(groupSummary).filter(Boolean);
@@ -1662,7 +1711,7 @@ function TopPerformerControl({
   const { draft, setDraft, dirty, error, apply } = useDraft(
     applied,
     commit,
-    validate,
+    validate
   );
   const subjectLabel = draft.by === "model" ? "Model" : "Agent";
   const subjectValues =
@@ -1828,7 +1877,7 @@ function CompareControl({
   const { draft, setDraft, dirty, error, apply } = useDraft(
     applied,
     commit,
-    validate,
+    validate
   );
 
   const subjectLabel = draft.by === "model" ? "Model" : "Agent";
@@ -1961,7 +2010,7 @@ function NumRange({
   const { draft, setDraft, dirty, error, apply } = useDraft(
     applied,
     commit,
-    validate,
+    validate
   );
   const toNum = (s: string) => (s === "" ? null : Number(s));
   const onKeyDown = (e: ReactKeyboardEvent) => {

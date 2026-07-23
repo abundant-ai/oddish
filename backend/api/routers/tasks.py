@@ -26,6 +26,7 @@ from cloud_policy import (
 )
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
+from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
     browse_task_facets_core,
@@ -746,7 +747,15 @@ async def browse_tasks(
     max_tokens: int | None = Query(None, ge=0),
     min_steps: int | None = Query(None, ge=0),
     max_steps: int | None = Query(None, ge=0),
-    metric_match: str = Query("any", pattern="^(any|all)$"),
+    min_duration_seconds: float | None = Query(None, ge=0),
+    max_duration_seconds: float | None = Query(None, ge=0),
+    min_tool_calls: int | None = Query(None, ge=0),
+    max_tool_calls: int | None = Query(None, ge=0),
+    tool_names: str | None = Query(None, description="Tool function name CSV"),
+    tool_count_mins: str | None = Query(
+        None, description="JSON object of tool name to minimum count"
+    ),
+    trial_metric_match: str = Query("any", pattern="^(any|all)$"),
     reward_min: float | None = Query(None, ge=0.0, le=1.0),
     reward_max: float | None = Query(None, ge=0.0, le=1.0),
     # --- Phase 1.2-lite aggregate filters / sort (computed on the fly) ---
@@ -872,6 +881,21 @@ async def browse_tasks(
                 loaded = None
             if isinstance(loaded, list):
                 parsed_or_groups = [g for g in loaded if isinstance(g, dict)] or None
+        try:
+            metric_filter = TrialMetricFilter.from_query(
+                models=models,
+                min_steps=min_steps,
+                max_steps=max_steps,
+                min_duration_seconds=min_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                min_tool_calls=min_tool_calls,
+                max_tool_calls=max_tool_calls,
+                tool_names=tool_names,
+                tool_count_mins=tool_count_mins,
+                match=trial_metric_match,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return await browse_tasks_core(
             session,
             org_id=auth.org_id,
@@ -896,7 +920,7 @@ async def browse_tasks(
             trial_finished_before=trial_finished_before,
             experiment_ids=_split_tag_csv(experiment_ids),
             agents=_split_tag_csv(agents),
-            models=_split_tag_csv(models),
+            models=metric_filter.models,
             agent_models=_split_tag_csv(agent_models),
             providers=_split_tag_csv(providers),
             environments=_split_tag_csv(environments),
@@ -911,9 +935,15 @@ async def browse_tasks(
             min_attempts=min_attempts,
             min_tokens=min_tokens,
             max_tokens=max_tokens,
-            min_steps=min_steps,
-            max_steps=max_steps,
-            metric_match=metric_match,
+            min_steps=metric_filter.min_steps,
+            max_steps=metric_filter.max_steps,
+            min_duration_seconds=metric_filter.min_duration_seconds,
+            max_duration_seconds=metric_filter.max_duration_seconds,
+            min_tool_calls=metric_filter.min_tool_calls,
+            max_tool_calls=metric_filter.max_tool_calls,
+            tool_names=metric_filter.tool_names,
+            tool_count_mins=metric_filter.tool_count_mins,
+            trial_metric_match=metric_filter.match.value,
             reward_min=reward_min,
             reward_max=reward_max,
             avg_score_min=avg_score_min,

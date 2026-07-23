@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from sqlalchemy import func, select
 
@@ -8,7 +10,13 @@ from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
-from oddish.core.verdict_sync import build_verdict_payload, sync_verdict_to_task
+from oddish.core.verdict_sync import (
+    aggregate_exploited_into_pre_trial,
+    build_pre_trial_payload,
+    build_verdict_payload,
+    sync_pre_trial_to_task,
+    sync_verdict_to_task,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -69,6 +77,25 @@ async def synthesize_task_verdict(
     )
     out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
     return TaskVerdictModel(**out.output)
+
+
+# The pre-trial-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
+# can be injected here the same way verdict synthesis is, without oddish
+# importing backend/. Mirrors VerdictSynthFn's shape.
+PreTrialSynthFn = Callable[[str, list[str], float], Awaitable[Any]]
+
+# Hosted (AnalyzerBlock-backed) pre-trial synth, registered by backend at import
+# via register_pre_trial_synth(). oddish/ can't import backend/, so the sandbox-
+# provisioning implementation is injected here rather than imported -- the same
+# seam analyzer_llm_client.register_sandbox_client_factory uses. None until
+# registered; run_task_qa_job only invokes it when settings.pre_trial_enabled.
+_pre_trial_synth_fn: PreTrialSynthFn | None = None
+
+
+def register_pre_trial_synth(fn: PreTrialSynthFn) -> None:
+    """Install the hosted pre-trial-synthesis implementation."""
+    global _pre_trial_synth_fn
+    _pre_trial_synth_fn = fn
 
 
 async def _heartbeat_qa_worker_job(
@@ -135,6 +162,7 @@ def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
 def _classifications_from_trials(trials) -> list:
     """Build verdict inputs from stored trial QA."""
     from oddish.analyze import Classification, TrialClassification
+    from oddish.analyze.models import ActionItem, ExploitationAssessment
 
     classifications: list = []
     for trial in trials:
@@ -153,6 +181,13 @@ def _classifications_from_trials(trials) -> list:
                     root_cause=analysis.get("root_cause", ""),
                     recommendation=analysis.get("recommendation", ""),
                     reward=analysis.get("reward"),
+                    action_items=[
+                        ActionItem(**x) for x in analysis.get("action_items", [])
+                    ],
+                    exploitation=[
+                        ExploitationAssessment(**x)
+                        for x in analysis.get("exploitation", [])
+                    ],
                 )
             )
     return classifications
@@ -241,6 +276,56 @@ async def run_task_qa_job(
     classifications: list[TrialClassification] = []
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
+
+        # Pre-trial: a task-source audit, independent of trial classification
+        # -- runs once, before the per-trial loop, even when there are zero
+        # live trials to classify. Gated off by default (settings.pre_trial_enabled)
+        # and a no-op unless the hosted synth is registered; the `is not None`
+        # guard keeps a skipped run from touching any pre_trial column. A pre-trial
+        # failure is swallowed here so it can never block the verdict path.
+        try:
+            if settings.pre_trial_enabled and _pre_trial_synth_fn is not None:
+                pre_trial_items = await _pre_trial_synth_fn(
+                    task_id,
+                    [trial_id for trial_id, _ in live_trials],
+                    settings.pre_trial_timeout,
+                )
+            else:
+                pre_trial_items = None
+            if pre_trial_items is not None:
+                await sync_pre_trial_to_task(
+                    task_id,
+                    payload=build_pre_trial_payload(pre_trial_items),
+                    error=None,
+                    should_store=lambda session: _worker_job_is_running(
+                        session, worker_job_id
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Pre-trial synthesis failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+            # Double-fault guard: recording the failure is itself a DB write,
+            # so it can fail too -- caught locally so that can never escape
+            # into the outer try/except below and get misattributed as a
+            # verdict-synthesis failure (which would mark the whole verdict
+            # FAILED for what is really just a pre-trial write hiccup).
+            try:
+                await sync_pre_trial_to_task(
+                    task_id,
+                    payload=None,
+                    error=exc,
+                    should_store=lambda session: _worker_job_is_running(
+                        session, worker_job_id
+                    ),
+                )
+            except Exception as sync_exc:  # noqa: BLE001
+                console.print(
+                    f"[red]Failed to record pre-trial failure for {task_id}: "
+                    f"{type(sync_exc).__name__}: {sync_exc}[/red]"
+                )
+
         if not live_trials:
             # Every live trial is excluded from QA (bulk-migrated imports
             # filtered by imported_at; gate-skipped trials). Nothing to classify
@@ -315,6 +400,18 @@ async def run_task_qa_job(
             )
             trials = trials_result.scalars().all()
             classifications = _classifications_from_trials(trials)
+
+        # The "doubly note" elevation: union each trial's exploitation
+        # assessments back onto task.pre_trial. Best-effort -- a failure here
+        # is a follow-up-audit gap, not a verdict-blocking error, so it must
+        # never stop verdict synthesis from running.
+        try:
+            await aggregate_exploited_into_pre_trial(task_id)
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Exploited-item aggregation failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
 
         console.print(
             f"[cyan]Computing verdict from {len(classifications)} "

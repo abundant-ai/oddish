@@ -121,6 +121,35 @@ class ClaudeCodeRuntime:
                 output[-500:],
             )
 
+    async def install_oddish_cli(
+        self,
+        client: DaytonaClient,
+        sandbox: CreatedSandbox,
+        *,
+        api_key: str,
+        api_base_url: str,
+    ) -> None:
+        """Install the oddish Python CLI so the agent can run `oddish pull`.
+
+        Mirrors ``_install_harbor``'s pinned pip install, but is load-bearing
+        here (the pre-trial agent's whole job is pulling task data via the
+        CLI), so unlike harbor a failure is raised rather than swallowed.
+        ``api_key``/``api_base_url`` are accepted for interface symmetry with
+        the runtime's other install hooks; the caller injects them into the
+        sandbox env separately via ``Provisioner.create(env_vars=...)``.
+        """
+        from oddish.workers.agents.claude_code import _pinned_oddish_requirement
+
+        requirement = _pinned_oddish_requirement() or "oddish"
+        exit_code, output = await client.exec_sync(
+            sandbox,
+            command=f"pip install --user --quiet {shlex.quote(requirement)} 2>&1",
+        )
+        if exit_code != 0:
+            raise RuntimeError(
+                f"oddish CLI install failed (exit={exit_code}): {output[-500:]}"
+            )
+
     async def run_once(
         self,
         client: DaytonaClient,

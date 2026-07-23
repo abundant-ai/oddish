@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from models import UserModel
 from oddish.core.admin import CostLeaderboardUser, get_cost_leaderboard_core
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
+from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 
 router = APIRouter(tags=["Dashboard"])
@@ -310,6 +311,16 @@ async def get_dashboard(
     experiments_tags: str | None = Query(None, description="CSV tag tokens, AND"),
     experiments_tags_any: str | None = Query(None, description="CSV tag tokens, OR"),
     experiments_tags_none: str | None = Query(None, description="CSV tag tokens, NOT"),
+    experiments_models: str | None = Query(None, description="Trial model CSV"),
+    experiments_min_steps: int | None = Query(None, ge=0),
+    experiments_max_steps: int | None = Query(None, ge=0),
+    experiments_min_duration_seconds: float | None = Query(None, ge=0),
+    experiments_max_duration_seconds: float | None = Query(None, ge=0),
+    experiments_min_tool_calls: int | None = Query(None, ge=0),
+    experiments_max_tool_calls: int | None = Query(None, ge=0),
+    experiments_tool_names: str | None = Query(None),
+    experiments_tool_count_mins: str | None = Query(None),
+    experiments_trial_metric_match: str = Query("any", pattern="^(any|all)$"),
     experiments_author: str | None = Query(
         None,
         description=(
@@ -325,12 +336,6 @@ async def get_dashboard(
             "org members + their aliases and ANDed with the owner/tag filters."
         ),
     ),
-    min_steps: int | None = Query(
-        None,
-        ge=0,
-        description="Only experiments containing a trial with at least this many steps.",
-    ),
-    metric_match: str = Query("any", pattern="^(any|all)$"),
     usage_minutes: int | None = Query(None, ge=1, le=86400),
     include_queues: bool = Query(True),
     include_tasks: bool = Query(True),
@@ -353,9 +358,11 @@ async def get_dashboard(
             "Dashboard DB connect",
         )
         resolve_started_at = now()
-        author_user_id, author_github_usernames, author_emails = (
-            await resolve_experiments_author(session, auth, experiments_author)
-        )
+        (
+            author_user_id,
+            author_github_usernames,
+            author_emails,
+        ) = await resolve_experiments_author(session, auth, experiments_author)
         search_tokens = [
             token.strip()
             for token in (experiments_author_query or "").split(",")
@@ -379,6 +386,21 @@ async def get_dashboard(
             elapsed_ms(resolve_started_at),
             "Dashboard author filter resolve",
         )
+        try:
+            metric_filter = TrialMetricFilter.from_query(
+                models=experiments_models,
+                min_steps=experiments_min_steps,
+                max_steps=experiments_max_steps,
+                min_duration_seconds=experiments_min_duration_seconds,
+                max_duration_seconds=experiments_max_duration_seconds,
+                min_tool_calls=experiments_min_tool_calls,
+                max_tool_calls=experiments_max_tool_calls,
+                tool_names=experiments_tool_names,
+                tool_count_mins=experiments_tool_count_mins,
+                match=experiments_trial_metric_match,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         dashboard = await get_dashboard_core(
             session,
             org_id=auth.org_id,
@@ -391,14 +413,22 @@ async def get_dashboard(
             experiments_tags=experiments_tags,
             experiments_tags_any=experiments_tags_any,
             experiments_tags_none=experiments_tags_none,
+            experiments_models=metric_filter.models,
+            experiments_min_steps=metric_filter.min_steps,
+            experiments_max_steps=metric_filter.max_steps,
+            experiments_min_duration_seconds=metric_filter.min_duration_seconds,
+            experiments_max_duration_seconds=metric_filter.max_duration_seconds,
+            experiments_min_tool_calls=metric_filter.min_tool_calls,
+            experiments_max_tool_calls=metric_filter.max_tool_calls,
+            experiments_tool_names=metric_filter.tool_names,
+            experiments_tool_count_mins=metric_filter.tool_count_mins,
+            experiments_trial_metric_match=metric_filter.match.value,
             experiments_author_user_id=author_user_id,
             experiments_author_github_usernames=author_github_usernames,
             experiments_author_emails=author_emails,
             experiments_search_author_user_ids=search_author_user_ids,
             experiments_search_author_github_usernames=search_author_github_usernames,
             experiments_search_author_emails=search_author_emails,
-            min_steps=min_steps,
-            metric_match=metric_match,
             usage_minutes=usage_minutes,
             include_queues=include_queues,
             include_tasks=include_tasks,

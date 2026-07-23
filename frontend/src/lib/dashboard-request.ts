@@ -8,10 +8,18 @@ type DashboardRequestParams = {
   experiments_tags?: string;
   experiments_tags_any?: string;
   experiments_tags_none?: string;
+  experiments_models?: string;
+  experiments_min_steps?: number;
+  experiments_max_steps?: number;
+  experiments_min_duration_seconds?: number;
+  experiments_max_duration_seconds?: number;
+  experiments_min_tool_calls?: number;
+  experiments_max_tool_calls?: number;
+  experiments_tool_names?: string;
+  experiments_tool_count_mins?: string;
+  experiments_trial_metric_match?: string;
   experiments_author?: string;
   experiments_author_query?: string;
-  min_steps?: number | null;
-  metric_match?: "any" | "all";
   usage_minutes?: number | null;
   include_queues?: boolean;
   include_tasks?: boolean;
@@ -40,7 +48,7 @@ export const DEFAULT_DASHBOARD_REQUEST_PARAMS: DashboardRequestParams =
 function setBooleanParam(
   params: URLSearchParams,
   name: string,
-  value: boolean | undefined,
+  value: boolean | undefined
 ) {
   if (value !== undefined) {
     params.set(name, String(value));
@@ -48,7 +56,7 @@ function setBooleanParam(
 }
 
 function buildDashboardSearchParams(
-  input: DashboardRequestParams,
+  input: DashboardRequestParams
 ): URLSearchParams {
   const params = new URLSearchParams();
 
@@ -83,13 +91,6 @@ function buildDashboardSearchParams(
     params.set("experiments_author_query", trimmedAuthorQuery);
   }
 
-  if (input.min_steps !== undefined && input.min_steps !== null) {
-    params.set("min_steps", String(input.min_steps));
-  }
-  if (input.metric_match === "all") {
-    params.set("metric_match", "all");
-  }
-
   for (const name of [
     "experiments_tags",
     "experiments_tags_any",
@@ -99,6 +100,26 @@ function buildDashboardSearchParams(
     if (value) {
       params.set(name, value);
     }
+  }
+  for (const name of [
+    "experiments_models",
+    "experiments_trial_metric_match",
+    "experiments_tool_names",
+    "experiments_tool_count_mins",
+  ] as const) {
+    const value = input[name]?.trim();
+    if (value) params.set(name, value);
+  }
+  for (const name of [
+    "experiments_min_steps",
+    "experiments_max_steps",
+    "experiments_min_duration_seconds",
+    "experiments_max_duration_seconds",
+    "experiments_min_tool_calls",
+    "experiments_max_tool_calls",
+  ] as const) {
+    const value = input[name];
+    if (value !== undefined) params.set(name, String(value));
   }
 
   if (input.usage_minutes !== undefined && input.usage_minutes !== null) {
@@ -119,7 +140,7 @@ export function buildDashboardApiPath(input: DashboardRequestParams): string {
 }
 
 export function buildDashboardBackendParams(
-  input: DashboardRequestParams,
+  input: DashboardRequestParams
 ): Record<string, string> {
   return Object.fromEntries(buildDashboardSearchParams(input).entries());
 }
