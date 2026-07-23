@@ -43,6 +43,9 @@ from oddish.core.endpoints.task_detail import (  # noqa: E402
     list_task_versions_core,
 )
 from oddish.core.endpoints.tasks_query import browse_tasks_core  # noqa: E402
+from oddish.core.sharing.public import (  # noqa: E402
+    list_public_experiment_tasks_core,
+)
 from oddish.core.helpers import (  # noqa: E402
     _composite_cost_fields,
     build_trial_response,
@@ -59,7 +62,7 @@ from oddish.db import (  # noqa: E402
     TrialStatus,
     utcnow,
 )
-from oddish.db.models import experiment_trials  # noqa: E402
+from oddish.db.models import experiment_trials, task_experiments  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
 _ORG = f"composite-org-{_RUN}"
@@ -605,3 +608,92 @@ async def test_experiment_totals_fold_composite_over_membership(session):
     # compute the open span. Pin the exclusion.
     assert totals.qa_cost_usd != pytest.approx(0.27 + 0.99)
     assert totals.owned_compute_cost_usd == pytest.approx(0.70)
+
+
+# --- Public share list (Slice 5): composite per trial on the share grid --------
+
+# The public experiment grid (share view) and its trial drawer render the
+# composite total via the shared ``sumTaskTrialCost`` client aggregator. That
+# only works if the backing ``list_public_experiment_tasks`` endpoint stamps
+# qa/compute per trial. Pin that the extracted core threads the batched composite
+# into every emitted trial (this path was unwired before Slice 5).
+_PUBLIC_TOKEN = f"composite-share-{_RUN}"
+_PUB_FULL = f"{_TASK}-pub-full"
+_PUB_QA = f"{_TASK}-pub-qa"
+_PUB_BARE = f"{_TASK}-pub-bare"
+
+
+@pytest.mark.asyncio
+async def test_public_experiment_tasks_emit_composite_per_trial(session):
+    """``list_public_experiment_tasks_core`` stamps qa/compute/total on every
+    emitted trial, so the share grid's per-task cost badge and the trial drawer's
+    task rollup render the composite total rather than inference alone.
+    """
+    session.add(
+        ExperimentModel(
+            id=_EXP,
+            name=_EXP,
+            org_id=_ORG,
+            is_public=True,
+            public_token=_PUBLIC_TOKEN,
+        )
+    )
+    session.add(
+        TaskModel(
+            id=_TASK,
+            name=_TASK,
+            org_id=_ORG,
+            user="tester",
+            task_path="/tmp/composite-cost-test",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    session.add_all(
+        [
+            _trial(_PUB_FULL, cost_usd=0.50),  # inference + QA + compute
+            _trial(_PUB_QA, cost_usd=0.25),  # inference + QA only
+            _trial(_PUB_BARE, cost_usd=0.10),  # inference only (no ledger rows)
+        ]
+    )
+    await session.flush()
+
+    # The share grid joins tasks through task_experiments, so link the task into
+    # the public experiment (membership, mirroring a real shared experiment).
+    await session.execute(
+        insert(task_experiments).values([{"task_id": _TASK, "experiment_id": _EXP}])
+    )
+    session.add_all(
+        [
+            _qa(_PUB_FULL, 0.20),
+            _span(_PUB_FULL, Decimal("0.30"), 0),
+            _qa(_PUB_QA, 0.05),
+        ]
+    )
+    await session.flush()
+
+    responses = await list_public_experiment_tasks_core(session, _PUBLIC_TOKEN)
+
+    assert len(responses) == 1
+    trials = {t.id: t for t in responses[0].trials}
+    assert set(trials) == {_PUB_FULL, _PUB_QA, _PUB_BARE}
+
+    # Full ledger: inference 0.50 + QA 0.20 + compute 0.30 = 1.00.
+    full = trials[_PUB_FULL]
+    assert full.cost_usd == pytest.approx(0.50)
+    assert full.qa_cost_usd == pytest.approx(0.20)
+    assert full.compute_cost_usd == pytest.approx(0.30)
+    assert full.total_cost_usd == pytest.approx(1.00)
+
+    # QA only: compute defaults to 0.0; total folds inference + QA (0.25 + 0.05).
+    qa_only = trials[_PUB_QA]
+    assert qa_only.qa_cost_usd == pytest.approx(0.05)
+    assert qa_only.compute_cost_usd == pytest.approx(0.0)
+    assert qa_only.total_cost_usd == pytest.approx(0.30)
+
+    # No ledger rows: qa/compute are 0.0 and total == inference. Crucially the
+    # fields are populated (not None) — the endpoint supplies a composite for
+    # every trial — so the client aggregator sums a real total, not a fallback.
+    bare = trials[_PUB_BARE]
+    assert bare.qa_cost_usd == pytest.approx(0.0)
+    assert bare.compute_cost_usd == pytest.approx(0.0)
+    assert bare.total_cost_usd == pytest.approx(0.10)

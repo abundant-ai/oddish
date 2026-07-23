@@ -30,7 +30,15 @@ export function formatTokenCount(value: number): string {
 }
 
 export interface TaskTrialCost {
+  // Inference (agent LLM) spend — kept for back-compat as the standalone
+  // inference component. ``totalCostUsd`` is the composite headline.
   costUsd: number;
+  // Composite components summed over the same priced trials as ``costUsd``:
+  // qa = analysis-classifier spend, compute = Modal sandbox spend, total =
+  // inference + qa + compute.
+  qaCostUsd: number;
+  computeCostUsd: number;
+  totalCostUsd: number;
   pricedCount: number;
   hasEstimated: boolean;
   hasNative: boolean;
@@ -39,11 +47,16 @@ export interface TaskTrialCost {
 // Priced, non-probe, non-superseded trials only — same scope as the experiment
 // header and /tasks rollup, so retries don't double-count. Gathered/shared-task
 // trials count too: like the experiment Cost tile, this prices the work being
-// displayed, wherever it ran.
+// displayed, wherever it ran. QA + compute are summed over that same priced
+// population (they mirror inference automatically, matching the server-side
+// composite fold), so ``totalCostUsd`` is the full inference + QA + sandbox
+// spend across the task's shown trials.
 export function sumTaskTrialCost(
   trials: Trial[] | null | undefined,
 ): TaskTrialCost {
   let costUsd = 0;
+  let qaCostUsd = 0;
+  let computeCostUsd = 0;
   let pricedCount = 0;
   let hasEstimated = false;
   let hasNative = false;
@@ -52,11 +65,21 @@ export function sumTaskTrialCost(
     if (trial.superseded_by_trial_id) continue;
     if (trial.cost_usd == null) continue;
     costUsd += trial.cost_usd;
+    qaCostUsd += trial.qa_cost_usd ?? 0;
+    computeCostUsd += trial.compute_cost_usd ?? 0;
     pricedCount += 1;
     if (trial.cost_is_estimated) hasEstimated = true;
     else hasNative = true;
   }
-  return { costUsd, pricedCount, hasEstimated, hasNative };
+  return {
+    costUsd,
+    qaCostUsd,
+    computeCostUsd,
+    totalCostUsd: costUsd + qaCostUsd + computeCostUsd,
+    pricedCount,
+    hasEstimated,
+    hasNative,
+  };
 }
 
 // Estimate markers matching the experiment header (#599): "~" prefix when every

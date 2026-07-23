@@ -582,9 +582,11 @@ function AgentCard({
     summary.rewardTotal > 0
       ? (summary.rewardSum / summary.rewardTotal) * 100
       : null;
+  // Composite (inference + QA + compute) mean, matching the adjacent composite
+  // "total cost" so avg × trial count reconciles with the total shown.
   const avgCostUsd =
     summary.costTrialCount > 0
-      ? summary.costUsd / summary.costTrialCount
+      ? summary.totalCostUsd / summary.costTrialCount
       : null;
   const avgDurationSec = useMemo(() => {
     let sum = 0;

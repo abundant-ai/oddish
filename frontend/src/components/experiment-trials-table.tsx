@@ -56,7 +56,12 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
-import { costEstimateMarks, formatCostUsd, sumTaskTrialCost } from "@/lib/format";
+import {
+  costEstimateMarks,
+  formatCostUsd,
+  formatCostUsdExact,
+  sumTaskTrialCost,
+} from "@/lib/format";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
@@ -2311,13 +2316,16 @@ export function ExperimentTrialsTable({
                                   <TooltipTrigger asChild>
                                     <span className="inline-flex shrink-0 items-center font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
                                       {marks.prefix}
-                                      {formatCostUsd(c.costUsd)}
+                                      {formatCostUsd(c.totalCostUsd)}
                                       {marks.suffix}
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent>
                                     Total cost across {c.pricedCount} priced trial
-                                    {c.pricedCount === 1 ? "" : "s"}
+                                    {c.pricedCount === 1 ? "" : "s"} ·{" "}
+                                    {formatCostUsdExact(c.costUsd)} inference ·{" "}
+                                    {formatCostUsdExact(c.qaCostUsd)} QA ·{" "}
+                                    {formatCostUsdExact(c.computeCostUsd)} sandbox
                                     {c.hasEstimated && c.hasNative
                                       ? " · * mixes native + token-estimated pricing"
                                       : c.hasEstimated

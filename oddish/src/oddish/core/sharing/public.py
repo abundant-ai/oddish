@@ -6,8 +6,10 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from oddish.core.cost_basis import composite_cost_by_trial
 from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
@@ -193,86 +195,112 @@ async def list_public_experiment_tasks(
 ) -> list[TaskStatusResponse]:
     """List tasks (with trials) for a public experiment."""
     async with get_session() as session:
-        experiment = await get_public_experiment(session, public_token)
-        if not experiment:
-            raise HTTPException(status_code=404, detail="Experiment not found")
+        return await list_public_experiment_tasks_core(
+            session, public_token, limit=limit, offset=offset
+        )
 
-        query = (
-            select(TaskModel)
-            .options(
-                selectinload(TaskModel.trials),
-                selectinload(TaskModel.experiments),
-            )
-            .where(
-                TaskModel.experiments.any(
-                    and_(
-                        ExperimentModel.public_token == public_token,
-                        ExperimentModel.is_public == True,  # noqa: E712
-                    )
+
+async def list_public_experiment_tasks_core(
+    session: AsyncSession,
+    public_token: str,
+    *,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[TaskStatusResponse]:
+    """Build the public share grid's tasks (with trials) for ``public_token``.
+
+    Extracted from the route so tests can drive it with an injected session.
+    Threads a batched :func:`composite_cost_by_trial` lookup into the builder so
+    every shown trial carries its QA + compute components — the share grid's
+    per-task cost badge and the trial drawer's task rollup render the composite
+    total, matching the authenticated slim path.
+    """
+    experiment = await get_public_experiment(session, public_token)
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    query = (
+        select(TaskModel)
+        .options(
+            selectinload(TaskModel.trials),
+            selectinload(TaskModel.experiments),
+        )
+        .where(
+            TaskModel.experiments.any(
+                and_(
+                    ExperimentModel.public_token == public_token,
+                    ExperimentModel.is_public == True,  # noqa: E712
                 )
             )
-            .order_by(TaskModel.created_at.desc())
-            .limit(limit)
-            .offset(offset)
+        )
+        .order_by(TaskModel.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+
+    result = await session.execute(query)
+    tasks = result.scalars().all()
+
+    exp_id_result = await session.execute(
+        select(ExperimentModel.id).where(
+            ExperimentModel.public_token == public_token,
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+    )
+    exp_id = exp_id_result.scalar_one_or_none()
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    gathered_ids: set[str] = set()
+    if exp_id:
+        gathered_ids = set(
+            (await session.execute(gathered_trial_ids_select(exp_id)))
+            .scalars()
+            .all()
         )
 
-        result = await session.execute(query)
-        tasks = result.scalars().all()
-
-        exp_id_result = await session.execute(
-            select(ExperimentModel.id).where(
-                ExperimentModel.public_token == public_token,
-                ExperimentModel.is_public == True,  # noqa: E712
-            )
-        )
-        exp_id = exp_id_result.scalar_one_or_none()
-        from sqlalchemy.orm.attributes import set_committed_value
-
-        gathered_ids: set[str] = set()
-        if exp_id:
-            gathered_ids = set(
-                (await session.execute(gathered_trial_ids_select(exp_id)))
-                .scalars()
-                .all()
-            )
-
-        for task in tasks:
-            # Scope to this experiment's trials (home or gathered) and never
-            # expose probes — probes are experimental and stay out of the
-            # public share view, gathered or not.
-            filtered = [
-                t
-                for t in task.trials
-                if not t.is_probe
-                and (not exp_id or t.experiment_id == exp_id or t.id in gathered_ids)
-            ]
-            set_committed_value(task, "trials", filtered)
-
-        queue_info_by_trial_id = await fetch_trial_queue_info(
-            session,
-            trials=[trial for task in tasks for trial in task.trials],
-        )
-        user_tags_by_task = await _hydrate_public_user_tags(
-            session, task_ids=[task.id for task in tasks]
-        )
-        responses = [
-            build_task_status_response(
-                task,
-                queue_info_by_trial_id=queue_info_by_trial_id,
-                experiment_context_id=exp_id,
-                gathered_trial_ids=gathered_ids,
-            )
-            for task in tasks
+    for task in tasks:
+        # Scope to this experiment's trials (home or gathered) and never
+        # expose probes — probes are experimental and stay out of the
+        # public share view, gathered or not.
+        filtered = [
+            t
+            for t in task.trials
+            if not t.is_probe
+            and (not exp_id or t.experiment_id == exp_id or t.id in gathered_ids)
         ]
-        public_exps = await _public_experiment_refs(
-            session, [task.id for task in tasks]
+        set_committed_value(task, "trials", filtered)
+
+    queue_info_by_trial_id = await fetch_trial_queue_info(
+        session,
+        trials=[trial for task in tasks for trial in task.trials],
+    )
+    user_tags_by_task = await _hydrate_public_user_tags(
+        session, task_ids=[task.id for task in tasks]
+    )
+    # Price QA + compute for every shown trial in one batched ledger lookup so
+    # the builder can stamp the composite components per trial (the public share
+    # renders the composite total, same as the authenticated grid).
+    composite_by_trial = await composite_cost_by_trial(
+        session,
+        [trial.id for task in tasks for trial in task.trials],
+    )
+    responses = [
+        build_task_status_response(
+            task,
+            queue_info_by_trial_id=queue_info_by_trial_id,
+            experiment_context_id=exp_id,
+            gathered_trial_ids=gathered_ids,
+            composite_by_trial=composite_by_trial,
         )
-        for resp, task in zip(responses, tasks):
-            resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
-            _apply_public_experiments(
-                resp, public_exps.get(task.id, []), preferred_id=exp_id
-            )
-        return responses
+        for task in tasks
+    ]
+    public_exps = await _public_experiment_refs(session, [task.id for task in tasks])
+    for resp, task in zip(responses, tasks):
+        resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+        _apply_public_experiments(
+            resp, public_exps.get(task.id, []), preferred_id=exp_id
+        )
+    return responses
 
 
 @router.get(

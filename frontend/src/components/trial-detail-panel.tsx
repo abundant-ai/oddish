@@ -51,12 +51,7 @@ import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import { CostWithBreakdown } from "@/components/cost-with-breakdown";
 import type { Trial, Task } from "@/lib/types";
-import {
-  costEstimateMarks,
-  formatCostUsd,
-  formatTokenCount,
-  sumTaskTrialCost,
-} from "@/lib/format";
+import { formatTokenCount, sumTaskTrialCost } from "@/lib/format";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -830,21 +825,22 @@ export function TrialDetailPanel({
                           "—"
                         )}
                       </span>
-                      {trial.cost_usd != null &&
-                        taskCost.pricedCount > 1 &&
-                        (() => {
-                          const marks = costEstimateMarks(
-                            taskCost.hasEstimated,
-                            taskCost.hasNative,
-                          );
-                          return (
-                            <span className="text-muted-foreground text-[9px] leading-none">
-                              of {marks.prefix}
-                              {formatCostUsd(taskCost.costUsd)}
-                              {marks.suffix} task
-                            </span>
-                          );
-                        })()}
+                      {trial.cost_usd != null && taskCost.pricedCount > 1 && (
+                        <span className="text-muted-foreground text-[9px] leading-none">
+                          of{" "}
+                          <CostWithBreakdown
+                            className="inline-flex items-baseline"
+                            total={taskCost.totalCostUsd}
+                            inference={taskCost.costUsd}
+                            qa={taskCost.qaCostUsd}
+                            compute={taskCost.computeCostUsd}
+                            estimated={
+                              taskCost.hasEstimated && !taskCost.hasNative
+                            }
+                          />{" "}
+                          task
+                        </span>
+                      )}
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (
