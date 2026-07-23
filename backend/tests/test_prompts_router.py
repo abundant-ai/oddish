@@ -28,6 +28,7 @@ class _FakePrompt:
     created_at = __import__("datetime").datetime.now()
     updated_at = __import__("datetime").datetime.now()
     versions = [_V1, _V2]
+    org_id = None
 
 
 class _FakeSession:
@@ -53,13 +54,23 @@ def _auth(scopes):
     return _factory
 
 
-async def _call(method, path, monkeypatch, *, scopes=(APIKeyScope.READ,), **kwargs):
-    async def fake_get(session, kind, *, version=None):
+async def _call(
+    method,
+    path,
+    monkeypatch,
+    *,
+    scopes=(APIKeyScope.READ,),
+    prompt_org_id=None,
+    **kwargs,
+):
+    async def fake_get(session, kind, *, version=None, scope_type=None, scope_id=None):
         if kind in {"not_a_kind", "NOT_A_KIND"}:
             raise HTTPException(status_code=404, detail="not found")
+        prompt = _FakePrompt()
+        prompt.org_id = prompt_org_id
         if version is not None:
-            return _FakePrompt(), _V1
-        return _FakePrompt(), _V2
+            return prompt, _V1
+        return prompt, _V2
 
     async def fake_usage(session, ref):
         return {"total": 0, "last_used_at": None, "by_version": []}
@@ -195,3 +206,57 @@ async def test_activate_route_is_gone(monkeypatch):
         json={"version": 1},
     )
     assert resp.status_code in (404, 405)
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_foreign_org_prompt_id(monkeypatch):
+    # An id belonging to another org's prompt must 404 before ever reaching
+    # set_prompt_core -- otherwise the write appends a version onto the
+    # victim's row (see _validated_ref / _assert_org_access).
+    called = False
+
+    async def fake_set(session, **kwargs):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
+    resp = await _call(
+        "PUT",
+        "/prompts/p1",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        prompt_org_id="org_2",
+        json={"content": "x"},
+    )
+    assert resp.status_code == 404
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_get_rejects_foreign_org_prompt_id(monkeypatch):
+    resp = await _call("GET", "/prompts/p1", monkeypatch, prompt_org_id="org_2")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_versions_rejects_foreign_org_prompt_id(monkeypatch):
+    resp = await _call(
+        "GET", "/prompts/p1/versions", monkeypatch, prompt_org_id="org_2"
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_global_prompt_id_is_still_readable(monkeypatch):
+    # org_id=None (global) must pass the guard untouched.
+    resp = await _call("GET", "/prompts/p1", monkeypatch, prompt_org_id=None)
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "p1"
+
+
+@pytest.mark.asyncio
+async def test_get_same_org_prompt_id_is_still_readable(monkeypatch):
+    resp = await _call("GET", "/prompts/p1", monkeypatch, prompt_org_id="org_1")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "p1"

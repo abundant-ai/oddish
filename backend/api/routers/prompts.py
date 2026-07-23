@@ -48,14 +48,23 @@ def _validated_kind(kind: str) -> str:
     )
 
 
-async def _validated_ref(session, ref: str) -> str:
+def _assert_org_access(prompt, auth: AuthContext) -> None:
+    """A prompt id is resolvable across scopes, so every id-resolved row must be
+    re-checked against the caller's org. 404 rather than 403: a foreign prompt's
+    existence is itself not the caller's to learn."""
+    if prompt.org_id and prompt.org_id != auth.org_id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
+
+async def _validated_ref(session, ref: str, auth: AuthContext) -> str:
     """Accept an existing prompt id, otherwise enforce the kind vocabulary."""
     try:
-        await get_prompt_core(session, ref)
+        prompt, _ = await get_prompt_core(session, ref)
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
         return _validated_kind(ref)
+    _assert_org_access(prompt, auth)
     return ref
 
 
@@ -95,8 +104,9 @@ async def get_prompt(
 ) -> PromptResponse:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        ref = await _validated_ref(session, key_or_id)
+        ref = await _validated_ref(session, key_or_id, auth)
         prompt, ver = await get_prompt_core(session, ref, version=version)
+        _assert_org_access(prompt, auth)
         response = _to_response(prompt, ver)
         response.usage = PromptUsage(**await get_prompt_usage_core(session, ref))
         return response
@@ -109,7 +119,9 @@ async def get_prompt_versions(
 ) -> list[PromptVersionResponse]:
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        ref = await _validated_ref(session, key_or_id)
+        ref = await _validated_ref(session, key_or_id, auth)
+        prompt, _ = await get_prompt_core(session, ref)
+        _assert_org_access(prompt, auth)
         versions = await list_prompt_versions_core(session, ref)
         return [PromptVersionResponse.model_validate(v) for v in versions]
 
@@ -130,7 +142,7 @@ async def set_prompt(
     """
     auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
-        ref = await _validated_ref(session, key_or_id)
+        ref = await _validated_ref(session, key_or_id, auth)
         resolved_scope: str | None
         resolved_scope_id: str | None
         if scope == "global":
