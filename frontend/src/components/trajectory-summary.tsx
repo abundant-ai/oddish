@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Sparkles, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
@@ -27,6 +28,18 @@ export function TrajectorySummary({
 }: TrajectorySummaryProps) {
   const { data, error, isLoading, mutate } = useTrajectorySummary(trialId, apiBaseUrl);
 
+  // A stored summary returns in well under a second; only a long in-flight
+  // request means the backend is actually generating one (~30s).
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!isLoading) {
+      setSlow(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlow(true), 4000);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
   if (isLoading) {
     return (
       <Card className="my-3">
@@ -38,7 +51,7 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Generating summary…
+          {slow ? "Generating summary… (first view can take ~30s)" : "Retrieving summary…"}
         </CardContent>
       </Card>
     );
