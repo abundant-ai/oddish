@@ -637,6 +637,66 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
+class CollectionAddRequest(BaseModel):
+    """Request to link more trials into an existing collection."""
+
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+    from_experiment_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "CollectionAddRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        self.from_experiment_ids = list(
+            dict.fromkeys(
+                s.strip() for s in self.from_experiment_ids if s and s.strip()
+            )
+        )
+        if not self.trial_ids and not self.task_ids and not self.from_experiment_ids:
+            raise ValueError(
+                "provide at least one trial id, task id, or source experiment id"
+            )
+        return self
+
+
+class CollectionRemoveRequest(BaseModel):
+    """Request to drop trials from an existing collection."""
+
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "CollectionRemoveRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        if not self.trial_ids and not self.task_ids:
+            raise ValueError("provide at least one trial id or task id")
+        return self
+
+
+class CollectionRenameRequest(BaseModel):
+    """Request to rename an existing collection."""
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be empty")
+        return stripped
+
+
 # =============================================================================
 # Response Schemas
 # =============================================================================
@@ -955,6 +1015,15 @@ class TrialResponse(BaseModel):
     total_steps: int | None = Field(
         None, description="Total agent trajectory steps, when available"
     )
+    trajectory_duration_seconds: float | None = Field(
+        None, description="Elapsed seconds between the first and last trajectory step"
+    )
+    total_tool_calls: int | None = Field(
+        None, description="Total tool calls in the agent trajectory"
+    )
+    tool_counts: dict[str, int] | None = Field(
+        None, description="Tool-call counts keyed by trajectory function name"
+    )
     cost_usd: float | None = Field(
         None,
         description=(
@@ -1208,6 +1277,20 @@ class TrialCollectionResponse(BaseModel):
     tasks_skipped_empty: int = 0
 
 
+class CollectionMutationResponse(BaseModel):
+    """Result of editing an existing read-only collection in place."""
+
+    id: str
+    name: str
+    trials_added: int = 0
+    trials_removed: int = 0
+    trials_total: int = 0
+    tasks_linked: int = 0
+    tasks_unlinked: int = 0
+    # Ids the caller named that were not members; ignored, not an error.
+    trials_skipped: int = 0
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
@@ -1224,6 +1307,8 @@ class TaskBrowseTrial(BaseModel):
     status: TrialStatus
     reward: float | None = None
     error_message: str | None = None
+    agent: str = ""
+    model: str | None = None
 
 
 class TaskBrowseItem(BaseModel):
@@ -1398,6 +1483,9 @@ class ImportedTrialSpec(BaseModel):
     cache_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
+    trajectory_duration_seconds: float | None = None
+    total_tool_calls: int | None = None
+    tool_counts: dict[str, int] | None = None
     cost_usd: float | None = None
     phase_timing: dict | None = Field(
         None,
@@ -1843,6 +1931,7 @@ class ReportResponse(BaseModel):
     num_bad_failures: int | None = None
     num_good_failures: int | None = None
     breakdown: dict | None = None
+    by_model: dict | None = None
     experiment_ids: list[str] = []
     created_at: datetime | None = None
     finished_at: datetime | None = None
@@ -1911,3 +2000,32 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PromptVersionResponse(BaseModel):
+    version: int
+    content: str
+    created_at: datetime
+    created_by: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class PromptResponse(BaseModel):
+    id: str
+    key: str
+    description: str
+    active_version: int | None = None
+    created_at: datetime
+    updated_at: datetime
+    content: str | None = None  # resolved active/selected version content
+    model_config = {"from_attributes": True}
+
+
+class PromptSetRequest(BaseModel):
+    content: str
+    description: str | None = None
+    activate: bool = True
+
+
+class PromptActivateRequest(BaseModel):
+    version: int

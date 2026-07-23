@@ -57,6 +57,8 @@ from oddish.cli.config import (
     get_dashboard_url,
     require_api_key,
 )
+from oddish.cli.preflight import gate_preflight
+from oddish.preflight.runner import run_checks
 
 console = Console()
 
@@ -182,6 +184,13 @@ def upload(
             ),
         ),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Upload even if preflight checks fail. Findings are still printed.",
+        ),
+    ] = False,
     api_url: Annotated[
         str,
         typer.Option(
@@ -268,6 +277,7 @@ def upload(
             experiment_id=experiment_id,
             user=user,
             skip_artifacts=skip_artifacts,
+            force=force,
             quiet=quiet,
             json_output=json_output,
         )
@@ -307,6 +317,7 @@ def upload(
         user=user,
         priority=priority,
         message=message,
+        force=force,
         quiet=quiet,
         json_output=json_output,
     )
@@ -329,6 +340,7 @@ def _run_task_upload(
     user: str | None,
     priority: str,
     message: str | None,
+    force: bool,
     quiet: bool,
     json_output: bool,
 ) -> None:
@@ -343,6 +355,12 @@ def _run_task_upload(
         n_tasks=n_tasks,
         quiet=quiet,
     )
+
+    # Gate before the upload persists a runnable task version: a task that leaks
+    # its own answer must not become runnable via `oddish run --task <id>`.
+    # No json_output -- upload owns its single stdout JSON document; the gate
+    # renders findings to stderr and aborts via typer.Exit on failure.
+    gate_preflight(run_checks(task_paths), force=force)
 
     # Step 2 (shared with ``oddish run``): upload each archive and
     # register the TaskModel. ``oddish upload`` always uses
@@ -438,6 +456,7 @@ def _run_trial_import(
     experiment_id: str | None,
     user: str | None,
     skip_artifacts: bool,
+    force: bool,
     quiet: bool,
     json_output: bool,
 ) -> None:
@@ -449,6 +468,13 @@ def _run_trial_import(
 
     # One-shot: upload the task alongside the trial import.
     if path_option is not None:
+        # Gate before the upload persists a runnable task version -- same
+        # reasoning as ``_run_task_upload``: this inline upload also makes
+        # the task runnable via `oddish run --task <id>`, so it must not
+        # bypass preflight just because it's reached via --path here
+        # instead of the main upload flow. No json_output -- upload owns
+        # its single stdout JSON document.
+        gate_preflight(run_checks([path_option]), force=force)
         if not quiet:
             console.print(f"[dim]Uploading task from {path_option}...[/dim]")
         upload_result = upload_task(
@@ -456,6 +482,7 @@ def _run_trial_import(
             path_option,
             register=True,
             user=user,
+            quiet=quiet or json_output,
         )
         resolved_task_id = upload_result.get("task_id")
         if not resolved_task_id:

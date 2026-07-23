@@ -287,7 +287,9 @@ def create_app() -> FastAPI:
         github_webhooks,
         imports,
         load,
+        notifications,
         orgs,
+        prompts,
         reports,
         skills,
         public,
@@ -300,6 +302,7 @@ def create_app() -> FastAPI:
     api.include_router(cc_chat.router)
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
+    api.include_router(notifications.router)
     api.include_router(api_keys.router)
     api.include_router(byok.router)
     api.include_router(clerk_webhooks.router)
@@ -310,6 +313,7 @@ def create_app() -> FastAPI:
     api.include_router(imports.router)
     api.include_router(load.router)
     api.include_router(skills.router)
+    api.include_router(prompts.router)
     api.include_router(documents.router)
     api.include_router(public.router)
     api.include_router(slack.router)

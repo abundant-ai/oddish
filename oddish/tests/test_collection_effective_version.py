@@ -304,6 +304,60 @@ async def test_default_version_survives_shell_to_slim_loading(session):
 
 
 @pytest.mark.asyncio
+async def test_task_shells_do_not_hydrate_trial_rows(session):
+    """The lightweight first-paint endpoint must not run TaskModel's default
+    select-in loader and materialize every historical trial for a member task.
+
+    Large ProgramSmith rollups contain tasks that have accumulated trials in
+    many older experiments.  Loading those ORM rows is both unnecessary for a
+    shell response and was the source of the production request timeout.
+    """
+    task = _task("shell-no-trial-hydration")
+    session.add(task)
+    await session.flush()
+
+    version = _version(task, 1)
+    session.add(version)
+    await session.flush()
+    task.current_version_id = version.id
+
+    viewed_experiment = _experiment("shell-viewed-experiment")
+    historical_experiment = _experiment("shell-historical-experiment")
+    session.add_all([viewed_experiment, historical_experiment])
+    await session.flush()
+    session.add_all(
+        [
+            _trial(task, viewed_experiment, task_version_id=version.id),
+            *[
+                _trial(task, historical_experiment, task_version_id=version.id)
+                for _ in range(8)
+            ],
+        ]
+    )
+    await session.execute(
+        task_experiments.insert().values(
+            task_id=task.id,
+            experiment_id=viewed_experiment.id,
+        )
+    )
+    await session.flush()
+
+    # Match a fresh production request and make ORM hydration observable.
+    session.expunge_all()
+    shells = await list_experiment_task_shells_core(
+        session,
+        experiment_id=viewed_experiment.id,
+        org_id="org1",
+    )
+
+    shell = {response.id: response for response in shells}[task.id]
+    assert shell.total == 1
+    assert not any(
+        isinstance(instance, TrialModel) for instance in session.identity_map.values()
+    ), "task-shells hydrated TrialModel rows instead of using aggregate counts"
+
+
+@pytest.mark.asyncio
 async def test_experiment_reports_default_while_using_latest_visible_trial_version(
     session,
 ):

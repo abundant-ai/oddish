@@ -97,6 +97,11 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
     if provider in ("anthropic", "claude"):
         key = getattr(settings, "anthropic_api_key", None)
         return {"ANTHROPIC_API_KEY": key} if key else {}
+    if provider == "anthropic-hdo":
+        # HDO-prefixed Claude trials overwrite ANTHROPIC_API_KEY with the
+        # separate HDO credential (same shape Claude Code / litellm expect).
+        key = getattr(settings, "anthropic_hdo_api_key", None)
+        return {"ANTHROPIC_API_KEY": key} if key else {}
     if provider == "bedrock":
         # A Bedrock-shaped model id genuinely runs on AWS Bedrock. Bedrock
         # authenticates with AWS creds, not a single API key; scoping those

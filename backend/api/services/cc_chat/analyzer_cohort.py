@@ -12,7 +12,6 @@ import logging
 from api.services.cc_chat.analyzer_parse import parse_cohort_result
 from api.services.cc_chat.analyzer_prompt import (
     CLI_DEST,
-    FINDINGS_GLOB,
     OUT_DIR,
     REDUCE_PATH,
     build_map_batch_prompt,
@@ -26,6 +25,23 @@ from oddish.evals.analyzer.schemas import Finding
 from oddish.evals.primitives import SubAnalysis
 
 logger = logging.getLogger(__name__)
+
+
+def _render_stream(raw_chunks: list[str]) -> str:
+    """Turn a block's accumulated ``json.dumps(event)`` chunks back into the
+    rendered lines parse_cohort_result scans for MAP/REDUCE markers, so the
+    stream fallback survives the move to blocks."""
+    import json as _json
+
+    lines: list[str] = []
+    for chunk in raw_chunks:
+        try:
+            line = render_event(_json.loads(chunk))
+        except Exception:  # noqa: BLE001 — a malformed chunk just can't render
+            continue
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
 
 # stream_chat has no --model flag, so force the model via env; Claude Code
 # honors ANTHROPIC_MODEL and the system/init event echoes it back.
@@ -80,17 +96,8 @@ def batches(cohort: list[SubAnalysis]) -> list[list[SubAnalysis]]:
         # what is genuinely at risk.
         return [cohort]
     return [
-        cohort[i : i + MAP_BATCH_SIZE]
-        for i in range(0, len(cohort), MAP_BATCH_SIZE)
+        cohort[i : i + MAP_BATCH_SIZE] for i in range(0, len(cohort), MAP_BATCH_SIZE)
     ]
-
-
-async def _download(client, sandbox, path: str) -> bytes:
-    try:
-        return await client.download_file(sandbox, src_path=path)
-    except Exception as exc:  # noqa: BLE001 — a missing file is the fallback path
-        logger.warning("analyzer-sandbox: could not download %s (%s)", path, exc)
-        return b""
 
 
 async def run_cohort(
@@ -109,12 +116,29 @@ async def run_cohort(
     api_key: str,
     cli_src: bytes,
     models_by_task: dict[str, list[str]] | None = None,
-) -> tuple[list[Finding], dict[str, str]]:
+    denominators: dict[str, dict] | None = None,
+) -> tuple[list[Finding], dict[str, str], tuple[list[dict], str]]:
+    # Imported here so the module still loads if the block layer is refactored;
+    # the cohort is the only caller that wires blocks to a shared sandbox client.
+    from oddish.blocks.analyzer.analyzer_block import (
+        AnalyzerBlock,
+        AnalyzerInput,
+        AnalyzerType,
+    )
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+
+    from api.services.blocks.analyzer.sandbox_llm_client import (
+        SandboxAnalyzerLLMClient,
+    )
+
     tag = f"[analyzer {analyzer_id}][{bucket}]"
     plan = batches(cohort)
-    # Retained only to serve the parse-fallback; never persisted.
-    stream_lines: list[str] = []
     sandbox = None
+    # Accumulated json.dumps(event) chunks across every block, rendered back into
+    # marker lines for parse_cohort_result's stream fallback. Never persisted.
+    raw_stream: list[str] = []
+    reduce_b = b""
+    findings_b = b""
     try:
         async with asyncio.timeout(COHORT_TIMEOUT_SECONDS):
             sandbox = await client.create_sandbox(
@@ -130,8 +154,11 @@ async def run_cohort(
                 # auto_stop is the only backstop that actually fires.
                 auto_stop_minutes=settings.daytona_auto_stop_interval_mins,
                 auto_delete_minutes=settings.daytona_auto_delete_interval_mins,
-                labels={"purpose": "analyzer-cohort", "analyzer": analyzer_id,
-                        "bucket": bucket},
+                labels={
+                    "purpose": "analyzer-cohort",
+                    "analyzer": analyzer_id,
+                    "bucket": bucket,
+                },
             )
             logger.info("%s sandbox id=%s (%d trials)", tag, sandbox.id, len(cohort))
             await client.create_session(sandbox, session_id="cc")
@@ -139,58 +166,94 @@ async def run_cohort(
             await client.exec_sync(sandbox, command=f"mkdir -p {OUT_DIR}")
             await client.upload_file(sandbox, dest_path=CLI_DEST, content=cli_src)
 
-            async def _turn(prompt: str, label: str, system_prompt=None) -> None:
-                # claude_session_id=None every time: a fresh process with a
-                # fresh context is the whole point. Passing --resume here would
-                # chain contexts and reintroduce the linear growth.
-                async for evt in runtime.stream_chat(
-                    client, sandbox, content=prompt,
-                    claude_session_id=None, daytona_session_id="cc",
-                    system_prompt=system_prompt,
-                ):
-                    line = render_event(evt)
-                    if line:
-                        stream_lines.append(line)
-                        logger.info("%s[%s] %s", tag, label, line)
+            # One shared client wrapping this cohort's sandbox; the blocks stream
+            # through it and never close it (an injected client is the caller's,
+            # and the finally below owns the sandbox lifecycle). Each block's
+            # stream_chat gets claude_session_id=None -- a fresh process per
+            # block is the whole point; resuming would chain contexts and
+            # reintroduce the linear context growth batching exists to prevent.
+            llm = SandboxAnalyzerLLMClient(
+                sandbox=sandbox,
+                daytona_client=client,
+                runtime=runtime,
+                daytona_session_id="cc",
+            )
 
             for i, batch in enumerate(plan, start=1):
                 logger.info(
                     "%s map batch %d/%d (%d trials)", tag, i, len(plan), len(batch)
                 )
-                # The fetch-more system prompt goes on MAP turns only, and on
-                # every one of them: context resets per batch, so batch 3 has no
-                # memory that batch 1 was told it could widen the tail budget.
-                await _turn(
-                    build_map_batch_prompt(
-                        bucket, batch, roster, oracle_by_trial, i, len(plan),
+                # The fetch-more system prompt rides EVERY map block: context
+                # resets per block, so batch 3 has no memory that batch 1 was
+                # told it could widen the tail budget. Map blocks are producers
+                # only (they write findings-<i>.jsonl); the reduce block below
+                # enumerates every findings_path(i), so nothing to download here.
+                map_block = AnalyzerBlock(
+                    analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
+                    llm_client_type=LLMClientType.SANDBOX,
+                    input=AnalyzerInput(
+                        input={
+                            "bucket": bucket,
+                            "batch_no": i,
+                            "trials": [s.trial_id for s in batch],
+                        },
+                    ),
+                    prompt=build_map_batch_prompt(
+                        bucket,
+                        batch,
+                        roster,
+                        oracle_by_trial,
+                        i,
+                        len(plan),
                         TRAJ_TAIL_BYTES,
                     ),
-                    f"map {i}/{len(plan)}",
                     system_prompt=build_system_prompt(TRAJ_TAIL_BYTES),
+                    model=HAIKU_MODEL,
+                    analyzer_id=analyzer_id,
+                    client=llm,
                 )
+                await map_block.run()
+                raw_stream.extend(map_block._chunks)
 
-            # REDUCE gets NO fetch-more prompt: its whole job is to read
-            # findings.jsonl, and telling it to pull trajectories would both
+            # REDUCE gets NO fetch-more system prompt: its whole job is to read
+            # the findings files, and telling it to pull trajectories would both
             # contradict its user prompt and let it refetch the entire cohort --
             # recreating the context blowup this batching exists to prevent.
-            logger.info("%s reduce over %s", tag, FINDINGS_GLOB)
-            await _turn(
-                build_reduce_only_prompt(bucket, counts, len(plan), models_by_task),
-                "reduce",
+            logger.info("%s reduce over %d batches", tag, len(plan))
+            reduce_block = AnalyzerBlock(
+                analyzer_type=AnalyzerType.TRAJECTORY_FAILURE_ANALYSIS,
+                llm_client_type=LLMClientType.SANDBOX,
+                input=AnalyzerInput(
+                    input={"bucket": bucket, "phase": "reduce"},
+                    files_to_download=[
+                        REDUCE_PATH,
+                        *(findings_path(i) for i in range(1, len(plan) + 1)),
+                    ],
+                ),
+                prompt=build_reduce_only_prompt(
+                    bucket, counts, len(plan), models_by_task, denominators
+                ),
+                system_prompt=None,
+                model=HAIKU_MODEL,
+                analyzer_id=analyzer_id,
+                client=llm,
             )
+            reduce_out = await reduce_block.run()
+            raw_stream.extend(reduce_block._chunks)
 
-            reduce_b = await _download(client, sandbox, REDUCE_PATH)
+            files = reduce_out.output  # {path: decoded str}
+            reduce_b = files.get(REDUCE_PATH, "").encode("utf-8")
             # Concatenate the per-batch files host-side rather than trusting the
-            # sandbox to have merged them. A missing batch file yields b"" and
-            # costs only its own batch, instead of taking the cohort down.
+            # sandbox to have merged them. A blank batch file costs only its own
+            # batch, instead of taking the cohort down.
             parts = []
             for i in range(1, len(plan) + 1):
-                b = await _download(client, sandbox, findings_path(i))
-                if not b.strip():
+                text = files.get(findings_path(i), "")
+                if not text.strip():
                     logger.warning("%s batch %d wrote no findings", tag, i)
                     continue
-                parts.append(b if b.endswith(b"\n") else b + b"\n")
-            findings_b = b"".join(parts)
+                parts.append(text if text.endswith("\n") else text + "\n")
+            findings_b = "".join(parts).encode("utf-8")
     except TimeoutError as exc:
         raise RuntimeError(
             f"analyzer cohort {bucket!r} exceeded {COHORT_TIMEOUT_SECONDS}s"
@@ -202,10 +265,10 @@ async def run_cohort(
             except Exception as exc:  # noqa: BLE001 — auto_delete is the backstop
                 logger.warning("%s sandbox delete failed: %s", tag, exc)
 
-    findings, sections = parse_cohort_result(
-        bucket, reduce_b, findings_b, "\n".join(stream_lines),
+    findings, sections, by_model = parse_cohort_result(
+        bucket, reduce_b, findings_b, _render_stream(raw_stream),
         # Scoped to this cohort, so a finding for someone else's trial is dropped.
         {sa.trial_id: host_by_trial[sa.trial_id] for sa in cohort},
     )
     logger.info("%s done: %d findings, sections=%s", tag, len(findings), sorted(sections))
-    return findings, sections
+    return findings, sections, by_model

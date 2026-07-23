@@ -20,7 +20,7 @@ from oddish.schemas import TaskSweepSubmission
 from oddish.workers.harbor import runner as harbor_runner
 
 
-AGENT_TOOLS_IMAGE = "ghcr.io/org/harbor-agent-tools:tag"
+SAMPLE_REGION = "us-east"
 
 
 class _SubmittingClient:
@@ -60,13 +60,13 @@ def test_submit_sweep_includes_harbor_environment_kwargs(monkeypatch) -> None:
         harbor_config={
             "environment": {
                 "kwargs": {
-                    "agent_tools_image": "ghcr.io/org/old-tools:tag",
+                    "region": "us-west",
                     "keep": "value",
                 }
             }
         },
         environment_kwargs=[
-            f"agent_tools_image={AGENT_TOOLS_IMAGE}",
+            f"region={SAMPLE_REGION}",
             "extra=value",
         ],
         override_cpus=4,
@@ -74,7 +74,7 @@ def test_submit_sweep_includes_harbor_environment_kwargs(monkeypatch) -> None:
 
     assert payloads[0]["harbor"]["environment"] == {
         "kwargs": {
-            "agent_tools_image": AGENT_TOOLS_IMAGE,
+            "region": SAMPLE_REGION,
             "keep": "value",
             "extra": "value",
         },
@@ -92,15 +92,13 @@ agents:
 harbor:
   environment:
     kwargs:
-      agent_tools_image: {AGENT_TOOLS_IMAGE}
+      region: {SAMPLE_REGION}
 """.strip()
     )
 
     config = cli_api.load_sweep_config(config_path)
 
-    assert config["harbor"]["environment"]["kwargs"]["agent_tools_image"] == (
-        AGENT_TOOLS_IMAGE
-    )
+    assert config["harbor"]["environment"]["kwargs"]["region"] == (SAMPLE_REGION)
 
 
 def test_sweep_config_loader_allows_oracle_without_model_name(
@@ -115,7 +113,7 @@ agents:
 harbor:
   environment:
     kwargs:
-      agent_tools_image: {AGENT_TOOLS_IMAGE}
+      region: {SAMPLE_REGION}
 """.strip()
     )
 
@@ -128,9 +126,7 @@ harbor:
             "n_trials": 1,
         }
     ]
-    assert config["harbor"]["environment"]["kwargs"]["agent_tools_image"] == (
-        AGENT_TOOLS_IMAGE
-    )
+    assert config["harbor"]["environment"]["kwargs"]["region"] == (SAMPLE_REGION)
 
 
 def test_harbor_environment_kwargs_survive_trial_config_round_trip() -> None:
@@ -140,7 +136,7 @@ def test_harbor_environment_kwargs_survive_trial_config_round_trip() -> None:
         harbor={
             "environment": {
                 "kwargs": {
-                    "agent_tools_image": AGENT_TOOLS_IMAGE,
+                    "region": SAMPLE_REGION,
                 }
             }
         },
@@ -155,9 +151,7 @@ def test_harbor_environment_kwargs_survive_trial_config_round_trip() -> None:
     harbor_config = _build_harbor_config_for_trial(task_submission, trials[0])
 
     assert harbor_config is not None
-    assert harbor_config["environment"]["kwargs"]["agent_tools_image"] == (
-        AGENT_TOOLS_IMAGE
-    )
+    assert harbor_config["environment"]["kwargs"]["region"] == (SAMPLE_REGION)
 
 
 def test_claude_code_openrouter_agent_config_sets_anthropic_skin_env(
@@ -341,6 +335,7 @@ def test_claude_code_moonshot_agent_config_sets_moonshot_skin_env(monkeypatch) -
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MOONSHOT_API_KEY}"
     assert agent_config.env["ANTHROPIC_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "kimi-k2.7-code"
+    assert agent_config.env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
     assert agent_config.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "262144"
@@ -351,6 +346,59 @@ def test_claude_code_moonshot_agent_config_sets_moonshot_skin_env(monkeypatch) -
     # K2.7 locks sampling params / thinking is always on -- no kwargs set.
     assert "thinking" not in agent_config.kwargs
     assert "reasoning_effort" not in agent_config.kwargs
+
+
+def test_kimi_claude_code_hardcodes_vendor_defaults_for_caller_model(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("MOONSHOT_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="kimi-claude-code",
+        model="vendor-model[1m]",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "moonshot/vendor-model[1m]"
+    assert (
+        agent_config.import_path == "oddish.workers.agents.claude_code:OddishClaudeCode"
+    )
+    assert agent_config.kwargs["version"] == "2.1.181"
+    assert agent_config.kwargs["disallowed_tools"] == (
+        "WebSearch WebFetch EnterPlanMode EnterWorktree "
+        "ExitPlanMode ExitWorktree AskUserQuestion"
+    )
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.moonshot.ai/anthropic"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MOONSHOT_API_KEY}"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == "vendor-model[1m]"
+    assert agent_config.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+    assert agent_config.env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1048576"
+    assert agent_config.env["CLAUDE_CODE_EFFORT_LEVEL"] == "max"
+    assert agent_config.env["FORCE_AUTO_BACKGROUND_TASKS"] == "1"
+    assert agent_config.env["ENABLE_BACKGROUND_TASKS"] == "1"
+    assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
+    assert agent_config.env["IS_SANDBOX"] == "1"
+    assert agent_config.env["API_TIMEOUT_MS"] == "12000000"
+    assert agent_config.env["BUN_CONFIG_HTTP_IDLE_TIMEOUT"] == "2000"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+
+
+def test_kimi_claude_code_moonshot_prefixes_caller_model(monkeypatch) -> None:
+    monkeypatch.delenv("MOONSHOT_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="kimi-claude-code",
+        model="moonshot/kimi-k2.7-code",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "moonshot/kimi-k2.7-code"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "kimi-k2.7-code"
+    assert agent_config.kwargs["version"] == "2.1.181"
 
 
 def test_claude_code_fireworks_agent_config_sets_fireworks_skin_env(
@@ -421,6 +469,49 @@ def test_claude_code_fireworks_does_not_trigger_zai_route(monkeypatch) -> None:
 
     assert "fireworks" in agent_config.env["ANTHROPIC_BASE_URL"]
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}"
+
+
+def test_claude_code_anthropic_hdo_overwrites_anthropic_api_key(monkeypatch) -> None:
+    monkeypatch.setattr(
+        harbor_runner.settings, "anthropic_hdo_api_key", "sk-ant-hdo-test"
+    )
+    monkeypatch.setattr(harbor_runner.settings, "anthropic_api_key", "sk-ant-platform")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-platform")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="anthropic-hdo/claude-sonnet-4-6",
+        raw_harbor_config={},
+    )
+
+    # Prefix stays for provider/queue/allowlist; Claude Code gets the bare API id.
+    assert agent_config.model_name == "anthropic-hdo/claude-sonnet-4-6"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == "sk-ant-hdo-test"
+    assert agent_config.env["ANTHROPIC_MODEL"] == "claude-sonnet-4-6"
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    # Direct Anthropic API — no custom base URL / auth-token skin.
+    assert "ANTHROPIC_BASE_URL" not in (agent_config.env or {})
+    assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
+
+
+def test_claude_code_anthropic_hdo_wins_over_probe_env_platform_key(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        harbor_runner.settings, "anthropic_hdo_api_key", "sk-ant-hdo-test"
+    )
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="anthropic-hdo/claude-sonnet-4-6",
+        raw_harbor_config={},
+        probe_oddish_env={"ANTHROPIC_API_KEY": "sk-ant-platform-or-byok"},
+    )
+
+    assert agent_config.env["ANTHROPIC_API_KEY"] == "sk-ant-hdo-test"
 
 
 def test_claude_code_fireworks_agent_config_preserves_explicit_env(monkeypatch) -> None:
@@ -593,7 +684,7 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
             harbor_config={
                 "environment": {
                     "kwargs": {
-                        "agent_tools_image": AGENT_TOOLS_IMAGE,
+                        "region": SAMPLE_REGION,
                     }
                 }
             },
@@ -601,4 +692,4 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
     )
 
     assert outcome.error is None
-    assert seen["environment_kwargs"]["agent_tools_image"] == AGENT_TOOLS_IMAGE
+    assert seen["environment_kwargs"]["region"] == SAMPLE_REGION

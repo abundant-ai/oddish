@@ -15,8 +15,10 @@ from oddish.config import (
     OPENAI_PROVIDER_AZURE,
     OPENAI_PROVIDER_OPENAI,
     ZAI_DEFAULT_BASE_URL,
+    anthropic_hdo_bare_model_id,
     fireworks_api_model_id,
     fireworks_bare_model_id,
+    is_anthropic_hdo_model,
     is_fireworks_model,
     is_meta_model,
     is_minimax_model,
@@ -30,6 +32,7 @@ from oddish.config import (
     moonshot_bare_model_id,
     settings,
     to_anthropic_api_model_id,
+    to_anthropic_hdo_model_id,
     to_fireworks_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
@@ -46,9 +49,7 @@ _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH = (
     "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
 )
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
-_ODDISH_MINI_SWE_IMPORT_PATH = (
-    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
-)
+_ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
 )
@@ -56,6 +57,7 @@ _ANTHROPIC_MODEL_ALIAS_KEYS = (
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_FABLE_MODEL",
     "CLAUDE_CODE_SUBAGENT_MODEL",
 )
 _AMBIENT_ANTHROPIC_CREDENTIAL_KEYS = (
@@ -64,9 +66,55 @@ _AMBIENT_ANTHROPIC_CREDENTIAL_KEYS = (
     "AWS_BEARER_TOKEN_BEDROCK",
 )
 
+# Oddish agent alias for Moonshot's Claude Code eval harness. Hardcodes the
+# vendor-required version / disallowed tools / long-context env; callers still
+# pass ``--model``.
+_KIMI_CLAUDE_CODE_AGENT = "kimi-claude-code"
+_KIMI_CLAUDE_CODE_VERSION = "2.1.181"
+_KIMI_CLAUDE_CODE_DISALLOWED_TOOLS = (
+    "WebSearch WebFetch EnterPlanMode EnterWorktree "
+    "ExitPlanMode ExitWorktree AskUserQuestion"
+)
+_KIMI_CLAUDE_CODE_RECOMMENDED_ENV: dict[str, str] = {
+    "ENABLE_TOOL_SEARCH": "false",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1048576",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max",
+    "FORCE_AUTO_BACKGROUND_TASKS": "1",
+    "ENABLE_BACKGROUND_TASKS": "1",
+    "IS_SANDBOX": "1",
+    "API_TIMEOUT_MS": "12000000",
+    "BUN_CONFIG_HTTP_IDLE_TIMEOUT": "2000",
+}
+
 
 def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
     return "claude-code" in (agent_config.name or "").strip().lower()
+
+
+def _is_kimi_claude_code_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() == _KIMI_CLAUDE_CODE_AGENT
+
+
+def _prepare_kimi_claude_code_agent(agent_config: AgentConfig) -> None:
+    """Apply vendor kwargs and moonshot-prefix the caller-supplied model."""
+    if not _is_kimi_claude_code_agent(agent_config):
+        return
+
+    model = (agent_config.model_name or "").strip()
+    if model:
+        bare = (
+            moonshot_bare_model_id(model)
+            if is_moonshot_model(model)
+            else model.split("/")[-1].strip()
+        )
+        if bare:
+            agent_config.model_name = f"moonshot/{bare}"
+
+    kwargs = dict(agent_config.kwargs or {})
+    kwargs.setdefault("version", _KIMI_CLAUDE_CODE_VERSION)
+    kwargs.setdefault("disallowed_tools", _KIMI_CLAUDE_CODE_DISALLOWED_TOOLS)
+    agent_config.kwargs = kwargs
 
 
 def _is_mini_swe_agent(agent_config: AgentConfig) -> bool:
@@ -240,13 +288,50 @@ def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
         return
 
     bare_model = moonshot_bare_model_id(agent_config.model_name or "")
+    recommended = (
+        _KIMI_CLAUDE_CODE_RECOMMENDED_ENV
+        if _is_kimi_claude_code_agent(agent_config)
+        else _MOONSHOT_RECOMMENDED_ENV
+    )
     _apply_anthropic_compat_env(
         agent_config,
         base_url=os.environ.get("MOONSHOT_BASE_URL") or MOONSHOT_DEFAULT_BASE_URL,
         auth_token="${MOONSHOT_API_KEY}",
         model=bare_model,
-        recommended_env=_MOONSHOT_RECOMMENDED_ENV,
+        recommended_env=recommended,
     )
+
+
+def _resolve_anthropic_hdo_api_key() -> str:
+    """Return the HDO Anthropic key from settings or the process environment."""
+    configured = (settings.anthropic_hdo_api_key or "").strip()
+    if configured:
+        return configured
+    return (os.environ.get("ANTHROPIC_HDO_API_KEY") or "").strip()
+
+
+def _inject_anthropic_hdo_api_key(
+    agent_config: AgentConfig, *, model_name: str | None
+) -> None:
+    """Overwrite ``ANTHROPIC_API_KEY`` with the HDO key for an HDO-prefixed trial.
+
+    Call while the model still carries the ``anthropic-hdo/`` prefix (or pass
+    that original id as *model_name*). Always overwrites: an empty HDO key must
+    not fall through to the platform Anthropic / Bedrock credentials.
+    """
+    if not is_anthropic_hdo_model(model_name):
+        return
+    bare_model = anthropic_hdo_bare_model_id(model_name or "")
+    api_model = to_anthropic_api_model_id(bare_model) or bare_model
+    env = dict(agent_config.env or {})
+    env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    if _is_claude_code_agent(agent_config) and api_model:
+        env["ANTHROPIC_MODEL"] = api_model
+        for alias in _ANTHROPIC_MODEL_ALIAS_KEYS:
+            env.setdefault(alias, api_model)
+    agent_config.env = env
 
 
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
@@ -329,7 +414,7 @@ def _apply_claude_code_oddish_wrapper(
     if agent_config.import_path is not None:
         return
     agent_name = (agent_config.name or "").strip().lower()
-    if agent_name != "claude-code":
+    if agent_name not in {"claude-code", _KIMI_CLAUDE_CODE_AGENT}:
         return
 
     agent_config.name = None
@@ -357,7 +442,7 @@ def _apply_claude_code_probe_subagent_model(
     if not is_probe or not agent_config.model_name:
         return
     agent_name = (agent_config.name or "").strip().lower()
-    if agent_name != "claude-code":
+    if agent_name not in {"claude-code", _KIMI_CLAUDE_CODE_AGENT}:
         return
     env = dict(agent_config.env or {})
     env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", agent_config.model_name)
@@ -440,6 +525,9 @@ def _build_agent_config(
     if model is not None:
         agent_config.model_name = model
 
+    # Before provider canonicalization: moonshot-prefix the model + vendor kwargs.
+    _prepare_kimi_claude_code_agent(agent_config)
+
     if is_fireworks_model(agent_config.model_name):
         agent_config.model_name = to_fireworks_model_id(agent_config.model_name)
     elif is_meta_model(agent_config.model_name):
@@ -452,6 +540,21 @@ def _build_agent_config(
         agent_config.model_name = to_minimax_model_id(agent_config.model_name)
     elif is_moonshot_model(agent_config.model_name):
         agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
+    elif is_anthropic_hdo_model(agent_config.model_name):
+        # Inject the HDO key before rewriting the model id so non-claude-code
+        # agents (which become anthropic/<id>) still authenticate with it.
+        hdo_model = agent_config.model_name
+        _inject_anthropic_hdo_api_key(agent_config, model_name=hdo_model)
+        canonical = to_anthropic_hdo_model_id(hdo_model)
+        if _is_claude_code_agent(agent_config):
+            # Keep the anthropic-hdo/ prefix for provider/queue/allowlist; the
+            # injector pins ANTHROPIC_MODEL to the bare Anthropic API id.
+            agent_config.model_name = canonical
+        else:
+            # litellm agents need anthropic/<api-id> plus ANTHROPIC_API_KEY.
+            bare = anthropic_hdo_bare_model_id(canonical or "")
+            api_id = to_anthropic_api_model_id(bare) or bare
+            agent_config.model_name = f"anthropic/{api_id}" if api_id else canonical
     elif not _is_claude_code_agent(agent_config):
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes a bare model id.
@@ -491,6 +594,11 @@ def _build_agent_config(
     _apply_mini_swe_agent(agent_config)
     _apply_claude_code_oddish_wrapper(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
+    # HDO key must win over probe/BYOK/platform ANTHROPIC_API_KEY merges above.
+    # Use the original *model* arg: non-claude-code agents rewrite model_name to
+    # anthropic/<id> and would otherwise lose the HDO signal.
+    if is_anthropic_hdo_model(model):
+        _inject_anthropic_hdo_api_key(agent_config, model_name=model)
 
     return agent_config
 

@@ -61,11 +61,12 @@ network_mode = "{agent_mode}"
     return task_path
 
 
-def test_inject_daytona_agent_model_hosts_for_restricted_direct_task(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL])
+def test_inject_restricted_agent_model_hosts_for_restricted_direct_task(
+    monkeypatch, tmp_path, environment_type
 ):
     task_path = _write_network_policy_task(tmp_path)
-    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(
         import_path="example.agent:Agent",
         model_name="example-model",
@@ -74,34 +75,66 @@ def test_inject_daytona_agent_model_hosts_for_restricted_direct_task(
     )
     captured: dict[str, object] = {}
 
-    def _infer(**kwargs):
-        captured.update(kwargs)
+    def _hosts(model_name, *, agent_env=None, agent_kwargs=None):
+        captured["model_name"] = model_name
+        captured["agent_env"] = agent_env
+        captured["agent_kwargs"] = agent_kwargs
         return ["model.test", "existing.test"]
 
-    monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
+    monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
 
-    harbor_runner._inject_daytona_agent_model_hosts(
+    harbor_runner._inject_restricted_agent_model_hosts(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
     )
 
     assert agent_config.extra_allowed_hosts == ["existing.test", "model.test"]
+    assert captured["model_name"] == "example-model"
+    assert captured["agent_env"] == {"MODEL_BASE_URL": "https://model.test/v1"}
     assert captured["agent_kwargs"] == {
         "extra_env": {"MODEL_BASE_URL": "https://model.test/v1"}
     }
 
 
+def test_apply_restricted_agent_network_defaults_disables_web_tools(
+    monkeypatch, tmp_path
+):
+    task_path = _write_network_policy_task(tmp_path)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.MODAL)
+    agent_config = HarborAgentConfig(
+        name="claude-code",
+        model_name="anthropic/claude-opus-4-8",
+        kwargs={"effort": "max"},
+    )
+    monkeypatch.setattr(
+        harbor_runner,
+        "outbound_hosts_for_model",
+        lambda *args, **kwargs: ["api.anthropic.com"],
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+    )
+
+    assert agent_config.extra_allowed_hosts == ["api.anthropic.com"]
+    assert agent_config.kwargs["disallowed_tools"] == "WebSearch WebFetch"
+    assert agent_config.kwargs["effort"] == "max"
+
+
 @pytest.mark.parametrize(
     ("environment_type", "environment_mode", "agent_mode", "compose"),
     [
-        (EnvironmentType.MODAL, "public", "no-network", False),
         (EnvironmentType.DAYTONA, "public", "public", False),
         (EnvironmentType.DAYTONA, "no-network", "no-network", False),
         (EnvironmentType.DAYTONA, "public", "no-network", True),
+        (EnvironmentType.MODAL, "public", "no-network", True),
+        (EnvironmentType.DOCKER, "public", "no-network", False),
     ],
 )
-def test_inject_daytona_agent_model_hosts_skips_unsupported_shapes(
+def test_inject_restricted_agent_model_hosts_skips_unsupported_shapes(
     monkeypatch,
     tmp_path,
     environment_type,
@@ -117,22 +150,22 @@ def test_inject_daytona_agent_model_hosts_skips_unsupported_shapes(
     )
     environment_config = HarborEnvironmentConfig(type=environment_type)
     agent_config = HarborAgentConfig(name="codex", model_name="example-model")
-    infer_calls = 0
+    host_calls = 0
 
-    def _infer(**kwargs):
-        nonlocal infer_calls
-        infer_calls += 1
+    def _hosts(*args, **kwargs):
+        nonlocal host_calls
+        host_calls += 1
         return ["model.test"]
 
-    monkeypatch.setattr(harbor_runner, "infer_agent_domains", _infer)
+    monkeypatch.setattr(harbor_runner, "outbound_hosts_for_model", _hosts)
 
-    harbor_runner._inject_daytona_agent_model_hosts(
+    harbor_runner._inject_restricted_agent_model_hosts(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
     )
 
-    assert infer_calls == 0
+    assert host_calls == 0
     assert agent_config.extra_allowed_hosts == []
 
 
@@ -293,6 +326,7 @@ def test_format_exception_message_includes_exception_group_children():
 
 def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
@@ -362,6 +396,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
 
 def test_store_trial_results_persists_total_steps(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
@@ -446,6 +481,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.FAILED,
@@ -518,6 +554,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
 
 def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        id="trial-1",
         task_id="task-1",
         model="gpt-5",
         status=trial_handler.TrialStatus.FAILED,
@@ -1859,6 +1896,7 @@ def test_cleanup_trial_wrapper_dirs_skips_missing_base(monkeypatch, tmp_path):
 
 def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
     return SimpleNamespace(
+        id="trial-1",
         task_id="task-retry-gate",
         model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,

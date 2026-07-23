@@ -12,12 +12,32 @@ hackable task could be laundered into the capability-headroom lane.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import Any, TypedDict
 
 from oddish.config import to_anthropic_api_model_id
 from oddish.evals.analyzer.bucketing import BUCKET_OF, SUBCATEGORY_OF
 
 _UNKNOWN_MODEL = "unknown"
+
+
+class _GapRow(TypedDict):
+    gap: str
+    subcategory: str
+    count: int
+    examples: list[dict]
+
+
+class _ModelGroup(TypedDict):
+    key: str
+    gaps: list[_GapRow]
+
+
+class _TaskGroup(TypedDict):
+    key: str
+    task_id: str
+    models_hit: list[str]
+    models_total: int | None
+    gaps: list[_GapRow]
 
 
 def _model_key(raw: str | None) -> str:
@@ -51,13 +71,13 @@ def _example(finding: dict) -> dict:
     }
 
 
-def _gaps(findings: list[dict]) -> list[dict]:
+def _gaps(findings: list[dict]) -> list[_GapRow]:
     """Group a lane's findings by subtype -> one row per distinct gap."""
     by_gap: dict[str, list[dict]] = defaultdict(list)
     for f in findings:
         by_gap[f.get("subtype") or "unknown"].append(f)
 
-    gaps = [
+    gaps: list[_GapRow] = [
         {
             "gap": gap,
             "subcategory": SUBCATEGORY_OF.get(gap, "emergent"),
@@ -75,7 +95,7 @@ def _by_model(findings: list[dict]) -> dict[str, Any]:
     for f in findings:
         by_model[_model_key(f.get("model"))].append(f)
 
-    groups = [
+    groups: list[_ModelGroup] = [
         {"key": key, "gaps": _gaps(items)} for key, items in by_model.items()
     ]
     groups.sort(key=lambda g: (-sum(x["count"] for x in g["gaps"]), g["key"]))
@@ -89,7 +109,7 @@ def _by_task(
     for f in findings:
         by_task[f.get("task_id") or "unknown"].append(f)
 
-    groups = []
+    groups: list[_TaskGroup] = []
     for task_id, items in by_task.items():
         # Both sides normalized, and both drop unattributable trials, or
         # models_hit could contain a key absent from the roster and the ratio
@@ -107,7 +127,7 @@ def _by_task(
             total = len({_model_key(m) for m in models_by_task.get(task_id, [])})
         groups.append(
             {
-                "key": items[0].get("task_path") or task_id,
+                "key": str(items[0].get("task_path") or task_id),
                 "task_id": task_id,
                 "models_hit": hit,
                 "models_total": total,
@@ -124,7 +144,9 @@ def build_rollup(
     """``models_by_task=None`` means no roster was persisted; task_construction
     then reports ``models_total: None`` (unknown) rather than 0."""
     lanes: dict[str, list[dict]] = {
-        "good_failures": [], "task_construction": [], "reward_hacking": []
+        "good_failures": [],
+        "task_construction": [],
+        "reward_hacking": [],
     }
     for f in findings:
         lane = _lane_of(f)

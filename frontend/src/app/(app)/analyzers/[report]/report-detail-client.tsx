@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fetcher } from "@/lib/api";
 import type { Report } from "@/lib/types";
+import { ByModelView } from "./by-model-view";
 
 const MarkdownRenderer = dynamic(() =>
   import("@/components/renderers/markdown-renderer").then(
@@ -104,6 +105,8 @@ export function ReportDetailClient({ reportId }: { reportId: string }) {
       {report.status === "failed" && report.error && (
         <div className="text-sm text-red-500">{report.error}</div>
       )}
+
+      {report.by_model && <ByModelView payload={report.by_model} />}
 
       <Section
         title="Bad failures (reward hacking)"

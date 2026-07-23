@@ -10,7 +10,7 @@ from typing import Optional
 from pydantic import BaseModel, model_validator
 
 from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
-from api.services.blocks.block import Block
+from oddish.blocks.block import Block
 
 logger = logging.getLogger("oddish.trajectory_block")
 
@@ -49,6 +49,8 @@ class TrajectoryComponent:
     step_ids: list[int]
     trajectory_component: TrajectoryBlockTaxonomy
     summary: Optional[str] = None
+    tool_count: int = 0
+    duration_ms: int = 0
 
 
 class TrajectoryInput(BaseModel):
@@ -211,11 +213,54 @@ class TrajectoryBlock(Block):
 
     def to_summary(self, raw: str, *, model: str) -> dict:
         out = self.parse(raw)
+        steps = self.trajectory_input.trajectory.get("steps") or []
+        step_by_id = {
+            step.get("step_id"): (index, step)
+            for index, step in enumerate(steps)
+            if isinstance(step, dict) and isinstance(step.get("step_id"), int)
+        }
+
+        def timestamp_ms(step: dict) -> float | None:
+            value = step.get("timestamp")
+            if not isinstance(value, str):
+                return None
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
+            except ValueError:
+                return None
+
+        def duration_ms(index: int, step: dict) -> int:
+            if index == 0:
+                return 0
+            current = timestamp_ms(step)
+            previous = timestamp_ms(steps[index - 1]) if isinstance(steps[index - 1], dict) else None
+            if current is None or previous is None:
+                return 0
+            return max(0, round(current - previous))
+
+        components = []
+        for component in out.components:
+            component_steps = [
+                step_by_id[step_id]
+                for step_id in component["step_ids"]
+                if step_id in step_by_id
+            ]
+            components.append({
+                **component,
+                # These fields are derived from the immutable trajectory rather
+                # than supplied by the LLM, so consumers can safely aggregate them.
+                "tool_count": sum(
+                    len(step.get("tool_calls") or [])
+                    for _, step in component_steps
+                    if isinstance(step.get("tool_calls"), list)
+                ),
+                "duration_ms": sum(duration_ms(index, step) for index, step in component_steps),
+            })
         return {
-            "schema_version": "4",
+            "schema_version": "5",
             "model": model,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "summary": out.summary,
             "highlights": out.highlights,
-            "components": out.components,
+            "components": components,
         }

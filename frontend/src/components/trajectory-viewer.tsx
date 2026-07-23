@@ -36,12 +36,19 @@ import type {
   ObservationContent,
   ContentPart,
 } from "@/lib/types";
+import { phaseColorVars, stepDurationsMs } from "@/lib/trajectory-metrics";
+import {
+  groupStatsLabel,
+  groupStepsBySegment,
+  toSegments,
+} from "@/lib/trajectory-segments";
+import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 import { formatMs } from "@/lib/utils";
 
 function formatStepDuration(
   prevTimestamp: string | null,
-  currentTimestamp: string | null,
+  currentTimestamp: string | null
 ): string | null {
   if (!prevTimestamp || !currentTimestamp) return null;
   const prev = new Date(prevTimestamp).getTime();
@@ -70,7 +77,7 @@ interface ImageError {
 }
 
 function getTextFromContent(
-  content: MessageContent | ObservationContent,
+  content: MessageContent | ObservationContent
 ): string {
   if (content === null || content === undefined) {
     return "";
@@ -81,14 +88,14 @@ function getTextFromContent(
 
   return content
     .filter(
-      (part): part is ContentPart & { type: "text" } => part.type === "text",
+      (part): part is ContentPart & { type: "text" } => part.type === "text"
     )
     .map((part) => part.text || "")
     .join("\n");
 }
 
 function getFirstLine(
-  content: MessageContent | ObservationContent,
+  content: MessageContent | ObservationContent
 ): string | null {
   const text = getTextFromContent(content);
   return text?.split("\n")[0] || null;
@@ -174,20 +181,20 @@ function ImageWithFallback({ src, path }: { src: string; path: string }) {
   if (error) {
     return (
       <div className="my-2">
-        <div className="rounded border border-dashed border-muted-foreground/50 bg-muted/50 p-4 text-sm">
-          <div className="mb-2 flex items-center gap-2 text-muted-foreground">
+        <div className="border-muted-foreground/50 bg-muted/50 rounded border border-dashed p-4 text-sm">
+          <div className="text-muted-foreground mb-2 flex items-center gap-2">
             <ImageOff className="h-4 w-4" />
             <span className="font-medium">Image unavailable</span>
             {error.status > 0 && (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-xs">
+              <span className="bg-muted rounded px-1.5 py-0.5 text-xs">
                 {error.status}
               </span>
             )}
           </div>
-          <div className="break-all font-mono text-xs text-muted-foreground/80">
+          <div className="text-muted-foreground/80 font-mono text-xs break-all">
             {path}
           </div>
-          <div className="mt-2 text-xs text-muted-foreground/60">
+          <div className="text-muted-foreground/60 mt-2 text-xs">
             {error.message}
           </div>
         </div>
@@ -200,12 +207,12 @@ function ImageWithFallback({ src, path }: { src: string; path: string }) {
       <img
         src={src}
         alt={`Image: ${path}`}
-        className="h-auto max-w-full rounded border border-border"
+        className="border-border h-auto max-w-full rounded border"
         style={{ maxHeight: "400px" }}
         loading="lazy"
         onError={handleError}
       />
-      <div className="mt-1 text-xs text-muted-foreground">{path}</div>
+      <div className="text-muted-foreground mt-1 text-xs">{path}</div>
     </div>
   );
 }
@@ -220,14 +227,14 @@ function ContentRenderer({
   apiBaseUrl: string;
 }) {
   if (content === null || content === undefined) {
-    return <span className="italic text-muted-foreground">(empty)</span>;
+    return <span className="text-muted-foreground italic">(empty)</span>;
   }
 
   if (typeof content === "string") {
     return (
-      <div className="whitespace-pre-wrap wrap-break-word text-sm">
+      <div className="text-sm wrap-break-word whitespace-pre-wrap">
         {content || (
-          <span className="italic text-muted-foreground">(empty)</span>
+          <span className="text-muted-foreground italic">(empty)</span>
         )}
       </div>
     );
@@ -240,7 +247,7 @@ function ContentRenderer({
           return (
             <div
               key={idx}
-              className="whitespace-pre-wrap wrap-break-word text-sm"
+              className="text-sm wrap-break-word whitespace-pre-wrap"
             >
               {part.text}
             </div>
@@ -313,7 +320,7 @@ function StepDurationBar({
   if (totalMs === 0) {
     return (
       <div className="mb-4">
-        <div className="h-6 rounded bg-muted" />
+        <div className="bg-muted h-6 rounded" />
       </div>
     );
   }
@@ -423,10 +430,10 @@ function TokenUsageBar({ metrics }: { metrics: FinalMetrics | null }) {
     <TooltipProvider>
       <div className="mb-4">
         <div className="mb-1.5 flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          <span className="text-muted-foreground text-[10px] tracking-wider uppercase">
             Tokens
           </span>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-muted-foreground text-xs">
             {total.toLocaleString()} total
           </span>
         </div>
@@ -498,7 +505,7 @@ function StepMetricsBar({ metrics }: { metrics: TrajectoryStep["metrics"] }) {
   ].filter((s) => s.value > 0);
 
   return (
-    <div className="flex items-center gap-3 text-xs text-muted-foreground">
+    <div className="text-muted-foreground flex items-center gap-3 text-xs">
       {/* Mini token bar */}
       {total > 0 && (
         <div className="flex items-center gap-1.5">
@@ -607,10 +614,10 @@ function StepContent({
       {/* Reasoning */}
       {step.reasoning_content && (
         <div>
-          <h5 className="mb-1 text-xs font-medium text-muted-foreground">
+          <h5 className="text-muted-foreground mb-1 text-xs font-medium">
             Reasoning
           </h5>
-          <div className="whitespace-pre-wrap rounded border border-blue-500/20 bg-blue-500/10 p-2 text-xs">
+          <div className="rounded border border-blue-500/20 bg-blue-500/10 p-2 text-xs whitespace-pre-wrap">
             {step.reasoning_content}
           </div>
         </div>
@@ -619,7 +626,7 @@ function StepContent({
       {/* Tool Calls */}
       {step.tool_calls && step.tool_calls.length > 0 && (
         <div>
-          <h5 className="mb-1 text-xs font-medium text-muted-foreground">
+          <h5 className="text-muted-foreground mb-1 text-xs font-medium">
             Tool Calls
           </h5>
           <div className="space-y-2">
@@ -637,7 +644,7 @@ function StepContent({
       {/* Observations */}
       {step.observation && step.observation.results.length > 0 && (
         <div>
-          <h5 className="mb-1 text-xs font-medium text-muted-foreground">
+          <h5 className="text-muted-foreground mb-1 text-xs font-medium">
             Observations
           </h5>
           <div className="space-y-2">
@@ -657,7 +664,7 @@ function StepContent({
               return (
                 <div
                   key={idx}
-                  className="rounded border border-border/60 bg-muted/20 p-2"
+                  className="border-border/60 bg-muted/20 rounded border p-2"
                 >
                   <ContentRenderer
                     content={result.content}
@@ -673,7 +680,7 @@ function StepContent({
 
       {/* Metrics */}
       {step.metrics && (
-        <div className="border-t border-border/50 pt-2">
+        <div className="border-border/50 border-t pt-2">
           <StepMetricsBar metrics={step.metrics} />
         </div>
       )}
@@ -716,7 +723,7 @@ export function TrajectoryViewer({
     fetcher,
     {
       revalidateOnFocus: false,
-    },
+    }
   );
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
@@ -747,6 +754,30 @@ export function TrajectoryViewer({
     return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
   }, [trajectory, lowerQuery]);
 
+  // A summary request can trigger paid on-demand generation server-side, so it
+  // must not fire for a trial we already know (via shouldFetch) has no trajectory.
+  const { data: summary } = useTrajectorySummary(
+    trialId,
+    apiBaseUrl,
+    shouldFetch
+  );
+  const segments = useMemo(() => toSegments(summary), [summary]);
+  const colorFor = useMemo(
+    () => phaseColorVars(segments.map((s) => s.key)),
+    [segments]
+  );
+  // Grouping runs over the *filtered* list, so a group whose steps all filtered
+  // out is simply never emitted.
+  const groups = useMemo(
+    () => groupStepsBySegment(visibleSteps, segments),
+    [visibleSteps, segments]
+  );
+  // Full-trajectory durations: group steps carry indexes into the full list.
+  const stepDurations = useMemo(
+    () => stepDurationsMs(trajectory?.steps ?? []),
+    [trajectory]
+  );
+
   const handleStepClick = useCallback(
     (index: number) => {
       const stepKey = `step-${index}`;
@@ -756,7 +787,7 @@ export function TrajectoryViewer({
         setQuery("");
       }
       setExpandedSteps((prev) =>
-        prev.includes(stepKey) ? prev : [...prev, stepKey],
+        prev.includes(stepKey) ? prev : [...prev, stepKey]
       );
       // Scroll to step after a brief delay for accordion animation
       setTimeout(() => {
@@ -766,7 +797,7 @@ export function TrajectoryViewer({
         });
       }, 50);
     },
-    [lowerQuery, visibleSteps],
+    [lowerQuery, visibleSteps]
   );
 
   // Resolve a #step-<step_id> hash once the trajectory has loaded. The hash
@@ -810,7 +841,7 @@ export function TrajectoryViewer({
     return (
       <div className="p-4 text-center">
         <Route className="mx-auto mb-2 h-8 w-8 text-red-500" />
-        <p className="text-sm text-muted-foreground">
+        <p className="text-muted-foreground text-sm">
           Failed to load trajectory
         </p>
         <p className="mt-1 text-xs text-red-500">{error.message}</p>
@@ -821,11 +852,11 @@ export function TrajectoryViewer({
   if (!trajectory) {
     return (
       <div className="p-6 text-center">
-        <Route className="mx-auto mb-3 h-10 w-10 text-muted-foreground/50" />
-        <p className="text-sm font-medium text-muted-foreground">
+        <Route className="text-muted-foreground/50 mx-auto mb-3 h-10 w-10" />
+        <p className="text-muted-foreground text-sm font-medium">
           No trajectory available
         </p>
-        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground/70">
+        <p className="text-muted-foreground/70 mx-auto mt-1 max-w-xs text-xs">
           This trial doesn't have ATIF trajectory data. Trajectories are
           recorded for agents that support the ATIF format.
         </p>
@@ -842,7 +873,7 @@ export function TrajectoryViewer({
           // step_id is typed number but arrives as a string from some producers;
           // strict === would return -1 and the scroll would silently no-op.
           trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId),
+            (s) => Number(s.step_id) === Number(stepId)
           )
         }
         onStepSelect={handleStepClick}
@@ -855,7 +886,7 @@ export function TrajectoryViewer({
           // step_id is typed number but arrives as a string from some producers;
           // strict === would return -1 and the scroll would silently no-op.
           trajectory.steps.findIndex(
-            (s) => Number(s.step_id) === Number(stepId),
+            (s) => Number(s.step_id) === Number(stepId)
           )
         }
         onStepSelect={handleStepClick}
@@ -868,7 +899,7 @@ export function TrajectoryViewer({
               Trajectory
             </span>
             <span className="flex items-center gap-2">
-              <span className="text-xs font-normal text-muted-foreground">
+              <span className="text-muted-foreground text-xs font-normal">
                 {lowerQuery
                   ? `${visibleSteps.length} of ${trajectory.steps.length} steps`
                   : `${trajectory.steps.length} steps`}
@@ -891,19 +922,19 @@ export function TrajectoryViewer({
         </CardHeader>
         <CardContent className="overflow-x-auto pt-1">
           {deepLinkError && (
-            <div className="mb-2 text-sm text-muted-foreground">
+            <div className="text-muted-foreground mb-2 text-sm">
               {deepLinkError}
             </div>
           )}
           {/* Step search */}
           <div className="relative mb-4">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
             <Input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Filter steps by keyword…"
-              className="h-9 pl-8 pr-8 text-sm"
+              className="h-9 pr-8 pl-8 text-sm"
             />
             {query && (
               <Button
@@ -912,7 +943,7 @@ export function TrajectoryViewer({
                 size="sm"
                 onClick={() => setQuery("")}
                 aria-label="Clear search"
-                className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground hover:text-foreground"
+                className="text-muted-foreground hover:text-foreground absolute top-1/2 right-1 h-7 w-7 -translate-y-1/2 p-0"
               >
                 <X className="h-3.5 w-3.5" />
               </Button>
@@ -930,9 +961,9 @@ export function TrajectoryViewer({
 
           {/* Steps Accordion */}
           {visibleSteps.length === 0 ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">
+            <div className="text-muted-foreground py-8 text-center text-sm">
               No steps match{" "}
-              <span className="font-medium text-foreground">
+              <span className="text-foreground font-medium">
                 &ldquo;{query.trim()}&rdquo;
               </span>
             </div>
@@ -942,33 +973,74 @@ export function TrajectoryViewer({
               value={expandedSteps}
               onValueChange={setExpandedSteps}
             >
-              {visibleSteps.map(({ step, idx }) => (
-                <AccordionItem
-                  key={step.step_id}
-                  value={`step-${idx}`}
-                  ref={(el: HTMLDivElement | null) => {
-                    stepRefs.current[idx] = el;
-                  }}
+              {groups.map((group) => (
+                // Keyed on the group's first step index, never positionally: the
+                // summary resolves after the trajectory, so the group count — and
+                // every index-derived key — changes when it arrives. A positional
+                // key would remount every AccordionItem/StepContent below it.
+                <div
+                  key={`${group.key ?? "unclaimed"}-${group.steps[0].idx}`}
+                  className="mt-5 first:mt-0"
                 >
-                  <AccordionTrigger className="py-3 hover:no-underline">
-                    <StepTrigger
-                      step={step}
-                      prevTimestamp={
-                        idx > 0
-                          ? (trajectory.steps[idx - 1]?.timestamp ?? null)
-                          : null
-                      }
-                      startTimestamp={trajectory.steps[0]?.timestamp ?? null}
-                    />
-                  </AccordionTrigger>
-                  <AccordionContent>
-                    <StepContent
-                      step={step}
-                      trialId={trialId}
-                      apiBaseUrl={apiBaseUrl}
-                    />
-                  </AccordionContent>
-                </AccordionItem>
+                  {group.label && (
+                    <div className="flex items-center gap-2 border-b pb-1.5">
+                      <span
+                        className="h-4 w-1 rounded-sm"
+                        aria-hidden="true"
+                        style={{
+                          background:
+                            (group.key && colorFor.get(group.key)) ??
+                            "var(--phase-other)",
+                        }}
+                      />
+                      <span
+                        role="heading"
+                        aria-level={4}
+                        className="text-sm font-semibold"
+                      >
+                        {group.label}
+                      </span>
+                      <span className="text-muted-foreground ml-auto font-mono text-xs">
+                        {groupStatsLabel(group, stepDurations)}
+                      </span>
+                    </div>
+                  )}
+                  {group.gist && (
+                    <p className="text-muted-foreground pt-1.5 pb-1 text-xs">
+                      {group.gist}
+                    </p>
+                  )}
+                  {group.steps.map(({ step, idx }) => (
+                    <AccordionItem
+                      key={step.step_id}
+                      value={`step-${idx}`}
+                      ref={(el: HTMLDivElement | null) => {
+                        stepRefs.current[idx] = el;
+                      }}
+                    >
+                      <AccordionTrigger className="py-3 hover:no-underline">
+                        <StepTrigger
+                          step={step}
+                          prevTimestamp={
+                            idx > 0
+                              ? (trajectory.steps[idx - 1]?.timestamp ?? null)
+                              : null
+                          }
+                          startTimestamp={
+                            trajectory.steps[0]?.timestamp ?? null
+                          }
+                        />
+                      </AccordionTrigger>
+                      <AccordionContent>
+                        <StepContent
+                          step={step}
+                          trialId={trialId}
+                          apiBaseUrl={apiBaseUrl}
+                        />
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </div>
               ))}
             </Accordion>
           )}

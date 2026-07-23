@@ -11,6 +11,8 @@ import json
 
 from oddish.evals.analyzer.prompt_builder import (
     SECTION_KEYS_BY_BUCKET,
+    by_model_output_shape,
+    denominators_block,
     map_output_shape,
     map_rubric,
     sections_block,
@@ -167,13 +169,20 @@ def build_reduce_only_prompt(
     counts: dict,
     batch_total: int,
     models_by_task: dict[str, list[str]] | None = None,
+    denominators: dict[str, dict] | None = None,
 ) -> str:
     """REDUCE over findings.jsonl. Runs in its own fresh claude process, so it
     reads the findings back off disk rather than holding them in context -- this
     is what keeps reduce independent of cohort size.
     """
     section_keys = SECTION_KEYS_BY_BUCKET[bucket]
-    example = json.dumps({k: "...markdown..." for k in section_keys})
+    # Unescape the shared fragment: it is str.format-escaped for the API path,
+    # but this prompt is assembled by concatenation, not .format().
+    by_model_example = by_model_output_shape().replace("{{", "{").replace("}}", "}")
+    # One JSON object, not two concatenated ones: the section keys stay open
+    # (no json.dumps here) so by_model_example's keys close the same brace.
+    section_pairs = ", ".join(f'"{k}": "...markdown..."' for k in section_keys)
+    example = f"{{{section_pairs},\n {by_model_example}}}"
     # Only the good bucket owns headroom_analysis, and it is the only brief that
     # asks for the roster. Rendering it for the bad cohort would hand that agent
     # a block no section it writes can use.
@@ -181,6 +190,12 @@ def build_reduce_only_prompt(
         "## Task roster — which models RAN each task, including the ones that PASSED\n"
         f"{task_roster_block(models_by_task)}\n\n"
         if "headroom_analysis" in section_keys
+        else ""
+    )
+    denominators_section = (
+        "## Per-model counts — the denominators for every per-model claim\n"
+        f"{denominators_block(denominators)}\n\n"
+        if denominators
         else ""
     )
     return (
@@ -206,7 +221,12 @@ def build_reduce_only_prompt(
         "## Counts\n"
         f"{json.dumps(counts, indent=2)}\n\n"
         f"{roster_section}"
+        f"{denominators_section}"
         f"## Write these markdown sections:\n{sections_block(section_keys)}\n\n"
+        "## Then write the per-model breakdown\n"
+        "Emit one by_model entry for EVERY model in the per-model counts above,\n"
+        "even if it has no findings — \"this model produced no failures of this\n"
+        "kind\" is a result. Use ONLY model ids that appear in those counts.\n\n"
         "## Output\n"
         f"Emit the result as a single JSON object prefixed with `REDUCE RESULT:`,\n"
         f"with exactly these keys:\n{example}\n\n"

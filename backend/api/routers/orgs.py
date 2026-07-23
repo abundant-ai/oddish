@@ -18,6 +18,8 @@ from api.schemas import (
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
+    PreTrialAnalysisSettingResponse,
+    PreTrialAnalysisSettingUpdate,
     OrgQuotaResponse,
     OrgUsageResponse,
     QuotaBumpRequest,
@@ -35,8 +37,10 @@ from auth import (
     require_can_manage_quotas,
 )
 from auth.verification import invalidate_cached_clerk_auth
+from pg_errors import is_undefined_table_error
 from oddish.config import QuotaMode, settings
 from models import (
+    OrganizationModel,
     OrgQuotaModel,
     QuotaBumpModel,
     QuotaModel,
@@ -67,6 +71,8 @@ CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
 router = APIRouter(tags=["Organization"])
 
+PRE_TRIAL_ANALYSIS_SETTING = "pre_trial_analysis_enabled"
+
 
 # =============================================================================
 # Organization Endpoints
@@ -88,6 +94,45 @@ async def get_organization(
         plan=auth.org.plan,
         created_at=auth.org.created_at.isoformat(),
     )
+
+
+@router.get(
+    "/org/settings/pre-trial-analysis",
+    response_model=PreTrialAnalysisSettingResponse,
+)
+async def get_pre_trial_analysis_setting(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> PreTrialAnalysisSettingResponse:
+    """Return the effective org setting; the deployment flag is its default."""
+    org_settings = auth.org.settings if auth.org and auth.org.settings else {}
+    enabled = org_settings.get(PRE_TRIAL_ANALYSIS_SETTING)
+    if not isinstance(enabled, bool):
+        enabled = settings.pre_trial_enabled
+    return PreTrialAnalysisSettingResponse(
+        enabled=enabled,
+        can_manage=auth.user_role == UserRole.ADMIN,
+    )
+
+
+@router.put(
+    "/org/settings/pre-trial-analysis",
+    response_model=PreTrialAnalysisSettingResponse,
+)
+async def update_pre_trial_analysis_setting(
+    data: PreTrialAnalysisSettingUpdate,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> PreTrialAnalysisSettingResponse:
+    """Enable or disable pre-trial QA for this organization."""
+    async with get_session() as session:
+        org = await session.get(OrganizationModel, auth.org_id, with_for_update=True)
+        if org is None:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        org.settings = {
+            **(org.settings or {}),
+            PRE_TRIAL_ANALYSIS_SETTING: data.enabled,
+        }
+        await session.commit()
+    return PreTrialAnalysisSettingResponse(enabled=data.enabled, can_manage=True)
 
 
 # =============================================================================
@@ -232,21 +277,6 @@ def _as_float_or_none(value) -> float | None:
     return None if value is None else float(value)
 
 
-def _is_undefined_table_error(exc: ProgrammingError) -> bool:
-    error: BaseException | None = exc.orig if exc.orig is not None else exc
-    seen: set[int] = set()
-    while error is not None and id(error) not in seen:
-        seen.add(id(error))
-        if (
-            getattr(error, "sqlstate", None) == "42P01"
-            or getattr(error, "pgcode", None) == "42P01"
-            or type(error).__name__ == "UndefinedTableError"
-        ):
-            return True
-        error = error.__cause__
-    return False
-
-
 async def _org_trial_usage(session, org_id) -> tuple[Decimal, Decimal]:
     used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
     reserved = await org_inflight_reserved_usd(session, org_id)
@@ -286,7 +316,7 @@ async def _org_quota_fields_or_unavailable(org_id) -> dict:
         async with get_session() as session:
             return await _org_quota_fields(session, org_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "GET /quotas org cap unavailable (org_quotas schema not "
@@ -305,7 +335,7 @@ async def _bump_totals_or_empty(org_id) -> dict:
         async with get_session() as session:
             return await live_bump_totals_by_user(session, org_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "boosts unavailable (quota_bumps schema not migrated yet); "
@@ -326,7 +356,7 @@ async def _bump_total_or_zero(
         async with session.begin_nested():
             return await live_bump_total(session, org_id, user_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "boost lookup unavailable (quota_bumps schema not migrated yet); "
@@ -426,7 +456,7 @@ async def get_org_quota_usage(
                 session, auth.org_id, start_of_today_utc()
             )
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         logger.warning(
             "GET /quotas/org cap unavailable (org_quotas schema not migrated "
@@ -482,7 +512,7 @@ async def set_org_quota(
 
             org_fields = await _org_quota_fields(session, auth.org_id)
     except ProgrammingError as exc:
-        if not _is_undefined_table_error(exc):
+        if not is_undefined_table_error(exc):
             raise
         raise HTTPException(
             status_code=503,

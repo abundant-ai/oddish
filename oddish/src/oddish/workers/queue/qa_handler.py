@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from sqlalchemy import func, select
 
+from oddish.analyze import BaselineValidation, TrialClassification
+from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
+from oddish.core.verdict_sync import (
+    aggregate_exploited_into_pre_trial,
+    build_pre_trial_payload,
+    build_verdict_payload,
+    sync_pre_trial_to_task,
+    sync_verdict_to_task,
+)
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -23,6 +34,70 @@ from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 QA_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+async def synthesize_task_verdict(
+    classifications: list[TrialClassification],
+    baseline: BaselineValidation | None,
+    quality_check_passed: bool,
+    timeout: float,
+    task_id: str | None = None,
+) -> TaskVerdictModel:
+    """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
+
+    The block self-provisions the direct API client for ``settings.verdict_model``
+    (an OpenAI/Azure model, so the API client uses the OpenAI SDK) with
+    TaskVerdictModel as the response format and VERDICT_MAX_TOKENS as the cap,
+    and closes it on every exit path. ``timeout`` bounds the whole block run --
+    the client has no per-request timeout knob -- falling back to
+    VERDICT_TIMEOUT, and the block persists itself to ``analyzer_blocks`` + S3.
+    """
+    from oddish.analyze.classifier import VERDICT_MAX_TOKENS, VERDICT_TIMEOUT
+    from oddish.blocks.analyzer.analyzer_block import (
+        AnalyzerBlock,
+        AnalyzerInput,
+        AnalyzerType,
+    )
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
+
+    vb = VerdictBlock(
+        classifications, baseline=baseline, quality_check_passed=quality_check_passed
+    )
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.TASK_VERDICT,
+        llm_client_type=LLMClientType.API,
+        input=AnalyzerInput(input={"num_trials": len(classifications)}),
+        analyzer_id=task_id,
+        # build_prompt() raises rather than sending the degraded placeholder
+        # (see VerdictBlock.build_prompt).
+        prompt=vb.build_prompt(),
+        model=settings.verdict_model,
+        max_tokens=VERDICT_MAX_TOKENS,
+        response_format=TaskVerdictModel,
+        output_transform=vb.to_verdict,
+    )
+    out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+    return TaskVerdictModel(**out.output)
+
+
+# The pre-trial-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
+# can be injected here the same way verdict synthesis is, without oddish
+# importing backend/. Mirrors VerdictSynthFn's shape.
+PreTrialSynthFn = Callable[[str, list[str], float], Awaitable[Any]]
+
+# Hosted (AnalyzerBlock-backed) pre-trial synth, registered by backend at import
+# via register_pre_trial_synth(). oddish/ can't import backend/, so the sandbox-
+# provisioning implementation is injected here rather than imported -- the same
+# seam analyzer_llm_client.register_sandbox_client_factory uses. None until
+# registered; the hosted hook resolves its organization-level setting.
+_pre_trial_synth_fn: PreTrialSynthFn | None = None
+
+
+def register_pre_trial_synth(fn: PreTrialSynthFn) -> None:
+    """Install the hosted pre-trial-synthesis implementation."""
+    global _pre_trial_synth_fn
+    _pre_trial_synth_fn = fn
 
 
 async def _heartbeat_qa_worker_job(
@@ -89,6 +164,7 @@ def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
 def _classifications_from_trials(trials) -> list:
     """Build verdict inputs from stored trial QA."""
     from oddish.analyze import Classification, TrialClassification
+    from oddish.analyze.models import ActionItem, ExploitationAssessment
 
     classifications: list = []
     for trial in trials:
@@ -107,6 +183,13 @@ def _classifications_from_trials(trials) -> list:
                     root_cause=analysis.get("root_cause", ""),
                     recommendation=analysis.get("recommendation", ""),
                     reward=analysis.get("reward"),
+                    action_items=[
+                        ActionItem(**x) for x in analysis.get("action_items", [])
+                    ],
+                    exploitation=[
+                        ExploitationAssessment(**x)
+                        for x in analysis.get("exploitation", [])
+                    ],
                 )
             )
     return classifications
@@ -160,8 +243,6 @@ async def run_task_qa_job(
     worker_job_id: str | None = None,
 ) -> None:
     """Classify a task's live trials and store one verdict."""
-    from oddish.analyze import TrialClassification, compute_task_verdict
-
     console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
     async with get_session() as session:
@@ -197,6 +278,56 @@ async def run_task_qa_job(
     classifications: list[TrialClassification] = []
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
+
+        # Pre-trial: a task-source audit, independent of trial classification
+        # -- runs once, before the per-trial loop, even when there are zero
+        # live trials to classify. The hosted hook applies the org-level setting
+        # and returns None when disabled; this is a no-op unless it is registered.
+        # guard keeps a skipped run from touching any pre_trial column. A pre-trial
+        # failure is swallowed here so it can never block the verdict path.
+        try:
+            if _pre_trial_synth_fn is not None:
+                pre_trial_items = await _pre_trial_synth_fn(
+                    task_id,
+                    [trial_id for trial_id, _ in live_trials],
+                    settings.pre_trial_timeout,
+                )
+            else:
+                pre_trial_items = None
+            if pre_trial_items is not None:
+                await sync_pre_trial_to_task(
+                    task_id,
+                    payload=build_pre_trial_payload(pre_trial_items),
+                    error=None,
+                    should_store=lambda session: _worker_job_is_running(
+                        session, worker_job_id
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Pre-trial synthesis failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+            # Double-fault guard: recording the failure is itself a DB write,
+            # so it can fail too -- caught locally so that can never escape
+            # into the outer try/except below and get misattributed as a
+            # verdict-synthesis failure (which would mark the whole verdict
+            # FAILED for what is really just a pre-trial write hiccup).
+            try:
+                await sync_pre_trial_to_task(
+                    task_id,
+                    payload=None,
+                    error=exc,
+                    should_store=lambda session: _worker_job_is_running(
+                        session, worker_job_id
+                    ),
+                )
+            except Exception as sync_exc:  # noqa: BLE001
+                console.print(
+                    f"[red]Failed to record pre-trial failure for {task_id}: "
+                    f"{type(sync_exc).__name__}: {sync_exc}[/red]"
+                )
+
         if not live_trials:
             # Every live trial is excluded from QA (bulk-migrated imports
             # filtered by imported_at; gate-skipped trials). Nothing to classify
@@ -272,6 +403,18 @@ async def run_task_qa_job(
             trials = trials_result.scalars().all()
             classifications = _classifications_from_trials(trials)
 
+        # The "doubly note" elevation: union each trial's exploitation
+        # assessments back onto task.pre_trial. Best-effort -- a failure here
+        # is a follow-up-audit gap, not a verdict-blocking error, so it must
+        # never stop verdict synthesis from running.
+        try:
+            await aggregate_exploited_into_pre_trial(task_id)
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Exploited-item aggregation failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+
         console.print(
             f"[cyan]Computing verdict from {len(classifications)} "
             "classifications...[/cyan]"
@@ -285,27 +428,18 @@ async def run_task_qa_job(
             raise ValueError("No successful classifications to synthesize verdict from")
 
         console.print("[dim]Starting verdict synthesis...[/dim]")
-        verdict = compute_task_verdict(
-            classifications=classifications,
-            baseline=None,
-            quality_check_passed=True,
-            model=settings.verdict_model,
-            console=console,
-            verbose=True,
-            timeout=180,
+        baseline = None
+        quality_check_passed = True
+        timeout = 180
+        verdict = await synthesize_task_verdict(
+            classifications,
+            baseline,
+            quality_check_passed,
+            timeout,
+            task_id=task_id,
         )
 
-        verdict_result = {
-            "is_good": verdict.is_good,
-            "confidence": verdict.confidence,
-            "primary_issue": verdict.primary_issue,
-            "reasoning": verdict.reasoning,
-            "recommendations": verdict.recommendations,
-            "task_problem_count": verdict.task_problem_count,
-            "agent_problem_count": verdict.agent_problem_count,
-            "success_count": verdict.success_count,
-            "harness_error_count": verdict.harness_error_count,
-        }
+        verdict_result = build_verdict_payload(verdict, classifications)
 
         console.print(
             f"[green]Verdict computed:[/green] {'GOOD' if verdict.is_good else 'NEEDS REVIEW'} "
@@ -326,38 +460,19 @@ async def run_task_qa_job(
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
-    async def _store_results() -> None:
-        async with get_session() as session:
-            task = await session.get(TaskModel, task_id, with_for_update=True)
-            if not task:
-                return
-
-            if not await _worker_job_is_running(session, worker_job_id):
-                console.print(
-                    f"[dim]QA {task_id} result ignored; job was cancelled[/dim]"
-                )
-                return
-
-            if verdict_result:
-                task.verdict = verdict_result
-                task.verdict_status = VerdictStatus.SUCCESS
-                task.verdict_error = None
-                task.verdict_finished_at = utcnow()
-                task.status = TaskStatus.COMPLETED
-                task.finished_at = utcnow()
-                console.print(
-                    f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]"
-                )
-            else:
-                task.verdict_status = VerdictStatus.FAILED
-                task.verdict_error = (
-                    verdict_error or "Verdict synthesis failed with exception"
-                )
-                task.verdict_finished_at = utcnow()
-                task.status = TaskStatus.COMPLETED
-                task.finished_at = utcnow()
-                console.print(
-                    f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
-                )
-
-    await asyncio.shield(_store_results())
+    status = await asyncio.shield(
+        sync_verdict_to_task(
+            task_id,
+            payload=verdict_result,
+            error=verdict_error,
+            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+        )
+    )
+    if status is None:
+        console.print(f"[dim]QA {task_id} result ignored; job was cancelled[/dim]")
+    elif verdict_result:
+        console.print(f"[green]Verdict {task_id} SUCCESS - Task COMPLETED[/green]")
+    else:
+        console.print(
+            f"[yellow]Verdict {task_id} FAILED - Task COMPLETED (no verdict)[/yellow]"
+        )

@@ -14,10 +14,12 @@ import time
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping, MutableSequence
 from typing import Any, cast
 
 import httpx
+import tomlkit
+import tomlkit.exceptions
 import typer
 import yaml
 from rich.console import Console
@@ -58,12 +60,14 @@ from oddish.core.harbor_artifacts import (
     detect_trajectory,
     extract_ctrf_summary,
     extract_trial_result_fields,
+    extract_trajectory_metrics,
     extract_verifier_metrics,
 )
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
 )
+from oddish.text_normalize import normalize_typography, summarize_normalization
 
 console = Console()
 TASK_SWEEP_TIMEOUT_SECONDS = 600.0
@@ -412,6 +416,69 @@ def validate_no_git_lfs_pointers(task_path: Path) -> None:
     raise typer.Exit(1)
 
 
+def _normalize_strings_in_place(node: Any, changes: dict[str, str]) -> None:
+    if isinstance(node, MutableMapping):
+        entries = list(node.items())
+    elif isinstance(node, MutableSequence):
+        entries = list(enumerate(node))
+    else:
+        return
+
+    for key, value in entries:
+        if isinstance(value, str):
+            normalized = normalize_typography(value)
+            if normalized != value:
+                changes.update(summarize_normalization(value))
+                node[key] = normalized
+        elif isinstance(value, (MutableMapping, MutableSequence)):
+            _normalize_strings_in_place(value, changes)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        if path.exists():
+            shutil.copymode(path, tmp_name)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def normalize_task_config_typography(task_path: Path) -> dict[str, str]:
+    """Normalize strings under ``[metadata]`` without changing runtime fields."""
+    config_path = task_path / "task.toml"
+    if not config_path.exists() or config_path.is_symlink():
+        return {}
+    try:
+        original = config_path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    try:
+        document = tomlkit.parse(original)
+    except tomlkit.exceptions.TOMLKitError:
+        return {}
+
+    metadata = document.get("metadata")
+    if not isinstance(metadata, MutableMapping):
+        return {}
+    changes: dict[str, str] = {}
+    _normalize_strings_in_place(metadata, changes)
+    if not changes:
+        return {}
+
+    try:
+        _atomic_write_text(config_path, tomlkit.dumps(document))
+    except OSError:
+        return {}
+    return changes
+
+
 def archive_task_dir(task_path: Path) -> Path:
     """Create a tarball of a task directory."""
     # Create tarball in temp directory
@@ -624,6 +691,7 @@ def upload_task(
     user: str | None = None,
     priority: str | None = None,
     force_new_version: bool = False,
+    quiet: bool = False,
 ) -> dict:
     """Upload a task directory to the API.
 
@@ -634,6 +702,17 @@ def upload_task(
     immediately (used by ``oddish upload``). The legacy sweep path leaves
     this False so task-row creation still happens inside ``/tasks/sweep``.
     """
+    typography_changes = normalize_task_config_typography(task_path)
+    if typography_changes and not quiet:
+        rendered = ", ".join(
+            f"{escape(repr(orig))}->{escape(repr(repl))}"
+            for orig, repl in typography_changes.items()
+        )
+        console.print(
+            f"[dim]Normalized non-ASCII typography in "
+            f"{escape(task_path.name)}/task.toml: {rendered}[/dim]"
+        )
+
     try:
         validate_task_timeout_config(task_path)
     except TaskTimeoutValidationError as exc:
@@ -771,6 +850,7 @@ def upload_tasks_with_progress(
             user=user,
             priority=priority,
             force_new_version=force_new_version,
+            quiet=quiet or json_output,
         )
 
     show_progress = not quiet and not json_output
@@ -977,6 +1057,8 @@ def build_sweep_payload(
     force_build: bool | None = None,
     agent_env: list[str] | None = None,
     agent_kwargs: list[str] | None = None,
+    allow_agent_hosts: list[str] | None = None,
+    disable_web_tools: bool = False,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
     content_hash: str | None = None,
@@ -988,6 +1070,8 @@ def build_sweep_payload(
     link: str | None = None,
     registry_auth: list[dict] | None = None,
 ) -> dict:
+    from oddish.cli.closed_internet import apply_closed_internet_overrides
+
     env_value = environment.value if environment else None
 
     if env_value is not None:
@@ -1030,6 +1114,12 @@ def build_sweep_payload(
             if parsed_kwargs:
                 existing.setdefault("kwargs", {}).update(parsed_kwargs)
             config["agent_config"] = existing
+
+    apply_closed_internet_overrides(
+        configs,
+        allow_agent_hosts=allow_agent_hosts,
+        disable_web_tools=disable_web_tools,
+    )
 
     payload: dict = {
         "task_id": task_id,
@@ -1166,6 +1256,8 @@ def submit_sweep(
     force_build: bool | None = None,
     agent_env: list[str] | None = None,
     agent_kwargs: list[str] | None = None,
+    allow_agent_hosts: list[str] | None = None,
+    disable_web_tools: bool = False,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
     content_hash: str | None = None,
@@ -1200,6 +1292,8 @@ def submit_sweep(
         force_build=force_build,
         agent_env=agent_env,
         agent_kwargs=agent_kwargs,
+        allow_agent_hosts=allow_agent_hosts,
+        disable_web_tools=disable_web_tools,
         artifact_paths=artifact_paths,
         append_to_task=append_to_task,
         content_hash=content_hash,
@@ -1532,6 +1626,9 @@ def trial_result_to_import_spec(
         total_steps = fields.total_steps
     if has_trajectory is None:
         has_trajectory = detect_trajectory(artifact_dir) if artifact_dir else False
+    trajectory_metrics = (
+        extract_trajectory_metrics(artifact_dir) if artifact_dir else None
+    )
 
     result_payload = None
     if artifact_dir is not None:
@@ -1564,6 +1661,15 @@ def trial_result_to_import_spec(
         "cache_tokens": fields.cache_tokens,
         "output_tokens": fields.output_tokens,
         "total_steps": total_steps,
+        "trajectory_duration_seconds": (
+            trajectory_metrics.trajectory_duration_seconds
+            if trajectory_metrics
+            else None
+        ),
+        "total_tool_calls": (
+            trajectory_metrics.total_tool_calls if trajectory_metrics else None
+        ),
+        "tool_counts": trajectory_metrics.tool_counts if trajectory_metrics else None,
         "cost_usd": fields.cost_usd,
         "phase_timing": fields.phase_timing,
         "has_trajectory": has_trajectory,
@@ -1757,7 +1863,7 @@ def load_sweep_config(config_path: Path) -> dict:
         harbor:
           environment:
             kwargs:
-              agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+              region: us-east
         priority: low
         experiment_id: exp_123
         max_trial_attempts: 3           # optional total Oddish attempts per trial
@@ -1861,6 +1967,10 @@ def load_sweep_config(config_path: Path) -> dict:
             agent_config_overrides["env"] = agent_entry["env"]
         if agent_entry.get("kwargs"):
             agent_config_overrides["kwargs"] = agent_entry["kwargs"]
+        if agent_entry.get("extra_allowed_hosts"):
+            agent_config_overrides["extra_allowed_hosts"] = agent_entry[
+                "extra_allowed_hosts"
+            ]
         if agent_config_overrides:
             entry["agent_config"] = agent_config_overrides
 

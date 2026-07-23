@@ -1,3 +1,4 @@
 - universal_capabilities_content: organize the good failures under 3a problem
   identification, 3b implementation, 3c syntax, and any emergent capability categories
   the findings surfaced.
+Cover only what holds across models; put single-model observations in that model's by_model entry.

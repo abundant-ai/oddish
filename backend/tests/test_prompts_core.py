@@ -1,0 +1,94 @@
+import uuid
+
+import pytest
+import pytest_asyncio
+from fastapi import HTTPException
+
+from oddish.core.prompts import (
+    activate_prompt_version_core,
+    get_active_prompt_content,
+    get_prompt_core,
+    list_prompt_versions_core,
+    set_prompt_core,
+)
+from oddish.db import PromptModel, get_session
+
+
+@pytest_asyncio.fixture
+async def prompt_key():
+    key = f"test_prompt_{uuid.uuid4().hex[:8]}"
+    yield key
+    async with get_session() as session:
+        await session.execute(PromptModel.__table__.delete().where(PromptModel.key == key))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_set_creates_v1_and_activates(prompt_key):
+    async with get_session() as session:
+        v = await set_prompt_core(session, key=prompt_key, content="hello", description="d")
+        await session.commit()
+        assert v.version == 1
+    async with get_session() as session:
+        prompt, ver = await get_prompt_core(session, prompt_key)
+        assert prompt.active_version == 1
+        assert ver.content == "hello"
+
+
+@pytest.mark.asyncio
+async def test_set_appends_and_bumps_version(prompt_key):
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="v1")
+        await session.commit()
+    async with get_session() as session:
+        v2 = await set_prompt_core(session, key=prompt_key, content="v2")
+        await session.commit()
+        assert v2.version == 2
+    async with get_session() as session:
+        assert await get_active_prompt_content(session, prompt_key) == "v2"
+        versions = await list_prompt_versions_core(session, prompt_key)
+        assert [x.version for x in versions] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_activate_rolls_back_to_earlier_version(prompt_key):
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="v1")
+        await set_prompt_core(session, key=prompt_key, content="v2")
+        await session.commit()
+    async with get_session() as session:
+        await activate_prompt_version_core(session, prompt_key, 1)
+        await session.commit()
+    async with get_session() as session:
+        assert await get_active_prompt_content(session, prompt_key) == "v1"
+
+
+@pytest.mark.asyncio
+async def test_set_no_activate_keeps_pointer(prompt_key):
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="v1")
+        await session.commit()
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="v2", activate=False)
+        await session.commit()
+    async with get_session() as session:
+        assert await get_active_prompt_content(session, prompt_key) == "v1"
+
+
+@pytest.mark.asyncio
+async def test_get_missing_key_raises_404():
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as exc:
+            await get_prompt_core(session, "does_not_exist_xyz")
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_activate_missing_version_raises_404(prompt_key):
+    async with get_session() as session:
+        await set_prompt_core(session, key=prompt_key, content="v1")
+        await session.commit()
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as exc:
+            await activate_prompt_version_core(session, prompt_key, 99)
+        assert exc.value.status_code == 404

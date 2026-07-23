@@ -70,6 +70,40 @@ def test_shared_trajectory_helpers_ignore_bad_cost(tmp_path):
     assert metrics.cost_usd is None
 
 
+def test_shared_trajectory_helpers_extract_duration_and_tool_counts(tmp_path):
+    agent_dir = tmp_path / "trial" / "agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "steps": [
+                    {
+                        "step_id": 1,
+                        "timestamp": "2026-01-01T00:00:00Z",
+                        "tool_calls": [{"function_name": "bash"}],
+                    },
+                    {
+                        "step_id": 2,
+                        "timestamp": "2026-01-01T00:00:02.500Z",
+                        "tool_calls": [
+                            {"function_name": "bash"},
+                            {"function_name": "read_file"},
+                        ],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = extract_trajectory_metrics(tmp_path)
+
+    assert metrics.total_steps == 2
+    assert metrics.trajectory_duration_seconds == 2.5
+    assert metrics.total_tool_calls == 3
+    assert metrics.tool_counts == {"bash": 2, "read_file": 1}
+
+
 def test_trial_import_spec_reuses_shared_extraction(tmp_path):
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()

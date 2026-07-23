@@ -148,12 +148,12 @@ def _minimal_ctx() -> TaskContext:
 
 
 def _fake_llm(payload: str):
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     return FakeAnalyzerLLMClient(chunks=[payload])
 
 
 def _patch_block_persistence(monkeypatch):
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
 
@@ -171,7 +171,7 @@ async def test_generate_returns_persistable_summary(monkeypatch):
     result = await generate(
         _trajectory_with_steps([1, 2, 3]), _minimal_ctx(), client=_fake_llm(payload),
     )
-    assert result["schema_version"] == SCHEMA_VERSION == "4"
+    assert result["schema_version"] == SCHEMA_VERSION == "5"
     assert result["summary"].startswith("Agent reproduced")
     assert [h["step_id"] for h in result["highlights"]] == [1, 3]
     assert result["components"][0]["trajectory_component"] == "debugging"
@@ -223,7 +223,7 @@ async def test_generate_raises_when_model_returns_non_object_json(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_wraps_client_errors(monkeypatch):
-    from api.services.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
+    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summarize_trajectory import SummaryGenerationError, generate
     _patch_block_persistence(monkeypatch)
     client = FakeAnalyzerLLMClient(chunks=[], exc=RuntimeError("boom"))
@@ -273,7 +273,7 @@ def _fake_session():
 
 @pytest.mark.asyncio
 async def test_get_or_generate_returns_block_when_fresh():
-    cached = {"schema_version": "4", "summary": "cached", "highlights": [], "components": []}
+    cached = {"schema_version": "5", "summary": "cached", "highlights": [], "components": []}
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
     with patch(
@@ -305,7 +305,7 @@ async def test_get_or_generate_returns_none_when_no_trajectory():
 async def test_get_or_generate_persists_on_miss():
     trial = _fake_trial(has_trajectory=True)
     session = _fake_session()
-    fresh = {"schema_version": "4", "summary": "fresh", "highlights": [], "components": []}
+    fresh = {"schema_version": "5", "summary": "fresh", "highlights": [], "components": []}
 
     async def fake_traj(_t):
         return {"steps": [{"step_id": 1}]}
@@ -351,7 +351,7 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
         finished.append("context")
         return _minimal_ctx()
 
-    fresh = {"schema_version": "4", "summary": "ok", "highlights": [], "components": []}
+    fresh = {"schema_version": "5", "summary": "ok", "highlights": [], "components": []}
 
     with patch(
         "api.services.summarize_trajectory._load_fresh_summary_block",
@@ -447,5 +447,81 @@ async def test_build_task_context_falls_back_to_harbor_config_model():
     assert ctx.model_used == "claude-sonnet-4-6"
 
 
-def test_schema_version_is_four():
-    assert SCHEMA_VERSION == "4"
+def test_schema_version_is_five():
+    assert SCHEMA_VERSION == "5"
+
+
+# ---------------------------------------------------------------------------
+# build_summary_block (shared construction site)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingLLM:
+    """Fake client that records the prompt it was handed."""
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+        self.prompt: str | None = None
+
+    async def stream(self, prompt: str, *, system_prompt: str | None = None):
+        self.prompt = prompt
+        yield self._payload
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _summary_payload() -> str:
+    return json.dumps({
+        "summary": "Agent fixed the bug.",
+        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
+        "components": [{"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}],
+    })
+
+
+@pytest.mark.asyncio
+async def test_generate_and_build_summary_block_agree(monkeypatch):
+    """generate() must build its block through build_summary_block(), so the
+    harness and production cannot drift in prompt, model, or metadata."""
+    import api.services.summarize_trajectory as summarize_trajectory_module
+    from api.services.summarize_trajectory import (
+        build_summary_block,
+        generate,
+        resolve_summary_model,
+    )
+
+    _patch_block_persistence(monkeypatch)
+    trajectory = _trajectory_with_steps([1, 2])
+    ctx = _minimal_ctx()
+
+    # Spy on the module-level call site so the assertions below check what
+    # generate() actually passed, not what the test independently constructs
+    # (which would be self-consistent regardless of generate()'s behavior).
+    real_build_summary_block = build_summary_block
+    captured: dict = {}
+
+    def _spying_build_summary_block(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        captured["block"] = real_build_summary_block(*args, **kwargs)
+        return captured["block"]
+
+    monkeypatch.setattr(
+        summarize_trajectory_module, "build_summary_block", _spying_build_summary_block
+    )
+
+    recorder = _RecordingLLM(_summary_payload())
+    await generate(deepcopy(trajectory), ctx, analyzer_id="tr_x", client=recorder)
+
+    block = build_summary_block(
+        deepcopy(trajectory),
+        ctx,
+        analyzer_id="tr_x",
+        model=resolve_summary_model(),
+        client=_fake_llm(_summary_payload()),
+    )
+
+    assert recorder.prompt == block.prompt
+    assert captured["kwargs"]["model"] == resolve_summary_model()
+    assert captured["kwargs"]["analyzer_id"] == "tr_x"
+    assert captured["block"].block_metadata["schema_version"] == SCHEMA_VERSION
+    assert captured["block"].block_metadata["model"] == resolve_summary_model()

@@ -24,6 +24,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
+from oddish.core.cost_basis import is_combine_copy
 from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
@@ -454,6 +455,9 @@ def build_trial_response(
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
         total_steps=trial.total_steps,
+        trajectory_duration_seconds=trial.trajectory_duration_seconds,
+        total_tool_calls=trial.total_tool_calls,
+        tool_counts=trial.tool_counts,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
@@ -528,6 +532,9 @@ def build_compact_trial_response(
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
         total_steps=trial.total_steps,
+        trajectory_duration_seconds=trial.trajectory_duration_seconds,
+        total_tool_calls=trial.total_tool_calls,
+        tool_counts=trial.tool_counts,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
@@ -731,6 +738,7 @@ def get_task_status_trials(
     task: TaskModel,
     *,
     version_id: str | None | object = _VERSION_ID_UNSET,
+    exclude_combine_copies: bool = False,
 ) -> list[TrialModel]:
     """Return only the trials that should appear in task status views.
 
@@ -743,6 +751,12 @@ def get_task_status_trials(
     filtered out: they remain in the DB so deep links / history queries
     keep working, but they should never clutter the default trial
     viewer, file viewer, or aggregated counts.
+
+    ``exclude_combine_copies`` drops experiment-combine materializations, which
+    re-record an existing execution under the same task. It must stay opt-in:
+    experiment-scoped callers pass trials already narrowed to one experiment,
+    and for a *combined* experiment every one of those rows is a copy — so
+    filtering unconditionally would empty that page.
     """
     effective: str | None
     if version_id is _VERSION_ID_UNSET:
@@ -750,7 +764,10 @@ def get_task_status_trials(
     else:
         effective = version_id  # type: ignore[assignment]
     live_trials = [
-        trial for trial in task.trials if trial.superseded_by_trial_id is None
+        trial
+        for trial in task.trials
+        if trial.superseded_by_trial_id is None
+        and not (exclude_combine_copies and is_combine_copy(trial))
     ]
     if effective is None:
         return live_trials
@@ -917,6 +934,7 @@ def build_task_status_response(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    exclude_combine_copies: bool = False,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -929,6 +947,9 @@ def build_task_status_response(
 
     ``gathered_trial_ids`` is forwarded to the internal auto-resolve so
     collection-gathered trials on an older version aren't re-resolved away.
+
+    ``exclude_combine_copies`` is forwarded to :func:`get_task_status_trials`;
+    see the caveat there before enabling it on an experiment-scoped caller.
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
@@ -936,7 +957,11 @@ def build_task_status_response(
             experiment_context_id=experiment_context_id,
             gathered_trial_ids=gathered_trial_ids,
         )
-    task_trials = get_task_status_trials(task, version_id=effective_version_id)
+    task_trials = get_task_status_trials(
+        task,
+        version_id=effective_version_id,
+        exclude_combine_copies=exclude_combine_copies,
+    )
     total = len(task_trials)
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)

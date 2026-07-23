@@ -114,6 +114,35 @@ def test_plain_claude_trial_model_stays_on_direct_anthropic(monkeypatch):
     assert settings.get_provider_for_trial("claude-code", None) == "bedrock"
 
 
+def test_anthropic_hdo_prefix_keeps_its_own_bucket(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    expected = "anthropic-hdo/claude-sonnet-4-6"
+
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic-hdo/claude-sonnet-4-6")
+        == expected
+    )
+    assert (
+        settings.get_provider_for_trial(
+            "claude-code", "anthropic-hdo/claude-sonnet-4-6"
+        )
+        == "anthropic-hdo"
+    )
+    assert (
+        settings.get_queue_key_for_trial(
+            "claude-code", "anthropic-hdo/claude-sonnet-4-6"
+        )
+        == expected
+    )
+    # A bare Claude id keeps the plain direct-API route — HDO is
+    # prefix-opt-in only and never inferred.
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6")
+        == "claude-sonnet-4-6"
+    )
+
+
 def test_bedrock_claude_trial_model_stays_on_bedrock(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
