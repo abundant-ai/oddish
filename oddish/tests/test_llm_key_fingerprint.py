@@ -39,6 +39,41 @@ def test_provider_hash_matches_admin_paste(monkeypatch):
     assert platform_key_hash_for_provider("anthropic") == hash_llm_key(key)
 
 
+def test_openai_provider_hash_uses_azure_key_in_default_route(monkeypatch):
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "openai_provider", "azure")
+    monkeypatch.setattr(settings, "azure_openai_api_key", "azure-platform-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "public-openai-key")
+    assert platform_key_hash_for_provider("openai") == hash_llm_key(
+        "azure-platform-key"
+    )
+
+
+def test_openai_provider_hash_uses_public_key_in_public_route(monkeypatch):
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "openai_provider", "openai")
+    monkeypatch.setattr(settings, "azure_openai_api_key", None)
+    monkeypatch.setattr(settings, "openai_api_key", "public-openai-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "different-public-key")
+    assert platform_key_hash_for_provider("openai") == hash_llm_key(
+        "public-openai-key"
+    )
+
+
+def test_openai_provider_hash_fails_open_on_invalid_route(monkeypatch):
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "openai_provider", "invalid")
+    monkeypatch.setenv("OPENAI_API_KEY", "public-openai-key")
+    assert platform_key_hash_for_provider("openai") == hash_llm_key(
+        "public-openai-key"
+    )
+    monkeypatch.delenv("OPENAI_API_KEY")
+    assert platform_key_hash_for_provider("openai") is None
+
+
 def test_provider_hash_none_when_unresolvable(monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     assert platform_key_hash_for_provider("xai") is None  # env not set
@@ -112,6 +147,13 @@ def test_byok_overlay_stamps_the_user_key(monkeypatch):
     assert trial_llm_key_hash(
         "bedrock", {"ANTHROPIC_API_KEY": "sk-ant-user"}
     ) == hash_llm_key("sk-ant-user")
+
+
+def test_non_anthropic_provider_ignores_anthropic_byok_fallback(monkeypatch):
+    monkeypatch.setenv("XAI_API_KEY", "xai-platform")
+    assert trial_llm_key_hash(
+        "xai", {"ANTHROPIC_API_KEY": "sk-ant-user"}
+    ) == hash_llm_key("xai-platform")
 
 
 def test_no_byok_overlay_falls_back_to_platform_key(monkeypatch):

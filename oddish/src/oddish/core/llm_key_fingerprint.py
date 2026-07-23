@@ -59,6 +59,20 @@ def _oddish_platform_key(provider: str) -> str | None:
     return configured or os.environ.get(_ODDISH_PROVIDER_ENV_KEYS[provider])
 
 
+def _openai_platform_key() -> str | None:
+    """Key for the configured OpenAI-family route, or None."""
+    from oddish.config import settings
+
+    try:
+        route = settings.get_openai_provider()
+    except ValueError:
+        return os.environ.get("OPENAI_API_KEY")
+
+    if route == "azure":
+        return settings.azure_openai_api_key or os.environ.get("AZURE_OPENAI_API_KEY")
+    return settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
+
+
 def _provider_key_var(provider: str) -> str | None:
     """Canonical env-var name holding ``provider``'s API key, or None."""
     var = _ODDISH_PROVIDER_ENV_KEYS.get(provider)
@@ -87,9 +101,9 @@ def trial_llm_key_hash(
     """
     if byok_env and provider:
         var = _provider_key_var(provider)
-        raw = (byok_env.get(var) if var else None) or byok_env.get(
-            "ANTHROPIC_API_KEY"
-        )
+        raw = byok_env.get(var) if var else None
+        if not raw and provider in ("anthropic", "anthropic-hdo", "bedrock"):
+            raw = byok_env.get("ANTHROPIC_API_KEY")
         raw = (raw or "").strip()
         if raw:
             return hash_llm_key(raw)
@@ -110,13 +124,18 @@ def platform_key_hash_for_provider(provider: str | None) -> str | None:
     if not provider:
         return None
 
-    if provider in _ODDISH_PROVIDER_ENV_KEYS:
-        raw = _oddish_platform_key(provider)
-    else:
-        var = _provider_key_var(provider)
-        if not var:
-            return None
-        raw = os.environ.get(var)
+    try:
+        if provider == "openai":
+            raw = _openai_platform_key()
+        elif provider in _ODDISH_PROVIDER_ENV_KEYS:
+            raw = _oddish_platform_key(provider)
+        else:
+            var = _provider_key_var(provider)
+            if not var:
+                return None
+            raw = os.environ.get(var)
+    except Exception:
+        return None
 
     raw = (raw or "").strip()
     return hash_llm_key(raw) if raw else None

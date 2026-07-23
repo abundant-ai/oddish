@@ -82,6 +82,10 @@ async def add_cost_excluded_key(
     key = request.key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="key must not be empty")
+    if len(key) < 8:
+        raise HTTPException(
+            status_code=400, detail="key is too short to be an LLM API key"
+        )
     key_hash = hash_llm_key(key)
 
     async with get_session() as session:

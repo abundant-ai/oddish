@@ -182,6 +182,13 @@ async def test_add_empty_key_is_400(admin_client, monkeypatch):
     assert resp.status_code == 400
 
 
+async def test_add_short_key_is_400(admin_client, monkeypatch):
+    _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
+    resp = await admin_client.post("/admin/cost-excluded-keys", json={"key": "abc"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "key is too short to be an LLM API key"
+
+
 async def test_list_returns_hints(admin_client, monkeypatch):
     from oddish.db import CostExcludedLlmKeyModel, utcnow
 
