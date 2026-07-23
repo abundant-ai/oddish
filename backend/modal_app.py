@@ -627,6 +627,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
         .run_commands(
             "curl -fsSL https://claude.ai/install.sh | bash",
             "ln -sf /root/.local/bin/claude /usr/local/bin/claude",
+            f"mkdir -p {os.path.dirname(BUNDLED_GROK_CLI_PATH)}",
             f"curl -fsSL -o {BUNDLED_GROK_CLI_PATH} "
             "https://storage.googleapis.com/grok-build-public-artifacts/cli/"
             f"grok-{GROK_CLI_VERSION}-linux-x86_64",
