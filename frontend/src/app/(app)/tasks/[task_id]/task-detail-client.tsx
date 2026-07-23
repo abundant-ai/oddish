@@ -553,12 +553,12 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
               {formatRewardPercent(trial.reward)})
             </div>
           )}
-          {(trial.total_cost_usd != null || trial.cost_usd != null) && (
+          {(trial.total_cost_usd ?? trial.cost_usd ?? 0) > 0 && (
             <div className="text-muted-foreground">
               {trial.cost_is_estimated ? "~" : ""}
               {formatCostUsd(trial.total_cost_usd ?? trial.cost_usd ?? 0)}
-              {(trial.qa_cost_usd != null ||
-                trial.compute_cost_usd != null) && (
+              {((trial.qa_cost_usd ?? 0) > 0 ||
+                (trial.compute_cost_usd ?? 0) > 0) && (
                 <span>
                   {" "}
                   ({formatCostUsdExact(trial.cost_usd ?? 0)} inf ·{" "}
