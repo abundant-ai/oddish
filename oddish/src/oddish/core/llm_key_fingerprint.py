@@ -33,6 +33,9 @@ def key_hint(raw_key: str) -> str:
 _ODDISH_PROVIDER_ENV_KEYS: dict[str, str] = {
     "anthropic-hdo": "ANTHROPIC_HDO_API_KEY",
     "azure": "AZURE_OPENAI_API_KEY",
+    # Harbor's AWS_ACCESS_KEY_ID entry is Oddish's storage credential, not the
+    # bearer token that funds Bedrock model calls.
+    "bedrock": "AWS_BEARER_TOKEN_BEDROCK",
     "meta": "META_API_KEY",
     "zai": "ZAI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
@@ -102,7 +105,8 @@ def trial_llm_key_hash(
     if byok_env and provider:
         var = _provider_key_var(provider)
         raw = byok_env.get(var) if var else None
-        if not raw and provider in ("anthropic", "anthropic-hdo", "bedrock"):
+        # HDO wins over BYOK in the runner when its model prefix opts in.
+        if not raw and provider in ("anthropic", "bedrock"):
             raw = byok_env.get("ANTHROPIC_API_KEY")
         raw = (raw or "").strip()
         if raw:

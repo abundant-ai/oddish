@@ -220,6 +220,7 @@ async def inflight_trial_count_by_org_user_all_orgs(
             TrialModel.deleted_at.is_(None),
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
+            not_excluded_llm_key_filter(),
         )
         .group_by(TrialModel.org_id, TrialModel.billed_user_id)
     )

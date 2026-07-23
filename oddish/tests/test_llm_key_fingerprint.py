@@ -125,6 +125,20 @@ def test_anthropic_hdo_prefers_settings_then_env(monkeypatch):
     )
 
 
+def test_bedrock_hash_uses_bearer_token_not_aws_access_key(monkeypatch):
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-platform-token")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "storage-access-key")
+    assert platform_key_hash_for_provider("bedrock") == hash_llm_key(
+        "bedrock-platform-token"
+    )
+
+
+def test_bedrock_hash_none_without_bearer_token(monkeypatch):
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "storage-access-key")
+    assert platform_key_hash_for_provider("bedrock") is None
+
+
 def test_stamp_strips_whitespace_to_match_admin_paste(monkeypatch):
     # An env value with a stray newline must hash equal to the trimmed key an
     # admin pastes into the UI (the router strips before hashing).
@@ -154,6 +168,15 @@ def test_non_anthropic_provider_ignores_anthropic_byok_fallback(monkeypatch):
     assert trial_llm_key_hash(
         "xai", {"ANTHROPIC_API_KEY": "sk-ant-user"}
     ) == hash_llm_key("xai-platform")
+
+
+def test_anthropic_hdo_ignores_anthropic_byok_fallback(monkeypatch):
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "anthropic_hdo_api_key", "hdo-platform")
+    assert trial_llm_key_hash(
+        "anthropic-hdo", {"ANTHROPIC_API_KEY": "sk-ant-user"}
+    ) == hash_llm_key("hdo-platform")
 
 
 def test_no_byok_overlay_falls_back_to_platform_key(monkeypatch):

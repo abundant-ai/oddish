@@ -184,7 +184,10 @@ async def test_inflight_reservation_skips_excluded_key_spend(seeded_data, monkey
     # Neither shape may reserve quota the settled sums will never charge --
     # and both reserve again once the key leaves the list.
     from oddish.config import settings
-    from oddish.core.quotas import inflight_reserved_usd
+    from oddish.core.quotas import (
+        inflight_reserved_usd,
+        inflight_trial_count_by_org_user_all_orgs,
+    )
     from oddish.db import TrialStatus
 
     monkeypatch.setattr(settings, "pending_trial_reservation_usd", 2.5)
@@ -206,6 +209,8 @@ async def test_inflight_reservation_skips_excluded_key_spend(seeded_data, monkey
 
         reserved = await inflight_reserved_usd(session, ORG, USER)
         assert float(reserved) == 0.0, reserved
+        inflight_counts = await inflight_trial_count_by_org_user_all_orgs(session)
+        assert inflight_counts.get((ORG, USER), 0) == 0
 
         await session.execute(
             CostExcludedLlmKeyModel.__table__.update()
@@ -217,3 +222,5 @@ async def test_inflight_reservation_skips_excluded_key_spend(seeded_data, monkey
         # greatest(5.0, floor) + greatest(0, floor=2.5)
         reserved = await inflight_reserved_usd(session, ORG, USER)
         assert abs(float(reserved) - 7.5) <= 1e-6, reserved
+        inflight_counts = await inflight_trial_count_by_org_user_all_orgs(session)
+        assert inflight_counts[(ORG, USER)] == 2
