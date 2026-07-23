@@ -1366,6 +1366,10 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
     task_verdict = getattr(task, "verdict", None)
     verdict = task_verdict if isinstance(task_verdict, dict) else {}
+    # Verdicts written before version-pinned QA have no task_version_id and may
+    # aggregate historical trials. Do not reuse that ambiguous evidence: the
+    # next terminal transition intentionally runs QA once for the exact current
+    # cohort and writes provenance that later transitions can trust.
     if (
         task.verdict_status == VerdictStatus.SUCCESS
         and verdict.get("task_version_id") == current_version_id

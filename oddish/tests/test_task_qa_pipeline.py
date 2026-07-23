@@ -348,6 +348,37 @@ async def test_stage_completes_after_historical_trials_finish_without_redoing_qa
     assert task.status == TaskStatus.COMPLETED
 
 
+@pytest.mark.asyncio
+async def test_stage_replaces_legacy_unscoped_verdict_with_version_pinned_qa(
+    monkeypatch,
+):
+    trial = SimpleNamespace(task_id="task-7")
+    task = SimpleNamespace(
+        id="task-7",
+        org_id="org-1",
+        current_version_id="task-7-v2",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        # Legacy verdicts predate task_version_id provenance and therefore
+        # cannot prove anything about the exact selected-version cohort.
+        verdict={"is_good": True},
+        verdict_status=VerdictStatus.SUCCESS,
+        finished_at=None,
+    )
+    session = _StageSession(trial=trial, task=task, scalar_values=(0, 1))
+    calls = []
+
+    async def fake_enqueue(_session, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+
+    assert await queue_mod.maybe_start_qa_stage(session, "task-7-v1-0") is True
+    assert calls[0]["task_version_id"] == "task-7-v2"
+    assert task.status == TaskStatus.VERDICT_PENDING
+    assert task.verdict_status == VerdictStatus.QUEUED
+
+
 # ---------------------------------------------------------------------------
 # run_task_qa_job: one job classifies all trials, then synthesizes the verdict
 # ---------------------------------------------------------------------------
