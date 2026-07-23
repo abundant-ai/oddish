@@ -75,6 +75,8 @@ def _fake_classification():
         root_cause=None,
         recommendation=None,
         reward=1.0,
+        action_items=[],
+        exploitation=[],
     )
 
 
@@ -98,7 +100,7 @@ async def test_successful_classification_writes_one_cost_row(session, monkeypatc
                                experiment_id="exp-x", billed_user_id="user-x")
 
     # Stub the classifier so no real subprocess runs, and set last_usage.
-    async def _fake_classify(self, *, trial_dir, task_dir, trial_agent):
+    async def _fake_classify(self, **kwargs):
         self.last_usage = AnalysisUsage(
             cost_usd=0.05, input_tokens=100, output_tokens=20,
             cache_read_tokens=0, cache_write_tokens=0,
@@ -133,7 +135,7 @@ async def test_failed_classification_writes_no_cost_row(session, monkeypatch):
     task_id = await _seed_task_and_trial(session, trial_id, org_id="org-x",
                                experiment_id="exp-x", billed_user_id="user-x")
 
-    async def _raise(self, *, trial_dir, task_dir, trial_agent):
+    async def _raise(self, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(TrialClassifier, "classify_trial", _raise)
