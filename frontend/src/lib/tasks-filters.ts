@@ -963,7 +963,6 @@ export const FILTER_PARAM_KEYS = [
 // sidebar's clear-on-change loop doesn't wipe deep-linked values.
 const EXTRA_BROWSE_PARAM_KEYS = [
   "experiment_ids",
-  "metric_match",
   "run_analysis",
   "run_probe",
   "harbor_shas",

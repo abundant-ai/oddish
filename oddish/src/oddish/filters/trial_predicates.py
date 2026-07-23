@@ -93,12 +93,12 @@ def build_trial_metric_predicate(
     if metric_filter.models:
         eligible.append(TrialModel.model.in_(metric_filter.models))
     conditions = trial_metric_conditions(metric_filter)
-    # Failed trials and trials without requested scalar measurements do not
-    # participate in metric matching. This keeps All mode useful while work is
-    # still running and prevents harness failures from failing the whole group.
+    # Only completed trials with every requested scalar measurement participate
+    # in metric matching. Running/unmeasured trials and execution errors are
+    # ignored, while eligible_exists keeps All mode non-vacuous.
     eligible.extend(
         [
-            TrialModel.status != TrialStatus.FAILED,
+            TrialModel.status == TrialStatus.SUCCESS,
             *trial_metric_measurement_clauses(metric_filter),
         ]
     )

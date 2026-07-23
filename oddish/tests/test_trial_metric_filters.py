@@ -92,6 +92,6 @@ def test_all_predicate_is_non_vacuous_and_ignores_failed_or_unmeasured_trials() 
     sql = _compiled("all")
     assert sql.count("EXISTS") == 2
     assert "trials.total_steps IS NOT NULL" in sql
-    assert "trials.status != 'FAILED'" in sql
+    assert "trials.status = 'SUCCESS'" in sql
     assert "coalesce(trials.total_steps >= 100, false)" in sql
     assert "NOT (EXISTS" in sql
