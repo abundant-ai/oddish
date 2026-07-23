@@ -4,7 +4,7 @@ from alembic import op
 
 
 revision = "trial_trajectory_metrics_001"
-down_revision = "prompts_merge_001"
+down_revision = "concurrency_override_001"
 branch_labels = depends_on = None
 
 
