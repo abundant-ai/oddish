@@ -1698,10 +1698,27 @@ def _write_codex_stdout_fixture(tmp_path):
     )
 
 
-def _write_codex_session_fixture(tmp_path, *, extra_shell_call=False):
+def _write_codex_session_fixture(
+    tmp_path, *, extra_shell_call=False, local_shell=False
+):
     """Rollout JSONL whose entries ordinally match the stdout fixture."""
     rollout_dir = tmp_path / "sessions" / "2026" / "07" / "21"
     rollout_dir.mkdir(parents=True)
+    if local_shell:
+        call_payload = {
+            "type": "local_shell_call",
+            "call_id": "call_1",
+            "action": {"type": "exec", "command": ["bash", "-lc", "ls"]},
+        }
+        output_type = "local_shell_call_output"
+    else:
+        call_payload = {
+            "type": "function_call",
+            "name": "shell_command",
+            "call_id": "call_1",
+            "arguments": '{"command":"ls"}',
+        }
+        output_type = "function_call_output"
     entries = [
         {
             "timestamp": "2026-07-21T04:21:28.937Z",
@@ -1711,18 +1728,13 @@ def _write_codex_session_fixture(tmp_path, *, extra_shell_call=False):
         {
             "timestamp": "2026-07-21T04:21:30.000Z",
             "type": "response_item",
-            "payload": {
-                "type": "function_call",
-                "name": "shell_command",
-                "call_id": "call_1",
-                "arguments": '{"command":"ls"}',
-            },
+            "payload": call_payload,
         },
         {
             "timestamp": "2026-07-21T04:21:31.500Z",
             "type": "response_item",
             "payload": {
-                "type": "function_call_output",
+                "type": output_type,
                 "call_id": "call_1",
                 "output": "README.md\n",
             },
@@ -1756,9 +1768,12 @@ def _write_codex_session_fixture(tmp_path, *, extra_shell_call=False):
     )
 
 
-def test_oddish_codex_stdout_trajectory_stamps_session_timestamps(tmp_path):
+@pytest.mark.parametrize("local_shell", [False, True])
+def test_oddish_codex_stdout_trajectory_stamps_session_timestamps(
+    tmp_path, local_shell
+):
     _write_codex_stdout_fixture(tmp_path)
-    _write_codex_session_fixture(tmp_path)
+    _write_codex_session_fixture(tmp_path, local_shell=local_shell)
     agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
 
     agent.populate_context_post_run(SimpleNamespace())

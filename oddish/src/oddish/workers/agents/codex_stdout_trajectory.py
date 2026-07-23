@@ -101,7 +101,10 @@ def _read_session_timeline(
                     timeline.shell_calls.append(
                         (timestamp, call_id if isinstance(call_id, str) else None)
                     )
-                elif ptype == "function_call_output" and timestamp:
+                elif (
+                    ptype in ("function_call_output", "local_shell_call_output")
+                    and timestamp
+                ):
                     call_id = payload.get("call_id")
                     if isinstance(call_id, str):
                         timeline.output_ts[call_id] = timestamp
