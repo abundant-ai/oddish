@@ -8,6 +8,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "prompts_003"
 down_revision: Union[str, Sequence[str], None] = "prompts_trajectory_merge_001"
@@ -15,8 +16,49 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _assert_no_orphaned_pre_trial_data(
+    bind: sa.engine.Connection, legacy_columns: list[str]
+) -> None:
+    """Refuse to drop pre-trial data the copy below would not carry over.
+
+    The copy joins on ``tasks.current_version_id``, which is nullable, so a task
+    without a current version (or pointing at a missing one) would have its
+    pre-trial data destroyed with no way to reconstruct it.
+    """
+    has_data = " OR ".join(f"tasks.{column} IS NOT NULL" for column in legacy_columns)
+    orphaned = bind.execute(
+        sa.text(
+            f"""
+            SELECT count(*) FROM tasks
+            WHERE ({has_data})
+              AND NOT EXISTS (
+                  SELECT 1 FROM task_versions
+                  WHERE task_versions.id = tasks.current_version_id
+              )
+            """
+        )
+    ).scalar_one()
+    if orphaned:
+        raise RuntimeError(
+            f"{orphaned} task(s) carry pre-trial data with no matching "
+            "task_versions row (current_version_id is NULL or dangling). "
+            "Dropping tasks.pre_trial_* would destroy it. Re-point or clear "
+            "those rows, then re-run."
+        )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
+
+    # Lock ordering: production traffic touches `tasks` before `task_versions`,
+    # so take the exclusive lock on `tasks` up front while holding nothing else.
+    # Reaching it after locking `task_versions` (the add_column branch below)
+    # inverts that order and deadlocks against live queries — this migration did
+    # exactly that against prod. lock_timeout keeps a blocked run from queueing
+    # all `tasks` traffic behind its pending lock request.
+    op.execute("SET LOCAL lock_timeout = '5s'")
+    op.execute("LOCK TABLE tasks IN ACCESS EXCLUSIVE MODE")
+
     cols = {c["name"] for c in sa.inspect(bind).get_columns("prompts")}
     if "key" in cols:
         op.alter_column("prompts", "key", new_column_name="kind")
@@ -47,13 +89,13 @@ def upgrade() -> None:
     if not _has_col("task_versions", "pre_trial"):
         op.add_column(
             "task_versions",
-            sa.Column("pre_trial", sa.dialects.postgresql.JSONB, nullable=True),
+            sa.Column("pre_trial", postgresql.JSONB, nullable=True),
         )
         op.add_column(
             "task_versions",
             sa.Column(
                 "pre_trial_status",
-                sa.Enum(name="jobstatus", create_type=False),
+                postgresql.ENUM(name="jobstatus", create_type=False),
                 nullable=True,
             ),
         )
@@ -84,6 +126,7 @@ def upgrade() -> None:
         if _has_col("tasks", col)
     ]
     if legacy_pre_trial_columns:
+        _assert_no_orphaned_pre_trial_data(bind, legacy_pre_trial_columns)
         assignments = ", ".join(
             f"{col} = COALESCE(task_versions.{col}, tasks.{col})"
             for col in legacy_pre_trial_columns
