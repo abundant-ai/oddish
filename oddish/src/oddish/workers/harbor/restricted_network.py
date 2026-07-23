@@ -403,6 +403,62 @@ def _model_transport_base_url_keys(model_name: str | None) -> tuple[str, ...]:
     }.get(provider, ())
 
 
+def _no_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
+    return ()
+
+
+def _anthropic_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
+    return ("ANTHROPIC_BASE_URL",)
+
+
+def _openai_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
+    return _OPENAI_BASE_URL_KEYS
+
+
+def _cursor_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
+    return _CURSOR_BASE_URL_KEYS
+
+
+def _gemini_base_url_keys(_agent_config: AgentConfig) -> tuple[str, ...]:
+    return _GEMINI_BASE_URL_KEYS
+
+
+def _mini_swe_base_url_keys(agent_config: AgentConfig) -> tuple[str, ...]:
+    return _model_transport_base_url_keys(agent_config.model_name)
+
+
+BaseUrlKeyResolver = Callable[[AgentConfig], tuple[str, ...]]
+
+
+@dataclass(frozen=True)
+class _RestrictedAgentSpec:
+    """One effective-agent contract: its restricted-network profile factory and
+    the transport base-URL aliases that factory consumes.
+
+    Pairing both in a single registry entry is the single source of truth: the
+    factory selects transport hosts for exactly these keys, and the worker
+    runtime-env filter drops any *other* known transport base URL using the same
+    keys. Neither can drift from the other because there is one entry, not two
+    parallel maps.
+    """
+
+    factory: ProfileFactory
+    base_url_keys: BaseUrlKeyResolver
+
+
+def _consumed_base_url_keys_for_class(
+    agent_class: type[Any], agent_config: AgentConfig
+) -> tuple[str, ...]:
+    """Consumed transport base-URL aliases for an already-resolved agent class.
+
+    Used by the profile factories, which are only ever dispatched for a class
+    that is present in the registry; an absent class yields an empty tuple so
+    the shared ``_selected_transport_hosts`` guard still fails closed.
+    """
+    spec = _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
+    return spec.base_url_keys(agent_config) if spec is not None else ()
+
+
 def _transport_free_profile(
     _agent_class: type[Any],
     _agent_config: AgentConfig,
@@ -412,14 +468,14 @@ def _transport_free_profile(
 
 
 def _claude_profile(
-    _agent_class: type[Any],
+    agent_class: type[Any],
     agent_config: AgentConfig,
     resolved_env: Mapping[str, str],
 ) -> RestrictedNetworkProfile:
     hosts = _selected_transport_hosts(
         agent_config,
         resolved_env,
-        base_url_keys=("ANTHROPIC_BASE_URL",),
+        base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         default_hosts=_ANTHROPIC_RUNTIME_HOSTS,
     )
     return RestrictedNetworkProfile(
@@ -430,14 +486,14 @@ def _claude_profile(
 
 
 def _codex_profile(
-    _agent_class: type[Any],
+    agent_class: type[Any],
     agent_config: AgentConfig,
     resolved_env: Mapping[str, str],
 ) -> RestrictedNetworkProfile:
     hosts = _selected_transport_hosts(
         agent_config,
         resolved_env,
-        base_url_keys=_OPENAI_BASE_URL_KEYS,
+        base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         default_hosts=_OPENAI_RUNTIME_HOSTS,
     )
     return RestrictedNetworkProfile(
@@ -448,7 +504,7 @@ def _codex_profile(
 
 
 def _grok_profile(
-    _agent_class: type[Any],
+    agent_class: type[Any],
     agent_config: AgentConfig,
     resolved_env: Mapping[str, str],
 ) -> RestrictedNetworkProfile:
@@ -456,7 +512,7 @@ def _grok_profile(
         outbound_hosts=_selected_transport_hosts(
             agent_config,
             resolved_env,
-            base_url_keys=(),
+            base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         ),
         kwarg_overrides={"disable_web_search": True},
         server_web_disabled=True,
@@ -464,7 +520,7 @@ def _grok_profile(
 
 
 def _mini_swe_profile(
-    _agent_class: type[Any],
+    agent_class: type[Any],
     agent_config: AgentConfig,
     resolved_env: Mapping[str, str],
 ) -> RestrictedNetworkProfile:
@@ -474,21 +530,21 @@ def _mini_swe_profile(
         outbound_hosts=_selected_transport_hosts(
             agent_config,
             resolved_env,
-            base_url_keys=_model_transport_base_url_keys(agent_config.model_name),
+            base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         ),
         server_web_disabled=True,
     )
 
 
 def _cursor_profile(
-    _agent_class: type[Any],
+    agent_class: type[Any],
     agent_config: AgentConfig,
     resolved_env: Mapping[str, str],
 ) -> RestrictedNetworkProfile:
     selected = _selected_transport_hosts(
         agent_config,
         resolved_env,
-        base_url_keys=_CURSOR_BASE_URL_KEYS,
+        base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         infer_model=False,
     )
     # Cursor is transport-authoritative: its service fronts the selected model.
@@ -504,7 +560,7 @@ def _cursor_profile(
 
 
 def _gemini_profile(
-    _agent_class: type[Any],
+    agent_class: type[Any],
     agent_config: AgentConfig,
     resolved_env: Mapping[str, str],
 ) -> RestrictedNetworkProfile:
@@ -533,7 +589,7 @@ def _gemini_profile(
     hosts = _selected_transport_hosts(
         agent_config,
         resolved_env,
-        base_url_keys=_GEMINI_BASE_URL_KEYS,
+        base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
         default_hosts=_GEMINI_RUNTIME_HOSTS,
     )
     return RestrictedNetworkProfile(
@@ -549,26 +605,81 @@ def _gemini_profile(
 # Temporary exact-class adapters for the stock implementations Oddish operates.
 # A subclass is new executable code and must either appear here explicitly or
 # define its own local capability hook; inheriting a trusted profile is unsafe.
-_COMPATIBILITY_PROFILES: dict[str, ProfileFactory] = {
-    "harbor.agents.nop:NopAgent": _transport_free_profile,
-    "harbor.agents.oracle:OracleAgent": _transport_free_profile,
-    "harbor.agents.installed.claude_code:ClaudeCode": _claude_profile,
-    "harbor.agents.installed.codex:Codex": _codex_profile,
-    "harbor.agents.installed.cursor_cli:CursorCli": _cursor_profile,
-    "harbor.agents.installed.mini_swe_agent:MiniSweAgent": _mini_swe_profile,
-    "oddish.workers.agents.claude_code:OddishClaudeCode": _claude_profile,
-    "oddish.workers.agents.claude_code:OddishProbeClaudeCode": _claude_profile,
-    "oddish.workers.agents.codex:OddishCodex": _codex_profile,
-    "oddish.workers.agents.codex:AzureCompatibleCodex": _codex_profile,
-    "oddish.workers.agents.grok_build:OddishGrokBuild": _grok_profile,
-    "oddish.workers.agents.gemini_cli:OddishGeminiCli": _gemini_profile,
-    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent": _mini_swe_profile,
-    "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent": _mini_swe_profile,
+_COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
+    "harbor.agents.nop:NopAgent": _RestrictedAgentSpec(
+        _transport_free_profile, _no_base_url_keys
+    ),
+    "harbor.agents.oracle:OracleAgent": _RestrictedAgentSpec(
+        _transport_free_profile, _no_base_url_keys
+    ),
+    "harbor.agents.installed.claude_code:ClaudeCode": _RestrictedAgentSpec(
+        _claude_profile, _anthropic_base_url_keys
+    ),
+    "harbor.agents.installed.codex:Codex": _RestrictedAgentSpec(
+        _codex_profile, _openai_base_url_keys
+    ),
+    "harbor.agents.installed.cursor_cli:CursorCli": _RestrictedAgentSpec(
+        _cursor_profile, _cursor_base_url_keys
+    ),
+    "harbor.agents.installed.mini_swe_agent:MiniSweAgent": _RestrictedAgentSpec(
+        _mini_swe_profile, _mini_swe_base_url_keys
+    ),
+    "oddish.workers.agents.claude_code:OddishClaudeCode": _RestrictedAgentSpec(
+        _claude_profile, _anthropic_base_url_keys
+    ),
+    "oddish.workers.agents.claude_code:OddishProbeClaudeCode": _RestrictedAgentSpec(
+        _claude_profile, _anthropic_base_url_keys
+    ),
+    "oddish.workers.agents.codex:OddishCodex": _RestrictedAgentSpec(
+        _codex_profile, _openai_base_url_keys
+    ),
+    "oddish.workers.agents.codex:AzureCompatibleCodex": _RestrictedAgentSpec(
+        _codex_profile, _openai_base_url_keys
+    ),
+    "oddish.workers.agents.grok_build:OddishGrokBuild": _RestrictedAgentSpec(
+        _grok_profile, _no_base_url_keys
+    ),
+    "oddish.workers.agents.gemini_cli:OddishGeminiCli": _RestrictedAgentSpec(
+        _gemini_profile, _gemini_base_url_keys
+    ),
+    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent": _RestrictedAgentSpec(
+        _mini_swe_profile, _mini_swe_base_url_keys
+    ),
+    "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent": _RestrictedAgentSpec(
+        _mini_swe_profile, _mini_swe_base_url_keys
+    ),
 }
 
 
 def _compatibility_factory(agent_class: type[Any]) -> ProfileFactory | None:
-    return _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
+    spec = _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
+    return spec.factory if spec is not None else None
+
+
+def consumed_transport_base_url_keys(
+    agent_config: AgentConfig,
+) -> tuple[str, ...] | None:
+    """Transport base-URL aliases the effective agent's restricted profile consumes.
+
+    Single source of truth, shared with the profile factories via
+    ``_COMPATIBILITY_PROFILES``: a factory grants restricted-Compose egress for
+    exactly the keys returned here. The worker runtime-env assembly uses this to
+    drop any *other* known transport base URL before it can reach a profile's
+    fail-closed "does not consume" guard.
+
+    Returns ``None`` when the effective agent is a custom-hook or unrecognised
+    class whose consumption cannot be attested from this registry. Such agents
+    never reach ``_selected_transport_hosts`` (their own hook declares hosts and
+    only sees ``_SAFE_PROFILE_ENV_KEYS``), so the caller leaves their env
+    untouched rather than guessing -- an empty tuple, by contrast, means the
+    agent is known to consume no transport base URL at all (e.g. nop/oracle,
+    grok).
+    """
+    agent_class = resolve_effective_agent_class(agent_config)
+    spec = _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
+    if spec is None:
+        return None
+    return spec.base_url_keys(agent_config)
 
 
 def _safe_hook_context(

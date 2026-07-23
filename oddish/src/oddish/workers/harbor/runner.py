@@ -60,12 +60,14 @@ from .agent_config import (
 )
 from .model_hosts import outbound_hosts_for_model
 from .restricted_network import (
+    _KNOWN_TRANSPORT_BASE_URL_KEYS,
     RUNTIME_ALLOWED_HOSTS_ATTR,
     RUNTIME_MODEL_NAME_ATTR,
     RestrictedNetworkProfile,
     RestrictedNetworkProfileError,
     apply_restricted_network_profile,
     assert_no_serialized_restricted_routes,
+    consumed_transport_base_url_keys,
     is_static_restricted_agent_supported,
     reject_submitted_restricted_routes,
     set_runtime_model_name,
@@ -133,6 +135,27 @@ def _resolved_runtime_transport_env(
             for key in _GEMINI_RUNTIME_ENV_KEYS:
                 if key not in runtime_env and (value := os.environ.get(key)):
                     runtime_env[key] = value
+        # Drop worker-injected model-transport base URLs the effective agent's
+        # restricted profile does not consume, honoring this function's contract
+        # of collecting "only worker routes consumed by the selected effective
+        # agent." Worker route injection can surface one provider's *_BASE_URL
+        # (e.g. an Azure OPENAI_BASE_URL on an OpenAI-provider trial) while the
+        # effective agent fronts an unrelated transport (e.g. Cursor -> only
+        # *.cursor.sh). Left in, that stray *known* transport key would trip the
+        # profile's fail-closed "does not consume" guard in
+        # _selected_transport_hosts and fail an otherwise valid trial before
+        # Job.create -- even though the key is never granted egress. Non-transport
+        # keys (credentials, feature flags) are preserved; an indeterminate
+        # effective agent (custom hook / unrecognised class -> keys is None) is
+        # left untouched, since those paths never reach _selected_transport_hosts.
+        consumed = consumed_transport_base_url_keys(agent_config)
+        if consumed is not None:
+            allowed = frozenset(consumed)
+            runtime_env = {
+                key: value
+                for key, value in runtime_env.items()
+                if key not in _KNOWN_TRANSPORT_BASE_URL_KEYS or key in allowed
+            }
     return runtime_env
 
 

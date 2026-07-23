@@ -175,6 +175,52 @@ def test_compose_transport_validates_selected_agent_extra_env(tmp_path):
         )
 
 
+def test_compose_transport_drops_unconsumed_openai_route_for_cursor(tmp_path):
+    # A cursor-cli trial whose worker openai_env carries OPENAI_BASE_URL (e.g. an
+    # openai-provider model under Azure) must not fail-close: cursor consumes only
+    # CURSOR_* routes, so the unconsumed OPENAI_BASE_URL is dropped before profile
+    # resolution and cursor still resolves to its own *.cursor.sh host set.
+    from oddish.workers.harbor.restricted_network import (
+        restricted_network_profile_for_config,
+    )
+
+    task_path = _write_network_policy_task(tmp_path, compose=True)
+    environment_config = HarborEnvironmentConfig(type=EnvironmentType.DAYTONA)
+    agent_config = HarborAgentConfig(name="cursor-cli", model_name="openai/gpt-5")
+
+    runtime_env = harbor_runner._resolved_runtime_transport_env(
+        {
+            "OPENAI_BASE_URL": "https://azure-openai.test/v1",
+            "OPENAI_API_KEY": "sk-secret",
+        },
+        agent_config=agent_config,
+    )
+    # The unconsumed known transport base URL is dropped; the credential is kept.
+    assert runtime_env == {"OPENAI_API_KEY": "sk-secret"}
+
+    # Profile resolution no longer raises, and the dropped route is not granted.
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=environment_config,
+        agent_config=agent_config,
+        runtime_transport_env=runtime_env,
+    )
+    hosts = getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR)
+    assert "azure-openai.test" not in hosts
+    assert hosts == ("*.cursor.sh",)
+
+    # The filter is load-bearing: fed the raw (unfiltered) worker route, the
+    # cursor profile still fails closed on the base URL it does not consume.
+    with pytest.raises(
+        harbor_runner.RestrictedNetworkProfileError,
+        match="does not consume",
+    ):
+        restricted_network_profile_for_config(
+            HarborAgentConfig(name="cursor-cli", model_name="openai/gpt-5"),
+            resolved_env={"OPENAI_BASE_URL": "https://azure-openai.test/v1"},
+        )
+
+
 @pytest.mark.parametrize(
     ("environment_type", "compose"),
     [
