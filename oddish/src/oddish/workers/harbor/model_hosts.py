@@ -2,9 +2,10 @@
 
 Oddish routes many providers through the same agent harness (notably
 ``claude-code``), so the model id usually decides which API host must be
-reachable. Harnesses that front models through their own service (Cursor CLI)
-also contribute runtime hosts. Prefer hosts already present in the trial's
-agent env, then fall back to Oddish's classifiers and default base URLs.
+reachable -- including harnesses that front models through their own service
+(e.g. the ``cursor/`` model prefix maps to Cursor's API host). Prefer hosts
+already present in the trial's agent env, then fall back to Oddish's
+classifiers and default base URLs.
 """
 
 from __future__ import annotations
@@ -138,7 +139,6 @@ def outbound_hosts_for_model(
     *,
     agent_env: Mapping[str, str] | None = None,
     agent_kwargs: dict[str, Any] | None = None,
-    prefer_exact_base_url: bool = False,
 ) -> list[str]:
     """Return API hosts the trial must reach for *model_name*.
 
@@ -154,12 +154,6 @@ def outbound_hosts_for_model(
     extra_env = (agent_kwargs or {}).get("extra_env")
     if isinstance(extra_env, dict):
         hosts.extend(_hosts_from_env(extra_env))
-
-    # Daytona Compose/DinD callers can request the normalized per-trial route
-    # as authoritative. The default remains the historical union used by
-    # Modal and single-container trials.
-    if hosts and prefer_exact_base_url:
-        return list(dict.fromkeys(hosts))
 
     if is_fireworks_model(model_name):
         host = _default_host(

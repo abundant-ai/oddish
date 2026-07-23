@@ -18,19 +18,12 @@ def test_outbound_hosts_follow_model_not_agent_env_shape():
     ]
 
 
-def test_outbound_hosts_preserve_legacy_union_unless_exact_route_requested():
+def test_outbound_hosts_preserve_legacy_union():
     hosts = outbound_hosts_for_model(
         "openai/model-with-explicit-route",
         agent_env={"OPENAI_BASE_URL": "https://api.fireworks.ai/inference"},
     )
     assert hosts == ["api.fireworks.ai", "api.openai.com", "ab.chatgpt.com"]
-
-    hosts = outbound_hosts_for_model(
-        "openai/model-with-explicit-route",
-        agent_env={"OPENAI_BASE_URL": "https://api.fireworks.ai/inference"},
-        prefer_exact_base_url=True,
-    )
-    assert hosts == ["api.fireworks.ai"]
 
 
 def test_outbound_hosts_bedrock_model_ids():
@@ -76,8 +69,8 @@ def test_outbound_hosts_read_cursor_custom_endpoint():
 
 
 def test_outbound_hosts_read_gemini_custom_endpoint():
-    assert outbound_hosts_for_model(
+    hosts = outbound_hosts_for_model(
         "google/gemini-test",
         agent_env={"GOOGLE_GEMINI_BASE_URL": "https://gemini-relay.example/v1"},
-        prefer_exact_base_url=True,
-    ) == ["gemini-relay.example"]
+    )
+    assert "gemini-relay.example" in hosts

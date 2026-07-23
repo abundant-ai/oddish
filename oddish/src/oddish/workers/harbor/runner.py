@@ -879,30 +879,6 @@ def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     ]
 
 
-def _inject_daytona_agent_model_hosts(
-    *,
-    task_path: Path,
-    environment_config: HarborEnvironmentConfig,
-    agent_config: HarborAgentConfig,
-    runtime_transport_env: dict[str, str] | None = None,
-) -> RestrictedNetworkProfile | None:
-    """Backward-compatible alias for restricted-agent host injection."""
-    profile = _apply_daytona_compose_restricted_network_profile(
-        task_path=task_path,
-        environment_config=environment_config,
-        agent_config=agent_config,
-        runtime_transport_env=runtime_transport_env,
-    )
-    if profile is not None:
-        return profile
-    _inject_restricted_agent_model_hosts(
-        task_path=task_path,
-        environment_config=environment_config,
-        agent_config=agent_config,
-    )
-    return None
-
-
 def _read_query_cli_text() -> str:
     """Thin wrapper so tests can monkeypatch without reaching into probe_staging."""
     from oddish.worker.probe_staging import read_query_cli_text
@@ -1148,7 +1124,9 @@ async def run_harbor_trial_async(
     try:
         # Build Harbor configs inside the try: model normalization and
         # Job.create can both fail and should return a well-formed outcome.
-        if restricted_compose_kind == "dynamic":
+        # Caller-supplied routes are rejected for every restricted Compose
+        # shape -- static (nop/oracle) trials must not widen egress either.
+        if restricted_compose_kind in ("dynamic", "static"):
             reject_submitted_restricted_routes(raw)
         env_config = hc.environment.model_copy()
         env_config.type = environment
@@ -1206,7 +1184,9 @@ async def run_harbor_trial_async(
                 is_probe=is_probe,
                 probe_oddish_env=extra_agent_env,
             )
-            if restricted_compose_kind == "dynamic":
+            # Early no-serialized-routes checkpoint, symmetric with the
+            # post-defaults assert below; both restricted kinds are covered.
+            if restricted_compose_kind in ("dynamic", "static"):
                 assert_no_serialized_restricted_routes(agent_config)
             if restricted_compose_kind == "dynamic":
                 runtime_transport_env = _resolved_runtime_transport_env(
@@ -1264,7 +1244,11 @@ async def run_harbor_trial_async(
                 agent_config=agent_config,
                 runtime_transport_env=runtime_transport_env,
             )
-            if restricted_compose_kind == "dynamic":
+            # Neither restricted kind serializes extra_allowed_hosts: the
+            # dynamic Compose profile grants hosts via the runtime-only
+            # attribute (runtime_only_hosts=True), and static (nop/oracle)
+            # trials skip the profile entirely and inject no routes.
+            if restricted_compose_kind in ("dynamic", "static"):
                 assert_no_serialized_restricted_routes(agent_config)
 
         # Claude Code downloads its CLI at agent-setup and calls its model
