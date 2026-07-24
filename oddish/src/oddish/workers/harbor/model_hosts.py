@@ -191,6 +191,12 @@ def outbound_hosts_for_model(
             hosts.extend(_GEMINI_HOSTS)
         elif head == "bedrock":
             hosts.extend(bedrock_domains_for_model(model_name=model_name))
+        elif not head and not hosts and raw.startswith("claude-"):
+            # Force-direct-API routing strips the provider prefix so claude-code
+            # gets the bare Anthropic id it requires, which otherwise leaves the
+            # restricted-network allowlist with no model host to resolve. A
+            # routed base URL above still wins.
+            hosts.extend(_ANTHROPIC_HOSTS)
 
     # Dedupe, drop empties, stable order.
     return list(dict.fromkeys(h for h in hosts if h))

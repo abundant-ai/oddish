@@ -34,6 +34,11 @@ def test_functions_module_imports_pre_trial_synth_for_its_side_effect():
     )
 
 
+class _FakePrompt:
+    def __init__(self, id: str = "prompt_fake_id") -> None:
+        self.id = id
+
+
 class _FakePromptVersion:
     def __init__(self, content: str, version: int = 7) -> None:
         self.content = content
@@ -89,15 +94,22 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     into a list of `ActionItem`. The block/client/session are all faked --
     no real sandbox, LLM, or DB."""
 
-    async def fake_get_prompt_core(session, kind):
+    async def fake_resolve_prompt_core(session, kind, **scope):
         assert kind == "QA_PRE_TRIAL"
-        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+        assert scope == {
+            "org_id": "org_1",
+            "user_id": None,
+            "experiment_id": None,
+            "task_id": "task_xyz",
+            "trial_id": None,
+        }
+        return _FakePrompt(), _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
     async def fake_resolve_org_pre_trial(task_id):
         return "org_1", True
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
-    monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
+    monkeypatch.setattr(mod, "resolve_prompt_core", fake_resolve_prompt_core)
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
 
@@ -114,6 +126,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     assert _FakeAnalyzerBlock.last_kwargs["block_metadata"] == {
         "prompt_key": "QA_PRE_TRIAL",
         "prompt_version": 7,
+        "prompt_id": "prompt_fake_id",
     }
     sandbox_config = _FakeAnalyzerBlock.last_kwargs["sandbox_config"]
     assert sandbox_config.install_oddish_cli is True
@@ -130,8 +143,8 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
-    async def fake_get_prompt_core(session, key):
-        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+    async def fake_resolve_prompt_core(session, key, **scope):
+        return _FakePrompt(), _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
     async def fake_resolve_org_pre_trial(task_id):
         return "org_1", True
@@ -141,7 +154,7 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
             return _FakeAnalyzerResult({"items": []})
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
-    monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
+    monkeypatch.setattr(mod, "resolve_prompt_core", fake_resolve_prompt_core)
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "AnalyzerBlock", _EmptyAnalyzerBlock)
 
@@ -168,15 +181,107 @@ async def test_synth_returns_before_provisioning_when_org_disabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_synth_raises_when_org_id_unresolved(monkeypatch):
-    async def fake_get_prompt_core(session, key):
-        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+    async def fake_resolve_prompt_core(session, key, **scope):
+        return _FakePrompt(), _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
     async def fake_resolve_org_pre_trial(task_id):
         return None, True
 
     monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
-    monkeypatch.setattr(mod, "get_prompt_core", fake_get_prompt_core)
+    monkeypatch.setattr(mod, "resolve_prompt_core", fake_resolve_prompt_core)
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
 
     with pytest.raises(RuntimeError, match="task_xyz"):
         await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
+
+
+# ---------------------------------------------------------------------------
+# resolve_prompt_core scope resolution (real DB, only AnalyzerBlock/org faked)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_synth_prefers_task_scoped_prompt_over_global(monkeypatch):
+    """Guard: a task-scoped QA_PRE_TRIAL override must be used instead of the
+    global prompt. Exercises resolve_prompt_core for real against the DB."""
+    import uuid
+
+    from oddish.core.prompts import set_prompt_core
+    from oddish.db import PromptKind, PromptModel, get_session
+
+    task_id = f"test_pre_trial_scope_{uuid.uuid4().hex[:8]}"
+    org_id = "org_pre_trial_scope_test"
+
+    async with get_session() as session:
+        await set_prompt_core(
+            session,
+            kind=PromptKind.QA_PRE_TRIAL.value,
+            content="SCOPED Audit {task_id}. Trials: {trial_ids}",
+            scope_type="task",
+            scope_id=task_id,
+            org_id=org_id,
+        )
+        await session.commit()
+
+    async def fake_resolve_org_pre_trial(tid):
+        return org_id, True
+
+    try:
+        monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
+        monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
+
+        await synthesize_task_pre_trial(task_id, f"{task_id}-v1", ["t1"], timeout=30.0)
+
+        prompt = _FakeAnalyzerBlock.last_kwargs["prompt"]
+        assert prompt == f"SCOPED Audit {task_id}. Trials: t1"
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                PromptModel.__table__.delete().where(
+                    PromptModel.kind == PromptKind.QA_PRE_TRIAL.value,
+                    PromptModel.scope_type == "task",
+                    PromptModel.scope_id == task_id,
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_synth_falls_back_to_global_with_no_scoped_rows(monkeypatch):
+    """Behavior preservation: an org/task with no scoped QA_PRE_TRIAL rows
+    must still resolve the global prompt -- the property that must not
+    regress when the lookup becomes scope-aware."""
+    from oddish.core.prompt_seeds import seed_prompts
+    from oddish.core.prompts import get_prompt_core
+    from oddish.db import PromptKind, get_session
+
+    # Guarantee the global row exists regardless of what other tests in the
+    # suite have deleted or re-seeded before this one runs.
+    async with get_session() as session:
+        await seed_prompts(session)
+        await session.commit()
+
+    async with get_session() as session:
+        global_prompt, global_version = await get_prompt_core(
+            session, PromptKind.QA_PRE_TRIAL.value
+        )
+
+    async def fake_resolve_org_pre_trial(tid):
+        return "org_with_no_overrides", True
+
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
+    monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
+
+    await synthesize_task_pre_trial(
+        "task_with_no_overrides", "task_with_no_overrides-v1", ["t1"], timeout=30.0
+    )
+
+    assert _FakeAnalyzerBlock.last_kwargs["block_metadata"] == {
+        "prompt_key": "QA_PRE_TRIAL",
+        "prompt_version": global_version.version,
+        "prompt_id": global_prompt.id,
+    }
+    expected_prompt = global_version.content.replace(
+        "{task_id}", "task_with_no_overrides"
+    ).replace("{trial_ids}", "t1")
+    assert _FakeAnalyzerBlock.last_kwargs["prompt"] == expected_prompt

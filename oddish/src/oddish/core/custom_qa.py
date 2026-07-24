@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.config import settings
-from oddish.core.prompts import get_prompt_core
+from oddish.core.prompts import resolve_prompt_core
 from oddish.db.models import (
     ExperimentModel,
     JobStatus,
@@ -70,17 +70,57 @@ async def get_custom_qa_run_core(
 
 async def _validate_scope(
     session: AsyncSession, *, kind: str, id: str, org_id: str | None
-) -> None:
+) -> ExperimentModel | TaskModel | TrialModel:
     model = {"experiment": ExperimentModel, "task": TaskModel, "trial": TrialModel}[
         kind
     ]
-    exists = await session.scalar(
-        select(model.id).where(model.id == id, model.org_id == org_id)
+    target = await session.scalar(
+        select(model).where(model.id == id, model.org_id == org_id)
     )
-    if not exists:
+    if target is None:
         raise HTTPException(
             status_code=404, detail=f"Unknown or inaccessible {kind}: {id}"
         )
+    return target
+
+
+def _assert_prompt_visible(prompt: PromptModel, *, org_id: str | None) -> None:
+    """Mirror ``_assert_org_access`` in the prompts router: ``variant.kind`` is
+    a free-form string that can also resolve as a prompt id, so a row scoped
+    to another org must stay invisible here too."""
+    if prompt.org_id and prompt.org_id != org_id:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+
+
+async def _resolve_variant(
+    session: AsyncSession,
+    kind: str,
+    *,
+    version: int | None,
+    org_id: str | None,
+    user_id: str | None,
+    scope_type: str,
+    scope_id: str,
+    target: ExperimentModel | TaskModel | TrialModel,
+) -> tuple[PromptModel, PromptVersionModel]:
+    """Resolve a QA variant using the target's complete available hierarchy."""
+    domain_scope = {"experiment_id": None, "task_id": None, "trial_id": None}
+    domain_scope[f"{scope_type}_id"] = scope_id
+    if isinstance(target, TrialModel):
+        domain_scope["task_id"] = target.task_id
+        domain_scope["experiment_id"] = target.experiment_id
+    prompt, latest = await resolve_prompt_core(
+        session, kind, org_id=org_id, user_id=user_id, **domain_scope
+    )
+    if version is None:
+        return prompt, latest
+    versions = await prompt.awaitable_attrs.versions
+    for v in versions:
+        if v.version == version:
+            return prompt, v
+    raise HTTPException(
+        status_code=404, detail=f"Prompt '{kind}' has no version {version}"
+    )
 
 
 async def run_custom_qa_core(
@@ -91,7 +131,7 @@ async def run_custom_qa_core(
     user_id: str | None,
     oddish_api_base_url: str | None = None,
 ) -> list[CustomQARunResponse]:
-    await _validate_scope(
+    target = await _validate_scope(
         session, kind=data.scope_type, id=data.scope_id, org_id=org_id
     )
     refs = [(v.kind.strip(), v.version) for v in data.variants]
@@ -108,9 +148,17 @@ async def run_custom_qa_core(
     )
     pending: list[tuple[PromptModel, PromptVersionModel, AnalyzerRunModel]] = []
     for variant in data.variants:
-        prompt, version = await get_prompt_core(
-            session, variant.kind.strip(), version=variant.version
+        prompt, version = await _resolve_variant(
+            session,
+            variant.kind.strip(),
+            version=variant.version,
+            org_id=org_id,
+            user_id=user_id,
+            scope_type=data.scope_type,
+            scope_id=data.scope_id,
+            target=target,
         )
+        _assert_prompt_visible(prompt, org_id=org_id)
         digest = hashlib.sha256(version.content.encode()).hexdigest()
         system_prompt = (
             "You are running an Oddish custom QA check. "
@@ -126,6 +174,9 @@ async def run_custom_qa_core(
         ref = f"{prompt.kind}@{version.version}"
         config = {
             "scope": {"type": data.scope_type, "id": data.scope_id},
+            "prompt_id": prompt.id,
+            "prompt_key": prompt.kind,
+            "prompt_version": version.version,
             "prompt": {
                 "id": prompt.id,
                 "kind": prompt.kind,

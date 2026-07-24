@@ -13,6 +13,7 @@ from oddish.analyze.analysis_cost import (
     usage_from_api_message,
     usage_from_openai_completion,
 )
+from oddish.blocks.analyzer.claude_cli_client import ClaudeCliClient, CliConfig
 from oddish.config import OPENAI_PROVIDER_OPENAI, _infer_provider_prefix, settings
 
 _DEFAULT_MODEL = "claude-opus-4-8"
@@ -53,6 +54,9 @@ def resolve_analyzer_api_key(explicit: str | None = None) -> str | None:
 
 class LLMClientType(str, enum.Enum):
     SANDBOX = "Sandbox"
+    # Filesystem-aware Claude Code process running in the worker that already
+    # downloaded the task and trial artifacts.
+    CLAUDE_CLI = "ClaudeCli"
     # Direct provider API. Speaks Anthropic or OpenAI/Azure, chosen from the
     # model id -- there is no separate OpenAI backend to select.
     API = "Api"
@@ -73,10 +77,17 @@ class SandboxConfig:
     oddish_api_key: str | None = None
     reasoning_effort: str | None = None
     trajectory_tail_bytes: int | None = None
+    # Serialized JSON Schema handed to claude-code's ``--json-schema``, which
+    # constrains generation and surfaces the object as ``structured_output`` on
+    # the final stream-json event. None leaves the run unconstrained.
+    json_schema: str | None = None
     session_id: str = "analyzer"
     labels: dict[str, str] = field(default_factory=dict)
     files_to_upload: dict[str, bytes] = field(default_factory=dict)
     setup_commands: tuple[str, ...] = ()
+    # Filesystem roots Claude Code may read outside its sandbox workspace.
+    # Paths must refer to their post-setup locations inside the sandbox.
+    add_dirs: tuple[str, ...] = ()
     auto_stop_minutes: int | None = None
     auto_delete_minutes: int | None = None
     snapshot: str | None = None
@@ -311,6 +322,11 @@ def register_sandbox_client_factory(factory: SandboxClientFactory) -> None:
     _sandbox_client_factory = factory
 
 
+def sandbox_client_factory_registered() -> bool:
+    """Whether the hosted layer installed its sandbox provisioner."""
+    return _sandbox_client_factory is not None
+
+
 async def create_llm_client(
     llm_client_type: LLMClientType,
     *,
@@ -319,6 +335,7 @@ async def create_llm_client(
     max_tokens: int | None = None,
     response_format: Any | None = None,
     sandbox_config: SandboxConfig | None = None,
+    cli_config: CliConfig | None = None,
 ) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
         if sandbox_config:
@@ -340,5 +357,12 @@ async def create_llm_client(
         return await _sandbox_client_factory(
             model=model, api_key=api_key, sandbox_config=config
         )
+
+    if llm_client_type == LLMClientType.CLAUDE_CLI:
+        if cli_config is None:
+            raise ValueError(
+                "CLAUDE_CLI needs a cli_config naming the directories it may read"
+            )
+        return ClaudeCliClient(model=model, config=cli_config)
 
     raise ValueError(f"unknown llm_client_type: {llm_client_type!r}")
