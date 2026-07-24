@@ -50,6 +50,13 @@ from oddish.workers.queue.analysis_handler import classify_trial_and_store
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 ANALYZER_HEARTBEAT_INTERVAL_SECONDS = 30
+# Re-poll cadence for a trial another worker is classifying.
+ANALYZER_CLAIM_POLL_SECONDS = 15
+# How long the second pass waits on those trials. Deliberately far below
+# ANALYSIS_CLAIM_TTL_MINUTES, unlike the QA path: an analyzer is interactive
+# (someone is watching the dashboard) and tolerates missing analyses by
+# design, so a slightly thin report beats a stalled one.
+ANALYZER_CLAIM_WAIT_SECONDS = 180
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +278,17 @@ async def run_analyzer_generation_job(
             rows = await _gather_trial_rows(session, analyzer_id, org_id)
             trial_ids = [t.id for t, _ in rows]
 
+        _should_store = (
+            (lambda session: _worker_job_is_running(session, worker_job_id))
+            if worker_job_id
+            else None
+        )
+        # Trials a peer worker was already classifying. Revisited after the
+        # loop rather than waited on here: analyzers share the QA queue key, so
+        # during a sweep's QA burst many trials are claimed, and blocking on
+        # each in turn would serialize the report behind other workers.
+        deferred: list[str] = []
+
         for tid in trial_ids:
             if worker_job_id:
                 async with get_session() as session:
@@ -283,18 +301,41 @@ async def run_analyzer_generation_job(
                 )
             if needs:
                 try:
-                    await classify_trial_and_store(
-                        tid,
-                        should_store=(
-                            lambda session: _worker_job_is_running(
-                                session, worker_job_id
-                            )
-                        )
-                        if worker_job_id
-                        else None,
-                    )
+                    if (
+                        await classify_trial_and_store(tid, should_store=_should_store)
+                        == AnalysisStatus.RUNNING
+                    ):
+                        deferred.append(tid)
                 except Exception:
                     pass  # skip un-analyzable trials; they still count toward num_trials
+
+        # Second pass over the claimed ones. The first pass bought them time,
+        # so a short poll usually lands the peer's analysis; on timeout the
+        # trial keeps whatever it has and the fresh gather below still counts
+        # it, matching this path's best-effort contract.
+        for tid in deferred:
+            if worker_job_id:
+                async with get_session() as session:
+                    if not await _worker_job_is_running(session, worker_job_id):
+                        return
+            deadline = asyncio.get_running_loop().time() + ANALYZER_CLAIM_WAIT_SECONDS
+            while True:
+                try:
+                    status = await classify_trial_and_store(
+                        tid, should_store=_should_store
+                    )
+                except Exception:
+                    break  # un-analyzable; same tolerance as the first pass
+                if status != AnalysisStatus.RUNNING:
+                    break
+                if asyncio.get_running_loop().time() >= deadline:
+                    logger.info(
+                        "analyzer %s proceeding without trial %s; still claimed",
+                        analyzer_id,
+                        tid,
+                    )
+                    break
+                await asyncio.sleep(ANALYZER_CLAIM_POLL_SECONDS)
 
         # 3. Build inputs + run the pure core.
         if worker_job_id:
