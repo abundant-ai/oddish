@@ -28,6 +28,7 @@ from oddish.core.idempotency import (
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     utcnow,
@@ -461,6 +462,15 @@ async def create_task_sweep_core(
             session, task_id=submission.task_id, org_id=org_id
         )
         await session.refresh(task, with_for_update=True)
+        if task.current_version_id is None:
+            current_version_id = await session.scalar(
+                select(TaskVersionModel.id)
+                .where(TaskVersionModel.task_id == task.id)
+                .order_by(TaskVersionModel.version.desc())
+                .limit(1)
+            )
+            if current_version_id is not None:
+                task.current_version_id = current_version_id
         # Allow flipping task.run_analysis from False to True on append.
         # ``run_analysis`` runs at trial-completion time, so updating the
         # task-level flag does not retroactively analyze pre-existing

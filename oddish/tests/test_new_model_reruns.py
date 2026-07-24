@@ -141,6 +141,36 @@ async def test_new_model_gets_full_n_trials(seeded_task_id):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_repairs_missing_current_version_without_duplicates(
+    seeded_task_id,
+):
+    from oddish.core.endpoints import create_task_sweep_core
+
+    submission = TaskSweepSubmission(
+        task_id=seeded_task_id,
+        append_to_task=True,
+        configs=[AgentModelPair(agent=AGENT, model=MODEL_A, n_trials=N_TRIALS)],
+        user="test",
+    )
+    async with get_session() as session:
+        await create_task_sweep_core(session, submission=submission, org_id=None)
+    async with get_session() as session:
+        task = await session.get(TaskModel, seeded_task_id)
+        expected_version_id = task.current_version_id
+        task.current_version_id = None
+
+    async with get_session() as session:
+        await create_task_sweep_core(session, submission=submission, org_id=None)
+    async with get_session() as session:
+        task = await session.get(TaskModel, seeded_task_id)
+        trials = await _trials_for_model(session, seeded_task_id, MODEL_A)
+
+    assert expected_version_id is not None
+    assert task.current_version_id == expected_version_id
+    assert len(trials) == N_TRIALS
+
+
+@pytest.mark.asyncio
 async def test_new_experiment_gets_full_n_trials(seeded_task_id):
     """Re-submitting the same task+model to a different experiment should create
     a full N trials in the new experiment, not 0 (shortfall against the old

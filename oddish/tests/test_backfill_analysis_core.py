@@ -88,9 +88,10 @@ class _FakeSession:
 
 
 class _CancelSession(_FakeSession):
-    def __init__(self, task, *, active_trial_count):
+    def __init__(self, task, *, active_trial_count, scalar_values=None):
         super().__init__(task)
         self.active_trial_count = active_trial_count
+        self.scalar_values = iter(scalar_values) if scalar_values else None
         self.execute_calls = 0
 
     async def execute(self, _stmt, _params=None):
@@ -100,6 +101,8 @@ class _CancelSession(_FakeSession):
         return _RowsResult()
 
     async def scalar(self, _stmt):
+        if self.scalar_values is not None:
+            return next(self.scalar_values)
         return self.active_trial_count
 
 
@@ -211,6 +214,30 @@ async def test_cancelled_qa_keeps_task_running_while_historical_trial_is_active(
     assert task.verdict_status == VerdictStatus.FAILED
     assert task.status == TaskStatus.RUNNING
     assert task.finished_at is None
+    assert session.committed is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_qa_repairs_missing_current_version():
+    current = _trial("tsk-0", analysis_status=AnalysisStatus.RUNNING)
+    task = _task(
+        [current],
+        run_analysis=True,
+        verdict_status=VerdictStatus.RUNNING,
+    )
+    task.current_version_id = None
+    task.status = TaskStatus.VERDICT_PENDING
+    session = _CancelSession(
+        task,
+        active_trial_count=0,
+        scalar_values=("tsk-v1", 0),
+    )
+
+    await cancel_task_qa_core(session, task_id="tsk", org_id="org-1")
+
+    assert task.current_version_id == "tsk-v1"
+    assert current.analysis_status == AnalysisStatus.FAILED
+    assert current.analysis_error is not None
     assert session.committed is True
 
 

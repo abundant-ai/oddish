@@ -124,10 +124,22 @@ async def cancel_task_qa_core(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
         .where(TaskModel.id == task_id)
+        .with_for_update()
     )
     task = result.scalar_one_or_none()
     if not task or (org_id is not None and task.org_id != org_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    current_version_id = task.current_version_id
+    if current_version_id is None:
+        current_version_id = await session.scalar(
+            select(TaskVersionModel.id)
+            .where(TaskVersionModel.task_id == task_id)
+            .order_by(TaskVersionModel.version.desc())
+            .limit(1)
+        )
+        if current_version_id is not None:
+            task.current_version_id = current_version_id
 
     now_value = utcnow()
     rows = await _cancel_worker_jobs_for_kind(
@@ -145,7 +157,7 @@ async def cancel_task_qa_core(
         # they don't linger in a RUNNING analysis state.
         for trial in task.trials or []:
             if (
-                trial.task_version_id == task.current_version_id
+                trial.task_version_id == current_version_id
                 and trial.superseded_by_trial_id is None
                 and _has_active_analysis(trial)
             ):

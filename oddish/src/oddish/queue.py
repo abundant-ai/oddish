@@ -1142,6 +1142,15 @@ async def append_trials_to_task(
     next_index = _get_next_trial_index(task.id, existing_trials)
 
     current_version_id = task.current_version_id
+    if current_version_id is None:
+        current_version_id = await session.scalar(
+            select(TaskVersionModel.id)
+            .where(TaskVersionModel.task_id == task.id)
+            .order_by(TaskVersionModel.version.desc())
+            .limit(1)
+        )
+        if current_version_id is not None:
+            task.current_version_id = current_version_id
 
     # Pick the target experiment: explicit argument wins, otherwise fall back
     # to the first linked experiment (the task's "primary" association).

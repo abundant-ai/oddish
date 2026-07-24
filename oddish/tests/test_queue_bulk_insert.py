@@ -252,6 +252,38 @@ async def test_append_bulk_inserts_in_one_statement(cleanup_task_ids):
 
 
 @pytest.mark.asyncio
+async def test_append_repairs_missing_current_version(cleanup_task_ids):
+    task_id = f"bulk-append-repair-version-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        task = await create_task(
+            session,
+            _submission("append-repair-version-base", n_trials=1),
+            task_id=task_id,
+        )
+        expected_version_id = task.current_version_id
+        task.current_version_id = None
+        await session.flush()
+
+        exp = await get_or_create_experiment(
+            session,
+            f"append-repair-version-exp-{_RUN}",
+            None,
+        )
+        await session.flush()
+        new_trials = await append_trials_to_task(
+            session,
+            task=task,
+            submission=_submission("append-repair-version", n_trials=1),
+            experiment_id=exp.id,
+        )
+
+    assert expected_version_id is not None
+    assert task.current_version_id == expected_version_id
+    assert [trial.task_version_id for trial in new_trials] == [expected_version_id]
+
+
+@pytest.mark.asyncio
 async def test_bulk_insert_parity_with_per_row(cleanup_task_ids):
     """The bulk path produces byte-identical rows to a faithful per-row replica.
 
