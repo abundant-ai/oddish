@@ -1,15 +1,12 @@
 import { formatCostUsd } from "@/lib/format";
 
-// QA spend rendered as a muted annotation on the agent-cost figure it
-// accompanies. Deliberately NOT summed into that figure: the headline number
-// keeps its existing meaning, and QA is secondary information.
+// QA spend rendered as a muted sidecar to the agent-cost figure it annotates.
+// Deliberately NOT summed into that figure: the headline number keeps its
+// existing meaning, and QA is secondary information.
 //
-// `sub` sits on its own line beneath a display figure; `row` sits inline
-// beside body text. Only the inline variant carries the leading "+": on its
-// own line the amount can't be misread as part of the figure above it, so the
-// sign is noise there.
+// `tile` sits beside a 26px display figure; `row` beside body text.
 const SIZES = {
-  sub: "text-[10px]",
+  tile: "text-[13px]",
   row: "text-[11px]",
 } as const;
 
@@ -31,8 +28,7 @@ export function QaCostSuffix({
       className={`font-mono font-normal text-[color:var(--paper-ink-3)] ${SIZES[size]}`}
       title={title}
     >
-      {size === "row" ? "+" : ""}
-      {formatCostUsd(costUsd)} QA
+      +{formatCostUsd(costUsd)} QA
     </span>
   );
 }
