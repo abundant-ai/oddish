@@ -206,6 +206,14 @@ def test_parse_stream_json_result_reads_the_last_result_event():
     assert parse_stream_json_result(raw) == {"classification": "GOOD_SUCCESS"}
 
 
+def test_parse_stream_json_result_skips_a_trailing_empty_result_event():
+    raw = (
+        '{"type": "result", "structured_output": {"classification": "GOOD_SUCCESS"}}'
+        '{"type": "result", "structured_output": null, "result": null}'
+    )
+    assert parse_stream_json_result(raw) == {"classification": "GOOD_SUCCESS"}
+
+
 def test_parse_stream_json_result_without_a_result_event_raises():
     with pytest.raises(RuntimeError, match="no structured result"):
         parse_stream_json_result('{"type": "assistant", "message": "hi"}')

@@ -117,7 +117,12 @@ def parse_stream_json_result(raw: str) -> Any:
             offset += 1
     for event in reversed(events):
         if event.get("type") == "result":
-            return extract_claude_result(event)
+            try:
+                return extract_claude_result(event)
+            except RuntimeError:
+                # A stream may end with an empty result envelope after an
+                # earlier result event already supplied the usable output.
+                continue
     raise RuntimeError("sandbox run emitted no structured result event")
 
 
