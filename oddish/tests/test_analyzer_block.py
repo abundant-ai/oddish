@@ -474,6 +474,43 @@ async def test_save_to_db_adds_row(monkeypatch):
     assert row.status == JobStatus.SUCCESS
     assert row.block_metadata == {"k": "v"}
 
+
+def test_block_row_kwargs_stamps_prompt_attribution_from_top_level():
+    from oddish.blocks.analyzer.analyzer_block import _block_row_kwargs
+
+    kw = _block_row_kwargs(
+        block_metadata={
+            "prompt_key": "QA_POST_TRIAL",
+            "prompt_version": 7,
+            "prompt_id": "prompt_1",
+        }
+    )
+    assert kw["prompt_key"] == "QA_POST_TRIAL"
+    assert kw["prompt_version"] == 7
+    assert kw["prompt_id"] == "prompt_1"
+
+
+def test_block_row_kwargs_stamps_prompt_attribution_from_nested_prompt():
+    """Custom QA stores attribution under a nested ``prompt`` object."""
+    from oddish.blocks.analyzer.analyzer_block import _block_row_kwargs
+
+    kw = _block_row_kwargs(
+        block_metadata={"prompt": {"id": "prompt_2", "kind": "QA_PRE_TRIAL", "version": 3}}
+    )
+    assert kw["prompt_key"] == "QA_PRE_TRIAL"
+    assert kw["prompt_version"] == 3
+    assert kw["prompt_id"] == "prompt_2"
+
+
+def test_block_row_kwargs_prompt_attribution_defaults_to_none():
+    from oddish.blocks.analyzer.analyzer_block import _block_row_kwargs
+
+    kw = _block_row_kwargs(block_metadata=None)
+    assert kw["prompt_key"] is None
+    assert kw["prompt_version"] is None
+    assert kw["prompt_id"] is None
+
+
 def _patch_persistence(monkeypatch):
     """Capture save_to_s3 raw + save_to_db without touching S3/DB."""
     saved = {"s3": None, "db": 0}

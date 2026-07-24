@@ -152,12 +152,14 @@ async def classify_trial_and_store(
         # packaged classifier prompt as a compatibility fallback.
         post_trial_prompt: str | None = None
         post_trial_prompt_version: int | None = None
+        post_trial_prompt_id: str | None = None
         try:
-            _, prompt_version = await get_prompt_core(
+            post_trial_prompt_row, prompt_version = await get_prompt_core(
                 session, PromptKind.QA_POST_TRIAL.value
             )
             post_trial_prompt = prompt_version.content
             post_trial_prompt_version = prompt_version.version
+            post_trial_prompt_id = post_trial_prompt_row.id
         except Exception as exc:
             console.print(
                 "[yellow]QA_POST_TRIAL prompt unavailable; using packaged "
@@ -263,6 +265,7 @@ async def classify_trial_and_store(
                         else None
                     ),
                     "prompt_version": post_trial_prompt_version,
+                    "prompt_id": post_trial_prompt_id,
                 },
             )
             classification_result = classification_to_result_dict(classification)

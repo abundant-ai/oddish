@@ -32,6 +32,10 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("idx_prompts_unique_kind_scope", table_name="prompts")
+    # Rows partitioned only by org_id collide under the narrower
+    # (kind, scope_type, scope_id) uniqueness. Org partitioning did not exist
+    # before this migration, so drop those rows rather than block the rollback.
+    op.execute("DELETE FROM prompts WHERE org_id IS NOT NULL")
     op.create_index(
         "idx_prompts_unique_kind_scope",
         "prompts",

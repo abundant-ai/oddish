@@ -590,6 +590,7 @@ class TrialClassifier:
         metadata = {
             "prompt_key": context.get("prompt_key"),
             "prompt_version": context.get("prompt_version"),
+            "prompt_id": context.get("prompt_id"),
             "model": block_model,
         }
         block = AnalyzerBlock(

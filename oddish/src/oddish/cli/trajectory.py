@@ -186,7 +186,12 @@ def components(
         ]
 
     if json_output:
-        console.print_json(_json.dumps([component for _, component in rows]))
+        # Carry the original component index so `--label --json` callers can feed
+        # it back to `steps --component N` -- array position no longer matches
+        # after filtering.
+        console.print_json(
+            _json.dumps([{"index": index, **component} for index, component in rows])
+        )
         return
 
     if not rows:

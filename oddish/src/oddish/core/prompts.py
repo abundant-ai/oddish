@@ -18,8 +18,19 @@ async def _get_prompt(session: AsyncSession, ref: str) -> PromptModel | None:
     """Resolve by kind first, then by id.
 
     Kind-first ordering means an opaque id can never shadow an existing kind.
+    A kind may now exist at several scopes (org/user/experiment/task/trial), so
+    the by-kind lookup pins the installation-wide default (NULL scope + org);
+    without this the first scoped row sharing a kind makes ``scalar_one_or_none``
+    raise ``MultipleResultsFound``.
     """
-    result = await session.execute(select(PromptModel).where(PromptModel.kind == ref))
+    result = await session.execute(
+        select(PromptModel).where(
+            PromptModel.kind == ref,
+            PromptModel.scope_type.is_(None),
+            PromptModel.scope_id.is_(None),
+            PromptModel.org_id.is_(None),
+        )
+    )
     prompt = result.scalar_one_or_none()
     if prompt is None:
         result = await session.execute(select(PromptModel).where(PromptModel.id == ref))
@@ -59,7 +70,17 @@ async def set_prompt_core(
 
 
 async def list_prompts_core(session: AsyncSession) -> list[PromptModel]:
-    result = await session.execute(select(PromptModel).order_by(PromptModel.kind))
+    # The registry view lists installation-wide defaults; scoped overrides are
+    # resolved per request, not surfaced as their own top-level rows.
+    result = await session.execute(
+        select(PromptModel)
+        .where(
+            PromptModel.scope_type.is_(None),
+            PromptModel.scope_id.is_(None),
+            PromptModel.org_id.is_(None),
+        )
+        .order_by(PromptModel.kind)
+    )
     return list(result.scalars().all())
 
 
