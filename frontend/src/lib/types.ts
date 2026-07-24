@@ -369,6 +369,9 @@ export interface ExperimentCostTotals {
   billed_token_count: number;
   billed_token_trial_count: number;
   total_trials: number;
+  qa_cost_usd?: number;
+  owned_qa_cost_usd?: number;
+  qa_has_estimated?: boolean;
 }
 
 export interface TaskDetailResponse {

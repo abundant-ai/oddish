@@ -913,6 +913,14 @@ class ExperimentCostTotals(BaseModel):
     billed_token_trial_count: int = 0
     total_trials: int = 0
 
+    # QA/analysis spend (``analysis_costs``), scoped exactly like the agent
+    # figures above: ``qa_cost_usd`` over every member trial, ``owned_*`` over
+    # homed trials only. Never folded into ``cost_usd`` -- the UI renders it as
+    # a separate muted figure so the headline number keeps its meaning.
+    qa_cost_usd: float = 0.0
+    owned_qa_cost_usd: float = 0.0
+    qa_has_estimated: bool = False
+
 
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
