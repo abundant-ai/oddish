@@ -7,8 +7,8 @@ import tempfile
 import time
 import uuid
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
@@ -21,8 +21,10 @@ from harbor.models.task.config import (
     TaskConfig as HarborTaskConfig,
     normalize_allowed_hosts,
 )
+from harbor.models.task.verifier_mode import resolve_effective_verifier_env_config
 from harbor.models.trial.config import AgentConfig as HarborAgentConfig
 from harbor.models.trial.config import EnvironmentConfig as HarborEnvironmentConfig
+from harbor.models.trial.config import ResourceMode
 from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 from harbor.utils.env import resolve_env_vars
@@ -32,6 +34,11 @@ from oddish.config import (
     is_anthropic_hdo_model,
     looks_like_bedrock_model_id,
     settings,
+)
+from oddish.costs.modal_cost import (
+    SpanResources,
+    normalize_gpu_type,
+    provider_default_request,
 )
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
@@ -81,6 +88,182 @@ _GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
 # TODO: Temporary workaround; remove once RishiDesai/harbor has the correct fix.
 # Hosts the Claude Code CLI fetches from at agent-setup (curl bootstrap / npm).
 _CLAUDE_CODE_INSTALLER_HOSTS = ("downloads.claude.ai", "registry.npmjs.org")
+
+
+def _resource_bounds(
+    value: int | None,
+    mode: ResourceMode,
+    *,
+    default_request: float,
+    auto_is_request: bool,
+) -> tuple[float | None, float | None]:
+    if value is None or mode == ResourceMode.IGNORE:
+        return None, None
+    if mode == ResourceMode.REQUEST or (mode == ResourceMode.AUTO and auto_is_request):
+        return float(value), None
+    if mode == ResourceMode.LIMIT:
+        return min(default_request, float(value)), float(value)
+    return float(value), float(value)
+
+
+def _unknown_sandbox_resources() -> SpanResources:
+    return SpanResources(
+        cpu_request=None,
+        cpu_limit=None,
+        mem_request_mb=None,
+        mem_limit_mb=None,
+        gpu_type=None,
+        gpu_count=0,
+        price_multiplier=Decimal(1),
+        container_class="sandbox",
+        spec_source="unknown",
+    )
+
+
+def _resources_from_environment_config(
+    env: Any, overrides: Any, provider: str = "modal"
+) -> SpanResources:
+    env = env.model_copy(deep=True)
+    if overrides.override_cpus is not None:
+        env.cpus = overrides.override_cpus
+    if overrides.override_memory_mb is not None:
+        env.memory_mb = overrides.override_memory_mb
+    if overrides.override_gpus is not None:
+        env.gpus = overrides.override_gpus
+
+    # The LIMIT-enforcement request floor is the provider's minimum request,
+    # not Modal's -- a Daytona sandbox reserves 1 vCPU / 1 GiB, not Modal's
+    # 0.125 core / 128 MiB, so a hardcoded Modal floor underprices it.
+    default_cpu, default_mem = provider_default_request(provider)
+    cpu_mode = ResourceMode(overrides.cpu_enforcement_policy)
+    mem_mode = ResourceMode(overrides.memory_enforcement_policy)
+    cpu_request, cpu_limit = _resource_bounds(
+        env.cpus,
+        cpu_mode,
+        default_request=default_cpu,
+        auto_is_request=False,
+    )
+    mem_request, mem_limit = _resource_bounds(
+        env.memory_mb,
+        mem_mode,
+        default_request=default_mem,
+        auto_is_request=True,
+    )
+    has_override = any(
+        value is not None
+        for value in (
+            overrides.override_cpus,
+            overrides.override_memory_mb,
+            overrides.override_gpus,
+        )
+    )
+    pinned = any(value is not None for value in (env.cpus, env.memory_mb, env.gpus))
+    return SpanResources(
+        cpu_request=cpu_request,
+        cpu_limit=cpu_limit,
+        mem_request_mb=int(mem_request) if mem_request is not None else None,
+        mem_limit_mb=int(mem_limit) if mem_limit is not None else None,
+        gpu_type=normalize_gpu_type(env.gpu_types[0] if env.gpu_types else None),
+        gpu_count=env.gpus or 0,
+        price_multiplier=Decimal(1),
+        container_class="sandbox",
+        spec_source=(
+            "override" if has_override else "pinned" if pinned else "provider_default"
+        ),
+        cpu_enforcement_mode=cpu_mode.value,
+        mem_enforcement_mode=mem_mode.value,
+    )
+
+
+def capture_sandbox_resources(
+    task_path: Path, harbor_config: dict[str, Any] | None, provider: str = "modal"
+) -> SpanResources:
+    """Snapshot the effective agent resources before an ephemeral fork."""
+    try:
+        task = HarborTaskConfig.model_validate_toml(
+            (task_path / "task.toml").read_text()
+        )
+        hc = HarborConfig.model_validate(harbor_config or {})
+        return _resources_from_environment_config(
+            task.environment, hc.environment, provider
+        )
+    except Exception:
+        return _unknown_sandbox_resources()
+
+
+def capture_verifier_resources(
+    task_path: Path, harbor_config: dict[str, Any] | None, provider: str = "modal"
+) -> SpanResources | None:
+    """Return the separate verifier's effective resources, if it has one."""
+    try:
+        task = HarborTaskConfig.model_validate_toml(
+            (task_path / "task.toml").read_text()
+        )
+        hc = HarborConfig.model_validate(harbor_config or {})
+        for step in task.steps or [None]:
+            env = resolve_effective_verifier_env_config(task, step)
+            if env is not None:
+                return _resources_from_environment_config(
+                    env, hc.environment, provider
+                )
+        return None
+    except Exception:
+        return None
+
+
+def capture_live_sandbox_resources(
+    environment: Any | None, fallback: SpanResources, provider: str = "modal"
+) -> SpanResources:
+    """Prefer the live Harbor environment's merged resource configuration.
+
+    This reads Modal-only accessors (``_cpu_config`` / ``_memory_config``), so
+    it applies only to Modal sandboxes. For any other provider we keep the
+    ``fallback`` (the provider-aware pre-fork snapshot) rather than relying on
+    an AttributeError to bail out -- otherwise a provider whose env happened to
+    expose those names could overwrite a correct Daytona floor with Modal's.
+    """
+    if environment is None or provider != "modal":
+        return fallback
+    try:
+        env = environment.task_env_config
+        cpu_mode = ResourceMode(environment._cpu_resource_mode)
+        mem_mode = ResourceMode(environment._memory_resource_mode)
+
+        def split(value: Any) -> tuple[float | None, float | None]:
+            if value is None:
+                return None, None
+            if isinstance(value, tuple):
+                return float(value[0]), float(value[1])
+            return float(value), None
+
+        cpu_request, cpu_limit = split(environment._cpu_config())
+        mem_request, mem_limit = split(environment._memory_config())
+        has_override = any(
+            value is not None
+            for value in (
+                environment._override_cpus,
+                environment._override_memory_mb,
+                environment._override_gpus,
+            )
+        )
+        pinned = any(value is not None for value in (env.cpus, env.memory_mb, env.gpus))
+        return SpanResources(
+            cpu_request=cpu_request,
+            cpu_limit=cpu_limit,
+            mem_request_mb=int(mem_request) if mem_request is not None else None,
+            mem_limit_mb=int(mem_limit) if mem_limit is not None else None,
+            gpu_type=normalize_gpu_type(env.gpu_types[0] if env.gpu_types else None),
+            gpu_count=env.gpus or 0,
+            price_multiplier=Decimal(1),
+            container_class="sandbox",
+            spec_source=(
+                "override" if has_override else "pinned" if pinned else "provider_default"
+            ),
+            cpu_enforcement_mode=cpu_mode.value,
+            mem_enforcement_mode=mem_mode.value,
+        )
+    except Exception:
+        return fallback
 
 
 def _sized_environment_build_timeout_multiplier(
@@ -288,6 +471,21 @@ def _apply_restricted_agent_network_defaults(
         agent_config=agent_config,
     )
     _apply_restricted_agent_web_tool_defaults(agent_config)
+
+
+def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts the claude-code CLI needs across install *and* run.
+
+    Harbor derives the agent-phase allowlist from the provider prefix on
+    ``model_name``, but force-direct-API routing strips that prefix to the bare
+    Anthropic id the CLI requires -- leaving Harbor nothing to resolve, so a
+    closed-internet trial reaches the installer CDN and then dies on ECONNRESET
+    at its first API call. Resolve the model endpoint here instead.
+    """
+    return [
+        *_CLAUDE_CODE_INSTALLER_HOSTS,
+        *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+    ]
 
 
 def _inject_daytona_agent_model_hosts(
@@ -584,11 +782,7 @@ async def run_harbor_trial_async(
         # Model API hosts are also injected automatically for restricted agent
         # phases via _apply_restricted_agent_network_defaults.
         if "claude-code" in (agent or "").strip().lower():
-            hosts = list(_CLAUDE_CODE_INSTALLER_HOSTS)
-            base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")
-            endpoint_host = urlparse(base_url).hostname if base_url else None
-            if endpoint_host:
-                hosts.append(endpoint_host)
+            hosts = _claude_code_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],

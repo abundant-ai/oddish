@@ -48,9 +48,14 @@ def test_validate_scope_rejects_empty_trial_list():
         validate_scope(trials=[], task=None, experiment=None)
 
 
-def _candidate(trial_id: str, *, has_trajectory=True, agent="claude-code", finished_at=object()):
+def _candidate(
+    trial_id: str, *, has_trajectory=True, agent="claude-code", finished_at=object()
+):
     return SimpleNamespace(
-        id=trial_id, has_trajectory=has_trajectory, agent=agent, finished_at=finished_at,
+        id=trial_id,
+        has_trajectory=has_trajectory,
+        agent=agent,
+        finished_at=finished_at,
     )
 
 
@@ -69,7 +74,11 @@ def test_filter_fetchable_keeps_only_trials_with_a_trajectory():
 def test_filter_fetchable_applies_limit_after_filtering():
     from api.services.summary_dump import filter_fetchable
 
-    rows = [_candidate("tr_a", has_trajectory=False), _candidate("tr_b"), _candidate("tr_c")]
+    rows = [
+        _candidate("tr_a", has_trajectory=False),
+        _candidate("tr_b"),
+        _candidate("tr_c"),
+    ]
     assert [t.id for t in filter_fetchable(rows, limit=1)] == ["tr_b"]
 
 
@@ -83,6 +92,19 @@ def test_filter_fetchable_applies_limit_after_filtering():
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not URL, reason="ODDISH_DATABASE_URL not set")
+
+
+@pytest.fixture(autouse=True)
+def _stub_prompt_registry(monkeypatch):
+    """summarize_trial fetches the registry template on every call (its own
+    session, not the caller's) -- stub it so these tests don't need a live
+    Postgres just to exercise the summary path."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "api.services.summarize_trajectory._load_summary_prompt",
+        AsyncMock(return_value=("TEMPLATE", 1)),
+    )
 
 
 @asynccontextmanager
@@ -131,8 +153,12 @@ async def test_resolve_cohort_experiment_scope_excludes_probes():
     async with _fresh_db() as maker:
         async with maker() as session:
             await _seed_org_experiment_task(session)
-            session.add(_trial("tr-real", task_id="task1", experiment_id="exp1", is_probe=False))
-            session.add(_trial("tr-probe", task_id="task1", experiment_id="exp1", is_probe=True))
+            session.add(
+                _trial("tr-real", task_id="task1", experiment_id="exp1", is_probe=False)
+            )
+            session.add(
+                _trial("tr-probe", task_id="task1", experiment_id="exp1", is_probe=True)
+            )
             await session.commit()
 
         async with maker() as session:
@@ -149,10 +175,22 @@ async def test_resolve_cohort_task_scope_resolves_by_name_via_join():
             session.add(OrganizationModel(id="org1", name="Org", slug="org"))
             session.add(ExperimentModel(id="exp1", name="Exp", org_id="org1"))
             session.add(
-                TaskModel(id="task-x", name="task-x-name", user="u", task_path="/p", org_id="org1")
+                TaskModel(
+                    id="task-x",
+                    name="task-x-name",
+                    user="u",
+                    task_path="/p",
+                    org_id="org1",
+                )
             )
             session.add(
-                TaskModel(id="task-y", name="task-y-name", user="u", task_path="/p", org_id="org1")
+                TaskModel(
+                    id="task-y",
+                    name="task-y-name",
+                    user="u",
+                    task_path="/p",
+                    org_id="org1",
+                )
             )
             await session.flush()
             session.add(_trial("tr-x", task_id="task-x", experiment_id="exp1"))
@@ -211,10 +249,20 @@ async def test_resolve_cohort_limit_applies_after_fetchable_filter():
             # "trial-1-bad" sorts first by id but isn't fetchable; a SQL LIMIT
             # applied before filtering would return zero fetchable rows here.
             session.add(
-                _trial("trial-1-bad", task_id="task1", experiment_id="exp1", has_trajectory=False)
+                _trial(
+                    "trial-1-bad",
+                    task_id="task1",
+                    experiment_id="exp1",
+                    has_trajectory=False,
+                )
             )
             session.add(
-                _trial("trial-2-good", task_id="task1", experiment_id="exp1", has_trajectory=True)
+                _trial(
+                    "trial-2-good",
+                    task_id="task1",
+                    experiment_id="exp1",
+                    has_trajectory=True,
+                )
             )
             await session.commit()
 
@@ -241,10 +289,14 @@ async def test_resolve_cohort_experiment_scope_includes_collection_linked_trial(
     async with _fresh_db() as maker:
         async with maker() as session:
             await _seed_org_experiment_task(session)
-            session.add(ExperimentModel(id="exp2-collection", name="Collection", org_id="org1"))
+            session.add(
+                ExperimentModel(id="exp2-collection", name="Collection", org_id="org1")
+            )
             session.add(_trial("tr-collected", task_id="task1", experiment_id="exp1"))
             await session.flush()
-            await _link_collection(session, experiment_id="exp2-collection", trial_id="tr-collected")
+            await _link_collection(
+                session, experiment_id="exp2-collection", trial_id="tr-collected"
+            )
             await session.commit()
 
         async with maker() as session:
@@ -259,7 +311,9 @@ async def test_resolve_cohort_experiment_scope_excludes_soft_deleted_collection_
     async with _fresh_db() as maker:
         async with maker() as session:
             await _seed_org_experiment_task(session)
-            session.add(ExperimentModel(id="exp2-collection", name="Collection", org_id="org1"))
+            session.add(
+                ExperimentModel(id="exp2-collection", name="Collection", org_id="org1")
+            )
             session.add(_trial("tr-collected", task_id="task1", experiment_id="exp1"))
             await session.flush()
             await _link_collection(
@@ -303,29 +357,47 @@ async def test_resolve_cohort_experiment_scope_collection_links_still_honor_guar
     async with _fresh_db() as maker:
         async with maker() as session:
             await _seed_org_experiment_task(session)
-            session.add(ExperimentModel(id="exp2-collection", name="Collection", org_id="org1"))
+            session.add(
+                ExperimentModel(id="exp2-collection", name="Collection", org_id="org1")
+            )
             # "aaa" sorts first but isn't fetchable -- a SQL LIMIT applied
             # before the Python filter would return zero rows here.
             session.add(
-                _trial("aaa-unfetchable", task_id="task1", experiment_id="exp1", has_trajectory=False)
+                _trial(
+                    "aaa-unfetchable",
+                    task_id="task1",
+                    experiment_id="exp1",
+                    has_trajectory=False,
+                )
             )
-            session.add(_trial("bbb-probe", task_id="task1", experiment_id="exp1", is_probe=True))
+            session.add(
+                _trial(
+                    "bbb-probe", task_id="task1", experiment_id="exp1", is_probe=True
+                )
+            )
             session.add(_trial("ccc-real", task_id="task1", experiment_id="exp1"))
             await session.flush()
             for tid in ("aaa-unfetchable", "bbb-probe", "ccc-real"):
-                await _link_collection(session, experiment_id="exp2-collection", trial_id=tid)
+                await _link_collection(
+                    session, experiment_id="exp2-collection", trial_id=tid
+                )
             await session.commit()
 
         async with maker() as session:
-            result = await resolve_cohort(session, experiment="exp2-collection", limit=5)
+            result = await resolve_cohort(
+                session, experiment="exp2-collection", limit=5
+            )
 
     assert [t.id for t in result] == ["ccc-real"]
 
 
 def _ctx() -> TaskContext:
     return TaskContext(
-        task_name="my-task", instruction=None, final_reward=1.0,
-        model_used="claude-opus-4-8", verifier_output=None,
+        task_name="my-task",
+        instruction=None,
+        final_reward=1.0,
+        model_used="claude-opus-4-8",
+        verifier_output=None,
     )
 
 
@@ -336,29 +408,52 @@ def _summary_trial(trial_id="tr_a"):
 
 
 def _traj() -> dict:
-    return {"steps": [{
-        "step_id": 1, "timestamp": "2026-04-30T12:00:00Z", "source": "agent",
-        "model_name": "claude-opus-4-8", "message": "hi", "reasoning_content": None,
-        "tool_calls": None, "observation": None, "metrics": None,
-    }]}
+    return {
+        "steps": [
+            {
+                "step_id": 1,
+                "timestamp": "2026-04-30T12:00:00Z",
+                "source": "agent",
+                "model_name": "claude-opus-4-8",
+                "message": "hi",
+                "reasoning_content": None,
+                "tool_calls": None,
+                "observation": None,
+                "metrics": None,
+            }
+        ]
+    }
 
 
 def _payload() -> str:
-    return json.dumps({
-        "summary": "Fixed it.",
-        "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
-        "components": [{"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}],
-    })
+    return json.dumps(
+        {
+            "summary": "Fixed it.",
+            "highlights": [{"step_id": 1, "title": "Repro", "why": "First."}],
+            "components": [
+                {"step_ids": [1], "trajectory_component": "debugging", "summary": "d"}
+            ],
+        }
+    )
+
+
+def _install_summary_client(monkeypatch, client):
+    async def create(*args, **kwargs):
+        return client
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.create_llm_client", create
+    )
 
 
 @pytest.mark.asyncio
-async def test_summarize_trial_returns_full_record():
+async def test_summarize_trial_returns_full_record(monkeypatch):
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
+    _install_summary_client(monkeypatch, FakeAnalyzerLLMClient(chunks=[_payload()]))
     record = await summarize_trial(
-        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
-        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False
     )
 
     assert record["trial_id"] == "tr_a"
@@ -375,15 +470,17 @@ async def test_summarize_trial_returns_full_record():
 
 
 @pytest.mark.asyncio
-async def test_summarize_trial_records_raw_on_parse_failure():
+async def test_summarize_trial_records_raw_on_parse_failure(monkeypatch):
     """A revised taxonomy that fails to parse is exactly when raw matters most,
     and that is the path where block.run() raises."""
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
+    _install_summary_client(
+        monkeypatch, FakeAnalyzerLLMClient(chunks=["not json at all"])
+    )
     record = await summarize_trial(
-        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
-        client=FakeAnalyzerLLMClient(chunks=["not json at all"]),
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False
     )
 
     assert record["status"] == "failed"
@@ -404,10 +501,10 @@ async def test_summarize_trial_does_not_persist_by_default(monkeypatch):
     db = AsyncMock()
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", s3)
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", db)
+    _install_summary_client(monkeypatch, FakeAnalyzerLLMClient(chunks=[_payload()]))
 
     await summarize_trial(
-        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
-        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False
     )
 
     s3.assert_not_awaited()
@@ -428,10 +525,10 @@ async def test_summarize_trial_persists_when_persist_is_true(monkeypatch):
     db = AsyncMock()
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", s3)
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", db)
+    _install_summary_client(monkeypatch, FakeAnalyzerLLMClient(chunks=[_payload()]))
 
     record = await summarize_trial(
-        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=True,
-        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=True
     )
 
     assert record["status"] == "success"
@@ -440,16 +537,18 @@ async def test_summarize_trial_persists_when_persist_is_true(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_summarize_trial_propagates_cancellation():
+async def test_summarize_trial_propagates_cancellation(monkeypatch):
     import asyncio
 
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
+    _install_summary_client(
+        monkeypatch, FakeAnalyzerLLMClient(exc=asyncio.CancelledError())
+    )
     with pytest.raises(asyncio.CancelledError):
         await summarize_trial(
-            _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
-            client=FakeAnalyzerLLMClient(exc=asyncio.CancelledError()),
+            _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False
         )
 
 
@@ -458,13 +557,14 @@ async def test_summarize_trial_records_failure_raised_before_the_block_exists():
     """A trajectory that isn't a dict is rejected by TrajectoryInput inside
     build_summary_block -- before any block exists to carry status/error.
     That must still be a record, not an exception."""
-    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
     record = await summarize_trial(
-        _summary_trial(), ["not", "a", "dict"], _ctx(),
-        model="claude-opus-4-8", persist=False,
-        client=FakeAnalyzerLLMClient(chunks=[_payload()]),
+        _summary_trial(),
+        ["not", "a", "dict"],
+        _ctx(),
+        model="claude-opus-4-8",
+        persist=False,
     )
 
     assert record["trial_id"] == "tr_a"
@@ -484,13 +584,15 @@ def _surrogate_payload() -> str:
 
 
 @pytest.mark.asyncio
-async def test_summarize_trial_never_reports_success_without_a_summary():
+async def test_summarize_trial_never_reports_success_without_a_summary(monkeypatch):
     from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
     from api.services.summary_dump import summarize_trial
 
+    _install_summary_client(
+        monkeypatch, FakeAnalyzerLLMClient(chunks=[_surrogate_payload()])
+    )
     record = await summarize_trial(
-        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
-        client=FakeAnalyzerLLMClient(chunks=[_surrogate_payload()]),
+        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False
     )
 
     assert record["summary"] is None
@@ -503,7 +605,7 @@ class _RaisingAcloseClient:
     """A client whose block work succeeds but whose owned-client teardown
     fails -- distinct from a block-level failure."""
 
-    def __init__(self, *, model=None, max_tokens=None):
+    def __init__(self, **kwargs):
         pass
 
     async def stream(self, prompt, *, system_prompt: str | None = None):
@@ -525,7 +627,11 @@ async def test_summarize_trial_keeps_success_when_only_teardown_fails(monkeypatc
     # No `client=` kwarg -- summarize_trial must construct (and own, and
     # therefore aclose()) the client itself for this path to exercise.
     record = await summarize_trial(
-        _summary_trial(), _traj(), _ctx(), model="claude-opus-4-8", persist=False,
+        _summary_trial(),
+        _traj(),
+        _ctx(),
+        model="claude-opus-4-8",
+        persist=False,
     )
 
     assert record["status"] == "success"
@@ -544,7 +650,7 @@ class _FakePromptClient:
     """Stands in for ApiAnalyzerLLMClient. The prompt carries the task name, so
     a per-trial verdict can be keyed off it without ordering assumptions."""
 
-    def __init__(self, *, model=None, max_tokens=None):
+    def __init__(self, **kwargs):
         pass
 
     async def stream(self, prompt, *, system_prompt: str | None = None):
@@ -576,8 +682,11 @@ def _stub_cohort(monkeypatch, cohort, *, prep_raises_for=()):
 
     async def _ctx_for(trial):
         return TaskContext(
-            task_name=trial.task.name, instruction=None, final_reward=1.0,
-            model_used="claude-opus-4-8", verifier_output=None,
+            task_name=trial.task.name,
+            instruction=None,
+            final_reward=1.0,
+            model_used="claude-opus-4-8",
+            verifier_output=None,
         )
 
     monkeypatch.setattr(sd, "resolve_cohort", _resolve)
@@ -651,7 +760,9 @@ async def test_run_cohort_prep_failure_yields_a_record_and_continues(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_run_cohort_skips_trials_with_no_trajectory_without_recording(monkeypatch):
+async def test_run_cohort_skips_trials_with_no_trajectory_without_recording(
+    monkeypatch,
+):
     import oddish.core.trial_io as trial_io
     from api.services.summary_dump import run_cohort
 
@@ -679,7 +790,9 @@ async def test_run_cohort_reports_unknown_explicit_trial_id_as_skipped(monkeypat
     _stub_cohort(monkeypatch, cohort)
 
     result = await run_cohort(
-        None, trials=["tr-1", "tr-missing", "tr-2"], model="claude-opus-4-8",
+        None,
+        trials=["tr-1", "tr-missing", "tr-2"],
+        model="claude-opus-4-8",
     )
 
     assert [r["trial_id"] for r in result] == ["tr-1", "tr-2"]
@@ -705,7 +818,9 @@ async def test_run_cohort_reports_missing_trajectory_as_skipped(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_cohort_skips_do_not_abort_and_other_records_still_return(monkeypatch):
+async def test_run_cohort_skips_do_not_abort_and_other_records_still_return(
+    monkeypatch,
+):
     """Both an unknown id and a missing trajectory in one run: neither aborts
     the cohort, and the surviving trials still get records."""
     import oddish.core.trial_io as trial_io
@@ -724,7 +839,9 @@ async def test_run_cohort_skips_do_not_abort_and_other_records_still_return(monk
     monkeypatch.setattr(trial_io, "read_trial_trajectory", _read)
 
     result = await run_cohort(
-        None, trials=["tr-1", "tr-2", "tr-3", "tr-missing"], model="claude-opus-4-8",
+        None,
+        trials=["tr-1", "tr-2", "tr-3", "tr-missing"],
+        model="claude-opus-4-8",
     )
 
     assert [r["trial_id"] for r in result] == ["tr-1", "tr-3"]
@@ -774,15 +891,28 @@ async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", AsyncMock())
 
     ctx = TaskContext(
-        task_name="t", instruction=None, final_reward=None,
-        model_used=None, verifier_output=None,
+        task_name="t",
+        instruction=None,
+        final_reward=None,
+        model_used=None,
+        verifier_output=None,
     )
 
-    await generate(_traj(), ctx, analyzer_id="tr_x")
+    await generate(
+        _traj(),
+        ctx,
+        analyzer_id="tr_x",
+        prompt_template="TEMPLATE",
+        prompt_version=1,
+    )
     prod_kwargs = _CapturingClient.last_kwargs
 
     await summarize_trial(
-        _summary_trial(), _traj(), ctx, model="claude-sonnet-5", persist=False,
+        _summary_trial(),
+        _traj(),
+        ctx,
+        model="claude-sonnet-5",
+        persist=False,
     )
     harness_kwargs = _CapturingClient.last_kwargs
 

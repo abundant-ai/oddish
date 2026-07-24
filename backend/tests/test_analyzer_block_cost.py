@@ -79,6 +79,7 @@ def _session(
 
 
 def _make_block(**over):
+    client = over.pop("client", None)
     kw = dict(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
         llm_client_type=LLMClientType.API,
@@ -87,7 +88,14 @@ def _make_block(**over):
         analyzer_id="trial-1",
     )
     kw.update(over)
-    return AnalyzerBlock(**kw)
+    block = AnalyzerBlock(**kw)
+    if client is not None:
+
+        async def _create_client():
+            return client
+
+        block._create_client = _create_client
+    return block
 
 
 @pytest.mark.asyncio
@@ -157,6 +165,7 @@ async def test_cohort_block_is_attributed_via_the_analyzers_table(monkeypatch):
     assert row.org_id == "org-9"
     assert row.billed_user_id == "user-9"
     assert row.trial_id is None
+    assert row.analyzer_id == "report-9"
 
 
 @pytest.mark.asyncio
@@ -165,7 +174,8 @@ async def test_task_qa_block_is_attributed_via_the_tasks_table(monkeypatch):
     _session(monkeypatch, added, trial_row=None, task_row=TASK_ROW)
     block = _make_block(
         analyzer_type=AnalyzerType.PRE_TRIAL,
-        analyzer_id="task-9",
+        analyzer_id=None,
+        task_id="task-9",
     )
     block.usage = USAGE
     await block.record_cost()
@@ -176,6 +186,8 @@ async def test_task_qa_block_is_attributed_via_the_tasks_table(monkeypatch):
     assert row.trial_id is None
     assert row.experiment_id is None
     assert row.cost_usd == 0.42
+    assert row.task_id == "task-9"
+    assert row.analyzer_id is None
 
 
 @pytest.mark.asyncio
@@ -188,6 +200,20 @@ async def test_trial_lookup_wins_and_skips_the_analyzers_fallback(monkeypatch):
     row = added[0]
     assert (row.org_id, row.billed_user_id) == ("org-1", "user-1")
     assert row.trial_id == "trial-1"
+
+
+@pytest.mark.asyncio
+async def test_trial_fallback_preserves_explicit_task_link(monkeypatch):
+    """A stale task lookup must not erase the subject copied to the ledger."""
+    added: list = []
+    _session(monkeypatch, added, task_row=None)
+    block = _make_block(task_id="task-missing")
+    block.usage = USAGE
+
+    await block.record_cost()
+
+    assert added[0].trial_id == "trial-1"
+    assert added[0].task_id == "task-missing"
 
 
 @pytest.mark.asyncio
@@ -262,9 +288,7 @@ async def test_record_cost_never_raises(monkeypatch, caplog):
     def _boom():
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(
-        "oddish.blocks.analyzer.analyzer_block.get_session", _boom
-    )
+    monkeypatch.setattr("oddish.blocks.analyzer.analyzer_block.get_session", _boom)
     b = _make_block()
     b.usage = USAGE
     await b.record_cost()  # must NOT raise
@@ -277,9 +301,7 @@ async def test_run_captures_usage_from_client_and_persists(monkeypatch):
     _session(monkeypatch, added)
     monkeypatch.setattr(
         "oddish.blocks.analyzer.analyzer_block.get_storage_client",
-        lambda: SimpleNamespace(
-            upload_bytes=lambda *a, **k: _noop()
-        ),
+        lambda: SimpleNamespace(upload_bytes=lambda *a, **k: _noop()),
     )
     client = FakeAnalyzerLLMClient(chunks=["hello"], last_usage=USAGE)
     b = _make_block(client=client)
@@ -329,8 +351,9 @@ def test_summary_block_carries_the_triggering_user():
         ),
         analyzer_id="trial-1",
         model="claude-opus-4-8",
-        client=FakeAnalyzerLLMClient(chunks=["{}"]),
         triggered_by_user_id="viewer-7",
+        prompt_template="INSTRUCTIONS",
+        prompt_version=1,
     )
     assert block.triggered_by_user_id == "viewer-7"
 
@@ -361,8 +384,9 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
                 verifier_output=None,
             ),
             analyzer_id="trial-1",
-            client=FakeAnalyzerLLMClient(chunks=["{}"]),
             triggered_by_user_id="viewer-7",
+            prompt_template="INSTRUCTIONS",
+            prompt_version=1,
         )
     except _StopBeforeRun:
         pass

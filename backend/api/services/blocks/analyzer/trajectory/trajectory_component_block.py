@@ -134,8 +134,9 @@ class TrajectoryBlock(Block):
 
     output_schema = TrajectoryOutput
 
-    def __init__(self, trajectory_input: TrajectoryInput) -> None:
+    def __init__(self, trajectory_input: TrajectoryInput, *, instructions_template: str) -> None:
         self.trajectory_input = trajectory_input
+        self._instructions_template = instructions_template
 
     # ---- prompt sections (build_prompt is inherited) ----
     def sections(self) -> list[dict]:
@@ -152,7 +153,8 @@ class TrajectoryBlock(Block):
                            "verifier_output": ti.verifier_output},
              "schema": _OutcomeIn, "formatter": self._fmt_outcome},
             {"name": "instructions", "raw_input": {}, "schema": _InstructionsIn,
-             "formatter": lambda _d: tp.instructions_section(taxonomy_values)},
+             "formatter": lambda _d: tp.instructions_section(
+                 self._instructions_template, taxonomy_values)},
             {"name": "trajectory", "raw_input": {"trajectory": ti.trajectory},
              "schema": _TrajectoryIn, "formatter": self._fmt_trajectory},
         ]

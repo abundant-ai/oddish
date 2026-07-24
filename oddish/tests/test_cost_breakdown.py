@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.config import settings  # noqa: E402
 from oddish.core.admin import (  # noqa: E402
     _UNATTRIBUTED_KEY,
+    _primary_task_authors,
     _spend_identity,
     get_cost_breakdown_core,
 )
@@ -445,6 +446,32 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
         k for k in result.series_by_user.keys if k.key == "__unattributed__"
     )
     assert unattributed_key.label == "Unattributed"
+
+
+@pytest.mark.asyncio
+async def test_primary_task_authors_ignores_other_org_tasks(seeded_cost_data):
+    foreign_task_id = f"{E8}-task-foreign"
+    async with get_session() as session:
+        session.add(
+            TaskModel(
+                id=foreign_task_id,
+                name=foreign_task_id,
+                user="foreign-org-secret",
+                org_id=ORG_1,
+                task_path="some/path",
+                created_at=utcnow() - timedelta(days=365),
+            )
+        )
+        await session.flush()
+        await session.execute(
+            task_experiments.insert().values(
+                task_id=foreign_task_id,
+                experiment_id=E8,
+            )
+        )
+        authors = await _primary_task_authors(session, [E8], org_id=ORG_2)
+
+    assert authors[E8] == "e8-runner"
 
 
 @pytest.mark.asyncio
@@ -877,15 +904,26 @@ async def test_cost_breakdown_includes_qa_analysis_cost():
         assert label in {k.key for k in qa_series.keys}
         series_model_total = sum(b.costs.get(label, 0.0) for b in qa_series.buckets)
         assert _approx(series_model_total, 1.0)
-        # The two-stack "type" series folds that same QA spend under one "qa"
-        # stack next to inference; its qa total matches the QA series' grand
-        # total (both derive from the same analysis rows).
         type_series = result.series_by_type
         assert type_series.dimension == "type"
-        assert {k.key for k in type_series.keys} == {"inference", "qa"}
+        assert {k.key for k in type_series.keys} == {
+            "inference",
+            "qa",
+            "compute",
+        }
         type_qa_total = sum(b.costs.get("qa", 0.0) for b in type_series.buckets)
         qa_series_grand_total = sum(b.cost_usd for b in qa_series.buckets)
         assert _approx(type_qa_total, qa_series_grand_total)
+        analysis_type_series = result.series_by_analysis_type
+        assert analysis_type_series.dimension == "analysis_type"
+        assert "trial_classifier" in {
+            key.key for key in analysis_type_series.keys
+        }
+        classifier_total = sum(
+            bucket.costs.get("trial_classifier", 0.0)
+            for bucket in analysis_type_series.buckets
+        )
+        assert classifier_total >= 1.0
     finally:
         async with get_session() as session:
             await session.execute(

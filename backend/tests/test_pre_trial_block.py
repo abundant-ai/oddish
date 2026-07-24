@@ -33,6 +33,24 @@ def test_to_action_items_tolerates_code_fences():
     assert _block().to_action_items(raw) == {"items": []}
 
 
+def test_to_action_items_accepts_bare_array():
+    # The registry prompt asks for "the structured list"; a model may return
+    # a bare JSON array instead of the {"items": [...]} envelope. That must
+    # parse, not fail the audit on shape alone.
+    raw = json.dumps([{
+        "source": "pre_trial", "problem_type": "incompleteness", "dimension": "verifier",
+        "file": "verifier.py", "line_start": 3, "line_end": 5,
+        "title": "t", "detail": "d", "recommendation": "r", "tier": "must_fix",
+    }])
+    out = _block().to_action_items(raw)
+    assert out["items"][0]["file"] == "verifier.py"
+
+
+def test_to_action_items_accepts_fenced_bare_array():
+    raw = "```json\n[]\n```"
+    assert _block().to_action_items(raw) == {"items": []}
+
+
 def test_pre_trial_section_joins_trial_ids():
     prompt = pre_trial_prompts.pre_trial_section(
         "task_abc", ["t1", "t2", "t3"], "Trials so far: {trial_ids}"

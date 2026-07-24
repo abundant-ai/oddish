@@ -43,6 +43,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
@@ -756,6 +757,10 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 cache_tokens=agent_result.n_cache_tokens,
                 cache_write_tokens=cache_write_tokens,
             )
+            # Local-mode trials land in the same cost accounting as queue
+            # trials, so stamp the platform key hash here too (see
+            # workers/queue/trial_handler settlement).
+            trial.llm_key_hash = platform_key_hash_for_provider(provider)
             log_unpriced_trial_if_needed(
                 cost_usd=trial.cost_usd,
                 trial_id=trial.id,

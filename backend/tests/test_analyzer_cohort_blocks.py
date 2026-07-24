@@ -1,6 +1,5 @@
-"""Integration test: run_cohort runs MAP + REDUCE as AnalyzerBlocks sharing one
-injected SandboxAnalyzerLLMClient, and feeds the reduce block's downloaded files
-into the unchanged parse_cohort_result.
+"""Integration test: parallel MAP blocks and a REDUCE block each own their
+sandbox client and exchange findings through declared block artifacts.
 
 The fake runtime plants deterministic findings/reduce FILES into the fake
 sandbox (the real source of truth); the stream markers are secondary, so the
@@ -11,9 +10,11 @@ import json
 
 import pytest
 
-from api.services.cc_chat.analyzer_cohort import run_cohort
+from api.services.cc_chat.analyzer_block_runner import run_analyzer_blocks
 from api.services.cc_chat.analyzer_prompt import REDUCE_PATH, findings_path
 from api.services.cc_chat.daytona_client import FakeDaytonaClient
+from api.services.blocks.analyzer.sandbox_llm_client import SandboxAnalyzerLLMClient
+from oddish.blocks.analyzer.analyzer_llm_client import register_sandbox_client_factory
 from oddish.evals.primitives import SubAnalysis
 
 
@@ -95,6 +96,31 @@ async def test_run_cohort_via_blocks(monkeypatch):
     )
     runtime = _FakeRuntime(fs)
 
+    async def factory(*, model, api_key, sandbox_config):
+        sandbox = await client.create_sandbox(
+            env_vars={
+                "ANTHROPIC_API_KEY": api_key or "",
+                "ANTHROPIC_MODEL": model or "",
+                "ODDISH_API_KEY": sandbox_config.oddish_api_key or "",
+                "ODDISH_API_BASE_URL": sandbox_config.oddish_api_base_url or "",
+            },
+            auto_stop_minutes=15,
+            auto_delete_minutes=30,
+            labels=sandbox_config.labels,
+        )
+        await runtime.install(client, sandbox)
+        for path, content in sandbox_config.files_to_upload.items():
+            fs[path] = content
+            await client.upload_file(sandbox, dest_path=path, content=content)
+        return SandboxAnalyzerLLMClient(
+            sandbox=sandbox,
+            daytona_client=client,
+            runtime=runtime,
+            daytona_session_id=sandbox_config.session_id,
+        )
+
+    register_sandbox_client_factory(factory)
+
     cohort = [_sub("b1", "reward_hacking")]
     host_by_trial = {
         "b1": {
@@ -107,9 +133,7 @@ async def test_run_cohort_via_blocks(monkeypatch):
         }
     }
 
-    findings, sections, _by_model = await run_cohort(
-        client,
-        runtime,
+    findings, sections, _by_model = await run_analyzer_blocks(
         bucket="bad",
         cohort=cohort,
         roster=[],
@@ -121,6 +145,7 @@ async def test_run_cohort_via_blocks(monkeypatch):
         api_base="http://api",
         api_key="ak",
         cli_src=b"cli",
+        parallelism=2,
         models_by_task=None,
     )
     # SECTION_KEYS_BY_BUCKET["bad"] == ("bad_failure_content",), so the reduce
@@ -128,5 +153,4 @@ async def test_run_cohort_via_blocks(monkeypatch):
     assert sections["bad_failure_content"] == "## bad\nmd"
     assert [f.trial_id for f in findings] == ["b1"]
 
-    # The sandbox is created and torn down by run_cohort itself.
-    assert len(client.deleted) == 1
+    assert len(client.deleted) == 2

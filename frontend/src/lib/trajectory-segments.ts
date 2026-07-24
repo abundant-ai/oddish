@@ -89,6 +89,10 @@ export function toSegments(
  * `filter_output` drops invalid ids but never dedupes). First claim wins, ordered
  * by lowest step_id, so every step is attributed exactly once — and the grouped
  * list and the Activity timeline agree on which component owns it.
+ *
+ * On long runs the model's claims are sparse (e.g. every other id), so a step
+ * that sits between two claims of the SAME component is attributed to the
+ * earlier one; a gap between differing components stays unclaimed.
  */
 export function segmentOwners(segments: Segment[]): Map<number, Segment> {
   const ordered = segments
@@ -97,11 +101,54 @@ export function segmentOwners(segments: Segment[]): Map<number, Segment> {
 
   const owner = new Map<number, Segment>();
   for (const segment of ordered) {
-    for (const id of segment.stepIds) {
+    // step_id is typed number but arrives as a string from some producers.
+    for (const id of segment.stepIds.map(Number)) {
       if (!owner.has(id)) owner.set(id, segment);
     }
   }
+
+  const claimed = [...owner.keys()].sort((a, b) => a - b);
+  for (let i = 1; i < claimed.length; i++) {
+    const prev = claimed[i - 1];
+    const next = claimed[i];
+    const prevSegment = owner.get(prev)!;
+    if (next - prev <= 1 || owner.get(next)!.key !== prevSegment.key) continue;
+    for (let id = prev + 1; id < next; id++) owner.set(id, prevSegment);
+  }
   return owner;
+}
+
+/** Key of the synthetic segment holding steps no component claims. */
+export const OTHER_SEGMENT_KEY = "other";
+
+/**
+ * Append a synthetic gray "Other" segment covering every loaded step that no
+ * component claims even after gap-fill, so coverage is complete by
+ * construction for every stored summary (no regeneration). Returns the input
+ * array untouched when coverage is already complete.
+ */
+export function withOtherSegment(
+  segments: Segment[],
+  steps: TrajectoryStep[]
+): Segment[] {
+  // No segments means there is no usable summary yet (still loading, absent,
+  // or failed). Preserve that state instead of presenting every step as Other.
+  if (segments.length === 0) return segments;
+
+  const owner = segmentOwners(segments);
+  const unclaimed = steps
+    .map((s) => Number(s.step_id))
+    .filter((id) => !owner.has(id));
+  if (unclaimed.length === 0) return segments;
+  return [
+    ...segments,
+    {
+      key: OTHER_SEGMENT_KEY,
+      label: "Other",
+      gist: "Steps not attributed to any component",
+      stepIds: unclaimed,
+    },
+  ];
 }
 
 /**

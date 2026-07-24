@@ -45,7 +45,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 
 # Plain Anthropic-style id: the classifier and trajectory analyzers route
 # non-Bedrock Claude ids to the direct Anthropic API.
-ANALYSIS_MODEL = "claude-sonnet-5"
+ANALYSIS_MODEL = "claude-haiku-4-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -921,6 +921,11 @@ class Settings(BaseSettings):
     # this is enabled.
     job_scoped_tokens_enabled: bool = False
 
+    # Record gross list-price estimates for Modal worker functions and Harbor
+    # sandboxes. Accounting is isolated from job execution and fails open while
+    # the corresponding migration rolls out.
+    modal_cost_tracking: bool = True
+
     # Local dev: dispatch trials to the in-process runner
     # (``worker.local_runner``) instead of the Modal/cloud queue. Set
     # ODDISH_LOCAL_MODE=1 to exercise probe trials end-to-end on a dev box.
@@ -986,9 +991,8 @@ class Settings(BaseSettings):
     def analyzer_snapshot(self) -> str:
         return self.agent_daytona_snapshot or self.cc_chat_daytona_snapshot
 
-    # Kill switch for the sandbox-per-cohort analyzer. Gates registration, not
-    # handler internals, so unsetting it reverts to the core API path with no
-    # branching in either.
+    # Kill switch for the hosted multi-block sandbox analyzer. Gates
+    # registration, so unsetting it reverts to the core API path.
     analyzer_sandbox_enabled: bool = True
 
     # Default for the org-scoped AnalyzerBlock pre-trial QA setting. An explicit

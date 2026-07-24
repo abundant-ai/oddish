@@ -13,6 +13,7 @@ import {
   segmentOwners,
   stepIdsLabel,
   toSegments,
+  withOtherSegment,
 } from "@/lib/trajectory-segments";
 import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
@@ -63,7 +64,7 @@ export function TrajectoryActivity({
 }: TrajectoryActivityProps) {
   const { data } = useTrajectorySummary(trialId, apiBaseUrl);
 
-  const segments = toSegments(data);
+  const segments = withOtherSegment(toSegments(data), steps);
   if (!steps.length || segments.length === 0) return null;
 
   const colorFor = phaseColorVars(segments.map((s) => s.key));
@@ -202,6 +203,10 @@ export function TrajectoryActivity({
           );
           // No timing data at all (e.g. codex trajectories lack timestamps).
           if (section.name === "Time" && denom <= 0) return null;
+          // Largest bar first; stable sort keeps first-appearance order on ties.
+          const ranked = [...kinds].sort(
+            (a, b) => section.value(b) - section.value(a)
+          );
           return (
           <div key={section.name}>
             <div className="flex items-baseline justify-between">
@@ -211,7 +216,7 @@ export function TrajectoryActivity({
               </span>
             </div>
             <div className="mt-1.5 space-y-1">
-              {kinds.map((kind) => (
+              {ranked.map((kind) => (
                 <div key={kind.key} className="flex items-center gap-2">
                   <span
                     className="flex w-36 shrink-0 items-center gap-1.5 text-xs"

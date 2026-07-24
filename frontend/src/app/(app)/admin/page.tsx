@@ -37,6 +37,7 @@ import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { UsagePanel } from "@/components/usage-panel";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
+import { CostExcludedKeysCard } from "@/components/cost-excluded-keys-card";
 import { SlackAlertSettingsForm } from "@/components/slack-alert-settings-form";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
@@ -61,7 +62,7 @@ function QueueSlotsCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    },
+    }
   );
 
   const formatTimestamp = (ts: string | null) => {
@@ -176,7 +177,7 @@ function QueueSlotsCard() {
                                         100,
                                         (queueSummary.active_slots /
                                           queueSummary.total_slots) *
-                                          100,
+                                          100
                                       )
                                     : 0
                                 }%`,
@@ -344,13 +345,13 @@ function QueueHealthCard() {
     .filter((row) =>
       `${row.kind} ${row.queueKey}`
         .toLowerCase()
-        .includes(queueFilter.toLowerCase().trim()),
+        .includes(queueFilter.toLowerCase().trim())
     )
     .sort(
       (a, b) =>
         b.queued + b.running - (a.queued + a.running) ||
         a.kind.localeCompare(b.kind) ||
-        a.queueKey.localeCompare(b.queueKey),
+        a.queueKey.localeCompare(b.queueKey)
     )
     .slice(0, 30);
 
@@ -491,7 +492,7 @@ function OrphanedStateCard() {
     fetcher,
     {
       refreshInterval: 10000,
-    },
+    }
   );
 
   const counts = data?.counts;
@@ -668,8 +669,18 @@ function AdminPageContent() {
   // between them.
   const router = useRouter();
   const searchParams = useSearchParams();
+  const {
+    data: operatorAccess,
+    error: operatorAccessError,
+    mutate: retryOperatorAccess,
+  } = useSWR<{ allowed: boolean }>("/api/admin/operator-access", fetcher);
+  const operatorAccessResolved = operatorAccess !== undefined;
+  const canManagePlatform = operatorAccess?.allowed === true;
+  const allowedTabs = canManagePlatform
+    ? ADMIN_TABS
+    : ADMIN_TABS.filter((tab) => tab !== "concurrency");
   const requestedTab = searchParams.get("tab") ?? "";
-  const activeTab = (ADMIN_TABS as readonly string[]).includes(requestedTab)
+  const activeTab = (allowedTabs as readonly string[]).includes(requestedTab)
     ? requestedTab
     : "overview";
   const handleTabChange = (value: string) => {
@@ -681,19 +692,37 @@ function AdminPageContent() {
   // An unknown ?tab= (typo, removed tab) falls back to overview on screen;
   // rewrite the URL to match so bookmarks and back/forward stay consistent.
   useEffect(() => {
-    if (requestedTab && requestedTab !== activeTab) {
+    if (operatorAccessResolved && requestedTab && requestedTab !== activeTab) {
       router.replace("/admin", { scroll: false });
     }
-  }, [requestedTab, activeTab, router]);
+  }, [operatorAccessResolved, requestedTab, activeTab, router]);
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Admin Dashboard</h1>
         <p className="text-muted-foreground text-sm">
-          Internal system monitoring for workers and job queues
+          Organization usage, spend, queues, tags, and quotas
         </p>
       </div>
+
+      {operatorAccessError && operatorAccess === undefined && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Operator controls unavailable</AlertTitle>
+          <AlertDescription className="flex items-center justify-between gap-4">
+            The capability check failed. Global controls remain hidden until it
+            succeeds.
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => retryOperatorAccess()}
+            >
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
 
       <Tabs
         value={activeTab}
@@ -705,13 +734,15 @@ function AdminPageContent() {
           <TabsTrigger value="usage">Usage</TabsTrigger>
           <TabsTrigger value="costs">Costs</TabsTrigger>
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
-          <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
+          {canManagePlatform && (
+            <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
+          )}
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
           <TabsTrigger value="quotas">Quotas</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
-          <QueueHealthOverviewCard />
+          <QueueHealthOverviewCard canManageConcurrency={canManagePlatform} />
         </TabsContent>
 
         <TabsContent value="usage" className="space-y-4">
@@ -720,16 +751,21 @@ function AdminPageContent() {
 
         <TabsContent value="costs" className="space-y-4">
           <CostBreakdownCard />
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">
-                Channel spend escalation
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <SlackAlertSettingsForm />
-            </CardContent>
-          </Card>
+          {canManagePlatform && (
+            <>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">
+                    Channel spend escalation
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <SlackAlertSettingsForm />
+                </CardContent>
+              </Card>
+              <CostExcludedKeysCard />
+            </>
+          )}
         </TabsContent>
 
         <TabsContent value="worker-jobs" className="space-y-4">
@@ -737,10 +773,12 @@ function AdminPageContent() {
           <OrphanedStateCard />
         </TabsContent>
 
-        <TabsContent value="concurrency" className="space-y-4">
-          <QueueHealthCard />
-          <QueueSlotsCard />
-        </TabsContent>
+        {canManagePlatform && (
+          <TabsContent value="concurrency" className="space-y-4">
+            <QueueHealthCard />
+            <QueueSlotsCard />
+          </TabsContent>
+        )}
 
         <TabsContent value="tags" className="space-y-4">
           <Card>

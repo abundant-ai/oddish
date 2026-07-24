@@ -189,6 +189,57 @@ def configure_logfire(service_name: str) -> bool:
         return True
 
 
+_log_bridge_configured = False
+
+
+def configure_stdlib_log_bridge(
+    *, logfire_active: bool, level: int = logging.INFO
+) -> None:
+    """Give the ``oddish`` stdlib logger tree a sink so ``logger.info`` surfaces.
+
+    The Modal worker never calls ``basicConfig`` and ``logfire.configure`` runs
+    with ``console=False`` and no stdlib bridge, so the root logger sits at
+    WARNING with no handler. Records from ``logging.getLogger("oddish.*")`` --
+    e.g. the analyzer block's prefixed ``[analyzer/task_verdict]`` progress
+    lines -- fall through to ``logging.lastResort`` (stderr, WARNING+) and are
+    dropped at INFO/DEBUG. Failures still surface (WARNING/ERROR via lastResort)
+    but the happy path leaves no log trace at all.
+
+    Attach handlers on the ``oddish`` logger (not root) so third-party INFO
+    noise -- asyncpg, httpx, litellm -- stays out:
+
+    * a stderr ``StreamHandler`` -> visible in ``modal app logs`` regardless of
+      whether ``LOGFIRE_TOKEN`` is set, and
+    * a ``LogfireLoggingHandler`` when Logfire is active -> queryable in the
+      Logfire UI beside the auto-instrumented spans.
+
+    Idempotent: safe to call once per container; repeated calls are no-ops.
+    """
+    global _log_bridge_configured
+    with _lock:
+        if _log_bridge_configured:
+            return
+
+        oddish_logger = logging.getLogger("oddish")
+        oddish_logger.setLevel(level)
+
+        stderr_handler = logging.StreamHandler()
+        stderr_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        oddish_logger.addHandler(stderr_handler)
+
+        if logfire_active:
+            try:
+                import logfire
+
+                oddish_logger.addHandler(logfire.LogfireLoggingHandler())
+            except Exception:
+                logger.warning("failed to attach LogfireLoggingHandler", exc_info=True)
+
+        _log_bridge_configured = True
+
+
 def _safe_instrument(fn) -> None:
     try:
         fn()

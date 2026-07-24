@@ -51,7 +51,7 @@ def _app(admin: bool = True):
     app = create_app()
     if admin:
         app.dependency_overrides[require_admin] = lambda: SimpleNamespace(
-            user_id="user-1"
+            user_id="user-1", org_id="org-1"
         )
     return app
 
@@ -61,6 +61,11 @@ async def _call(app, method: str, **kwargs):
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         return await client.request(method, "/admin/slack-alert-settings", **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def operator_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-1")
 
 
 @pytest.mark.asyncio
@@ -146,3 +151,10 @@ async def test_requires_admin():
     response = await _call(_app(admin=False), "GET")
 
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_rejects_admin_from_other_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-2")
+    response = await _call(_app(), "GET")
+    assert response.status_code == 403

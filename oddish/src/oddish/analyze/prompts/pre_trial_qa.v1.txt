@@ -23,4 +23,6 @@ For every issue, emit one action item with: problem_type (incompleteness or
 mismatch), dimension, the exact file (task-relative path) and line_start/
 line_end, a short title, a detail of what is wrong, a concrete recommendation,
 and a tier (must_fix, should_fix, optional). Cite REAL line numbers you saw.
-Return only the structured list of action items.
+Return ONLY a JSON object of the form {"items": [<action item>, ...]} where
+each element carries the fields above. No prose before or after, no code
+fences. If you find no issues, return {"items": []}.

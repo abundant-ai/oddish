@@ -1593,6 +1593,162 @@ def test_oddish_codex_keeps_existing_richer_trajectory(tmp_path):
     assert (tmp_path / "trajectory.json").read_text(encoding="utf-8") == original
 
 
+def _write_codex_stdout_fixture(tmp_path):
+    """codex.txt with one started+completed command and one agent message."""
+    (tmp_path / "codex.txt").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "thread.started", "thread_id": "thread-1"}),
+                json.dumps(
+                    {
+                        "type": "item.started",
+                        "item": {
+                            "id": "item_1",
+                            "type": "command_execution",
+                            "command": "/bin/bash -lc ls",
+                            "status": "in_progress",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_1",
+                            "type": "command_execution",
+                            "command": "/bin/bash -lc ls",
+                            "aggregated_output": "README.md\n",
+                            "exit_code": 0,
+                            "status": "completed",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "id": "item_2",
+                            "type": "agent_message",
+                            "text": "Done.",
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_codex_session_fixture(
+    tmp_path, *, extra_shell_call=False, local_shell=False
+):
+    """Rollout JSONL whose entries ordinally match the stdout fixture."""
+    rollout_dir = tmp_path / "sessions" / "2026" / "07" / "21"
+    rollout_dir.mkdir(parents=True)
+    if local_shell:
+        call_payload = {
+            "type": "local_shell_call",
+            "call_id": "call_1",
+            "action": {"type": "exec", "command": ["bash", "-lc", "ls"]},
+        }
+        output_type = "local_shell_call_output"
+    else:
+        call_payload = {
+            "type": "function_call",
+            "name": "shell_command",
+            "call_id": "call_1",
+            "arguments": '{"command":"ls"}',
+        }
+        output_type = "function_call_output"
+    entries = [
+        {
+            "timestamp": "2026-07-21T04:21:28.937Z",
+            "type": "session_meta",
+            "payload": {"session_id": "thread-1", "originator": "codex_exec"},
+        },
+        {
+            "timestamp": "2026-07-21T04:21:30.000Z",
+            "type": "response_item",
+            "payload": call_payload,
+        },
+        {
+            "timestamp": "2026-07-21T04:21:31.500Z",
+            "type": "response_item",
+            "payload": {
+                "type": output_type,
+                "call_id": "call_1",
+                "output": "README.md\n",
+            },
+        },
+        {
+            "timestamp": "2026-07-21T04:21:33.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Done."}],
+            },
+        },
+    ]
+    if extra_shell_call:
+        entries.append(
+            {
+                "timestamp": "2026-07-21T04:21:34.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "shell_command",
+                    "call_id": "call_2",
+                    "arguments": '{"command":"pwd"}',
+                },
+            }
+        )
+    (rollout_dir / "rollout-2026-07-21T04-21-28-thread-1.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in entries) + "\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("local_shell", [False, True])
+def test_oddish_codex_stdout_trajectory_stamps_session_timestamps(
+    tmp_path, local_shell
+):
+    _write_codex_stdout_fixture(tmp_path)
+    _write_codex_session_fixture(tmp_path, local_shell=local_shell)
+    agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+
+    agent.populate_context_post_run(SimpleNamespace())
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    steps = trajectory["steps"]
+    assert len(steps) == 3
+    # Started step gets the shell call's timestamp, the completed step its
+    # output's, so the pair brackets the command's runtime.
+    assert steps[0]["message"].startswith("Started command")
+    assert steps[0]["timestamp"] == "2026-07-21T04:21:30.000Z"
+    assert steps[1]["message"].startswith("Executed command")
+    assert steps[1]["timestamp"] == "2026-07-21T04:21:31.500Z"
+    assert steps[2]["message"] == "Done."
+    assert steps[2]["timestamp"] == "2026-07-21T04:21:33.000Z"
+
+
+def test_oddish_codex_stdout_trajectory_skips_misaligned_buckets(tmp_path):
+    _write_codex_stdout_fixture(tmp_path)
+    _write_codex_session_fixture(tmp_path, extra_shell_call=True)
+    agent = OddishCodex(logs_dir=tmp_path, model_name="gpt-5.2-codex")
+
+    agent.populate_context_post_run(SimpleNamespace())
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    steps = trajectory["steps"]
+    # Shell-call counts disagree (2 rollout vs 1 stdout): command steps stay
+    # unstamped rather than guessing, but messages still align.
+    assert steps[0].get("timestamp") is None
+    assert steps[1].get("timestamp") is None
+    assert steps[2]["timestamp"] == "2026-07-21T04:21:33.000Z"
+
+
 def test_trial_uses_openai_provider_before_azure_model_rewrite(monkeypatch):
     assert harbor_runner._trial_uses_openai_provider(
         agent="custom-agent",
@@ -2784,3 +2940,33 @@ def test_ephemeral_non_gke_trial_passes_caller_env_build_multiplier_through(
     )
 
     assert captured["environment_build_timeout_multiplier"] is None
+
+
+def test_claude_code_environment_hosts_include_model_endpoint():
+    """Regression: offline claude-code trials died on ECONNRESET with 0 tokens.
+
+    Force-direct-API routing rewrites the model to the bare ``claude-opus-4-8``
+    that the CLI needs, which left the environment allowlist holding only the
+    installer CDNs -- exactly the production config.json of
+    amf3-serialization-c175f554-60.
+    """
+    hosts = harbor_runner._claude_code_environment_hosts(
+        HarborAgentConfig(name="claude-code", model_name="claude-opus-4-8")
+    )
+
+    assert "downloads.claude.ai" in hosts  # install still works
+    assert "api.anthropic.com" in hosts  # ...and so does inference
+
+
+def test_claude_code_environment_hosts_follow_routed_base_url():
+    """A provider-routed claude-code (e.g. z.ai) allowlists that host, not Anthropic."""
+    hosts = harbor_runner._claude_code_environment_hosts(
+        HarborAgentConfig(
+            name="claude-code",
+            model_name="zai/glm-4.6",
+            env={"ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"},
+        )
+    )
+
+    assert "api.z.ai" in hosts
+    assert "api.anthropic.com" not in hosts

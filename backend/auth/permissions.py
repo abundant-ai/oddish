@@ -1,9 +1,42 @@
 from __future__ import annotations
 
+import os
+
+from fastapi import HTTPException
+
 from auth.types import AuthContext
 from auth.types import AuthMethod
 from models import APIKeyScope
 from models import UserRole
+
+
+def is_operator_org(auth: AuthContext) -> bool:
+    """Whether the caller's active org is the platform-operator org.
+
+    ``ODDISH_OPERATOR_ORG_ID`` names the operator org. By default it is matched
+    against the org's internal **id** (server-issued, not caller-controllable).
+    Prefix it with ``slug:`` to match the org's human-readable **slug** instead
+    -- e.g. ``slug:abundant`` -- matched case-insensitively. An unset/blank
+    value grants operator access to no one.
+
+    The id and slug forms are kept separate on purpose. Matching a bare value
+    against both would let a tenant that claims an operator's id-string as its
+    own ``org_slug`` (which the org's creator chooses) pass the check. Requiring
+    an explicit ``slug:`` opt-in for slug matching closes that escalation.
+    """
+    configured = os.environ.get("ODDISH_OPERATOR_ORG_ID", "").strip()
+    if not configured:
+        return False
+    if configured.lower().startswith("slug:"):
+        want = configured[len("slug:") :].strip().lower()
+        slug = (getattr(auth, "org_slug", None) or "").strip().lower()
+        return bool(want) and slug == want
+    return getattr(auth, "org_id", None) == configured
+
+
+def require_operator_org(auth: AuthContext) -> None:
+    if not is_operator_org(auth):
+        raise HTTPException(status_code=403, detail="Operator access required")
 
 
 def can_create_api_keys(auth: AuthContext) -> bool:

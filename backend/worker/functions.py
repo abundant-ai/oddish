@@ -61,6 +61,7 @@ from modal_app import (
 from backfill_github_id import backfill_github_id
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
+from oddish.costs.recorder import WorkerBillingSpec
 from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
@@ -110,17 +111,19 @@ from .byok_resolver import install_byok_resolver
 
 install_byok_resolver()
 
-# Swap the core ANALYZER handler for the sandbox-per-cohort one (bad + good
-# each get their own Daytona agent). Gated by settings.analyzer_sandbox_enabled;
-# off -> the core API path, unchanged.
+# Swap the core ANALYZER handler for the multi-block sandbox runner. Each map
+# batch gets an independent AnalyzerBlock/sandbox, bounded by map_concurrency,
+# followed by a reduce block.
 from .analyzer_sandbox import install_sandbox_analyzer_handler
 
 if install_sandbox_analyzer_handler():
-    console.print("[dim]analyzer: sandbox-per-cohort handler registered[/dim]")
+    console.print("[dim]analyzer: multi-block sandbox handler registered[/dim]")
 
 # Register the Daytona-sandbox analyzer backend into core's client factory.
 # Import for the side effect; core runs every non-sandbox block without it.
-from api.services.blocks.analyzer import sandbox_llm_client as _sandbox_llm_client  # noqa: F401
+from api.services.blocks.analyzer import (
+    sandbox_llm_client as _sandbox_llm_client,
+)  # noqa: F401
 
 # Register the hosted pre-trial synth hook (invoked by qa_handler only when
 # settings.pre_trial_enabled). Import for the side effect.
@@ -250,6 +253,11 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
             modal_function_call_id=fc_id,
             post_success_hooks=_POST_SUCCESS_HOOKS,
             harbor_variant_id=harbor_variant_id,
+            worker_billing_spec=WorkerBillingSpec(
+                cpu_cores=WORKER_CPU,
+                memory_mb=WORKER_MEMORY_MB,
+                nonpreemptible=WORKER_NONPREEMPTIBLE,
+            ),
         )
         if jobs_processed == 0:
             console.print(
