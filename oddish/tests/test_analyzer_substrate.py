@@ -111,7 +111,7 @@ async def test_classifier_stays_local_when_sandbox_is_available_but_not_opted_in
     assert block.llm_client_type is LLMClientType.CLAUDE_CLI
     assert block._sandbox_config is None
     # No tar upload, and the prompt keeps the worker-local paths it was built with.
-    assert block._client_factory is not None
+    assert block._cli_config is not None
 
 
 @pytest.mark.asyncio
@@ -125,7 +125,7 @@ async def test_classifier_uses_sandbox_when_explicitly_enabled(monkeypatch, tmp_
 
     assert block.llm_client_type is LLMClientType.SANDBOX
     assert block._sandbox_config.files_to_upload
-    assert block._client_factory is None
+    assert block._cli_config is None
 
 
 @pytest.mark.asyncio
