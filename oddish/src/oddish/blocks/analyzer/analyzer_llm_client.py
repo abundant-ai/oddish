@@ -8,7 +8,11 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, runtime_ch
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from oddish.analyze.analysis_cost import AnalysisUsage, usage_from_api_message
+from oddish.analyze.analysis_cost import (
+    AnalysisUsage,
+    usage_from_api_message,
+    usage_from_openai_completion,
+)
 from oddish.config import OPENAI_PROVIDER_OPENAI, _infer_provider_prefix, settings
 
 _DEFAULT_MODEL = "claude-opus-4-8"
@@ -258,13 +262,20 @@ class ApiAnalyzerLLMClient:
             # providers) but maps to the wire param OpenAI accepts.
             kwargs["max_completion_tokens"] = self._max_tokens
 
+        # Content chunks carry no usage; the API only emits the usage chunk
+        # that get_final_completion() folds in when this is asked for, and the
+        # SDK's stream helper does not set it. Without it the task-verdict block
+        # records no cost at all (record_cost bails on usage is None).
+        kwargs["stream_options"] = {"include_usage": True}
+
         async with self._openai.chat.completions.stream(**kwargs) as stream:
             async for event in stream:
                 if event.type == "content.delta":
                     yield event.delta
-        # OpenAI streaming chunks carry no usage, so self.last_usage stays None:
-        # OpenAI spend is not folded into analysis_costs the way the Anthropic
-        # path's usage_from_api_message does it.
+            final = await stream.get_final_completion()
+        self.last_usage = usage_from_openai_completion(
+            getattr(final, "usage", None), self._model
+        )
 
     async def aclose(self) -> None:
         if self._uses_openai:
