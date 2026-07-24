@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import os
+import shlex
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,27 @@ _CLASSIFY_PROMPT = _CLASSIFY_PROMPT_PATH.read_text()
 
 _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
+
+
+_SNAPSHOT_ARCHIVE = "/tmp/oddish-post-trial.tar.gz"
+
+
+def _assert_dirs_in_snapshot(
+    extra_dirs: list[Path] | None, *roots: Path
+) -> None:
+    """Fail loudly on context the sandbox snapshot would not carry.
+
+    Only ``roots`` are archived. A dir outside them still reaches claude-code as
+    an ``--add-dir`` path that resolves to nothing in the sandbox, and an empty
+    directory reads as "no evidence" rather than as an error.
+    """
+    resolved_roots = [root.resolve() for root in roots]
+    for extra in extra_dirs or []:
+        if not any(extra.resolve().is_relative_to(r) for r in resolved_roots):
+            raise ValueError(
+                f"{extra} is outside the post-trial snapshot "
+                f"({', '.join(str(r) for r in resolved_roots)})"
+            )
 
 
 def _classification_schema_json() -> str:
@@ -453,29 +475,24 @@ class TrialClassifier:
         )
         use_sandbox = client_type is LLMClientType.SANDBOX
         sandbox_config = None
-        block_prompt = prompt
         block_model = self._model
         client_factory = _client_factory
         if use_sandbox:
+            _assert_dirs_in_snapshot(extra_dirs, task_dir, trial_dir)
+            # Archive members are the worker's own absolute paths minus the
+            # leading slash, so extracting at / restores each dir exactly where
+            # the prompt already says it is. Rewriting host paths into a sandbox
+            # root is what breaks silently: a context file whose path is not in
+            # the substitution list points the agent at an empty tree, and it
+            # answers confidently from nothing.
             archive = io.BytesIO()
             with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
-                bundle.add(task_dir, arcname="task")
-                bundle.add(trial_dir, arcname="trial")
-            sandbox_root = "/home/daytona/workspace/post-trial"
-            sandbox_task_dir = f"{sandbox_root}/task"
-            sandbox_trial_dir = f"{sandbox_root}/trial"
-            # Longest local path first: one dir nested under the other would
-            # otherwise have its prefix rewritten by the outer dir's pass,
-            # silently aiming the agent at the wrong extracted tree.
-            for local_dir, sandbox_dir in sorted(
-                (
-                    (str(task_dir), sandbox_task_dir),
-                    (str(trial_dir), sandbox_trial_dir),
-                ),
-                key=lambda pair: len(pair[0]),
-                reverse=True,
-            ):
-                block_prompt = block_prompt.replace(local_dir, sandbox_dir)
+                for local_dir in (task_dir, trial_dir):
+                    bundle.add(local_dir, arcname=str(local_dir).lstrip("/"))
+            parents = " ".join(
+                shlex.quote(str(d.parent))
+                for d in dict.fromkeys((task_dir, trial_dir))
+            )
             # The sandbox authenticates with ANTHROPIC_API_KEY, so it needs the
             # plain API id -- _resolve_analysis_model_and_env does the same
             # normalization for the local subprocess. An un-normalized Bedrock
@@ -483,12 +500,9 @@ class TrialClassifier:
             block_model = to_anthropic_api_model_id(self._model) or self._model
             sandbox_config = SandboxConfig(
                 session_id="post-trial",
-                files_to_upload={
-                    "/tmp/oddish-post-trial.tar.gz": archive.getvalue(),
-                },
+                files_to_upload={_SNAPSHOT_ARCHIVE: archive.getvalue()},
                 setup_commands=(
-                    f"mkdir -p {sandbox_root} && "
-                    f"tar -xzf /tmp/oddish-post-trial.tar.gz -C {sandbox_root}",
+                    f"mkdir -p {parents} && tar -xzf {_SNAPSHOT_ARCHIVE} -C /",
                 ),
                 json_schema=_classification_schema_json(),
             )
@@ -508,7 +522,7 @@ class TrialClassifier:
                     "task_id": context.get("task_id"),
                 }
             ),
-            prompt=block_prompt,
+            prompt=prompt,
             analyzer_id=context.get("trial_id"),
             task_id=context.get("task_id"),
             block_metadata=metadata,

@@ -46,6 +46,11 @@ class AnalyzerType(str, enum.Enum):
 # nothing, so a worker-local subprocess is sufficient; PRE_TRIAL runs
 # ``oddish pull`` and the verifier, so isolation is a hard requirement.
 # Anything unlisted has no filesystem to bind to and talks to the provider API.
+# Ceiling on the network round-trip that tears a client down (for SANDBOX, a
+# Daytona delete). Generous, but bounded -- see the close in ``run``.
+_CLIENT_CLOSE_TIMEOUT = 60.0
+
+
 _REQUIRED_SUBSTRATE: dict[AnalyzerType, LLMClientType] = {
     AnalyzerType.POST_TRIAL: LLMClientType.CLAUDE_CLI,
     AnalyzerType.PRE_TRIAL: LLMClientType.SANDBOX,
@@ -142,6 +147,7 @@ class AnalyzerBlock(Block):
         client_creation_timeout: float | None = None,
         attribution_org_id: str | None = None,
         client_factory: Callable[[], Any] | None = None,
+        client_close_timeout: float | None = _CLIENT_CLOSE_TIMEOUT,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -176,6 +182,7 @@ class AnalyzerBlock(Block):
         self._active_client: AnalyzerLLMClient | None = None
         self.attribution_org_id = attribution_org_id
         self._client_factory = client_factory
+        self._client_close_timeout = client_close_timeout
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -324,9 +331,11 @@ class AnalyzerBlock(Block):
         failure too: a block that errored still burned the tokens.
 
         Never raises -- accounting must not take down a block that already
-        produced its output.
+        produced its output. The outcome is stamped onto the block instead, so
+        lost spend is countable in Postgres rather than only in a log line.
         """
         if self.usage is None:
+            self._stamp_cost_status("no_usage")
             return
         try:
             async with get_session() as session:
@@ -337,6 +346,7 @@ class AnalyzerBlock(Block):
                         **await self._cost_attribution(session),
                     )
                 )
+            self._stamp_cost_status("recorded")
             self.log.info(
                 "recorded cost job_kind=%s cost_usd=%s source=%s",
                 self.analyzer_type.value,
@@ -344,7 +354,18 @@ class AnalyzerBlock(Block):
                 self.usage.source,
             )
         except Exception:
+            self._stamp_cost_status("failed")
             self.log.exception("record_cost failed for id=%s", self.id)
+
+    def _stamp_cost_status(self, status: str) -> None:
+        """Record on the block row whether this block's spend reached
+        ``analysis_costs``: ``recorded`` | ``no_usage`` | ``failed``.
+
+        The invariant this exists to make queryable: every successful block
+        should be ``recorded``. Anything else on a block that burned tokens is
+        spend that is missing from the ledger.
+        """
+        self.block_metadata = {**(self.block_metadata or {}), "cost_status": status}
 
     async def _create_client(self) -> AnalyzerLLMClient:
         if self._client_factory is not None:
@@ -420,7 +441,13 @@ class AnalyzerBlock(Block):
             if self._active_client is not None:
                 self.usage = getattr(self._active_client, "last_usage", None)
                 try:
-                    await self._active_client.aclose()
+                    # Bounded: aclose() deletes the sandbox over the network, and
+                    # an unbounded await here outlives the caller's own timeout.
+                    # On expiry the sandbox falls back to Daytona's auto-delete.
+                    await asyncio.wait_for(
+                        self._active_client.aclose(),
+                        timeout=self._client_close_timeout,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     self.error = self.error or repr(exc)
                     self.log.exception("client cleanup failed")
@@ -443,9 +470,11 @@ class AnalyzerBlock(Block):
                 raise
 
     async def _persist(self) -> None:
-        """S3 first, then DB. Each is failure-isolated inside its own method, so
-        an S3 outage still lets the DB row land (and vice versa)."""
+        """S3, then the cost row, then the DB. Each is failure-isolated inside
+        its own method, so an S3 outage still lets the DB row land (and vice
+        versa). Cost goes before the DB write so ``cost_status`` is on the row
+        that lands -- stamping it afterwards would never reach Postgres."""
         raw = "".join(self._chunks).encode("utf-8")
         await self.save_to_s3(raw)
-        await self.save_to_db()
         await self.record_cost()
+        await self.save_to_db()
