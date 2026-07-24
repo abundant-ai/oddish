@@ -49,6 +49,7 @@ import {
 } from "@/lib/status-config";
 import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
 import type {
+  ExperimentTaskVersionPin,
   Task,
   TaskBrowseExperiment,
   TaskDetailResponse,
@@ -438,6 +439,15 @@ function VersionSwitcher({
 
 const GLOBAL_SCOPE = "__global__";
 
+const SECONDARY_BUTTON_CLASS =
+  "h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]";
+
+function scopeItemClass(active: boolean) {
+  return `flex flex-col items-start gap-0.5 px-3 py-2 ${
+    active ? "bg-[color:var(--paper-surface-2)]" : ""
+  }`;
+}
+
 function DefaultVersionScopeSelector({
   experiments,
   scope,
@@ -468,9 +478,7 @@ function DefaultVersionScopeSelector({
       <DropdownMenuContent align="start" className="w-[300px] font-mono">
         <DropdownMenuItem
           onSelect={() => onSelect(GLOBAL_SCOPE)}
-          className={`flex flex-col items-start gap-0.5 px-3 py-2 ${
-            scope === GLOBAL_SCOPE ? "bg-[color:var(--paper-surface-2)]" : ""
-          }`}
+          className={scopeItemClass(scope === GLOBAL_SCOPE)}
         >
           <span className="text-[11.5px] font-semibold text-[color:var(--paper-ink)]">
             All experiments (global)
@@ -485,11 +493,7 @@ function DefaultVersionScopeSelector({
             <DropdownMenuItem
               key={experiment.id}
               onSelect={() => onSelect(experiment.id)}
-              className={`flex flex-col items-start gap-0.5 px-3 py-2 ${
-                scope === experiment.id
-                  ? "bg-[color:var(--paper-surface-2)]"
-                  : ""
-              }`}
+              className={scopeItemClass(scope === experiment.id)}
             >
               <span className="truncate text-[11.5px] font-semibold text-[color:var(--paper-ink)]">
                 {experiment.name}
@@ -502,6 +506,37 @@ function DefaultVersionScopeSelector({
         })}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+function ClearPinButton({
+  isSaving,
+  onClick,
+  label,
+  title,
+}: {
+  isSaving: boolean;
+  onClick: () => void;
+  label: string;
+  title?: string;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      disabled={isSaving}
+      onClick={onClick}
+      title={title}
+      className={SECONDARY_BUTTON_CLASS}
+    >
+      {isSaving ? (
+        <Loader2 className="h-3 w-3 animate-spin" />
+      ) : (
+        <X className="h-3 w-3" />
+      )}
+      {label}
+    </Button>
   );
 }
 
@@ -543,21 +578,11 @@ function DefaultVersionControl({
             : "Default version"}
         </span>
         {scopeExperiment ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={isSaving}
+          <ClearPinButton
+            isSaving={isSaving}
             onClick={onClearPin}
-            className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
-          >
-            {isSaving ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <X className="h-3 w-3" />
-            )}
-            Clear pin
-          </Button>
+            label="Clear pin"
+          />
         ) : null}
       </div>
     );
@@ -574,7 +599,7 @@ function DefaultVersionControl({
               size="sm"
               disabled={isSaving}
               onClick={onSetDefault}
-              className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+              className={SECONDARY_BUTTON_CLASS}
             >
               {isSaving ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
@@ -596,21 +621,48 @@ function DefaultVersionControl({
         </Tooltip>
       </TooltipProvider>
       {scopeExperiment && pinnedVersion != null ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={isSaving}
+        <ClearPinButton
+          isSaving={isSaving}
           onClick={onClearPin}
-          className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+          label={`Clear pin (v${pinnedVersion})`}
           title={`${scopeExperiment.name} is pinned to v${pinnedVersion}. Clear to revert to the derived version.`}
-        >
-          <X className="h-3 w-3" />
-          Clear pin (v{pinnedVersion})
-        </Button>
+        />
       ) : null}
     </div>
   );
+}
+
+async function writeExperimentVersionPin(
+  experimentId: string,
+  taskId: string,
+  version: number | null
+): Promise<void> {
+  const url = `/api/experiments/${encodeURIComponent(experimentId)}/tasks/${encodeURIComponent(taskId)}/default-version`;
+  const res = await fetch(
+    url,
+    version != null
+      ? {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version }),
+        }
+      : { method: "DELETE" }
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    const fallback =
+      version != null ? "Failed to pin the version" : "Failed to clear the pin";
+    throw new Error(data.detail || data.error || fallback);
+  }
+}
+
+function withExperimentPin(
+  pins: ExperimentTaskVersionPin[] | undefined,
+  experimentId: string,
+  next: ExperimentTaskVersionPin | null
+): ExperimentTaskVersionPin[] {
+  const rest = (pins ?? []).filter((pin) => pin.experiment_id !== experimentId);
+  return next ? [...rest, next] : rest;
 }
 
 function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
@@ -896,25 +948,45 @@ export function TaskDetailClient({
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
   const handleSetDefaultVersion = useCallback(async () => {
     if (!task || !selectedVersion) return;
+    if (!scopeExperiment && selectedVersion.is_current) return;
 
-    const versionId = selectedVersion.id;
-    const versionNumber = selectedVersion.version;
+    const { id: versionId, version: versionNumber } = selectedVersion;
     setIsSettingDefaultVersion(true);
     setDefaultVersionError(null);
     try {
       if (scopeExperiment) {
+        await writeExperimentVersionPin(
+          scopeExperiment.id,
+          task.id,
+          versionNumber
+        );
+        await mutate(
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  experiment_version_pins: withExperimentPin(
+                    current.experiment_version_pins,
+                    scopeExperiment.id,
+                    {
+                      experiment_id: scopeExperiment.id,
+                      task_version_id: versionId,
+                      task_version: versionNumber,
+                    }
+                  ),
+                }
+              : current,
+          { revalidate: false }
+        );
+      } else {
         const res = await fetch(
-          `/api/experiments/${encodeURIComponent(scopeExperiment.id)}/tasks/${encodeURIComponent(task.id)}/default-version`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ version: versionNumber }),
-          }
+          `/api/tasks/${encodeURIComponent(task.id)}/versions/${versionNumber}/default`,
+          { method: "PUT" }
         );
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
-            data.detail || data.error || "Failed to pin the version"
+            data.detail || data.error || "Failed to change the default version"
           );
         }
         await mutate(
@@ -922,55 +994,21 @@ export function TaskDetailClient({
             current
               ? {
                   ...current,
-                  experiment_version_pins: [
-                    ...(current.experiment_version_pins ?? []).filter(
-                      (pin) => pin.experiment_id !== scopeExperiment.id
-                    ),
-                    {
-                      experiment_id: scopeExperiment.id,
-                      task_version_id: versionId,
-                      task_version: versionNumber,
-                    },
-                  ],
+                  task: {
+                    ...current.task,
+                    current_version_id: versionId,
+                    current_version: versionNumber,
+                  },
+                  versions: current.versions.map((candidate) => ({
+                    ...candidate,
+                    is_current: candidate.id === versionId,
+                  })),
                 }
               : current,
           { revalidate: false }
         );
-        void mutate();
-        return;
+        writeVersionToQuery(versionId, versionId);
       }
-
-      if (selectedVersion.is_current) return;
-      const res = await fetch(
-        `/api/tasks/${encodeURIComponent(task.id)}/versions/${versionNumber}/default`,
-        { method: "PUT" }
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to change the default version"
-        );
-      }
-
-      await mutate(
-        (current) =>
-          current
-            ? {
-                ...current,
-                task: {
-                  ...current.task,
-                  current_version_id: versionId,
-                  current_version: versionNumber,
-                },
-                versions: current.versions.map((candidate) => ({
-                  ...candidate,
-                  is_current: candidate.id === versionId,
-                })),
-              }
-            : current,
-        { revalidate: false }
-      );
-      writeVersionToQuery(versionId, versionId);
       void mutate();
     } catch (err) {
       setDefaultVersionError(
@@ -989,22 +1027,17 @@ export function TaskDetailClient({
     setIsSettingDefaultVersion(true);
     setDefaultVersionError(null);
     try {
-      const res = await fetch(
-        `/api/experiments/${encodeURIComponent(scopeExperiment.id)}/tasks/${encodeURIComponent(task.id)}/default-version`,
-        { method: "DELETE" }
-      );
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to clear the pin");
-      }
+      await writeExperimentVersionPin(scopeExperiment.id, task.id, null);
       await mutate(
         (current) =>
           current
             ? {
                 ...current,
-                experiment_version_pins: (
-                  current.experiment_version_pins ?? []
-                ).filter((pin) => pin.experiment_id !== scopeExperiment.id),
+                experiment_version_pins: withExperimentPin(
+                  current.experiment_version_pins,
+                  scopeExperiment.id,
+                  null
+                ),
               }
             : current,
         { revalidate: false }

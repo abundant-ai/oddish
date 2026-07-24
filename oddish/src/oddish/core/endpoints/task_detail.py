@@ -156,16 +156,11 @@ async def set_experiment_task_default_version_core(
     org_id: str | None = None,
     created_by_user_id: str | None = None,
 ) -> TaskVersionResponse:
-    """Pin the version one experiment displays for one of its tasks.
+    """Pin the version one experiment displays for a task.
 
-    Display-only: it changes which version the experiment's task/trial views
-    pivot on, not which version new runs execute (submission still uses
-    ``tasks.current_version_id``). The task's global default is untouched, so
-    ``TaskStatusResponse.current_version`` keeps reporting it everywhere.
+    Display-only: the task's global default is untouched.
     """
-    await _get_experiment_for_org(
-        session, experiment_id=experiment_id, org_id=org_id
-    )
+    await _get_experiment_for_org(session, experiment_id=experiment_id, org_id=org_id)
     task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
     result = await session.execute(
         select(TaskVersionModel).where(
@@ -180,9 +175,7 @@ async def set_experiment_task_default_version_core(
             detail=f"Version {version} not found for task {task_id}",
         )
 
-    pin = await _get_live_pin(
-        session, experiment_id=experiment_id, task_id=task.id
-    )
+    pin = await _get_live_pin(session, experiment_id=experiment_id, task_id=task.id)
     if pin is None:
         session.add(
             ExperimentTaskVersionPinModel(
@@ -210,16 +203,12 @@ async def clear_experiment_task_default_version_core(
 ) -> None:
     """Drop an experiment's version pin, reverting it to the derived pivot.
 
-    Tombstoned rather than hard-deleted so the partial unique index frees the
-    ``(experiment_id, task_id)`` slot for a later re-pin. Idempotent.
+    Tombstoned (not hard-deleted) so the slot frees up for a later re-pin.
+    Idempotent.
     """
-    await _get_experiment_for_org(
-        session, experiment_id=experiment_id, org_id=org_id
-    )
+    await _get_experiment_for_org(session, experiment_id=experiment_id, org_id=org_id)
     task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
-    pin = await _get_live_pin(
-        session, experiment_id=experiment_id, task_id=task.id
-    )
+    pin = await _get_live_pin(session, experiment_id=experiment_id, task_id=task.id)
     if pin is None:
         return
     pin.deleted_at = datetime.now(timezone.utc)
@@ -247,12 +236,7 @@ async def list_task_version_pins_core(
             (TaskVersionModel.id == ExperimentTaskVersionPinModel.task_version_id)
             & (TaskVersionModel.task_id == ExperimentTaskVersionPinModel.task_id),
         )
-        .where(
-            ExperimentTaskVersionPinModel.task_id == task_id,
-            # Redundant with the session-level soft-delete filter, kept
-            # explicit: a cleared pin must never resurface as a pivot.
-            ExperimentTaskVersionPinModel.deleted_at.is_(None),
-        )
+        .where(ExperimentTaskVersionPinModel.task_id == task_id)
     )
     return [
         ExperimentTaskVersionPin(

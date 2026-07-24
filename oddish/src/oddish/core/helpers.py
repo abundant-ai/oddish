@@ -617,30 +617,18 @@ def resolve_effective_version_id(
 ) -> str | None:
     """Return the ``task_version_id`` that best represents ``task`` in context.
 
-    Outside an experiment (``experiment_context_id`` is ``None``) this is the
-    task's global ``current_version_id``. Within an experiment the order is:
-
-    1. an explicit ``experiment_task_version_pins`` row for this
-       ``(experiment, task)`` pair,
-    2. else the derived pivot -- the task's explicit default when a visible
-       trial represents it, otherwise the latest represented version. This
-       lets users promote an older stored version and see new runs on it
-       without blanking historical experiments whose trials exist only on
-       another version,
-    3. else ``task.current_version_id``.
-
-    ``pins`` maps ``(experiment_id, task_id)`` to a pinned version id and must
-    already be filtered to versions that still exist for that task -- this
-    function is sync and must never lazy-load, so liveness is the fetcher's
-    job (:func:`fetch_experiment_task_version_pins`). The default ``None``
-    means "no pins", keeping every non-opted-in caller byte-for-byte
-    unchanged.
+    Outside an experiment this is ``task.current_version_id``. Inside one,
+    resolution order is pin -> derived-from-trials -> global default (see
+    AGENTS.md). ``pins`` must already be filtered to live versions -- this
+    resolver is sync and must never lazy-load, so liveness is the fetcher's
+    job (:func:`fetch_experiment_task_version_pins`). Default ``None`` means
+    "no pins".
 
     ``gathered_trial_ids`` folds in trials owned by a *collection* experiment
     via the ``experiment_trials`` join table -- these carry their home
     experiment's scalar ``experiment_id`` (not this collection's), so they'd
-    otherwise be invisible to the scalar-column membership test.  Passing the
-    default ``None`` leaves the behavior byte-for-byte unchanged.
+    otherwise be invisible to the scalar-column membership test. Default
+    ``None`` leaves behavior unchanged.
     """
     if experiment_context_id is None:
         return task.current_version_id
@@ -675,13 +663,11 @@ async def fetch_experiment_task_version_pins(
     experiment_id: str,
     task_ids: Sequence[str],
 ) -> dict[tuple[str, str], str]:
-    """Live ``experiment_task_version_pins`` for one experiment, keyed by
-    ``(experiment_id, task_id)``.
+    """Live version pins for one experiment, keyed by ``(experiment_id, task_id)``.
 
-    Joined to ``task_versions`` so a pin whose version no longer exists for the
-    task is simply absent from the map -- callers then fall back to the derived
-    rule instead of pivoting on a dangling id. Cleared pins are tombstones and
-    are excluded too.
+    Joined to ``task_versions`` so a pin on a deleted version is simply absent
+    -- callers fall back to the derived rule instead of pivoting on a dangling
+    id.
     """
     if not task_ids:
         return {}
@@ -704,9 +690,6 @@ async def fetch_experiment_task_version_pins(
         .where(
             ExperimentTaskVersionPinModel.experiment_id == experiment_id,
             ExperimentTaskVersionPinModel.task_id.in_(list(task_ids)),
-            # Redundant with the session-level soft-delete filter, kept
-            # explicit: a cleared pin must never resurface as a pivot.
-            ExperimentTaskVersionPinModel.deleted_at.is_(None),
         )
     )
     result = await session.execute(stmt)
@@ -732,9 +715,8 @@ async def fetch_experiment_effective_version_ids(
     scoped trials are omitted.
 
     ``pins`` (from :func:`fetch_experiment_task_version_pins`) overrides the
-    derived value and is applied even for tasks with no scoped trials, so a
-    pinned task with no runs on that version reports it (and empty counts)
-    rather than silently falling back. Default ``None`` -> unchanged behavior.
+    derived value, including for tasks with no scoped trials. Default
+    ``None`` leaves behavior unchanged.
 
     Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
     server returns at most one row per task -- ordered by the *integer*

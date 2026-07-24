@@ -371,8 +371,7 @@ export interface ExperimentCostTotals {
   total_trials: number;
 }
 
-/** One experiment's explicit display-version override for a task. Display
- * only: new runs still execute the task's global `current_version_id`. */
+/** One experiment's display-version override for a task (display-only). */
 export interface ExperimentTaskVersionPin {
   experiment_id: string;
   task_version_id: string;

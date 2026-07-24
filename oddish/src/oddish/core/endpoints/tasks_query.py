@@ -285,10 +285,7 @@ async def list_tasks_core(
             .scalars()
             .all()
         )
-        # Explicit per-experiment version pins outrank the derived pivot. Fetched
-        # here (async) and threaded into the sync resolver so it never
-        # lazy-loads. ``task-shells`` / ``slim-tasks`` fetch the same map so
-        # progressive loading cannot flip the pivot mid-load.
+        # Fetched async, threaded into the sync resolver below (never lazy-loads).
         version_pins = await fetch_experiment_task_version_pins(
             session,
             experiment_id=experiment_id,

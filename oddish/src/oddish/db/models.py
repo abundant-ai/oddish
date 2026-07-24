@@ -954,15 +954,10 @@ class TaskVersionModel(TimestampedMixin, Base):
 class ExperimentTaskVersionPinModel(TimestampedMixin, Base):
     """Per-experiment override of which task version an experiment displays.
 
-    Without a pin, an experiment's version pivot is *derived* from its own
-    trials (see ``resolve_effective_version_id``). A pin lets two experiments
-    show two different versions of the same task. It is display-only: new
-    trials still submit against ``tasks.current_version_id``.
-
-    No DB-level foreign keys, matching the OSS/cloud split convention used by
-    the other association-ish tables here. Liveness of ``task_version_id`` is
-    enforced at read time by joining ``task_versions``, so a pin that outlives
-    its version silently falls back to the derived rule.
+    Display-only: new trials still submit against ``tasks.current_version_id``.
+    No DB-level foreign keys (matches the other association-ish tables here);
+    liveness of ``task_version_id`` is enforced at read time by joining
+    ``task_versions``.
     """
 
     __tablename__ = "experiment_task_version_pins"

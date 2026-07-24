@@ -33,11 +33,11 @@ from oddish.core.endpoints import (
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
+    clear_experiment_task_default_version_core,
     combine_experiments_core,
     create_task_sweep_batch_core,
     create_task_sweep_core,
     delete_experiment_core,
-    clear_experiment_task_default_version_core,
     delete_task_core,
     get_experiment_cost_totals,
     get_task_detail_core,
@@ -1602,8 +1602,7 @@ async def set_experiment_task_default_version(
 ) -> TaskVersionResponse:
     """Pin the version this experiment displays for one of its tasks.
 
-    Display-only: it does not change ``tasks.current_version_id``, so new runs
-    still execute the task's global default.
+    Display-only: new runs still execute ``tasks.current_version_id``.
     """
     auth.require_scope(APIKeyScope.TASKS)
 
