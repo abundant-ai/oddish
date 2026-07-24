@@ -61,7 +61,9 @@ You are the auditor and have full access to all artifacts — the agent was sand
 
 **Trial execution ({trial_dir}):**
 
-6. `agent/` — the full agent trajectory. Read it **start to finish**, not just the tail. Determine its schema first (JSON, JSONL, `.traj`, plain log). *(required)*
+6. `agent/` — the full agent trajectory. Determine its schema first (JSON, JSONL, `.traj`, plain log). *(required)* Absent a component index (below), read it **start to finish**, not just the tail.
+
+{trajectory_index_context}
 7. `verifier/test-stdout.txt` — grading output: which tests ran, which failed, on what assertion, with what error
 8. `result.json` — contains `verifier_result.rewards.reward`
 9. The agent's final submitted artifact — its graded diff or working-tree state. **This is a distinct artifact from the trajectory** and is required for the consistency check below.

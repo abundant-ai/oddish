@@ -38,6 +38,12 @@ TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "5"
 SUMMARY_PROMPT_KEY = PromptKind.TRAJECTORY_SUMMARY.value
 
+# Where the sandbox substrate finds the trajectory. The agent reads this file
+# instead of receiving the trajectory inline, so the prompt stays a fixed small
+# size no matter how long the trial ran.
+SANDBOX_ROOT = "/home/daytona/workspace/trajectory-summary"
+SANDBOX_TRAJECTORY_PATH = f"{SANDBOX_ROOT}/trajectory.json"
+
 # Output cap for the summary call. The Anthropic API requires max_tokens, so
 # some value must be set; this one is a ceiling, not a target -- billing is on
 # tokens actually generated. Was 2048 (inherited from the pre-migration cap),
@@ -191,16 +197,47 @@ def build_summary_block(
     or block metadata. The registry template and version are required so no
     production or offline caller can silently fall back to baked-in text.
     """
+    import json
+
+    from oddish.blocks.analyzer import analyzer_llm_client
     from oddish.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
         AnalyzerInput,
         AnalyzerType,
+        resolve_substrate,
     )
-    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType, SandboxConfig
+    from oddish.config import settings
     from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
         TrajectoryBlock,
         TrajectoryInput,
+        TrajectoryOutput,
     )
+
+    client_type = resolve_substrate(
+        AnalyzerType.TRAJECTORY_SUMMARY,
+        sandbox_available=analyzer_llm_client.sandbox_client_factory_registered(),
+        force_sandbox=settings.trajectory_summary_sandbox_enabled,
+    )
+    use_sandbox = client_type is LLMClientType.SANDBOX
+
+    sandbox_config = None
+    if use_sandbox:
+        # Ship the same preprocessed trajectory the inline prompt would have
+        # carried, so both substrates segment identical input.
+        sandbox_config = SandboxConfig(
+            session_id="trajectory-summary",
+            files_to_upload={
+                "/tmp/oddish-trajectory.json": json.dumps(
+                    preprocess(trajectory)
+                ).encode(),
+            },
+            setup_commands=(
+                f"mkdir -p {SANDBOX_ROOT} && "
+                f"mv /tmp/oddish-trajectory.json {SANDBOX_TRAJECTORY_PATH}",
+            ),
+            json_schema=json.dumps(TrajectoryOutput.model_json_schema()),
+        )
 
     tb = TrajectoryBlock(
         TrajectoryInput(
@@ -212,10 +249,21 @@ def build_summary_block(
             trajectory=trajectory,
         ),
         instructions_template=prompt_template,
+        trajectory_path=SANDBOX_TRAJECTORY_PATH if use_sandbox else None,
     )
+
+    def _to_summary(raw: str) -> dict:
+        if not use_sandbox:
+            return tb.to_summary(raw, model=model)
+        # The sandbox substrate returns claude-code stream events, not the
+        # bare JSON body the API substrate yields.
+        from oddish.analyze.classifier import parse_claude_code_result
+
+        return tb.to_summary(json.dumps(parse_claude_code_result(raw)), model=model)
+
     return AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
-        llm_client_type=LLMClientType.API,
+        llm_client_type=client_type,
         input=AnalyzerInput(
             input={"trial_id": analyzer_id, "task_name": task_context.task_name}
         ),
@@ -227,9 +275,10 @@ def build_summary_block(
             "prompt_key": SUMMARY_PROMPT_KEY,
             "prompt_version": prompt_version,
         },
-        output_transform=lambda raw: tb.to_summary(raw, model=model),
+        output_transform=_to_summary,
         model=model,
         max_tokens=SUMMARY_MAX_TOKENS,
+        sandbox_config=sandbox_config,
         triggered_by_user_id=triggered_by_user_id,
     )
 

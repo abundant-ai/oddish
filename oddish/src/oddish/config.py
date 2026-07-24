@@ -1178,6 +1178,14 @@ class Settings(BaseSettings):
     # there is. Enable only to give the classifier capabilities (shell, the
     # verifier) that the local subprocess deliberately withholds.
     post_trial_sandbox_enabled: bool = False
+
+    # Run trajectory segmentation (summary + star steps + components) in a
+    # sandbox that reads the trajectory off disk, instead of inlining the whole
+    # trajectory into one API prompt. Worth enabling when trajectories are long:
+    # the inline form has to fit a single context window, while the sandbox
+    # agent reads the file in chunks. Off by default -- for typical-length
+    # trajectories the single API call is cheaper than provisioning a sandbox.
+    trajectory_summary_sandbox_enabled: bool = False
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``

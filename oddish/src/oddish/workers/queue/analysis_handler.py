@@ -255,6 +255,7 @@ async def classify_trial_and_store(
                 analyzer_block_context={
                     "trial_id": trial_id,
                     "task_id": task_id,
+                    "org_id": trial_org_id,
                     "prompt_key": (
                         PromptKind.QA_POST_TRIAL.value
                         if post_trial_prompt_version is not None
