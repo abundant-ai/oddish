@@ -771,6 +771,43 @@ def _initial_trial_job_status(agent: str, *, gating: bool) -> WorkerJobStatus:
     return WorkerJobStatus.QUEUED
 
 
+async def _enqueue_pre_trial_assignment_runs(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str,
+    experiment_id: str | None,
+    org_id: str | None,
+    user_id: str | None,
+) -> None:
+    """Best-effort additive pre-trial analyzers for one task version."""
+    from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
+
+    try:
+        async with session.begin_nested():
+            await enqueue_qa_assignment_runs_core(
+                session,
+                stage="pre_trial",
+                stage_event_key=f"task_version:{task_version_id}",
+                org_id=org_id,
+                user_id=user_id,
+                experiment_id=experiment_id,
+                task_id=task_id,
+                trial_id=None,
+                run_scope_type="task",
+                run_scope_id=task_id,
+            )
+    except Exception:  # noqa: BLE001
+        # These analyzers are observability/QA sidecars. A bad assignment must
+        # not reject the sweep or roll back its trial jobs.
+        logger.warning(
+            "pre-trial assignment enqueue failed for task=%s version=%s",
+            task_id,
+            task_version_id,
+            exc_info=True,
+        )
+
+
 def _ensure_not_collection_target(experiment: "ExperimentModel | None") -> None:
     """Reject runs targeting a read-only collection experiment."""
     if experiment is not None and experiment.is_collection:
@@ -953,6 +990,15 @@ async def create_task(
     await session.flush()
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+
+    await _enqueue_pre_trial_assignment_runs(
+        session,
+        task_id=task_id,
+        task_version_id=version_id,
+        experiment_id=experiment.id,
+        org_id=org_id,
+        user_id=billed_user_id,
+    )
 
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
@@ -1212,6 +1258,15 @@ async def append_trials_to_task(
 
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+
+    await _enqueue_pre_trial_assignment_runs(
+        session,
+        task_id=task.id,
+        task_version_id=current_version_id,
+        experiment_id=trial_experiment_id,
+        org_id=task.org_id,
+        user_id=billed_user_id,
+    )
 
     # The replacement rows must exist before the self-referential FK can point
     # old attempts at them. Only live FAILED rows are eligible: if another

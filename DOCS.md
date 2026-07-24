@@ -115,6 +115,14 @@ latest-wins afterwards, so a later `oddish prompt upload` is picked up with no
 change to the assignment; pass `--prompt-version N` to pin instead. Global-scope
 assignments are installation-wide and restricted to the platform operator.
 
+Assignment execution is additive and non-blocking. A pre-trial assignment is
+enqueued once per `(assignment, task version)` when a sweep first submits trials
+for that version; it does not gate those trials. A post-trial assignment is
+enqueued once per `(assignment, trial)` when that trial reaches its final
+`SUCCESS` or `FAILED` state. Retried lifecycle hooks are idempotent. Assignment
+failures are visible through `oddish qa-jobs status`, but do not change the
+trial's status or the task verdict.
+
 The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
 authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
 oracle/nop and lazy-solution experiments. The worker mints a short-lived

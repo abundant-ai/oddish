@@ -70,6 +70,7 @@ reference. The main commands are:
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
 - `oddish qa` — A/B test versioned QA prompt variants against an experiment, task, or trial.
+- `oddish qa-jobs` — assign, inspect, disable, and monitor automatic pre-/post-trial AnalyzerBlock jobs.
 - `oddish prompt` — manage the shared prompt registry and its active/immutable versions.
 
 Every command except `oddish logs` supports `--json` for machine-readable output.

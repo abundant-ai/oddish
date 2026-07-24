@@ -14,12 +14,20 @@ import pytest_asyncio
 from oddish.core.prompts import set_prompt_core
 from oddish.core.qa_assignments import (
     GLOBAL_SCOPE_TYPE,
+    enqueue_qa_assignment_runs_core,
     list_qa_assignments_core,
     normalize_scope,
     resolve_qa_assignments_core,
     upsert_qa_assignment_core,
 )
-from oddish.db import PromptModel, QAAssignmentModel, QAStage, get_session
+from oddish.db import (
+    AnalyzerRunModel,
+    PromptModel,
+    QAAssignmentModel,
+    QAStage,
+    WorkerJobModel,
+    get_session,
+)
 
 POST = QAStage.POST_TRIAL.value
 PRE = QAStage.PRE_TRIAL.value
@@ -79,7 +87,9 @@ async def _prompt(kind, *, scope_type=None, scope_id=None, org_id=None, content=
     return prompt_id
 
 
-async def _assign(prompt_id, *, stage=POST, scope_type, scope_id=None, org_id=None, **kw):
+async def _assign(
+    prompt_id, *, stage=POST, scope_type, scope_id=None, org_id=None, **kw
+):
     async with get_session() as session:
         prompt = await session.get(PromptModel, prompt_id)
         assignment = await upsert_qa_assignment_core(
@@ -213,7 +223,9 @@ async def test_stages_are_independent(kinds):
     jobs, which is why rollups cannot key on analyzer_blocks.prompt_id."""
     kind = kinds("both_stages")
     prompt_id = await _prompt(kind)
-    await _assign(prompt_id, stage=PRE, scope_type=GLOBAL_SCOPE_TYPE, llm_client_type="Sandbox")
+    await _assign(
+        prompt_id, stage=PRE, scope_type=GLOBAL_SCOPE_TYPE, llm_client_type="Sandbox"
+    )
     await _assign(prompt_id, stage=POST, scope_type=GLOBAL_SCOPE_TYPE)
 
     resolved = await _resolve(org_id="org_a")
@@ -323,3 +335,82 @@ def test_global_scope_normalizes_to_the_not_null_pair():
 def test_domain_scope_requires_an_id():
     with pytest.raises(ValueError, match="scope_id"):
         normalize_scope("task", None)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_event_enqueues_analyzer_block_once(kinds):
+    kind = kinds("automatic")
+    assignment_id = await _assign(
+        await _prompt(
+            kind,
+            scope_type="task",
+            scope_id="task_auto",
+            org_id="org_a",
+            content="inspect this lifecycle event",
+        ),
+        stage=POST,
+        scope_type="task",
+        scope_id="task_auto",
+        org_id="org_a",
+        model="claude-sonnet-4-6",
+    )
+
+    async with get_session() as session:
+        first = await enqueue_qa_assignment_runs_core(
+            session,
+            stage=POST,
+            stage_event_key="trial:trial_auto",
+            org_id="org_a",
+            user_id="user_a",
+            experiment_id="exp_auto",
+            task_id="task_auto",
+            trial_id="trial_auto",
+            run_scope_type="trial",
+            run_scope_id="trial_auto",
+        )
+        await session.commit()
+
+    assert len(first) == 1
+    run_id = first[0].id
+    assert first[0].qa_assignment_id == assignment_id
+    assert first[0].run_config["automatic"] is True
+    assert first[0].run_config["stage"] == POST
+    assert first[0].run_config["scope"] == {
+        "type": "trial",
+        "id": "trial_auto",
+    }
+
+    async with get_session() as session:
+        second = await enqueue_qa_assignment_runs_core(
+            session,
+            stage=POST,
+            stage_event_key="trial:trial_auto",
+            org_id="org_a",
+            user_id="user_a",
+            experiment_id="exp_auto",
+            task_id="task_auto",
+            trial_id="trial_auto",
+            run_scope_type="trial",
+            run_scope_id="trial_auto",
+        )
+        jobs = (
+            await session.execute(
+                WorkerJobModel.__table__.select().where(
+                    WorkerJobModel.subject_table == "analyzer_runs",
+                    WorkerJobModel.subject_id == run_id,
+                )
+            )
+        ).all()
+        assert second == []
+        assert len(jobs) == 1
+
+        await session.execute(
+            WorkerJobModel.__table__.delete().where(
+                WorkerJobModel.subject_table == "analyzer_runs",
+                WorkerJobModel.subject_id == run_id,
+            )
+        )
+        await session.execute(
+            AnalyzerRunModel.__table__.delete().where(AnalyzerRunModel.id == run_id)
+        )
+        await session.commit()

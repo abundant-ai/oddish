@@ -15,17 +15,23 @@ stay in ``backend/``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.config import api_base_url_for_modal_app, settings
 from oddish.db.models import (
     AnalyzerRunModel,
+    JobStatus,
     PromptModel,
     QAAssignmentModel,
     QAStage,
+    WorkerJobKind,
     utcnow,
 )
+from oddish.workers.jobs import EnqueueRequest, enqueue_worker_job
 
 
 # ``qa_assignments.scope_type`` / ``scope_id`` are both NOT NULL (unlike
@@ -111,9 +117,9 @@ async def _select_assignments(session: AsyncSession, where) -> list[tuple]:
     """Assignments joined to their prompt. The join is required, not an
     optimization: the override key is the *referenced prompt's kind*."""
     result = await session.execute(
-        select(QAAssignmentModel, PromptModel).join(
-            PromptModel, PromptModel.id == QAAssignmentModel.prompt_id
-        ).where(where)
+        select(QAAssignmentModel, PromptModel)
+        .join(PromptModel, PromptModel.id == QAAssignmentModel.prompt_id)
+        .where(where)
     )
     return list(result.all())
 
@@ -277,7 +283,9 @@ async def upsert_qa_assignment_core(
             break
 
     if existing is None:
-        existing = QAAssignmentModel(org_id=org_id, scope_type=scope_type, scope_id=scope_id, stage=stage)
+        existing = QAAssignmentModel(
+            org_id=org_id, scope_type=scope_type, scope_id=scope_id, stage=stage
+        )
         session.add(existing)
 
     existing.prompt_id = prompt.id
@@ -332,3 +340,145 @@ async def qa_assignment_status_core(
         value = status.value if hasattr(status, "value") else str(status)
         out.setdefault(assignment_id, {})[value] = count
     return out
+
+
+async def enqueue_qa_assignment_runs_core(
+    session: AsyncSession,
+    *,
+    stage: str,
+    stage_event_key: str,
+    org_id: str | None,
+    user_id: str | None,
+    experiment_id: str | None,
+    task_id: str | None,
+    trial_id: str | None,
+    run_scope_type: str,
+    run_scope_id: str,
+) -> list[AnalyzerRunModel]:
+    """Resolve and enqueue every assignment for one lifecycle event.
+
+    The caller owns the transaction. Existing ``(assignment, event)`` runs are
+    returned as no-ops, making retries of trial finalization and sweep
+    submission safe. The database's partial unique index is the final
+    concurrency guard.
+    """
+    if stage not in {item.value for item in QAStage}:
+        raise ValueError(f"unsupported QA stage: {stage}")
+    if not stage_event_key:
+        raise ValueError("stage_event_key is required")
+
+    resolved = await resolve_qa_assignments_core(
+        session,
+        stage=stage,
+        org_id=org_id,
+        user_id=user_id,
+        experiment_id=experiment_id,
+        task_id=task_id,
+        trial_id=trial_id,
+    )
+    created: list[AnalyzerRunModel] = []
+    for item in resolved:
+        assignment = item.assignment
+        existing = await session.scalar(
+            select(AnalyzerRunModel).where(
+                AnalyzerRunModel.qa_assignment_id == assignment.id,
+                AnalyzerRunModel.stage_event_key == stage_event_key,
+            )
+        )
+        if existing is not None:
+            continue
+
+        versions = await item.prompt.awaitable_attrs.versions
+        version = next(
+            (
+                candidate
+                for candidate in versions
+                if candidate.version == item.effective_version
+            ),
+            None,
+        )
+        # Assignment writes reject version-less prompts and invalid pins. Keep
+        # lifecycle hooks resilient if historical data was edited manually.
+        if version is None:
+            continue
+
+        backend = (
+            "sandbox"
+            if assignment.llm_client_type == LLMClientType.SANDBOX.value
+            else "api"
+        )
+        digest = hashlib.sha256(version.content.encode()).hexdigest()
+        system_prompt = (
+            "You are running an automatic Oddish QA check. "
+            f"The lifecycle stage is {stage}; the exact subject is "
+            f"{run_scope_type} {run_scope_id}. Treat the assigned prompt as "
+            "the QA hypothesis and report concrete evidence."
+        )
+        oddish_api_base_url = None
+        if assignment.allow_oddish_cli:
+            system_prompt += (
+                " The oddish CLI is installed and authenticated in this "
+                "ephemeral sandbox. Use it when useful and report every "
+                "command and created resource."
+            )
+            oddish_api_base_url = (
+                settings.public_api_base_url or api_base_url_for_modal_app()
+            ).rstrip("/")
+
+        config = {
+            "scope": {"type": run_scope_type, "id": run_scope_id},
+            "stage": stage,
+            "stage_event_key": stage_event_key,
+            "qa_assignment_id": assignment.id,
+            "assignment_scope": {
+                "type": assignment.scope_type,
+                "id": assignment.scope_id,
+            },
+            "inherited_from": item.inherited_from,
+            "prompt_id": item.prompt.id,
+            "prompt_key": item.prompt.kind,
+            "prompt_version": version.version,
+            "prompt": {
+                "id": item.prompt.id,
+                "kind": item.prompt.kind,
+                "version": version.version,
+                "version_id": version.id,
+                "sha256": digest,
+            },
+            "model": assignment.model,
+            "reasoning_effort": assignment.reasoning_effort,
+            "backend": backend,
+            "oddish_cli_enabled": bool(assignment.allow_oddish_cli),
+            "oddish_api_base_url": oddish_api_base_url,
+            "system_prompt": system_prompt,
+            "automatic": True,
+        }
+        run = AnalyzerRunModel(
+            org_id=org_id,
+            prompt_version_id=version.id,
+            triggered_by_user_id=user_id,
+            scope_type=run_scope_type,
+            scope_id=run_scope_id,
+            model=assignment.model,
+            reasoning_effort=assignment.reasoning_effort,
+            llm_client_type=assignment.llm_client_type,
+            status=JobStatus.QUEUED,
+            run_config=config,
+            qa_assignment_id=assignment.id,
+            stage_event_key=stage_event_key,
+        )
+        session.add(run)
+        await session.flush()
+        await enqueue_worker_job(
+            session,
+            EnqueueRequest(
+                kind=WorkerJobKind.ANALYZER_BLOCK,
+                queue_key=settings.normalize_queue_key(assignment.model),
+                payload={"analyzer_run_id": run.id},
+                subject_table="analyzer_runs",
+                subject_id=run.id,
+                org_id=org_id,
+            ),
+        )
+        created.append(run)
+    return created

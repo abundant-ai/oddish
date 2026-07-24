@@ -253,3 +253,30 @@ def test_failed_request_exits_nonzero(monkeypatch):
         qa_jobs_app, ["assign", "QA_POST_TRIAL", "--post-trial", "--task", "fvsmith"]
     )
     assert result.exit_code == 1
+
+
+def test_status_reports_automatic_run_counts(monkeypatch):
+    calls = _fake_client(
+        monkeypatch,
+        payload={
+            "scope": "task:fvsmith",
+            "jobs": [
+                {
+                    "assignment_id": "qa_1",
+                    "stage": "post_trial",
+                    "prompt_kind": "QA_POST_TRIAL",
+                    "inherited_from": "task:fvsmith",
+                    "total": 3,
+                    "counts": {"SUCCESS": 2, "FAILED": 1},
+                }
+            ],
+        },
+    )
+    result = runner.invoke(qa_jobs_app, ["status", "--task", "fvsmith"])
+    assert result.exit_code == 0, result.output
+    request = calls["requests"][-1]
+    assert request["url"].endswith("/qa-jobs/status")
+    assert request["params"] == {"scope": "task", "scope_id": "fvsmith"}
+    assert "QA_POST_TRIAL" in result.output
+    assert "2" in result.output
+    assert "1" in result.output

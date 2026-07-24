@@ -20,6 +20,16 @@ class MissingPromptVersionError(RuntimeError):
     """The immutable prompt version referenced by an analyzer run is gone."""
 
 
+def _analyzer_type_for_config(config: dict) -> AnalyzerType:
+    stage = config.get("stage")
+    if config.get("automatic") and stage in {
+        AnalyzerType.PRE_TRIAL.value,
+        AnalyzerType.POST_TRIAL.value,
+    }:
+        return AnalyzerType(stage)
+    return AnalyzerType.CUSTOM_QA
+
+
 async def _heartbeat(worker_job_id: str, stop: asyncio.Event) -> None:
     while True:
         try:
@@ -52,6 +62,8 @@ async def run_analyzer_block_job(
             config = dict(run.run_config or {})
             oddish_cli_enabled = bool(config.get("oddish_cli_enabled"))
             client_type = LLMClientType(run.llm_client_type)
+            stage = config.get("stage")
+            analyzer_type = _analyzer_type_for_config(config)
             sandbox_config = None
             if client_type == LLMClientType.SANDBOX:
                 sandbox_config = SandboxConfig(
@@ -64,11 +76,11 @@ async def run_analyzer_block_job(
                     ),
                     oddish_api_scope="tasks" if oddish_cli_enabled else "read",
                     reasoning_effort=run.reasoning_effort,
-                    session_id="custom-qa",
+                    session_id=stage or "custom-qa",
                 )
 
             block = AnalyzerBlock(
-                analyzer_type=AnalyzerType.CUSTOM_QA,
+                analyzer_type=analyzer_type,
                 llm_client_type=client_type,
                 input=AnalyzerInput(
                     input={

@@ -6,7 +6,23 @@ import pytest
 import oddish.workers.jobs.handlers as job_handlers
 import oddish.workers.queue.analyzer_block_handler as handler
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.blocks.analyzer.analyzer_block import AnalyzerType
 from oddish.db.models import AnalyzerRunModel, JobStatus, PromptVersionModel
+
+
+def test_automatic_run_uses_lifecycle_analyzer_type():
+    assert (
+        handler._analyzer_type_for_config({"automatic": True, "stage": "pre_trial"})
+        == AnalyzerType.PRE_TRIAL
+    )
+    assert (
+        handler._analyzer_type_for_config({"automatic": True, "stage": "post_trial"})
+        == AnalyzerType.POST_TRIAL
+    )
+    assert (
+        handler._analyzer_type_for_config({"automatic": False, "stage": "post_trial"})
+        == AnalyzerType.CUSTOM_QA
+    )
 
 
 @pytest.mark.asyncio

@@ -220,6 +220,59 @@ def list_jobs(
     console.print(table)
 
 
+@qa_jobs_app.command("status")
+def status(
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+    api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
+):
+    """Show execution counts for the effective assignments at a scope."""
+    url = _resolve(api_url)
+    scope, scope_id = resolve_scope_flags(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+        default="global",
+    )
+    with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+        resp = client.get(
+            f"{url}/qa-jobs/status",
+            params=_scope_params(scope, scope_id),
+        )
+    if resp.status_code != 200:
+        _fail(resp)
+    body = resp.json()
+    if json_output:
+        console.print_json(_json.dumps(body))
+        return
+    rows = body.get("jobs") or []
+    err_console.print(f"[dim]scope={body.get('scope') or scope}[/dim]")
+    if not rows:
+        console.print("[dim]no QA job runs[/dim]")
+        return
+    table = Table("PHASE", "PROMPT", "FROM", "QUEUED", "RUNNING", "SUCCESS", "FAILED")
+    for row in rows:
+        counts = row.get("counts") or {}
+        table.add_row(
+            _STAGE_LABEL.get(row["stage"], row["stage"]),
+            row["prompt_kind"],
+            row["inherited_from"],
+            str(counts.get("QUEUED", 0)),
+            str(counts.get("RUNNING", 0)),
+            str(counts.get("SUCCESS", 0)),
+            str(counts.get("FAILED", 0)),
+        )
+    console.print(table)
+
+
 @qa_jobs_app.command("disable")
 def disable(
     prompt: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],

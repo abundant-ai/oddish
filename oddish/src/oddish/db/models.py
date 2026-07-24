@@ -675,6 +675,15 @@ class AnalyzerRunModel(TimestampedMixin, Base):
     """Lineage for one execution of one analyzer prompt version."""
 
     __tablename__ = "analyzer_runs"
+    __table_args__ = (
+        Index(
+            "uq_analyzer_runs_assignment_event",
+            "qa_assignment_id",
+            "stage_event_key",
+            unique=True,
+            postgresql_where=text("qa_assignment_id IS NOT NULL"),
+        ),
+    )
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     prompt_version_id: Mapped[str] = mapped_column(

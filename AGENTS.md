@@ -127,12 +127,21 @@ High-level flow:
    failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Trajectory analysis is **task-scoped**: when every trial of a
+4. Scoped QA assignments enqueue independent `ANALYZER_BLOCK` jobs through
+   `oddish.core.qa_assignments.enqueue_qa_assignment_runs_core`. `pre_trial`
+   fires once per assignment and task version during sweep submission;
+   `post_trial` fires once per assignment and final terminal trial. The
+   `(qa_assignment_id, stage_event_key)` partial unique index makes lifecycle
+   retries idempotent. These jobs are additive and non-blocking: their failure
+   does not change trial state or the built-in task verdict pipeline. API
+   assignments are prompt-only; sandbox assignments may request an
+   authenticated short-lived Oddish CLI.
+5. Trajectory analysis is **task-scoped**: when every trial of a
    `run_analysis` task is terminal, a single `QA` job is enqueued. That one
    job classifies every live trial's trajectory (written to `trials.analysis`)
    and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
    tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
-5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
+6. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
    codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
@@ -150,7 +159,7 @@ High-level flow:
    identifiers. Claude message payloads also carry a `block_index` and
    `text_mode` (`append` or `replace`) so clients can assemble corrected text
    snapshots without concatenating stale content.
-6. Trial completion persists queryable execution metrics on the trial row:
+7. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
