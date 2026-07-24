@@ -255,6 +255,7 @@ async def upsert_qa_assignment_core(
     prompt_version: int | None = None,
     enabled: bool = True,
     created_by_user_id: str | None = None,
+    overwrite_runner_config: bool = True,
 ) -> QAAssignmentModel:
     """Create, or update in place, the assignment for this scope/stage/kind.
 
@@ -263,6 +264,13 @@ async def upsert_qa_assignment_core(
     through different prompt rows would make the effective job ambiguous.
     Re-assigning therefore repoints the existing row rather than adding a
     competing one.
+
+    ``overwrite_runner_config=False`` flips ``enabled`` on an existing row
+    without touching its model/backend/effort/CLI/version. A bare
+    ``qa-jobs disable`` carries no runner config, so it must not clobber a
+    configured assignment's settings back to stage defaults on the way to
+    suppressing it. On a fresh row the passed values still seed the NOT NULL
+    columns regardless.
     """
     if stage not in {s.value for s in QAStage}:
         raise ValueError(f"unsupported QA stage: {stage}")
@@ -283,20 +291,22 @@ async def upsert_qa_assignment_core(
             existing = assignment
             break
 
-    if existing is None:
+    creating = existing is None
+    if creating:
         existing = QAAssignmentModel(
             org_id=org_id, scope_type=scope_type, scope_id=scope_id, stage=stage
         )
         session.add(existing)
 
     existing.prompt_id = prompt.id
-    existing.prompt_version = prompt_version
-    existing.model = model
-    existing.reasoning_effort = reasoning_effort
-    existing.llm_client_type = llm_client_type
-    existing.allow_oddish_cli = allow_oddish_cli
     existing.enabled = enabled
-    existing.created_by_user_id = created_by_user_id
+    if creating or overwrite_runner_config:
+        existing.prompt_version = prompt_version
+        existing.model = model
+        existing.reasoning_effort = reasoning_effort
+        existing.llm_client_type = llm_client_type
+        existing.allow_oddish_cli = allow_oddish_cli
+        existing.created_by_user_id = created_by_user_id
     await session.flush()
     return existing
 

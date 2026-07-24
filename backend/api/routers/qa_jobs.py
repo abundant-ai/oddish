@@ -263,6 +263,18 @@ async def assign_qa_job(
                 else LLMClientType.API
             )
         )
+        # A request that carries no runner config -- e.g. `qa-jobs disable`,
+        # which sends only enabled=false -- must not reset an existing row's
+        # model/backend/effort/CLI/version to stage defaults while toggling it.
+        overwrite_runner_config = any(
+            (
+                data.model is not None,
+                data.backend is not None,
+                data.reasoning_effort is not None,
+                data.allow_oddish_cli is not None,
+                data.prompt_version is not None,
+            )
+        )
         try:
             assignment = await upsert_qa_assignment_core(
                 session,
@@ -275,10 +287,11 @@ async def assign_qa_job(
                 model=data.model or _default_model(data.stage),
                 llm_client_type=client_type.value,
                 reasoning_effort=data.reasoning_effort,
-                allow_oddish_cli=data.allow_oddish_cli,
+                allow_oddish_cli=bool(data.allow_oddish_cli),
                 prompt_version=data.prompt_version,
                 enabled=data.enabled,
                 created_by_user_id=auth.user_id,
+                overwrite_runner_config=overwrite_runner_config,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

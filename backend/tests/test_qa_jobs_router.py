@@ -143,6 +143,50 @@ async def test_stage_defaults_pick_the_matching_runner(kind, task):
 
 
 @pytest.mark.asyncio
+async def test_disable_preserves_the_existing_runner_config(kind, task):
+    """`qa-jobs disable` sends only enabled=false. It must flip the flag on a
+    configured row without resetting its model/backend/CLI/version to stage
+    defaults -- otherwise re-enabling silently loses the runner settings."""
+    await _make_prompt(kind, scope_type="task", scope_id=task, org_id="org_a")
+    async with await _client() as client:
+        assigned = await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task},
+            json={
+                "prompt": kind,
+                "stage": "post_trial",
+                "model": "claude-opus-4-8",
+                "backend": "sandbox",
+                "allow_oddish_cli": True,
+                "prompt_version": 1,
+            },
+        )
+        assert assigned.status_code == 200, assigned.text
+
+        # The bare disable payload the CLI sends -- no runner config.
+        disabled = await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task},
+            json={"prompt": kind, "stage": "post_trial", "enabled": False},
+        )
+        assert disabled.status_code == 200, disabled.text
+
+        listed = await client.get(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task, "resolved": "false"},
+        )
+    assert listed.status_code == 200
+    mine = [r for r in listed.json() if r["prompt_kind"] == kind]
+    assert len(mine) == 1
+    row = mine[0]
+    assert row["enabled"] is False
+    assert row["model"] == "claude-opus-4-8"
+    assert row["backend"] == "sandbox"
+    assert row["allow_oddish_cli"] is True
+    assert row["prompt_version"] == 1
+
+
+@pytest.mark.asyncio
 async def test_defined_listing_excludes_inherited_rows(kind, task):
     # Assign at org scope, then confirm the task scope defines nothing itself.
     await _make_prompt(kind, scope_type="org", scope_id="org_a", org_id="org_a")

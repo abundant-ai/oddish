@@ -1984,7 +1984,9 @@ class QAJobAssignRequest(BaseModel):
     model: str | None = None
     reasoning_effort: Literal["low", "medium", "high"] | None = None
     backend: Literal["api", "sandbox"] | None = None
-    allow_oddish_cli: bool = False
+    # None (field omitted) means "don't touch runner config" on an update, as a
+    # bare `qa-jobs disable` does; a create still lands False.
+    allow_oddish_cli: bool | None = None
     enabled: bool = True
 
 
