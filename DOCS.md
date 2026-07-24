@@ -75,6 +75,13 @@ flag (`--org` here) to read back what you just wrote. Every read command
 prints the scope it actually resolved (`scope=org:acme`, `scope=global`,
 ...) so which row you're looking at is never a guess.
 
+When several scopes could apply, the narrowest wins: **trial → task →
+experiment → user → org → global**. Task outranks experiment deliberately —
+the two aren't nested (a task spans experiments, an experiment spans tasks),
+and a task override usually encodes durable knowledge about that task, which
+a broader experiment override should not silently suppress. Only one prompt
+ever wins; overrides replace rather than combine.
+
 The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
 authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
 oracle/nop and lazy-solution experiments. The worker mints a short-lived

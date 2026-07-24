@@ -192,15 +192,35 @@ async def resolve_prompt_core(
     task_id: str | None,
     trial_id: str | None,
 ) -> tuple[PromptModel, PromptVersionModel]:
-    """Resolve the narrowest available override, then the global default."""
+    """Resolve the narrowest available override, then the global default.
+
+    Strict narrowest-wins: exactly one prompt is returned per kind. This is
+    deliberately NOT how ``qa_job_assignments`` composes scopes -- that layer
+    UNIONs, so a task-level check cannot disable the org's default QA. The two
+    answer different questions ("which checks run" vs "what does this check
+    say"), and only the latter can have one winner.
+    """
     # task and experiment are NOT nested (a task spans experiments, an experiment
-    # spans tasks), so this order is a deliberate call, not a containment fact:
-    # experiment wins so pinning a prompt to an experiment (e.g. for an A/B) can't
-    # be silently overridden by a task-level override inside it.
+    # spans tasks), so this order is a deliberate call, not a containment fact.
+    #
+    # Task wins. A task override encodes durable knowledge about that task (a
+    # brittle verifier, a known failure mode); an experiment override encodes
+    # intent for one run. Letting the broader scope win would silently suppress
+    # the task's knowledge exactly where attention is highest, with no signal.
+    #
+    # This costs A/B hermeticity, but less than it appears: a task override
+    # applies equally to both arms of a comparison that shares a task set, so it
+    # is a constant, not a confound -- it costs that task's signal, visibly,
+    # rather than corrupting the result. (An A/B whose arms run DIFFERENT task
+    # sets does not get that guarantee; pin at trial scope for those.)
+    #
+    # Keeping every tier narrowest-wins also preserves the invariant the
+    # assignments layer relies on: a narrower scope never silently removes a
+    # broader scope's coverage.
     candidates = [
         ("trial", trial_id),
-        ("experiment", experiment_id),
         ("task", task_id),
+        ("experiment", experiment_id),
         ("user", user_id),
         ("org", org_id),
     ]

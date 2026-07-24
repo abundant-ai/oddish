@@ -86,8 +86,8 @@ async def test_narrowest_scope_wins_across_all_levels(scoped_kind):
     ladder = [
         ("org", "org_a", "org"),
         ("user", "user_a", "user"),
-        ("task", "task_a", "task"),
         ("experiment", "exp_a", "experiment"),
+        ("task", "task_a", "task"),
         ("trial", "trial_a", "trial"),
     ]
     scopes = {**_NO_SCOPES, "org_id": "org_a"}
@@ -106,11 +106,13 @@ async def test_narrowest_scope_wins_across_all_levels(scoped_kind):
 
 
 @pytest.mark.asyncio
-async def test_experiment_scope_beats_task_scope(scoped_kind):
+async def test_task_scope_beats_experiment_scope(scoped_kind):
     # Task and experiment are not nested (a task spans experiments, an
-    # experiment spans tasks). A trial belonging to both must resolve the
-    # experiment override, so pinning a prompt to an experiment for an A/B
-    # can't be silently overridden by a task-level override inside it.
+    # experiment spans tasks), so this precedence is a decision, not a
+    # containment fact. A trial belonging to both resolves the TASK override: a
+    # task override encodes durable knowledge about that task, and letting the
+    # broader experiment scope win would suppress it silently. See
+    # resolve_prompt_core for the A/B tradeoff this accepts.
     await _write(scoped_kind, "global")
     await _write(
         scoped_kind, "task", scope_type="task", scope_id="task_a", org_id="org_a"
@@ -130,7 +132,7 @@ async def test_experiment_scope_beats_task_scope(scoped_kind):
                 "experiment_id": "exp_a",
             },
         )
-    assert ver.content == "experiment"
+    assert ver.content == "task"
 
 
 @pytest.mark.asyncio
