@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from oddish.config import settings, to_anthropic_api_model_id
@@ -733,3 +735,140 @@ async def test_store_writes_empty_list_not_null_when_no_findings(monkeypatch):
     await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
 
     assert analyzer.findings == []
+
+
+@pytest.mark.asyncio
+async def test_peer_claimed_trials_are_deferred_to_a_second_pass(monkeypatch):
+    """A trial another worker is classifying must be retried after the loop.
+
+    ``classify_trial_and_store`` returns RUNNING when a peer owns a fresh
+    claim. Reports share the QA queue key, so during a sweep's QA burst that
+    is the expected case, not a rare race -- and skipping outright would build
+    the report on trials whose analysis lands seconds later. Deferring to a
+    second pass lets the rest of the loop run first, so by the time the
+    stragglers are re-polled the peer has usually finished.
+    """
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import AnalysisStatus, JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    class _FakeTrial:
+        def __init__(self, id_):
+            self.id = id_
+            self.analysis_status = None
+
+    trials_by_id = {tid: _FakeTrial(tid) for tid in ("t1", "t2", "t3")}
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, model, id_, with_for_update=False):
+            if model is rh.AnalyzerModel:
+                return analyzer
+            return trials_by_id.get(id_)
+
+    monkeypatch.setattr(rh, "get_session", lambda: _FakeSession())
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return [(trials_by_id[t], f"task-{t}") for t in ("t1", "t2", "t3")]
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    classify_calls: list[str] = []
+
+    async def fake_classify(tid, should_store=None):
+        classify_calls.append(tid)
+        # t1 is claimed by a peer on first contact, and free once the rest of
+        # the loop has run.
+        if tid == "t1" and classify_calls.count("t1") == 1:
+            return AnalysisStatus.RUNNING
+        trials_by_id[tid].analysis_status = AnalysisStatus.SUCCESS
+        return AnalysisStatus.SUCCESS
+
+    monkeypatch.setattr(rh, "classify_trial_and_store", fake_classify)
+    monkeypatch.setattr(rh, "ANALYZER_CLAIM_POLL_SECONDS", 0)
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    async def fake_run_eval(inputs, config, **kwargs):
+        return _fake_output_with_findings()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    # The peer-claimed trial is revisited only after t2/t3 -- it must not block
+    # them, and it must not be dropped.
+    assert classify_calls == ["t1", "t2", "t3", "t1"]
+    assert trials_by_id["t1"].analysis_status == AnalysisStatus.SUCCESS
+    assert analyzer.status == JobStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_a_never_released_claim_does_not_hang_the_report(monkeypatch):
+    """The second pass is bounded: a wedged peer must not stall the report."""
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import AnalysisStatus, JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    class _FakeTrial:
+        def __init__(self, id_):
+            self.id = id_
+            self.analysis_status = None
+
+    trials_by_id = {"t1": _FakeTrial("t1")}
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, model, id_, with_for_update=False):
+            if model is rh.AnalyzerModel:
+                return analyzer
+            return trials_by_id.get(id_)
+
+    monkeypatch.setattr(rh, "get_session", lambda: _FakeSession())
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return [(trials_by_id["t1"], "task-t1")]
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    calls = {"n": 0}
+
+    async def never_released(tid, should_store=None):
+        calls["n"] += 1
+        return AnalysisStatus.RUNNING
+
+    monkeypatch.setattr(rh, "classify_trial_and_store", never_released)
+    monkeypatch.setattr(rh, "ANALYZER_CLAIM_POLL_SECONDS", 0)
+    monkeypatch.setattr(rh, "ANALYZER_CLAIM_WAIT_SECONDS", 0)
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    async def fake_run_eval(inputs, config, **kwargs):
+        return _fake_output_with_findings()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
+
+    await asyncio.wait_for(
+        rh.run_analyzer_generation_job("r1", worker_job_id="job-1"), 5
+    )
+
+    # Gave up on the straggler and still produced the report.
+    assert analyzer.status == JobStatus.SUCCESS
