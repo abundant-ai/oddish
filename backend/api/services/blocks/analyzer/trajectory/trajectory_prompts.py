@@ -29,3 +29,21 @@ def instructions_section(template: str, taxonomy_values: list[str]) -> str:
 
 def trajectory_section(trajectory_json: str) -> str:
     return f"<trajectory>\n{trajectory_json}\n</trajectory>"
+
+
+def trajectory_file_section(path: str, step_count: int) -> str:
+    """Point a filesystem-capable agent at the trajectory instead of inlining it.
+
+    Trajectories reach ~350k tokens at the tail of the distribution, which does
+    not fit a prompt. Handing over a path lets the agent read the file in
+    chunks and keeps the prompt a fixed small size regardless of trial length.
+    """
+    return (
+        "<trajectory>\n"
+        f"The ATIF trajectory for this trial is on disk at {path}\n"
+        f"It contains {step_count} steps under the top-level \"steps\" key; each "
+        'step carries an integer "step_id".\n'
+        "Read it (in chunks if large) before segmenting. Every step_id you "
+        "reference must come from that file.\n"
+        "</trajectory>"
+    )

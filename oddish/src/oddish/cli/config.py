@@ -33,10 +33,13 @@ def get_api_url() -> str:
 
     Resolution order:
       1. ``ODDISH_API_URL`` (full URL override)
-      2. ``ODDISH_PREVIEW_PR`` formatted into ``PREVIEW_URL_TEMPLATE``
-      3. ``DEFAULT_API_URL``
+      2. ``ODDISH_API_BASE_URL`` (sandbox/runtime-injected override)
+      3. ``ODDISH_PREVIEW_PR`` formatted into ``PREVIEW_URL_TEMPLATE``
+      4. ``DEFAULT_API_URL``
     """
-    env_url = os.environ.get("ODDISH_API_URL")
+    env_url = os.environ.get("ODDISH_API_URL") or os.environ.get(
+        "ODDISH_API_BASE_URL"
+    )
     if env_url:
         return env_url
     pr = os.environ.get("ODDISH_PREVIEW_PR", "").strip()

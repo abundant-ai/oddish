@@ -131,6 +131,7 @@ async def classify_trial_and_store(
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
+        trial_org_id = trial.org_id
         # Pre-trial findings live on the audited task version; prefer the
         # version this trial ran against, falling back to the task's current
         # version for older trials that predate version stamping.
@@ -255,6 +256,7 @@ async def classify_trial_and_store(
                 analyzer_block_context={
                     "trial_id": trial_id,
                     "task_id": task_id,
+                    "org_id": trial_org_id,
                     "prompt_key": (
                         PromptKind.QA_POST_TRIAL.value
                         if post_trial_prompt_version is not None

@@ -13,6 +13,7 @@ from harbor.models.trial.result import TrialResult
 from oddish.config import (
     ANALYSIS_MODEL,
     BEDROCK_ENV_VARS,
+    api_base_url_for_modal_app,
     looks_like_bedrock_model_id,
     settings,
     to_anthropic_api_model_id,
@@ -38,6 +39,63 @@ _CLASSIFY_PROMPT = _CLASSIFY_PROMPT_PATH.read_text()
 
 _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
+
+
+def parse_claude_code_result(raw: str) -> Any:
+    """Extract the final Claude Code result from concatenated stream events.
+
+    Shared by every sandbox-substrate block: claude-code in stream mode emits a
+    run of JSON objects, and only the last ``result`` event carries the answer.
+    """
+    decoder = json.JSONDecoder()
+    offset = 0
+    events: list[dict] = []
+    while offset < len(raw):
+        event, offset = decoder.raw_decode(raw, offset)
+        if isinstance(event, dict):
+            events.append(event)
+        while offset < len(raw) and raw[offset].isspace():
+            offset += 1
+    for event in reversed(events):
+        if event.get("type") != "result":
+            continue
+        # Not `.get(a, .get(b))`: claude-code emits an explicit
+        # "structured_output": null when schema validation produced nothing,
+        # and that must still fall through to the free-text result.
+        result = event.get("structured_output")
+        if result is None:
+            result = event.get("result")
+        if isinstance(result, dict):
+            return result
+        if isinstance(result, str):
+            from oddish.blocks.block import Block
+
+            return json.loads(Block.strip_code_fences(result))
+    raise RuntimeError("sandbox block returned no structured result event")
+
+
+def build_trajectory_index_context(trial_id: str | None) -> str | None:
+    """Tell the classifier the trajectory is queryable in parts, or None.
+
+    Only rendered when the sandbox has the oddish CLI and a trial to query. The
+    component index spans every step, so working from it is full coverage at a
+    coarse grain -- which is what lets the classifier stop reading all of
+    ``agent/`` without going blind to anything.
+    """
+    if not trial_id:
+        return None
+    return (
+        "This trajectory is also segmented and queryable with the `oddish` CLI, "
+        "installed here:\n"
+        f"  oddish trajectory summary {trial_id}       # prose summary + star steps\n"
+        f"  oddish trajectory components {trial_id}    # labelled index of every step\n"
+        f"  oddish trajectory steps {trial_id} -c N    # full content of component N\n"
+        "Start with `summary`, then `components`. The index accounts for every "
+        "step, so it gives you complete coverage cheaply; use it to choose which "
+        "components to read in full instead of reading all of `agent/`. Read a "
+        "component in full whenever your verdict depends on what happened inside "
+        "it, and say so in `evidence` if the index alone drove a conclusion."
+    )
 
 
 def _classification_schema_json() -> str:
@@ -170,6 +228,7 @@ def build_classify_prompt(
     trial_agent_context: str,
     pre_trial_context: str | None = None,
     file_access_context: str | None = None,
+    trajectory_index_context: str | None = None,
     template: str | None = None,
 ) -> str:
     """Render the classification prompt.
@@ -177,6 +236,9 @@ def build_classify_prompt(
     Extracted so the pre-trial/file-access placeholder wiring is unit-testable
     without spawning the Claude CLI subprocess. ``template`` overrides the
     packaged prompt (cloud QA passes the latest QA_POST_TRIAL registry version).
+
+    Every placeholder is always supplied, so a registry prompt that predates one
+    renders unchanged rather than raising.
     """
     return (template or _CLASSIFY_PROMPT).format(
         result=result_str,
@@ -185,6 +247,7 @@ def build_classify_prompt(
         trial_agent_context=trial_agent_context,
         pre_trial_context=pre_trial_context or "(none)",
         file_access_context=file_access_context or "(none)",
+        trajectory_index_context=trajectory_index_context or "",
     )
 
 
@@ -321,6 +384,16 @@ class TrialClassifier:
             trial_dir, pre_trial_items, file_access
         )
 
+        # The CLI only exists on the sandbox substrate, and only with an org to
+        # scope its read key to. Offering it otherwise sends the agent chasing
+        # a command that is not installed.
+        context = analyzer_block_context or {}
+        trajectory_index_context = None
+        if settings.post_trial_sandbox_enabled and context.get("org_id"):
+            trajectory_index_context = build_trajectory_index_context(
+                context.get("trial_id")
+            )
+
         prompt = build_classify_prompt(
             template=self._prompt_template,
             result_str=result_str,
@@ -329,6 +402,7 @@ class TrialClassifier:
             trial_agent_context=_get_trial_agent_context(trial_agent),
             pre_trial_context=pre_trial_context,
             file_access_context=file_access_context,
+            trajectory_index_context=trajectory_index_context,
         )
 
         try:
@@ -481,6 +555,12 @@ class TrialClassifier:
             # normalization for the local subprocess. An un-normalized Bedrock
             # inference-profile id reaches claude-code as an unknown model.
             block_model = to_anthropic_api_model_id(self._model) or self._model
+            # With a scoped read key the classifier can pull the trajectory in
+            # parts (`oddish trajectory summary|components|steps`) instead of
+            # reading the whole uploaded trajectory.json. Without an org_id
+            # there is nothing to scope a key to, so it falls back to the
+            # uploaded copy -- correct, just more tokens.
+            org_id = context.get("org_id")
             sandbox_config = SandboxConfig(
                 session_id="post-trial",
                 files_to_upload={
@@ -491,6 +571,11 @@ class TrialClassifier:
                     f"tar -xzf /tmp/oddish-post-trial.tar.gz -C {sandbox_root}",
                 ),
                 json_schema=_classification_schema_json(),
+                install_oddish_cli=org_id is not None,
+                oddish_org_id=org_id,
+                oddish_api_base_url=(
+                    settings.public_api_base_url or api_base_url_for_modal_app()
+                ),
             )
             client_factory = None
 
@@ -530,32 +615,7 @@ class TrialClassifier:
 
     @staticmethod
     def _parse_sandbox_block_output(raw: str) -> Any:
-        """Extract the final Claude Code result from concatenated stream events."""
-        decoder = json.JSONDecoder()
-        offset = 0
-        events: list[dict] = []
-        while offset < len(raw):
-            event, offset = decoder.raw_decode(raw, offset)
-            if isinstance(event, dict):
-                events.append(event)
-            while offset < len(raw) and raw[offset].isspace():
-                offset += 1
-        for event in reversed(events):
-            if event.get("type") != "result":
-                continue
-            # Not `.get(a, .get(b))`: claude-code emits an explicit
-            # "structured_output": null when schema validation produced nothing,
-            # and that must still fall through to the free-text result.
-            result = event.get("structured_output")
-            if result is None:
-                result = event.get("result")
-            if isinstance(result, dict):
-                return result
-            if isinstance(result, str):
-                from oddish.blocks.block import Block
-
-                return json.loads(Block.strip_code_fences(result))
-        raise RuntimeError("sandbox classifier returned no structured result event")
+        return parse_claude_code_result(raw)
 
     def _stash_usage(self, payload: dict, model_id: str | None) -> None:
         self.last_usage = parse_cli_usage(payload, model_id)

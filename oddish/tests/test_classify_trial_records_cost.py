@@ -101,6 +101,7 @@ async def test_handler_does_not_duplicate_analyzer_block_cost(session, monkeypat
 
     # Stub the classifier so no real subprocess runs, and set last_usage.
     async def _fake_classify(self, *, trial_dir, task_dir, trial_agent, **kwargs):
+        assert kwargs["analyzer_block_context"]["org_id"] == "org-x"
         self.last_usage = AnalysisUsage(
             cost_usd=0.05, input_tokens=100, output_tokens=20,
             cache_read_tokens=0, cache_write_tokens=0,

@@ -134,9 +134,19 @@ class TrajectoryBlock(Block):
 
     output_schema = TrajectoryOutput
 
-    def __init__(self, trajectory_input: TrajectoryInput, *, instructions_template: str) -> None:
+    def __init__(
+        self,
+        trajectory_input: TrajectoryInput,
+        *,
+        instructions_template: str,
+        trajectory_path: str | None = None,
+    ) -> None:
         self.trajectory_input = trajectory_input
         self._instructions_template = instructions_template
+        # When set, the trajectory is delivered as a file the agent reads
+        # rather than inlined into the prompt. Parsing is unchanged: step-id
+        # validation still runs against the in-process trajectory.
+        self._trajectory_path = trajectory_path
 
     # ---- prompt sections (build_prompt is inherited) ----
     def sections(self) -> list[dict]:
@@ -171,9 +181,12 @@ class TrajectoryBlock(Block):
         model = d.model_used or "[unavailable]"
         return tp.outcome_section(reward, verifier, model)
 
-    @staticmethod
-    def _fmt_trajectory(d: _TrajectoryIn) -> str:
+    def _fmt_trajectory(self, d: _TrajectoryIn) -> str:
         from api.services.summarize_trajectory import preprocess
+
+        if self._trajectory_path is not None:
+            steps = d.trajectory.get("steps") or []
+            return tp.trajectory_file_section(self._trajectory_path, len(steps))
         return tp.trajectory_section(json.dumps(preprocess(d.trajectory)))
 
     # ---- parsing (parse is inherited; this filters elements) ----
