@@ -354,6 +354,7 @@ def test_summary_block_carries_the_triggering_user():
         triggered_by_user_id="viewer-7",
         prompt_template="INSTRUCTIONS",
         prompt_version=1,
+        prompt_id="prompt-test-id",
     )
     assert block.triggered_by_user_id == "viewer-7"
 
@@ -387,6 +388,7 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
             triggered_by_user_id="viewer-7",
             prompt_template="INSTRUCTIONS",
             prompt_version=1,
+            prompt_id="prompt-test-id",
         )
     except _StopBeforeRun:
         pass

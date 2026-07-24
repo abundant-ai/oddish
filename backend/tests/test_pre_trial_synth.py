@@ -34,6 +34,11 @@ def test_functions_module_imports_pre_trial_synth_for_its_side_effect():
     )
 
 
+class _FakePrompt:
+    def __init__(self, id: str = "prompt_fake_id") -> None:
+        self.id = id
+
+
 class _FakePromptVersion:
     def __init__(self, content: str, version: int = 7) -> None:
         self.content = content
@@ -98,7 +103,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
             "task_id": "task_xyz",
             "trial_id": None,
         }
-        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+        return _FakePrompt(), _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
     async def fake_resolve_org_pre_trial(task_id):
         return "org_1", True
@@ -121,6 +126,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     assert _FakeAnalyzerBlock.last_kwargs["block_metadata"] == {
         "prompt_key": "QA_PRE_TRIAL",
         "prompt_version": 7,
+        "prompt_id": "prompt_fake_id",
     }
     sandbox_config = _FakeAnalyzerBlock.last_kwargs["sandbox_config"]
     assert sandbox_config.install_oddish_cli is True
@@ -138,7 +144,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
 @pytest.mark.asyncio
 async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     async def fake_resolve_prompt_core(session, key, **scope):
-        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+        return _FakePrompt(), _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
     async def fake_resolve_org_pre_trial(task_id):
         return "org_1", True
@@ -176,7 +182,7 @@ async def test_synth_returns_before_provisioning_when_org_disabled(monkeypatch):
 @pytest.mark.asyncio
 async def test_synth_raises_when_org_id_unresolved(monkeypatch):
     async def fake_resolve_prompt_core(session, key, **scope):
-        return None, _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
+        return _FakePrompt(), _FakePromptVersion("Audit {task_id}. Trials: {trial_ids}")
 
     async def fake_resolve_org_pre_trial(task_id):
         return None, True
@@ -249,7 +255,7 @@ async def test_synth_falls_back_to_global_with_no_scoped_rows(monkeypatch):
     from oddish.db import PromptKind, get_session
 
     async with get_session() as session:
-        _, global_version = await get_prompt_core(
+        global_prompt, global_version = await get_prompt_core(
             session, PromptKind.QA_PRE_TRIAL.value
         )
 
@@ -266,6 +272,7 @@ async def test_synth_falls_back_to_global_with_no_scoped_rows(monkeypatch):
     assert _FakeAnalyzerBlock.last_kwargs["block_metadata"] == {
         "prompt_key": "QA_PRE_TRIAL",
         "prompt_version": global_version.version,
+        "prompt_id": global_prompt.id,
     }
     expected_prompt = global_version.content.replace(
         "{task_id}", "task_with_no_overrides"

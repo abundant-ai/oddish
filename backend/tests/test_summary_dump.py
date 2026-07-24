@@ -103,7 +103,7 @@ def _stub_prompt_registry(monkeypatch):
 
     monkeypatch.setattr(
         "api.services.summarize_trajectory._load_summary_prompt",
-        AsyncMock(return_value=("TEMPLATE", 1)),
+        AsyncMock(return_value=("TEMPLATE", 1, "prompt-test-id")),
     )
 
 
@@ -904,6 +904,7 @@ async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
         analyzer_id="tr_x",
         prompt_template="TEMPLATE",
         prompt_version=1,
+        prompt_id="prompt-test-id",
     )
     prod_kwargs = _CapturingClient.last_kwargs
 

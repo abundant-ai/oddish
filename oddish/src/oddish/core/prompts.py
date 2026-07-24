@@ -84,6 +84,15 @@ async def set_prompt_core(
             f"({prompt.scope_type!r}, {prompt.scope_id!r}), not the requested "
             f"({scope_type!r}, {scope_id!r})"
         )
+    if prompt is not None and prompt.org_id and prompt.org_id != org_id:
+        # `user` scope_id is a bare user id, not org-partitioned like task/
+        # experiment/trial ids -- without this, a user who is FULL in org B
+        # could append a version to their own ("user", user_id) row stamped
+        # org_id=A from a prior membership.
+        raise ValueError(
+            f"prompt '{kind}' at scope ({scope_type!r}, {scope_id!r}) belongs "
+            f"to org {prompt.org_id!r}, not the requesting org {org_id!r}"
+        )
     if prompt is None:
         prompt = PromptModel(
             kind=kind,

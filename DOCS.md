@@ -62,6 +62,19 @@ historical version. Manage them with `oddish prompt list`,
 and `oddish prompt diff KIND 2 3`. Editing appends a new version, which is
 live immediately (latest always wins; there is no activation step).
 
+Every prompt is also scopeable — org, user, experiment, task, or trial, on
+top of the installation-wide default — via `--org`, `--user`, `--task ID`,
+`--experiment ID`, `--trial ID`, or `--global` on any `prompt` subcommand.
+`set`/`upload` default to `--org` (there's rarely a reason to overwrite the
+global default by accident); `get`, `view`, `versions`, and `diff` default
+to `--global` instead, matching the long-standing unscoped lookup every
+existing caller expects. That means `oddish prompt set KIND -f x.md`
+followed by a bare `oddish prompt view KIND` does **not** round-trip — the
+`set` wrote the org row, the `view` reads the global one. Pass the matching
+flag (`--org` here) to read back what you just wrote. Every read command
+prints the scope it actually resolved (`scope=org:acme`, `scope=global`,
+...) so which row you're looking at is never a guess.
+
 The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
 authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
 oracle/nop and lazy-solution experiments. The worker mints a short-lived

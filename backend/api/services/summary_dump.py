@@ -170,7 +170,7 @@ async def summarize_trial(
         # Use the same registry lookup as production; there is no baked-in
         # fallback that can drift from the live prompt.
         async with get_session() as session:
-            prompt_template, prompt_version = await _load_summary_prompt(session)
+            prompt_template, prompt_version, prompt_id = await _load_summary_prompt(session)
         block = build_summary_block(
             trajectory,
             task_context,
@@ -178,6 +178,7 @@ async def summarize_trial(
             model=model,
             prompt_template=prompt_template,
             prompt_version=prompt_version,
+            prompt_id=prompt_id,
         )
     except asyncio.CancelledError:
         raise

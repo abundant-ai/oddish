@@ -12,6 +12,7 @@ from rich.console import Console
 from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
 
 console = Console()
+err_console = Console(stderr=True)
 prompt_app = typer.Typer(
     help="Manage versioned analyzer prompts (latest version is always live).",
     no_args_is_help=True,
@@ -27,6 +28,12 @@ def _resolve(api_url: str | None) -> str:
 def _fail(resp: httpx.Response) -> None:
     console.print(f"[red]Failed ({resp.status_code}):[/red] {resp.text}")
     raise typer.Exit(1)
+
+
+def _scope_label(scope_type: str | None, scope_id: str | None) -> str:
+    """Render a (scope_type, scope_id) pair the way ``upload`` already does,
+    so every command that surfaces scope agrees on one format."""
+    return f"{scope_type or 'global'}{':' + scope_id if scope_id else ''}"
 
 
 def resolve_scope_flags(
@@ -154,6 +161,12 @@ def get_prompt(
     if json_output:
         console.print_json(_json.dumps(data))
     else:
+        # Scope goes to stderr so `oddish prompt get KIND > file.md` still
+        # captures pure content -- but it's always on screen: a --global
+        # default and an org write silently diverge otherwise.
+        err_console.print(
+            f"[dim]scope={_scope_label(data.get('scope_type'), data.get('scope_id'))}[/dim]"
+        )
         console.print(data.get("content", ""))
 
 
@@ -185,7 +198,8 @@ def view_prompt(
     prompt = resp.json()
     usage = prompt.get("usage") or {}
     console.print(
-        f"{prompt['kind']}  (id {prompt['id']})  latest v{prompt.get('latest_version')}"
+        f"{prompt['kind']}  (id {prompt['id']})  latest v{prompt.get('latest_version')}  "
+        f"scope={_scope_label(prompt.get('scope_type'), prompt.get('scope_id'))}"
     )
     if prompt.get("description"):
         console.print(prompt["description"])
@@ -257,8 +271,7 @@ def upload_prompt(
     data = resp.json()
     console.print(
         f"[green]Uploaded {key_or_id}[/green] "
-        f"scope={data.get('scope_type') or 'global'}"
-        f"{':' + data['scope_id'] if data.get('scope_id') else ''} "
+        f"scope={_scope_label(data.get('scope_type'), data.get('scope_id'))} "
         f"latest_version={data.get('latest_version')}"
     )
 
@@ -288,6 +301,12 @@ def versions(
         resp = client.get(f"{url}/prompts/{key_or_id}/versions", params=params)
     if resp.status_code != 200:
         _fail(resp)
+    # The versions endpoint returns bare version rows with no scope field, so
+    # this is the scope we asked for, not one echoed back by the server --
+    # exact for a kind ref; a raw id ref ignores scope filtering entirely.
+    console.print(
+        f"[dim]scope={_scope_label(params['scope'], params.get('scope_id'))}[/dim]"
+    )
     for v in resp.json():
         console.print(
             f"v{v['version']:<4} {v.get('created_at', '')}  {v.get('created_by') or ''}"
@@ -329,18 +348,39 @@ def diff(
     kind: str,
     version_a: int,
     version_b: int,
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """Unified diff between two versions of a prompt."""
     url = _resolve(api_url)
+    scope_params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        ra = client.get(f"{url}/prompts/{kind}", params={"version": version_a})
-        rb = client.get(f"{url}/prompts/{kind}", params={"version": version_b})
+        ra = client.get(
+            f"{url}/prompts/{kind}", params={**scope_params, "version": version_a}
+        )
+        rb = client.get(
+            f"{url}/prompts/{kind}", params={**scope_params, "version": version_b}
+        )
     for r in (ra, rb):
         if r.status_code != 200:
             _fail(r)
     a = ra.json().get("content", "").splitlines(keepends=True)
     b = rb.json().get("content", "").splitlines(keepends=True)
+    console.print(
+        f"[dim]scope={_scope_label(scope_params['scope'], scope_params.get('scope_id'))}[/dim]"
+    )
     for line in difflib.unified_diff(
         a, b, fromfile=f"{kind}@v{version_a}", tofile=f"{kind}@v{version_b}"
     ):

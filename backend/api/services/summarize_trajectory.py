@@ -156,11 +156,14 @@ async def _load_summary_prompt(
     experiment_id: str | None = None,
     task_id: str | None = None,
     trial_id: str | None = None,
-) -> tuple[str, int]:
+) -> tuple[str, int, str]:
     """Load the latest trajectory-summary prompt, seeding built-ins on a miss.
 
     Resolves the narrowest scoped override for the given context, falling
-    back to the global prompt when none exists.
+    back to the global prompt when none exists. Returns ``(content, version,
+    prompt_id)`` -- the id is required by callers so the block they build can
+    stamp ``prompt_id`` and be attributed to the resolved row, not the global
+    NULL-prompt_id fallback.
     """
     scope = dict(
         org_id=org_id,
@@ -170,7 +173,7 @@ async def _load_summary_prompt(
         trial_id=trial_id,
     )
     try:
-        _, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
+        prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
     except HTTPException:
         try:
             # Keep a lost concurrent-seed race inside a savepoint. Rolling back
@@ -178,13 +181,13 @@ async def _load_summary_prompt(
             async with session.begin_nested():
                 await seed_prompts(session)
             await session.commit()
-            _, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
+            prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
         except Exception as exc:
             # An immediate unique constraint is raised inside the savepoint.
             # Its rollback leaves the outer transaction and loaded ORM state
             # intact, so the winner's row can be read without a full rollback.
             try:
-                _, version = await resolve_prompt_core(
+                prompt, version = await resolve_prompt_core(
                     session, SUMMARY_PROMPT_KEY, **scope
                 )
             except Exception:
@@ -192,7 +195,7 @@ async def _load_summary_prompt(
                     f"prompt '{SUMMARY_PROMPT_KEY}' is not registered and "
                     f"seeding failed: {exc}"
                 ) from exc
-    return version.content, version.version
+    return version.content, version.version, prompt.id
 
 
 def build_summary_block(
@@ -204,6 +207,7 @@ def build_summary_block(
     triggered_by_user_id: str | None = None,
     prompt_template: str,
     prompt_version: int,
+    prompt_id: str,
 ):
     """Build the trajectory-summary ``AnalyzerBlock``.
 
@@ -247,6 +251,7 @@ def build_summary_block(
             "model": model,
             "prompt_key": SUMMARY_PROMPT_KEY,
             "prompt_version": prompt_version,
+            "prompt_id": prompt_id,
         },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
@@ -263,6 +268,7 @@ async def generate(
     triggered_by_user_id: str | None = None,
     prompt_template: str,
     prompt_version: int,
+    prompt_id: str,
 ) -> dict:
     """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
 
@@ -280,6 +286,7 @@ async def generate(
         triggered_by_user_id=triggered_by_user_id,
         prompt_template=prompt_template,
         prompt_version=prompt_version,
+        prompt_id=prompt_id,
     )
     try:
         out = await block.run()
@@ -403,7 +410,7 @@ async def get_or_generate_summary(
         if fresh is not None:
             return fresh
 
-        prompt_template, prompt_version = await _load_summary_prompt(
+        prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
             session,
             org_id=trial.org_id,
             user_id=trial.billed_user_id,
@@ -426,6 +433,7 @@ async def get_or_generate_summary(
             triggered_by_user_id=triggered_by_user_id,
             prompt_template=prompt_template,
             prompt_version=prompt_version,
+            prompt_id=prompt_id,
         )
 
         # Mirror into the trials column for the graph builder + analyzer-input

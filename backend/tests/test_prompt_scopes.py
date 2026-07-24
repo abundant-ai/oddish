@@ -250,6 +250,32 @@ async def test_set_by_id_rejects_scope_mismatch(scoped_kind):
 
 
 @pytest.mark.asyncio
+async def test_set_rejects_cross_org_write_to_user_scoped_row(scoped_kind):
+    # scope_id for "user" is a bare user id, not org-partitioned the way
+    # task/experiment/trial ids are -- so (scope_type, scope_id) alone can
+    # resolve to the SAME row for a user who has since moved to (or holds
+    # FULL access in) a different org. Without the org_id check, that write
+    # would silently append to the other org's row.
+    await _write(scoped_kind, "org_a v1", scope_type="user", scope_id="u1", org_id="org_a")
+    async with get_session() as session:
+        with pytest.raises(ValueError):
+            await set_prompt_core(
+                session,
+                kind=scoped_kind,
+                content="hijacked",
+                scope_type="user",
+                scope_id="u1",
+                org_id="org_b",
+            )
+    async with get_session() as session:
+        _, ver = await get_prompt_core(
+            session, scoped_kind, scope_type="user", scope_id="u1"
+        )
+    assert ver.version == 1
+    assert ver.content == "org_a v1"
+
+
+@pytest.mark.asyncio
 async def test_scoped_and_global_versions_increment_independently(scoped_kind):
     await _write(scoped_kind, "g1")
     await _write(scoped_kind, "g2")

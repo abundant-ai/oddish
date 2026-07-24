@@ -99,7 +99,7 @@ async def synthesize_task_pre_trial(
     async with get_session() as session:
         # Pre-trial audits a task version, not a single trial or user, so only
         # org/task scope is meaningful here.
-        _, ver = await resolve_prompt_core(
+        prompt, ver = await resolve_prompt_core(
             session,
             PromptKind.QA_PRE_TRIAL.value,
             org_id=org_id,
@@ -110,6 +110,7 @@ async def synthesize_task_pre_trial(
         )
         prompt_template = ver.content
         prompt_version = ver.version
+        prompt_id = prompt.id
 
     block_obj = PreTrialBlock(
         task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
@@ -142,6 +143,7 @@ async def synthesize_task_pre_trial(
         block_metadata={
             "prompt_key": PromptKind.QA_PRE_TRIAL.value,
             "prompt_version": prompt_version,
+            "prompt_id": prompt_id,
         },
     )
     result = await asyncio.wait_for(

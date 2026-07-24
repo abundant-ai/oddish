@@ -23,6 +23,7 @@ from api.services.summarize_trajectory import (
 _PROMPT_KWARGS = {
     "prompt_template": "INSTRUCTIONS {{taxonomy}}",
     "prompt_version": 1,
+    "prompt_id": "prompt-test-id",
 }
 
 
@@ -416,7 +417,7 @@ async def test_get_or_generate_persists_on_miss():
         patch(
             "api.services.summarize_trajectory._load_summary_prompt",
             new_callable=AsyncMock,
-            return_value=("INSTRUCTIONS {{taxonomy}}", 1),
+            return_value=("INSTRUCTIONS {{taxonomy}}", 1, "prompt-test-id"),
         ),
         patch(
             "api.services.summarize_trajectory.read_trial_trajectory",
@@ -430,12 +431,13 @@ async def test_get_or_generate_persists_on_miss():
             "api.services.summarize_trajectory.generate",
             new_callable=AsyncMock,
             return_value=fresh,
-        ),
+        ) as gen,
     ):
         result = await get_or_generate_summary(session, trial)
     assert result == fresh
     session.execute.assert_awaited_once()  # the mirror UPDATE
     session.commit.assert_awaited_once()
+    assert gen.await_args.kwargs["prompt_id"] == "prompt-test-id"
 
 
 @pytest.mark.asyncio
@@ -470,7 +472,7 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
         patch(
             "api.services.summarize_trajectory._load_summary_prompt",
             new_callable=AsyncMock,
-            return_value=("INSTRUCTIONS {{taxonomy}}", 1),
+            return_value=("INSTRUCTIONS {{taxonomy}}", 1, "prompt-test-id"),
         ),
         patch(
             "api.services.summarize_trajectory.read_trial_trajectory",
@@ -680,6 +682,7 @@ async def test_generate_and_build_summary_block_agree(monkeypatch):
     assert captured["block"].block_metadata["model"] == resolve_summary_model()
     assert captured["block"].block_metadata["prompt_key"] == "TRAJECTORY_SUMMARY"
     assert captured["block"].block_metadata["prompt_version"] == 1
+    assert captured["block"].block_metadata["prompt_id"] == "prompt-test-id"
 
 
 @pytest.mark.asyncio
@@ -718,7 +721,7 @@ async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
                 )
             )
         ).scalar_one()
-        content, version = await _load_summary_prompt(session)
+        content, version, _prompt_id = await _load_summary_prompt(session)
         assert sentinel.kind == PromptKind.QA_PRE_TRIAL.value
 
     assert version == 1
@@ -748,7 +751,7 @@ async def test_load_summary_prompt_prefers_task_scoped_override():
     org_id = "org_summary_scope_test"
 
     async with get_session() as session:
-        await set_prompt_core(
+        scoped_version = await set_prompt_core(
             session,
             kind=SUMMARY_PROMPT_KEY,
             content="SCOPED TASK PROMPT {{taxonomy}}",
@@ -757,10 +760,11 @@ async def test_load_summary_prompt_prefers_task_scoped_override():
             org_id=org_id,
         )
         await session.commit()
+        scoped_prompt_id = scoped_version.prompt_id
 
     try:
         async with get_session() as session:
-            content, _version = await _load_summary_prompt(
+            content, _version, prompt_id = await _load_summary_prompt(
                 session,
                 org_id=org_id,
                 user_id=None,
@@ -769,6 +773,7 @@ async def test_load_summary_prompt_prefers_task_scoped_override():
                 trial_id=None,
             )
         assert content == "SCOPED TASK PROMPT {{taxonomy}}"
+        assert prompt_id == scoped_prompt_id
     finally:
         async with get_session() as session:
             await session.execute(
@@ -793,8 +798,10 @@ async def test_load_summary_prompt_falls_back_to_global_with_no_scoped_rows():
     from oddish.db import get_session
 
     async with get_session() as session:
-        _, global_version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
-        content, version = await _load_summary_prompt(
+        global_prompt, global_version = await get_prompt_core(
+            session, SUMMARY_PROMPT_KEY
+        )
+        content, version, prompt_id = await _load_summary_prompt(
             session,
             org_id="org_with_no_overrides",
             user_id="user_with_no_overrides",
@@ -805,6 +812,7 @@ async def test_load_summary_prompt_falls_back_to_global_with_no_scoped_rows():
 
     assert content == global_version.content
     assert version == global_version.version
+    assert prompt_id == global_prompt.id
 
 
 @pytest.mark.asyncio
@@ -832,7 +840,9 @@ async def test_get_or_generate_summary_passes_trial_scope_to_prompt_loader():
     async def fake_ctx(_t):
         return _minimal_ctx()
 
-    load_prompt = AsyncMock(return_value=("INSTRUCTIONS {{taxonomy}}", 1))
+    load_prompt = AsyncMock(
+        return_value=("INSTRUCTIONS {{taxonomy}}", 1, "prompt-test-id")
+    )
 
     with (
         patch(
@@ -868,3 +878,100 @@ async def test_get_or_generate_summary_passes_trial_scope_to_prompt_loader():
         task_id="task-1",
         trial_id="t-scope-1",
     )
+
+
+# ---------------------------------------------------------------------------
+# Guard: a scoped override's block run must attribute to itself, never to the
+# global row's NULL-prompt_id fallback (finding 2 -- permanent counter
+# pollution if this regresses).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scoped_prompt_block_attributes_usage_to_override_not_global(
+    monkeypatch,
+):
+    """End-to-end through generate()/build_summary_block() with a real DB: a
+    task-scoped TRAJECTORY_SUMMARY override must produce an analyzer_blocks
+    row stamped with the override's prompt_id, counted in the override's
+    usage and NOT in the global row's usage."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from api.services.summarize_trajectory import SUMMARY_PROMPT_KEY, generate
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
+    from oddish.core.prompts import (
+        get_prompt_core,
+        get_prompt_usage_core,
+        set_prompt_core,
+    )
+    from oddish.db import PromptModel, get_session
+    from oddish.db.models import AnalyzerBlockModel
+
+    task_id = f"test_summary_usage_{uuid.uuid4().hex[:8]}"
+    org_id = "org_summary_usage_test"
+    analyzer_id = f"tr_usage_guard_{uuid.uuid4().hex[:8]}"
+
+    async with get_session() as session:
+        scoped_version = await set_prompt_core(
+            session,
+            kind=SUMMARY_PROMPT_KEY,
+            content="SCOPED USAGE {{taxonomy}}",
+            scope_type="task",
+            scope_id=task_id,
+            org_id=org_id,
+        )
+        await session.commit()
+        scoped_prompt_id = scoped_version.prompt_id
+
+    async with get_session() as session:
+        global_prompt, _ = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+        global_usage_before = await get_prompt_usage_core(session, global_prompt.id)
+
+    monkeypatch.setattr(AnalyzerBlock, "save_to_s3", AsyncMock())
+    payload = json.dumps({"summary": "s", "highlights": [], "components": []})
+    _install_fake_llm(monkeypatch, _fake_llm(payload))
+
+    try:
+        await generate(
+            _trajectory_with_steps([1]),
+            _minimal_ctx(),
+            analyzer_id=analyzer_id,
+            prompt_template="SCOPED USAGE {{taxonomy}}",
+            prompt_version=scoped_version.version,
+            prompt_id=scoped_prompt_id,
+        )
+
+        async with get_session() as session:
+            row = (
+                await session.execute(
+                    select(AnalyzerBlockModel).where(
+                        AnalyzerBlockModel.analyzer_id == analyzer_id
+                    )
+                )
+            ).scalar_one()
+            assert row.prompt_id == scoped_prompt_id
+
+            scoped_usage = await get_prompt_usage_core(session, scoped_prompt_id)
+            assert scoped_usage["total"] == 1
+
+            global_usage_after = await get_prompt_usage_core(
+                session, global_prompt.id
+            )
+            assert global_usage_after["total"] == global_usage_before["total"]
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                AnalyzerBlockModel.__table__.delete().where(
+                    AnalyzerBlockModel.analyzer_id == analyzer_id
+                )
+            )
+            await session.execute(
+                PromptModel.__table__.delete().where(
+                    PromptModel.kind == SUMMARY_PROMPT_KEY,
+                    PromptModel.scope_type == "task",
+                    PromptModel.scope_id == task_id,
+                )
+            )
+            await session.commit()
