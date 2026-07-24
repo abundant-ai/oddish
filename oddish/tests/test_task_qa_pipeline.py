@@ -12,6 +12,7 @@ synthesizes the task verdict. These tests cover:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -413,8 +414,14 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_task_qa_job_defers_verdict_for_fresh_running_claim(monkeypatch):
-    """A competing classifier claim means the verdict inputs are incomplete."""
+async def test_run_task_qa_job_waits_out_a_peer_classification_claim(monkeypatch):
+    """A peer's claim is waited out, never turned into a non-terminal exit.
+
+    Returning early on the claim would leave ``verdict_status`` RUNNING, and
+    ``QaJobHandler`` treats non-terminal as a retryable failure -- whose retry
+    resets an already-terminal verdict back to QUEUED, so a flaky
+    re-synthesis could land FAILED over the peer's completed verdict.
+    """
     task = SimpleNamespace(
         id="task-claim-owned",
         org_id="org-1",
@@ -440,13 +447,100 @@ async def test_run_task_qa_job_defers_verdict_for_fresh_running_claim(monkeypatc
     async def fake_load_live(_task_id):
         return [(trial.id, AnalysisStatus.RUNNING)]
 
+    attempts = 0
+
     async def fake_classify(_trial_id, should_store=None):
+        nonlocal attempts
         assert should_store is not None
+        attempts += 1
+        if attempts < 3:
+            return AnalysisStatus.RUNNING
+        trial.analysis_status = AnalysisStatus.SUCCESS
+        trial.analysis = {"classification": "GOOD_SUCCESS", "subtype": "Clean"}
+        return AnalysisStatus.SUCCESS
+
+    async def fake_compute_verdict(classifications, *_args, **_kwargs):
+        assert len(classifications) == 1
+        return SimpleNamespace(
+            is_good=True,
+            confidence="high",
+            primary_issue=None,
+            reasoning="peer classification landed",
+            recommendations=[],
+            task_problem_count=0,
+            agent_problem_count=0,
+            success_count=1,
+            harness_error_count=0,
+        )
+
+    monkeypatch.setattr(qa_handler, "QA_CLAIM_WAIT_POLL_SECONDS", 0)
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "classify_trial_and_store", fake_classify)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fake_compute_verdict)
+
+    await qa_handler.run_task_qa_job(task.id, queue_key="qa")
+
+    assert attempts == 3, "the peer's claim must be re-polled, not bailed on"
+    # Terminal either way: the job must never hand QaJobHandler a
+    # non-terminal verdict_status to retry.
+    assert task.verdict_status == VerdictStatus.SUCCESS
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict_finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_run_task_qa_job_stops_waiting_when_the_job_is_cancelled(monkeypatch):
+    """A cancelled job must not sit in the claim wait until the TTL."""
+    task = SimpleNamespace(
+        id="task-claim-cancelled",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="trial-claim-cancelled",
+        analysis_status=AnalysisStatus.RUNNING,
+        analysis=None,
+    )
+    # RUNNING for the job's own start-up checks, then CANCELLED once the wait
+    # begins re-checking.
+    session = _QASession(
+        task=task,
+        trials=[trial],
+        worker_status=[
+            WorkerJobStatus.RUNNING,
+            WorkerJobStatus.RUNNING,
+            WorkerJobStatus.CANCELLED,
+        ],
+    )
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return [(trial.id, AnalysisStatus.RUNNING)]
+
+    attempts = 0
+
+    async def fake_classify(_trial_id, should_store=None):
+        nonlocal attempts
+        attempts += 1
         return AnalysisStatus.RUNNING
 
     async def fail_compute_verdict(*_args, **_kwargs):
-        raise AssertionError("must not synthesize from an incomplete claim set")
+        raise AssertionError("a cancelled job must not synthesize a verdict")
 
+    monkeypatch.setattr(qa_handler, "QA_CLAIM_WAIT_POLL_SECONDS", 0)
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
     monkeypatch.setattr(
         qa_handler, "_load_live_trials_for_classification", fake_load_live
@@ -454,11 +548,10 @@ async def test_run_task_qa_job_defers_verdict_for_fresh_running_claim(monkeypatc
     monkeypatch.setattr(qa_handler, "classify_trial_and_store", fake_classify)
     monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fail_compute_verdict)
 
-    await qa_handler.run_task_qa_job(task.id, queue_key="qa")
+    await asyncio.wait_for(qa_handler.run_task_qa_job(task.id, queue_key="qa"), 5)
 
-    assert task.verdict_status == VerdictStatus.RUNNING
+    assert attempts >= 1
     assert task.verdict is None
-    assert task.verdict_finished_at is None
 
 
 @pytest.mark.asyncio

@@ -112,9 +112,11 @@ async def classify_trial_and_store(
 ) -> AnalysisStatus | None:
     """Classify one trial and store its analysis.
 
-    Returns ``RUNNING`` when another worker owns a fresh claim. Callers that
-    aggregate several classifications must treat that as an incomplete batch,
-    not as the same no-op as an already-terminal trial.
+    Returns ``RUNNING`` when another worker owns a fresh claim -- distinct from
+    the ``None`` of an already-terminal trial, because nothing was stored and
+    nothing will be until that peer finishes. Callers that aggregate several
+    classifications must wait it out rather than proceed on a partial set; see
+    ``qa_handler._classify_waiting_out_peer_claim``.
     """
     from oddish.analyze import TrialClassifier
 
