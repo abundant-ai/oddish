@@ -1,0 +1,385 @@
+"""QA/analysis spend rolled up per trial, task, and experiment.
+
+Attribution on ``analysis_costs`` is asymmetric: ``trial_classifier`` rows set
+``trial_id`` and the trial's HOME ``experiment_id`` but never ``task_id``;
+task-level QA sets only ``task_id``. So task and experiment rollups resolve
+through ``trials`` and UNION the directly-attributed rows, rather than trusting
+a single scope column.
+
+Filter parity with ``experiment_cost``: soft-deleted trials still count (the
+money was spent), soft-deleted MEMBERSHIP rows do not (the trial left the
+collection).
+"""
+
+from __future__ import annotations
+
+import sys
+import uuid
+from pathlib import Path
+
+import pytest
+from sqlalchemy import insert
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from oddish.core.endpoints.qa_cost import (  # noqa: E402
+    get_experiment_qa_cost_totals,
+    get_task_qa_costs,
+    get_trial_qa_costs,
+)
+from oddish.db.models import (  # noqa: E402
+    AnalysisCostModel,
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    TrialStatus,
+    experiment_trials,
+    generate_id,
+    utcnow,
+)
+
+_ORG = f"qacost-org-{uuid.uuid4().hex[:8]}"
+
+
+async def _fixture(session, slug: str) -> tuple[TaskModel, ExperimentModel]:
+    task = TaskModel(
+        name=f"qacost-task-{slug}-{_ORG}",
+        org_id=_ORG,
+        user="tester",
+        task_path=f"s3://tasks/qacost-{slug}",
+    )
+    session.add(task)
+    await session.flush()
+
+    experiment = ExperimentModel(
+        name=f"qacost-exp-{slug}-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(experiment)
+    await session.flush()
+    return task, experiment
+
+
+def _trial(task, experiment, *, deleted_at=None) -> TrialModel:
+    trial_id = generate_id()
+    return TrialModel(
+        id=trial_id,
+        name=trial_id,
+        task_id=task.id,
+        experiment_id=experiment.id,
+        org_id=_ORG,
+        agent="claude-code",
+        provider="anthropic",
+        queue_key="anthropic/claude-opus-4-8",
+        model="claude-opus-4-8",
+        status=TrialStatus.SUCCESS,
+        created_at=utcnow(),
+        deleted_at=deleted_at,
+    )
+
+
+def _qa_row(
+    *,
+    cost_usd: float,
+    trial_id: str | None = None,
+    task_id: str | None = None,
+    experiment_id: str | None = None,
+    job_kind: str = "trial_classifier",
+    cost_source: str = "estimated",
+) -> AnalysisCostModel:
+    return AnalysisCostModel(
+        job_kind=job_kind,
+        trial_id=trial_id,
+        task_id=task_id,
+        experiment_id=experiment_id,
+        org_id=_ORG,
+        model="claude-haiku-4-5",
+        cost_usd=cost_usd,
+        cost_source=cost_source,
+    )
+
+
+@pytest.mark.asyncio
+async def test_trial_scope_sums_per_trial(session):
+    task, experiment = await _fixture(session, "trialscope")
+    a, b = _trial(task, experiment), _trial(task, experiment)
+    session.add_all([a, b])
+    await session.flush()
+
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.004, trial_id=a.id),
+            _qa_row(cost_usd=0.006, trial_id=a.id),  # a re-classification
+            _qa_row(cost_usd=0.002, trial_id=b.id),
+        ]
+    )
+    await session.flush()
+
+    costs = await get_trial_qa_costs(session, trial_ids=[a.id, b.id], org_id=_ORG)
+
+    assert costs[a.id] == pytest.approx(0.010)
+    assert costs[b.id] == pytest.approx(0.002)
+
+
+@pytest.mark.asyncio
+async def test_trial_scope_omits_trials_with_no_qa(session):
+    """Absent, not zero -- the UI renders nothing rather than '+$0.00 QA'."""
+    task, experiment = await _fixture(session, "noqa")
+    trial = _trial(task, experiment)
+    session.add(trial)
+    await session.flush()
+
+    costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=_ORG)
+
+    assert trial.id not in costs
+
+
+@pytest.mark.asyncio
+async def test_task_scope_joins_through_trials(session):
+    """The core case: ``trial_classifier`` rows never set ``task_id``.
+
+    A rollup reading ``analysis_costs.task_id`` directly would report $0 here.
+    """
+    task, experiment = await _fixture(session, "taskjoin")
+    a, b = _trial(task, experiment), _trial(task, experiment)
+    session.add_all([a, b])
+    await session.flush()
+
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.03, trial_id=a.id),
+            _qa_row(cost_usd=0.05, trial_id=b.id),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_task_qa_costs(session, task_ids=[task.id], org_id=_ORG)
+
+    assert totals[task.id].qa_cost_usd == pytest.approx(0.08)
+    assert totals[task.id].qa_job_count == 2
+
+
+@pytest.mark.asyncio
+async def test_task_scope_unions_task_level_qa_without_double_counting(session):
+    """Task-level QA sets ``task_id`` and no ``trial_id``; both must count once."""
+    task, experiment = await _fixture(session, "taskunion")
+    trial = _trial(task, experiment)
+    session.add(trial)
+    await session.flush()
+
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.03, trial_id=trial.id),
+            _qa_row(cost_usd=0.07, task_id=task.id, job_kind="CUSTOM_QA"),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_task_qa_costs(session, task_ids=[task.id], org_id=_ORG)
+
+    assert totals[task.id].qa_cost_usd == pytest.approx(0.10)
+    assert totals[task.id].qa_job_count == 2
+
+
+@pytest.mark.asyncio
+async def test_row_with_both_trial_and_task_id_counts_once(session):
+    """After the Task 1 fix a row can carry both. It is one job, one charge."""
+    task, experiment = await _fixture(session, "bothids")
+    trial = _trial(task, experiment)
+    session.add(trial)
+    await session.flush()
+
+    session.add(_qa_row(cost_usd=0.09, trial_id=trial.id, task_id=task.id))
+    await session.flush()
+
+    totals = await get_task_qa_costs(session, task_ids=[task.id], org_id=_ORG)
+
+    assert totals[task.id].qa_cost_usd == pytest.approx(0.09)
+    assert totals[task.id].qa_job_count == 1
+
+
+@pytest.mark.asyncio
+async def test_task_scope_counts_a_soft_deleted_trials_qa(session):
+    """Same filter parity the experiment scope gets: the trial is gone from
+    the grid, the money is not. The join to ``trials`` has to opt out of the
+    soft-delete auto-filter or this silently under-reports."""
+    task, experiment = await _fixture(session, "tasksoftdel")
+    trial = _trial(task, experiment, deleted_at=utcnow())
+    session.add(trial)
+    await session.flush()
+
+    session.add(_qa_row(cost_usd=0.05, trial_id=trial.id))
+    await session.flush()
+
+    totals = await get_task_qa_costs(session, task_ids=[task.id], org_id=_ORG)
+
+    assert totals[task.id].qa_cost_usd == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_task_scope_returns_only_the_requested_tasks(session):
+    """The returned dict is keyed by ids the caller asked for, never others.
+
+    A row can name two tasks at once: ``analyzer_block``'s trial path copies
+    the block's own ``task_id`` onto a trial-subject row, so the row's
+    ``task_id`` and its trial's task need not agree. Folding the two paths into
+    one ``COALESCE(analysis_costs.task_id, trials.task_id)`` charges whichever
+    won the coalesce -- here handing back a task the caller never asked about
+    and $0 for the one it did.
+    """
+    task_a, experiment = await _fixture(session, "leak-a")
+    task_b, _experiment_b = await _fixture(session, "leak-b")
+    trial = _trial(task_a, experiment)
+    session.add(trial)
+    await session.flush()
+
+    session.add(_qa_row(cost_usd=0.11, trial_id=trial.id, task_id=task_b.id))
+    await session.flush()
+
+    totals = await get_task_qa_costs(session, task_ids=[task_a.id], org_id=_ORG)
+
+    assert set(totals) == {task_a.id}
+    assert totals[task_a.id].qa_cost_usd == pytest.approx(0.11)
+
+
+@pytest.mark.asyncio
+async def test_experiment_scope_counts_gathered_trials_but_not_as_owned(session):
+    """``qa_cost_usd`` covers member trials; ``owned_qa_cost_usd`` only homed
+    ones -- mirroring the agent-cost tile's two scopes."""
+    task, home = await _fixture(session, "gathered-home")
+    _task2, collection = await _fixture(session, "gathered-coll")
+
+    homed = _trial(task, collection)
+    gathered = _trial(task, home)
+    session.add_all([homed, gathered])
+    await session.flush()
+
+    await session.execute(
+        insert(experiment_trials).values(
+            experiment_id=collection.id, trial_id=gathered.id
+        )
+    )
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.02, trial_id=homed.id),
+            _qa_row(cost_usd=0.05, trial_id=gathered.id),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_qa_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+
+    assert totals.qa_cost_usd == pytest.approx(0.07)
+    assert totals.owned_qa_cost_usd == pytest.approx(0.02)
+
+
+@pytest.mark.asyncio
+async def test_owned_follows_the_trial_home_not_the_row_label(session):
+    """When a row has a trial, its trial's home decides ``owned`` -- the row's
+    own ``experiment_id`` does not.
+
+    ``owned_*`` is the number that stays additive across experiments, so a row
+    naming this experiment while its trial is homed elsewhere must not be
+    charged here as owned: the home experiment already reports it. Only
+    trial-less rows fall back to the row's label.
+    """
+    task, home = await _fixture(session, "ownedlabel-home")
+    _task2, other = await _fixture(session, "ownedlabel-other")
+
+    trial = _trial(task, home)
+    session.add(trial)
+    await session.flush()
+
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.03, trial_id=trial.id, experiment_id=other.id),
+            _qa_row(cost_usd=0.06, experiment_id=other.id, job_kind="CUSTOM_QA"),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_qa_cost_totals(
+        session, experiment_id=other.id, org_id=_ORG
+    )
+
+    assert totals.qa_cost_usd == pytest.approx(0.09)
+    assert totals.owned_qa_cost_usd == pytest.approx(0.06)
+    assert totals.owned_qa_job_count == 1
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_trial_still_counts(session):
+    """Deleting a trial removes it from the view; it does not refund it."""
+    task, experiment = await _fixture(session, "softdel")
+    trial = _trial(task, experiment, deleted_at=utcnow())
+    session.add(trial)
+    await session.flush()
+
+    session.add(_qa_row(cost_usd=0.04, trial_id=trial.id))
+    await session.flush()
+
+    totals = await get_experiment_qa_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    assert totals.qa_cost_usd == pytest.approx(0.04)
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_analysis_cost_row_is_excluded(session):
+    task, experiment = await _fixture(session, "softdelcost")
+    trial = _trial(task, experiment)
+    session.add(trial)
+    await session.flush()
+
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.04, trial_id=trial.id),
+            AnalysisCostModel(
+                job_kind="trial_classifier",
+                trial_id=trial.id,
+                org_id=_ORG,
+                model="claude-haiku-4-5",
+                cost_usd=99.0,
+                cost_source="estimated",
+                deleted_at=utcnow(),
+            ),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_qa_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    assert totals.qa_cost_usd == pytest.approx(0.04)
+
+
+@pytest.mark.asyncio
+async def test_cost_source_flags_track_native_and_estimated(session):
+    task, experiment = await _fixture(session, "sources")
+    trial = _trial(task, experiment)
+    session.add(trial)
+    await session.flush()
+
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.01, trial_id=trial.id, cost_source="native"),
+            _qa_row(cost_usd=0.02, trial_id=trial.id, cost_source="estimated"),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_qa_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    assert totals.qa_has_native is True
+    assert totals.qa_has_estimated is True
+
+
+@pytest.mark.asyncio
+async def test_empty_id_list_returns_empty_without_querying(session):
+    assert await get_trial_qa_costs(session, trial_ids=[], org_id=_ORG) == {}
+    assert await get_task_qa_costs(session, task_ids=[], org_id=_ORG) == {}
