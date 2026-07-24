@@ -72,7 +72,7 @@ from oddish.schemas import (
     UserTagRef,
 )
 from oddish.core.cost_basis import not_combine_copy_filter
-from oddish.core.endpoints.qa_cost import get_task_qa_costs
+from oddish.core.endpoints.qa_cost import get_task_qa_costs, get_trial_qa_costs
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -601,6 +601,13 @@ async def list_experiment_slim_tasks(
         .all()
     )
 
+    # One query for the whole page's trials, not one per trial: this is the
+    # grid's per-trial QA sidecar, and the grid can page thousands of trials.
+    page_trial_ids = [trial.id for task in tasks for trial in task.trials]
+    qa_costs_by_trial_id = await get_trial_qa_costs(
+        session, trial_ids=page_trial_ids, org_id=org_id
+    )
+
     build_started_at = now()
     response = [
         build_slim_task_status_response(
@@ -608,6 +615,7 @@ async def list_experiment_slim_tasks(
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
+            qa_costs_by_trial_id=qa_costs_by_trial_id,
         )
         for task in tasks
     ]

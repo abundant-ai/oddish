@@ -72,6 +72,7 @@ import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -840,6 +841,10 @@ export function TrialDetailPanel({
                             </span>
                           );
                         })()}
+                      <QaCostSuffix
+                        costUsd={trial.qa_cost_usd}
+                        title="QA/analysis spend for this trial. Not included in the cost figure."
+                      />
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (

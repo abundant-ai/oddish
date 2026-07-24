@@ -147,6 +147,10 @@ export interface Trial {
   tool_counts?: Record<string, number> | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  // QA/analysis spend for this trial. Null/undefined = not resolved by the
+  // endpoint that served this trial (most do not) -- distinct from 0, which
+  // would mean "resolved, and there was no QA".
+  qa_cost_usd?: number | null;
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;

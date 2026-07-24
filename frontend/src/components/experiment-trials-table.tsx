@@ -57,6 +57,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import { costEstimateMarks, formatCostUsd, sumTaskTrialCost } from "@/lib/format";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
@@ -2309,10 +2310,11 @@ export function ExperimentTrialsTable({
                               return (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <span className="inline-flex shrink-0 items-center font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
+                                    <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
                                       {marks.prefix}
                                       {formatCostUsd(c.costUsd)}
                                       {marks.suffix}
+                                      <QaCostSuffix costUsd={c.qaCostUsd} />
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent>

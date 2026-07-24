@@ -27,6 +27,12 @@ from oddish.core.endpoints.qa_cost import (  # noqa: E402
     get_task_qa_costs,
     get_trial_qa_costs,
 )
+from oddish.core.endpoints.tasks_query import list_experiment_slim_tasks  # noqa: E402
+from oddish.core.endpoints.trials import (  # noqa: E402
+    get_trial_by_index_core,
+    get_trial_response_for_org_core,
+)
+from oddish.core.sharing.helpers import list_experiment_trials_for_org  # noqa: E402
 from oddish.db.models import (  # noqa: E402
     AnalysisCostModel,
     ExperimentModel,
@@ -35,6 +41,7 @@ from oddish.db.models import (  # noqa: E402
     TrialStatus,
     experiment_trials,
     generate_id,
+    task_experiments,
     utcnow,
 )
 
@@ -406,3 +413,155 @@ async def test_cost_source_flags_track_native_and_estimated(session):
 async def test_empty_id_list_returns_empty_without_querying(session):
     assert await get_trial_qa_costs(session, trial_ids=[], org_id=_ORG) == {}
     assert await get_task_qa_costs(session, task_ids=[], org_id=_ORG) == {}
+
+
+@pytest.mark.asyncio
+async def test_trial_costs_batched_for_a_page_of_ids(session):
+    """One query per page of trials, not one per trial.
+
+    The paginated trial list must not gain an N+1; this pins the batch API
+    that the serializer is required to use.
+    """
+    task, experiment = await _fixture(session, "batch")
+    trials = [_trial(task, experiment) for _ in range(5)]
+    session.add_all(trials)
+    await session.flush()
+
+    session.add_all(
+        [_qa_row(cost_usd=0.01, trial_id=t.id) for t in trials[:3]]
+    )
+    await session.flush()
+
+    costs = await get_trial_qa_costs(
+        session, trial_ids=[t.id for t in trials], org_id=_ORG
+    )
+
+    assert len(costs) == 3
+    assert all(costs[t.id] == pytest.approx(0.01) for t in trials[:3])
+    assert all(t.id not in costs for t in trials[3:])
+
+
+# =============================================================================
+# Task 5: qa_cost_usd surfaced on the trial-detail and trials-table responses
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_trial_detail_by_id_populates_qa_cost_usd(session):
+    """``GET /trials/{trial_id}`` -- the trial detail panel's fetch."""
+    task, experiment = await _fixture(session, "detail-byid")
+    with_qa, without_qa = _trial(task, experiment), _trial(task, experiment)
+    session.add_all([with_qa, without_qa])
+    await session.flush()
+    session.add(_qa_row(cost_usd=0.03, trial_id=with_qa.id))
+    await session.flush()
+
+    priced = await get_trial_response_for_org_core(
+        session, trial_id=with_qa.id, org_id=_ORG
+    )
+    unpriced = await get_trial_response_for_org_core(
+        session, trial_id=without_qa.id, org_id=_ORG
+    )
+
+    assert priced.qa_cost_usd == pytest.approx(0.03)
+    # Absent, not zero -- the UI renders nothing rather than "+$0.00 QA".
+    assert unpriced.qa_cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_trial_detail_by_index_populates_qa_cost_usd(session):
+    """``GET /tasks/{task_id}/trials/{index}`` -- the other trial-detail path.
+
+    ``get_trial_by_index_core`` looks the trial up by the conventional
+    ``{task_id}-{index}`` id, so the fixture trial is given that id directly.
+    """
+    task, experiment = await _fixture(session, "detail-byidx")
+    trial = _trial(task, experiment)
+    trial.id = f"{task.id}-0"
+    session.add(trial)
+    await session.flush()
+    session.add(_qa_row(cost_usd=0.02, trial_id=trial.id))
+    await session.flush()
+
+    response = await get_trial_by_index_core(
+        session, task_id=task.id, index=0, org_id=_ORG
+    )
+
+    assert response.qa_cost_usd == pytest.approx(0.02)
+
+
+@pytest.mark.asyncio
+async def test_slim_tasks_populate_per_trial_qa_cost(session):
+    """The experiment grid's slim per-trial payload carries ``qa_cost_usd``."""
+    task, experiment = await _fixture(session, "slim-qa")
+    with_qa, without_qa = _trial(task, experiment), _trial(task, experiment)
+    session.add_all([with_qa, without_qa])
+    # A normal experiment owns its task via the association table directly.
+    await session.execute(
+        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
+    )
+    await session.flush()
+    session.add(_qa_row(cost_usd=0.04, trial_id=with_qa.id))
+    await session.flush()
+
+    responses = await list_experiment_slim_tasks(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    task_resp = next(r for r in responses if r.id == task.id)
+    by_id = {t.id: t for t in (task_resp.trials or [])}
+    assert by_id[with_qa.id].qa_cost_usd == pytest.approx(0.04)
+    assert by_id[without_qa.id].qa_cost_usd is None
+
+
+@pytest.mark.asyncio
+async def test_slim_tasks_resolve_qa_costs_in_one_query_for_the_page(
+    session, monkeypatch
+):
+    """The grid pages many tasks/trials at once; QA must not fan out per trial."""
+    task, experiment = await _fixture(session, "slim-batch")
+    trials = [_trial(task, experiment) for _ in range(4)]
+    session.add_all(trials)
+    await session.execute(
+        task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
+    )
+    await session.flush()
+    session.add_all([_qa_row(cost_usd=0.01, trial_id=t.id) for t in trials])
+    await session.flush()
+
+    import oddish.core.endpoints.tasks_query as tasks_query_mod
+
+    call_count = 0
+    real_get_trial_qa_costs = tasks_query_mod.get_trial_qa_costs
+
+    async def _counting_get_trial_qa_costs(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return await real_get_trial_qa_costs(*args, **kwargs)
+
+    monkeypatch.setattr(
+        tasks_query_mod, "get_trial_qa_costs", _counting_get_trial_qa_costs
+    )
+
+    await list_experiment_slim_tasks(session, experiment_id=experiment.id, org_id=_ORG)
+
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sharing_trial_list_leaves_qa_cost_unpopulated(session):
+    """Sharing/public views deliberately omit QA spend -- internal cost data
+    has no place in a public trial view."""
+    task, experiment = await _fixture(session, "sharing-noqa")
+    trial = _trial(task, experiment)
+    session.add(trial)
+    await session.flush()
+    session.add(_qa_row(cost_usd=0.05, trial_id=trial.id))
+    await session.flush()
+
+    trials = await list_experiment_trials_for_org(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    (response,) = [t for t in trials if t.id == trial.id]
+    assert response.qa_cost_usd is None

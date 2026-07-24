@@ -1060,6 +1060,10 @@ class TrialResponse(BaseModel):
             "billed spend and quota usage."
         ),
     )
+    # QA/analysis spend for this trial. None when no QA ran -- distinct from
+    # 0.0, so the UI can render nothing rather than "+$0.00 QA". None also
+    # means "not resolved by this caller": most builders never populate it.
+    qa_cost_usd: float | None = None
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(
