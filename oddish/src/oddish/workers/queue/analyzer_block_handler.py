@@ -30,6 +30,30 @@ def _analyzer_type_for_config(config: dict) -> AnalyzerType:
     return AnalyzerType.CUSTOM_QA
 
 
+def _subject_linkage(
+    analyzer_type: AnalyzerType, run: AnalyzerRunModel, config: dict
+) -> tuple[str | None, str | None, str | None]:
+    """The ``(analyzer_id, task_id, attribution_org_id)`` a lifecycle block needs.
+
+    Lifecycle-typed runs land in the same cost/lineage paths as the built-in
+    blocks, which assume a concrete subject: a POST_TRIAL block attributes its
+    spend to the trial named by ``analyzer_id`` (mirroring the built-in
+    post-trial classifier) and carries ``task_id`` for lineage; a PRE_TRIAL
+    block attributes to its task. Both leave ``attribution_org_id`` unset so
+    ``AnalyzerBlock._cost_attribution`` resolves that subject instead of
+    short-circuiting on the org. CUSTOM_QA keeps the ad-hoc-run behavior:
+    ``analyzer_id`` is the run id and spend attributes to the org.
+
+    ``run.scope_id`` is the fallback for runs enqueued before ``run_config``
+    carried these keys (post-trial scope is the trial, pre-trial the task).
+    """
+    if analyzer_type is AnalyzerType.POST_TRIAL:
+        return config.get("trial_id") or run.scope_id, config.get("task_id"), None
+    if analyzer_type is AnalyzerType.PRE_TRIAL:
+        return None, config.get("task_id") or run.scope_id, None
+    return run.id, None, run.org_id
+
+
 async def _heartbeat(worker_job_id: str, stop: asyncio.Event) -> None:
     while True:
         try:
@@ -64,6 +88,9 @@ async def run_analyzer_block_job(
             client_type = LLMClientType(run.llm_client_type)
             stage = config.get("stage")
             analyzer_type = _analyzer_type_for_config(config)
+            analyzer_id, task_id, attribution_org_id = _subject_linkage(
+                analyzer_type, run, config
+            )
             sandbox_config = None
             if client_type == LLMClientType.SANDBOX:
                 sandbox_config = SandboxConfig(
@@ -90,10 +117,11 @@ async def run_analyzer_block_job(
                 ),
                 prompt=version.content,
                 system_prompt=config.get("system_prompt"),
-                analyzer_id=run.id,
+                analyzer_id=analyzer_id,
+                task_id=task_id,
                 model=run.model,
                 triggered_by_user_id=run.triggered_by_user_id,
-                attribution_org_id=run.org_id,
+                attribution_org_id=attribution_org_id,
                 sandbox_config=sandbox_config,
                 block_metadata=config,
             )

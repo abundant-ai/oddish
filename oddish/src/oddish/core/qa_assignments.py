@@ -428,6 +428,11 @@ async def enqueue_qa_assignment_runs_core(
 
         config = {
             "scope": {"type": run_scope_type, "id": run_scope_id},
+            # The subject the lifecycle block attributes cost and lineage to:
+            # a post-trial run charges its trial (via analyzer_id) and carries
+            # task_id for lineage; a pre-trial run charges its task.
+            "task_id": task_id,
+            "trial_id": trial_id,
             "stage": stage,
             "stage_event_key": stage_event_key,
             "qa_assignment_id": assignment.id,
