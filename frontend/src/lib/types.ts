@@ -205,6 +205,9 @@ export interface Task {
   experiment_created_at?: string | null;
   experiment_owner?: string | null;
   experiment_link?: string | null;
+  // Null on public/share responses, which never resolve API key names.
+  api_key_name?: string | null;
+  experiment_api_key_name?: string | null;
   experiments?: { id: string; name: string }[];
   total: number;
   completed: number;

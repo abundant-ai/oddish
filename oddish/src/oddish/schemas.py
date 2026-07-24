@@ -1388,6 +1388,21 @@ class TaskStatusResponse(BaseModel):
     experiment_created_at: datetime | None = None
     experiment_owner: str | None = None
     experiment_link: str | None = None
+    api_key_name: str | None = Field(
+        None,
+        description=(
+            "Name of the API key that submitted this task. None for JWT/OSS "
+            "submissions and on public/share responses, which never resolve it."
+        ),
+    )
+    experiment_api_key_name: str | None = Field(
+        None,
+        description=(
+            "Name of the API key whose run created this task's primary "
+            "experiment. None for dashboard-created experiments, for "
+            "experiments predating the column, and on public/share responses."
+        ),
+    )
     experiments: list[TaskBrowseExperiment] = Field(
         default_factory=list,
         description=(

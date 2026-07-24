@@ -36,6 +36,7 @@ from oddish.core.helpers import (
     build_task_status_response,
     build_task_status_responses_from_counts,
     build_slim_task_status_response,
+    fetch_api_key_names,
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
@@ -225,6 +226,7 @@ async def list_tasks_core(
                 ExperimentModel.created_at,
                 ExperimentModel.owner,
                 ExperimentModel.link,
+                ExperimentModel.api_key_id,
             )
             query = query.options(
                 load_only(*TASK_STATUS_RESPONSE_COLUMNS),
@@ -379,6 +381,7 @@ async def list_tasks_core(
             # the extra ``fetch_trial_analysis_summaries`` round trip
             # entirely on this path.
             build_started_at = now()
+            api_key_names = await fetch_api_key_names(session, tasks=tasks)
             response = [
                 build_task_status_response_compact(
                     task,
@@ -387,6 +390,7 @@ async def list_tasks_core(
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
                     gathered_trial_ids=gathered_trial_ids,
+                    api_key_names=api_key_names,
                 )
                 for task in tasks
             ]
@@ -398,6 +402,7 @@ async def list_tasks_core(
                 )
             return response
         build_started_at = now()
+        api_key_names = await fetch_api_key_names(session, tasks=tasks)
         response = [
             build_task_status_response(
                 task,
@@ -406,6 +411,7 @@ async def list_tasks_core(
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
                 gathered_trial_ids=gathered_trial_ids,
+                api_key_names=api_key_names,
             )
             for task in tasks
         ]
@@ -445,6 +451,7 @@ async def list_tasks_core(
             if include_worker_jobs
             else {}
         ),
+        api_key_names=await fetch_api_key_names(session, tasks=tasks),
     )
     if record_timing is not None:
         record_timing(
@@ -542,6 +549,7 @@ async def list_experiment_task_shells_core(
         experiment_context_id=experiment_id,
         effective_version_id_by_task_id=(effective_version_id_by_task_id or None),
         jobs_by_subject={},
+        api_key_names=await fetch_api_key_names(session, tasks=tasks),
     )
     if record_timing is not None:
         record_timing("tasks_build", elapsed_ms(build_started_at), "Build task shells")
@@ -601,12 +609,14 @@ async def list_experiment_slim_tasks(
     )
 
     build_started_at = now()
+    api_key_names = await fetch_api_key_names(session, tasks=tasks)
     response = [
         build_slim_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
+            api_key_names=api_key_names,
         )
         for task in tasks
     ]
@@ -2520,6 +2530,7 @@ async def get_task_status_core(
             include_empty_rewards=include_empty_rewards,
             queue_info_by_trial_id=queue_info_by_trial_id,
             jobs_by_subject=jobs_by_subject,
+            api_key_names=await fetch_api_key_names(session, tasks=[task]),
         )
 
     jobs_by_subject = await fetch_visible_worker_jobs(session, task_ids=[task.id])
@@ -2529,5 +2540,6 @@ async def get_task_status_core(
             tasks=[task],
             include_empty_rewards=include_empty_rewards,
             jobs_by_subject=jobs_by_subject,
+            api_key_names=await fetch_api_key_names(session, tasks=[task]),
         )
     )[0]

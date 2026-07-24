@@ -257,7 +257,8 @@ function TaskDetailHeader({
         })()}
         {(() => {
           const byline = task.github_username || task.user;
-          if (!byline && !task.created_at) return null;
+          const apiKeyName = task.api_key_name;
+          if (!byline && !task.created_at && !apiKeyName) return null;
           return (
             <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
               {byline ? <span>by {byline}</span> : null}
@@ -266,6 +267,19 @@ function TaskDetailHeader({
                 <span title={new Date(task.created_at).toLocaleString()}>
                   created {formatRelativeTime(task.created_at)}
                 </span>
+              ) : null}
+              {apiKeyName ? (
+                <>
+                  {byline || task.created_at ? (
+                    <span aria-hidden>·</span>
+                  ) : null}
+                  <span
+                    className="text-[color:var(--paper-ink-4)]"
+                    title={`Submitted with API key "${apiKeyName}"`}
+                  >
+                    via {apiKeyName}
+                  </span>
+                </>
               ) : null}
             </div>
           );

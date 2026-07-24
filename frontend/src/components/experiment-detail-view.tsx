@@ -354,8 +354,10 @@ function formatRelativeTime(iso: string): string {
 function pickExperimentCreationMeta(tasks: Task[]): {
   createdAt: string | null;
   author: string | null;
+  apiKeyName: string | null;
 } {
-  if (tasks.length === 0) return { createdAt: null, author: null };
+  if (tasks.length === 0)
+    return { createdAt: null, author: null, apiKeyName: null };
   const experimentCreatedAt =
     tasks.find((task) => task.experiment_created_at)?.experiment_created_at ??
     null;
@@ -373,10 +375,16 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   // experiments with no stamped owner.
   const experimentOwner =
     tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null;
+  // The experiment's own key is stamped set-once and never backfilled, so
+  // experiments predating the column fall back to the creating task's key.
+  const experimentApiKeyName =
+    tasks.find((task) => task.experiment_api_key_name)
+      ?.experiment_api_key_name ?? null;
   return {
     createdAt: experimentCreatedAt ?? earliest.created_at,
     author:
       experimentOwner ?? earliest.github_username ?? earliest.user ?? null,
+    apiKeyName: experimentApiKeyName ?? earliest.api_key_name ?? null,
   };
 }
 
@@ -481,9 +489,11 @@ function ExperimentMetaStrip({
   }, [experimentId]);
 
   if (isInitialLoading) return null;
-  const { createdAt, author } = pickExperimentCreationMeta(tasks);
+  const { createdAt, author, apiKeyName } = pickExperimentCreationMeta(tasks);
   const showAuthor = Boolean(author) && !readOnly;
-  if (!createdAt && !showAuthor && !experimentId) return null;
+  // Key names are org-internal: never on the public share view.
+  const showApiKey = Boolean(apiKeyName) && !readOnly;
+  if (!createdAt && !showAuthor && !showApiKey && !experimentId) return null;
 
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
@@ -494,7 +504,16 @@ function ExperimentMetaStrip({
       )}
       {createdAt && showAuthor && <MetaDot />}
       {showAuthor && <span>by {author}</span>}
-      {(createdAt || showAuthor) && experimentId && <MetaDot />}
+      {(createdAt || showAuthor) && showApiKey && <MetaDot />}
+      {showApiKey && (
+        <span
+          className="text-[color:var(--paper-ink-4)]"
+          title={`Submitted with API key "${apiKeyName}"`}
+        >
+          via {apiKeyName}
+        </span>
+      )}
+      {(createdAt || showAuthor || showApiKey) && experimentId && <MetaDot />}
       {experimentId && (
         <span className="inline-flex items-center gap-1">
           <span>id</span>

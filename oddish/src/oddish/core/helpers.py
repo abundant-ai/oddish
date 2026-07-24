@@ -800,6 +800,34 @@ def _primary_experiment_for_task(
     return experiments[0]
 
 
+async def fetch_api_key_names(
+    session: AsyncSession, *, tasks: Sequence[TaskModel]
+) -> dict[str, str]:
+    """Map ``api_key_id`` -> key name for the tasks and their experiments.
+
+    Opt-in on purpose: the builders leave the name ``None`` when no map is
+    supplied, so public/share endpoints -- which never call this -- cannot leak
+    an org's key names by accident. Reading ``api_key_id`` here requires it in
+    the compact ``load_only`` sets (see ``TASK_STATUS_RESPONSE_COLUMNS`` and the
+    experiments loader in ``list_tasks_core``).
+    """
+    from oddish.db.models import APIKeyModel
+
+    key_ids: set[str] = set()
+    for task in tasks:
+        if task.api_key_id:
+            key_ids.add(task.api_key_id)
+        for experiment in task.experiments or []:
+            if experiment.api_key_id:
+                key_ids.add(experiment.api_key_id)
+    if not key_ids:
+        return {}
+    result = await session.execute(
+        select(APIKeyModel.id, APIKeyModel.name).where(APIKeyModel.id.in_(key_ids))
+    )
+    return {row.id: row.name for row in result.all()}
+
+
 TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.id,
     TaskModel.name,
@@ -808,6 +836,7 @@ TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.user,
     TaskModel.tags,
     TaskModel.link,
+    TaskModel.api_key_id,
     TaskModel.task_path,
     TaskModel.current_version_id,
     TaskModel.run_analysis,
@@ -837,6 +866,7 @@ def _build_task_status_response(
     jobs: Sequence[VisibleWorkerJob] | None = None,
     experiment_context_id: str | None = None,
     trial_version_id: str | None | object = _VERSION_ID_UNSET,
+    api_key_names: Mapping[str, str] | None = None,
 ) -> TaskStatusResponse:
     formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
         _format_reward_fields(
@@ -869,6 +899,13 @@ def _build_task_status_response(
     )
     experiment_owner = primary_experiment.owner if primary_experiment else None
     experiment_link = primary_experiment.link if primary_experiment else None
+    names = api_key_names or {}
+    api_key_name = names.get(task.api_key_id) if task.api_key_id else None
+    experiment_api_key_name = (
+        names.get(primary_experiment.api_key_id)
+        if primary_experiment and primary_experiment.api_key_id
+        else None
+    )
     return TaskStatusResponse(
         id=task.id,
         name=task.name,
@@ -887,6 +924,8 @@ def _build_task_status_response(
         experiment_created_at=experiment_created_at,
         experiment_owner=experiment_owner,
         experiment_link=experiment_link,
+        api_key_name=api_key_name,
+        experiment_api_key_name=experiment_api_key_name,
         # Sorted (name, id) to match the browse chips and because the ORM
         # relationship has no order_by -- DB return order is not stable.
         experiments=[
@@ -935,6 +974,7 @@ def build_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
     exclude_combine_copies: bool = False,
+    api_key_names: Mapping[str, str] | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -1010,6 +1050,7 @@ def build_task_status_response(
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
         trial_version_id=effective_version_id,
+        api_key_names=api_key_names,
     )
 
 
@@ -1023,6 +1064,7 @@ def build_task_status_response_compact(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    api_key_names: Mapping[str, str] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -1085,6 +1127,7 @@ def build_task_status_response_compact(
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
         trial_version_id=effective_version_id,
+        api_key_names=api_key_names,
     )
 
 
@@ -1173,6 +1216,7 @@ def build_slim_task_status_response(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    api_key_names: Mapping[str, str] | None = None,
 ) -> TaskStatusResponse:
     """Build a task status response with slim per-trial payloads."""
     if effective_version_id is _VERSION_ID_UNSET:
@@ -1205,6 +1249,7 @@ def build_slim_task_status_response(
         jobs=[],
         experiment_context_id=experiment_context_id,
         trial_version_id=effective_version_id,
+        api_key_names=api_key_names,
     )
 
 
@@ -1258,6 +1303,7 @@ async def build_task_status_responses_from_counts(
     experiment_context_id: str | None = None,
     effective_version_id_by_task_id: dict[str, str] | None = None,
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
+    api_key_names: Mapping[str, str] | None = None,
 ) -> list[TaskStatusResponse]:
     """Build TaskStatusResponse objects with aggregated trial counts.
 
@@ -1382,6 +1428,7 @@ async def build_task_status_responses_from_counts(
             ),
             experiment_context_id=experiment_context_id,
             trial_version_id=_effective(task),
+            api_key_names=api_key_names,
         )
         for task in tasks
     ]

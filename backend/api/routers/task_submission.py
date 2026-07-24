@@ -338,6 +338,22 @@ def stamp_experiment_owner(
         experiment.owner_user_id = owner_user_id
 
 
+def stamp_experiment_api_key(
+    experiment: ExperimentModel | None,
+    api_key_id: str | None,
+) -> None:
+    """Record the creating run's API key on the experiment (set-once).
+
+    Mirrors ``task.api_key_id``: audit-only provenance, never billing. Only the
+    run that creates the experiment claims it, so a later append through a
+    different key does not retro-stamp an experiment that predates the column.
+    """
+    if experiment is None or not api_key_id:
+        return
+    if experiment.api_key_id is None:
+        experiment.api_key_id = api_key_id
+
+
 def require_experiment_publish_scope(auth: AuthContext) -> None:
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 

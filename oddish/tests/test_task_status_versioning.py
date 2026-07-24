@@ -42,6 +42,7 @@ def test_task_status_response_includes_experiment_created_at():
         created_at=experiment_created_at,
         owner=None,
         link=None,
+        api_key_id=None,
     )
     task = SimpleNamespace(
         id="task-a",
@@ -51,6 +52,7 @@ def test_task_status_response_includes_experiment_created_at():
         user="alice",
         tags={},
         task_path="/tmp/demo-task",
+        api_key_id=None,
         current_version_id=None,
         run_analysis=False,
         run_probe=False,
@@ -82,6 +84,93 @@ def test_task_status_response_includes_experiment_created_at():
     assert response.updated_at == task_created_at
     assert response.trial_version is None
     assert response.trial_version_id is None
+
+
+def _api_key_task(*, task_api_key_id: str | None, exp_api_key_id: str | None):
+    experiment = SimpleNamespace(
+        id="exp-a",
+        name="demo experiment",
+        is_public=False,
+        created_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        owner=None,
+        link=None,
+        api_key_id=exp_api_key_id,
+    )
+    return SimpleNamespace(
+        id="task-a",
+        name="demo task",
+        status=TaskStatus.PENDING,
+        priority=Priority.LOW,
+        user="alice",
+        tags={},
+        task_path="/tmp/demo-task",
+        api_key_id=task_api_key_id,
+        current_version_id=None,
+        run_analysis=False,
+        run_probe=False,
+        verdict_status=None,
+        verdict=None,
+        verdict_error=None,
+        experiments=[experiment],
+        created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        started_at=None,
+        finished_at=None,
+        link=None,
+    )
+
+
+def _build(task, **kwargs):
+    return helpers._build_task_status_response(
+        task,
+        total=0,
+        completed=0,
+        failed=0,
+        reward_success=0,
+        reward_sum=0.0,
+        reward_total=0,
+        include_empty_rewards=True,
+        trials=None,
+        **kwargs,
+    )
+
+
+def test_api_key_names_resolve_task_and_experiment_keys():
+    task = _api_key_task(task_api_key_id="key-1", exp_api_key_id="key-2")
+
+    response = _build(task, api_key_names={"key-1": "ci-bot", "key-2": "nightly"})
+
+    assert response.api_key_name == "ci-bot"
+    assert response.experiment_api_key_name == "nightly"
+
+
+def test_api_key_names_omitted_leaves_names_none():
+    """The public/share builders pass no map; they must never resolve names."""
+    task = _api_key_task(task_api_key_id="key-1", exp_api_key_id="key-2")
+
+    response = _build(task)
+
+    assert response.api_key_name is None
+    assert response.experiment_api_key_name is None
+
+
+def test_api_key_names_none_for_jwt_and_dashboard_experiments():
+    task = _api_key_task(task_api_key_id=None, exp_api_key_id=None)
+
+    response = _build(task, api_key_names={"key-1": "ci-bot"})
+
+    assert response.api_key_name is None
+    assert response.experiment_api_key_name is None
+
+
+def test_api_key_name_none_when_key_row_is_gone():
+    """A revoked/deleted key id resolves to nothing rather than leaking the id."""
+    task = _api_key_task(task_api_key_id="key-gone", exp_api_key_id="key-gone")
+
+    response = _build(task, api_key_names={})
+
+    assert response.api_key_name is None
+    assert response.experiment_api_key_name is None
 
 
 def test_get_task_status_trials_filters_to_current_version():

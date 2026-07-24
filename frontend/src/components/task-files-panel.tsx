@@ -1307,6 +1307,25 @@ export function TaskFilesPanel({
                 </span>
               )}
             </DrawerTitle>
+            {/* Submitter provenance. Hidden on the public share view, which
+                passes showAnalysis={false} and must not leak org key names. */}
+            {showAnalysis !== false &&
+              (() => {
+                const byline = task?.github_username || task?.user;
+                const apiKeyName = task?.api_key_name;
+                if (!byline && !apiKeyName) return null;
+                return (
+                  <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px]">
+                    {byline ? <span>by {byline}</span> : null}
+                    {byline && apiKeyName ? <span aria-hidden>·</span> : null}
+                    {apiKeyName ? (
+                      <span title={`Submitted with API key "${apiKeyName}"`}>
+                        via {apiKeyName}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })()}
             <div className="mt-1 min-h-3 text-[10px] text-emerald-600">
               {copiedTaskName ? "Copied to clipboard" : null}
             </div>

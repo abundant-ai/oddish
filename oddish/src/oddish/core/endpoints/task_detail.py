@@ -10,6 +10,7 @@ from oddish.core.endpoints._common import get_task_for_org_core
 from oddish.core.helpers import (
     build_task_status_response,
     build_trial_response,
+    fetch_api_key_names,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
 )
@@ -148,6 +149,7 @@ async def get_task_detail_core(
         queue_info_by_trial_id=queue_info_by_trial_id,
         jobs_by_subject=jobs_by_subject,
         exclude_combine_copies=True,
+        api_key_names=await fetch_api_key_names(session, tasks=[task]),
     )
     # Combine copies are the *same execution* re-materialized under this task
     # by ``combine_experiments_core``, not a fresh run. They aren't marked

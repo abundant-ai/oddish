@@ -90,6 +90,7 @@ from api.routers.task_submission import (
     resolve_created_by_user_id,
     resolve_experiment_owner_user_id,
     resolve_submission_identity,
+    stamp_experiment_api_key,
     stamp_experiment_owner,
 )
 from dashboard_attribution import resolve_search_authors
@@ -404,6 +405,7 @@ async def create_task_sweep(
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
             task.api_key_id = auth.api_key_id
+            stamp_experiment_api_key(experiment, auth.api_key_id)
 
             await maybe_publish_experiment(session, task, submission, auth)
 
@@ -495,6 +497,7 @@ async def create_task_sweep_batch(
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
             task.api_key_id = auth.api_key_id
+            stamp_experiment_api_key(experiment, auth.api_key_id)
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
             require_experiment_publish_scope(auth)
