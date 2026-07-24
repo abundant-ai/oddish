@@ -1129,7 +1129,15 @@ class Settings(BaseSettings):
     # once stopped for ``daytona_auto_delete_interval_mins`` it is deleted.
     # This is the backstop for sandboxes that escape explicit teardown via
     # ``cancel_job_by_worker``; 0 disables auto-stop, so keep it positive.
-    daytona_auto_stop_interval_mins: int = 30
+    # Ephemeral sandboxes (below) force ``auto_delete_interval=0`` harbor-side,
+    # so an auto-stop there is an immediate delete. 30min was short enough
+    # that the idle window during a separate-verifier artifact upload
+    # (GB-scale ``.lake`` payloads on the formal-verification tasks) got the
+    # verifier sandbox reaped mid-upload -- surfacing as ``DaytonaError 404:
+    # not found: sandbox <id> ... (it has been deleted)`` on
+    # ``/toolbox/<id>/files/bulk-upload``. 16 trials in experiment
+    # ``e127df61`` died that way on 2026-07-24.
+    daytona_auto_stop_interval_mins: int = 120
     daytona_auto_delete_interval_mins: int = 60
 
     # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
