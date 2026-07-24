@@ -90,7 +90,14 @@ def assign(
         Optional[int],
         typer.Option("--prompt-version", help="Pin a version; default is latest-wins."),
     ] = None,
-    allow_oddish_cli: Annotated[bool, typer.Option("--allow-oddish-cli")] = False,
+    allow_oddish_cli: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--allow-oddish-cli/--no-allow-oddish-cli",
+            help="Grant the sandbox agent the oddish CLI. Omit to leave an "
+            "existing job's setting unchanged.",
+        ),
+    ] = None,
     org: _ScopeOrg = False,
     user: _ScopeUser = False,
     task: _ScopeTask = None,

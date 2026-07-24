@@ -14,7 +14,14 @@ from httpx import ASGITransport, AsyncClient
 from api.app import create_app
 from auth import APIKeyScope, AuthContext, AuthMethod, require_auth
 from oddish.core.prompts import set_prompt_core
-from oddish.db import PromptModel, QAAssignmentModel, TaskModel, get_session
+from oddish.db import (
+    ExperimentModel,
+    PromptModel,
+    QAAssignmentModel,
+    TaskModel,
+    TrialModel,
+    get_session,
+)
 from oddish.db.models import Priority, TaskStatus
 
 OPERATOR_ORG = "org_operator"
@@ -78,6 +85,39 @@ async def task():
     async with get_session() as session:
         await session.execute(
             TaskModel.__table__.delete().where(TaskModel.id == task_id)
+        )
+        await session.commit()
+
+
+@pytest_asyncio.fixture
+async def trial(task):
+    """A real trial under an experiment and the `task` fixture -- so resolving
+    at trial scope has a task/experiment ancestry to walk."""
+    exp_id = f"exp_{uuid.uuid4().hex[:8]}"
+    trial_id = f"{task}-0"
+    async with get_session() as session:
+        session.add(ExperimentModel(id=exp_id, name=exp_id, org_id="org_a"))
+        await session.flush()
+        session.add(
+            TrialModel(
+                id=trial_id,
+                name=trial_id,
+                task_id=task,
+                experiment_id=exp_id,
+                org_id="org_a",
+                agent="claude-code",
+                provider="anthropic",
+                queue_key="q",
+            )
+        )
+        await session.commit()
+    yield {"trial_id": trial_id, "experiment_id": exp_id, "task_id": task}
+    async with get_session() as session:
+        await session.execute(
+            TrialModel.__table__.delete().where(TrialModel.id == trial_id)
+        )
+        await session.execute(
+            ExperimentModel.__table__.delete().where(ExperimentModel.id == exp_id)
         )
         await session.commit()
 
@@ -184,6 +224,105 @@ async def test_disable_preserves_the_existing_runner_config(kind, task):
     assert row["backend"] == "sandbox"
     assert row["allow_oddish_cli"] is True
     assert row["prompt_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reenable_via_bare_assign_preserves_config(kind, task):
+    """Re-enabling a disabled job is a bare `assign` (enabled defaults true, no
+    runner flags). It must restore the flag without wiping the config that
+    `disable` deliberately preserved -- the round-trip has to be lossless."""
+    await _make_prompt(kind, scope_type="task", scope_id=task, org_id="org_a")
+    async with await _client() as client:
+        await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task},
+            json={
+                "prompt": kind,
+                "stage": "post_trial",
+                "model": "claude-opus-4-8",
+                "backend": "sandbox",
+                "allow_oddish_cli": True,
+                "prompt_version": 1,
+            },
+        )
+        await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task},
+            json={"prompt": kind, "stage": "post_trial", "enabled": False},
+        )
+        # Bare re-enable: no runner fields, enabled defaults to true.
+        reenabled = await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task},
+            json={"prompt": kind, "stage": "post_trial"},
+        )
+        assert reenabled.status_code == 200, reenabled.text
+    row = reenabled.json()
+    assert row["enabled"] is True
+    assert row["model"] == "claude-opus-4-8"
+    assert row["backend"] == "sandbox"
+    assert row["allow_oddish_cli"] is True
+    assert row["prompt_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_assign_updates_only_the_provided_runner_fields(kind, task):
+    """A partial `assign --model X` rewrites only the model; backend/CLI/version
+    it did not mention stay put."""
+    await _make_prompt(kind, scope_type="task", scope_id=task, org_id="org_a")
+    async with await _client() as client:
+        await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task},
+            json={
+                "prompt": kind,
+                "stage": "post_trial",
+                "model": "claude-opus-4-8",
+                "backend": "sandbox",
+                "allow_oddish_cli": True,
+                "prompt_version": 1,
+            },
+        )
+        updated = await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": task},
+            json={"prompt": kind, "stage": "post_trial", "model": "claude-haiku-4-5"},
+        )
+        assert updated.status_code == 200, updated.text
+    row = updated.json()
+    assert row["model"] == "claude-haiku-4-5"
+    assert row["backend"] == "sandbox"
+    assert row["allow_oddish_cli"] is True
+    assert row["prompt_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_resolved_at_trial_includes_ancestor_task_jobs(kind, trial):
+    """`resolved` at a trial must union in the jobs defined on its parent task
+    (and experiment/org) -- otherwise list/status under-report what actually
+    runs, which is keyed off the trial's full ancestry at enqueue time."""
+    await _make_prompt(
+        kind, scope_type="task", scope_id=trial["task_id"], org_id="org_a"
+    )
+    async with await _client() as client:
+        assigned = await client.post(
+            "/qa-jobs",
+            params={"scope": "task", "scope_id": trial["task_id"]},
+            json={"prompt": kind, "stage": "post_trial"},
+        )
+        assert assigned.status_code == 200, assigned.text
+        resolved = await client.get(
+            "/qa-jobs",
+            params={
+                "scope": "trial",
+                "scope_id": trial["trial_id"],
+                "resolved": "true",
+            },
+        )
+    assert resolved.status_code == 200, resolved.text
+    mine = [r for r in resolved.json() if r["prompt_kind"] == kind]
+    assert len(mine) == 1
+    assert mine[0]["inherited_from"] == f"task:{trial['task_id']}"
 
 
 @pytest.mark.asyncio
