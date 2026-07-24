@@ -84,7 +84,28 @@ async def test_resolve_byok_calls_registered_resolver():
         "experiment_name": "e",
         "model": "claude-opus-4-8",
         "agent": "claude-code",
+        "experiment_owner_user_id": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_resolve_byok_forwards_experiment_owner():
+    seen = {}
+
+    async def resolver(**ctx):
+        seen.update(ctx)
+        return None
+
+    byok.register_byok_resolver(resolver)
+    await byok.resolve_byok(
+        owner_user_id="u1",
+        org_id="o1",
+        experiment_name="e",
+        model="claude-opus-4-8",
+        agent="claude-code",
+        experiment_owner_user_id="exp-owner",
+    )
+    assert seen["experiment_owner_user_id"] == "exp-owner"
 
 
 @pytest.mark.asyncio

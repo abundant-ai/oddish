@@ -163,6 +163,9 @@ class PreparedTrialRun:
     # Trial owner for BYOK resolution: the task submitter, falling back to the
     # experiment owner. None means BYOK never applies.
     created_by_user_id: str | None = None
+    # Experiment owner, passed alongside created_by_user_id so BYOK can fall
+    # back to the experiment owner's key when the task owner has none.
+    experiment_owner_user_id: str | None = None
     billed_user_id: str | None = None
     trial_attempt: int = 1
 
@@ -573,6 +576,7 @@ async def _prepare_trial_run(
             created_by_user_id=(
                 (task.created_by_user_id if task else None) or experiment_owner_user_id
             ),
+            experiment_owner_user_id=experiment_owner_user_id,
         )
 
 
@@ -1460,6 +1464,7 @@ async def run_trial_job(
             experiment_name=prepared_trial.experiment_name,
             model=prepared_trial.trial_model,
             agent=prepared_trial.trial_agent,
+            experiment_owner_user_id=prepared_trial.experiment_owner_user_id,
         )
 
     span_provider = (

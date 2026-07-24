@@ -38,6 +38,7 @@ class ByokResolver(Protocol):
         experiment_name: str | None,
         model: str | None,
         agent: str,
+        experiment_owner_user_id: str | None = None,
     ) -> Awaitable[ByokResolution | None]: ...
 
 
@@ -65,6 +66,7 @@ async def resolve_byok(
     experiment_name: str | None,
     model: str | None,
     agent: str,
+    experiment_owner_user_id: str | None = None,
 ) -> ByokResolution | None:
     """Call the registered resolver; any crash falls back to platform keys."""
     if _RESOLVER is None:
@@ -76,6 +78,7 @@ async def resolve_byok(
             experiment_name=experiment_name,
             model=model,
             agent=agent,
+            experiment_owner_user_id=experiment_owner_user_id,
         )
     except Exception as exc:  # noqa: BLE001
         console.print(

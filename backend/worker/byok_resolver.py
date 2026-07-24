@@ -1,10 +1,11 @@
 """Backend BYOK resolver, registered into the core seam at worker startup.
 
-Decides, per trial: if the ``oddish_byok`` gate is on for the trial's owner and
-they have a stored Anthropic key, inject it. Otherwise return None and the
-trial runs on the platform key. Fully fail-open -- a missing key, a decrypt
-failure, or a Bedrock-routed trial all just fall back to the platform key,
-never a failure.
+Decides, per trial: for each candidate owner -- the task submitter, then the
+experiment owner -- whose ``oddish_byok`` gate is on and who has a stored
+Anthropic key, inject that key. Otherwise return None and the trial runs on
+the platform key. Fully fail-open -- a missing key, a decrypt failure, or a
+Bedrock-routed trial all just fall through to the next candidate or the
+platform key, never a failure.
 """
 
 from __future__ import annotations
@@ -51,34 +52,47 @@ async def resolve_byok_for_trial(
     experiment_name: str | None,
     model: str | None,
     agent: str,
+    experiment_owner_user_id: str | None = None,
 ) -> ByokResolution | None:
-    if not owner_user_id:
-        return None  # BYOK is per-user; ownerless trials use platform keys.
     if not uses_direct_anthropic(agent, model, settings=settings):
         return None  # An Anthropic key only helps a direct-Anthropic trial.
-    if not _gate_passes(
-        user_id=owner_user_id,
-        org_id=org_id,
-        experiment_name=experiment_name,
-        model=model,
-        agent=agent,
-    ):
-        return None
 
-    row = await _fetch_key_row(owner_user_id)
-    if row is None:
-        return None
-    try:
-        key = crypto.decrypt_secret(row.ciphertext, row.key_version)
-    except Exception:
-        logger.warning(
-            "could not decrypt BYOK key for user %s; using platform key",
-            owner_user_id,
-            exc_info=True,
-        )
-        return None
+    # Candidate owners in priority order: the task submitter, then the
+    # experiment owner. A trial appended into someone's experiment can use that
+    # owner's stored key when the task itself belongs to a user without one.
+    # Each candidate must pass the gate for themselves; any miss (gate off, no
+    # key row, decrypt failure) falls through to the next candidate, and an
+    # empty candidate list keeps the platform key -- BYOK stays per-user and
+    # ownerless trials never gain a key.
+    candidates: list[str] = []
+    for uid in (owner_user_id, experiment_owner_user_id):
+        if uid and uid not in candidates:
+            candidates.append(uid)
 
-    return ByokResolution(env={"ANTHROPIC_API_KEY": key})
+    for uid in candidates:
+        if not _gate_passes(
+            user_id=uid,
+            org_id=org_id,
+            experiment_name=experiment_name,
+            model=model,
+            agent=agent,
+        ):
+            continue
+        row = await _fetch_key_row(uid)
+        if row is None:
+            continue
+        try:
+            key = crypto.decrypt_secret(row.ciphertext, row.key_version)
+        except Exception:
+            logger.warning(
+                "could not decrypt BYOK key for user %s; trying next candidate",
+                uid,
+                exc_info=True,
+            )
+            continue
+        return ByokResolution(env={"ANTHROPIC_API_KEY": key})
+
+    return None
 
 
 def install_byok_resolver() -> None:

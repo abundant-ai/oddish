@@ -113,3 +113,94 @@ async def test_gate_receives_full_context(resolver_mod, monkeypatch):
         "model": "claude-opus-4-8",
         "agent": "claude-code",
     }
+
+
+@pytest.mark.asyncio
+async def test_experiment_owner_fallback_when_task_owner_has_no_key(
+    resolver_mod, monkeypatch
+):
+    monkeypatch.setattr(resolver_mod, "_gate_passes", lambda **k: True)
+
+    async def fake_fetch(user_id):
+        return _row("sk-exp-owner") if user_id == "exp-owner" else None
+
+    monkeypatch.setattr(resolver_mod, "_fetch_key_row", fake_fetch)
+    res = await _resolve(resolver_mod, experiment_owner_user_id="exp-owner")
+    assert res is not None and res.env == {"ANTHROPIC_API_KEY": "sk-exp-owner"}
+
+
+@pytest.mark.asyncio
+async def test_task_owner_key_wins_over_experiment_owner(resolver_mod, monkeypatch):
+    monkeypatch.setattr(resolver_mod, "_gate_passes", lambda **k: True)
+
+    async def fake_fetch(user_id):
+        return _row(f"sk-{user_id}")
+
+    monkeypatch.setattr(resolver_mod, "_fetch_key_row", fake_fetch)
+    res = await _resolve(resolver_mod, experiment_owner_user_id="exp-owner")
+    assert res is not None and res.env == {"ANTHROPIC_API_KEY": "sk-u1"}
+
+
+@pytest.mark.asyncio
+async def test_gate_evaluated_per_candidate(resolver_mod, monkeypatch):
+    # Gate off for the task owner but on for the experiment owner: the
+    # experiment owner's key is used, and the gate saw both candidates.
+    gated = []
+    monkeypatch.setattr(
+        resolver_mod,
+        "_gate_passes",
+        lambda **k: gated.append(k["user_id"]) or k["user_id"] == "exp-owner",
+    )
+
+    async def fake_fetch(user_id):
+        return _row(f"sk-{user_id}")
+
+    monkeypatch.setattr(resolver_mod, "_fetch_key_row", fake_fetch)
+    res = await _resolve(resolver_mod, experiment_owner_user_id="exp-owner")
+    assert res is not None and res.env == {"ANTHROPIC_API_KEY": "sk-exp-owner"}
+    assert gated == ["u1", "exp-owner"]
+
+
+@pytest.mark.asyncio
+async def test_decrypt_failure_falls_through_to_experiment_owner(
+    resolver_mod, monkeypatch
+):
+    monkeypatch.setattr(resolver_mod, "_gate_passes", lambda **k: True)
+
+    async def fake_fetch(user_id):
+        if user_id == "u1":
+            row = _row()
+            row.ciphertext = b"garbage-not-decryptable"
+            return row
+        return _row("sk-exp-owner")
+
+    monkeypatch.setattr(resolver_mod, "_fetch_key_row", fake_fetch)
+    res = await _resolve(resolver_mod, experiment_owner_user_id="exp-owner")
+    assert res is not None and res.env == {"ANTHROPIC_API_KEY": "sk-exp-owner"}
+
+
+@pytest.mark.asyncio
+async def test_same_owner_and_experiment_owner_checked_once(resolver_mod, monkeypatch):
+    gated = []
+    monkeypatch.setattr(
+        resolver_mod, "_gate_passes", lambda **k: gated.append(k["user_id"]) or False
+    )
+    assert await _resolve(resolver_mod, experiment_owner_user_id="u1") is None
+    assert gated == ["u1"]  # deduped: one gate check, not two
+
+
+@pytest.mark.asyncio
+async def test_ownerless_trial_with_experiment_owner_uses_their_key(
+    resolver_mod, monkeypatch
+):
+    monkeypatch.setattr(resolver_mod, "_gate_passes", lambda **k: True)
+
+    async def fake_fetch(user_id):
+        assert user_id == "exp-owner"
+        return _row("sk-exp-owner")
+
+    monkeypatch.setattr(resolver_mod, "_fetch_key_row", fake_fetch)
+    res = await _resolve(
+        resolver_mod, owner_user_id=None, experiment_owner_user_id="exp-owner"
+    )
+    assert res is not None and res.env == {"ANTHROPIC_API_KEY": "sk-exp-owner"}
