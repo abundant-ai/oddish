@@ -87,14 +87,10 @@ def _to_response(prompt, version) -> PromptResponse:
     return resp
 
 
-def _resolve_scope_params(
-    scope: str | None, scope_id: str | None, auth: AuthContext
+async def _resolve_scope_params(
+    session, scope: str | None, scope_id: str | None, auth: AuthContext
 ) -> tuple[str | None, str | None]:
-    """Map read-side scope query params onto (scope_type, scope_id).
-
-    Read-only: unlike ``set_prompt`` this does not verify the target exists,
-    because a miss resolves to 404 from the core lookup anyway.
-    """
+    """Map read-side scope params and verify domain targets in the active org."""
     if scope in (None, "global"):
         return None, None
     if scope == "org":
@@ -108,6 +104,14 @@ def _resolve_scope_params(
             raise HTTPException(
                 status_code=422, detail=f"{scope} scope requires scope_id"
             )
+        model = {
+            "experiment": ExperimentModel,
+            "task": TaskModel,
+            "trial": TrialModel,
+        }[scope]
+        target = await session.get(model, scope_id)
+        if target is None or target.org_id != auth.org_id:
+            raise HTTPException(status_code=404, detail=f"{scope} not found")
         return scope, scope_id
     raise HTTPException(
         status_code=422,
@@ -139,8 +143,10 @@ async def get_prompt(
     scope_id: Annotated[str | None, Query()] = None,
 ) -> PromptResponse:
     auth.require_scope(APIKeyScope.READ)
-    scope_type, resolved_scope_id = _resolve_scope_params(scope, scope_id, auth)
     async with get_session() as session:
+        scope_type, resolved_scope_id = await _resolve_scope_params(
+            session, scope, scope_id, auth
+        )
         ref, _ = await _validated_ref(session, key_or_id, auth)
         prompt, ver = await get_prompt_core(
             session,
@@ -148,6 +154,7 @@ async def get_prompt(
             version=version,
             scope_type=scope_type,
             scope_id=resolved_scope_id,
+            org_id=auth.org_id if scope_type is not None else None,
         )
         _assert_org_access(prompt, auth)
         response = _to_response(prompt, ver)
@@ -163,15 +170,25 @@ async def get_prompt_versions(
     scope_id: Annotated[str | None, Query()] = None,
 ) -> list[PromptVersionResponse]:
     auth.require_scope(APIKeyScope.READ)
-    scope_type, resolved_scope_id = _resolve_scope_params(scope, scope_id, auth)
     async with get_session() as session:
+        scope_type, resolved_scope_id = await _resolve_scope_params(
+            session, scope, scope_id, auth
+        )
         ref, _ = await _validated_ref(session, key_or_id, auth)
         prompt, _ = await get_prompt_core(
-            session, ref, scope_type=scope_type, scope_id=resolved_scope_id
+            session,
+            ref,
+            scope_type=scope_type,
+            scope_id=resolved_scope_id,
+            org_id=auth.org_id if scope_type is not None else None,
         )
         _assert_org_access(prompt, auth)
         versions = await list_prompt_versions_core(
-            session, ref, scope_type=scope_type, scope_id=resolved_scope_id
+            session,
+            ref,
+            scope_type=scope_type,
+            scope_id=resolved_scope_id,
+            org_id=auth.org_id if scope_type is not None else None,
         )
         return [PromptVersionResponse.model_validate(v) for v in versions]
 
@@ -203,11 +220,15 @@ async def set_prompt(
             resolved_scope, resolved_scope_id = "org", auth.org_id
         elif scope == "user":
             if not auth.user_id:
-                raise HTTPException(status_code=422, detail="user scope requires user auth")
+                raise HTTPException(
+                    status_code=422, detail="user scope requires user auth"
+                )
             resolved_scope, resolved_scope_id = "user", auth.user_id
         elif scope in {"experiment", "task", "trial"}:
             if not scope_id:
-                raise HTTPException(status_code=422, detail=f"{scope} scope requires scope_id")
+                raise HTTPException(
+                    status_code=422, detail=f"{scope} scope requires scope_id"
+                )
             model = {
                 "experiment": ExperimentModel,
                 "task": TaskModel,
@@ -253,5 +274,6 @@ async def set_prompt(
             ref,
             scope_type=resolved_scope,
             scope_id=resolved_scope_id,
+            org_id=auth.org_id if resolved_scope is not None else None,
         )
         return _to_response(prompt, ver)

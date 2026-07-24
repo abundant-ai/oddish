@@ -13,7 +13,7 @@ from oddish.db import (
     WorkerJobModel,
     get_session,
 )
-from oddish.db.models import AnalyzerRunModel, JobStatus, WorkerJobKind
+from oddish.db.models import AnalyzerRunModel, JobStatus, TrialModel, WorkerJobKind
 from oddish.schemas import CustomQARunRequest
 
 
@@ -115,6 +115,44 @@ async def test_custom_qa_rejects_foreign_org_prompt(monkeypatch):
     assert exc.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_trial_variant_resolution_passes_full_prompt_hierarchy(monkeypatch):
+    seen = {}
+    prompt = SimpleNamespace(id="prompt_1", kind="check", org_id="org_1")
+    version = SimpleNamespace(id="version_1", version=1, content="Audit this")
+
+    async def resolve_prompt(session, kind, **kwargs):
+        seen.update(kwargs)
+        return prompt, version
+
+    monkeypatch.setattr(custom_qa, "resolve_prompt_core", resolve_prompt)
+    trial = TrialModel(
+        id="trial_1",
+        task_id="task_1",
+        experiment_id="experiment_1",
+    )
+
+    resolved = await custom_qa._resolve_variant(
+        object(),
+        "check",
+        version=None,
+        org_id="org_1",
+        user_id="user_1",
+        scope_type="trial",
+        scope_id="trial_1",
+        target=trial,
+    )
+
+    assert resolved == (prompt, version)
+    assert seen == {
+        "org_id": "org_1",
+        "user_id": "user_1",
+        "experiment_id": "experiment_1",
+        "task_id": "task_1",
+        "trial_id": "trial_1",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Finding 1 (integration): scope resolution against a real DB, exercising
 # resolve_prompt_core rather than a mocked prompt lookup.
@@ -146,11 +184,11 @@ async def _cleanup(session, *, kind: str, task_id: str, run_ids: list[str]) -> N
             )
         )
         await session.execute(
-            AnalyzerRunModel.__table__.delete().where(
-                AnalyzerRunModel.id.in_(run_ids)
-            )
+            AnalyzerRunModel.__table__.delete().where(AnalyzerRunModel.id.in_(run_ids))
         )
-    await session.execute(PromptModel.__table__.delete().where(PromptModel.kind == kind))
+    await session.execute(
+        PromptModel.__table__.delete().where(PromptModel.kind == kind)
+    )
     await session.execute(TaskModel.__table__.delete().where(TaskModel.id == task_id))
     await session.commit()
 
@@ -202,7 +240,9 @@ async def test_run_custom_qa_core_falls_back_to_global_prompt():
     org_id = f"org-{uuid.uuid4().hex[:8]}"
     async with get_session() as session:
         task_id = await _seed_task(session, org_id=org_id)
-        global_version = await set_prompt_core(session, kind=kind, content="global content")
+        global_version = await set_prompt_core(
+            session, kind=kind, content="global content"
+        )
         await session.commit()
 
     run_ids: list[str] = []

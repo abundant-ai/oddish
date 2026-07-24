@@ -34,13 +34,21 @@ class _FakePrompt:
 
 
 class _FakeSession:
+    def __init__(self, target_org_id="org_1"):
+        self.target_org_id = target_org_id
+
     async def commit(self):
         pass
 
+    async def get(self, model, scope_id):
+        if self.target_org_id is None:
+            return None
+        return type("Target", (), {"id": scope_id, "org_id": self.target_org_id})()
+
 
 @contextlib.asynccontextmanager
-async def _ctx(_):
-    yield _FakeSession()
+async def _ctx(session):
+    yield session or _FakeSession()
 
 
 def _auth(scopes):
@@ -64,9 +72,18 @@ async def _call(
     scopes=(APIKeyScope.READ,),
     prompt_org_id=None,
     prompt_core=None,
+    target_org_id="org_1",
     **kwargs,
 ):
-    async def fake_get(session, kind, *, version=None, scope_type=None, scope_id=None):
+    async def fake_get(
+        session,
+        kind,
+        *,
+        version=None,
+        scope_type=None,
+        scope_id=None,
+        org_id=None,
+    ):
         if kind in {"not_a_kind", "NOT_A_KIND"}:
             raise HTTPException(status_code=404, detail="not found")
         prompt = _FakePrompt()
@@ -78,7 +95,11 @@ async def _call(
     async def fake_usage(session, ref):
         return {"total": 0, "last_used_at": None, "by_version": []}
 
-    monkeypatch.setattr(prompts_router, "get_session", lambda: _ctx(None))
+    monkeypatch.setattr(
+        prompts_router,
+        "get_session",
+        lambda: _ctx(_FakeSession(target_org_id=target_org_id)),
+    )
     monkeypatch.setattr(prompts_router, "get_prompt_core", prompt_core or fake_get)
     monkeypatch.setattr(prompts_router, "get_prompt_usage_core", fake_usage)
     app = create_app()
@@ -342,10 +363,18 @@ async def test_get_same_org_prompt_id_is_still_readable(monkeypatch):
 
 
 def _capturing_prompt_core(seen):
-    async def fake_get(session, ref, *, version=None, scope_type=None, scope_id=None):
+    async def fake_get(
+        session,
+        ref,
+        *,
+        version=None,
+        scope_type=None,
+        scope_id=None,
+        org_id=None,
+    ):
         # _validated_ref calls this first with no scope; record only the
         # router's own call, which is the second one.
-        seen.append({"scope_type": scope_type, "scope_id": scope_id})
+        seen.append({"scope_type": scope_type, "scope_id": scope_id, "org_id": org_id})
         return _FakePrompt(), _V2
 
     return fake_get
@@ -361,7 +390,11 @@ async def test_get_prompt_passes_scope_to_core(monkeypatch):
         prompt_core=_capturing_prompt_core(seen),
     )
     assert resp.status_code == 200
-    assert seen[-1] == {"scope_type": "task", "scope_id": "task_a"}
+    assert seen[-1] == {
+        "scope_type": "task",
+        "scope_id": "task_a",
+        "org_id": "org_1",
+    }
 
 
 @pytest.mark.asyncio
@@ -374,7 +407,7 @@ async def test_get_prompt_defaults_to_global_scope(monkeypatch):
         prompt_core=_capturing_prompt_core(seen),
     )
     assert resp.status_code == 200
-    assert seen[-1] == {"scope_type": None, "scope_id": None}
+    assert seen[-1] == {"scope_type": None, "scope_id": None, "org_id": None}
 
 
 @pytest.mark.asyncio
@@ -388,7 +421,11 @@ async def test_get_prompt_org_scope_infers_auth_org(monkeypatch):
     )
     assert resp.status_code == 200
     # _auth() builds an AuthContext with org_id="org_1".
-    assert seen[-1] == {"scope_type": "org", "scope_id": "org_1"}
+    assert seen[-1] == {
+        "scope_type": "org",
+        "scope_id": "org_1",
+        "org_id": "org_1",
+    }
 
 
 @pytest.mark.asyncio
@@ -401,6 +438,29 @@ async def test_get_prompt_rejects_unknown_scope(monkeypatch):
 async def test_get_prompt_task_scope_requires_scope_id(monkeypatch):
     resp = await _call("GET", "/prompts/QA_PRE_TRIAL?scope=task", monkeypatch)
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_rejects_foreign_domain_scope_before_prompt_lookup(
+    monkeypatch,
+):
+    called = False
+
+    async def fake_get(session, ref, **kwargs):
+        nonlocal called
+        called = True
+        return _FakePrompt(), _V2
+
+    resp = await _call(
+        "GET",
+        "/prompts/QA_PRE_TRIAL?scope=task&scope_id=foreign_task",
+        monkeypatch,
+        prompt_core=fake_get,
+        target_org_id="org_2",
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "task not found"
+    assert called is False
 
 
 @pytest.mark.asyncio
@@ -447,8 +507,10 @@ async def test_set_prompt_domain_scope_requires_scope_id(monkeypatch):
 
 
 def _capturing_versions_core(seen):
-    async def fake_versions(session, ref, *, scope_type=None, scope_id=None):
-        seen.append({"scope_type": scope_type, "scope_id": scope_id})
+    async def fake_versions(
+        session, ref, *, scope_type=None, scope_id=None, org_id=None
+    ):
+        seen.append({"scope_type": scope_type, "scope_id": scope_id, "org_id": org_id})
         return [_V1, _V2]
 
     return fake_versions
@@ -464,7 +526,11 @@ async def test_get_prompt_versions_passes_scope_to_core(monkeypatch):
         "GET", "/prompts/QA_PRE_TRIAL/versions?scope=task&scope_id=task_a", monkeypatch
     )
     assert resp.status_code == 200
-    assert seen[-1] == {"scope_type": "task", "scope_id": "task_a"}
+    assert seen[-1] == {
+        "scope_type": "task",
+        "scope_id": "task_a",
+        "org_id": "org_1",
+    }
 
 
 @pytest.mark.asyncio
@@ -475,4 +541,4 @@ async def test_get_prompt_versions_defaults_to_global_scope(monkeypatch):
     )
     resp = await _call("GET", "/prompts/QA_PRE_TRIAL/versions", monkeypatch)
     assert resp.status_code == 200
-    assert seen[-1] == {"scope_type": None, "scope_id": None}
+    assert seen[-1] == {"scope_type": None, "scope_id": None, "org_id": None}

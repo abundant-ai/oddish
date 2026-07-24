@@ -224,6 +224,34 @@ def test_get_shows_scope_on_screen(monkeypatch):
     assert "GLOBAL TEXT" in result.output
 
 
+def test_list_shows_scope_for_each_prompt(monkeypatch):
+    _fake_client(
+        monkeypatch,
+        method="get",
+        url_substr="/prompts",
+        payload=[
+            {
+                "kind": "QA_POST_TRIAL",
+                "id": "global",
+                "latest_version": 1,
+                "scope_type": None,
+                "scope_id": None,
+            },
+            {
+                "kind": "QA_POST_TRIAL",
+                "id": "task",
+                "latest_version": 2,
+                "scope_type": "task",
+                "scope_id": "task_1",
+            },
+        ],
+    )
+    result = runner.invoke(prompt_app, ["list"])
+    assert result.exit_code == 0
+    assert "scope=global" in result.output
+    assert "scope=task:task_1" in result.output
+
+
 def test_get_shows_org_scope(monkeypatch):
     _fake_client(
         monkeypatch,

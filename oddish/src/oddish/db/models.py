@@ -644,9 +644,7 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Which prompts row produced this block. prompt_key/prompt_version alone
     # cannot attribute usage once the same kind exists at several scopes.
-    prompt_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
+    prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # input/output are arbitrary JSON (the block's I/O are typed ``any``).
     input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
@@ -2395,6 +2393,7 @@ class PromptModel(TimestampedMixin, Base):
         Index(
             "idx_prompts_unique_kind_scope",
             "kind",
+            text("COALESCE(org_id, '')"),
             text("COALESCE(scope_type, '')"),
             text("COALESCE(scope_id, '')"),
             unique=True,

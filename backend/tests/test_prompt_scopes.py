@@ -69,9 +69,7 @@ async def test_falls_back_to_global_when_no_override(scoped_kind):
 @pytest.mark.asyncio
 async def test_org_override_beats_global(scoped_kind):
     await _write(scoped_kind, "global")
-    await _write(
-        scoped_kind, "org", scope_type="org", scope_id="org_a", org_id="org_a"
-    )
+    await _write(scoped_kind, "org", scope_type="org", scope_id="org_a", org_id="org_a")
     async with get_session() as session:
         _, ver = await resolve_prompt_core(
             session, scoped_kind, **{**_NO_SCOPES, "org_id": "org_a"}
@@ -118,8 +116,11 @@ async def test_task_scope_beats_experiment_scope(scoped_kind):
         scoped_kind, "task", scope_type="task", scope_id="task_a", org_id="org_a"
     )
     await _write(
-        scoped_kind, "experiment",
-        scope_type="experiment", scope_id="exp_a", org_id="org_a",
+        scoped_kind,
+        "experiment",
+        scope_type="experiment",
+        scope_id="exp_a",
+        org_id="org_a",
     )
     async with get_session() as session:
         _, ver = await resolve_prompt_core(
@@ -140,8 +141,11 @@ async def test_other_orgs_override_is_never_resolved(scoped_kind):
     # The guard that keeps one tenant's prompt out of another's QA.
     await _write(scoped_kind, "global")
     await _write(
-        scoped_kind, "org_b_secret",
-        scope_type="task", scope_id="task_shared", org_id="org_b",
+        scoped_kind,
+        "org_b_secret",
+        scope_type="task",
+        scope_id="task_shared",
+        org_id="org_b",
     )
     async with get_session() as session:
         _, ver = await resolve_prompt_core(
@@ -252,42 +256,45 @@ async def test_set_by_id_rejects_scope_mismatch(scoped_kind):
 
 
 @pytest.mark.asyncio
-async def test_set_rejects_cross_org_write_to_user_scoped_row(scoped_kind):
-    # scope_id for "user" is a bare user id, not org-partitioned the way
-    # task/experiment/trial ids are -- so (scope_type, scope_id) alone can
-    # resolve to the SAME row for a user who has since moved to (or holds
-    # FULL access in) a different org. Without the org_id check, that write
-    # would silently append to the other org's row.
-    await _write(scoped_kind, "org_a v1", scope_type="user", scope_id="u1", org_id="org_a")
+async def test_user_scoped_rows_are_partitioned_by_org(scoped_kind):
+    await _write(
+        scoped_kind, "org_a v1", scope_type="user", scope_id="u1", org_id="org_a"
+    )
+    await _write(
+        scoped_kind, "org_b v1", scope_type="user", scope_id="u1", org_id="org_b"
+    )
     async with get_session() as session:
-        with pytest.raises(ValueError):
-            await set_prompt_core(
-                session,
-                kind=scoped_kind,
-                content="hijacked",
-                scope_type="user",
-                scope_id="u1",
-                org_id="org_b",
-            )
-    async with get_session() as session:
-        _, ver = await get_prompt_core(
-            session, scoped_kind, scope_type="user", scope_id="u1"
+        _, org_a = await get_prompt_core(
+            session,
+            scoped_kind,
+            scope_type="user",
+            scope_id="u1",
+            org_id="org_a",
         )
-    assert ver.version == 1
-    assert ver.content == "org_a v1"
+        _, org_b = await get_prompt_core(
+            session,
+            scoped_kind,
+            scope_type="user",
+            scope_id="u1",
+            org_id="org_b",
+        )
+    assert org_a.content == "org_a v1"
+    assert org_b.content == "org_b v1"
 
 
 @pytest.mark.asyncio
 async def test_scoped_and_global_versions_increment_independently(scoped_kind):
     await _write(scoped_kind, "g1")
     await _write(scoped_kind, "g2")
-    await _write(
-        scoped_kind, "o1", scope_type="org", scope_id="org_a", org_id="org_a"
-    )
+    await _write(scoped_kind, "o1", scope_type="org", scope_id="org_a", org_id="org_a")
     async with get_session() as session:
         _, global_ver = await get_prompt_core(session, scoped_kind)
         _, org_ver = await get_prompt_core(
-            session, scoped_kind, scope_type="org", scope_id="org_a"
+            session,
+            scoped_kind,
+            scope_type="org",
+            scope_id="org_a",
+            org_id="org_a",
         )
     assert global_ver.version == 2
     assert org_ver.version == 1
@@ -296,18 +303,22 @@ async def test_scoped_and_global_versions_increment_independently(scoped_kind):
 @pytest.mark.asyncio
 async def test_same_kind_coexists_across_distinct_scopes(scoped_kind):
     await _write(scoped_kind, "global")
-    await _write(
-        scoped_kind, "a", scope_type="org", scope_id="org_a", org_id="org_a"
-    )
-    await _write(
-        scoped_kind, "b", scope_type="org", scope_id="org_b", org_id="org_b"
-    )
+    await _write(scoped_kind, "a", scope_type="org", scope_id="org_a", org_id="org_a")
+    await _write(scoped_kind, "b", scope_type="org", scope_id="org_b", org_id="org_b")
     async with get_session() as session:
         _, a = await get_prompt_core(
-            session, scoped_kind, scope_type="org", scope_id="org_a"
+            session,
+            scoped_kind,
+            scope_type="org",
+            scope_id="org_a",
+            org_id="org_a",
         )
         _, b = await get_prompt_core(
-            session, scoped_kind, scope_type="org", scope_id="org_b"
+            session,
+            scoped_kind,
+            scope_type="org",
+            scope_id="org_b",
+            org_id="org_b",
         )
     assert (a.content, b.content) == ("a", "b")
 
@@ -336,9 +347,7 @@ async def test_scoped_prompt_is_fetchable_by_id(scoped_kind):
 async def test_duplicate_row_at_identical_scope_is_rejected(scoped_kind):
     # set_prompt_core appends a version rather than inserting a second row, so
     # the index is exercised by inserting the ORM row directly.
-    await _write(
-        scoped_kind, "a", scope_type="org", scope_id="org_a", org_id="org_a"
-    )
+    await _write(scoped_kind, "a", scope_type="org", scope_id="org_a", org_id="org_a")
     with pytest.raises(IntegrityError):
         async with get_session() as session:
             session.add(

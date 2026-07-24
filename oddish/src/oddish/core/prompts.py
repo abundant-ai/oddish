@@ -23,6 +23,7 @@ async def _get_prompt(
     *,
     scope_type: str | None = None,
     scope_id: str | None = None,
+    org_id: str | None = None,
 ) -> PromptModel | None:
     """Resolve by kind within the given scope, then by id.
 
@@ -37,6 +38,7 @@ async def _get_prompt(
         else and_(
             PromptModel.scope_type == scope_type,
             PromptModel.scope_id == scope_id,
+            PromptModel.org_id == org_id,
         )
     )
     result = await session.execute(
@@ -44,9 +46,7 @@ async def _get_prompt(
     )
     prompt = result.scalar_one_or_none()
     if prompt is None:
-        result = await session.execute(
-            select(PromptModel).where(PromptModel.id == ref)
-        )
+        result = await session.execute(select(PromptModel).where(PromptModel.id == ref))
         prompt = result.scalar_one_or_none()
     return prompt
 
@@ -69,7 +69,11 @@ async def set_prompt_core(
     if scope_type is not None and not org_id:
         raise ValueError("org_id is required when scope_type is set")
     prompt = await _get_prompt(
-        session, kind, scope_type=scope_type, scope_id=scope_id
+        session,
+        kind,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        org_id=org_id,
     )
     if prompt is not None and (prompt.scope_type, prompt.scope_id) != (
         scope_type,
@@ -143,8 +147,15 @@ async def list_prompt_versions_core(
     *,
     scope_type: str | None = None,
     scope_id: str | None = None,
+    org_id: str | None = None,
 ) -> list[PromptVersionModel]:
-    prompt = await _get_prompt(session, kind, scope_type=scope_type, scope_id=scope_id)
+    prompt = await _get_prompt(
+        session,
+        kind,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        org_id=org_id,
+    )
     if prompt is None:
         raise HTTPException(status_code=404, detail=f"Prompt '{kind}' not found")
     versions = await prompt.awaitable_attrs.versions
@@ -158,9 +169,14 @@ async def get_prompt_core(
     version: int | None = None,
     scope_type: str | None = None,
     scope_id: str | None = None,
+    org_id: str | None = None,
 ) -> tuple[PromptModel, PromptVersionModel]:
     prompt = await _get_prompt(
-        session, kind, scope_type=scope_type, scope_id=scope_id
+        session,
+        kind,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        org_id=org_id,
     )
     if prompt is None:
         raise HTTPException(status_code=404, detail=f"Prompt '{kind}' not found")
@@ -228,7 +244,11 @@ async def resolve_prompt_core(
         if not scope_id:
             continue
         prompt = await _get_prompt(
-            session, kind, scope_type=scope_type, scope_id=scope_id
+            session,
+            kind,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            org_id=org_id,
         )
         if prompt is not None and (prompt.org_id is None or prompt.org_id == org_id):
             versions = await prompt.awaitable_attrs.versions
