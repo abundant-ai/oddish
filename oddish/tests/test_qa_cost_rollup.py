@@ -85,6 +85,7 @@ def _qa_row(
     experiment_id: str | None = None,
     job_kind: str = "trial_classifier",
     cost_source: str = "estimated",
+    deleted_at=None,
 ) -> AnalysisCostModel:
     return AnalysisCostModel(
         job_kind=job_kind,
@@ -95,6 +96,7 @@ def _qa_row(
         model="claude-haiku-4-5",
         cost_usd=cost_usd,
         cost_source=cost_source,
+        deleted_at=deleted_at,
     )
 
 
@@ -110,6 +112,7 @@ async def test_trial_scope_sums_per_trial(session):
             _qa_row(cost_usd=0.004, trial_id=a.id),
             _qa_row(cost_usd=0.006, trial_id=a.id),  # a re-classification
             _qa_row(cost_usd=0.002, trial_id=b.id),
+            _qa_row(cost_usd=99.0, trial_id=a.id, deleted_at=utcnow()),  # voided
         ]
     )
     await session.flush()
@@ -170,6 +173,12 @@ async def test_task_scope_unions_task_level_qa_without_double_counting(session):
         [
             _qa_row(cost_usd=0.03, trial_id=trial.id),
             _qa_row(cost_usd=0.07, task_id=task.id, job_kind="CUSTOM_QA"),
+            _qa_row(
+                cost_usd=99.0,
+                task_id=task.id,
+                job_kind="CUSTOM_QA",
+                deleted_at=utcnow(),
+            ),  # voided
         ]
     )
     await session.flush()
@@ -250,18 +259,32 @@ async def test_experiment_scope_counts_gathered_trials_but_not_as_owned(session)
 
     homed = _trial(task, collection)
     gathered = _trial(task, home)
-    session.add_all([homed, gathered])
+    unlinked = _trial(task, home)
+    session.add_all([homed, gathered, unlinked])
     await session.flush()
 
     await session.execute(
         insert(experiment_trials).values(
-            experiment_id=collection.id, trial_id=gathered.id
+            [
+                {
+                    "experiment_id": collection.id,
+                    "trial_id": gathered.id,
+                    "deleted_at": None,
+                },
+                # soft-deleted membership: no longer a member, cost excluded
+                {
+                    "experiment_id": collection.id,
+                    "trial_id": unlinked.id,
+                    "deleted_at": utcnow(),
+                },
+            ]
         )
     )
     session.add_all(
         [
             _qa_row(cost_usd=0.02, trial_id=homed.id),
             _qa_row(cost_usd=0.05, trial_id=gathered.id),
+            _qa_row(cost_usd=99.0, trial_id=unlinked.id),
         ]
     )
     await session.flush()

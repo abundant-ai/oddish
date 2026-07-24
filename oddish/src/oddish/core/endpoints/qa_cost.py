@@ -77,15 +77,33 @@ _LEDGER_ROW = (
 
 
 def _fold(rows) -> QaCostTotals:
+    """Combine pre-aggregated group rows (``cost_usd``/``job_count``/
+    ``has_native``/``has_estimated`` columns from a SQL ``GROUP BY``) into one
+    totals object. Folds at most a handful of group rows, never raw ledger
+    rows."""
     totals = QaCostTotals()
     for row in rows:
         totals.qa_cost_usd += float(row.cost_usd)
-        totals.qa_job_count += 1
-        if row.cost_source == "native":
-            totals.qa_has_native = True
-        else:
-            totals.qa_has_estimated = True
+        totals.qa_job_count += row.job_count
+        totals.qa_has_native = totals.qa_has_native or bool(row.has_native)
+        totals.qa_has_estimated = totals.qa_has_estimated or bool(row.has_estimated)
     return totals
+
+
+def _group_flags(cost_source):
+    """``bool_or`` pair for the native/estimated flags, shared by every
+    ``GROUP BY`` query in this module.
+
+    ``cost_source != "native"`` (rather than ``~(cost_source == "native")``)
+    matters only defensively -- the column is NOT NULL -- but keeps the
+    estimated flag correct if that ever changes: SQL's NULL-propagating
+    ``==`` would otherwise drop a NULL row from both flags instead of
+    counting it as estimated.
+    """
+    return (
+        func.bool_or(cost_source == "native").label("has_native"),
+        func.bool_or(cost_source != "native").label("has_estimated"),
+    )
 
 
 async def get_trial_qa_costs(
@@ -137,7 +155,14 @@ async def get_task_qa_costs(
     so it is charged exactly once, while a row whose ``task_id`` and whose
     trial's task differ still counts once for each -- which a
     ``COALESCE(analysis_costs.task_id, trials.task_id)`` projection could not
-    express, and which could otherwise return a task nobody asked for.
+    express, and which could otherwise return a task nobody asked for. That
+    also means a row can be charged to two different tasks in the same
+    result: per-task totals are not additive across a task list, and must not
+    be summed into a single "total QA spend" figure.
+
+    The UNION is aggregated in SQL (``GROUP BY`` over the deduped rows), not
+    folded row-by-row in Python, so a page of many task ids pulls back at
+    most one row per task rather than every ledger row in scope.
     """
     if not task_ids:
         return {}
@@ -156,12 +181,19 @@ async def get_task_qa_costs(
         direct = direct.where(AnalysisCostModel.org_id == org_id)
         via_trials = via_trials.where(AnalysisCostModel.org_id == org_id)
 
-    query = direct.union(via_trials).execution_options(include_deleted=True)
+    u = direct.union(via_trials).subquery()
+    query = (
+        select(
+            u.c.task_id,
+            func.sum(u.c.cost_usd).label("cost_usd"),
+            func.count().label("job_count"),
+            *_group_flags(u.c.cost_source),
+        )
+        .group_by(u.c.task_id)
+        .execution_options(include_deleted=True)
+    )
 
-    by_task: dict[str, list] = {}
-    for row in (await session.execute(query)).all():
-        by_task.setdefault(row.task_id, []).append(row)
-    return {task_id: _fold(rows) for task_id, rows in by_task.items()}
+    return {row.task_id: _fold([row]) for row in (await session.execute(query)).all()}
 
 
 async def get_experiment_qa_cost_totals(
@@ -180,6 +212,9 @@ async def get_experiment_qa_cost_totals(
 
     The join is on ``trials.id``, so it matches at most one trial per ledger
     row and cannot fan out -- no ``DISTINCT`` needed.
+
+    Aggregated in SQL, grouped by ``owned``: at most two group rows come back
+    (owned / not-owned) rather than every ledger row in scope.
     """
     owned = case(
         (TrialModel.id.isnot(None), TrialModel.experiment_id == experiment_id),
@@ -187,7 +222,12 @@ async def get_experiment_qa_cost_totals(
     ).label("owned")
 
     query = (
-        select(*_LEDGER_ROW, owned)
+        select(
+            owned,
+            func.sum(_COST).label("cost_usd"),
+            func.count().label("job_count"),
+            *_group_flags(AnalysisCostModel.cost_source),
+        )
         .select_from(AnalysisCostModel)
         .outerjoin(TrialModel, TrialModel.id == AnalysisCostModel.trial_id)
         .where(
@@ -197,6 +237,7 @@ async def get_experiment_qa_cost_totals(
                 AnalysisCostModel.experiment_id == experiment_id,
             ),
         )
+        .group_by(owned)
         .execution_options(include_deleted=True)
     )
     if org_id is not None:
