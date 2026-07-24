@@ -184,36 +184,83 @@ class AnalysisJobHandler:
             )
 
 
-async def _earlier_active_qa_job_exists(
+async def _qa_job_should_yield(
     session,
     *,
     task_id: str,
     exclude_job_id: str,
+    task_version_id: str | None,
+    current_version_id: str | None,
 ) -> bool:
     current_created_at = (
         select(WorkerJobModel.created_at)
         .where(WorkerJobModel.id == exclude_job_id)
         .scalar_subquery()
     )
+    current_claimed_at = (
+        select(
+            func.coalesce(
+                WorkerJobModel.claimed_at,
+                WorkerJobModel.created_at,
+            )
+        )
+        .where(WorkerJobModel.id == exclude_job_id)
+        .scalar_subquery()
+    )
+    active_filters = (
+        WorkerJobModel.kind == WorkerJobKind.QA,
+        WorkerJobModel.subject_id == task_id,
+        WorkerJobModel.id != exclude_job_id,
+        WorkerJobModel.status.in_(
+            (
+                WorkerJobStatus.QUEUED,
+                WorkerJobStatus.RUNNING,
+                WorkerJobStatus.RETRYING,
+            )
+        ),
+    )
+    earlier_job = or_(
+        WorkerJobModel.created_at < current_created_at,
+        and_(
+            WorkerJobModel.created_at == current_created_at,
+            WorkerJobModel.id < exclude_job_id,
+        ),
+    )
+    pinned_to_current = (
+        WorkerJobModel.payload["task_version_id"].as_string() == current_version_id
+    )
+    preexisting_current_job = and_(
+        pinned_to_current,
+        WorkerJobModel.created_at <= current_claimed_at,
+    )
+    preexisting_current_job_exists = (
+        select(WorkerJobModel.id)
+        .where(*active_filters, preexisting_current_job)
+        .exists()
+    )
+    if task_version_id == current_version_id:
+        competitor = or_(
+            and_(pinned_to_current, earlier_job),
+            and_(
+                WorkerJobModel.status == WorkerJobStatus.RUNNING,
+                WorkerJobModel.claimed_at < current_created_at,
+            ),
+        )
+    else:
+        # A current-version job that already existed when this stale retry was
+        # claimed owns QA. A job enqueued after this retry began instead yields
+        # to the in-flight work, preventing both jobs from classifying the same
+        # cohort. With no pre-existing current job, the earliest stale/legacy
+        # job may adopt the current version so recovery still makes progress.
+        competitor = or_(
+            preexisting_current_job,
+            and_(earlier_job, ~preexisting_current_job_exists),
+        )
     return bool(
         await session.scalar(
             select(func.count(WorkerJobModel.id)).where(
-                WorkerJobModel.kind == WorkerJobKind.QA,
-                WorkerJobModel.subject_id == task_id,
-                or_(
-                    WorkerJobModel.created_at < current_created_at,
-                    and_(
-                        WorkerJobModel.created_at == current_created_at,
-                        WorkerJobModel.id < exclude_job_id,
-                    ),
-                ),
-                WorkerJobModel.status.in_(
-                    (
-                        WorkerJobStatus.QUEUED,
-                        WorkerJobStatus.RUNNING,
-                        WorkerJobStatus.RETRYING,
-                    )
-                ),
+                *active_filters,
+                competitor,
             )
         )
     )
@@ -250,6 +297,7 @@ class QaJobHandler:
         if not task_id:
             raise ValueError("QA worker_job missing subject_id / payload.task_id")
         task_version_id = payload.get("task_version_id")
+        requested_task_version_id = task_version_id
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id, with_for_update=True)
@@ -269,14 +317,17 @@ class QaJobHandler:
             version_mismatch = (
                 task_version_id is not None and current_version_id != task_version_id
             )
-            if await _earlier_active_qa_job_exists(
+            if await _qa_job_should_yield(
                 session,
                 task_id=task_id,
                 exclude_job_id=job.id,
+                task_version_id=task_version_id,
+                current_version_id=current_version_id,
             ):
                 return JobOutcome.ok()
+            active_current_trials: int | None = None
             if version_mismatch:
-                active_trials = await session.scalar(
+                active_current_trials = await session.scalar(
                     select(func.count(TrialModel.id)).where(
                         TrialModel.task_id == task_id,
                         TrialModel.task_version_id == current_version_id,
@@ -291,7 +342,7 @@ class QaJobHandler:
                         ),
                     )
                 )
-                if active_trials:
+                if active_current_trials:
                     task.status = TaskStatus.RUNNING
                     task.finished_at = None
                     task.verdict = None
@@ -300,10 +351,29 @@ class QaJobHandler:
                     task.verdict_started_at = None
                     task.verdict_finished_at = None
                     return JobOutcome.ok()
+                task_version_id = current_version_id
+            task_version_id = task_version_id or current_version_id
+            if task.verdict_status == VerdictStatus.SUCCESS:
+                if active_current_trials is None:
+                    active_current_trials = await session.scalar(
+                        select(func.count(TrialModel.id)).where(
+                            TrialModel.task_id == task_id,
+                            TrialModel.task_version_id == current_version_id,
+                            TrialModel.superseded_by_trial_id.is_(None),
+                            TrialModel.status.in_(
+                                (
+                                    TrialStatus.PENDING,
+                                    TrialStatus.QUEUED,
+                                    TrialStatus.RUNNING,
+                                    TrialStatus.RETRYING,
+                                )
+                            ),
+                        )
+                    )
                 task_verdict = getattr(task, "verdict", None)
                 verdict = task_verdict if isinstance(task_verdict, dict) else {}
                 if (
-                    task.verdict_status == VerdictStatus.SUCCESS
+                    not active_current_trials
                     and verdict.get("task_version_id") == current_version_id
                     and verdict.get("trial_ids")
                     == await _qa_eligible_trial_ids(
@@ -333,8 +403,6 @@ class QaJobHandler:
                     )
                     task.finished_at = None if active_task_trials else utcnow()
                     return JobOutcome.ok()
-                task_version_id = current_version_id
-            task_version_id = task_version_id or current_version_id
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 task.verdict = None
                 task.verdict_status = VerdictStatus.QUEUED
@@ -375,12 +443,14 @@ class QaJobHandler:
                     ),
                 )
             )
-            earlier_qa_active = await _earlier_active_qa_job_exists(
+            preferred_qa_active = await _qa_job_should_yield(
                 session,
                 task_id=task_id,
                 exclude_job_id=job.id,
+                task_version_id=requested_task_version_id,
+                current_version_id=current_version_id,
             )
-            if not earlier_qa_active:
+            if not preferred_qa_active:
                 task.status = TaskStatus.RUNNING
                 task.finished_at = None
                 task.verdict = None
@@ -388,7 +458,7 @@ class QaJobHandler:
                 task.verdict_error = None
                 task.verdict_started_at = None
                 task.verdict_finished_at = None
-            if active_trials or earlier_qa_active:
+            if active_trials or preferred_qa_active:
                 return JobOutcome.ok()
             return _fail_retryable(
                 f"QA {task_id} result was rejected after its cohort changed"

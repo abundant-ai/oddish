@@ -518,7 +518,50 @@ async def test_qa_handler_reuses_exact_current_verdict_for_stale_job(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_qa_handler_defers_stale_job_to_current_queued_job(monkeypatch):
+async def test_qa_handler_reuses_exact_current_verdict_for_late_duplicate(
+    monkeypatch,
+):
+    task_row = SimpleNamespace(
+        current_version_id="task-xyz-v9",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict={
+            "task_version_id": "task-xyz-v9",
+            "trial_ids": ["task-xyz-9"],
+        },
+        verdict_status=VerdictStatus.SUCCESS,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "get_session",
+        _fake_get_session_factory(
+            task_row,
+            # No active QA owner, no active current-version trials, and no
+            # active historical trials remain.
+            scalar_values=(0, 0, 0),
+            scalars_value=("task-xyz-9",),
+        ),
+    )
+    called = _patch_run(monkeypatch, "run_task_qa_job")
+
+    outcome = await QaJobHandler().run(
+        _verdict_claim(
+            payload={
+                "task_id": "task-xyz",
+                "task_version_id": "task-xyz-v9",
+            }
+        )
+    )
+
+    assert outcome.success is not None
+    assert called["args"] is None
+    assert task_row.status == TaskStatus.COMPLETED
+    assert task_row.verdict_status == VerdictStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_defers_earlier_stale_job_to_newer_current_job(
+    monkeypatch,
+):
     task_row = SimpleNamespace(
         current_version_id="task-xyz-v9",
         verdict_status=VerdictStatus.QUEUED,
@@ -528,6 +571,8 @@ async def test_qa_handler_defers_stale_job_to_current_queued_job(monkeypatch):
         "get_session",
         _fake_get_session_factory(
             task_row,
+            # The active-job election prefers a current-version job that was
+            # already queued when this stale retry was claimed.
             scalar_values=(1,),
         ),
     )
