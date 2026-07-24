@@ -197,16 +197,6 @@ async def _qa_job_should_yield(
         .where(WorkerJobModel.id == exclude_job_id)
         .scalar_subquery()
     )
-    current_claimed_at = (
-        select(
-            func.coalesce(
-                WorkerJobModel.claimed_at,
-                WorkerJobModel.created_at,
-            )
-        )
-        .where(WorkerJobModel.id == exclude_job_id)
-        .scalar_subquery()
-    )
     active_filters = (
         WorkerJobModel.kind == WorkerJobKind.QA,
         WorkerJobModel.subject_id == task_id,
@@ -229,32 +219,19 @@ async def _qa_job_should_yield(
     pinned_to_current = (
         WorkerJobModel.payload["task_version_id"].as_string() == current_version_id
     )
-    preexisting_current_job = and_(
-        pinned_to_current,
-        WorkerJobModel.created_at <= current_claimed_at,
-    )
-    preexisting_current_job_exists = (
-        select(WorkerJobModel.id)
-        .where(*active_filters, preexisting_current_job)
-        .exists()
+    current_pinned_job_exists = (
+        select(WorkerJobModel.id).where(*active_filters, pinned_to_current).exists()
     )
     if task_version_id == current_version_id:
-        competitor = or_(
-            and_(pinned_to_current, earlier_job),
-            and_(
-                WorkerJobModel.status == WorkerJobStatus.RUNNING,
-                WorkerJobModel.claimed_at < current_created_at,
-            ),
-        )
+        competitor = and_(pinned_to_current, earlier_job)
     else:
-        # A current-version job that already existed when this stale retry was
-        # claimed owns QA. A job enqueued after this retry began instead yields
-        # to the in-flight work, preventing both jobs from classifying the same
-        # cohort. With no pre-existing current job, the earliest stale/legacy
-        # job may adopt the current version so recovery still makes progress.
+        # A current-version job always owns QA. With none active, the earliest
+        # stale/legacy job may adopt the current version; adoption repins that
+        # worker_job payload before work starts, so later current jobs see the
+        # real in-flight owner rather than an old-version blocker.
         competitor = or_(
-            preexisting_current_job,
-            and_(earlier_job, ~preexisting_current_job_exists),
+            pinned_to_current,
+            and_(earlier_job, ~current_pinned_job_exists),
         )
     return bool(
         await session.scalar(
@@ -403,6 +380,20 @@ class QaJobHandler:
                     )
                     task.finished_at = None if active_task_trials else utcnow()
                     return JobOutcome.ok()
+            if version_mismatch:
+                worker_job = await session.get(
+                    WorkerJobModel,
+                    job.id,
+                    with_for_update=True,
+                )
+                if worker_job is None:
+                    return _fail_permanent(
+                        f"QA worker_job {job.id} vanished before version adoption"
+                    )
+                worker_payload = dict(getattr(worker_job, "payload", None) or {})
+                worker_payload["task_version_id"] = current_version_id
+                worker_job.payload = worker_payload
+                requested_task_version_id = current_version_id
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 task.verdict = None
                 task.verdict_status = VerdictStatus.QUEUED

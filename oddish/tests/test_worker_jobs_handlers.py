@@ -404,6 +404,7 @@ async def test_qa_handler_adopts_current_terminal_task_version(monkeypatch):
     assert outcome.success is not None
     assert called["task_version_id"] == "task-xyz-v9"
     assert task_row.verdict_status == VerdictStatus.SUCCESS
+    assert task_row.payload["task_version_id"] == "task-xyz-v9"
 
 
 @pytest.mark.asyncio
@@ -571,8 +572,7 @@ async def test_qa_handler_defers_earlier_stale_job_to_newer_current_job(
         "get_session",
         _fake_get_session_factory(
             task_row,
-            # The active-job election prefers a current-version job that was
-            # already queued when this stale retry was claimed.
+            # The active-job election prefers an already-pinned current job.
             scalar_values=(1,),
         ),
     )
