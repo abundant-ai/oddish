@@ -28,7 +28,7 @@ from oddish.core.qa_assignments import (
     scope_label,
     upsert_qa_assignment_core,
 )
-from oddish.db import QAStage, get_session
+from oddish.db import QAStage, TrialModel, get_session
 from oddish.schemas import (
     QAJobAssignRequest,
     QAJobResponse,
@@ -77,11 +77,19 @@ def _to_response(resolved: ResolvedAssignment) -> QAJobResponse:
     )
 
 
-def _resolution_scopes(
-    scope_type: str | None, scope_id: str | None, auth: AuthContext
+async def _resolution_scopes(
+    session, scope_type: str | None, scope_id: str | None, auth: AuthContext
 ) -> dict:
     """Map a requested scope onto ``resolve_qa_assignments_core`` arguments --
     i.e. the effective job set a subject at that scope would run.
+
+    The union in ``resolve_qa_assignments_core`` needs the subject's whole
+    ancestry, not just the immediate id, or ``list``/``status`` under-report
+    the jobs that would actually fire. A trial runs inside a task and an
+    experiment, so resolving at a trial must carry its task/experiment/user --
+    exactly what the post-trial enqueue passes (``trial_handler``). Every other
+    scope's only ancestor is the org, which is already set. A missing trial row
+    falls back to the trial id alone.
 
     A global write is ``scope_type=None``; it carries no org context, so
     ``org_id`` is ``None`` -- otherwise a kind-based resolve would prefer the
@@ -96,8 +104,15 @@ def _resolution_scopes(
     }
     if scope_type == "user":
         scopes["user_id"] = scope_id
-    elif scope_type in {"experiment", "task", "trial"}:
+    elif scope_type in {"experiment", "task"}:
         scopes[f"{scope_type}_id"] = scope_id
+    elif scope_type == "trial":
+        scopes["trial_id"] = scope_id
+        trial = await session.get(TrialModel, scope_id)
+        if trial is not None:
+            scopes["task_id"] = trial.task_id
+            scopes["experiment_id"] = trial.experiment_id
+            scopes["user_id"] = trial.billed_user_id
     return scopes
 
 
@@ -122,7 +137,9 @@ async def _resolved_at(session, scope_type, scope_id, auth, *, stage=None):
             trial_id=None,
         )
     return await resolve_qa_assignments_core(
-        session, stage=stage, **_resolution_scopes(scope_type, scope_id, auth)
+        session,
+        stage=stage,
+        **(await _resolution_scopes(session, scope_type, scope_id, auth)),
     )
 
 
@@ -222,7 +239,13 @@ async def assign_qa_job(
         # so can name another org's row -- re-check it before binding to it.
         try:
             prompt, latest = await resolve_prompt_core(
-                session, ref, **_resolution_scopes(scope_type, resolved_scope_id, auth)
+                session,
+                ref,
+                **(
+                    await _resolution_scopes(
+                        session, scope_type, resolved_scope_id, auth
+                    )
+                ),
             )
         except HTTPException as exc:
             if exc.status_code != 404:
@@ -263,18 +286,22 @@ async def assign_qa_job(
                 else LLMClientType.API
             )
         )
-        # A request that carries no runner config -- e.g. `qa-jobs disable`,
-        # which sends only enabled=false -- must not reset an existing row's
-        # model/backend/effort/CLI/version to stage defaults while toggling it.
-        overwrite_runner_config = any(
-            (
-                data.model is not None,
-                data.backend is not None,
-                data.reasoning_effort is not None,
-                data.allow_oddish_cli is not None,
-                data.prompt_version is not None,
-            )
-        )
+        # Runner config is a partial update: only the fields the request
+        # actually carried overwrite an existing row, so a bare `disable` (and
+        # a bare `assign` that re-enables) leaves a configured job's settings
+        # intact instead of resetting them to stage defaults. `backend` maps to
+        # llm_client_type. Omitted fields still take their defaults on a create.
+        runner_fields_provided = set()
+        if data.model is not None:
+            runner_fields_provided.add("model")
+        if data.backend is not None:
+            runner_fields_provided.add("llm_client_type")
+        if data.reasoning_effort is not None:
+            runner_fields_provided.add("reasoning_effort")
+        if data.allow_oddish_cli is not None:
+            runner_fields_provided.add("allow_oddish_cli")
+        if data.prompt_version is not None:
+            runner_fields_provided.add("prompt_version")
         try:
             assignment = await upsert_qa_assignment_core(
                 session,
@@ -291,7 +318,7 @@ async def assign_qa_job(
                 prompt_version=data.prompt_version,
                 enabled=data.enabled,
                 created_by_user_id=auth.user_id,
-                overwrite_runner_config=overwrite_runner_config,
+                runner_fields_provided=runner_fields_provided,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

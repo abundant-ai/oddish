@@ -255,7 +255,7 @@ async def upsert_qa_assignment_core(
     prompt_version: int | None = None,
     enabled: bool = True,
     created_by_user_id: str | None = None,
-    overwrite_runner_config: bool = True,
+    runner_fields_provided: set[str] | None = None,
 ) -> QAAssignmentModel:
     """Create, or update in place, the assignment for this scope/stage/kind.
 
@@ -265,18 +265,19 @@ async def upsert_qa_assignment_core(
     Re-assigning therefore repoints the existing row rather than adding a
     competing one.
 
-    ``overwrite_runner_config=False`` flips ``enabled`` on an existing row
-    without touching its model/backend/effort/CLI/version. A bare
-    ``qa-jobs disable`` carries no runner config, so it must not clobber a
-    configured assignment's settings back to stage defaults on the way to
-    suppressing it. On a fresh row the passed values still seed the NOT NULL
-    columns regardless.
+    Runner config is a **partial update**. ``runner_fields_provided`` names the
+    subset of ``{model, llm_client_type, reasoning_effort, allow_oddish_cli,
+    prompt_version}`` the caller actually specified; on an existing row only
+    those are rewritten and the rest are preserved. ``None`` means "all of
+    them" (the create-time defaults, and any caller that passes a full config).
+    This is what lets a bare ``qa-jobs disable`` flip ``enabled`` -- and a bare
+    ``assign`` re-enable -- without resetting a configured assignment's
+    settings to stage defaults. A fresh row seeds every NOT NULL column from
+    the passed values regardless.
     """
     if stage not in {s.value for s in QAStage}:
         raise ValueError(f"unsupported QA stage: {stage}")
     scope_type, scope_id = normalize_scope(scope_type, scope_id)
-    if allow_oddish_cli and llm_client_type != "Sandbox":
-        raise ValueError("Oddish CLI access is only available to the sandbox backend")
 
     existing = None
     for assignment, candidate_prompt in await _select_assignments(
@@ -292,21 +293,44 @@ async def upsert_qa_assignment_core(
             break
 
     creating = existing is None
+
+    def _field(name: str, new, old):
+        """Take the new value only if this is a create or the caller set it;
+        otherwise keep what the existing row already holds."""
+        if creating or runner_fields_provided is None or name in runner_fields_provided:
+            return new
+        return old
+
+    # Validate against the effective post-merge values, not the passed ones: an
+    # `assign --allow-oddish-cli` that omits backend must be checked against the
+    # existing row's sandbox backend, not the API stage default.
+    eff_client = _field(
+        "llm_client_type", llm_client_type, existing and existing.llm_client_type
+    )
+    eff_allow_cli = _field(
+        "allow_oddish_cli", allow_oddish_cli, existing and existing.allow_oddish_cli
+    )
+    if eff_allow_cli and eff_client != "Sandbox":
+        raise ValueError("Oddish CLI access is only available to the sandbox backend")
+
     if creating:
         existing = QAAssignmentModel(
             org_id=org_id, scope_type=scope_type, scope_id=scope_id, stage=stage
         )
         session.add(existing)
+        existing.created_by_user_id = created_by_user_id
 
     existing.prompt_id = prompt.id
     existing.enabled = enabled
-    if creating or overwrite_runner_config:
-        existing.prompt_version = prompt_version
-        existing.model = model
-        existing.reasoning_effort = reasoning_effort
-        existing.llm_client_type = llm_client_type
-        existing.allow_oddish_cli = allow_oddish_cli
-        existing.created_by_user_id = created_by_user_id
+    existing.model = _field("model", model, existing.model)
+    existing.llm_client_type = eff_client
+    existing.reasoning_effort = _field(
+        "reasoning_effort", reasoning_effort, existing.reasoning_effort
+    )
+    existing.allow_oddish_cli = eff_allow_cli
+    existing.prompt_version = _field(
+        "prompt_version", prompt_version, existing.prompt_version
+    )
     await session.flush()
     return existing
 
