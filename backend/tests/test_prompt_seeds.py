@@ -31,6 +31,10 @@ async def test_seed_is_idempotent_and_populates_content():
             session, PromptKind.QA_PRE_TRIAL.value
         )
         assert "VERIFIER COMPLETENESS" in content
+        assert 'source="pre_trial"' in content
+        assert '`dimension="oracle"`' in content
+        assert "`incompleteness`" in content
+        assert "`must_fix`" in content
 
         post_trial = await get_latest_prompt_content(
             session, PromptKind.QA_POST_TRIAL.value
@@ -38,6 +42,9 @@ async def test_seed_is_idempotent_and_populates_content():
         from oddish.analyze.classifier import _CLASSIFY_PROMPT
 
         assert post_trial == _CLASSIFY_PROMPT
+        assert "exactly\none entry per item" in post_trial
+        assert '"action_items": [' in post_trial
+        assert '"exploitation": [' in post_trial
 
 
 @pytest.mark.asyncio
@@ -93,6 +100,51 @@ async def test_seed_upgrades_legacy_post_trial_stub_but_not_operator_edits():
             session, PromptKind.QA_POST_TRIAL.value
         )
         assert content == "my custom prompt"
+
+
+@pytest.mark.asyncio
+async def test_seed_upgrades_known_pre_trial_v1_but_not_operator_edits():
+    from oddish.core.prompts import set_prompt_core
+
+    kind = PromptKind.QA_PRE_TRIAL.value
+    # Load the retained v1 fixture: production upgrades are keyed to this exact
+    # content hash, not a loose prefix that could overwrite an operator edit.
+    from pathlib import Path
+
+    v1 = (
+        Path(__file__).parents[2]
+        / "oddish"
+        / "src"
+        / "oddish"
+        / "analyze"
+        / "prompts"
+        / "pre_trial_qa.v1.txt"
+    ).read_text()
+
+    async with get_session() as session:
+        await session.execute(
+            PromptModel.__table__.delete().where(PromptModel.kind == kind)
+        )
+        await set_prompt_core(session, kind=kind, content=v1)
+        await session.commit()
+
+    async with get_session() as session:
+        created = await seed_prompts(session)
+        await session.commit()
+        assert f"{kind} (built-in upgraded)" in created
+
+    async with get_session() as session:
+        content = await get_latest_prompt_content(session, kind)
+        assert content == PROMPT_SEEDS[kind][1]
+        assert 'source="pre_trial"' in content
+
+        await set_prompt_core(session, kind=kind, content="my taxonomy override")
+        await session.commit()
+
+    async with get_session() as session:
+        assert await seed_prompts(session) == []
+        content = await get_latest_prompt_content(session, kind)
+        assert content == "my taxonomy override"
 
 
 @pytest.mark.asyncio
