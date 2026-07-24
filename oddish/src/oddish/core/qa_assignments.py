@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import hashlib
 
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
@@ -467,18 +468,28 @@ async def enqueue_qa_assignment_runs_core(
             qa_assignment_id=assignment.id,
             stage_event_key=stage_event_key,
         )
-        session.add(run)
-        await session.flush()
-        await enqueue_worker_job(
-            session,
-            EnqueueRequest(
-                kind=WorkerJobKind.ANALYZER_BLOCK,
-                queue_key=settings.normalize_queue_key(assignment.model),
-                payload={"analyzer_run_id": run.id},
-                subject_table="analyzer_runs",
-                subject_id=run.id,
-                org_id=org_id,
-            ),
-        )
+        # The pre-loop SELECT skips runs already committed, but a concurrent
+        # enqueue for the same event can commit between that read and this
+        # insert. Give each run its own savepoint so the partial unique index
+        # -- the documented final guard -- rejects that one duplicate as an
+        # idempotent no-op instead of aborting the batch and rolling back the
+        # sibling runs already inserted for other assignments.
+        try:
+            async with session.begin_nested():
+                session.add(run)
+                await session.flush()
+                await enqueue_worker_job(
+                    session,
+                    EnqueueRequest(
+                        kind=WorkerJobKind.ANALYZER_BLOCK,
+                        queue_key=settings.normalize_queue_key(assignment.model),
+                        payload={"analyzer_run_id": run.id},
+                        subject_table="analyzer_runs",
+                        subject_id=run.id,
+                        org_id=org_id,
+                    ),
+                )
+        except IntegrityError:
+            continue
         created.append(run)
     return created

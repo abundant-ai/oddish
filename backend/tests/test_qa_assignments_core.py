@@ -10,6 +10,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.exc import IntegrityError
 
 from oddish.core.prompts import set_prompt_core
 from oddish.core.qa_assignments import (
@@ -414,3 +415,98 @@ async def test_lifecycle_event_enqueues_analyzer_block_once(kinds):
             AnalyzerRunModel.__table__.delete().where(AnalyzerRunModel.id == run_id)
         )
         await session.commit()
+
+
+async def _delete_runs(*run_ids):
+    async with get_session() as session:
+        for run_id in run_ids:
+            await session.execute(
+                WorkerJobModel.__table__.delete().where(
+                    WorkerJobModel.subject_table == "analyzer_runs",
+                    WorkerJobModel.subject_id == run_id,
+                )
+            )
+            await session.execute(
+                AnalyzerRunModel.__table__.delete().where(
+                    AnalyzerRunModel.id == run_id
+                )
+            )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_index_conflict_on_one_run_does_not_drop_siblings(kinds, monkeypatch):
+    """When one assignment's run hits the partial unique index -- a concurrent
+    enqueue committed the same (assignment, event) between this batch's
+    existence check and its insert -- the per-run savepoint must absorb that
+    one IntegrityError as a no-op. The sibling assignment's run, inserted in the
+    same batch, must survive rather than be rolled back with it."""
+    from oddish.config import settings
+    from oddish.core import qa_assignments as qa
+
+    ok_assignment = await _assign(
+        await _prompt(
+            kinds("sib_ok"), scope_type="task", scope_id="task_sib", org_id="org_a"
+        ),
+        stage=POST,
+        scope_type="task",
+        scope_id="task_sib",
+        org_id="org_a",
+        model="claude-opus-4-8",
+    )
+    await _assign(
+        await _prompt(
+            kinds("sib_conflict"),
+            scope_type="task",
+            scope_id="task_sib",
+            org_id="org_a",
+        ),
+        stage=POST,
+        scope_type="task",
+        scope_id="task_sib",
+        org_id="org_a",
+        model="claude-sonnet-4-6",
+    )
+    conflict_key = settings.normalize_queue_key("claude-sonnet-4-6")
+    assert settings.normalize_queue_key("claude-opus-4-8") != conflict_key
+
+    # Stand in for the index rejecting the duplicate at flush time, on exactly
+    # the conflicting assignment (identified by its distinct queue key).
+    real_enqueue = qa.enqueue_worker_job
+
+    async def _enqueue_or_conflict(session, request):
+        if request.queue_key == conflict_key:
+            raise IntegrityError("duplicate run", {}, Exception("unique violation"))
+        return await real_enqueue(session, request)
+
+    monkeypatch.setattr(qa, "enqueue_worker_job", _enqueue_or_conflict)
+
+    async with get_session() as session:
+        created = await enqueue_qa_assignment_runs_core(
+            session,
+            stage=POST,
+            stage_event_key="trial:trial_sib",
+            org_id="org_a",
+            user_id="user_a",
+            experiment_id=None,
+            task_id="task_sib",
+            trial_id="trial_sib",
+            run_scope_type="trial",
+            run_scope_id="trial_sib",
+        )
+        await session.commit()
+
+    assert [r.qa_assignment_id for r in created] == [ok_assignment]
+
+    # The conflicting run rolled back with its savepoint -- no orphan persisted,
+    # and the sibling's run committed.
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                AnalyzerRunModel.__table__.select().where(
+                    AnalyzerRunModel.stage_event_key == "trial:trial_sib"
+                )
+            )
+        ).all()
+    assert {r.qa_assignment_id for r in rows} == {ok_assignment}
+    await _delete_runs(*(r.id for r in created))

@@ -263,6 +263,31 @@ async def test_global_assign_and_delete_allowed_for_operator(kind, monkeypatch):
     assert allowed.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_global_assign_by_kind_binds_the_installation_wide_prompt(
+    kind, monkeypatch
+):
+    """A global assign must resolve the kind with no org context. The operator
+    has its own org-scoped override for this kind; binding *that* private row
+    into an installation-wide assignment would leak it to every tenant."""
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", OPERATOR_ORG)
+    global_id = await _make_prompt(kind)
+    operator_override_id = await _make_prompt(
+        kind, scope_type="org", scope_id=OPERATOR_ORG, org_id=OPERATOR_ORG
+    )
+    assert global_id != operator_override_id
+
+    async with await _client(org_id=OPERATOR_ORG) as client:
+        created = await client.post(
+            "/qa-jobs",
+            params={"scope": "global"},
+            json={"prompt": kind, "stage": "post_trial"},
+        )
+    assert created.status_code == 200, created.text
+    assert created.json()["prompt_id"] == global_id
+    assert created.json()["prompt_id"] != operator_override_id
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------

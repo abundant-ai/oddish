@@ -81,9 +81,14 @@ def _resolution_scopes(
     scope_type: str | None, scope_id: str | None, auth: AuthContext
 ) -> dict:
     """Map a requested scope onto ``resolve_qa_assignments_core`` arguments --
-    i.e. the effective job set a subject at that scope would run."""
+    i.e. the effective job set a subject at that scope would run.
+
+    A global write is ``scope_type=None``; it carries no org context, so
+    ``org_id`` is ``None`` -- otherwise a kind-based resolve would prefer the
+    operator org's own override over the installation-wide prompt and bind
+    that private row into a row every tenant inherits."""
     scopes = {
-        "org_id": auth.org_id,
+        "org_id": None if scope_type is None else auth.org_id,
         "user_id": None,
         "experiment_id": None,
         "task_id": None,
