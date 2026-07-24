@@ -108,11 +108,17 @@ def block_logger(key_prefix: str) -> logging.LoggerAdapter:
 
 
 def _block_row_kwargs(*, block_metadata: dict | None, **base) -> dict:
-    """Pure kwargs builder for AnalyzerBlockModel, so prompt_key/prompt_version
-    extraction from block_metadata is unit-testable without a DB."""
+    """Pure kwargs builder for AnalyzerBlockModel, so prompt attribution
+    extraction from block_metadata is unit-testable without a DB.
+
+    Attribution lives at the top level (post-trial QA) or under a nested
+    ``prompt`` object (custom QA's run_config); accept either so newly created
+    blocks stamp ``prompt_id`` for scoped-prompt attribution."""
     md = block_metadata or {}
-    base["prompt_key"] = md.get("prompt_key")
-    base["prompt_version"] = md.get("prompt_version")
+    prompt_meta = md.get("prompt") if isinstance(md.get("prompt"), dict) else {}
+    base["prompt_key"] = md.get("prompt_key") or prompt_meta.get("kind")
+    base["prompt_version"] = md.get("prompt_version") or prompt_meta.get("version")
+    base["prompt_id"] = md.get("prompt_id") or prompt_meta.get("id")
     base["block_metadata"] = block_metadata
     return base
 

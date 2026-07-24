@@ -389,7 +389,14 @@ class TrialClassifier:
         # a command that is not installed.
         context = analyzer_block_context or {}
         trajectory_index_context = None
-        if settings.post_trial_sandbox_enabled and context.get("org_id"):
+        sandbox_api_base_url = (
+            settings.public_api_base_url or api_base_url_for_modal_app()
+        )
+        if (
+            settings.post_trial_sandbox_enabled
+            and context.get("org_id")
+            and sandbox_api_base_url
+        ):
             trajectory_index_context = build_trajectory_index_context(
                 context.get("trial_id")
             )
@@ -530,6 +537,9 @@ class TrialClassifier:
         block_prompt = prompt
         block_model = self._model
         client_factory = _client_factory
+        sandbox_api_base_url = (
+            settings.public_api_base_url or api_base_url_for_modal_app()
+        )
         if use_sandbox:
             archive = io.BytesIO()
             with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
@@ -571,17 +581,16 @@ class TrialClassifier:
                     f"tar -xzf /tmp/oddish-post-trial.tar.gz -C {sandbox_root}",
                 ),
                 json_schema=_classification_schema_json(),
-                install_oddish_cli=org_id is not None,
+                install_oddish_cli=bool(org_id and sandbox_api_base_url),
                 oddish_org_id=org_id,
-                oddish_api_base_url=(
-                    settings.public_api_base_url or api_base_url_for_modal_app()
-                ),
+                oddish_api_base_url=sandbox_api_base_url or None,
             )
             client_factory = None
 
         metadata = {
             "prompt_key": context.get("prompt_key"),
             "prompt_version": context.get("prompt_version"),
+            "prompt_id": context.get("prompt_id"),
             "model": block_model,
         }
         block = AnalyzerBlock(

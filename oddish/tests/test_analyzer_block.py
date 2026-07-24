@@ -139,6 +139,41 @@ async def test_post_trial_sandbox_opt_in_uploads_and_rewrites_paths(
 
 
 @pytest.mark.asyncio
+async def test_post_trial_sandbox_skips_cli_without_api_base_url(
+    monkeypatch, tmp_path
+):
+    """Uploaded artifacts remain usable when no public CLI endpoint resolves."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
+    monkeypatch.setattr(settings, "public_api_base_url", "")
+    monkeypatch.delenv("MODAL_APP_NAME", raising=False)
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+    captured = {}
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={"classification": "GOOD_SUCCESS"})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
+        prompt="classify from uploaded files",
+        trial_dir=tmp_path,
+        task_dir=tmp_path,
+        extra_dirs=None,
+        context={"trial_id": "trial-1", "task_id": "task-1", "org_id": "org-1"},
+    )
+
+    config = captured["block"]._sandbox_config
+    assert config.files_to_upload
+    assert config.install_oddish_cli is False
+    assert config.oddish_api_base_url is None
+
+
+@pytest.mark.asyncio
 async def test_post_trial_sandbox_rewrites_qa_context_refs(monkeypatch, tmp_path):
     """The prompt cites `.qa_context/*.json` by absolute path so the sandbox
     rewrite carries it; a relative ref would resolve against the sandbox cwd."""
@@ -438,6 +473,43 @@ async def test_save_to_db_adds_row(monkeypatch):
     assert row.output == "result-text"
     assert row.status == JobStatus.SUCCESS
     assert row.block_metadata == {"k": "v"}
+
+
+def test_block_row_kwargs_stamps_prompt_attribution_from_top_level():
+    from oddish.blocks.analyzer.analyzer_block import _block_row_kwargs
+
+    kw = _block_row_kwargs(
+        block_metadata={
+            "prompt_key": "QA_POST_TRIAL",
+            "prompt_version": 7,
+            "prompt_id": "prompt_1",
+        }
+    )
+    assert kw["prompt_key"] == "QA_POST_TRIAL"
+    assert kw["prompt_version"] == 7
+    assert kw["prompt_id"] == "prompt_1"
+
+
+def test_block_row_kwargs_stamps_prompt_attribution_from_nested_prompt():
+    """Custom QA stores attribution under a nested ``prompt`` object."""
+    from oddish.blocks.analyzer.analyzer_block import _block_row_kwargs
+
+    kw = _block_row_kwargs(
+        block_metadata={"prompt": {"id": "prompt_2", "kind": "QA_PRE_TRIAL", "version": 3}}
+    )
+    assert kw["prompt_key"] == "QA_PRE_TRIAL"
+    assert kw["prompt_version"] == 3
+    assert kw["prompt_id"] == "prompt_2"
+
+
+def test_block_row_kwargs_prompt_attribution_defaults_to_none():
+    from oddish.blocks.analyzer.analyzer_block import _block_row_kwargs
+
+    kw = _block_row_kwargs(block_metadata=None)
+    assert kw["prompt_key"] is None
+    assert kw["prompt_version"] is None
+    assert kw["prompt_id"] is None
+
 
 def _patch_persistence(monkeypatch):
     """Capture save_to_s3 raw + save_to_db without touching S3/DB."""
