@@ -33,6 +33,13 @@ class _FakeStream:
 
         return gen()
 
+    @property
+    def current_completion_snapshot(self):
+        # The real SDK folds the usage chunk onto this snapshot as the stream
+        # drains; the client reads spend from here so it survives even when
+        # get_final_completion() raises on a truncated finish.
+        return SimpleNamespace(usage=self._usage)
+
     async def get_final_completion(self):
         return SimpleNamespace(usage=self._usage)
 
@@ -127,3 +134,33 @@ async def test_missing_usage_leaves_last_usage_none(monkeypatch):
     [c async for c in client.stream("prompt")]
 
     assert client.last_usage is None
+
+
+class _RaisingFinalStream(_FakeStream):
+    """A length/content-filter finish makes the real get_final_completion()
+    raise while re-parsing the response_format, after the usage chunk was
+    already accumulated onto the snapshot."""
+
+    async def get_final_completion(self):
+        raise RuntimeError("length finish -- response_format validation failed")
+
+
+@pytest.mark.asyncio
+async def test_usage_recorded_even_when_finalization_raises(monkeypatch):
+    """The spend must land in last_usage before the truncation raise escapes;
+    otherwise those tokens vanish from analysis_costs exactly like the bug this
+    PR set out to fix."""
+    fake = _FakeOpenAI(_usage())
+    monkeypatch.setattr(fake.chat.completions, "stream", lambda **kw: _RaisingFinalStream(_usage()))
+    monkeypatch.setattr(
+        mod, "_build_openai_client", lambda *, model, api_key: (fake, MODEL)
+    )
+    client = mod.ApiAnalyzerLLMClient(model=MODEL, max_tokens=256)
+
+    with pytest.raises(RuntimeError):
+        [c async for c in client.stream("prompt")]
+
+    assert client.last_usage is not None, "spend dropped when finalization raised"
+    assert client.last_usage.input_tokens == 1000
+    assert client.last_usage.output_tokens == 200
+    assert client.last_usage.cost_usd > 0

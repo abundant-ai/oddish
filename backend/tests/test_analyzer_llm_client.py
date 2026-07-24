@@ -349,6 +349,15 @@ class _FakeOpenAIStream:
         for event in self._events:
             yield event
 
+    @property
+    def current_completion_snapshot(self):
+        # Production reads usage off the accumulated snapshot; these tests only
+        # exercise delta filtering and request wiring, so none is enough.
+        return SimpleNamespace(usage=None)
+
+    async def get_final_completion(self):
+        return SimpleNamespace(usage=None)
+
 
 class _FakeOpenAICompletions:
     def __init__(self, events, sent):

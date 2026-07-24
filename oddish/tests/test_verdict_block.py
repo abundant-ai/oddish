@@ -168,9 +168,13 @@ class _FakeOpenAIStream:
         for event in self._events:
             yield event
 
+    @property
+    def current_completion_snapshot(self):
+        """The client reads usage off the accumulated snapshot; these tests
+        assert request wiring, so reporting none is enough."""
+        return SimpleNamespace(usage=self._usage)
+
     async def get_final_completion(self):
-        """The client reads usage off the final completion; these tests assert
-        request wiring, so reporting none is enough."""
         return SimpleNamespace(usage=self._usage)
 
 

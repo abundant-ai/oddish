@@ -277,10 +277,17 @@ class ApiAnalyzerLLMClient:
             async for event in stream:
                 if event.type == "content.delta":
                     yield event.delta
-            final = await stream.get_final_completion()
-        self.last_usage = usage_from_openai_completion(
-            getattr(final, "usage", None), self._model
-        )
+            # The usage chunk is folded into current_completion_snapshot as the
+            # stream drains; read it here, before get_final_completion() reparses
+            # the response_format and can raise on a length/content-filter finish
+            # (LengthFinishReasonError). Those tokens were spent regardless, so
+            # stash first -- the way the Anthropic path stashes usage before its
+            # max_tokens truncation raise.
+            self.last_usage = usage_from_openai_completion(
+                getattr(stream.current_completion_snapshot, "usage", None),
+                self._model,
+            )
+            await stream.get_final_completion()
 
     async def aclose(self) -> None:
         if self._uses_openai:
