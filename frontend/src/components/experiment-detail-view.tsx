@@ -259,7 +259,7 @@ function ExperimentHeaderMeta({
   prLink?: React.ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2">
+    <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
       {headerStatus}
       {prLink}
       {isLoading && (
@@ -460,7 +460,7 @@ function ExperimentMetaStrip({
   if (!createdAt && !showAuthor && !experimentId) return null;
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+    <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
       {createdAt && (
         <span title={new Date(createdAt).toLocaleString()}>
           created {formatRelativeTime(createdAt)}
@@ -1218,31 +1218,30 @@ export function ExperimentDetailView({
         <div className="space-y-4">
           {/*
            * Experiment page header — editorial layout, no surrounding box.
-           * Fraunces display title, a dot-separated meta strip, with the
-           * Show-graph + Publish actions parked top-right.
+           * Fraunces display title on its own full-width row (so long names
+           * aren't squeezed by the actions), then a dot-separated meta strip
+           * with the Show-graph + Publish actions parked on its right.
            */}
           <div className="space-y-2">
-            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  {headerLeft}
-                  {experimentId && (
-                    <TagEditor
-                      scope="EXPERIMENT"
-                      targetId={experimentId}
-                      initialTags={experimentTags ?? []}
-                      experimentMode="living"
-                      onMutate={() => void mutateExperimentTags()}
-                    />
-                  )}
-                </div>
-                <ExperimentMetaStrip
-                  tasks={tasksForExperiment}
-                  isInitialLoading={isInitialLoading}
-                  experimentId={experimentId}
-                  readOnly={readOnly}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {headerLeft}
+              {experimentId && (
+                <TagEditor
+                  scope="EXPERIMENT"
+                  targetId={experimentId}
+                  initialTags={experimentTags ?? []}
+                  experimentMode="living"
+                  onMutate={() => void mutateExperimentTags()}
                 />
-              </div>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+              <ExperimentMetaStrip
+                tasks={tasksForExperiment}
+                isInitialLoading={isInitialLoading}
+                experimentId={experimentId}
+                readOnly={readOnly}
+              />
               <ExperimentHeaderMeta
                 isLoading={isLoading}
                 isInitialLoading={isInitialLoading}
