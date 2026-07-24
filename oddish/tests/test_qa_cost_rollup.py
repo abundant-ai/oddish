@@ -37,6 +37,7 @@ from oddish.db.models import (  # noqa: E402
     AnalysisCostModel,
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     experiment_trials,
@@ -229,6 +230,75 @@ async def test_task_scope_counts_a_soft_deleted_trials_qa(session):
     totals = await get_task_qa_costs(session, task_ids=[task.id], org_id=_ORG)
 
     assert totals[task.id].qa_cost_usd == pytest.approx(0.05)
+
+
+@pytest.mark.asyncio
+async def test_trial_scope_pairs_match_the_cards_agent_cost_population(session):
+    """The task-browse card prices only current-version, non-probe,
+    non-superseded, non-combine-copy, live trials. ``trial_scope_pairs`` holds
+    the per-trial QA branch to that same population so the card's two figures
+    describe the same trials, while task-level QA (no trial) still counts."""
+    task, experiment = await _fixture(session, "cardscope")
+    v_current = TaskVersionModel(
+        id=f"{task.id}-v2", task_id=task.id, version=2, task_path=task.task_path
+    )
+    v_old = TaskVersionModel(
+        id=f"{task.id}-v1", task_id=task.id, version=1, task_path=task.task_path
+    )
+    session.add_all([v_current, v_old])
+    await session.flush()
+
+    cur = _trial(task, experiment)
+    cur.task_version_id = v_current.id
+
+    superseded = _trial(task, experiment)
+    superseded.task_version_id = v_current.id
+    superseded.superseded_by_trial_id = cur.id
+
+    probe = _trial(task, experiment)
+    probe.task_version_id = v_current.id
+    probe.is_probe = True
+
+    combine_copy = _trial(task, experiment)
+    combine_copy.task_version_id = v_current.id
+    combine_copy.idempotency_key = "combine:abc"
+
+    old_version = _trial(task, experiment)
+    old_version.task_version_id = v_old.id
+
+    soft_deleted = _trial(task, experiment, deleted_at=utcnow())
+    soft_deleted.task_version_id = v_current.id
+
+    session.add_all(
+        [cur, superseded, probe, combine_copy, old_version, soft_deleted]
+    )
+    await session.flush()
+
+    session.add_all(
+        [
+            _qa_row(cost_usd=0.01, trial_id=cur.id),
+            _qa_row(cost_usd=0.02, trial_id=superseded.id),
+            _qa_row(cost_usd=0.04, trial_id=probe.id),
+            _qa_row(cost_usd=0.08, trial_id=combine_copy.id),
+            _qa_row(cost_usd=0.16, trial_id=old_version.id),
+            _qa_row(cost_usd=0.32, trial_id=soft_deleted.id),
+            _qa_row(cost_usd=0.005, task_id=task.id, job_kind="CUSTOM_QA"),
+        ]
+    )
+    await session.flush()
+
+    scoped = await get_task_qa_costs(
+        session,
+        task_ids=[task.id],
+        org_id=_ORG,
+        trial_scope_pairs=[(task.id, v_current.id)],
+    )
+    # Current-version trial (0.01) + task-level direct QA (0.005) only.
+    assert scoped[task.id].qa_cost_usd == pytest.approx(0.015)
+
+    # Unscoped (task detail / experiment views) still counts every row.
+    broad = await get_task_qa_costs(session, task_ids=[task.id], org_id=_ORG)
+    assert broad[task.id].qa_cost_usd == pytest.approx(0.635)
 
 
 @pytest.mark.asyncio

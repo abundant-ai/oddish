@@ -2288,8 +2288,15 @@ async def browse_tasks_core(
 
     # QA spend is a separate ledger with its own grain (one row per analysis
     # job, not per trial), so it is a second aggregate rather than another
-    # branch of the loop above.
-    qa_by_task = await get_task_qa_costs(session, task_ids=task_ids, org_id=org_id)
+    # branch of the loop above. Scoped to the same current-version, non-probe,
+    # non-superseded, non-combine-copy trial population the card prices for
+    # agent cost, so the card's two figures describe the same trials.
+    qa_by_task = await get_task_qa_costs(
+        session,
+        task_ids=task_ids,
+        org_id=org_id,
+        trial_scope_pairs=task_version_pairs,
+    )
 
     build_started_at = now()
     response = TaskBrowseResponse(

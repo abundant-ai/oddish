@@ -808,7 +808,11 @@ export function TrialDetailPanel({
             </Card>
             {(trial.cost_usd != null ||
               trial.input_tokens != null ||
-              trial.output_tokens != null) && (
+              trial.output_tokens != null ||
+              // A trial can be QA'd without the agent ever reporting a cost;
+              // keep the card so its QA sidecar isn't hidden. QaCostSuffix
+              // still self-guards on qa_cost_usd > 0.
+              (trial.qa_cost_usd != null && trial.qa_cost_usd > 0)) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">

@@ -36,9 +36,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from pydantic import BaseModel
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db.models import AnalysisCostModel, TrialModel
 
@@ -146,6 +147,7 @@ async def get_task_qa_costs(
     *,
     task_ids: Sequence[str],
     org_id: str | None = None,
+    trial_scope_pairs: Sequence[tuple[str, str]] | None = None,
 ) -> dict[str, QaCostTotals]:
     """``task_id -> QaCostTotals``, omitting tasks with no QA spend.
 
@@ -163,11 +165,21 @@ async def get_task_qa_costs(
     The UNION is aggregated in SQL (``GROUP BY`` over the deduped rows), not
     folded row-by-row in Python, so a page of many task ids pulls back at
     most one row per task rather than every ledger row in scope.
+
+    ``trial_scope_pairs`` narrows the per-trial branch to a given set of
+    ``(task_id, task_version_id)`` pairs and applies the same
+    current-version / non-probe / non-superseded / non-combine-copy / live
+    filters the task-browse card uses for its agent-cost figure -- so the two
+    numbers on one card describe the same trials. Task-level (``task_id``)
+    rows are untouched: they are not version-scoped. When ``None`` (task
+    detail, experiment views) the branch stays broad and counts QA on every
+    trial regardless of version or soft-delete state.
     """
     if not task_ids:
         return {}
 
     ids = list(task_ids)
+    scoped = trial_scope_pairs is not None
     direct = select(*_LEDGER_ROW, AnalysisCostModel.task_id.label("task_id")).where(
         _LIVE, AnalysisCostModel.task_id.in_(ids)
     )
@@ -177,21 +189,32 @@ async def get_task_qa_costs(
         .join(TrialModel, TrialModel.id == AnalysisCostModel.trial_id)
         .where(_LIVE, TrialModel.task_id.in_(ids))
     )
+    if scoped:
+        via_trials = via_trials.where(
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
+            not_combine_copy_filter(),
+            tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                list(trial_scope_pairs)
+            ),
+        )
     if org_id is not None:
         direct = direct.where(AnalysisCostModel.org_id == org_id)
         via_trials = via_trials.where(AnalysisCostModel.org_id == org_id)
 
     u = direct.union(via_trials).subquery()
-    query = (
-        select(
-            u.c.task_id,
-            func.sum(u.c.cost_usd).label("cost_usd"),
-            func.count().label("job_count"),
-            *_group_flags(u.c.cost_source),
-        )
-        .group_by(u.c.task_id)
-        .execution_options(include_deleted=True)
-    )
+    query = select(
+        u.c.task_id,
+        func.sum(u.c.cost_usd).label("cost_usd"),
+        func.count().label("job_count"),
+        *_group_flags(u.c.cost_source),
+    ).group_by(u.c.task_id)
+    if not scoped:
+        # Broad callers count QA on soft-deleted trials too: deleting a trial
+        # removes it from the view, it does not refund QA already spent. The
+        # scoped card path leaves this off so the soft-delete auto-filter drops
+        # those trials, mirroring the card's agent figure.
+        query = query.execution_options(include_deleted=True)
 
     return {row.task_id: _fold([row]) for row in (await session.execute(query)).all()}
 
