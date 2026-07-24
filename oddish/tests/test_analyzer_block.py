@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
@@ -39,11 +40,21 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
 ):
     from oddish.blocks.analyzer import analyzer_llm_client
 
+    from oddish.blocks.analyzer import claude_cli_client
+
     captured = {}
     classifier = TrialClassifier(model="anthropic/test")
 
-    async def fake_cli(prompt, trial_dir, task_dir, *, extra_dirs=None):
-        return {"classification": "GOOD_SUCCESS"}
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            envelope = {"structured_output": {"classification": "GOOD_SUCCESS"}}
+            return json.dumps(envelope).encode(), b""
+
+    async def fake_exec(*command, **kwargs):
+        captured["command"] = list(command)
+        return _FakeProcess()
 
     async def fake_s3(self, raw):
         captured["raw"] = raw
@@ -54,7 +65,7 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
     async def fake_cost(self):
         return None
 
-    monkeypatch.setattr(classifier, "_run_claude_cli", fake_cli)
+    monkeypatch.setattr(claude_cli_client.asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(
         analyzer_llm_client,
         "sandbox_client_factory_registered",
@@ -86,15 +97,17 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
     assert block.llm_client_type is LLMClientType.CLAUDE_CLI
     assert block.block_metadata["prompt_key"] == "QA_POST_TRIAL"
     assert block.block_metadata["prompt_version"] == 7
-    assert captured["raw"] == b'{"classification": "GOOD_SUCCESS"}'
+    # S3 keeps the raw claude-code envelope, matching what the sandbox path
+    # persists -- the parsed object is the block output, not the artifact.
+    assert json.loads(captured["raw"])["structured_output"] == {
+        "classification": "GOOD_SUCCESS"
+    }
 
 
 @pytest.mark.asyncio
-async def test_post_trial_sandbox_opt_in_uploads_and_rewrites_paths(
-    monkeypatch, tmp_path
-):
-    """With the sandbox explicitly enabled, artifacts are shipped and the
-    prompt's host paths are rewritten to their in-sandbox locations."""
+async def test_post_trial_sandbox_opt_in_uploads_the_snapshot(monkeypatch, tmp_path):
+    """With the sandbox explicitly enabled, artifacts are shipped and the prompt
+    travels unmodified."""
     from oddish.blocks.analyzer import analyzer_llm_client
     from oddish.config import settings
 
@@ -131,7 +144,7 @@ async def test_post_trial_sandbox_opt_in_uploads_and_rewrites_paths(
     block = captured["block"]
     assert output == {"classification": "GOOD_SUCCESS"}
     assert block.llm_client_type is LLMClientType.SANDBOX
-    assert block._client_factory is None
+    assert block._cli_config is None
     assert block._sandbox_config.files_to_upload
     # The snapshot is restored at the worker's own absolute paths, so the prompt
     # travels unmodified. Nothing to rewrite is nothing to get wrong.
@@ -381,12 +394,14 @@ async def test_post_trial_sandbox_survives_nested_dirs(monkeypatch, tmp_path):
 
 
 def test_post_trial_parses_sandbox_result_stream():
+    from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
+
     raw = (
         '{"type":"assistant","message":{"content":[]}}'
         '{"type":"result","result":"```json\\n'
         '{\\"classification\\":\\"GOOD_SUCCESS\\"}\\n```"}'
     )
-    assert TrialClassifier._parse_sandbox_block_output(raw) == {
+    assert parse_stream_json_result(raw) == {
         "classification": "GOOD_SUCCESS"
     }
 
@@ -394,11 +409,13 @@ def test_post_trial_parses_sandbox_result_stream():
 def test_post_trial_falls_back_to_result_on_null_structured_output():
     """claude-code emits an explicit null when schema validation yielded
     nothing; the free-text result is still usable."""
+    from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
+
     raw = (
         '{"type":"result","structured_output":null,'
         '"result":"{\\"classification\\":\\"GOOD_SUCCESS\\"}"}'
     )
-    assert TrialClassifier._parse_sandbox_block_output(raw) == {
+    assert parse_stream_json_result(raw) == {
         "classification": "GOOD_SUCCESS"
     }
 
@@ -767,6 +784,42 @@ async def test_self_provisioning_honors_creation_timeout(monkeypatch):
 
     with pytest.raises(TimeoutError):
         await block.run()
+
+
+@pytest.mark.asyncio
+async def test_block_provisions_the_cli_backend_from_config(monkeypatch, tmp_path):
+    """CLAUDE_CLI is provisioned by the block like SANDBOX and API are. No
+    caller-supplied factory, no context smuggled in through a closure."""
+    from oddish.blocks.analyzer import claude_cli_client
+    from oddish.blocks.analyzer.claude_cli_client import CliConfig, parse_cli_envelope
+
+    saved = _patch_persistence(monkeypatch)
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                json.dumps({"structured_output": {"classification": "GOOD_SUCCESS"}})
+            ).encode(), b""
+
+    async def _exec(*command, **kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(claude_cli_client.asyncio, "create_subprocess_exec", _exec)
+
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.POST_TRIAL,
+        llm_client_type=LLMClientType.CLAUDE_CLI,
+        input=AnalyzerInput(input={}),
+        prompt="classify",
+        cli_config=CliConfig(cwd=tmp_path),
+        output_transform=parse_cli_envelope,
+    )
+    output = await block.run()
+
+    assert output.output == {"classification": "GOOD_SUCCESS"}
+    assert saved["status"] == JobStatus.SUCCESS
 
 
 class _CountingSession:

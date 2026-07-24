@@ -26,6 +26,7 @@ from oddish.blocks.analyzer.analyzer_llm_client import (
     SandboxConfig,
     create_llm_client,
 )
+from oddish.blocks.analyzer.claude_cli_client import CliConfig
 from oddish.blocks.block import Block
 
 
@@ -146,7 +147,7 @@ class AnalyzerBlock(Block):
         sandbox_config: SandboxConfig | None = None,
         client_creation_timeout: float | None = None,
         attribution_org_id: str | None = None,
-        client_factory: Callable[[], Any] | None = None,
+        cli_config: CliConfig | None = None,
         client_close_timeout: float | None = _CLIENT_CLOSE_TIMEOUT,
     ) -> None:
         self.id = generate_id()
@@ -181,7 +182,7 @@ class AnalyzerBlock(Block):
         self._client_creation_timeout = client_creation_timeout
         self._active_client: AnalyzerLLMClient | None = None
         self.attribution_org_id = attribution_org_id
-        self._client_factory = client_factory
+        self._cli_config = cli_config
         self._client_close_timeout = client_close_timeout
 
         self.key_prefix = block_key_prefix(analyzer_type)
@@ -368,8 +369,6 @@ class AnalyzerBlock(Block):
         self.block_metadata = {**(self.block_metadata or {}), "cost_status": status}
 
     async def _create_client(self) -> AnalyzerLLMClient:
-        if self._client_factory is not None:
-            return await self._client_factory()
         create = create_llm_client(
             self.llm_client_type,
             model=self.model,
@@ -377,6 +376,7 @@ class AnalyzerBlock(Block):
             max_tokens=self._max_tokens,
             response_format=self._response_format,
             sandbox_config=self._sandbox_config,
+            cli_config=self._cli_config,
         )
         if self._client_creation_timeout is None:
             return await create
