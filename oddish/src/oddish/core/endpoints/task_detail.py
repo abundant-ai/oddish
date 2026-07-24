@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from oddish.core.cost_basis import is_combine_copy
 from oddish.core.endpoints._common import get_task_for_org_core
+from oddish.core.endpoints.qa_cost import get_task_qa_costs
 from oddish.core.helpers import (
     build_task_status_response,
     build_trial_response,
@@ -175,11 +176,15 @@ async def get_task_detail_core(
     )
 
     billed_trial_ids = {t.id for t in all_trial_models if t.billed_user_id is not None}
+    qa_by_task = await get_task_qa_costs(session, task_ids=[task_id], org_id=org_id)
     totals, versions_sorted = _aggregate_task_detail_rollups(
         trials=task_status.trials or [],
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
         billed_trial_ids=billed_trial_ids,
+        qa_cost_usd=(
+            qa_by_task[task_id].qa_cost_usd if task_id in qa_by_task else 0.0
+        ),
     )
 
     # Version-scoped experiments: which experiments ran non-probe trials
@@ -284,6 +289,7 @@ def _aggregate_task_detail_rollups(
     version_rows,
     current_version_id: str | None,
     billed_trial_ids: set[str] | None = None,
+    qa_cost_usd: float = 0.0,
 ) -> tuple[TaskCostTotals, list[TaskVersionSummary]]:
     """Fold trials into a task-wide cost rollup + per-version summaries.
 
@@ -303,6 +309,8 @@ def _aggregate_task_detail_rollups(
 
     billed_ids = billed_trial_ids or set()
     totals = TaskCostTotals()
+    # Resolved by the async caller: this fold is sessionless by design.
+    totals.qa_cost_usd = qa_cost_usd
     for trial in trials:
         totals.total_trials += 1
         is_billed = trial.id in billed_ids

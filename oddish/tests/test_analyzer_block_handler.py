@@ -19,6 +19,8 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         model="test-model",
         reasoning_effort=None,
         llm_client_type=LLMClientType.API.value,
+        scope_type="task",
+        scope_id="task_1",
         run_config={
             "scope": {"type": "task", "id": "task_1"},
             "system_prompt": "Inspect the task",
@@ -52,10 +54,14 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         finally:
             session.closed = True
 
+    blocks = []
+
     class FakeBlock:
         def __init__(self, **kwargs):
             self.id = "block_1"
             self.error = None
+            self.kwargs = kwargs
+            blocks.append(self)
 
         async def run(self):
             assert sessions[0].closed
@@ -72,6 +78,10 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
     assert run.analyzer_block_id == "block_1"
     assert run.status == JobStatus.SUCCESS
     assert run.output == {"ok": True}
+
+    assert len(blocks) == 1
+    assert blocks[0].kwargs["subject_type"] == run.scope_type
+    assert blocks[0].kwargs["subject_id"] == run.scope_id
 
 
 @pytest.mark.asyncio

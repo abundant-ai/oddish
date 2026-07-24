@@ -10,6 +10,7 @@ from oddish.core.endpoints._common import (
     get_trial_for_org_core,
     _reset_task_verdict,
 )
+from oddish.core.endpoints.qa_cost import get_trial_qa_costs
 from oddish.core.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
@@ -58,11 +59,13 @@ async def get_trial_by_index_core(
 
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
     jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
+    qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
     return build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
         jobs=jobs_by_subject.get(("trials", trial.id), []),
+        qa_cost_usd=qa_costs.get(trial.id),
     )
 
 
@@ -93,11 +96,13 @@ async def get_trial_response_for_org_core(
 
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
     jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
+    qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
     return build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
         jobs=jobs_by_subject.get(("trials", trial.id), []),
+        qa_cost_usd=qa_costs.get(trial.id),
     )
 
 
