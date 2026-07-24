@@ -794,8 +794,15 @@ async def test_load_summary_prompt_falls_back_to_global_with_no_scoped_rows():
         SUMMARY_PROMPT_KEY,
         _load_summary_prompt,
     )
+    from oddish.core.prompt_seeds import seed_prompts
     from oddish.core.prompts import get_prompt_core
     from oddish.db import get_session
+
+    # Guarantee the global row exists regardless of what other tests in the
+    # suite have deleted or re-seeded before this one runs.
+    async with get_session() as session:
+        await seed_prompts(session)
+        await session.commit()
 
     async with get_session() as session:
         global_prompt, global_version = await get_prompt_core(
