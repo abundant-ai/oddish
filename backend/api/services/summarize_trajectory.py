@@ -23,7 +23,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.prompt_seeds import seed_prompts
-from oddish.core.prompts import get_prompt_core
+from oddish.core.prompts import resolve_prompt_core
 from oddish.core.trial_io import (
     read_trial_instruction,
     read_trial_trajectory,
@@ -148,10 +148,29 @@ def resolve_summary_model() -> str:
     return to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
 
 
-async def _load_summary_prompt(session: AsyncSession) -> tuple[str, int]:
-    """Load the latest trajectory-summary prompt, seeding built-ins on a miss."""
+async def _load_summary_prompt(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    user_id: str | None = None,
+    experiment_id: str | None = None,
+    task_id: str | None = None,
+    trial_id: str | None = None,
+) -> tuple[str, int]:
+    """Load the latest trajectory-summary prompt, seeding built-ins on a miss.
+
+    Resolves the narrowest scoped override for the given context, falling
+    back to the global prompt when none exists.
+    """
+    scope = dict(
+        org_id=org_id,
+        user_id=user_id,
+        experiment_id=experiment_id,
+        task_id=task_id,
+        trial_id=trial_id,
+    )
     try:
-        _, version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+        _, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
     except HTTPException:
         try:
             # Keep a lost concurrent-seed race inside a savepoint. Rolling back
@@ -159,13 +178,15 @@ async def _load_summary_prompt(session: AsyncSession) -> tuple[str, int]:
             async with session.begin_nested():
                 await seed_prompts(session)
             await session.commit()
-            _, version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+            _, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
         except Exception as exc:
             # An immediate unique constraint is raised inside the savepoint.
             # Its rollback leaves the outer transaction and loaded ORM state
             # intact, so the winner's row can be read without a full rollback.
             try:
-                _, version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+                _, version = await resolve_prompt_core(
+                    session, SUMMARY_PROMPT_KEY, **scope
+                )
             except Exception:
                 raise SummaryGenerationError(
                     f"prompt '{SUMMARY_PROMPT_KEY}' is not registered and "
@@ -382,7 +403,14 @@ async def get_or_generate_summary(
         if fresh is not None:
             return fresh
 
-        prompt_template, prompt_version = await _load_summary_prompt(session)
+        prompt_template, prompt_version = await _load_summary_prompt(
+            session,
+            org_id=trial.org_id,
+            user_id=trial.billed_user_id,
+            experiment_id=trial.experiment_id,
+            task_id=trial.task_id,
+            trial_id=trial.id,
+        )
 
         trajectory, task_context = await asyncio.gather(
             read_trial_trajectory(trial),

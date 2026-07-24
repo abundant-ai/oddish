@@ -37,11 +37,15 @@ def resolve_scope_flags(
     experiment: Optional[str] = None,
     trial: Optional[str] = None,
     global_scope: bool = False,
+    default: str = "org",
 ) -> tuple[str, Optional[str]]:
     """Map mutually exclusive scope flags onto (scope, scope_id).
 
-    Shared verbatim with the ``qa-jobs`` command group; the flag duplication
-    across groups is intentional.
+    ``default`` is what "no flag given" means -- writes default to ``"org"``
+    (updating nothing is never useful), reads default to ``"global"`` (the
+    long-standing, unscoped lookup every existing caller expects). Shared
+    verbatim with the ``qa-jobs`` command group; the flag duplication across
+    groups is intentional.
     """
     selected = [
         item
@@ -57,7 +61,7 @@ def resolve_scope_flags(
     ]
     if len(selected) > 1:
         raise typer.BadParameter("Choose exactly one prompt scope.")
-    return selected[0] if selected else ("org", None)
+    return selected[0] if selected else (default, None)
 
 
 @prompt_app.command("list")
@@ -77,16 +81,71 @@ def list_prompts(
         )
 
 
+_ScopeOrg = Annotated[
+    bool, typer.Option("--org", help="Read the current organization's override.")
+]
+_ScopeUser = Annotated[
+    bool, typer.Option("--user", help="Read the authenticated user's override.")
+]
+_ScopeTask = Annotated[
+    Optional[str], typer.Option("--task", help="Read a task id's override.")
+]
+_ScopeExperiment = Annotated[
+    Optional[str],
+    typer.Option("--experiment", help="Read an experiment id's override."),
+]
+_ScopeTrial = Annotated[
+    Optional[str], typer.Option("--trial", help="Read a trial id's override.")
+]
+_ScopeGlobal = Annotated[
+    bool,
+    typer.Option("--global", help="Read the installation-wide fallback (default)."),
+]
+
+
+def _read_scope_params(
+    *, org: bool, user: bool, task, experiment, trial, global_scope: bool
+) -> dict:
+    scope, scope_id = resolve_scope_flags(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+        default="global",
+    )
+    params: dict = {"scope": scope}
+    if scope_id:
+        params["scope_id"] = scope_id
+    return params
+
+
 @prompt_app.command("get")
 def get_prompt(
     key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
     version: Annotated[Optional[int], typer.Option("--version", "-v")] = None,
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """Print a prompt's content (latest version by default)."""
     url = _resolve(api_url)
-    params = {"version": version} if version is not None else {}
+    params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
+    if version is not None:
+        params["version"] = version
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         resp = client.get(f"{url}/prompts/{key_or_id}", params=params)
     if resp.status_code != 200:
@@ -101,12 +160,26 @@ def get_prompt(
 @prompt_app.command("view")
 def view_prompt(
     key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """Show prompt metadata, versions, and analyzer-block usage."""
     url = _resolve(api_url)
+    params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{key_or_id}")
+        resp = client.get(f"{url}/prompts/{key_or_id}", params=params)
     if resp.status_code != 200:
         _fail(resp)
     prompt = resp.json()
@@ -193,12 +266,26 @@ def upload_prompt(
 @prompt_app.command("versions")
 def versions(
     key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """List a prompt's versions."""
     url = _resolve(api_url)
+    params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{key_or_id}/versions")
+        resp = client.get(f"{url}/prompts/{key_or_id}/versions", params=params)
     if resp.status_code != 200:
         _fail(resp)
     for v in resp.json():

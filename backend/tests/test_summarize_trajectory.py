@@ -335,6 +335,10 @@ def _fake_trial(*, has_trajectory: bool):
         has_trajectory=has_trajectory,
         agent="claude-code",
         finished_at=None,
+        org_id=None,
+        billed_user_id=None,
+        experiment_id=None,
+        task_id=None,
     )
 
 
@@ -719,3 +723,148 @@ async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
 
     assert version == 1
     assert "{{taxonomy}}" in content
+
+
+# ---------------------------------------------------------------------------
+# _load_summary_prompt / get_or_generate_summary scope resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_load_summary_prompt_prefers_task_scoped_override():
+    """Guard: a task-scoped TRAJECTORY_SUMMARY row must beat the global
+    prompt when the caller's scope matches it. Exercises resolve_prompt_core
+    for real against the DB."""
+    import uuid
+
+    from api.services.summarize_trajectory import (
+        SUMMARY_PROMPT_KEY,
+        _load_summary_prompt,
+    )
+    from oddish.core.prompts import set_prompt_core
+    from oddish.db import PromptModel, get_session
+
+    task_id = f"test_summary_scope_{uuid.uuid4().hex[:8]}"
+    org_id = "org_summary_scope_test"
+
+    async with get_session() as session:
+        await set_prompt_core(
+            session,
+            kind=SUMMARY_PROMPT_KEY,
+            content="SCOPED TASK PROMPT {{taxonomy}}",
+            scope_type="task",
+            scope_id=task_id,
+            org_id=org_id,
+        )
+        await session.commit()
+
+    try:
+        async with get_session() as session:
+            content, _version = await _load_summary_prompt(
+                session,
+                org_id=org_id,
+                user_id=None,
+                experiment_id=None,
+                task_id=task_id,
+                trial_id=None,
+            )
+        assert content == "SCOPED TASK PROMPT {{taxonomy}}"
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                PromptModel.__table__.delete().where(
+                    PromptModel.kind == SUMMARY_PROMPT_KEY,
+                    PromptModel.scope_type == "task",
+                    PromptModel.scope_id == task_id,
+                )
+            )
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_load_summary_prompt_falls_back_to_global_with_no_scoped_rows():
+    """Behavior preservation: with no scoped rows for this context, the
+    global prompt is still resolved -- the property that must not regress."""
+    from api.services.summarize_trajectory import (
+        SUMMARY_PROMPT_KEY,
+        _load_summary_prompt,
+    )
+    from oddish.core.prompts import get_prompt_core
+    from oddish.db import get_session
+
+    async with get_session() as session:
+        _, global_version = await get_prompt_core(session, SUMMARY_PROMPT_KEY)
+        content, version = await _load_summary_prompt(
+            session,
+            org_id="org_with_no_overrides",
+            user_id="user_with_no_overrides",
+            experiment_id="exp_with_no_overrides",
+            task_id="task_with_no_overrides",
+            trial_id="trial_with_no_overrides",
+        )
+
+    assert content == global_version.content
+    assert version == global_version.version
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_summary_passes_trial_scope_to_prompt_loader():
+    """get_or_generate_summary must thread the trial's own org/user/
+    experiment/task/trial ids into the prompt lookup, not resolve globally."""
+    trial = SimpleNamespace(
+        id="t-scope-1",
+        name="trial-0",
+        trial_s3_key="trials/t-scope-1/",
+        has_trajectory=True,
+        agent="claude-code",
+        finished_at=None,
+        org_id="org-1",
+        billed_user_id="user-1",
+        experiment_id="exp-1",
+        task_id="task-1",
+    )
+    session = _fake_session()
+    fresh = {"schema_version": "5", "summary": "ok", "highlights": [], "components": []}
+
+    async def fake_traj(_t):
+        return {"steps": [{"step_id": 1}]}
+
+    async def fake_ctx(_t):
+        return _minimal_ctx()
+
+    load_prompt = AsyncMock(return_value=("INSTRUCTIONS {{taxonomy}}", 1))
+
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_summary_prompt",
+            new=load_prompt,
+        ),
+        patch(
+            "api.services.summarize_trajectory.read_trial_trajectory",
+            new=fake_traj,
+        ),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new=fake_ctx,
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+            return_value=fresh,
+        ),
+    ):
+        await get_or_generate_summary(session, trial)
+
+    load_prompt.assert_awaited_once_with(
+        session,
+        org_id="org-1",
+        user_id="user-1",
+        experiment_id="exp-1",
+        task_id="task-1",
+        trial_id="t-scope-1",
+    )

@@ -26,7 +26,7 @@ from oddish.blocks.analyzer.analyzer_block import (
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType, SandboxConfig
 from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from oddish.config import api_base_url_for_modal_app, settings
-from oddish.core.prompts import get_prompt_core
+from oddish.core.prompts import resolve_prompt_core
 from oddish.db import PromptKind, get_session
 from oddish.db.models import TaskModel
 from oddish.workers.queue.qa_handler import (
@@ -97,7 +97,17 @@ async def synthesize_task_pre_trial(
         raise RuntimeError(f"Cannot resolve org_id for task {task_id}")
 
     async with get_session() as session:
-        _, ver = await get_prompt_core(session, PromptKind.QA_PRE_TRIAL.value)
+        # Pre-trial audits a task version, not a single trial or user, so only
+        # org/task scope is meaningful here.
+        _, ver = await resolve_prompt_core(
+            session,
+            PromptKind.QA_PRE_TRIAL.value,
+            org_id=org_id,
+            user_id=None,
+            experiment_id=None,
+            task_id=task_id,
+            trial_id=None,
+        )
         prompt_template = ver.content
         prompt_version = ver.version
 
