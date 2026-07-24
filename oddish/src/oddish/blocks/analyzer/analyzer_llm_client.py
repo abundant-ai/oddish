@@ -9,6 +9,7 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from oddish.analyze.analysis_cost import AnalysisUsage, usage_from_api_message
+from oddish.blocks.analyzer.claude_cli_client import ClaudeCliClient, CliConfig
 from oddish.config import OPENAI_PROVIDER_OPENAI, _infer_provider_prefix, settings
 
 _DEFAULT_MODEL = "claude-opus-4-8"
@@ -80,6 +81,9 @@ class SandboxConfig:
     labels: dict[str, str] = field(default_factory=dict)
     files_to_upload: dict[str, bytes] = field(default_factory=dict)
     setup_commands: tuple[str, ...] = ()
+    # Filesystem roots Claude Code may read outside its sandbox workspace.
+    # Paths must refer to their post-setup locations inside the sandbox.
+    add_dirs: tuple[str, ...] = ()
     auto_stop_minutes: int | None = None
     auto_delete_minutes: int | None = None
     snapshot: str | None = None
@@ -308,6 +312,7 @@ async def create_llm_client(
     max_tokens: int | None = None,
     response_format: Any | None = None,
     sandbox_config: SandboxConfig | None = None,
+    cli_config: CliConfig | None = None,
 ) -> AnalyzerLLMClient:
     if llm_client_type == LLMClientType.API:
         if sandbox_config:
@@ -331,9 +336,10 @@ async def create_llm_client(
         )
 
     if llm_client_type == LLMClientType.CLAUDE_CLI:
-        raise RuntimeError(
-            "CLAUDE_CLI clients are context-bound and must be supplied by "
-            "the filesystem-aware post-trial classifier"
-        )
+        if cli_config is None:
+            raise ValueError(
+                "CLAUDE_CLI needs a cli_config naming the directories it may read"
+            )
+        return ClaudeCliClient(model=model, config=cli_config)
 
     raise ValueError(f"unknown llm_client_type: {llm_client_type!r}")

@@ -245,6 +245,7 @@ class ClaudeCodeRuntime:
         daytona_session_id: str = "cc",
         system_prompt: str | None = None,
         json_schema: str | None = None,
+        add_dirs: tuple[str, ...] = (),
     ) -> AsyncIterator[dict]:
         parts = [
             _CLAUDE_BIN,
@@ -263,6 +264,8 @@ class ClaudeCodeRuntime:
         # could not run the CLI at all.
         if system_prompt:
             parts += ["--append-system-prompt", shlex.quote(system_prompt)]
+        for add_dir in add_dirs:
+            parts += ["--add-dir", shlex.quote(add_dir)]
         if claude_session_id:
             parts += ["--resume", shlex.quote(claude_session_id)]
 

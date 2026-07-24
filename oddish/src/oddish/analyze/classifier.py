@@ -4,21 +4,19 @@ import asyncio
 import io
 import json
 import os
+import shlex
 import tarfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import logging
 from harbor.models.trial.result import TrialResult
 
 from oddish.config import (
     ANALYSIS_MODEL,
-    BEDROCK_ENV_VARS,
-    looks_like_bedrock_model_id,
     settings,
     to_anthropic_api_model_id,
 )
-from oddish.analyze._sdk_utils import Colors, print_process_stream
-from oddish.analyze.analysis_cost import AnalysisUsage, parse_cli_usage
+from oddish.analyze._sdk_utils import Colors
 
 from .models import (
     BaselineValidation,
@@ -26,6 +24,9 @@ from .models import (
     TrialClassification,
     TrialClassificationModel,
 )
+
+if TYPE_CHECKING:
+    from oddish.blocks.analyzer.claude_cli_client import CliConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,27 @@ _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
 
 
+_SNAPSHOT_ARCHIVE = "/tmp/oddish-post-trial.tar.gz"
+
+
+def _assert_dirs_in_snapshot(
+    extra_dirs: list[Path] | None, *roots: Path
+) -> None:
+    """Fail loudly on context the sandbox snapshot would not carry.
+
+    Only ``roots`` are archived. A dir outside them still reaches claude-code as
+    an ``--add-dir`` path that resolves to nothing in the sandbox, and an empty
+    directory reads as "no evidence" rather than as an error.
+    """
+    resolved_roots = [root.resolve() for root in roots]
+    for extra in extra_dirs or []:
+        if not any(extra.resolve().is_relative_to(r) for r in resolved_roots):
+            raise ValueError(
+                f"{extra} is outside the post-trial snapshot "
+                f"({', '.join(str(r) for r in resolved_roots)})"
+            )
+
+
 def _classification_schema_json() -> str:
     """Claude Code ``--json-schema`` payload for the classification output.
 
@@ -49,36 +71,6 @@ def _classification_schema_json() -> str:
     comes back empty.
     """
     return json.dumps(TrialClassificationModel.model_json_schema())
-
-
-def _resolve_analysis_model_and_env(
-    model: str, base_env: dict[str, str]
-) -> tuple[str, dict[str, str]]:
-    """Pick the ``--model`` id and env for the analysis Claude CLI subprocess.
-
-    The Modal image bakes the Bedrock env vars so Claude Code defaults to
-    Bedrock, and the CLI picks its route from the environment (not ``--model``).
-    Two cases route this analysis call to the direct Anthropic API instead:
-
-    * a plain (non-Bedrock) analysis model id, or
-    * the force-direct incident toggle (``settings.claude_code_force_direct_api``,
-      default on; mirrors ``harbor_runner._claude_code_forces_direct_api``) when
-      an ``ANTHROPIC_API_KEY`` is present -- the workers' Bedrock credentials
-      can't run inference (400 "Operation not allowed"), so every Bedrock
-      analysis call fails until that flag is flipped off.
-
-    In both direct-API cases, normalize any Bedrock inference-profile id back to
-    its plain API id and strip the Bedrock signals so the CLI authenticates with
-    ``ANTHROPIC_API_KEY``. Otherwise keep the Bedrock id and env untouched.
-    """
-    env = dict(base_env)
-    has_api_key = bool(env.get("ANTHROPIC_API_KEY", "").strip())
-    force_direct = has_api_key and settings.claude_code_force_direct_api
-    if looks_like_bedrock_model_id(model) and not force_direct:
-        return model, env
-    for name in BEDROCK_ENV_VARS:
-        env.pop(name, None)
-    return (to_anthropic_api_model_id(model) or model), env
 
 
 _ORACLE_TRIAL_AGENT_CONTEXT = """
@@ -130,10 +122,10 @@ def _write_qa_context(
     dir and each context string are ``None`` when the corresponding input was
     not provided, so absent inputs never touch disk or the prompt.
 
-    Each context string cites the file by absolute path. The sandbox classifier
-    rewrites ``trial_dir`` to its in-sandbox location, and only an absolute path
-    rides along with that rewrite -- a relative ``.qa_context/...`` reference
-    would resolve against the sandbox's own cwd, where nothing exists.
+    Each context string cites the file by absolute path. The sandbox restores
+    the snapshot at those same paths, so an absolute reference resolves there
+    too -- a relative ``.qa_context/...`` ref would resolve against the
+    sandbox's own cwd, where nothing exists.
     """
     if pre_trial_items is None and file_access is None:
         return None, None, None
@@ -226,8 +218,6 @@ class TrialClassifier:
         # Cloud QA supplies the latest QA_POST_TRIAL registry version. Keep the
         # packaged prompt as a fallback for local/library callers without a DB.
         self._prompt_template = prompt_template or _CLASSIFY_PROMPT
-        # Usage/cost of the most recent successful CLI classification, or None.
-        self.last_usage: AnalysisUsage | None = None
         self._setup_authentication()
 
     def _setup_authentication(self) -> None:
@@ -350,7 +340,7 @@ class TrialClassifier:
             try:
                 extra_dirs = [qa_context_dir] if qa_context_dir else None
                 if analyzer_block_context is None:
-                    structured_output = await self._run_claude_cli(
+                    structured_output = await self._run_cli_directly(
                         prompt,
                         trial_dir,
                         task_dir,
@@ -424,27 +414,10 @@ class TrialClassifier:
         from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
         from oddish.blocks.analyzer import analyzer_llm_client
         from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
-
-        classifier = self
-
-        class _ClaudeCliClient:
-            last_usage = None
-
-            async def stream(self, block_prompt: str, *, system_prompt=None):
-                output = await classifier._run_claude_cli(
-                    block_prompt,
-                    trial_dir,
-                    task_dir,
-                    extra_dirs=extra_dirs,
-                )
-                self.last_usage = classifier.last_usage
-                yield json.dumps(output)
-
-            async def aclose(self) -> None:
-                return None
-
-        async def _client_factory():
-            return _ClaudeCliClient()
+        from oddish.blocks.analyzer.claude_cli_client import (
+            parse_cli_envelope,
+            parse_stream_json_result,
+        )
 
         client_type = resolve_substrate(
             AnalyzerType.POST_TRIAL,
@@ -453,46 +426,40 @@ class TrialClassifier:
         )
         use_sandbox = client_type is LLMClientType.SANDBOX
         sandbox_config = None
-        block_prompt = prompt
+        cli_config = None if use_sandbox else self._cli_config(
+            trial_dir, task_dir, extra_dirs
+        )
         block_model = self._model
-        client_factory = _client_factory
         if use_sandbox:
+            _assert_dirs_in_snapshot(extra_dirs, task_dir, trial_dir)
+            # Archive members are the worker's own absolute paths minus the
+            # leading slash, so extracting at / restores each dir exactly where
+            # the prompt already says it is. Rewriting host paths into a sandbox
+            # root is what breaks silently: a context file whose path is not in
+            # the substitution list points the agent at an empty tree, and it
+            # answers confidently from nothing.
             archive = io.BytesIO()
             with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
-                bundle.add(task_dir, arcname="task")
-                bundle.add(trial_dir, arcname="trial")
-            sandbox_root = "/home/daytona/workspace/post-trial"
-            sandbox_task_dir = f"{sandbox_root}/task"
-            sandbox_trial_dir = f"{sandbox_root}/trial"
-            # Longest local path first: one dir nested under the other would
-            # otherwise have its prefix rewritten by the outer dir's pass,
-            # silently aiming the agent at the wrong extracted tree.
-            for local_dir, sandbox_dir in sorted(
-                (
-                    (str(task_dir), sandbox_task_dir),
-                    (str(trial_dir), sandbox_trial_dir),
-                ),
-                key=lambda pair: len(pair[0]),
-                reverse=True,
-            ):
-                block_prompt = block_prompt.replace(local_dir, sandbox_dir)
+                for local_dir in (task_dir, trial_dir):
+                    bundle.add(local_dir, arcname=str(local_dir).lstrip("/"))
+            parents = " ".join(
+                shlex.quote(str(d.parent))
+                for d in dict.fromkeys((task_dir, trial_dir))
+            )
             # The sandbox authenticates with ANTHROPIC_API_KEY, so it needs the
-            # plain API id -- _resolve_analysis_model_and_env does the same
+            # plain API id -- resolve_analysis_model_and_env does the same
             # normalization for the local subprocess. An un-normalized Bedrock
             # inference-profile id reaches claude-code as an unknown model.
             block_model = to_anthropic_api_model_id(self._model) or self._model
             sandbox_config = SandboxConfig(
                 session_id="post-trial",
-                files_to_upload={
-                    "/tmp/oddish-post-trial.tar.gz": archive.getvalue(),
-                },
+                files_to_upload={_SNAPSHOT_ARCHIVE: archive.getvalue()},
                 setup_commands=(
-                    f"mkdir -p {sandbox_root} && "
-                    f"tar -xzf /tmp/oddish-post-trial.tar.gz -C {sandbox_root}",
+                    f"mkdir -p {parents} && tar -xzf {_SNAPSHOT_ARCHIVE} -C /",
                 ),
                 json_schema=_classification_schema_json(),
+                add_dirs=(str(task_dir), str(trial_dir)),
             )
-            client_factory = None
 
         metadata = {
             "prompt_key": context.get("prompt_key"),
@@ -508,59 +475,47 @@ class TrialClassifier:
                     "task_id": context.get("task_id"),
                 }
             ),
-            prompt=block_prompt,
+            prompt=prompt,
             analyzer_id=context.get("trial_id"),
             task_id=context.get("task_id"),
             block_metadata=metadata,
             model=block_model,
             output_transform=(
-                self._parse_sandbox_block_output if use_sandbox else json.loads
+                parse_stream_json_result if use_sandbox else parse_cli_envelope
             ),
             sandbox_config=sandbox_config,
-            client_factory=client_factory,
+            cli_config=cli_config,
         )
         if use_sandbox:
-            # The CLAUDE_CLI path already bounds itself inside _run_claude_cli.
-            # The sandbox path has no inner deadline, so a wedged Daytona
-            # session would hold the QA job open for as long as it stayed alive.
+            # CliConfig.timeout bounds the CLAUDE_CLI path from inside, where it
+            # can also kill the subprocess. The sandbox path has no inner
+            # deadline, so a wedged Daytona session would hold the QA job open
+            # for as long as it stayed alive.
             output = await asyncio.wait_for(block.run(), timeout=self._timeout)
         else:
             output = await block.run()
         return output.output
 
-    @staticmethod
-    def _parse_sandbox_block_output(raw: str) -> Any:
-        """Extract the final Claude Code result from concatenated stream events."""
-        decoder = json.JSONDecoder()
-        offset = 0
-        events: list[dict] = []
-        while offset < len(raw):
-            event, offset = decoder.raw_decode(raw, offset)
-            if isinstance(event, dict):
-                events.append(event)
-            while offset < len(raw) and raw[offset].isspace():
-                offset += 1
-        for event in reversed(events):
-            if event.get("type") != "result":
-                continue
-            # Not `.get(a, .get(b))`: claude-code emits an explicit
-            # "structured_output": null when schema validation produced nothing,
-            # and that must still fall through to the free-text result.
-            result = event.get("structured_output")
-            if result is None:
-                result = event.get("result")
-            if isinstance(result, dict):
-                return result
-            if isinstance(result, str):
-                from oddish.blocks.block import Block
+    def _cli_config(
+        self, trial_dir: Path, task_dir: Path, extra_dirs: list[Path] | None
+    ) -> CliConfig:
+        """The one place the classifier describes its filesystem to claude-code.
 
-                return json.loads(Block.strip_code_fences(result))
-        raise RuntimeError("sandbox classifier returned no structured result event")
+        Both entry points build it from here, so the block path and the local
+        no-DB path cannot drift in what the agent may read or how its output is
+        constrained -- which is how --json-schema ended up on only one of them.
+        """
+        from oddish.blocks.analyzer.claude_cli_client import CliConfig
 
-    def _stash_usage(self, payload: dict, model_id: str | None) -> None:
-        self.last_usage = parse_cli_usage(payload, model_id)
+        return CliConfig(
+            cwd=trial_dir,
+            add_dirs=(task_dir, *(extra_dirs or [])),
+            json_schema=_classification_schema_json(),
+            timeout=self._timeout,
+            verbose=self._verbose,
+        )
 
-    async def _run_claude_cli(
+    async def _run_cli_directly(
         self,
         prompt: str,
         trial_dir: Path,
@@ -568,98 +523,21 @@ class TrialClassifier:
         *,
         extra_dirs: list[Path] | None = None,
     ) -> Any:
-        """Run Claude Code in print mode and return structured output."""
-        self.last_usage = None
-        schema = _classification_schema_json()
-        claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
-        logger.info(f"choosing model: {self._model}")
-        model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))
-        logger.info(f"resolved model_id: {model_id}")
-        command = [
-            claude_bin,
-            "-p",
-            prompt,
-            "--model",
-            model_id,
-            "--output-format",
-            "json",
-            "--json-schema",
-            schema,
-            "--tools",
-            "Read,Glob",
-            "--allowedTools",
-            "Read",
-            "Glob",
-            "--permission-mode",
-            "bypassPermissions",
-            "--dangerously-skip-permissions",
-            "--add-dir",
-            str(task_dir),
-        ]
-        for extra_dir in extra_dirs or []:
-            command += ["--add-dir", str(extra_dir)]
-
-        if self._verbose:
-            print(
-                f"{Colors.CYAN}[Classifier] Claude CLI model={model_id} cwd={trial_dir}{Colors.RESET}",
-                flush=True,
-            )
-
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(trial_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        """Classify without a block: local runs have no DB row to persist to."""
+        from oddish.blocks.analyzer.claude_cli_client import (
+            ClaudeCliClient,
+            parse_cli_envelope,
         )
 
+        client = ClaudeCliClient(
+            model=self._model,
+            config=self._cli_config(trial_dir, task_dir, extra_dirs),
+        )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=self._timeout,
-            )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
-            raise TimeoutError from None
-
-        stdout_text = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-
-        if self._verbose:
-            print_process_stream("Claude stderr", stderr_text, Colors.MAGENTA)
-
-        if process.returncode != 0:
-            error_text = (
-                stderr_text.strip() or stdout_text.strip() or "Unknown Claude CLI error"
-            )
-            raise RuntimeError(
-                f"Claude CLI exited with code {process.returncode}: {error_text}"
-            )
-
-        try:
-            payload = json.loads(stdout_text)
-        except json.JSONDecodeError as exc:
-            if self._verbose:
-                print_process_stream("Claude stdout", stdout_text, Colors.BLUE)
-            raise RuntimeError(f"Claude CLI returned invalid JSON: {exc}") from exc
-
-        self._stash_usage(payload, model_id)
-
-        structured_output = payload.get("structured_output")
-        if structured_output is not None:
-            return structured_output
-
-        result = payload.get("result")
-        if isinstance(result, dict):
-            return result
-        if isinstance(result, str):
-            try:
-                return json.loads(result)
-            except json.JSONDecodeError:
-                pass
-
-        raise RuntimeError("Claude CLI JSON response did not contain structured_output")
+            raw = "".join([chunk async for chunk in client.stream(prompt)])
+        finally:
+            await client.aclose()
+        return parse_cli_envelope(raw)
 
     def _parse_trial_classification_structured(
         self,

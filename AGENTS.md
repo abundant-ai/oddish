@@ -240,11 +240,15 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
   the shared `classify_trial_and_store`, then synthesize the task verdict
-- post-trial classification runs through `AnalyzerBlock`: hosted workers use
-  the registered Daytona `SANDBOX` with an uploaded task/trial snapshot, while
-  self-hosted workers fall back to the local Claude Code client recorded as
-  `CLAUDE_CLI`. Its costs use the `post_trial` job kind; the legacy
-  `trial_classifier` cost bucket is retired at this cutover.
+- post-trial classification runs through `AnalyzerBlock`. It reads two
+  already-downloaded directories and executes nothing, so `resolve_substrate`
+  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
+  `post_trial_sandbox_enabled` is the operator opt-in that lifts it into a
+  Daytona `SANDBOX`, which restores the task/trial snapshot at the worker's own
+  absolute paths so no prompt rewriting is involved. Its costs use the
+  `post_trial` job kind; the legacy `trial_classifier` cost bucket is retired at
+  this cutover, and every block row carries `block_metadata.cost_status`
+  (`recorded` | `no_usage` | `failed`) so lost spend is queryable.
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over

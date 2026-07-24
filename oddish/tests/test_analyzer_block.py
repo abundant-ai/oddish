@@ -1,9 +1,11 @@
 import asyncio
+import json
 import logging
 from types import SimpleNamespace
 
 import pytest
 
+from oddish.analyze.analysis_cost import AnalysisUsage
 from oddish.analyze.classifier import TrialClassifier
 from oddish.blocks.analyzer.analyzer_block import AnalyzerBlock
 from oddish.blocks.analyzer.analyzer_block import (
@@ -38,11 +40,21 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
 ):
     from oddish.blocks.analyzer import analyzer_llm_client
 
+    from oddish.blocks.analyzer import claude_cli_client
+
     captured = {}
     classifier = TrialClassifier(model="anthropic/test")
 
-    async def fake_cli(prompt, trial_dir, task_dir, *, extra_dirs=None):
-        return {"classification": "GOOD_SUCCESS"}
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            envelope = {"structured_output": {"classification": "GOOD_SUCCESS"}}
+            return json.dumps(envelope).encode(), b""
+
+    async def fake_exec(*command, **kwargs):
+        captured["command"] = list(command)
+        return _FakeProcess()
 
     async def fake_s3(self, raw):
         captured["raw"] = raw
@@ -53,7 +65,7 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
     async def fake_cost(self):
         return None
 
-    monkeypatch.setattr(classifier, "_run_claude_cli", fake_cli)
+    monkeypatch.setattr(claude_cli_client.asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(
         analyzer_llm_client,
         "sandbox_client_factory_registered",
@@ -85,15 +97,17 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
     assert block.llm_client_type is LLMClientType.CLAUDE_CLI
     assert block.block_metadata["prompt_key"] == "QA_POST_TRIAL"
     assert block.block_metadata["prompt_version"] == 7
-    assert captured["raw"] == b'{"classification": "GOOD_SUCCESS"}'
+    # S3 keeps the raw claude-code envelope, matching what the sandbox path
+    # persists -- the parsed object is the block output, not the artifact.
+    assert json.loads(captured["raw"])["structured_output"] == {
+        "classification": "GOOD_SUCCESS"
+    }
 
 
 @pytest.mark.asyncio
-async def test_post_trial_sandbox_opt_in_uploads_and_rewrites_paths(
-    monkeypatch, tmp_path
-):
-    """With the sandbox explicitly enabled, artifacts are shipped and the
-    prompt's host paths are rewritten to their in-sandbox locations."""
+async def test_post_trial_sandbox_opt_in_uploads_the_snapshot(monkeypatch, tmp_path):
+    """With the sandbox explicitly enabled, artifacts are shipped and the prompt
+    travels unmodified."""
     from oddish.blocks.analyzer import analyzer_llm_client
     from oddish.config import settings
 
@@ -130,18 +144,96 @@ async def test_post_trial_sandbox_opt_in_uploads_and_rewrites_paths(
     block = captured["block"]
     assert output == {"classification": "GOOD_SUCCESS"}
     assert block.llm_client_type is LLMClientType.SANDBOX
-    assert block._client_factory is None
+    assert block._cli_config is None
     assert block._sandbox_config.files_to_upload
-    assert str(task_dir) not in block.prompt
-    assert str(trial_dir) not in block.prompt
-    assert "/home/daytona/workspace/post-trial/task" in block.prompt
-    assert "/home/daytona/workspace/post-trial/trial" in block.prompt
+    # The snapshot is restored at the worker's own absolute paths, so the prompt
+    # travels unmodified. Nothing to rewrite is nothing to get wrong.
+    assert block.prompt == f"read {task_dir} and {trial_dir}"
+    setup = " ".join(block._sandbox_config.setup_commands)
+    assert str(task_dir.parent) in setup
+    assert "-C /" in setup
+    assert block._sandbox_config.add_dirs == (str(task_dir), str(trial_dir))
 
 
 @pytest.mark.asyncio
-async def test_post_trial_sandbox_rewrites_qa_context_refs(monkeypatch, tmp_path):
-    """The prompt cites `.qa_context/*.json` by absolute path so the sandbox
-    rewrite carries it; a relative ref would resolve against the sandbox cwd."""
+async def test_post_trial_sandbox_archives_dirs_at_their_absolute_paths(
+    monkeypatch, tmp_path
+):
+    """The tarball's member names are the worker's absolute paths minus the
+    leading slash, so extracting at / reproduces them exactly."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    task_dir = tmp_path / "task-local"
+    trial_dir = tmp_path / "trial-local"
+    task_dir.mkdir()
+    trial_dir.mkdir()
+    (task_dir / "README.md").write_text("task")
+    (trial_dir / "result.json").write_text("{}")
+
+    captured = {}
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
+        prompt="classify",
+        trial_dir=trial_dir,
+        task_dir=task_dir,
+        extra_dirs=None,
+        context={"trial_id": "trial-1", "task_id": "task-1"},
+    )
+
+    import io
+    import tarfile
+
+    blob = next(iter(captured["block"]._sandbox_config.files_to_upload.values()))
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as bundle:
+        names = bundle.getnames()
+    assert str(task_dir).lstrip("/") in names
+    assert f"{str(trial_dir).lstrip('/')}/result.json" in names
+    assert not any(name.startswith("/") for name in names)
+
+
+@pytest.mark.asyncio
+async def test_post_trial_sandbox_rejects_context_outside_the_snapshot(
+    monkeypatch, tmp_path
+):
+    """An extra dir the tarball does not carry would leave the agent reading an
+    empty path and returning a confidently empty classification. Fail instead."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    task_dir = tmp_path / "task-local"
+    trial_dir = tmp_path / "trial-local"
+    stray_dir = tmp_path / "somewhere-else"
+    for d in (task_dir, trial_dir, stray_dir):
+        d.mkdir()
+
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+
+    with pytest.raises(ValueError, match="outside the post-trial snapshot"):
+        await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
+            prompt="classify",
+            trial_dir=trial_dir,
+            task_dir=task_dir,
+            extra_dirs=[stray_dir],
+            context={"trial_id": "trial-1", "task_id": "task-1"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_trial_sandbox_serves_qa_context_refs(monkeypatch, tmp_path):
+    """The prompt cites `.qa_context/*.json` by absolute path; that path lives
+    under trial_dir, so the snapshot restores it where the prompt says it is. A
+    relative ref would resolve against the sandbox cwd, where nothing exists."""
     from oddish.analyze.classifier import _write_qa_context
     from oddish.blocks.analyzer import analyzer_llm_client
 
@@ -175,11 +267,8 @@ async def test_post_trial_sandbox_rewrites_qa_context_refs(monkeypatch, tmp_path
     )
 
     prompt = captured["block"].prompt
-    assert str(qa_dir) not in prompt
-    assert "/home/daytona/workspace/post-trial/trial/.qa_context/pre_trial.json" in prompt
-    assert (
-        "/home/daytona/workspace/post-trial/trial/.qa_context/file_access.json" in prompt
-    )
+    assert f"{qa_dir}/pre_trial.json" in prompt
+    assert f"{qa_dir}/file_access.json" in prompt
 
 
 @pytest.mark.asyncio
@@ -274,9 +363,10 @@ async def test_post_trial_sandbox_normalizes_bedrock_model_id(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_post_trial_sandbox_rewrite_survives_nested_dirs(monkeypatch, tmp_path):
-    """A trial dir nested under the task dir must not have its prefix eaten by
-    the task rewrite -- that aims the agent at the wrong extracted tree."""
+async def test_post_trial_sandbox_survives_nested_dirs(monkeypatch, tmp_path):
+    """A trial dir nested under the task dir is archived twice at the same
+    absolute path; extraction must still leave both readable where the prompt
+    says they are."""
     from oddish.blocks.analyzer import analyzer_llm_client
 
     task_dir = tmp_path / "task"
@@ -301,20 +391,18 @@ async def test_post_trial_sandbox_rewrite_survives_nested_dirs(monkeypatch, tmp_
         context={"trial_id": "trial-1", "task_id": "task-1"},
     )
 
-    prompt = captured["block"].prompt
-    assert prompt == (
-        "task at /home/daytona/workspace/post-trial/task, "
-        "trial at /home/daytona/workspace/post-trial/trial"
-    )
+    assert captured["block"].prompt == f"task at {task_dir}, trial at {trial_dir}"
 
 
 def test_post_trial_parses_sandbox_result_stream():
+    from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
+
     raw = (
         '{"type":"assistant","message":{"content":[]}}'
         '{"type":"result","result":"```json\\n'
         '{\\"classification\\":\\"GOOD_SUCCESS\\"}\\n```"}'
     )
-    assert TrialClassifier._parse_sandbox_block_output(raw) == {
+    assert parse_stream_json_result(raw) == {
         "classification": "GOOD_SUCCESS"
     }
 
@@ -322,11 +410,13 @@ def test_post_trial_parses_sandbox_result_stream():
 def test_post_trial_falls_back_to_result_on_null_structured_output():
     """claude-code emits an explicit null when schema validation yielded
     nothing; the free-text result is still usable."""
+    from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
+
     raw = (
         '{"type":"result","structured_output":null,'
         '"result":"{\\"classification\\":\\"GOOD_SUCCESS\\"}"}'
     )
-    assert TrialClassifier._parse_sandbox_block_output(raw) == {
+    assert parse_stream_json_result(raw) == {
         "classification": "GOOD_SUCCESS"
     }
 
@@ -452,6 +542,7 @@ def _patch_persistence(monkeypatch):
         saved["output"] = self.output
         saved["error"] = self.error
         saved["duration"] = self.job_duration_seconds
+        saved["block_metadata"] = dict(self.block_metadata or {})
 
     monkeypatch.setattr(AnalyzerBlock, "save_to_s3", fake_s3)
     monkeypatch.setattr(AnalyzerBlock, "save_to_db", fake_db)
@@ -694,3 +785,149 @@ async def test_self_provisioning_honors_creation_timeout(monkeypatch):
 
     with pytest.raises(TimeoutError):
         await block.run()
+
+
+@pytest.mark.asyncio
+async def test_block_provisions_the_cli_backend_from_config(monkeypatch, tmp_path):
+    """CLAUDE_CLI is provisioned by the block like SANDBOX and API are. No
+    caller-supplied factory, no context smuggled in through a closure."""
+    from oddish.blocks.analyzer import claude_cli_client
+    from oddish.blocks.analyzer.claude_cli_client import CliConfig, parse_cli_envelope
+
+    saved = _patch_persistence(monkeypatch)
+
+    class _FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                json.dumps({"structured_output": {"classification": "GOOD_SUCCESS"}})
+            ).encode(), b""
+
+    async def _exec(*command, **kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(claude_cli_client.asyncio, "create_subprocess_exec", _exec)
+
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.POST_TRIAL,
+        llm_client_type=LLMClientType.CLAUDE_CLI,
+        input=AnalyzerInput(input={}),
+        prompt="classify",
+        cli_config=CliConfig(cwd=tmp_path),
+        output_transform=parse_cli_envelope,
+    )
+    output = await block.run()
+
+    assert output.output == {"classification": "GOOD_SUCCESS"}
+    assert saved["status"] == JobStatus.SUCCESS
+
+
+class _CountingSession:
+    """Minimal stand-in for ``get_session()`` that records the rows added."""
+
+    rows: list = []
+
+    def add(self, obj):
+        type(self).rows.append(obj)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _usage(cost_usd: float = 0.5) -> AnalysisUsage:
+    return AnalysisUsage(
+        cost_usd=cost_usd,
+        input_tokens=10,
+        output_tokens=2,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        model="anthropic/test",
+        source="native",
+    )
+
+
+@pytest.mark.asyncio
+async def test_record_cost_marks_the_block_when_no_usage_was_reported():
+    """A block that reports no usage writes no cost row. Since the post-trial
+    cutover deleted the hand-written trial_classifier row, that silence is now
+    the only difference between "the run was free" and "we lost the spend"."""
+    block = _make_block(analyzer_type=AnalyzerType.POST_TRIAL)
+    block.usage = None
+
+    await block.record_cost()
+
+    assert block.block_metadata["cost_status"] == "no_usage"
+
+
+@pytest.mark.asyncio
+async def test_record_cost_marks_the_block_when_the_write_fails(monkeypatch):
+    """record_cost never raises, so a failed write is invisible unless the block
+    row carries it -- the log line is not queryable."""
+
+    def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.get_session", boom
+    )
+    block = _make_block(analyzer_type=AnalyzerType.POST_TRIAL)
+    block.usage = _usage()
+
+    await block.record_cost()
+
+    assert block.block_metadata["cost_status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_record_cost_marks_the_block_when_the_row_lands(monkeypatch):
+    _CountingSession.rows = []
+    monkeypatch.setattr(
+        "oddish.blocks.analyzer.analyzer_block.get_session",
+        lambda: _CountingSession(),
+    )
+    block = _make_block(analyzer_type=AnalyzerType.POST_TRIAL)
+    block.usage = _usage()
+
+    await block.record_cost()
+
+    assert len(_CountingSession.rows) == 1
+    assert block.block_metadata["cost_status"] == "recorded"
+
+
+@pytest.mark.asyncio
+async def test_run_persists_the_cost_status_on_the_block_row(monkeypatch):
+    """The status has to be stamped before save_to_db, or it never reaches
+    Postgres and the invariant is unqueryable."""
+    saved = _patch_persistence(monkeypatch)
+    block = _make_block(client=FakeAnalyzerLLMClient(chunks=["out"]))
+
+    await block.run()
+
+    assert saved["block_metadata"]["cost_status"] == "no_usage"
+
+
+@pytest.mark.asyncio
+async def test_run_returns_even_when_closing_the_client_hangs(monkeypatch):
+    """aclose() runs in the finally block. An unbounded await there lets a wedged
+    sandbox delete hold the QA job open past the classifier's own timeout."""
+    saved = _patch_persistence(monkeypatch)
+
+    class _UnclosableClient:
+        last_usage = None
+
+        async def stream(self, prompt, *, system_prompt=None):
+            yield "out"
+
+        async def aclose(self):
+            await asyncio.sleep(3600)
+
+    block = _make_block(client=_UnclosableClient(), client_close_timeout=0.01)
+
+    await asyncio.wait_for(block.run(), timeout=5)
+
+    assert saved["db"] == 1
+    assert saved["status"] == JobStatus.SUCCESS
