@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
+from rich.console import Console
 
 from oddish.analyze.classifier import (
     build_classify_prompt,
     build_trajectory_index_context,
 )
+from oddish.cli import trajectory
 from oddish.cli.trajectory import _fmt_step_range, _parse_step_selector
 
 
@@ -93,3 +97,48 @@ def test_step_ranges_collapse(step_ids, expected):
 )
 def test_step_selectors_parse(selector, expected):
     assert _parse_step_selector(selector) == expected
+
+
+def test_filtered_components_keep_their_original_indices(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(trajectory, "console", Console(file=output, width=120))
+    monkeypatch.setattr(trajectory, "_resolve", lambda _: "https://api.test")
+    monkeypatch.setattr(
+        trajectory,
+        "_fetch_summary",
+        lambda *_: {
+            "components": [
+                {"trajectory_component": "setup", "step_ids": [1]},
+                {"trajectory_component": "debug", "step_ids": [2, 3]},
+            ]
+        },
+    )
+
+    trajectory.components("trial-1", label="debug")
+
+    assert "1   debug" in output.getvalue()
+    assert "0   debug" not in output.getvalue()
+
+
+def test_steps_print_bracketed_content_without_rich_markup(monkeypatch):
+    output = io.StringIO()
+    monkeypatch.setattr(trajectory, "console", Console(file=output, width=120))
+    monkeypatch.setattr(trajectory, "_resolve", lambda _: "https://api.test")
+    monkeypatch.setattr(
+        trajectory,
+        "_get",
+        lambda *_: {
+            "steps": [
+                {
+                    "step_id": 1,
+                    "message": "[bold]literal[/bold] and [not-a-rich-tag]",
+                }
+            ]
+        },
+    )
+
+    trajectory.steps("trial-1", step_selector="1")
+
+    rendered = output.getvalue()
+    assert "[bold]literal[/bold]" in rendered
+    assert "[not-a-rich-tag]" in rendered

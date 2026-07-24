@@ -20,6 +20,7 @@ from typing import Annotated, Any, Optional
 import httpx
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
 
@@ -133,16 +134,22 @@ def summary(
         return
 
     console.print(f"[bold]Summary[/bold] (trial {trial_id})")
-    console.print(data.get("summary") or "[dim]none[/dim]")
+    summary_text = data.get("summary")
+    if summary_text:
+        console.print(str(summary_text), markup=False)
+    else:
+        console.print("[dim]none[/dim]")
 
     highlights = [h for h in (data.get("highlights") or []) if isinstance(h, dict)]
     if highlights:
         console.print("\n[bold]Star steps[/bold]")
         for h in highlights:
-            console.print(f"  step {h.get('step_id')}: {h.get('title') or ''}")
+            console.print(
+                f"  step {h.get('step_id')}: {h.get('title') or ''}", markup=False
+            )
             why = (h.get("why") or "").strip()
             if why:
-                console.print(f"    [dim]{why}[/dim]")
+                console.print(f"    {escape(why)}", style="dim")
 
     count = len(_components(data))
     if count:
@@ -170,12 +177,16 @@ def components(
     """
     url = _resolve(api_url)
     data = _fetch_summary(url, trial_id)
-    rows = _components(data)
+    rows = list(enumerate(_components(data)))
     if label:
-        rows = [c for c in rows if c.get("trajectory_component") == label]
+        rows = [
+            (index, component)
+            for index, component in rows
+            if component.get("trajectory_component") == label
+        ]
 
     if json_output:
-        console.print_json(_json.dumps(rows))
+        console.print_json(_json.dumps([component for _, component in rows]))
         return
 
     if not rows:
@@ -184,17 +195,18 @@ def components(
 
     console.print(f"[bold]{'#':<3} {'label':<26} {'steps':<14} {'n':>4} "
                   f"{'tools':>6} {'time':>8}[/bold]")
-    for index, component in enumerate(rows):
+    for index, component in rows:
         step_ids = [s for s in (component.get("step_ids") or []) if isinstance(s, int)]
         console.print(
             f"{index:<3} {str(component.get('trajectory_component') or '?'):<26} "
             f"{_fmt_step_range(step_ids):<14} {len(step_ids):>4} "
             f"{int(component.get('tool_count') or 0):>6} "
-            f"{_fmt_duration(component.get('duration_ms')):>8}"
+            f"{_fmt_duration(component.get('duration_ms')):>8}",
+            markup=False,
         )
         text = (component.get("summary") or "").strip()
         if text:
-            console.print(f"    [dim]{text}[/dim]")
+            console.print(f"    {escape(text)}", style="dim")
 
     console.print(
         f"\n[dim]Read one with: oddish trajectory steps {trial_id} --component N[/dim]"
@@ -263,4 +275,4 @@ def steps(
 
     for step in selected:
         console.print(f"\n[bold]── step {step.get('step_id')} ──[/bold]")
-        console.print(_json.dumps(step, indent=2, default=str))
+        console.print(_json.dumps(step, indent=2, default=str), markup=False)

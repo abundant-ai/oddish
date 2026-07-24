@@ -139,6 +139,41 @@ async def test_post_trial_sandbox_opt_in_uploads_and_rewrites_paths(
 
 
 @pytest.mark.asyncio
+async def test_post_trial_sandbox_skips_cli_without_api_base_url(
+    monkeypatch, tmp_path
+):
+    """Uploaded artifacts remain usable when no public CLI endpoint resolves."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
+    monkeypatch.setattr(settings, "public_api_base_url", "")
+    monkeypatch.delenv("MODAL_APP_NAME", raising=False)
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+    captured = {}
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={"classification": "GOOD_SUCCESS"})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
+        prompt="classify from uploaded files",
+        trial_dir=tmp_path,
+        task_dir=tmp_path,
+        extra_dirs=None,
+        context={"trial_id": "trial-1", "task_id": "task-1", "org_id": "org-1"},
+    )
+
+    config = captured["block"]._sandbox_config
+    assert config.files_to_upload
+    assert config.install_oddish_cli is False
+    assert config.oddish_api_base_url is None
+
+
+@pytest.mark.asyncio
 async def test_post_trial_sandbox_rewrites_qa_context_refs(monkeypatch, tmp_path):
     """The prompt cites `.qa_context/*.json` by absolute path so the sandbox
     rewrite carries it; a relative ref would resolve against the sandbox cwd."""
