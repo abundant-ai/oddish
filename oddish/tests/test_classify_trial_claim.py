@@ -145,11 +145,12 @@ async def test_second_caller_skips_a_trial_already_being_classified(
         # means the RUNNING claim is durably visible to the second caller.
         await asyncio.wait_for(first_started.wait(), timeout=10)
 
-        await ah.classify_trial_and_store(trial_id)
+        skipped_status = await ah.classify_trial_and_store(trial_id)
 
         release.set()
         await asyncio.wait_for(first, timeout=10)
 
+        assert skipped_status == AnalysisStatus.RUNNING
         assert calls == 1, "a trial under active classification was re-classified"
 
         rows = (

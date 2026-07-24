@@ -516,12 +516,24 @@ async def run_task_qa_job(
                     )
                     return
             try:
-                await classify_trial_and_store(
+                analysis_status = await classify_trial_and_store(
                     trial_id,
                     should_store=lambda session: _worker_job_is_running(
                         session, worker_job_id
                     ),
                 )
+                if analysis_status == AnalysisStatus.RUNNING:
+                    # Another QA job owns this trial's fresh classification
+                    # claim. This batch is incomplete, so do not synthesize a
+                    # verdict from only the classifications visible so far.
+                    # Leaving verdict_status RUNNING makes this worker job
+                    # retryable; the claim owner can still finish and persist
+                    # the complete terminal verdict in the meantime.
+                    console.print(
+                        f"[yellow]QA {task_id} deferred; trial {trial_id} "
+                        "is being classified by another worker[/yellow]"
+                    )
+                    return
             except Exception as exc:  # noqa: BLE001
                 console.print(
                     f"[red]Classification crashed for {trial_id}: "

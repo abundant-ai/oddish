@@ -110,7 +110,12 @@ async def classify_trial_and_store(
     trial_id: str,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> AnalysisStatus | None:
-    """Classify one trial and store its analysis."""
+    """Classify one trial and store its analysis.
+
+    Returns ``RUNNING`` when another worker owns a fresh claim. Callers that
+    aggregate several classifications must treat that as an incomplete batch,
+    not as the same no-op as an already-terminal trial.
+    """
     from oddish.analyze import TrialClassifier
 
     # Claim the trial. Locked because concurrent QA jobs for one task are
@@ -144,7 +149,7 @@ async def classify_trial_and_store(
             console.print(
                 f"[yellow]Trial {trial_id} is already being classified, skipping[/yellow]"
             )
-            return None
+            return AnalysisStatus.RUNNING
 
         trial.analysis_status = AnalysisStatus.RUNNING
         trial.analysis_started_at = utcnow()

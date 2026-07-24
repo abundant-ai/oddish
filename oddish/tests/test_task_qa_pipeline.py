@@ -413,6 +413,55 @@ async def test_run_task_qa_job_classifies_then_synthesizes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_task_qa_job_defers_verdict_for_fresh_running_claim(monkeypatch):
+    """A competing classifier claim means the verdict inputs are incomplete."""
+    task = SimpleNamespace(
+        id="task-claim-owned",
+        org_id="org-1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict_status=VerdictStatus.QUEUED,
+        verdict=None,
+        verdict_error=None,
+        verdict_started_at=None,
+        verdict_finished_at=None,
+        finished_at=None,
+    )
+    trial = SimpleNamespace(
+        id="trial-claim-owned",
+        analysis_status=AnalysisStatus.RUNNING,
+        analysis=None,
+    )
+    session = _QASession(task=task, trials=[trial])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    async def fake_load_live(_task_id):
+        return [(trial.id, AnalysisStatus.RUNNING)]
+
+    async def fake_classify(_trial_id, should_store=None):
+        assert should_store is not None
+        return AnalysisStatus.RUNNING
+
+    async def fail_compute_verdict(*_args, **_kwargs):
+        raise AssertionError("must not synthesize from an incomplete claim set")
+
+    monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        qa_handler, "_load_live_trials_for_classification", fake_load_live
+    )
+    monkeypatch.setattr(qa_handler, "classify_trial_and_store", fake_classify)
+    monkeypatch.setattr(qa_handler, "synthesize_task_verdict", fail_compute_verdict)
+
+    await qa_handler.run_task_qa_job(task.id, queue_key="qa")
+
+    assert task.verdict_status == VerdictStatus.RUNNING
+    assert task.verdict is None
+    assert task.verdict_finished_at is None
+
+
+@pytest.mark.asyncio
 async def test_run_task_qa_job_default_pre_trial_synth_is_noop(monkeypatch):
     """CRITICAL INVARIANT: with the default (no-op) ``pre_trial_synth_fn``,
     ``run_task_qa_job`` must not touch the pre_trial columns at all, and the
