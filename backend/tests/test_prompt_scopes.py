@@ -157,6 +157,34 @@ async def test_other_orgs_override_is_never_resolved(scoped_kind):
 
 
 @pytest.mark.asyncio
+async def test_foreign_prompt_id_is_rejected_by_global_fallback(scoped_kind):
+    await _write(
+        scoped_kind,
+        "org_b_secret",
+        scope_type="org",
+        scope_id="org_b",
+        org_id="org_b",
+    )
+    async with get_session() as session:
+        prompt, _ = await get_prompt_core(
+            session,
+            scoped_kind,
+            scope_type="org",
+            scope_id="org_b",
+            org_id="org_b",
+        )
+
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as exc:
+            await resolve_prompt_core(
+                session,
+                prompt.id,
+                **{**_NO_SCOPES, "org_id": "org_a"},
+            )
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_scope_without_versions_falls_through_to_global(scoped_kind):
     # A prompt row can exist with zero versions; it must not shadow the global.
     await _write(scoped_kind, "global")

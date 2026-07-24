@@ -72,6 +72,7 @@ async def _call(
     scopes=(APIKeyScope.READ,),
     prompt_org_id=None,
     prompt_core=None,
+    prompt_row_core=None,
     target_org_id="org_1",
     **kwargs,
 ):
@@ -95,12 +96,24 @@ async def _call(
     async def fake_usage(session, ref):
         return {"total": 0, "last_used_at": None, "by_version": []}
 
+    async def fake_get_row(
+        session, ref, *, scope_type=None, scope_id=None, org_id=None
+    ):
+        if ref in {"not_a_kind", "NOT_A_KIND"}:
+            return None
+        prompt = _FakePrompt()
+        prompt.org_id = prompt_org_id
+        return prompt
+
     monkeypatch.setattr(
         prompts_router,
         "get_session",
         lambda: _ctx(_FakeSession(target_org_id=target_org_id)),
     )
     monkeypatch.setattr(prompts_router, "get_prompt_core", prompt_core or fake_get)
+    monkeypatch.setattr(
+        prompts_router, "get_prompt_row_core", prompt_row_core or fake_get_row
+    )
     monkeypatch.setattr(prompts_router, "get_prompt_usage_core", fake_usage)
     app = create_app()
     app.dependency_overrides[require_auth] = _auth(list(scopes))
@@ -305,6 +318,34 @@ async def test_put_rejects_foreign_org_prompt_id(monkeypatch):
         json={"content": "x"},
     )
     assert resp.status_code == 404
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_put_rejects_foreign_versionless_prompt_id(monkeypatch):
+    called = False
+
+    async def fake_row(session, ref, **kwargs):
+        prompt = _FakePrompt()
+        prompt.org_id = "org_2"
+        prompt.versions = []
+        return prompt
+
+    async def fake_set(session, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(prompts_router, "set_prompt_core", fake_set)
+    resp = await _call(
+        "PUT",
+        "/prompts/deadbeef",
+        monkeypatch,
+        scopes=(APIKeyScope.FULL,),
+        prompt_row_core=fake_row,
+        json={"content": "x"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Prompt not found"
     assert called is False
 
 
