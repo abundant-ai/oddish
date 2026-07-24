@@ -55,10 +55,13 @@ class _FakeOpenAI:
         return None
 
 
-def _client(monkeypatch, usage):
+def _client(monkeypatch, usage, *, deployment=None):
     fake = _FakeOpenAI(usage)
+    # On Azure the second element is the deployment id, which diverges from the
+    # canonical model; default it equal to model to mirror the public-OpenAI path.
+    wire = deployment if deployment is not None else MODEL
     monkeypatch.setattr(
-        mod, "_build_openai_client", lambda *, model, api_key: (fake, model)
+        mod, "_build_openai_client", lambda *, model, api_key: (fake, wire)
     )
     return mod.ApiAnalyzerLLMClient(model=MODEL, max_tokens=256), fake
 
@@ -95,6 +98,25 @@ async def test_openai_stream_asks_the_api_for_usage(monkeypatch):
     assert fake.chat.completions.captured.get("stream_options") == {
         "include_usage": True
     }
+
+
+@pytest.mark.asyncio
+async def test_azure_prices_canonical_model_not_deployment(monkeypatch):
+    """Azure's deployment id is unpriceable; usage must price the model id.
+
+    On the Azure path _build_openai_client returns the deployment id as the
+    wire model. Pricing off that name leaves task_verdict rows with tokens but
+    a null cost_usd -- the deployment must be sent on the request while the
+    canonical model is what gets priced.
+    """
+    client, fake = _client(monkeypatch, _usage(), deployment="azure-gpt-5-4")
+
+    [c async for c in client.stream("prompt")]
+
+    assert fake.chat.completions.captured.get("model") == "azure-gpt-5-4"
+    assert client.last_usage is not None
+    assert client.last_usage.model == MODEL
+    assert client.last_usage.cost_usd > 0
 
 
 @pytest.mark.asyncio

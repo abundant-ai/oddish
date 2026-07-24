@@ -176,7 +176,12 @@ class ApiAnalyzerLLMClient:
 
         if self._uses_openai:
             self._response_format = response_format
-            self._openai, self._model = _build_openai_client(
+            # On Azure the wire model is the deployment id, which is not a
+            # priceable model id -- keep self._model canonical so usage is
+            # priced against a known model, and send the deployment id
+            # (self._request_model) on the request. On public OpenAI the two
+            # are identical.
+            self._openai, self._request_model = _build_openai_client(
                 model=model, api_key=api_key
             )
             self._anthropic = None
@@ -253,7 +258,7 @@ class ApiAnalyzerLLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        kwargs: dict = dict(model=self._model, messages=messages)
+        kwargs: dict = dict(model=self._request_model, messages=messages)
         if self._response_format is not None:
             kwargs["response_format"] = self._response_format
         if self._max_tokens is not None:
