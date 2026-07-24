@@ -449,8 +449,7 @@ class AnalyzerBlock(Block):
                         self._active_client.aclose(),
                         timeout=self._client_close_timeout,
                     )
-                except Exception as exc:  # noqa: BLE001
-                    self.error = self.error or repr(exc)
+                except Exception:  # noqa: BLE001
                     self.log.exception("client cleanup failed")
                 self._active_client = None
             self.job_ended_at = utcnow()

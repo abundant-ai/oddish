@@ -931,3 +931,5 @@ async def test_run_returns_even_when_closing_the_client_hangs(monkeypatch):
 
     assert saved["db"] == 1
     assert saved["status"] == JobStatus.SUCCESS
+    assert saved["error"] is None
+    assert block.error is None
