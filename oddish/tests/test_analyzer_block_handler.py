@@ -28,26 +28,36 @@ def test_automatic_run_uses_lifecycle_analyzer_type():
 def test_subject_linkage_matches_the_lifecycle_cost_contract():
     """POST_TRIAL charges its trial (analyzer_id) and carries task_id; PRE_TRIAL
     charges its task; both leave attribution_org_id unset so _cost_attribution
-    resolves the subject. CUSTOM_QA keeps the ad-hoc org attribution."""
-    post = SimpleNamespace(id="run_1", org_id="org_1", scope_id="trial_9")
+    resolves the subject and set no explicit subject_type/subject_id. CUSTOM_QA
+    keeps the ad-hoc org attribution and passes its own scope as the subject so
+    the cost row is not left scope-less."""
+    post = SimpleNamespace(
+        id="run_1", org_id="org_1", scope_type="trial", scope_id="trial_9"
+    )
     assert handler._subject_linkage(
         AnalyzerType.POST_TRIAL, post, {"trial_id": "trial_9", "task_id": "task_3"}
-    ) == ("trial_9", "task_3", None)
+    ) == ("trial_9", "task_3", None, None, None)
 
-    pre = SimpleNamespace(id="run_2", org_id="org_1", scope_id="task_3")
+    pre = SimpleNamespace(
+        id="run_2", org_id="org_1", scope_type="task", scope_id="task_3"
+    )
     assert handler._subject_linkage(
         AnalyzerType.PRE_TRIAL, pre, {"task_id": "task_3"}
-    ) == (None, "task_3", None)
+    ) == (None, "task_3", None, None, None)
 
     assert handler._subject_linkage(AnalyzerType.CUSTOM_QA, post, {}) == (
         "run_1",
         None,
         "org_1",
+        "trial",
+        "trial_9",
     )
 
     # Older runs whose run_config predates these keys fall back to scope_id.
     assert handler._subject_linkage(AnalyzerType.POST_TRIAL, post, {}) == (
         "trial_9",
+        None,
+        None,
         None,
         None,
     )
@@ -125,6 +135,8 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         model="test-model",
         reasoning_effort=None,
         llm_client_type=LLMClientType.API.value,
+        scope_type="task",
+        scope_id="task_1",
         run_config={
             "scope": {"type": "task", "id": "task_1"},
             "system_prompt": "Inspect the task",
@@ -158,10 +170,14 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         finally:
             session.closed = True
 
+    blocks = []
+
     class FakeBlock:
         def __init__(self, **kwargs):
             self.id = "block_1"
             self.error = None
+            self.kwargs = kwargs
+            blocks.append(self)
 
         async def run(self):
             assert sessions[0].closed
@@ -178,6 +194,10 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
     assert run.analyzer_block_id == "block_1"
     assert run.status == JobStatus.SUCCESS
     assert run.output == {"ok": True}
+
+    assert len(blocks) == 1
+    assert blocks[0].kwargs["subject_type"] == run.scope_type
+    assert blocks[0].kwargs["subject_id"] == run.scope_id
 
 
 @pytest.mark.asyncio

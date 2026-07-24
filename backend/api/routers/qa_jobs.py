@@ -298,9 +298,7 @@ async def assign_qa_job(
         await session.commit()
 
         effective = (
-            data.prompt_version
-            if data.prompt_version is not None
-            else latest.version
+            data.prompt_version if data.prompt_version is not None else latest.version
         )
         return _to_response(
             ResolvedAssignment(
@@ -320,9 +318,7 @@ async def delete_qa_job(
     """Soft delete one assignment."""
     auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
-        assignment = await get_qa_assignment_core(
-            session, assignment_id=assignment_id
-        )
+        assignment = await get_qa_assignment_core(session, assignment_id=assignment_id)
         if assignment is None:
             raise HTTPException(status_code=404, detail="QA job not found")
         assert_org_access(assignment, auth, detail="QA job not found")

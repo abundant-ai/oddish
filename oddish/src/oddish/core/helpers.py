@@ -421,6 +421,9 @@ def build_trial_response(
     *,
     queue_info: TrialQueueInfo | None = None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
+    # None = "not resolved by this caller", which the UI renders as nothing.
+    # Distinct from 0.0, which would mean "resolved, and there was no QA".
+    qa_cost_usd: float | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
@@ -472,6 +475,7 @@ def build_trial_response(
         created_at=trial.created_at,
         started_at=trial.started_at,
         finished_at=trial.finished_at,
+        qa_cost_usd=qa_cost_usd,
     )
 
 
@@ -1119,7 +1123,14 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
 )
 
 
-def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+def build_slim_trial_response(
+    trial: TrialModel,
+    task_path: str,
+    *,
+    # None = "not resolved by this caller", which the UI renders as nothing.
+    # Distinct from 0.0, which would mean "resolved, and there was no QA".
+    qa_cost_usd: float | None = None,
+) -> TrialResponse:
     """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
     if isinstance(trial.analysis, dict):
@@ -1163,6 +1174,7 @@ def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialRespons
         created_at=trial.created_at,
         started_at=trial.started_at,
         finished_at=trial.finished_at,
+        qa_cost_usd=qa_cost_usd,
     )
 
 
@@ -1173,8 +1185,14 @@ def build_slim_task_status_response(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    qa_costs_by_trial_id: dict[str, float] | None = None,
 ) -> TaskStatusResponse:
-    """Build a task status response with slim per-trial payloads."""
+    """Build a task status response with slim per-trial payloads.
+
+    ``qa_costs_by_trial_id`` is the caller's already-resolved page of QA
+    costs (see :func:`oddish.core.endpoints.qa_cost.get_trial_qa_costs`);
+    None -> every trial's ``qa_cost_usd`` stays unresolved (None), not 0.0.
+    """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
             task,
@@ -1189,7 +1207,18 @@ def build_slim_task_status_response(
     reward_success = sum(1 for t in task_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
-    trials = [build_slim_trial_response(t, task.task_path) for t in task_trials]
+    trials = [
+        build_slim_trial_response(
+            t,
+            task.task_path,
+            qa_cost_usd=(
+                qa_costs_by_trial_id.get(t.id)
+                if qa_costs_by_trial_id is not None
+                else None
+            ),
+        )
+        for t in task_trials
+    ]
 
     return _build_task_status_response(
         task,

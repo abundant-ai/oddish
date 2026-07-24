@@ -32,8 +32,9 @@ def _analyzer_type_for_config(config: dict) -> AnalyzerType:
 
 def _subject_linkage(
     analyzer_type: AnalyzerType, run: AnalyzerRunModel, config: dict
-) -> tuple[str | None, str | None, str | None]:
-    """The ``(analyzer_id, task_id, attribution_org_id)`` a lifecycle block needs.
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """The subject columns a block needs: ``(analyzer_id, task_id,
+    attribution_org_id, subject_type, subject_id)``.
 
     Lifecycle-typed runs land in the same cost/lineage paths as the built-in
     blocks, which assume a concrete subject: a POST_TRIAL block attributes its
@@ -41,17 +42,29 @@ def _subject_linkage(
     post-trial classifier) and carries ``task_id`` for lineage; a PRE_TRIAL
     block attributes to its task. Both leave ``attribution_org_id`` unset so
     ``AnalyzerBlock._cost_attribution`` resolves that subject instead of
-    short-circuiting on the org. CUSTOM_QA keeps the ad-hoc-run behavior:
-    ``analyzer_id`` is the run id and spend attributes to the org.
+    short-circuiting on the org.
 
-    ``run.scope_id`` is the fallback for runs enqueued before ``run_config``
-    carried these keys (post-trial scope is the trial, pre-trial the task).
+    CUSTOM_QA keeps the ad-hoc-run behavior: ``analyzer_id`` is the run id and
+    spend attributes to the org, but the run's own ``scope_type``/``scope_id``
+    is passed as an explicit ``subject_type``/``subject_id`` so the cost row is
+    not left scope-less (the generic runner always sets an org override, which
+    would otherwise short-circuit resolution).
+
+    ``run.scope_id`` is the fallback for lifecycle runs enqueued before
+    ``run_config`` carried these keys (post-trial scope is the trial, pre-trial
+    the task).
     """
     if analyzer_type is AnalyzerType.POST_TRIAL:
-        return config.get("trial_id") or run.scope_id, config.get("task_id"), None
+        return (
+            config.get("trial_id") or run.scope_id,
+            config.get("task_id"),
+            None,
+            None,
+            None,
+        )
     if analyzer_type is AnalyzerType.PRE_TRIAL:
-        return None, config.get("task_id") or run.scope_id, None
-    return run.id, None, run.org_id
+        return None, config.get("task_id") or run.scope_id, None, None, None
+    return run.id, None, run.org_id, run.scope_type, run.scope_id
 
 
 async def _heartbeat(worker_job_id: str, stop: asyncio.Event) -> None:
@@ -88,9 +101,13 @@ async def run_analyzer_block_job(
             client_type = LLMClientType(run.llm_client_type)
             stage = config.get("stage")
             analyzer_type = _analyzer_type_for_config(config)
-            analyzer_id, task_id, attribution_org_id = _subject_linkage(
-                analyzer_type, run, config
-            )
+            (
+                analyzer_id,
+                task_id,
+                attribution_org_id,
+                subject_type,
+                subject_id,
+            ) = _subject_linkage(analyzer_type, run, config)
             sandbox_config = None
             if client_type == LLMClientType.SANDBOX:
                 sandbox_config = SandboxConfig(
@@ -122,6 +139,11 @@ async def run_analyzer_block_job(
                 model=run.model,
                 triggered_by_user_id=run.triggered_by_user_id,
                 attribution_org_id=attribution_org_id,
+                # What the run is about. Lifecycle blocks resolve their subject
+                # via analyzer_id/task_id, so this is set only for custom QA --
+                # without it the org override leaves its cost row scope-less.
+                subject_type=subject_type,
+                subject_id=subject_id,
                 sandbox_config=sandbox_config,
                 block_metadata=config,
             )

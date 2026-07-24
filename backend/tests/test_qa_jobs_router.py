@@ -192,7 +192,9 @@ async def test_defined_listing_excludes_inherited_rows(kind, task):
     await _make_prompt(kind, scope_type="org", scope_id="org_a", org_id="org_a")
     async with await _client() as client:
         assigned = await client.post(
-            "/qa-jobs", params={"scope": "org"}, json={"prompt": kind, "stage": "post_trial"}
+            "/qa-jobs",
+            params={"scope": "org"},
+            json={"prompt": kind, "stage": "post_trial"},
         )
         assert assigned.status_code == 200, assigned.text
         resolved = await client.get(
@@ -231,7 +233,9 @@ async def test_cannot_delete_another_orgs_assignment(kind):
     await _make_prompt(kind, scope_type="org", scope_id="org_b", org_id="org_b")
     async with await _client(org_id="org_b") as client:
         created = await client.post(
-            "/qa-jobs", params={"scope": "org"}, json={"prompt": kind, "stage": "post_trial"}
+            "/qa-jobs",
+            params={"scope": "org"},
+            json={"prompt": kind, "stage": "post_trial"},
         )
         assert created.status_code == 200, created.text
         assignment_id = created.json()["id"]
@@ -342,7 +346,9 @@ async def test_assign_requires_full_scope(kind):
     await _make_prompt(kind, scope_type="org", scope_id="org_a", org_id="org_a")
     async with await _client(scope=APIKeyScope.READ) as client:
         resp = await client.post(
-            "/qa-jobs", params={"scope": "org"}, json={"prompt": kind, "stage": "post_trial"}
+            "/qa-jobs",
+            params={"scope": "org"},
+            json={"prompt": kind, "stage": "post_trial"},
         )
     assert resp.status_code == 403
 
@@ -352,13 +358,19 @@ async def test_prompt_with_no_versions_is_rejected_at_assign_time(kind):
     async with get_session() as session:
         session.add(
             PromptModel(
-                kind=kind, description="", scope_type="org", scope_id="org_a", org_id="org_a"
+                kind=kind,
+                description="",
+                scope_type="org",
+                scope_id="org_a",
+                org_id="org_a",
             )
         )
         await session.commit()
     async with await _client() as client:
         resp = await client.post(
-            "/qa-jobs", params={"scope": "org"}, json={"prompt": kind, "stage": "post_trial"}
+            "/qa-jobs",
+            params={"scope": "org"},
+            json={"prompt": kind, "stage": "post_trial"},
         )
     assert resp.status_code == 400
     assert "no versions" in resp.json()["detail"]
@@ -381,7 +393,9 @@ async def test_unknown_stage_is_rejected(kind):
     await _make_prompt(kind, scope_type="org", scope_id="org_a", org_id="org_a")
     async with await _client() as client:
         resp = await client.post(
-            "/qa-jobs", params={"scope": "org"}, json={"prompt": kind, "stage": "mid_trial"}
+            "/qa-jobs",
+            params={"scope": "org"},
+            json={"prompt": kind, "stage": "mid_trial"},
         )
     assert resp.status_code == 422
 

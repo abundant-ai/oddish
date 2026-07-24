@@ -8,7 +8,11 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol, runtime_ch
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from oddish.analyze.analysis_cost import AnalysisUsage, usage_from_api_message
+from oddish.analyze.analysis_cost import (
+    AnalysisUsage,
+    usage_from_api_message,
+    usage_from_openai_completion,
+)
 from oddish.blocks.analyzer.claude_cli_client import ClaudeCliClient, CliConfig
 from oddish.config import OPENAI_PROVIDER_OPENAI, _infer_provider_prefix, settings
 
@@ -183,7 +187,12 @@ class ApiAnalyzerLLMClient:
 
         if self._uses_openai:
             self._response_format = response_format
-            self._openai, self._model = _build_openai_client(
+            # On Azure the wire model is the deployment id, which is not a
+            # priceable model id -- keep self._model canonical so usage is
+            # priced against a known model, and send the deployment id
+            # (self._request_model) on the request. On public OpenAI the two
+            # are identical.
+            self._openai, self._request_model = _build_openai_client(
                 model=model, api_key=api_key
             )
             self._anthropic = None
@@ -260,7 +269,7 @@ class ApiAnalyzerLLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        kwargs: dict = dict(model=self._model, messages=messages)
+        kwargs: dict = dict(model=self._request_model, messages=messages)
         if self._response_format is not None:
             kwargs["response_format"] = self._response_format
         if self._max_tokens is not None:
@@ -269,13 +278,27 @@ class ApiAnalyzerLLMClient:
             # providers) but maps to the wire param OpenAI accepts.
             kwargs["max_completion_tokens"] = self._max_tokens
 
+        # Content chunks carry no usage; the API only emits the usage chunk
+        # that get_final_completion() folds in when this is asked for, and the
+        # SDK's stream helper does not set it. Without it the task-verdict block
+        # records no cost at all (record_cost bails on usage is None).
+        kwargs["stream_options"] = {"include_usage": True}
+
         async with self._openai.chat.completions.stream(**kwargs) as stream:
             async for event in stream:
                 if event.type == "content.delta":
                     yield event.delta
-        # OpenAI streaming chunks carry no usage, so self.last_usage stays None:
-        # OpenAI spend is not folded into analysis_costs the way the Anthropic
-        # path's usage_from_api_message does it.
+            # The usage chunk is folded into current_completion_snapshot as the
+            # stream drains; read it here, before get_final_completion() reparses
+            # the response_format and can raise on a length/content-filter finish
+            # (LengthFinishReasonError). Those tokens were spent regardless, so
+            # stash first -- the way the Anthropic path stashes usage before its
+            # max_tokens truncation raise.
+            self.last_usage = usage_from_openai_completion(
+                getattr(stream.current_completion_snapshot, "usage", None),
+                self._model,
+            )
+            await stream.get_final_completion()
 
     async def aclose(self) -> None:
         if self._uses_openai:
