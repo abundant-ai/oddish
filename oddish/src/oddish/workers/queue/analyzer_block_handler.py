@@ -20,6 +20,53 @@ class MissingPromptVersionError(RuntimeError):
     """The immutable prompt version referenced by an analyzer run is gone."""
 
 
+def _analyzer_type_for_config(config: dict) -> AnalyzerType:
+    stage = config.get("stage")
+    if config.get("automatic") and stage in {
+        AnalyzerType.PRE_TRIAL.value,
+        AnalyzerType.POST_TRIAL.value,
+    }:
+        return AnalyzerType(stage)
+    return AnalyzerType.CUSTOM_QA
+
+
+def _subject_linkage(
+    analyzer_type: AnalyzerType, run: AnalyzerRunModel, config: dict
+) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    """The subject columns a block needs: ``(analyzer_id, task_id,
+    attribution_org_id, subject_type, subject_id)``.
+
+    Lifecycle-typed runs land in the same cost/lineage paths as the built-in
+    blocks, which assume a concrete subject: a POST_TRIAL block attributes its
+    spend to the trial named by ``analyzer_id`` (mirroring the built-in
+    post-trial classifier) and carries ``task_id`` for lineage; a PRE_TRIAL
+    block attributes to its task. Both leave ``attribution_org_id`` unset so
+    ``AnalyzerBlock._cost_attribution`` resolves that subject instead of
+    short-circuiting on the org.
+
+    CUSTOM_QA keeps the ad-hoc-run behavior: ``analyzer_id`` is the run id and
+    spend attributes to the org, but the run's own ``scope_type``/``scope_id``
+    is passed as an explicit ``subject_type``/``subject_id`` so the cost row is
+    not left scope-less (the generic runner always sets an org override, which
+    would otherwise short-circuit resolution).
+
+    ``run.scope_id`` is the fallback for lifecycle runs enqueued before
+    ``run_config`` carried these keys (post-trial scope is the trial, pre-trial
+    the task).
+    """
+    if analyzer_type is AnalyzerType.POST_TRIAL:
+        return (
+            config.get("trial_id") or run.scope_id,
+            config.get("task_id"),
+            None,
+            None,
+            None,
+        )
+    if analyzer_type is AnalyzerType.PRE_TRIAL:
+        return None, config.get("task_id") or run.scope_id, None, None, None
+    return run.id, None, run.org_id, run.scope_type, run.scope_id
+
+
 async def _heartbeat(worker_job_id: str, stop: asyncio.Event) -> None:
     while True:
         try:
@@ -52,6 +99,15 @@ async def run_analyzer_block_job(
             config = dict(run.run_config or {})
             oddish_cli_enabled = bool(config.get("oddish_cli_enabled"))
             client_type = LLMClientType(run.llm_client_type)
+            stage = config.get("stage")
+            analyzer_type = _analyzer_type_for_config(config)
+            (
+                analyzer_id,
+                task_id,
+                attribution_org_id,
+                subject_type,
+                subject_id,
+            ) = _subject_linkage(analyzer_type, run, config)
             sandbox_config = None
             if client_type == LLMClientType.SANDBOX:
                 sandbox_config = SandboxConfig(
@@ -64,11 +120,11 @@ async def run_analyzer_block_job(
                     ),
                     oddish_api_scope="tasks" if oddish_cli_enabled else "read",
                     reasoning_effort=run.reasoning_effort,
-                    session_id="custom-qa",
+                    session_id=stage or "custom-qa",
                 )
 
             block = AnalyzerBlock(
-                analyzer_type=AnalyzerType.CUSTOM_QA,
+                analyzer_type=analyzer_type,
                 llm_client_type=client_type,
                 input=AnalyzerInput(
                     input={
@@ -78,14 +134,16 @@ async def run_analyzer_block_job(
                 ),
                 prompt=version.content,
                 system_prompt=config.get("system_prompt"),
-                analyzer_id=run.id,
+                analyzer_id=analyzer_id,
+                task_id=task_id,
                 model=run.model,
                 triggered_by_user_id=run.triggered_by_user_id,
-                attribution_org_id=run.org_id,
-                # The run knows exactly what it is about; without this the cost
-                # row lands with every scope column NULL.
-                subject_type=run.scope_type,
-                subject_id=run.scope_id,
+                attribution_org_id=attribution_org_id,
+                # What the run is about. Lifecycle blocks resolve their subject
+                # via analyzer_id/task_id, so this is set only for custom QA --
+                # without it the org override leaves its cost row scope-less.
+                subject_type=subject_type,
+                subject_id=subject_id,
                 sandbox_config=sandbox_config,
                 block_metadata=config,
             )

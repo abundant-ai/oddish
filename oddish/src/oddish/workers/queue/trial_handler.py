@@ -864,7 +864,31 @@ async def _store_trial_results(
             trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
 
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
+            from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
             from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+
+            try:
+                async with session.begin_nested():
+                    await enqueue_qa_assignment_runs_core(
+                        session,
+                        stage="post_trial",
+                        stage_event_key=f"trial:{trial.id}",
+                        org_id=getattr(trial, "org_id", None),
+                        user_id=getattr(trial, "billed_user_id", None),
+                        experiment_id=getattr(trial, "experiment_id", None),
+                        task_id=trial.task_id,
+                        trial_id=trial.id,
+                        run_scope_type="trial",
+                        run_scope_id=trial.id,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                # Assignment analyzers are additive. A configuration or queue
+                # failure must never roll a successfully persisted trial back
+                # into RUNNING or prevent the built-in QA stage from starting.
+                console.print(
+                    f"[red]Post-trial assignment enqueue failed for {trial.id}: "
+                    f"{type(exc).__name__}: {exc}[/red]"
+                )
 
             # Resolve the baseline gate first: a faulty-task cancel drops the
             # LLM trials from the pending set so the task can advance below; a
