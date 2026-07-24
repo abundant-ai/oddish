@@ -189,6 +189,12 @@ trial classification records the post-trial prompt kind and version in
 `trials.analysis`; local/library classification without a registry row falls
 back to the packaged `analyze/classify_prompt.txt`.
 
+Hosted prompt overrides may be scoped to an org, user, experiment, task, or
+trial. Resolution is trial → task → experiment → user → org → global, and every
+domain-scoped read must first verify that the target belongs to the active org.
+Scoped prompt identity includes `org_id`; in particular, the same user may have
+independent overrides for the same kind in multiple organizations.
+
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):
@@ -234,6 +240,15 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
   the shared `classify_trial_and_store`, then synthesize the task verdict
+- post-trial classification runs through `AnalyzerBlock`. It reads two
+  already-downloaded directories and executes nothing, so `resolve_substrate`
+  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
+  `post_trial_sandbox_enabled` is the operator opt-in that lifts it into a
+  Daytona `SANDBOX`, which restores the task/trial snapshot at the worker's own
+  absolute paths so no prompt rewriting is involved. Its costs use the
+  `post_trial` job kind; the legacy `trial_classifier` cost bucket is retired at
+  this cutover, and every block row carries `block_metadata.cost_status`
+  (`recorded` | `no_usage` | `failed`) so lost spend is queryable.
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over

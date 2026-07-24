@@ -14,7 +14,7 @@ the time this revision runs, and an unguarded ``create_table`` / ``add_column``
 would raise DuplicateTable / DuplicateColumn.
 
 Revision ID: qa_assignments_001
-Revises: analyzer_block_prompt_id_001
+Revises: prompt_scope_org_001
 """
 
 from alembic import op
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 
 
 revision = "qa_assignments_001"
-down_revision = "analyzer_block_prompt_id_001"
+down_revision = "prompt_scope_org_001"
 branch_labels = None
 depends_on = None
 

@@ -70,17 +70,18 @@ async def get_custom_qa_run_core(
 
 async def _validate_scope(
     session: AsyncSession, *, kind: str, id: str, org_id: str | None
-) -> None:
+) -> ExperimentModel | TaskModel | TrialModel:
     model = {"experiment": ExperimentModel, "task": TaskModel, "trial": TrialModel}[
         kind
     ]
-    exists = await session.scalar(
-        select(model.id).where(model.id == id, model.org_id == org_id)
+    target = await session.scalar(
+        select(model).where(model.id == id, model.org_id == org_id)
     )
-    if not exists:
+    if target is None:
         raise HTTPException(
             status_code=404, detail=f"Unknown or inaccessible {kind}: {id}"
         )
+    return target
 
 
 def _assert_prompt_visible(prompt: PromptModel, *, org_id: str | None) -> None:
@@ -97,17 +98,19 @@ async def _resolve_variant(
     *,
     version: int | None,
     org_id: str | None,
+    user_id: str | None,
     scope_type: str,
     scope_id: str,
+    target: ExperimentModel | TaskModel | TrialModel,
 ) -> tuple[PromptModel, PromptVersionModel]:
-    """Resolve a QA variant by the run's own scope (org override -> global),
-    then pick the pinned version if one was requested. Only the domain scope
-    the run targets is passed to ``resolve_prompt_core``; the rest stay
-    ``None`` since a custom QA run has no user/other-domain context to offer."""
+    """Resolve a QA variant using the target's complete available hierarchy."""
     domain_scope = {"experiment_id": None, "task_id": None, "trial_id": None}
     domain_scope[f"{scope_type}_id"] = scope_id
+    if isinstance(target, TrialModel):
+        domain_scope["task_id"] = target.task_id
+        domain_scope["experiment_id"] = target.experiment_id
     prompt, latest = await resolve_prompt_core(
-        session, kind, org_id=org_id, user_id=None, **domain_scope
+        session, kind, org_id=org_id, user_id=user_id, **domain_scope
     )
     if version is None:
         return prompt, latest
@@ -128,7 +131,7 @@ async def run_custom_qa_core(
     user_id: str | None,
     oddish_api_base_url: str | None = None,
 ) -> list[CustomQARunResponse]:
-    await _validate_scope(
+    target = await _validate_scope(
         session, kind=data.scope_type, id=data.scope_id, org_id=org_id
     )
     refs = [(v.kind.strip(), v.version) for v in data.variants]
@@ -150,8 +153,10 @@ async def run_custom_qa_core(
             variant.kind.strip(),
             version=variant.version,
             org_id=org_id,
+            user_id=user_id,
             scope_type=data.scope_type,
             scope_id=data.scope_id,
+            target=target,
         )
         _assert_prompt_visible(prompt, org_id=org_id)
         digest = hashlib.sha256(version.content.encode()).hexdigest()

@@ -30,11 +30,21 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.workers.queue.analysis_handler import classify_trial_and_store
+from oddish.workers.queue.analysis_handler import (
+    ANALYSIS_CLAIM_TTL_MINUTES,
+    classify_trial_and_store,
+)
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 QA_HEARTBEAT_INTERVAL_SECONDS = 30
+# Re-poll cadence while a peer worker owns a trial's classification claim.
+QA_CLAIM_WAIT_POLL_SECONDS = 15
+# Backstop on that wait. A claim stops being honored once it passes
+# ``ANALYSIS_CLAIM_TTL_MINUTES``, at which point ``classify_trial_and_store``
+# retakes it and the poll resolves on its own -- so this only fires if a peer
+# keeps renewing a claim forever, and exists purely so the wait can't hang.
+QA_CLAIM_WAIT_TIMEOUT_SECONDS = (ANALYSIS_CLAIM_TTL_MINUTES + 5) * 60
 
 
 async def synthesize_task_verdict(
@@ -169,6 +179,57 @@ async def _worker_job_is_running(
         statement = statement.with_for_update()
     status = await session.scalar(statement)
     return status == WorkerJobStatus.RUNNING
+
+
+async def _classify_waiting_out_peer_claim(
+    trial_id: str,
+    *,
+    task_id: str,
+    worker_job_id: str | None,
+) -> AnalysisStatus | None:
+    """Classify one trial, waiting out a peer worker's claim on it.
+
+    ``classify_trial_and_store`` returns ``RUNNING`` when another worker holds
+    a fresh claim. Bailing out of the QA job on that would leave
+    ``verdict_status`` non-terminal, and ``QaJobHandler`` treats non-terminal
+    as a retryable failure -- whose retry resets an already-terminal verdict
+    back to QUEUED before re-running. A peer that finished in the meantime
+    would then have its verdict re-synthesized (paying twice) and, if that
+    re-run flaked, overwritten with FAILED. Waiting instead keeps this job on
+    a terminal-exit-only path.
+
+    The wait self-resolves: once the peer's claim ages past
+    ``ANALYSIS_CLAIM_TTL_MINUTES`` the next call retakes it, so a dead peer
+    costs one TTL rather than stranding the trial.
+    """
+    deadline = asyncio.get_running_loop().time() + QA_CLAIM_WAIT_TIMEOUT_SECONDS
+    while True:
+        status = await classify_trial_and_store(
+            trial_id,
+            should_store=lambda session: _worker_job_is_running(session, worker_job_id),
+        )
+        if status != AnalysisStatus.RUNNING:
+            return status
+
+        async with get_session() as session:
+            if not await _worker_job_is_running(session, worker_job_id):
+                console.print(
+                    f"[dim]QA {task_id} stopped waiting on {trial_id}; "
+                    "job was cancelled[/dim]"
+                )
+                return status
+        if asyncio.get_running_loop().time() >= deadline:
+            console.print(
+                f"[yellow]QA {task_id} gave up waiting on {trial_id}; "
+                "its classification claim outlived the TTL[/yellow]"
+            )
+            return status
+
+        console.print(
+            f"[dim]QA {task_id} waiting on {trial_id}; another worker is "
+            "classifying it[/dim]"
+        )
+        await asyncio.sleep(QA_CLAIM_WAIT_POLL_SECONDS)
 
 
 # Lease slack on top of settings.pre_trial_timeout before a RUNNING claim is
@@ -516,11 +577,10 @@ async def run_task_qa_job(
                     )
                     return
             try:
-                await classify_trial_and_store(
+                await _classify_waiting_out_peer_claim(
                     trial_id,
-                    should_store=lambda session: _worker_job_is_running(
-                        session, worker_job_id
-                    ),
+                    task_id=task_id,
+                    worker_job_id=worker_job_id,
                 )
             except Exception as exc:  # noqa: BLE001
                 console.print(

@@ -129,8 +129,10 @@ async def qa_job_status(
 ) -> QAJobStatusResponse:
     """Run counts per effective assignment, for the UI panel."""
     auth.require_scope(APIKeyScope.READ)
-    scope_type, resolved_scope_id = resolve_read_scope(scope, scope_id, auth)
     async with get_session() as session:
+        scope_type, resolved_scope_id = await resolve_read_scope(
+            session, scope, scope_id, auth
+        )
         resolved = await _resolved_at(session, scope_type, resolved_scope_id, auth)
         counts = await qa_assignment_status_core(
             session,
@@ -167,8 +169,10 @@ async def list_qa_jobs(
     auth.require_scope(APIKeyScope.READ)
     if stage is not None and stage not in {s.value for s in QAStage}:
         raise HTTPException(status_code=422, detail=f"unknown stage: {stage}")
-    scope_type, resolved_scope_id = resolve_read_scope(scope, scope_id, auth)
     async with get_session() as session:
+        scope_type, resolved_scope_id = await resolve_read_scope(
+            session, scope, scope_id, auth
+        )
         if resolved:
             rows = await _resolved_at(
                 session, scope_type, resolved_scope_id, auth, stage=stage
@@ -221,7 +225,11 @@ async def assign_qa_job(
             # Resolution skips version-less rows, so distinguish "no such
             # prompt" from "prompt exists but has nothing to run".
             empty = await find_prompt_row_core(
-                session, ref, scope_type=scope_type, scope_id=resolved_scope_id
+                session,
+                ref,
+                scope_type=scope_type,
+                scope_id=resolved_scope_id,
+                org_id=auth.org_id if scope_type is not None else None,
             )
             if empty is None:
                 raise

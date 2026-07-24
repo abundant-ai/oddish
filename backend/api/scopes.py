@@ -23,14 +23,14 @@ _DOMAIN_MODELS = {
 _SCOPE_HELP = "scope must be global, org, user, experiment, task, or trial"
 
 
-def resolve_read_scope(
-    scope: str | None, scope_id: str | None, auth: AuthContext
+async def resolve_read_scope(
+    session, scope: str | None, scope_id: str | None, auth: AuthContext
 ) -> tuple[str | None, str | None]:
     """Read-side mapping. ``global`` is ``(None, None)``, matching how the
     prompt registry spells the installation-wide row.
 
-    Deliberately does not verify the target exists: a miss resolves to 404 from
-    the core lookup anyway.
+    Domain targets are verified against the active organization before their
+    ids are used in a scoped lookup.
     """
     if scope in (None, "global"):
         return None, None
@@ -45,6 +45,9 @@ def resolve_read_scope(
             raise HTTPException(
                 status_code=422, detail=f"{scope} scope requires scope_id"
             )
+        target = await session.get(_DOMAIN_MODELS[scope], scope_id)
+        if target is None or target.org_id != auth.org_id:
+            raise HTTPException(status_code=404, detail=f"{scope} not found")
         return scope, scope_id
     raise HTTPException(status_code=422, detail=_SCOPE_HELP)
 

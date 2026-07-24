@@ -83,7 +83,14 @@ async def run() -> None:
         if trajectory is None:
             raise SystemExit(f"Trial {TRIAL_ID!r} has no fetchable trajectory.")
         task_context = await build_task_context(trial)
-        prompt_template, prompt_version, prompt_id = await _load_summary_prompt(session)
+        prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
+            session,
+            org_id=trial.org_id,
+            user_id=trial.billed_user_id,
+            experiment_id=trial.experiment_id,
+            task_id=trial.task_id,
+            trial_id=trial.id,
+        )
 
     print(
         f"trial={TRIAL_ID}  task={task_context.task_name!r}  "

@@ -82,9 +82,13 @@ def list_prompts(
     if resp.status_code != 200:
         _fail(resp)
     for p in resp.json():
+        scope = p.get("scope_type") or "global"
+        scope_id = p.get("scope_id")
+        scope_label = f"{scope}:{scope_id}" if scope_id else scope
         console.print(
             f"{p['kind']:32}  id={p.get('id')}  "
-            f"v{p.get('latest_version')}  {p.get('description', '')}"
+            f"scope={scope_label}  v{p.get('latest_version')}  "
+            f"{p.get('description', '')}"
         )
 
 
@@ -232,16 +236,22 @@ def upload_prompt(
     ],
     description: Annotated[Optional[str], typer.Option("--description", "-d")] = None,
     org: Annotated[
-        bool, typer.Option("--org", help="Override for the current organization (default).")
+        bool,
+        typer.Option("--org", help="Override for the current organization (default)."),
     ] = False,
     user: Annotated[
         bool, typer.Option("--user", help="Override for the authenticated user.")
     ] = False,
-    task: Annotated[Optional[str], typer.Option("--task", help="Override for a task id.")] = None,
-    experiment: Annotated[
-        Optional[str], typer.Option("--experiment", help="Override for an experiment id.")
+    task: Annotated[
+        Optional[str], typer.Option("--task", help="Override for a task id.")
     ] = None,
-    trial: Annotated[Optional[str], typer.Option("--trial", help="Override for a trial id.")] = None,
+    experiment: Annotated[
+        Optional[str],
+        typer.Option("--experiment", help="Override for an experiment id."),
+    ] = None,
+    trial: Annotated[
+        Optional[str], typer.Option("--trial", help="Override for a trial id.")
+    ] = None,
     global_scope: Annotated[
         bool, typer.Option("--global", help="Update the installation-wide fallback.")
     ] = False,

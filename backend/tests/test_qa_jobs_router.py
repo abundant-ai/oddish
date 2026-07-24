@@ -218,7 +218,7 @@ async def test_another_orgs_assignment_absent_from_resolution(kind, task):
         resp = await client.get(
             "/qa-jobs", params={"scope": "task", "scope_id": task, "resolved": "true"}
         )
-    assert kind not in {r["prompt_kind"] for r in resp.json()}
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
