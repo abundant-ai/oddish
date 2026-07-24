@@ -914,12 +914,29 @@ class ExperimentCostTotals(BaseModel):
     total_trials: int = 0
 
 
+class ExperimentTaskVersionPin(BaseModel):
+    """One experiment's explicit display-version override for a task."""
+
+    experiment_id: str
+    task_version_id: str
+    task_version: int
+
+
+class SetExperimentTaskVersionRequest(BaseModel):
+    version: int
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
 
     task: "TaskStatusResponse"
     versions: list[TaskVersionSummary] = Field(default_factory=list)
     totals: TaskCostTotals = Field(default_factory=TaskCostTotals)
+    # Authenticated surface only -- never populated on /public/* or share
+    # responses, which keep the derived pivot.
+    experiment_version_pins: list[ExperimentTaskVersionPin] = Field(
+        default_factory=list
+    )
 
 
 class VisibleWorkerJob(BaseModel):

@@ -613,16 +613,28 @@ def resolve_effective_version_id(
     *,
     experiment_context_id: str | None = None,
     gathered_trial_ids: set[str] | None = None,
+    pins: Mapping[tuple[str, str], str] | None = None,
 ) -> str | None:
     """Return the ``task_version_id`` that best represents ``task`` in context.
 
     Outside an experiment (``experiment_context_id`` is ``None``) this is the
-    task's global ``current_version_id``. Within an experiment, that explicit
-    default wins when a visible trial represents it; otherwise the latest
-    represented version wins. This lets users promote an older stored version
-    and see new runs on it without blanking historical experiments whose trials
-    exist only on another version. Falls back to ``task.current_version_id``
-    when no scoped trial has a ``task_version_id``.
+    task's global ``current_version_id``. Within an experiment the order is:
+
+    1. an explicit ``experiment_task_version_pins`` row for this
+       ``(experiment, task)`` pair,
+    2. else the derived pivot -- the task's explicit default when a visible
+       trial represents it, otherwise the latest represented version. This
+       lets users promote an older stored version and see new runs on it
+       without blanking historical experiments whose trials exist only on
+       another version,
+    3. else ``task.current_version_id``.
+
+    ``pins`` maps ``(experiment_id, task_id)`` to a pinned version id and must
+    already be filtered to versions that still exist for that task -- this
+    function is sync and must never lazy-load, so liveness is the fetcher's
+    job (:func:`fetch_experiment_task_version_pins`). The default ``None``
+    means "no pins", keeping every non-opted-in caller byte-for-byte
+    unchanged.
 
     ``gathered_trial_ids`` folds in trials owned by a *collection* experiment
     via the ``experiment_trials`` join table -- these carry their home
@@ -632,6 +644,10 @@ def resolve_effective_version_id(
     """
     if experiment_context_id is None:
         return task.current_version_id
+    if pins:
+        pinned = pins.get((experiment_context_id, task.id))
+        if pinned:
+            return pinned
     candidates: list[str] = []
     for trial in task.trials or []:
         if getattr(trial, "is_probe", False):
@@ -653,11 +669,59 @@ def resolve_effective_version_id(
     return max(candidates, key=_parse_version_number)
 
 
+async def fetch_experiment_task_version_pins(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    task_ids: Sequence[str],
+) -> dict[tuple[str, str], str]:
+    """Live ``experiment_task_version_pins`` for one experiment, keyed by
+    ``(experiment_id, task_id)``.
+
+    Joined to ``task_versions`` so a pin whose version no longer exists for the
+    task is simply absent from the map -- callers then fall back to the derived
+    rule instead of pivoting on a dangling id. Cleared pins are tombstones and
+    are excluded too.
+    """
+    if not task_ids:
+        return {}
+
+    from oddish.db import (  # local import: avoid cycle
+        ExperimentTaskVersionPinModel,
+        TaskVersionModel,
+    )
+
+    stmt = (
+        select(
+            ExperimentTaskVersionPinModel.task_id,
+            ExperimentTaskVersionPinModel.task_version_id,
+        )
+        .join(
+            TaskVersionModel,
+            (TaskVersionModel.id == ExperimentTaskVersionPinModel.task_version_id)
+            & (TaskVersionModel.task_id == ExperimentTaskVersionPinModel.task_id),
+        )
+        .where(
+            ExperimentTaskVersionPinModel.experiment_id == experiment_id,
+            ExperimentTaskVersionPinModel.task_id.in_(list(task_ids)),
+            # Redundant with the session-level soft-delete filter, kept
+            # explicit: a cleared pin must never resurface as a pivot.
+            ExperimentTaskVersionPinModel.deleted_at.is_(None),
+        )
+    )
+    result = await session.execute(stmt)
+    return {
+        (experiment_id, str(task_id)): str(version_id)
+        for task_id, version_id in result.all()
+    }
+
+
 async def fetch_experiment_effective_version_ids(
     session: AsyncSession,
     *,
     experiment_id: str,
     task_ids: Sequence[str],
+    pins: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[str, str]:
     """SQL-backed version of :func:`resolve_effective_version_id` for many tasks.
 
@@ -666,6 +730,11 @@ async def fetch_experiment_effective_version_ids(
     explicit default version when a visible trial represents it in this
     experiment, or the latest represented version otherwise. Tasks with no
     scoped trials are omitted.
+
+    ``pins`` (from :func:`fetch_experiment_task_version_pins`) overrides the
+    derived value and is applied even for tasks with no scoped trials, so a
+    pinned task with no runs on that version reports it (and empty counts)
+    rather than silently falling back. Default ``None`` -> unchanged behavior.
 
     Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
     server returns at most one row per task -- ordered by the *integer*
@@ -704,11 +773,17 @@ async def fetch_experiment_effective_version_ids(
     )
 
     result = await session.execute(stmt)
-    return {
+    derived = {
         str(task_id): str(version_id)
         for task_id, version_id in result.all()
         if version_id is not None
     }
+    if pins:
+        wanted = set(task_ids)
+        for (pin_experiment_id, task_id), version_id in pins.items():
+            if pin_experiment_id == experiment_id and task_id in wanted:
+                derived[task_id] = version_id
+    return derived
 
 
 def filter_probe_trials_for_effective_versions(
@@ -934,6 +1009,7 @@ def build_task_status_response(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    pins: Mapping[tuple[str, str], str] | None = None,
     exclude_combine_copies: bool = False,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
@@ -956,6 +1032,7 @@ def build_task_status_response(
             task,
             experiment_context_id=experiment_context_id,
             gathered_trial_ids=gathered_trial_ids,
+            pins=pins,
         )
     task_trials = get_task_status_trials(
         task,
@@ -1023,6 +1100,7 @@ def build_task_status_response_compact(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    pins: Mapping[tuple[str, str], str] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -1033,6 +1111,7 @@ def build_task_status_response_compact(
             task,
             experiment_context_id=experiment_context_id,
             gathered_trial_ids=gathered_trial_ids,
+            pins=pins,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     real_trials = [t for t in task_trials if not t.is_probe]
@@ -1173,6 +1252,7 @@ def build_slim_task_status_response(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    pins: Mapping[tuple[str, str], str] | None = None,
 ) -> TaskStatusResponse:
     """Build a task status response with slim per-trial payloads."""
     if effective_version_id is _VERSION_ID_UNSET:
@@ -1180,6 +1260,7 @@ def build_slim_task_status_response(
             task,
             experiment_context_id=experiment_context_id,
             gathered_trial_ids=gathered_trial_ids,
+            pins=pins,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     total = len(task_trials)

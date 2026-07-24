@@ -37,6 +37,7 @@ from oddish.core.endpoints import (
     create_task_sweep_batch_core,
     create_task_sweep_core,
     delete_experiment_core,
+    clear_experiment_task_default_version_core,
     delete_task_core,
     get_experiment_cost_totals,
     get_task_detail_core,
@@ -49,6 +50,7 @@ from oddish.core.endpoints import (
     replay_has_retryable_failed_trials,
     list_task_versions_core,
     rerun_task_qa_core,
+    set_experiment_task_default_version_core,
     set_task_default_version_core,
     unlink_task_from_experiment_core,
 )
@@ -124,6 +126,7 @@ from oddish.schemas import (
     ExperimentCostTotals,
     ExperimentProbeRow,
     OrgProbeRow,
+    SetExperimentTaskVersionRequest,
     TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
@@ -1585,6 +1588,60 @@ async def set_task_default_version(
 
     invalidate_dashboard_cache(org_id=auth.org_id)
     return selected
+
+
+@router.put(
+    "/experiments/{experiment_id}/tasks/{task_id}/default-version",
+    response_model=TaskVersionResponse,
+)
+async def set_experiment_task_default_version(
+    experiment_id: str,
+    task_id: str,
+    payload: SetExperimentTaskVersionRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskVersionResponse:
+    """Pin the version this experiment displays for one of its tasks.
+
+    Display-only: it does not change ``tasks.current_version_id``, so new runs
+    still execute the task's global default.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        selected = await set_experiment_task_default_version_core(
+            session,
+            experiment_id=experiment_id,
+            task_id=task_id,
+            version=payload.version,
+            org_id=auth.org_id,
+            created_by_user_id=auth.user_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return selected
+
+
+@router.delete("/experiments/{experiment_id}/tasks/{task_id}/default-version")
+async def clear_experiment_task_default_version(
+    experiment_id: str,
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict[str, str]:
+    """Drop the pin so the experiment reverts to the derived version."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        await clear_experiment_task_default_version_core(
+            session,
+            experiment_id=experiment_id,
+            task_id=task_id,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return {"status": "ok"}
 
 
 # =============================================================================

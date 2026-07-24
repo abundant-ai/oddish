@@ -50,6 +50,7 @@ import {
 import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
 import type {
   Task,
+  TaskBrowseExperiment,
   TaskDetailResponse,
   TaskVersionSummary,
   Trial,
@@ -63,6 +64,7 @@ import {
   GitPullRequest,
   Loader2,
   Star,
+  X,
 } from "lucide-react";
 
 const TaskFilesPanel = dynamic(
@@ -434,55 +436,180 @@ function VersionSwitcher({
   );
 }
 
+const GLOBAL_SCOPE = "__global__";
+
+function DefaultVersionScopeSelector({
+  experiments,
+  scope,
+  onSelect,
+  pinnedVersionByExperiment,
+}: {
+  experiments: TaskBrowseExperiment[];
+  scope: string;
+  onSelect: (scope: string) => void;
+  pinnedVersionByExperiment: Map<string, number>;
+}) {
+  const selected = experiments.find((e) => e.id === scope);
+  const triggerLabel = selected ? selected.name : "All experiments (global)";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-8 max-w-[220px] justify-between rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 font-mono text-[10.5px] text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)]"
+          title="Which scope the default-version control writes to"
+        >
+          <span className="truncate">{triggerLabel}</span>
+          <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-[300px] font-mono">
+        <DropdownMenuItem
+          onSelect={() => onSelect(GLOBAL_SCOPE)}
+          className={`flex flex-col items-start gap-0.5 px-3 py-2 ${
+            scope === GLOBAL_SCOPE ? "bg-[color:var(--paper-surface-2)]" : ""
+          }`}
+        >
+          <span className="text-[11.5px] font-semibold text-[color:var(--paper-ink)]">
+            All experiments (global)
+          </span>
+          <span className="text-[10.5px] text-[color:var(--paper-ink-3)]">
+            the task default, also used for new runs
+          </span>
+        </DropdownMenuItem>
+        {experiments.map((experiment) => {
+          const pinned = pinnedVersionByExperiment.get(experiment.id);
+          return (
+            <DropdownMenuItem
+              key={experiment.id}
+              onSelect={() => onSelect(experiment.id)}
+              className={`flex flex-col items-start gap-0.5 px-3 py-2 ${
+                scope === experiment.id
+                  ? "bg-[color:var(--paper-surface-2)]"
+                  : ""
+              }`}
+            >
+              <span className="truncate text-[11.5px] font-semibold text-[color:var(--paper-ink)]">
+                {experiment.name}
+              </span>
+              <span className="text-[10.5px] text-[color:var(--paper-ink-3)]">
+                {pinned != null ? `pinned to v${pinned}` : "no pin · derived"}
+              </span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function DefaultVersionControl({
   version,
   isSaving,
   onSetDefault,
+  onClearPin,
+  scopeExperiment,
+  pinnedVersion,
 }: {
   version: TaskVersionSummary | undefined;
   isSaving: boolean;
   onSetDefault: () => void;
+  onClearPin: () => void;
+  scopeExperiment: TaskBrowseExperiment | null;
+  pinnedVersion: number | undefined;
 }) {
   if (!version) return null;
 
-  if (version.is_current) {
-    return (
-      <span
-        className="inline-flex h-8 items-center gap-1.5 rounded-[7px] border border-amber-500/25 bg-amber-500/8 px-2.5 font-mono text-[10.5px] font-semibold text-amber-700 dark:text-amber-300"
-        title="This version is shown by default and used for new runs"
-      >
-        <Star className="h-3 w-3 fill-current" />
-        Default version
-      </span>
-    );
-  }
+  const isSet = scopeExperiment
+    ? pinnedVersion === version.version
+    : version.is_current;
 
-  return (
-    <TooltipProvider delayDuration={250}>
-      <Tooltip>
-        <TooltipTrigger asChild>
+  if (isSet) {
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className="inline-flex h-8 items-center gap-1.5 rounded-[7px] border border-amber-500/25 bg-amber-500/8 px-2.5 font-mono text-[10.5px] font-semibold text-amber-700 dark:text-amber-300"
+          title={
+            scopeExperiment
+              ? `Shown by default in ${scopeExperiment.name}. New runs still use the task default.`
+              : "This version is shown by default and used for new runs"
+          }
+        >
+          <Star className="h-3 w-3 fill-current" />
+          {scopeExperiment
+            ? `Default in ${scopeExperiment.name}`
+            : "Default version"}
+        </span>
+        {scopeExperiment ? (
           <Button
             type="button"
             variant="ghost"
             size="sm"
             disabled={isSaving}
-            onClick={onSetDefault}
+            onClick={onClearPin}
             className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
           >
             {isSaving ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
-              <Star className="h-3 w-3" />
+              <X className="h-3 w-3" />
             )}
-            {isSaving ? "Saving..." : "Make default"}
+            Clear pin
           </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[280px]">
-          Show v{version.version} by default on this task page and use it for
-          new runs.
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <TooltipProvider delayDuration={250}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={isSaving}
+              onClick={onSetDefault}
+              className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+            >
+              {isSaving ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Star className="h-3 w-3" />
+              )}
+              {isSaving
+                ? "Saving..."
+                : scopeExperiment
+                  ? `Set as default for ${scopeExperiment.name}`
+                  : "Make default"}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="max-w-[280px]">
+            {scopeExperiment
+              ? `Show v${version.version} in ${scopeExperiment.name} only. New runs still use the task default.`
+              : `Show v${version.version} by default on this task page and use it for new runs.`}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+      {scopeExperiment && pinnedVersion != null ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={isSaving}
+          onClick={onClearPin}
+          className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+          title={`${scopeExperiment.name} is pinned to v${pinnedVersion}. Clear to revert to the derived version.`}
+        >
+          <X className="h-3 w-3" />
+          Clear pin (v{pinnedVersion})
+        </Button>
+      ) : null}
+    </div>
   );
 }
 
@@ -707,6 +834,35 @@ export function TaskDetailClient({
   const [defaultVersionError, setDefaultVersionError] = useState<string | null>(
     null
   );
+  // Which scope the "set default" control writes to. GLOBAL_SCOPE keeps the
+  // pre-existing task-wide behavior; an experiment id writes a display-only
+  // pin for that experiment.
+  const [defaultVersionScope, setDefaultVersionScope] =
+    useState<string>(GLOBAL_SCOPE);
+
+  const taskExperiments = useMemo<TaskBrowseExperiment[]>(
+    () => task?.experiments ?? [],
+    [task?.experiments]
+  );
+  const pinnedVersionByExperiment = useMemo(() => {
+    const byExperiment = new Map<string, number>();
+    for (const pin of detail?.experiment_version_pins ?? []) {
+      byExperiment.set(pin.experiment_id, pin.task_version);
+    }
+    return byExperiment;
+  }, [detail?.experiment_version_pins]);
+
+  useEffect(() => {
+    if (
+      defaultVersionScope !== GLOBAL_SCOPE &&
+      !taskExperiments.some((e) => e.id === defaultVersionScope)
+    ) {
+      setDefaultVersionScope(GLOBAL_SCOPE);
+    }
+  }, [defaultVersionScope, taskExperiments]);
+
+  const scopeExperiment =
+    taskExperiments.find((e) => e.id === defaultVersionScope) ?? null;
 
   useEffect(() => {
     if (
@@ -739,13 +895,52 @@ export function TaskDetailClient({
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
   const handleSetDefaultVersion = useCallback(async () => {
-    if (!task || !selectedVersion || selectedVersion.is_current) return;
+    if (!task || !selectedVersion) return;
 
     const versionId = selectedVersion.id;
     const versionNumber = selectedVersion.version;
     setIsSettingDefaultVersion(true);
     setDefaultVersionError(null);
     try {
+      if (scopeExperiment) {
+        const res = await fetch(
+          `/api/experiments/${encodeURIComponent(scopeExperiment.id)}/tasks/${encodeURIComponent(task.id)}/default-version`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version: versionNumber }),
+          }
+        );
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(
+            data.detail || data.error || "Failed to pin the version"
+          );
+        }
+        await mutate(
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  experiment_version_pins: [
+                    ...(current.experiment_version_pins ?? []).filter(
+                      (pin) => pin.experiment_id !== scopeExperiment.id
+                    ),
+                    {
+                      experiment_id: scopeExperiment.id,
+                      task_version_id: versionId,
+                      task_version: versionNumber,
+                    },
+                  ],
+                }
+              : current,
+          { revalidate: false }
+        );
+        void mutate();
+        return;
+      }
+
+      if (selectedVersion.is_current) return;
       const res = await fetch(
         `/api/tasks/${encodeURIComponent(task.id)}/versions/${versionNumber}/default`,
         { method: "PUT" }
@@ -786,7 +981,43 @@ export function TaskDetailClient({
     } finally {
       setIsSettingDefaultVersion(false);
     }
-  }, [mutate, selectedVersion, task]);
+  }, [mutate, scopeExperiment, selectedVersion, task]);
+
+  const handleClearVersionPin = useCallback(async () => {
+    if (!task || !scopeExperiment) return;
+
+    setIsSettingDefaultVersion(true);
+    setDefaultVersionError(null);
+    try {
+      const res = await fetch(
+        `/api/experiments/${encodeURIComponent(scopeExperiment.id)}/tasks/${encodeURIComponent(task.id)}/default-version`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to clear the pin");
+      }
+      await mutate(
+        (current) =>
+          current
+            ? {
+                ...current,
+                experiment_version_pins: (
+                  current.experiment_version_pins ?? []
+                ).filter((pin) => pin.experiment_id !== scopeExperiment.id),
+              }
+            : current,
+        { revalidate: false }
+      );
+      void mutate();
+    } catch (err) {
+      setDefaultVersionError(
+        err instanceof Error ? err.message : "Failed to clear the pin"
+      );
+    } finally {
+      setIsSettingDefaultVersion(false);
+    }
+  }, [mutate, scopeExperiment, task]);
 
   const versionSummary: TrialAggregate = useMemo(() => {
     if (selectedVersion) return summaryFromVersion(selectedVersion);
@@ -1114,11 +1345,31 @@ export function TaskDetailClient({
               onSelect={handleSelectVersion}
             />
             {versions.length > 1 ? (
-              <DefaultVersionControl
-                version={selectedVersion}
-                isSaving={isSettingDefaultVersion}
-                onSetDefault={handleSetDefaultVersion}
-              />
+              <>
+                {taskExperiments.length > 0 ? (
+                  <DefaultVersionScopeSelector
+                    experiments={taskExperiments}
+                    scope={defaultVersionScope}
+                    onSelect={(next) => {
+                      setDefaultVersionScope(next);
+                      setDefaultVersionError(null);
+                    }}
+                    pinnedVersionByExperiment={pinnedVersionByExperiment}
+                  />
+                ) : null}
+                <DefaultVersionControl
+                  version={selectedVersion}
+                  isSaving={isSettingDefaultVersion}
+                  onSetDefault={handleSetDefaultVersion}
+                  onClearPin={handleClearVersionPin}
+                  scopeExperiment={scopeExperiment}
+                  pinnedVersion={
+                    scopeExperiment
+                      ? pinnedVersionByExperiment.get(scopeExperiment.id)
+                      : undefined
+                  }
+                />
+              </>
             ) : null}
             {selectedVersionId ? (
               <TagEditor

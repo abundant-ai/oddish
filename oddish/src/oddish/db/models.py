@@ -951,6 +951,41 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
 
+class ExperimentTaskVersionPinModel(TimestampedMixin, Base):
+    """Per-experiment override of which task version an experiment displays.
+
+    Without a pin, an experiment's version pivot is *derived* from its own
+    trials (see ``resolve_effective_version_id``). A pin lets two experiments
+    show two different versions of the same task. It is display-only: new
+    trials still submit against ``tasks.current_version_id``.
+
+    No DB-level foreign keys, matching the OSS/cloud split convention used by
+    the other association-ish tables here. Liveness of ``task_version_id`` is
+    enforced at read time by joining ``task_versions``, so a pin that outlives
+    its version silently falls back to the derived rule.
+    """
+
+    __tablename__ = "experiment_task_version_pins"
+    __table_args__ = (
+        Index(
+            "uq_experiment_task_version_pins_target",
+            "experiment_id",
+            "task_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("idx_experiment_task_version_pins_task_id", "task_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 160 to match ``task_versions.id`` ("{task_id}-v{N}" over a 128-char id).
+    task_version_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class TrialModel(TimestampedMixin, Base):
     """Trial database model."""
 
@@ -2446,6 +2481,7 @@ register_soft_delete_models(
     PromptModel,
     AnalyzerRunModel,
     TaskModel,
+    ExperimentTaskVersionPinModel,
     TrialModel,
     TagModel,
     TagAssignmentModel,

@@ -333,12 +333,23 @@ report the pivot separately as `trial_version` / `trial_version_id`, including
 on lightweight task shells that omit trial rows.
 
 `tasks.current_version_id` is the user-selectable default, not necessarily the
-numerically latest version. In an experiment view, `trial_version_id` uses that
-default when the experiment has a non-superseded, non-probe trial for it;
-otherwise it falls back to the highest version represented by such trials. The
-`task-shells` and `slim-tasks` endpoints must apply the same trial-version rule
-so progressive loading cannot change the files/counts pivot or mix one
-version's trials with another's artifacts.
+numerically latest version. In an experiment view, `trial_version_id` resolves
+in this order: (1) a live `experiment_task_version_pins` row for
+`(experiment_id, task_id)` whose version still exists for the task; (2) the
+task default when the experiment has a non-superseded, non-probe trial for it;
+(3) the highest version represented by such trials; (4)
+`tasks.current_version_id`. The `task-shells` and `slim-tasks` endpoints must
+apply the same trial-version rule so progressive loading cannot change the
+files/counts pivot or mix one version's trials with another's artifacts.
+
+A pin is set by `PUT /experiments/{experiment_id}/tasks/{task_id}/default-version`
+and cleared by the matching `DELETE`. It is **display-only**: submission still
+pins new trials to `tasks.current_version_id` (`oddish/src/oddish/queue.py`), and
+the pin is never surfaced on `/public/*` or share views -- those callers pass no
+pin map, so they keep the derived pivot. `resolve_effective_version_id` is sync:
+the pin map is fetched by the async caller
+(`fetch_experiment_task_version_pins`) and threaded in as `pins=`; the default
+`None` means "no pins" so every caller that does not opt in is unchanged.
 
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
@@ -377,7 +388,7 @@ participate in the session-level auto-filter:
 
 | Package | Soft-deletable models |
 |---------|------------------------|
-| `oddish.db.models` | `ExperimentModel`, `TaskModel`, `TrialModel`, `TagModel`, `TagAssignmentModel`, `TagExclusionModel`, `TagGrantModel`, `SavedTagFilterModel`, `SkillModel`, `DocumentModel` |
+| `oddish.db.models` | `ExperimentModel`, `TaskModel`, `ExperimentTaskVersionPinModel`, `TrialModel`, `TagModel`, `TagAssignmentModel`, `TagExclusionModel`, `TagGrantModel`, `SavedTagFilterModel`, `SkillModel`, `DocumentModel` |
 | `backend.models` | `OrganizationModel`, `UserModel`, `APIKeyModel` |
 
 Behavior:
@@ -481,6 +492,7 @@ extensions) — see `backend/README.md`.
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
 | Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` |
+| Experiment version pins | `PUT /experiments/{experiment_id}/tasks/{task_id}/default-version`, `DELETE /experiments/{experiment_id}/tasks/{task_id}/default-version` |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
@@ -488,10 +500,12 @@ extensions) — see `backend/README.md`.
 | Admin diagnostics | `GET /admin/slots`, `GET /admin/queue-status`, `GET /admin/orphaned-state`, `GET /admin/queue-health` |
 | Public sharing | `/public/experiments...` router from `oddish.core.sharing.public` |
 
-The core server has **no DELETE routes**. Deletion endpoints
+The core server has **no domain-deletion routes**. Deletion endpoints
 (`DELETE /experiments/{id}`, `DELETE /experiments/{id}/tasks/{task_id}`,
 `DELETE /trials/{trial_id}`) exist only on the hosted backend (admin-gated) and
-call the shared `oddish.core.endpoints.deletion` helpers.
+call the shared `oddish.core.endpoints.deletion` helpers. The one core `DELETE`
+is `/experiments/{id}/tasks/{task_id}/default-version`, which clears a display
+preference and destroys no domain data.
 
 Public share links use 256-bit `public_token` values and are access-by-link, not
 enumerable. The unauthenticated `/public/experiments` list intentionally returns

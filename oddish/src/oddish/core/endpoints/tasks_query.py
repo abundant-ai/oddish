@@ -37,6 +37,7 @@ from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     build_slim_task_status_response,
     fetch_experiment_effective_version_ids,
+    fetch_experiment_task_version_pins,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
     filter_probe_trials_for_effective_versions,
@@ -277,11 +278,21 @@ async def list_tasks_core(
     # double-filtered away by the effective-version drop). Empty for a normal
     # experiment -> every path stays identical to before.
     gathered_trial_ids: set[str] = set()
+    version_pins: dict[tuple[str, str], str] = {}
     if experiment_id:
         gathered_trial_ids = set(
             (await session.execute(gathered_trial_ids_select(experiment_id)))
             .scalars()
             .all()
+        )
+        # Explicit per-experiment version pins outrank the derived pivot. Fetched
+        # here (async) and threaded into the sync resolver so it never
+        # lazy-loads. ``task-shells`` / ``slim-tasks`` fetch the same map so
+        # progressive loading cannot flip the pivot mid-load.
+        version_pins = await fetch_experiment_task_version_pins(
+            session,
+            experiment_id=experiment_id,
+            task_ids=[task.id for task in tasks],
         )
 
     if include_trials:
@@ -301,6 +312,7 @@ async def list_tasks_core(
                     task,
                     experiment_context_id=experiment_id,
                     gathered_trial_ids=gathered_trial_ids,
+                    pins=version_pins,
                 )
                 effective_by_task[task.id] = effective
                 set_committed_value(
@@ -387,6 +399,7 @@ async def list_tasks_core(
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
                     gathered_trial_ids=gathered_trial_ids,
+                    pins=version_pins,
                 )
                 for task in tasks
             ]
@@ -406,6 +419,7 @@ async def list_tasks_core(
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
                 gathered_trial_ids=gathered_trial_ids,
+                pins=version_pins,
             )
             for task in tasks
         ]
@@ -429,6 +443,7 @@ async def list_tasks_core(
             session,
             experiment_id=experiment_id,
             task_ids=[task.id for task in tasks],
+            pins=version_pins,
         )
     response = await build_task_status_responses_from_counts(
         session,
@@ -526,11 +541,15 @@ async def list_experiment_task_shells_core(
             set_committed_value(task, "experiments", scoped_experiments)
 
     build_started_at = now()
+    shell_task_ids = [task.id for task in tasks]
     effective_version_id_by_task_id = (
         await fetch_experiment_effective_version_ids(
             session,
             experiment_id=experiment_id,
-            task_ids=[task.id for task in tasks],
+            task_ids=shell_task_ids,
+            pins=await fetch_experiment_task_version_pins(
+                session, experiment_id=experiment_id, task_ids=shell_task_ids
+            ),
         )
         if tasks
         else {}
@@ -599,6 +618,11 @@ async def list_experiment_slim_tasks(
         .scalars()
         .all()
     )
+    version_pins = await fetch_experiment_task_version_pins(
+        session,
+        experiment_id=experiment_id,
+        task_ids=[task.id for task in tasks],
+    )
 
     build_started_at = now()
     response = [
@@ -607,6 +631,7 @@ async def list_experiment_slim_tasks(
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
+            pins=version_pins,
         )
         for task in tasks
     ]

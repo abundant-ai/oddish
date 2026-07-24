@@ -232,7 +232,7 @@ export interface Task {
   finished_at?: string | null;
 }
 
-interface TaskBrowseExperiment {
+export interface TaskBrowseExperiment {
   id: string;
   name: string;
 }
@@ -371,10 +371,19 @@ export interface ExperimentCostTotals {
   total_trials: number;
 }
 
+/** One experiment's explicit display-version override for a task. Display
+ * only: new runs still execute the task's global `current_version_id`. */
+export interface ExperimentTaskVersionPin {
+  experiment_id: string;
+  task_version_id: string;
+  task_version: number;
+}
+
 export interface TaskDetailResponse {
   task: Task;
   versions: TaskVersionSummary[];
   totals: TaskCostTotals;
+  experiment_version_pins?: ExperimentTaskVersionPin[];
 }
 
 export interface QueueStats {

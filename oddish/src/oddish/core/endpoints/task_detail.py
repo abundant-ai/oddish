@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,8 +20,15 @@ from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
     recompute_task_browse_projection,
 )
-from oddish.db import ExperimentModel, TaskModel, TaskVersionModel, TrialStatus
+from oddish.db import (
+    ExperimentModel,
+    ExperimentTaskVersionPinModel,
+    TaskModel,
+    TaskVersionModel,
+    TrialStatus,
+)
 from oddish.schemas import (
+    ExperimentTaskVersionPin,
     TaskBrowseExperiment,
     TaskCostTotals,
     TaskDetailResponse,
@@ -110,6 +119,149 @@ async def set_task_default_version_core(
     await session.flush()
     await recompute_task_browse_projection(session, task_id=task.id)
     return TaskVersionResponse.model_validate(version_row)
+
+
+async def _get_experiment_for_org(
+    session: AsyncSession, *, experiment_id: str, org_id: str | None
+) -> ExperimentModel:
+    query = select(ExperimentModel).where(ExperimentModel.id == experiment_id)
+    if org_id is not None:
+        query = query.where(ExperimentModel.org_id == org_id)
+    experiment = (await session.execute(query)).scalar_one_or_none()
+    if not experiment:
+        raise HTTPException(
+            status_code=404, detail=f"Experiment {experiment_id} not found"
+        )
+    return experiment
+
+
+async def _get_live_pin(
+    session: AsyncSession, *, experiment_id: str, task_id: str
+) -> ExperimentTaskVersionPinModel | None:
+    result = await session.execute(
+        select(ExperimentTaskVersionPinModel).where(
+            ExperimentTaskVersionPinModel.experiment_id == experiment_id,
+            ExperimentTaskVersionPinModel.task_id == task_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def set_experiment_task_default_version_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    task_id: str,
+    version: int,
+    org_id: str | None = None,
+    created_by_user_id: str | None = None,
+) -> TaskVersionResponse:
+    """Pin the version one experiment displays for one of its tasks.
+
+    Display-only: it changes which version the experiment's task/trial views
+    pivot on, not which version new runs execute (submission still uses
+    ``tasks.current_version_id``). The task's global default is untouched, so
+    ``TaskStatusResponse.current_version`` keeps reporting it everywhere.
+    """
+    await _get_experiment_for_org(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    result = await session.execute(
+        select(TaskVersionModel).where(
+            TaskVersionModel.task_id == task.id,
+            TaskVersionModel.version == version,
+        )
+    )
+    version_row = result.scalar_one_or_none()
+    if not version_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} not found for task {task_id}",
+        )
+
+    pin = await _get_live_pin(
+        session, experiment_id=experiment_id, task_id=task.id
+    )
+    if pin is None:
+        session.add(
+            ExperimentTaskVersionPinModel(
+                org_id=org_id if org_id is not None else task.org_id,
+                experiment_id=experiment_id,
+                task_id=task.id,
+                task_version_id=version_row.id,
+                created_by_user_id=created_by_user_id,
+            )
+        )
+    else:
+        pin.task_version_id = version_row.id
+        if created_by_user_id is not None:
+            pin.created_by_user_id = created_by_user_id
+    await session.flush()
+    return TaskVersionResponse.model_validate(version_row)
+
+
+async def clear_experiment_task_default_version_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    task_id: str,
+    org_id: str | None = None,
+) -> None:
+    """Drop an experiment's version pin, reverting it to the derived pivot.
+
+    Tombstoned rather than hard-deleted so the partial unique index frees the
+    ``(experiment_id, task_id)`` slot for a later re-pin. Idempotent.
+    """
+    await _get_experiment_for_org(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    pin = await _get_live_pin(
+        session, experiment_id=experiment_id, task_id=task.id
+    )
+    if pin is None:
+        return
+    pin.deleted_at = datetime.now(timezone.utc)
+    await session.flush()
+
+
+async def list_task_version_pins_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+) -> list[ExperimentTaskVersionPin]:
+    """Live version pins for one task across every experiment that set one.
+
+    Joined to ``task_versions`` so a pin whose version no longer exists is
+    omitted -- the same liveness rule the resolver applies.
+    """
+    result = await session.execute(
+        select(
+            ExperimentTaskVersionPinModel.experiment_id,
+            ExperimentTaskVersionPinModel.task_version_id,
+            TaskVersionModel.version,
+        )
+        .join(
+            TaskVersionModel,
+            (TaskVersionModel.id == ExperimentTaskVersionPinModel.task_version_id)
+            & (TaskVersionModel.task_id == ExperimentTaskVersionPinModel.task_id),
+        )
+        .where(
+            ExperimentTaskVersionPinModel.task_id == task_id,
+            # Redundant with the session-level soft-delete filter, kept
+            # explicit: a cleared pin must never resurface as a pivot.
+            ExperimentTaskVersionPinModel.deleted_at.is_(None),
+        )
+    )
+    return [
+        ExperimentTaskVersionPin(
+            experiment_id=experiment_id,
+            task_version_id=task_version_id,
+            task_version=version,
+        )
+        for experiment_id, task_version_id, version in result.all()
+    ]
 
 
 async def get_task_detail_core(
@@ -247,6 +399,9 @@ async def get_task_detail_core(
         task=task_status,
         versions=versions_sorted,
         totals=totals,
+        experiment_version_pins=await list_task_version_pins_core(
+            session, task_id=task.id
+        ),
     )
 
 

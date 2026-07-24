@@ -19,6 +19,7 @@ from oddish.core.endpoints import (
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
+    clear_experiment_task_default_version_core,
     combine_experiments_core,
     create_task_sweep_batch_core,
     create_task_sweep_core,
@@ -28,6 +29,7 @@ from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_trial_for_org_core,
     list_task_versions_core,
+    set_experiment_task_default_version_core,
     set_task_default_version_core,
     list_tasks_core,
     rerun_task_qa_core,
@@ -103,6 +105,7 @@ from oddish.schemas import (
     TaskSweepBatchRequest,
     TaskSweepBatchResponse,
     TaskSweepSubmission,
+    SetExperimentTaskVersionRequest,
     TaskVersionResponse,
     TrialImportCompleteRequest,
     TrialImportCompleteResponse,
@@ -578,6 +581,41 @@ async def set_task_default_version(task_id: str, version: int) -> TaskVersionRes
         )
         await session.commit()
         return selected
+
+
+@api.put(
+    "/experiments/{experiment_id}/tasks/{task_id}/default-version",
+    response_model=TaskVersionResponse,
+)
+async def set_experiment_task_default_version(
+    experiment_id: str,
+    task_id: str,
+    payload: SetExperimentTaskVersionRequest,
+) -> TaskVersionResponse:
+    """Pin the version this experiment displays for one of its tasks.
+
+    Display-only: new runs still execute ``tasks.current_version_id``.
+    """
+    async with get_session() as session:
+        selected = await set_experiment_task_default_version_core(
+            session,
+            experiment_id=experiment_id,
+            task_id=task_id,
+            version=payload.version,
+        )
+        await session.commit()
+        return selected
+
+
+@api.delete("/experiments/{experiment_id}/tasks/{task_id}/default-version")
+async def clear_experiment_task_default_version(experiment_id: str, task_id: str):
+    """Drop the pin so the experiment reverts to the derived version."""
+    async with get_session() as session:
+        await clear_experiment_task_default_version_core(
+            session, experiment_id=experiment_id, task_id=task_id
+        )
+        await session.commit()
+    return {"status": "ok"}
 
 
 @api.post("/tasks/cancel")
