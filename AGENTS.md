@@ -189,6 +189,12 @@ trial classification records the post-trial prompt kind and version in
 `trials.analysis`; local/library classification without a registry row falls
 back to the packaged `analyze/classify_prompt.txt`.
 
+Hosted prompt overrides may be scoped to an org, user, experiment, task, or
+trial. Resolution is trial → task → experiment → user → org → global, and every
+domain-scoped read must first verify that the target belongs to the active org.
+Scoped prompt identity includes `org_id`; in particular, the same user may have
+independent overrides for the same kind in multiple organizations.
+
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):

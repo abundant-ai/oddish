@@ -108,11 +108,12 @@ def block_logger(key_prefix: str) -> logging.LoggerAdapter:
 
 
 def _block_row_kwargs(*, block_metadata: dict | None, **base) -> dict:
-    """Pure kwargs builder for AnalyzerBlockModel, so prompt_key/prompt_version
-    extraction from block_metadata is unit-testable without a DB."""
+    """Pure kwargs builder for AnalyzerBlockModel, so prompt_key/prompt_version/
+    prompt_id extraction from block_metadata is unit-testable without a DB."""
     md = block_metadata or {}
     base["prompt_key"] = md.get("prompt_key")
     base["prompt_version"] = md.get("prompt_version")
+    base["prompt_id"] = md.get("prompt_id")
     base["block_metadata"] = block_metadata
     return base
 

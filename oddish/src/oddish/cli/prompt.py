@@ -12,6 +12,7 @@ from rich.console import Console
 from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
 
 console = Console()
+err_console = Console(stderr=True)
 prompt_app = typer.Typer(
     help="Manage versioned analyzer prompts (latest version is always live).",
     no_args_is_help=True,
@@ -29,6 +30,47 @@ def _fail(resp: httpx.Response) -> None:
     raise typer.Exit(1)
 
 
+def _scope_label(scope_type: str | None, scope_id: str | None) -> str:
+    """Render a (scope_type, scope_id) pair the way ``upload`` already does,
+    so every command that surfaces scope agrees on one format."""
+    return f"{scope_type or 'global'}{':' + scope_id if scope_id else ''}"
+
+
+def resolve_scope_flags(
+    *,
+    org: bool = False,
+    user: bool = False,
+    task: Optional[str] = None,
+    experiment: Optional[str] = None,
+    trial: Optional[str] = None,
+    global_scope: bool = False,
+    default: str = "org",
+) -> tuple[str, Optional[str]]:
+    """Map mutually exclusive scope flags onto (scope, scope_id).
+
+    ``default`` is what "no flag given" means -- writes default to ``"org"``
+    (updating nothing is never useful), reads default to ``"global"`` (the
+    long-standing, unscoped lookup every existing caller expects). Shared
+    verbatim with the ``qa-jobs`` command group; the flag duplication across
+    groups is intentional.
+    """
+    selected = [
+        item
+        for item in (
+            ("org", None) if org else None,
+            ("user", None) if user else None,
+            ("task", task) if task else None,
+            ("experiment", experiment) if experiment else None,
+            ("trial", trial) if trial else None,
+            ("global", None) if global_scope else None,
+        )
+        if item is not None
+    ]
+    if len(selected) > 1:
+        raise typer.BadParameter("Choose exactly one prompt scope.")
+    return selected[0] if selected else (default, None)
+
+
 @prompt_app.command("list")
 def list_prompts(
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
@@ -40,22 +82,81 @@ def list_prompts(
     if resp.status_code != 200:
         _fail(resp)
     for p in resp.json():
+        scope = p.get("scope_type") or "global"
+        scope_id = p.get("scope_id")
+        scope_label = f"{scope}:{scope_id}" if scope_id else scope
         console.print(
             f"{p['kind']:32}  id={p.get('id')}  "
-            f"v{p.get('latest_version')}  {p.get('description', '')}"
+            f"scope={scope_label}  v{p.get('latest_version')}  "
+            f"{p.get('description', '')}"
         )
+
+
+_ScopeOrg = Annotated[
+    bool, typer.Option("--org", help="Read the current organization's override.")
+]
+_ScopeUser = Annotated[
+    bool, typer.Option("--user", help="Read the authenticated user's override.")
+]
+_ScopeTask = Annotated[
+    Optional[str], typer.Option("--task", help="Read a task id's override.")
+]
+_ScopeExperiment = Annotated[
+    Optional[str],
+    typer.Option("--experiment", help="Read an experiment id's override."),
+]
+_ScopeTrial = Annotated[
+    Optional[str], typer.Option("--trial", help="Read a trial id's override.")
+]
+_ScopeGlobal = Annotated[
+    bool,
+    typer.Option("--global", help="Read the installation-wide fallback (default)."),
+]
+
+
+def _read_scope_params(
+    *, org: bool, user: bool, task, experiment, trial, global_scope: bool
+) -> dict:
+    scope, scope_id = resolve_scope_flags(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+        default="global",
+    )
+    params: dict = {"scope": scope}
+    if scope_id:
+        params["scope_id"] = scope_id
+    return params
 
 
 @prompt_app.command("get")
 def get_prompt(
     key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
     version: Annotated[Optional[int], typer.Option("--version", "-v")] = None,
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     json_output: Annotated[bool, typer.Option("--json")] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """Print a prompt's content (latest version by default)."""
     url = _resolve(api_url)
-    params = {"version": version} if version is not None else {}
+    params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
+    if version is not None:
+        params["version"] = version
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         resp = client.get(f"{url}/prompts/{key_or_id}", params=params)
     if resp.status_code != 200:
@@ -64,24 +165,45 @@ def get_prompt(
     if json_output:
         console.print_json(_json.dumps(data))
     else:
+        # Scope goes to stderr so `oddish prompt get KIND > file.md` still
+        # captures pure content -- but it's always on screen: a --global
+        # default and an org write silently diverge otherwise.
+        err_console.print(
+            f"[dim]scope={_scope_label(data.get('scope_type'), data.get('scope_id'))}[/dim]"
+        )
         console.print(data.get("content", ""))
 
 
 @prompt_app.command("view")
 def view_prompt(
     key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """Show prompt metadata, versions, and analyzer-block usage."""
     url = _resolve(api_url)
+    params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{key_or_id}")
+        resp = client.get(f"{url}/prompts/{key_or_id}", params=params)
     if resp.status_code != 200:
         _fail(resp)
     prompt = resp.json()
     usage = prompt.get("usage") or {}
     console.print(
-        f"{prompt['kind']}  (id {prompt['id']})  latest v{prompt.get('latest_version')}"
+        f"{prompt['kind']}  (id {prompt['id']})  latest v{prompt.get('latest_version')}  "
+        f"scope={_scope_label(prompt.get('scope_type'), prompt.get('scope_id'))}"
     )
     if prompt.get("description"):
         console.print(prompt["description"])
@@ -113,21 +235,53 @@ def upload_prompt(
         Path, typer.Option("--file", "-f", help="File with prompt content.")
     ],
     description: Annotated[Optional[str], typer.Option("--description", "-d")] = None,
+    org: Annotated[
+        bool,
+        typer.Option("--org", help="Override for the current organization (default)."),
+    ] = False,
+    user: Annotated[
+        bool, typer.Option("--user", help="Override for the authenticated user.")
+    ] = False,
+    task: Annotated[
+        Optional[str], typer.Option("--task", help="Override for a task id.")
+    ] = None,
+    experiment: Annotated[
+        Optional[str],
+        typer.Option("--experiment", help="Override for an experiment id."),
+    ] = None,
+    trial: Annotated[
+        Optional[str], typer.Option("--trial", help="Override for a trial id.")
+    ] = None,
+    global_scope: Annotated[
+        bool, typer.Option("--global", help="Update the installation-wide fallback.")
+    ] = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
-    """Upload a new prompt version; the latest version becomes live."""
+    """Upload a new scoped prompt version; organization scope is the default."""
     url = _resolve(api_url)
+    scope, scope_id = resolve_scope_flags(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     content = file.read_text()
     payload: dict = {"content": content}
     if description is not None:
         payload["description"] = description
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.put(f"{url}/prompts/{key_or_id}", json=payload)
+        params = {"scope": scope}
+        if scope_id:
+            params["scope_id"] = scope_id
+        resp = client.put(f"{url}/prompts/{key_or_id}", params=params, json=payload)
     if resp.status_code != 200:
         _fail(resp)
     data = resp.json()
     console.print(
         f"[green]Uploaded {key_or_id}[/green] "
+        f"scope={_scope_label(data.get('scope_type'), data.get('scope_id'))} "
         f"latest_version={data.get('latest_version')}"
     )
 
@@ -135,14 +289,34 @@ def upload_prompt(
 @prompt_app.command("versions")
 def versions(
     key_or_id: Annotated[str, typer.Argument(help="Prompt kind, or prompt id.")],
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """List a prompt's versions."""
     url = _resolve(api_url)
+    params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        resp = client.get(f"{url}/prompts/{key_or_id}/versions")
+        resp = client.get(f"{url}/prompts/{key_or_id}/versions", params=params)
     if resp.status_code != 200:
         _fail(resp)
+    # The versions endpoint returns bare version rows with no scope field, so
+    # this is the scope we asked for, not one echoed back by the server --
+    # exact for a kind ref; a raw id ref ignores scope filtering entirely.
+    console.print(
+        f"[dim]scope={_scope_label(params['scope'], params.get('scope_id'))}[/dim]"
+    )
     for v in resp.json():
         console.print(
             f"v{v['version']:<4} {v.get('created_at', '')}  {v.get('created_by') or ''}"
@@ -159,14 +333,21 @@ def seed(
     url = _resolve(api_url)
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         for kind, (description, content) in PROMPT_SEEDS.items():
-            got = client.get(f"{url}/prompts/{kind}")
+            got = client.get(f"{url}/prompts/{kind}", params={"scope": "global"})
             if got.status_code == 200:
                 console.print(f"[dim]{kind}: exists, skipping[/dim]")
                 continue
             resp = client.put(
                 f"{url}/prompts/{kind}",
+                params={"scope": "global"},
                 json={"content": content, "description": description},
             )
+            if resp.status_code == 403:
+                console.print(
+                    "[red]Not permitted:[/red] seeding the installation-wide "
+                    "prompt registry requires operator access."
+                )
+                raise typer.Exit(1)
             if resp.status_code != 200:
                 _fail(resp)
             console.print(f"[green]Seeded {kind}[/green]")
@@ -177,18 +358,39 @@ def diff(
     kind: str,
     version_a: int,
     version_b: int,
+    org: _ScopeOrg = False,
+    user: _ScopeUser = False,
+    task: _ScopeTask = None,
+    experiment: _ScopeExperiment = None,
+    trial: _ScopeTrial = None,
+    global_scope: _ScopeGlobal = False,
     api_url: Annotated[Optional[str], typer.Option("--api-url", "-u")] = None,
 ):
     """Unified diff between two versions of a prompt."""
     url = _resolve(api_url)
+    scope_params = _read_scope_params(
+        org=org,
+        user=user,
+        task=task,
+        experiment=experiment,
+        trial=trial,
+        global_scope=global_scope,
+    )
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
-        ra = client.get(f"{url}/prompts/{kind}", params={"version": version_a})
-        rb = client.get(f"{url}/prompts/{kind}", params={"version": version_b})
+        ra = client.get(
+            f"{url}/prompts/{kind}", params={**scope_params, "version": version_a}
+        )
+        rb = client.get(
+            f"{url}/prompts/{kind}", params={**scope_params, "version": version_b}
+        )
     for r in (ra, rb):
         if r.status_code != 200:
             _fail(r)
     a = ra.json().get("content", "").splitlines(keepends=True)
     b = rb.json().get("content", "").splitlines(keepends=True)
+    console.print(
+        f"[dim]scope={_scope_label(scope_params['scope'], scope_params.get('scope_id'))}[/dim]"
+    )
     for line in difflib.unified_diff(
         a, b, fromfile=f"{kind}@v{version_a}", tofile=f"{kind}@v{version_b}"
     ):

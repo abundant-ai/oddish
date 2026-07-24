@@ -642,6 +642,9 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Which prompts row produced this block. prompt_key/prompt_version alone
+    # cannot attribute usage once the same kind exists at several scopes.
+    prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # input/output are arbitrary JSON (the block's I/O are typed ``any``).
     input: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
@@ -2381,23 +2384,33 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
 
 
 class PromptModel(TimestampedMixin, Base):
-    """A versioned analyzer prompt, one row per kind. The highest
+    """A versioned analyzer prompt, one row per kind and optional scope. The highest
     ``prompt_versions.version`` is always the one that runs; editing appends
     a new version (no activation pointer)."""
 
     __tablename__ = "prompts"
     __table_args__ = (
         Index(
-            "idx_prompts_unique_kind",
+            "idx_prompts_unique_kind_scope",
             "kind",
+            text("COALESCE(org_id, '')"),
+            text("COALESCE(scope_type, '')"),
+            text("COALESCE(scope_id, '')"),
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index("ix_prompts_org_id", "org_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     kind: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # NULL/NULL is the installation-wide default. Hosted callers may create
+    # org, user, experiment, task, or trial overrides. IDs intentionally have
+    # no hosted-auth FKs so the core package remains self-hostable.
+    scope_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    scope_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     versions: Mapped[list["PromptVersionModel"]] = relationship(  # type: ignore[assignment]
         "PromptVersionModel",
