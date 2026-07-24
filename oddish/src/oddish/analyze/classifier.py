@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import tarfile
 from pathlib import Path
 from typing import Any
 import logging
@@ -36,6 +38,17 @@ _CLASSIFY_PROMPT = _CLASSIFY_PROMPT_PATH.read_text()
 
 _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
+
+
+def _classification_schema_json() -> str:
+    """Claude Code ``--json-schema`` payload for the classification output.
+
+    Both classifier backends constrain generation with it: the prompt's example
+    object shows only the five narrative fields, so without the schema the model
+    silently drops ``action_items`` / ``exploitation`` and post-trial linkage
+    comes back empty.
+    """
+    return json.dumps(TrialClassificationModel.model_json_schema())
 
 
 def _resolve_analysis_model_and_env(
@@ -116,6 +129,11 @@ def _write_qa_context(
     Returns ``(qa_context_dir, pre_trial_context, file_access_context)``. The
     dir and each context string are ``None`` when the corresponding input was
     not provided, so absent inputs never touch disk or the prompt.
+
+    Each context string cites the file by absolute path. The sandbox classifier
+    rewrites ``trial_dir`` to its in-sandbox location, and only an absolute path
+    rides along with that rewrite -- a relative ``.qa_context/...`` reference
+    would resolve against the sandbox's own cwd, where nothing exists.
     """
     if pre_trial_items is None and file_access is None:
         return None, None, None
@@ -128,8 +146,8 @@ def _write_qa_context(
         (qa_context_dir / "pre_trial.json").write_text(json.dumps(pre_trial_items, indent=2))
         pre_trial_context = (
             f"{len(pre_trial_items)} pre-trial action item(s) were identified for this "
-            "task. See .qa_context/pre_trial.json for the full list (id, file, line "
-            "range, title, detail)."
+            f"task. See {qa_context_dir}/pre_trial.json for the full list (id, file, "
+            "line range, title, detail)."
         )
 
     file_access_context = None
@@ -137,7 +155,7 @@ def _write_qa_context(
         (qa_context_dir / "file_access.json").write_text(json.dumps(file_access, indent=2))
         file_access_context = (
             f"File-access metadata for {len(file_access)} trajectory step(s) is "
-            "available. See .qa_context/file_access.json for per-step "
+            f"available. See {qa_context_dir}/file_access.json for per-step "
             "files_read/files_written/commands."
         )
 
@@ -232,6 +250,7 @@ class TrialClassifier:
         trial_agent: str | None = None,
         pre_trial_items: list[dict] | None = None,
         file_access: list[dict] | None = None,
+        analyzer_block_context: dict[str, Any] | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
         result_path = trial_dir / "result.json"
@@ -329,12 +348,22 @@ class TrialClassifier:
                 print("-" * 60, flush=True)
 
             try:
-                structured_output = await self._run_claude_cli(
-                    prompt,
-                    trial_dir,
-                    task_dir,
-                    extra_dirs=[qa_context_dir] if qa_context_dir else None,
-                )
+                extra_dirs = [qa_context_dir] if qa_context_dir else None
+                if analyzer_block_context is None:
+                    structured_output = await self._run_claude_cli(
+                        prompt,
+                        trial_dir,
+                        task_dir,
+                        extra_dirs=extra_dirs,
+                    )
+                else:
+                    structured_output = await self._run_in_analyzer_block(
+                        prompt=prompt,
+                        trial_dir=trial_dir,
+                        task_dir=task_dir,
+                        extra_dirs=extra_dirs,
+                        context=analyzer_block_context,
+                    )
             except TimeoutError:
                 if self._verbose:
                     print(
@@ -376,6 +405,158 @@ class TrialClassifier:
                 reward=reward,
             )
 
+    async def _run_in_analyzer_block(
+        self,
+        *,
+        prompt: str,
+        trial_dir: Path,
+        task_dir: Path,
+        extra_dirs: list[Path] | None,
+        context: dict[str, Any],
+    ) -> Any:
+        """Run the filesystem-aware classifier as a persisted AnalyzerBlock."""
+        from oddish.blocks.analyzer.analyzer_block import (
+            AnalyzerBlock,
+            AnalyzerInput,
+            AnalyzerType,
+            resolve_substrate,
+        )
+        from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+        from oddish.blocks.analyzer import analyzer_llm_client
+        from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
+
+        classifier = self
+
+        class _ClaudeCliClient:
+            last_usage = None
+
+            async def stream(self, block_prompt: str, *, system_prompt=None):
+                output = await classifier._run_claude_cli(
+                    block_prompt,
+                    trial_dir,
+                    task_dir,
+                    extra_dirs=extra_dirs,
+                )
+                self.last_usage = classifier.last_usage
+                yield json.dumps(output)
+
+            async def aclose(self) -> None:
+                return None
+
+        async def _client_factory():
+            return _ClaudeCliClient()
+
+        client_type = resolve_substrate(
+            AnalyzerType.POST_TRIAL,
+            sandbox_available=analyzer_llm_client.sandbox_client_factory_registered(),
+            force_sandbox=settings.post_trial_sandbox_enabled,
+        )
+        use_sandbox = client_type is LLMClientType.SANDBOX
+        sandbox_config = None
+        block_prompt = prompt
+        block_model = self._model
+        client_factory = _client_factory
+        if use_sandbox:
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+                bundle.add(task_dir, arcname="task")
+                bundle.add(trial_dir, arcname="trial")
+            sandbox_root = "/home/daytona/workspace/post-trial"
+            sandbox_task_dir = f"{sandbox_root}/task"
+            sandbox_trial_dir = f"{sandbox_root}/trial"
+            # Longest local path first: one dir nested under the other would
+            # otherwise have its prefix rewritten by the outer dir's pass,
+            # silently aiming the agent at the wrong extracted tree.
+            for local_dir, sandbox_dir in sorted(
+                (
+                    (str(task_dir), sandbox_task_dir),
+                    (str(trial_dir), sandbox_trial_dir),
+                ),
+                key=lambda pair: len(pair[0]),
+                reverse=True,
+            ):
+                block_prompt = block_prompt.replace(local_dir, sandbox_dir)
+            # The sandbox authenticates with ANTHROPIC_API_KEY, so it needs the
+            # plain API id -- _resolve_analysis_model_and_env does the same
+            # normalization for the local subprocess. An un-normalized Bedrock
+            # inference-profile id reaches claude-code as an unknown model.
+            block_model = to_anthropic_api_model_id(self._model) or self._model
+            sandbox_config = SandboxConfig(
+                session_id="post-trial",
+                files_to_upload={
+                    "/tmp/oddish-post-trial.tar.gz": archive.getvalue(),
+                },
+                setup_commands=(
+                    f"mkdir -p {sandbox_root} && "
+                    f"tar -xzf /tmp/oddish-post-trial.tar.gz -C {sandbox_root}",
+                ),
+                json_schema=_classification_schema_json(),
+            )
+            client_factory = None
+
+        metadata = {
+            "prompt_key": context.get("prompt_key"),
+            "prompt_version": context.get("prompt_version"),
+            "model": block_model,
+        }
+        block = AnalyzerBlock(
+            analyzer_type=AnalyzerType.POST_TRIAL,
+            llm_client_type=client_type,
+            input=AnalyzerInput(
+                input={
+                    "trial_id": context.get("trial_id"),
+                    "task_id": context.get("task_id"),
+                }
+            ),
+            prompt=block_prompt,
+            analyzer_id=context.get("trial_id"),
+            task_id=context.get("task_id"),
+            block_metadata=metadata,
+            model=block_model,
+            output_transform=(
+                self._parse_sandbox_block_output if use_sandbox else json.loads
+            ),
+            sandbox_config=sandbox_config,
+            client_factory=client_factory,
+        )
+        if use_sandbox:
+            # The CLAUDE_CLI path already bounds itself inside _run_claude_cli.
+            # The sandbox path has no inner deadline, so a wedged Daytona
+            # session would hold the QA job open for as long as it stayed alive.
+            output = await asyncio.wait_for(block.run(), timeout=self._timeout)
+        else:
+            output = await block.run()
+        return output.output
+
+    @staticmethod
+    def _parse_sandbox_block_output(raw: str) -> Any:
+        """Extract the final Claude Code result from concatenated stream events."""
+        decoder = json.JSONDecoder()
+        offset = 0
+        events: list[dict] = []
+        while offset < len(raw):
+            event, offset = decoder.raw_decode(raw, offset)
+            if isinstance(event, dict):
+                events.append(event)
+            while offset < len(raw) and raw[offset].isspace():
+                offset += 1
+        for event in reversed(events):
+            if event.get("type") != "result":
+                continue
+            # Not `.get(a, .get(b))`: claude-code emits an explicit
+            # "structured_output": null when schema validation produced nothing,
+            # and that must still fall through to the free-text result.
+            result = event.get("structured_output")
+            if result is None:
+                result = event.get("result")
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, str):
+                from oddish.blocks.block import Block
+
+                return json.loads(Block.strip_code_fences(result))
+        raise RuntimeError("sandbox classifier returned no structured result event")
+
     def _stash_usage(self, payload: dict, model_id: str | None) -> None:
         self.last_usage = parse_cli_usage(payload, model_id)
 
@@ -389,7 +570,7 @@ class TrialClassifier:
     ) -> Any:
         """Run Claude Code in print mode and return structured output."""
         self.last_usage = None
-        schema = json.dumps(TrialClassificationModel.model_json_schema())
+        schema = _classification_schema_json()
         claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
         logger.info(f"choosing model: {self._model}")
         model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))

@@ -36,7 +36,45 @@ class AnalyzerType(str, enum.Enum):
     TRAJECTORY_SUMMARY = "trajectory_summary"
     TASK_VERDICT = "task_verdict"
     PRE_TRIAL = "pre_trial"
+    POST_TRIAL = "post_trial"
     CUSTOM_QA = "custom_qa"
+
+
+# The backend each analyzer needs, keyed by what the analyzer is permitted to
+# do rather than by what happens to be importable in this process. POST_TRIAL
+# reads two already-downloaded directories through Read/Glob and executes
+# nothing, so a worker-local subprocess is sufficient; PRE_TRIAL runs
+# ``oddish pull`` and the verifier, so isolation is a hard requirement.
+# Anything unlisted has no filesystem to bind to and talks to the provider API.
+_REQUIRED_SUBSTRATE: dict[AnalyzerType, LLMClientType] = {
+    AnalyzerType.POST_TRIAL: LLMClientType.CLAUDE_CLI,
+    AnalyzerType.PRE_TRIAL: LLMClientType.SANDBOX,
+}
+
+
+def resolve_substrate(
+    analyzer_type: AnalyzerType,
+    *,
+    sandbox_available: bool,
+    force_sandbox: bool = False,
+) -> LLMClientType:
+    """Pick the execution backend for an analyzer.
+
+    ``force_sandbox`` is the operator opt-in that lifts a normally worker-local
+    analyzer into isolation; it is a deliberate setting, never inferred from
+    whether the hosted sandbox client was imported. A sandbox that is required
+    but unregistered raises instead of falling back, because the two backends
+    stream different shapes and are read by different output transforms -- a
+    silent downgrade hands the caller output its parser cannot decode.
+    """
+    required = _REQUIRED_SUBSTRATE.get(analyzer_type, LLMClientType.API)
+    wants_sandbox = force_sandbox or required is LLMClientType.SANDBOX
+    if wants_sandbox and not sandbox_available:
+        raise RuntimeError(
+            f"{analyzer_type.value} needs the hosted sandbox backend, which is "
+            "not registered in this process"
+        )
+    return LLMClientType.SANDBOX if wants_sandbox else required
 
 
 @dataclass
@@ -103,6 +141,7 @@ class AnalyzerBlock(Block):
         sandbox_config: SandboxConfig | None = None,
         client_creation_timeout: float | None = None,
         attribution_org_id: str | None = None,
+        client_factory: Callable[[], Any] | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -136,6 +175,7 @@ class AnalyzerBlock(Block):
         self._client_creation_timeout = client_creation_timeout
         self._active_client: AnalyzerLLMClient | None = None
         self.attribution_org_id = attribution_org_id
+        self._client_factory = client_factory
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -214,7 +254,9 @@ class AnalyzerBlock(Block):
             "task_id": self.task_id,
             "analyzer_id": None,
         }
-        if self.task_id:
+        # A post-trial block carries task_id for lineage, but its spend belongs
+        # to the individual trial referenced by analyzer_id.
+        if self.task_id and self.analyzer_type is not AnalyzerType.POST_TRIAL:
             task = (
                 await session.execute(
                     select(
@@ -305,6 +347,8 @@ class AnalyzerBlock(Block):
             self.log.exception("record_cost failed for id=%s", self.id)
 
     async def _create_client(self) -> AnalyzerLLMClient:
+        if self._client_factory is not None:
+            return await self._client_factory()
         create = create_llm_client(
             self.llm_client_type,
             model=self.model,

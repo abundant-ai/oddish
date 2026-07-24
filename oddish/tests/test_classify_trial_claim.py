@@ -15,8 +15,6 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
-
 from oddish.analyze import TrialClassifier
 from oddish.analyze.analysis_cost import AnalysisUsage
 from oddish.db import (
@@ -151,20 +149,10 @@ async def test_second_caller_skips_a_trial_already_being_classified(
         await asyncio.wait_for(first, timeout=10)
 
         assert skipped_status == AnalysisStatus.RUNNING
+        # The classify call count IS the duplicate-spend check: since #898 the
+        # ledger row is written by AnalyzerBlock, not by this handler, so
+        # counting analysis_costs rows here would prove nothing either way.
         assert calls == 1, "a trial under active classification was re-classified"
-
-        rows = (
-            (
-                await session.execute(
-                    select(AnalysisCostModel).where(
-                        AnalysisCostModel.trial_id == trial_id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        assert len(rows) == 1
     finally:
         release.set()
         await _cleanup(

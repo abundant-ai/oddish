@@ -16,7 +16,7 @@ import posixpath
 import shlex
 from typing import AsyncIterator
 
-from oddish.analyze.analysis_cost import AnalysisUsage
+from oddish.analyze.analysis_cost import AnalysisUsage, parse_cli_usage
 from oddish.blocks.analyzer.analyzer_llm_client import (
     AnalyzerLLMClient,
     SandboxConfig,
@@ -69,18 +69,20 @@ class SandboxAnalyzerLLMClient:
         sandbox: CreatedSandbox,
         daytona_client: DaytonaClient,
         runtime: ClaudeCodeRuntime,
+        model: str | None = None,
+        json_schema: str | None = None,
         daytona_session_id: str = _DAYTONA_SESSION_ID,
         internal_api_key_id: str | None = None,
     ) -> None:
         self._sandbox = sandbox
         self._client = daytona_client
         self._runtime = runtime
+        self._model = model
+        self._json_schema = json_schema
         self._session_id = daytona_session_id
         self._internal_api_key_id = internal_api_key_id
-        # Always None for now: claude-code reports native cost in its
-        # stream-json ``result`` event, which this client passes through as an
-        # opaque chunk. Parsing it is what will light up cost rows for the
-        # sandbox-backed cohort blocks.
+        # Filled from claude-code's stream-json ``result`` event, which carries
+        # the run's native cost/usage.
         self.last_usage: AnalysisUsage | None = None
 
     async def stream(
@@ -93,7 +95,13 @@ class SandboxAnalyzerLLMClient:
             claude_session_id=None,
             daytona_session_id=self._session_id,
             system_prompt=system_prompt,
+            json_schema=self._json_schema,
         ):
+            if event.get("type") == "result":
+                self.last_usage = parse_cli_usage(
+                    event,
+                    self._model,
+                )
             yield json.dumps(event)
 
     async def _download_file(self, path: str) -> bytes:
@@ -220,6 +228,8 @@ async def create_sandbox_llm_client(
         sandbox=sandbox,
         daytona_client=daytona_client,
         runtime=runtime,
+        model=model,
+        json_schema=sandbox_config.json_schema,
         daytona_session_id=sandbox_config.session_id,
         internal_api_key_id=internal_api_key_id,
     )

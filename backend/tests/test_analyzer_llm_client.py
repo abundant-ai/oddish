@@ -266,6 +266,7 @@ async def test_sandbox_client_streams_json_lines_and_closes():
             claude_session_id,
             daytona_session_id="cc",
             system_prompt=None,
+            json_schema=None,
         ):
             sent["content"] = content
             for d in [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]:
