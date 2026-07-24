@@ -454,6 +454,7 @@ class TrialClassifier:
         use_sandbox = client_type is LLMClientType.SANDBOX
         sandbox_config = None
         block_prompt = prompt
+        block_model = self._model
         client_factory = _client_factory
         if use_sandbox:
             archive = io.BytesIO()
@@ -463,8 +464,23 @@ class TrialClassifier:
             sandbox_root = "/home/daytona/workspace/post-trial"
             sandbox_task_dir = f"{sandbox_root}/task"
             sandbox_trial_dir = f"{sandbox_root}/trial"
-            block_prompt = block_prompt.replace(str(task_dir), sandbox_task_dir)
-            block_prompt = block_prompt.replace(str(trial_dir), sandbox_trial_dir)
+            # Longest local path first: one dir nested under the other would
+            # otherwise have its prefix rewritten by the outer dir's pass,
+            # silently aiming the agent at the wrong extracted tree.
+            for local_dir, sandbox_dir in sorted(
+                (
+                    (str(task_dir), sandbox_task_dir),
+                    (str(trial_dir), sandbox_trial_dir),
+                ),
+                key=lambda pair: len(pair[0]),
+                reverse=True,
+            ):
+                block_prompt = block_prompt.replace(local_dir, sandbox_dir)
+            # The sandbox authenticates with ANTHROPIC_API_KEY, so it needs the
+            # plain API id -- _resolve_analysis_model_and_env does the same
+            # normalization for the local subprocess. An un-normalized Bedrock
+            # inference-profile id reaches claude-code as an unknown model.
+            block_model = to_anthropic_api_model_id(self._model) or self._model
             sandbox_config = SandboxConfig(
                 session_id="post-trial",
                 files_to_upload={
@@ -481,7 +497,7 @@ class TrialClassifier:
         metadata = {
             "prompt_key": context.get("prompt_key"),
             "prompt_version": context.get("prompt_version"),
-            "model": self._model,
+            "model": block_model,
         }
         block = AnalyzerBlock(
             analyzer_type=AnalyzerType.POST_TRIAL,
@@ -496,7 +512,7 @@ class TrialClassifier:
             analyzer_id=context.get("trial_id"),
             task_id=context.get("task_id"),
             block_metadata=metadata,
-            model=self._model,
+            model=block_model,
             output_transform=(
                 self._parse_sandbox_block_output if use_sandbox else json.loads
             ),
@@ -527,7 +543,12 @@ class TrialClassifier:
         for event in reversed(events):
             if event.get("type") != "result":
                 continue
-            result = event.get("structured_output", event.get("result"))
+            # Not `.get(a, .get(b))`: claude-code emits an explicit
+            # "structured_output": null when schema validation produced nothing,
+            # and that must still fall through to the free-text result.
+            result = event.get("structured_output")
+            if result is None:
+                result = event.get("result")
             if isinstance(result, dict):
                 return result
             if isinstance(result, str):

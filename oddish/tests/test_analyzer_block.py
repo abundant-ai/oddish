@@ -17,6 +17,7 @@ from oddish.blocks.analyzer.analyzer_llm_client import (
     FakeAnalyzerLLMClient,
     LLMClientType,
 )
+from oddish.config import settings
 from oddish.db.models import JobStatus, utcnow
 
 
@@ -155,6 +156,7 @@ async def test_post_trial_sandbox_rewrites_qa_context_refs(monkeypatch, tmp_path
     assert str(qa_dir) in file_access_context
 
     captured = {}
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
     monkeypatch.setattr(
         analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
     )
@@ -187,6 +189,7 @@ async def test_post_trial_sandbox_constrains_output_to_schema(monkeypatch, tmp_p
     from oddish.blocks.analyzer import analyzer_llm_client
 
     captured = {}
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
     monkeypatch.setattr(
         analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
     )
@@ -217,6 +220,7 @@ async def test_post_trial_sandbox_run_is_bounded_by_classifier_timeout(
     """A wedged Daytona session must not hold the QA job open indefinitely."""
     from oddish.blocks.analyzer import analyzer_llm_client
 
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
     monkeypatch.setattr(
         analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
     )
@@ -236,11 +240,91 @@ async def test_post_trial_sandbox_run_is_bounded_by_classifier_timeout(
         )
 
 
+@pytest.mark.asyncio
+async def test_post_trial_sandbox_normalizes_bedrock_model_id(monkeypatch, tmp_path):
+    """The sandbox authenticates with ANTHROPIC_API_KEY, so a Bedrock
+    inference-profile id would reach claude-code as an unknown model."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    captured = {}
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    classifier = TrialClassifier(
+        model="global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    )
+    await classifier._run_in_analyzer_block(
+        prompt="classify",
+        trial_dir=tmp_path,
+        task_dir=tmp_path,
+        extra_dirs=None,
+        context={"trial_id": "trial-1", "task_id": "task-1"},
+    )
+
+    block = captured["block"]
+    assert block.model == "claude-haiku-4-5"
+    assert block.block_metadata["model"] == "claude-haiku-4-5"
+
+
+@pytest.mark.asyncio
+async def test_post_trial_sandbox_rewrite_survives_nested_dirs(monkeypatch, tmp_path):
+    """A trial dir nested under the task dir must not have its prefix eaten by
+    the task rewrite -- that aims the agent at the wrong extracted tree."""
+    from oddish.blocks.analyzer import analyzer_llm_client
+
+    task_dir = tmp_path / "task"
+    trial_dir = task_dir / "trials" / "t1"
+    trial_dir.mkdir(parents=True)
+    captured = {}
+    monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
+    monkeypatch.setattr(
+        analyzer_llm_client, "sandbox_client_factory_registered", lambda: True
+    )
+
+    async def fake_run(self):
+        captured["block"] = self
+        return SimpleNamespace(output={})
+
+    monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
+    await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
+        prompt=f"task at {task_dir}, trial at {trial_dir}",
+        trial_dir=trial_dir,
+        task_dir=task_dir,
+        extra_dirs=None,
+        context={"trial_id": "trial-1", "task_id": "task-1"},
+    )
+
+    prompt = captured["block"].prompt
+    assert prompt == (
+        "task at /home/daytona/workspace/post-trial/task, "
+        "trial at /home/daytona/workspace/post-trial/trial"
+    )
+
+
 def test_post_trial_parses_sandbox_result_stream():
     raw = (
         '{"type":"assistant","message":{"content":[]}}'
         '{"type":"result","result":"```json\\n'
         '{\\"classification\\":\\"GOOD_SUCCESS\\"}\\n```"}'
+    )
+    assert TrialClassifier._parse_sandbox_block_output(raw) == {
+        "classification": "GOOD_SUCCESS"
+    }
+
+
+def test_post_trial_falls_back_to_result_on_null_structured_output():
+    """claude-code emits an explicit null when schema validation yielded
+    nothing; the free-text result is still usable."""
+    raw = (
+        '{"type":"result","structured_output":null,'
+        '"result":"{\\"classification\\":\\"GOOD_SUCCESS\\"}"}'
     )
     assert TrialClassifier._parse_sandbox_block_output(raw) == {
         "classification": "GOOD_SUCCESS"
