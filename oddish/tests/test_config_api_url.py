@@ -40,3 +40,21 @@ def test_cli_config_reexports_constants():
 
     assert cli_config.DEFAULT_API_URL == DEFAULT_API_URL
     assert cli_config.PREVIEW_URL_TEMPLATE == PREVIEW_URL_TEMPLATE
+
+
+def test_cli_api_url_accepts_sandbox_base_url(monkeypatch):
+    from oddish.cli.config import get_api_url
+
+    monkeypatch.delenv("ODDISH_API_URL", raising=False)
+    monkeypatch.setenv("ODDISH_API_BASE_URL", "https://sandbox-api.example")
+
+    assert get_api_url() == "https://sandbox-api.example"
+
+
+def test_cli_api_url_prefers_standard_override(monkeypatch):
+    from oddish.cli.config import get_api_url
+
+    monkeypatch.setenv("ODDISH_API_URL", "https://cli-api.example")
+    monkeypatch.setenv("ODDISH_API_BASE_URL", "https://sandbox-api.example")
+
+    assert get_api_url() == "https://cli-api.example"
