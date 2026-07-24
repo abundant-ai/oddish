@@ -698,6 +698,15 @@ async def run_task_qa_job(
             task_id,
             payload=verdict_result,
             error=verdict_error,
+            failure_payload=(
+                {
+                    "task_version_id": task_version_id,
+                    "trial_count": len(live_trial_ids),
+                    "trial_ids": sorted(live_trial_ids),
+                }
+                if verdict_result is None and verdict_error is not None
+                else None
+            ),
             should_store=lambda session: _qa_store_allowed(
                 session,
                 worker_job_id,

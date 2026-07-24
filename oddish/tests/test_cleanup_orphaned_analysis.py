@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import ORPHANED_ANALYSIS_ERROR_PREFIX  # noqa: E402
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX  # noqa: E402
-from oddish.db import VerdictStatus  # noqa: E402
+from oddish.db import TaskStatus, VerdictStatus  # noqa: E402
 from oddish.queue import requeue_inflight_trial_analysis  # noqa: E402
 from oddish.workers.queue import cleanup  # noqa: E402
 
@@ -68,6 +68,9 @@ class _RecordingSession:
 
     async def scalar(self, *args: Any, **kwargs: Any) -> Any:
         return None
+
+    async def scalars(self, *args: Any, **kwargs: Any) -> tuple[str, ...]:
+        return ("task-1-0",)
 
     async def flush(self) -> None:
         return None
@@ -178,6 +181,11 @@ async def test_qa_reap_failed_finalizes_nonterminal_trial_analyses() -> None:
     await cleanup._mirror_stale_job_to_domain_row(session, _qa_row("FAILED"))
 
     assert task.verdict_status == VerdictStatus.FAILED
+    assert task.verdict == {
+        "task_version_id": "task-1-v1",
+        "trial_count": 1,
+        "trial_ids": ["task-1-0"],
+    }
     fails = session.updates("analysis_status = 'FAILED'")
     assert len(fails) == 1
     sql, params = fails[0]
@@ -190,6 +198,46 @@ async def test_qa_reap_failed_finalizes_nonterminal_trial_analyses() -> None:
     # (append) reopens these rows instead of inheriting a permanent gap.
     assert params["reason"].startswith(ORPHANED_ANALYSIS_ERROR_PREFIX)
     assert "heartbeat stalled" in params["reason"]
+
+
+@pytest.mark.asyncio
+async def test_healer_finalizes_exhausted_current_qa_failure(monkeypatch) -> None:
+    task = SimpleNamespace(
+        id="task-1",
+        org_id="org-1",
+        current_version_id="task-1-v1",
+        status=TaskStatus.VERDICT_PENDING,
+        verdict={
+            "task_version_id": "task-1-v1",
+            "trial_count": 1,
+            "trial_ids": ["task-1-0"],
+        },
+        verdict_status=VerdictStatus.FAILED,
+        finished_at=None,
+    )
+
+    class _HealSession(_RecordingSession):
+        async def execute(self, statement, params=None):
+            sql = " ".join(str(statement).split())
+            if "FROM tasks t" in sql and "VERDICT_PENDING" in sql:
+                return _Result(rows=[("task-1",)])
+            return await super().execute(statement, params)
+
+        async def get(self, _model, _object_id):
+            return task
+
+        async def scalar(self, *args: Any, **kwargs: Any) -> int:
+            return 0
+
+    async def fail_enqueue(*_args, **_kwargs):
+        raise AssertionError("exhausted current QA must not be re-enqueued")
+
+    monkeypatch.setattr("oddish.queue.enqueue_qa_worker_job", fail_enqueue)
+    completed = await cleanup._heal_stale_verdict_pending(_HealSession(task=task))
+
+    assert completed == 1
+    assert task.status == TaskStatus.COMPLETED
+    assert task.finished_at is not None
 
 
 # ---------------------------------------------------------------------------

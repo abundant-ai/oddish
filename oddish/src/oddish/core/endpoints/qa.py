@@ -12,6 +12,7 @@ from oddish.core.endpoints._common import (
     _ACTIVE_WORKER_JOB_STATUSES_SQL,
     _reset_task_verdict,
 )
+from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -150,6 +151,22 @@ async def cancel_task_qa_core(
         reason=USER_CANCELLED_MESSAGE,
     )
     if rows or _has_active_verdict(task) or task.status == TaskStatus.VERDICT_PENDING:
+        qa_eligible_ids = sorted(
+            str(trial.id)
+            for trial in task.trials or []
+            if trial.task_version_id == current_version_id
+            and trial.superseded_by_trial_id is None
+            and getattr(trial, "imported_at", None) is None
+            and getattr(trial, "status", None) != TrialStatus.SKIPPED
+            and not str(getattr(trial, "error_message", "") or "").startswith(
+                GATE_SKIP_PREFIX
+            )
+        )
+        task.verdict = {
+            "task_version_id": current_version_id,
+            "trial_count": len(qa_eligible_ids),
+            "trial_ids": qa_eligible_ids,
+        }
         task.verdict_status = VerdictStatus.FAILED
         task.verdict_error = USER_CANCELLED_MESSAGE
         task.verdict_finished_at = now_value

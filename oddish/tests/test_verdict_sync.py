@@ -97,3 +97,42 @@ async def test_sync_stores_verdict_but_keeps_task_running_when_trials_remain(
     assert task.verdict_status == VerdictStatus.SUCCESS
     assert task.status == TaskStatus.RUNNING
     assert task.finished_at is None
+
+
+@pytest.mark.asyncio
+async def test_sync_failed_verdict_stores_version_provenance(monkeypatch):
+    task = SimpleNamespace(
+        verdict={"task_version_id": "task-1-v1"},
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_finished_at=None,
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at=None,
+    )
+
+    class _Session:
+        async def get(self, _model, _task_id, **_kwargs):
+            return task
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield _Session()
+
+    monkeypatch.setattr("oddish.core.verdict_sync.get_session", fake_get_session)
+    provenance = {
+        "task_version_id": "task-1-v2",
+        "trial_count": 1,
+        "trial_ids": ["task-1-1"],
+    }
+
+    status = await sync_verdict_to_task(
+        "task-1",
+        payload=None,
+        error="synthesis failed",
+        failure_payload=provenance,
+    )
+
+    assert status == VerdictStatus.FAILED.value
+    assert task.verdict == provenance
+    assert task.verdict_status == VerdictStatus.FAILED
+    assert task.verdict_error == "synthesis failed"

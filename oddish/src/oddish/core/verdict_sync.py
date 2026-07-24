@@ -61,6 +61,7 @@ async def sync_verdict_to_task(
     *,
     payload: dict | None,
     error: str | None,
+    failure_payload: dict | None = None,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
     should_complete: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> str | None:
@@ -82,6 +83,7 @@ async def sync_verdict_to_task(
             task.verdict_status = VerdictStatus.SUCCESS
             task.verdict_error = None
         else:
+            task.verdict = failure_payload
             task.verdict_status = VerdictStatus.FAILED
             task.verdict_error = error or "Verdict synthesis failed with exception"
 

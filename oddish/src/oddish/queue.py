@@ -1414,7 +1414,11 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
     task_verdict = getattr(task, "verdict", None)
     verdict = task_verdict if isinstance(task_verdict, dict) else {}
-    if task.verdict_status == VerdictStatus.FAILED:
+    verdict_matches_current = (
+        verdict.get("task_version_id") == current_version_id
+        and verdict.get("trial_ids") == qa_eligible_ids
+    )
+    if task.verdict_status == VerdictStatus.FAILED and verdict_matches_current:
         remaining_count = await session.scalar(active_trials_query)
         if remaining_count > 0:
             return False
@@ -1427,11 +1431,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         await session.flush()
         return True
 
-    if (
-        task.verdict_status == VerdictStatus.SUCCESS
-        and verdict.get("task_version_id") == current_version_id
-        and verdict.get("trial_ids") == qa_eligible_ids
-    ):
+    if task.verdict_status == VerdictStatus.SUCCESS and verdict_matches_current:
         remaining_count = await session.scalar(active_trials_query)
         if remaining_count > 0:
             return False

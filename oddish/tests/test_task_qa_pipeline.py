@@ -479,6 +479,10 @@ async def test_stage_finishes_cancelled_qa_after_historical_trials_stop(monkeypa
         current_version_id="task-10-v2",
         status=TaskStatus.RUNNING,
         run_analysis=True,
+        verdict={
+            "task_version_id": "task-10-v2",
+            "trial_ids": ["task-10-0"],
+        },
         verdict_status=VerdictStatus.FAILED,
         verdict_error=queue_mod.USER_CANCELLED_MESSAGE,
     )
@@ -514,6 +518,10 @@ async def test_stage_does_not_requeue_failed_qa_while_history_runs(monkeypatch):
         current_version_id="task-11-v2",
         status=TaskStatus.RUNNING,
         run_analysis=True,
+        verdict={
+            "task_version_id": "task-11-v2",
+            "trial_ids": ["task-11-0"],
+        },
         verdict_status=VerdictStatus.FAILED,
         verdict_error="synthesis failed",
     )
@@ -531,6 +539,40 @@ async def test_stage_does_not_requeue_failed_qa_while_history_runs(monkeypatch):
     )
     assert await queue_mod.maybe_start_qa_stage(session, "task-11-v1-0") is False
     assert task.status == TaskStatus.RUNNING
+
+
+@pytest.mark.asyncio
+async def test_stage_requeues_failed_qa_from_stale_version(monkeypatch):
+    trial = SimpleNamespace(task_id="task-11-stale")
+    task = SimpleNamespace(
+        org_id="org-1",
+        current_version_id="task-11-stale-v2",
+        status=TaskStatus.RUNNING,
+        run_analysis=True,
+        verdict={
+            "task_version_id": "task-11-stale-v1",
+            "trial_ids": ["task-11-stale-0"],
+        },
+        verdict_status=VerdictStatus.FAILED,
+        verdict_error="old synthesis failed",
+    )
+    calls = []
+
+    async def fake_enqueue(_session, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_enqueue)
+    session = _StageSession(
+        trial=trial,
+        task=task,
+        scalar_values=(0,),
+        qa_trial_ids=("task-11-stale-1",),
+    )
+
+    assert await queue_mod.maybe_start_qa_stage(session, "task-11-stale-v2-0") is True
+    assert calls[0]["task_version_id"] == "task-11-stale-v2"
+    assert task.verdict_status == VerdictStatus.QUEUED
+    assert task.verdict is None
 
 
 @pytest.mark.asyncio

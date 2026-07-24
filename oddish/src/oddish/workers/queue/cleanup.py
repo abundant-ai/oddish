@@ -414,6 +414,21 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             task, "current_version_id", None
         )
         if row["new_status"] == "FAILED":
+            from oddish.workers.queue.qa_handler import _qa_trial_filters
+
+            trial_ids = sorted(
+                str(trial_id)
+                for trial_id in await session.scalars(
+                    select(TrialModel.id).where(
+                        *_qa_trial_filters(task.id, task_version_id)
+                    )
+                )
+            )
+            task.verdict = {
+                "task_version_id": task_version_id,
+                "trial_count": len(trial_ids),
+                "trial_ids": trial_ids,
+            }
             task.verdict_status = VerdictStatus.FAILED
             task.verdict_error = row["error_message"]
             task.verdict_finished_at = utcnow()
@@ -1018,9 +1033,11 @@ async def _heal_stale_verdict_pending(session) -> int:
         task = await session.get(TaskModel, str(task_id))
         if not task or task.status != TaskStatus.VERDICT_PENDING:
             continue
-        verdict_is_current = task.verdict_status == VerdictStatus.FAILED or (
-            task.verdict_status == VerdictStatus.SUCCESS
-            and isinstance(task.verdict, dict)
+        verdict_is_current = task.verdict_status in (
+            VerdictStatus.SUCCESS,
+            VerdictStatus.FAILED,
+        ) and (
+            isinstance(task.verdict, dict)
             and task.verdict.get("task_version_id") == task.current_version_id
             and task.verdict.get("trial_ids")
             == sorted(
