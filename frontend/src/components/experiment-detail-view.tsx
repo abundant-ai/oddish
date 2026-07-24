@@ -375,8 +375,7 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   // experiments with no stamped owner.
   const experimentOwner =
     tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null;
-  // The experiment's own key is stamped set-once and never backfilled, so
-  // experiments predating the column fall back to the creating task's key.
+  // Falls back to the task's key since older experiments predate the column.
   const experimentApiKeyName =
     tasks.find((task) => task.experiment_api_key_name)
       ?.experiment_api_key_name ?? null;
@@ -506,10 +505,7 @@ function ExperimentMetaStrip({
       {showAuthor && <span>by {author}</span>}
       {(createdAt || showAuthor) && showApiKey && <MetaDot />}
       {showApiKey && (
-        <span
-          className="text-[color:var(--paper-ink-4)]"
-          title={`Submitted with API key "${apiKeyName}"`}
-        >
+        <span className="text-[color:var(--paper-ink-4)]">
           via {apiKeyName}
         </span>
       )}

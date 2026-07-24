@@ -1,15 +1,8 @@
-"""End-to-end: the submitting API key's NAME reaches every task/experiment view.
+"""Submitting API key names reach every task/experiment view.
 
-These exercise the real query paths rather than the response builders because
-the risk this PR carries lives in the query options, not the builders. Reading
-``TaskModel.api_key_id`` / ``ExperimentModel.api_key_id`` in a builder while the
-column is missing from the compact ``load_only`` sets fires a lazy load outside
-the request greenlet and 500s with ``MissingGreenlet`` -- and only the compact
-paths (``compact_trials=True``, ``task-shells``, ``slim-tasks``) show it. A
-builder unit test cannot catch that: in-memory models have every attribute set.
-
-The public/share paths are covered too: they never pass an ``api_key_names``
-map, so the names must stay ``None`` there no matter what the DB holds.
+Real query paths, not builders: a load_only column miss only 500s with
+MissingGreenlet on the compact paths. Also covers public/share views, which
+must never resolve names.
 """
 
 from __future__ import annotations
@@ -77,9 +70,7 @@ async def _seed(session, *, org_id="org1"):
     await session.flush()
     task.current_version_id = version.id
 
-    # Link through the association table, not ``task.experiments.append`` --
-    # the relationship is ``lazy="select"``, so appending would lazy-load the
-    # collection outside the greenlet.
+    # Not task.experiments.append: lazy="select" would lazy-load outside the greenlet.
     await session.execute(
         task_experiments.insert().values(task_id=task.id, experiment_id=experiment.id)
     )
@@ -102,10 +93,7 @@ async def _seed(session, *, org_id="org1"):
     )
     await session.flush()
     task_id, experiment_id = task.id, experiment.id
-    # Drop the seeded instances from the identity map. Without this the query
-    # under test just hands back these same in-memory objects with every
-    # attribute already populated, so a column missing from a ``load_only`` set
-    # would never lazy-load and the test would pass vacuously.
+    # Without this, in-memory objects short-circuit load_only and tests pass vacuously.
     session.expunge_all()
     return task_id, experiment_id
 

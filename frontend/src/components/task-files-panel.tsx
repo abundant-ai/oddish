@@ -1307,8 +1307,7 @@ export function TaskFilesPanel({
                 </span>
               )}
             </DrawerTitle>
-            {/* Submitter provenance. Hidden on the public share view, which
-                passes showAnalysis={false} and must not leak org key names. */}
+            {/* Hidden on share view (showAnalysis={false}) to avoid leaking key names */}
             {showAnalysis !== false &&
               (() => {
                 const byline = task?.github_username || task?.user;
@@ -1318,11 +1317,7 @@ export function TaskFilesPanel({
                   <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px]">
                     {byline ? <span>by {byline}</span> : null}
                     {byline && apiKeyName ? <span aria-hidden>·</span> : null}
-                    {apiKeyName ? (
-                      <span title={`Submitted with API key "${apiKeyName}"`}>
-                        via {apiKeyName}
-                      </span>
-                    ) : null}
+                    {apiKeyName ? <span>via {apiKeyName}</span> : null}
                   </div>
                 );
               })()}

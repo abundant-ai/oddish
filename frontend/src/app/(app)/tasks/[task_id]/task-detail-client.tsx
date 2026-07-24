@@ -273,10 +273,7 @@ function TaskDetailHeader({
                   {byline || task.created_at ? (
                     <span aria-hidden>·</span>
                   ) : null}
-                  <span
-                    className="text-[color:var(--paper-ink-4)]"
-                    title={`Submitted with API key "${apiKeyName}"`}
-                  >
+                  <span className="text-[color:var(--paper-ink-4)]">
                     via {apiKeyName}
                   </span>
                 </>

@@ -1,8 +1,6 @@
 """Add experiments.api_key_id (audit-only submitter provenance).
 
-Deliberately not backfilled: experiments created from the dashboard have no
-submitting API key at all, so NULL stays a legitimate value and the UI hides
-the field when it is absent.
+Not backfilled: dashboard-created experiments have no key, so NULL is legitimate.
 """
 
 from typing import Sequence, Union

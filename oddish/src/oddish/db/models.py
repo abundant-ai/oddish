@@ -483,10 +483,7 @@ class ExperimentModel(TimestampedMixin, Base):
     owner: Mapped[str | None] = mapped_column(Text, nullable=True)
     link: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Audit-only: API key whose run created this experiment (NULL for JWT/OSS
-    # and for experiments made from the dashboard). Set-once like ``owner`` /
-    # ``link``; never backfilled, so a NULL means "unknown", not "no key".
-    # Billing still follows trials.billed_user_id, never this.
+    # Audit-only, set-once provenance; billing always follows trials.billed_user_id.
     api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Public sharing (nullable until published)

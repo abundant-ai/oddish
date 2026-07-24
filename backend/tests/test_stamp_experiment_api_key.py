@@ -21,8 +21,7 @@ def test_keeps_existing_key() -> None:
 
 
 def test_ignores_missing_inputs() -> None:
-    # A JWT/dashboard submission has no key; the column stays NULL rather than
-    # being backfilled from some later run.
+    # No key (JWT/dashboard) leaves the column NULL rather than backfilling it.
     experiment = _experiment(None)
     stamp_experiment_api_key(experiment, None)
     assert experiment.api_key_id is None

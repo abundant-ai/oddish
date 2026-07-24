@@ -803,13 +803,9 @@ def _primary_experiment_for_task(
 async def fetch_api_key_names(
     session: AsyncSession, *, tasks: Sequence[TaskModel]
 ) -> dict[str, str]:
-    """Map ``api_key_id`` -> key name for the tasks and their experiments.
+    """Map api_key_id -> key name for the tasks and their experiments.
 
-    Opt-in on purpose: the builders leave the name ``None`` when no map is
-    supplied, so public/share endpoints -- which never call this -- cannot leak
-    an org's key names by accident. Reading ``api_key_id`` here requires it in
-    the compact ``load_only`` sets (see ``TASK_STATUS_RESPONSE_COLUMNS`` and the
-    experiments loader in ``list_tasks_core``).
+    Opt-in: public/share builders never call this, so names stay None there.
     """
     from oddish.db.models import APIKeyModel
 
