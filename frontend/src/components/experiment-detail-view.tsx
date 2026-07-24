@@ -734,18 +734,18 @@ function ExperimentSummaryBar({
           ) : (
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
-          {!costPending && (
-            <QaCostSuffix
-              costUsd={summary.qaCostUsd}
-              size="tile"
-              title={
-                summary.qaHasEstimated
-                  ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
-                  : "QA/analysis spend across this experiment's trials. Not included in the cost figure."
-              }
-            />
-          )}
         </span>
+        {!costPending && (
+          <QaCostSuffix
+            costUsd={summary.qaCostUsd}
+            size="sub"
+            title={
+              summary.qaHasEstimated
+                ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
+                : "QA/analysis spend across this experiment's trials. Not included in the cost figure."
+            }
+          />
+        )}
         {!costPending && summary.tokenTrialCount > 0 && (
           <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
             {formatTokenCount(summary.tokenCount)}
@@ -818,14 +818,14 @@ function ExperimentSummaryBar({
             ) : (
               <span className="text-[color:var(--paper-ink-3)]">—</span>
             )}
-            {!costPending && (
-              <QaCostSuffix
-                costUsd={summary.ownedQaCostUsd}
-                size="tile"
-                title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
-              />
-            )}
           </span>
+          {!costPending && (
+            <QaCostSuffix
+              costUsd={summary.ownedQaCostUsd}
+              size="sub"
+              title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
+            />
+          )}
           {!costPending && summary.ownedTokenTrialCount > 0 && (
             <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
               {formatTokenCount(summary.ownedTokenCount)}
