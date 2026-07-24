@@ -82,6 +82,10 @@ async def run_analyzer_block_job(
                 model=run.model,
                 triggered_by_user_id=run.triggered_by_user_id,
                 attribution_org_id=run.org_id,
+                # The run knows exactly what it is about; without this the cost
+                # row lands with every scope column NULL.
+                subject_type=run.scope_type,
+                subject_id=run.scope_id,
                 sandbox_config=sandbox_config,
                 block_metadata=config,
             )

@@ -19,6 +19,8 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         model="test-model",
         reasoning_effort=None,
         llm_client_type=LLMClientType.API.value,
+        scope_type="task",
+        scope_id="task_1",
         run_config={
             "scope": {"type": "task", "id": "task_1"},
             "system_prompt": "Inspect the task",

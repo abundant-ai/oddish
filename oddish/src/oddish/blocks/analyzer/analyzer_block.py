@@ -103,6 +103,8 @@ class AnalyzerBlock(Block):
         sandbox_config: SandboxConfig | None = None,
         client_creation_timeout: float | None = None,
         attribution_org_id: str | None = None,
+        subject_type: str | None = None,
+        subject_id: str | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -136,6 +138,12 @@ class AnalyzerBlock(Block):
         self._client_creation_timeout = client_creation_timeout
         self._active_client: AnalyzerLLMClient | None = None
         self.attribution_org_id = attribution_org_id
+        # What this block is ABOUT, as opposed to ``analyzer_id``, which is an
+        # overloaded association id. Set explicitly by callers that know their
+        # subject (see ``analyzer_block_handler``); cohort blocks leave it None
+        # because they span many trials and have no single subject to charge.
+        self.subject_type = subject_type
+        self.subject_id = subject_id
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -197,14 +205,20 @@ class AnalyzerBlock(Block):
     async def _cost_attribution(self, session) -> dict[str, str | None]:
         """Resolve the subject columns copied onto the immutable cost row.
 
-        Task-level blocks use the explicit ``task_id`` link. Legacy block types
-        use ``analyzer_id`` as their existing trial or AnalyzerModel association.
-        Cost rows copy that association; task-level QA leaves it NULL.
+        Resolution order:
 
-        ``trial_id`` is left None on the analyzer path rather than pointed at a
-        row in a different table; a cohort block spans many trials, so there is
-        no single one to charge. Same for ``experiment_id`` -- an analyzer
-        references N experiments via ``analyzer_experiments``.
+        1. An explicit ``subject_type``/``subject_id`` (trial, task, or
+           experiment). This is what callers that know their subject pass.
+        2. The legacy paths: an explicit ``task_id``, or ``analyzer_id`` used
+           as an overloaded association id (a trial id, else an AnalyzerModel
+           id).
+
+        ``attribution_org_id`` OVERRIDES the resolved org. It must not
+        short-circuit resolution -- doing so is what left every custom-QA cost
+        row scope-less, since the generic runner always passes one.
+
+        Cohort blocks span many trials and resolve to a NULL subject
+        deliberately: there is no single trial or experiment to charge.
         """
         blank: dict[str, str | None] = {
             "trial_id": None,
@@ -214,48 +228,36 @@ class AnalyzerBlock(Block):
             "task_id": self.task_id,
             "analyzer_id": None,
         }
-        if self.task_id:
-            task = (
-                await session.execute(
-                    select(
-                        TaskModel.org_id,
-                        TaskModel.created_by_user_id,
-                    ).where(TaskModel.id == self.task_id)
-                )
-            ).first()
-            if task is not None:
-                return {
-                    **blank,
-                    "org_id": task.org_id,
-                    "billed_user_id": self.triggered_by_user_id
-                    or task.created_by_user_id,
-                }
-        if not self.analyzer_id:
-            return {**blank, "org_id": self.attribution_org_id}
-        if self.attribution_org_id is not None:
-            return {**blank, "org_id": self.attribution_org_id}
 
-        trial = (
-            await session.execute(
-                select(
-                    TrialModel.id,
-                    TrialModel.org_id,
-                    TrialModel.experiment_id,
-                    TrialModel.billed_user_id,
-                ).where(TrialModel.id == self.analyzer_id)
-            )
-        ).first()
-        if trial is not None:
-            return {
-                **blank,
-                "trial_id": trial.id,
-                "org_id": trial.org_id,
-                "experiment_id": trial.experiment_id,
-                # The triggering user wins: they caused the call. Falls back to
-                # the trial's owner for internally-driven runs with no request
-                # behind them (workers, the graph builder).
-                "billed_user_id": self.triggered_by_user_id or trial.billed_user_id,
-            }
+        resolved = await self._resolve_subject(session, blank)
+
+        # Applied last so an explicit org wins over the subject's own, without
+        # costing us the subject.
+        if self.attribution_org_id is not None:
+            resolved["org_id"] = self.attribution_org_id
+        return resolved
+
+    async def _resolve_subject(
+        self, session, blank: dict[str, str | None]
+    ) -> dict[str, str | None]:
+        """Subject resolution for ``_cost_attribution``, org override aside."""
+        if self.subject_type == "trial" and self.subject_id:
+            return await self._attribute_to_trial(session, blank, self.subject_id)
+        if self.subject_type == "task" and self.subject_id:
+            return await self._attribute_to_task(session, blank, self.subject_id)
+        if self.subject_type == "experiment" and self.subject_id:
+            return {**blank, "experiment_id": self.subject_id}
+
+        if self.task_id:
+            return await self._attribute_to_task(session, blank, self.task_id)
+        if not self.analyzer_id:
+            return blank
+
+        # ``analyzer_id`` is an overloaded association id: a trial id on the
+        # trial path, an AnalyzerModel id on the cohort path.
+        by_trial = await self._attribute_to_trial(session, blank, self.analyzer_id)
+        if by_trial["trial_id"] is not None:
+            return by_trial
 
         analyzer = (
             await session.execute(
@@ -271,6 +273,54 @@ class AnalyzerBlock(Block):
             "org_id": analyzer.org_id,
             "billed_user_id": self.triggered_by_user_id or analyzer.owner_user_id,
             "analyzer_id": self.analyzer_id,
+        }
+
+    async def _attribute_to_trial(
+        self, session, blank: dict[str, str | None], trial_id: str
+    ) -> dict[str, str | None]:
+        """Charge a single trial. Unknown id degrades to ``blank`` rather than
+        raising -- accounting must never take down a block that produced
+        output."""
+        trial = (
+            await session.execute(
+                select(
+                    TrialModel.id,
+                    TrialModel.org_id,
+                    TrialModel.experiment_id,
+                    TrialModel.billed_user_id,
+                ).where(TrialModel.id == trial_id)
+            )
+        ).first()
+        if trial is None:
+            return blank
+        return {
+            **blank,
+            "trial_id": trial.id,
+            "org_id": trial.org_id,
+            "experiment_id": trial.experiment_id,
+            # The triggering user wins: they caused the call. Falls back to
+            # the trial's owner for internally-driven runs with no request
+            # behind them (workers, the graph builder).
+            "billed_user_id": self.triggered_by_user_id or trial.billed_user_id,
+        }
+
+    async def _attribute_to_task(
+        self, session, blank: dict[str, str | None], task_id: str
+    ) -> dict[str, str | None]:
+        task = (
+            await session.execute(
+                select(TaskModel.org_id, TaskModel.created_by_user_id).where(
+                    TaskModel.id == task_id
+                )
+            )
+        ).first()
+        if task is None:
+            return {**blank, "task_id": task_id}
+        return {
+            **blank,
+            "task_id": task_id,
+            "org_id": task.org_id,
+            "billed_user_id": self.triggered_by_user_id or task.created_by_user_id,
         }
 
     async def record_cost(self) -> None:
