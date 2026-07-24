@@ -127,7 +127,16 @@ High-level flow:
    failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Trajectory analysis uses one **task-level, version-pinned** `QA` job when
+4. Scoped QA assignments enqueue independent `ANALYZER_BLOCK` jobs through
+   `oddish.core.qa_assignments.enqueue_qa_assignment_runs_core`. `pre_trial`
+   fires once per assignment and task version during sweep submission;
+   `post_trial` fires once per assignment and final terminal trial. The
+   `(qa_assignment_id, stage_event_key)` partial unique index makes lifecycle
+   retries idempotent. These jobs are additive and non-blocking: their failure
+   does not change trial state or the built-in task verdict pipeline. API
+   assignments are prompt-only; sandbox assignments may request an
+   authenticated short-lived Oddish CLI.
+5. Trajectory analysis uses one **task-level, version-pinned** `QA` job when
    the selected current-version trials of a `run_analysis` task are terminal.
    Historical-version trials may still run; they keep the aggregate task status
    running but do not delay current-version QA. The job classifies every
@@ -136,7 +145,7 @@ High-level flow:
    It discards its output if the selected version or eligible trial set changes
    while it runs. A sweep of `T` tasks × `N` trials therefore enqueues `T` QA
    jobs, not `T × (N + 1)`.
-5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
+6. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
    codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
@@ -154,7 +163,7 @@ High-level flow:
    identifiers. Claude message payloads also carry a `block_index` and
    `text_mode` (`append` or `replace`) so clients can assemble corrected text
    snapshots without concatenating stale content.
-6. Trial completion persists queryable execution metrics on the trial row:
+7. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
@@ -192,6 +201,12 @@ seed missing built-in kinds at startup without overwriting operator edits. A
 trial classification records the post-trial prompt kind and version in
 `trials.analysis`; local/library classification without a registry row falls
 back to the packaged `analyze/classify_prompt.txt`.
+
+Hosted prompt overrides may be scoped to an org, user, experiment, task, or
+trial. Resolution is trial → task → experiment → user → org → global, and every
+domain-scoped read must first verify that the target belongs to the active org.
+Scoped prompt identity includes `org_id`; in particular, the same user may have
+independent overrides for the same kind in multiple organizations.
 
 ### Worker job kinds
 
@@ -239,6 +254,15 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
 - the task-level QA job (`run_task_qa_job`): classify every QA-eligible trial
   on the pinned current version via the shared `classify_trial_and_store`, then
   synthesize the task verdict from that unchanged version cohort
+- post-trial classification runs through `AnalyzerBlock`. It reads two
+  already-downloaded directories and executes nothing, so `resolve_substrate`
+  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
+  `post_trial_sandbox_enabled` is the operator opt-in that lifts it into a
+  Daytona `SANDBOX`, which restores the task/trial snapshot at the worker's own
+  absolute paths so no prompt rewriting is involved. Its costs use the
+  `post_trial` job kind; the legacy `trial_classifier` cost bucket is retired at
+  this cutover, and every block row carries `block_metadata.cost_status`
+  (`recorded` | `no_usage` | `failed`) so lost spend is queryable.
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over

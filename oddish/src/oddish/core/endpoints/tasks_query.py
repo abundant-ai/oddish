@@ -72,6 +72,7 @@ from oddish.schemas import (
     UserTagRef,
 )
 from oddish.core.cost_basis import not_combine_copy_filter
+from oddish.core.endpoints.qa_cost import get_task_qa_costs, get_trial_qa_costs
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -600,6 +601,13 @@ async def list_experiment_slim_tasks(
         .all()
     )
 
+    # One query for the whole page's trials, not one per trial: this is the
+    # grid's per-trial QA sidecar, and the grid can page thousands of trials.
+    page_trial_ids = [trial.id for task in tasks for trial in task.trials]
+    qa_costs_by_trial_id = await get_trial_qa_costs(
+        session, trial_ids=page_trial_ids, org_id=org_id
+    )
+
     build_started_at = now()
     response = [
         build_slim_task_status_response(
@@ -607,6 +615,7 @@ async def list_experiment_slim_tasks(
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
             gathered_trial_ids=gathered_trial_ids,
+            qa_costs_by_trial_id=qa_costs_by_trial_id,
         )
         for task in tasks
     ]
@@ -2277,6 +2286,18 @@ async def browse_tasks_core(
         else {}
     )
 
+    # QA spend is a separate ledger with its own grain (one row per analysis
+    # job, not per trial), so it is a second aggregate rather than another
+    # branch of the loop above. Scoped to the same current-version, non-probe,
+    # non-superseded, non-combine-copy trial population the card prices for
+    # agent cost, so the card's two figures describe the same trials.
+    qa_by_task = await get_task_qa_costs(
+        session,
+        task_ids=task_ids,
+        org_id=org_id,
+        trial_scope_pairs=task_version_pairs,
+    )
+
     build_started_at = now()
     response = TaskBrowseResponse(
         items=[
@@ -2351,6 +2372,11 @@ async def browse_tasks_core(
                 ),
                 billed_has_native=bool(
                     cost_by_task.get(str(row["task_id"]), {}).get("billed_has_native")
+                ),
+                qa_cost_usd=(
+                    qa_by_task[str(row["task_id"])].qa_cost_usd
+                    if str(row["task_id"]) in qa_by_task
+                    else 0.0
                 ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),

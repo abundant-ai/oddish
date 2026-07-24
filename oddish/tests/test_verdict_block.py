@@ -4,6 +4,7 @@ wiring (qa_handler.synthesize_task_verdict)."""
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -153,8 +154,9 @@ class _FakeStreamEvent:
 
 
 class _FakeOpenAIStream:
-    def __init__(self, events):
+    def __init__(self, events, usage=None):
         self._events = events
+        self._usage = usage
 
     async def __aenter__(self):
         return self
@@ -165,6 +167,15 @@ class _FakeOpenAIStream:
     async def __aiter__(self):
         for event in self._events:
             yield event
+
+    @property
+    def current_completion_snapshot(self):
+        """The client reads usage off the accumulated snapshot; these tests
+        assert request wiring, so reporting none is enough."""
+        return SimpleNamespace(usage=self._usage)
+
+    async def get_final_completion(self):
+        return SimpleNamespace(usage=self._usage)
 
 
 class _FakeOpenAICompletions:

@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from oddish.analyze.analysis_cost import (
-    AnalysisUsage,
-    build_analysis_cost_row,
-    should_record_cost,
-)
 from oddish.analyze.models import compute_action_item_id
 from oddish.analyze.trajectory_files import parse_trajectory_file_access
 from oddish.config import settings
-from oddish.core.prompts import get_prompt_core
+from oddish.core.prompts import resolve_prompt_core
 from oddish.db import AnalysisStatus, PromptKind, TaskModel, TaskVersionModel, utcnow
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
 from oddish.workers.queue.db_helpers import _trial_session
@@ -25,6 +21,11 @@ ANALYSIS_TIMEOUT = 900  # 15 minutes
 # slow classification can't drift across the reap threshold mid-run.
 # 30s matches the trial heartbeat interval for consistency.
 ANALYSIS_HEARTBEAT_INTERVAL_SECONDS = 30
+# How long a RUNNING claim is trusted to belong to a live worker. Must exceed
+# the worst-case classification (``ANALYSIS_TIMEOUT`` plus the S3 task/trial
+# download and sandbox provisioning that precede it); past it the claim is
+# presumed abandoned so a worker that died mid-run can't strand the trial.
+ANALYSIS_CLAIM_TTL_MINUTES = 30
 
 
 def classification_to_result_dict(classification) -> dict:
@@ -104,11 +105,22 @@ async def classify_trial_and_store(
     trial_id: str,
     should_store: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> AnalysisStatus | None:
-    """Classify one trial and store its analysis."""
+    """Classify one trial and store its analysis.
+
+    Returns ``RUNNING`` when another worker owns a fresh claim -- distinct from
+    the ``None`` of an already-terminal trial, because nothing was stored and
+    nothing will be until that peer finishes. Callers that aggregate several
+    classifications must wait it out rather than proceed on a partial set; see
+    ``qa_handler._classify_waiting_out_peer_claim``.
+    """
     from oddish.analyze import TrialClassifier
 
-    # Mark as running
-    async with _trial_session(trial_id) as (session, trial):
+    # Claim the trial. Locked because concurrent QA jobs for one task are
+    # routine -- a sweep append enqueues one per batch, and a stale-reaped job
+    # is retried alongside the run it duplicated -- so an unlocked read lets
+    # several workers claim the same trial and each pay for the identical
+    # classification.
+    async with _trial_session(trial_id, with_for_update=True) as (session, trial):
         if not trial:
             raise RuntimeError(f"Trial {trial_id} not found in database")
         if trial.deleted_at is not None:
@@ -121,6 +133,20 @@ async def classify_trial_and_store(
                 f"[yellow]Trial {trial_id} already analyzed, skipping[/yellow]"
             )
             return None
+
+        # A fresh RUNNING claim belongs to a live worker; leave it alone. An
+        # expired one (or a legacy row with no start stamp) is presumed
+        # abandoned and retaken, so a dead worker can't strand the trial.
+        claimed_at = trial.analysis_started_at
+        if (
+            trial.analysis_status == AnalysisStatus.RUNNING
+            and claimed_at is not None
+            and utcnow() - claimed_at < timedelta(minutes=ANALYSIS_CLAIM_TTL_MINUTES)
+        ):
+            console.print(
+                f"[yellow]Trial {trial_id} is already being classified, skipping[/yellow]"
+            )
+            return AnalysisStatus.RUNNING
 
         trial.analysis_status = AnalysisStatus.RUNNING
         trial.analysis_started_at = utcnow()
@@ -136,6 +162,9 @@ async def classify_trial_and_store(
         task_path = task.task_path
         trial_result_path = trial.harbor_result_path
         trial_agent = trial.agent
+        trial_experiment_id = trial.experiment_id
+        trial_org_id = trial.org_id
+        trial_user_id = trial.billed_user_id
         # Pre-trial findings live on the audited task version; prefer the
         # version this trial ran against, falling back to the task's current
         # version for older trials that predate version stamping.
@@ -156,12 +185,24 @@ async def classify_trial_and_store(
         # packaged classifier prompt as a compatibility fallback.
         post_trial_prompt: str | None = None
         post_trial_prompt_version: int | None = None
+        post_trial_prompt_id: str | None = None
+        post_trial_prompt_scope: str | None = None
+        post_trial_prompt_scope_id: str | None = None
         try:
-            _, prompt_version = await get_prompt_core(
-                session, PromptKind.QA_POST_TRIAL.value
+            prompt, prompt_version = await resolve_prompt_core(
+                session,
+                PromptKind.QA_POST_TRIAL.value,
+                org_id=trial_org_id,
+                user_id=trial_user_id,
+                experiment_id=trial_experiment_id,
+                task_id=task_id,
+                trial_id=trial_id,
             )
             post_trial_prompt = prompt_version.content
             post_trial_prompt_version = prompt_version.version
+            post_trial_prompt_id = prompt.id
+            post_trial_prompt_scope = prompt.scope_type or "global"
+            post_trial_prompt_scope_id = prompt.scope_id
         except Exception as exc:
             console.print(
                 "[yellow]QA_POST_TRIAL prompt unavailable; using packaged "
@@ -183,7 +224,6 @@ async def classify_trial_and_store(
     trial_dir_to_use: Path | None = None
     classification_result = None
     analysis_error = None
-    analysis_usage: AnalysisUsage | None = None
 
     try:
         (
@@ -258,13 +298,24 @@ async def classify_trial_and_store(
                 trial_agent=trial_agent,
                 pre_trial_items=pre_trial_items,
                 file_access=file_access,
+                analyzer_block_context={
+                    "trial_id": trial_id,
+                    "task_id": task_id,
+                    "prompt_key": (
+                        PromptKind.QA_POST_TRIAL.value
+                        if post_trial_prompt_version is not None
+                        else None
+                    ),
+                    "prompt_version": post_trial_prompt_version,
+                },
             )
-            analysis_usage = classifier.last_usage
-
             classification_result = classification_to_result_dict(classification)
             if post_trial_prompt_version is not None:
                 classification_result["prompt_kind"] = PromptKind.QA_POST_TRIAL.value
                 classification_result["prompt_version"] = post_trial_prompt_version
+                classification_result["prompt_id"] = post_trial_prompt_id
+                classification_result["prompt_scope"] = post_trial_prompt_scope
+                classification_result["prompt_scope_id"] = post_trial_prompt_scope_id
 
             # Check if classification is a fallback (indicates Claude SDK issue)
             if "classification failed" in (classification.evidence or "").lower():
@@ -315,17 +366,6 @@ async def classify_trial_and_store(
                 trial.analysis_status = AnalysisStatus.SUCCESS
                 trial.analysis_finished_at = utcnow()
                 trial.analysis_error = None
-                if should_record_cost(classification_result, analysis_usage):
-                    session.add(
-                        build_analysis_cost_row(
-                            job_kind="trial_classifier",
-                            trial_id=trial_id,
-                            org_id=trial.org_id,
-                            experiment_id=trial.experiment_id,
-                            billed_user_id=trial.billed_user_id,
-                            usage=analysis_usage,
-                        )
-                    )
                 stored_status = AnalysisStatus.SUCCESS
                 console.print(f"[green]Analysis {trial_id} SUCCESS[/green]")
             else:
