@@ -1008,12 +1008,12 @@ export function TaskDetailClient({
                 hasNative={totals?.cost_has_native ?? false}
                 size="lg"
               />
+              <QaCostSuffix
+                costUsd={totals?.qa_cost_usd}
+                size="tile"
+                title="QA/analysis spend for this task's trials. Not included in the cost figure."
+              />
             </span>
-            <QaCostSuffix
-              costUsd={totals?.qa_cost_usd}
-              size="sub"
-              title="QA/analysis spend for this task's trials. Not included in the cost figure."
-            />
             {allVersionsSummary.tokenTrialCount > 0 && (
               <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
                 {formatTokenCount(allVersionsSummary.tokenCount)}

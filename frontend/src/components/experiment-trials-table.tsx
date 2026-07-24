@@ -57,6 +57,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import { costEstimateMarks, formatCostUsd, sumTaskTrialCost } from "@/lib/format";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
@@ -2301,11 +2302,12 @@ export function ExperimentTrialsTable({
                               // prices the row being shown, matching the Cost
                               // tile.
                               const c = sumTaskTrialCost(orderedTrials);
-                              // Agent cost only. QA spend is deliberately not
-                              // annotated per row -- the row is already dense,
-                              // and QA totals live on the experiment's Cost
-                              // tile and on each task's own page.
-                              if (c.pricedCount === 0) return null;
+                              const hasAgentCost = c.pricedCount > 0;
+                              // Render when there's agent cost OR QA-only
+                              // spend: a trial can be QA'd without the agent
+                              // ever reporting a cost, and its QA sidecar must
+                              // not be hidden with the agent figure.
+                              if (!hasAgentCost && c.qaCostUsd <= 0) return null;
                               const marks = costEstimateMarks(
                                 c.hasEstimated,
                                 c.hasNative,
@@ -2313,20 +2315,31 @@ export function ExperimentTrialsTable({
                               return (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <span className="inline-flex shrink-0 items-center font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
-                                      {marks.prefix}
-                                      {formatCostUsd(c.costUsd)}
-                                      {marks.suffix}
+                                    <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
+                                      {hasAgentCost && (
+                                        <>
+                                          {marks.prefix}
+                                          {formatCostUsd(c.costUsd)}
+                                          {marks.suffix}
+                                        </>
+                                      )}
+                                      <QaCostSuffix costUsd={c.qaCostUsd} />
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent>
-                                    Total cost across {c.pricedCount} priced
-                                    trial{c.pricedCount === 1 ? "" : "s"}
-                                    {c.hasEstimated && c.hasNative
-                                      ? " · * mixes native + token-estimated pricing"
-                                      : c.hasEstimated
-                                        ? " · ~ token-estimated pricing"
-                                        : ""}
+                                    {hasAgentCost ? (
+                                      <>
+                                        Total cost across {c.pricedCount} priced
+                                        trial{c.pricedCount === 1 ? "" : "s"}
+                                        {c.hasEstimated && c.hasNative
+                                          ? " · * mixes native + token-estimated pricing"
+                                          : c.hasEstimated
+                                            ? " · ~ token-estimated pricing"
+                                            : ""}
+                                      </>
+                                    ) : (
+                                      "QA/analysis spend only; no priced agent trials in this row."
+                                    )}
                                   </TooltipContent>
                                 </Tooltip>
                               );
