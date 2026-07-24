@@ -1969,6 +1969,57 @@ class CustomQARunResponse(BaseModel):
     run_config: dict
 
 
+class QAJobAssignRequest(BaseModel):
+    """Create or update one QA job assignment at a scope.
+
+    ``model`` and ``backend`` are optional because they have per-stage
+    deployment defaults (``settings.pre_trial_model`` / ``analysis_model``),
+    which is also what makes a bare ``qa-jobs disable`` possible -- a
+    suppression row still has to satisfy the NOT NULL columns.
+    """
+
+    prompt: str = Field(min_length=1, description="Prompt kind, or prompt id.")
+    stage: Literal["pre_trial", "post_trial"]
+    prompt_version: int | None = Field(default=None, ge=1)
+    model: str | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    backend: Literal["api", "sandbox"] | None = None
+    allow_oddish_cli: bool = False
+    enabled: bool = True
+
+
+class QAJobResponse(BaseModel):
+    id: str
+    stage: str
+    prompt_id: str
+    prompt_kind: str
+    prompt_version: int | None = None  # pinned version, NULL = latest-wins
+    effective_version: int | None = None  # what would actually run
+    scope_type: str
+    scope_id: str
+    org_id: str | None = None
+    model: str
+    reasoning_effort: str | None = None
+    backend: str
+    allow_oddish_cli: bool
+    enabled: bool
+    inherited_from: str
+
+
+class QAJobStatusRow(BaseModel):
+    assignment_id: str
+    stage: str
+    prompt_kind: str
+    inherited_from: str
+    total: int
+    counts: dict[str, int] = {}
+
+
+class QAJobStatusResponse(BaseModel):
+    scope: str
+    jobs: list[QAJobStatusRow] = []
+
+
 # ---------------------------------------------------------------------------
 # Documents — agent doc-store.
 # ---------------------------------------------------------------------------

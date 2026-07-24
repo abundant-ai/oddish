@@ -51,6 +51,23 @@ async def _get_prompt(
     return prompt
 
 
+async def find_prompt_row_core(
+    session: AsyncSession,
+    ref: str,
+    *,
+    scope_type: str | None = None,
+    scope_id: str | None = None,
+) -> PromptModel | None:
+    """Locate a prompt row without requiring it to have any versions.
+
+    ``resolve_prompt_core`` deliberately skips version-less rows so an empty
+    override cannot shadow a global with real content. Callers that need to
+    distinguish "no such prompt" from "prompt exists but is empty" -- e.g. to
+    reject a QA assignment with an accurate message -- use this instead.
+    """
+    return await _get_prompt(session, ref, scope_type=scope_type, scope_id=scope_id)
+
+
 async def set_prompt_core(
     session: AsyncSession,
     *,

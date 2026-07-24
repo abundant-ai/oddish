@@ -82,6 +82,39 @@ and a task override usually encodes durable knowledge about that task, which
 a broader experiment override should not silently suppress. Only one prompt
 ever wins; overrides replace rather than combine.
 
+### Automatic QA jobs
+
+`oddish qa` runs a prompt once, by hand. To make one run *automatically*, assign
+it as a QA job with `oddish qa-jobs`. An assignment binds a registry prompt to a
+lifecycle stage — `--pre-trial` (once per task version) or `--post-trial` (once
+per trial) — at any of the same six scopes:
+
+```bash
+# Override this task's post-trial QA, uploading new text in the same step
+oddish qa-jobs assign QA_POST_TRIAL --post-trial --task fvsmith \
+  --file ./post_trial.md --backend api --model claude-opus-4-8
+
+# What will this task actually run?
+oddish qa-jobs list --task fvsmith
+
+# Suppress a broader default here
+oddish qa-jobs disable QA_POST_TRIAL --post-trial --task fvsmith
+```
+
+Unlike prompt content, assignments **union** across scopes rather than picking a
+single winner: adding one extra check to a task must not silently switch off the
+org's default post-trial QA. Within a scope ladder, a narrower row *replaces* a
+broader one for the same `(stage, prompt kind)`, and a row written by `disable`
+suppresses the broader default entirely. `list` defaults to `--global` and shows
+the resolved set with the scope each row came from; `--defined` shows only rows
+set at exactly that scope, which is what you edit.
+
+`--file` is a convenience for the create case — omitting it assigns against
+whatever content already resolves at that scope. Content keeps following
+latest-wins afterwards, so a later `oddish prompt upload` is picked up with no
+change to the assignment; pass `--prompt-version N` to pin instead. Global-scope
+assignments are installation-wide and restricted to the platform operator.
+
 The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
 authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
 oracle/nop and lazy-solution experiments. The worker mints a short-lived

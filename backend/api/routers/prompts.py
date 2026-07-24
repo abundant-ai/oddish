@@ -13,8 +13,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from api.scopes import resolve_read_scope, resolve_write_scope
 from auth import APIKeyScope, AuthContext, require_auth
-from auth.permissions import require_operator_org
+from auth.permissions import assert_org_access
 from oddish.core.prompts import (
     get_prompt_core,
     get_prompt_usage_core,
@@ -22,7 +23,7 @@ from oddish.core.prompts import (
     list_prompts_core,
     set_prompt_core,
 )
-from oddish.db import ExperimentModel, PromptKind, TaskModel, TrialModel, get_session
+from oddish.db import PromptKind, get_session
 from oddish.schemas import (
     PromptResponse,
     PromptSetRequest,
@@ -51,10 +52,8 @@ def _validated_kind(kind: str) -> str:
 
 def _assert_org_access(prompt, auth: AuthContext) -> None:
     """A prompt id is resolvable across scopes, so every id-resolved row must be
-    re-checked against the caller's org. 404 rather than 403: a foreign prompt's
-    existence is itself not the caller's to learn."""
-    if prompt.org_id and prompt.org_id != auth.org_id:
-        raise HTTPException(status_code=404, detail="Prompt not found")
+    re-checked against the caller's org."""
+    assert_org_access(prompt, auth, detail="Prompt not found")
 
 
 async def _validated_ref(session, ref: str, auth: AuthContext):
@@ -87,32 +86,7 @@ def _to_response(prompt, version) -> PromptResponse:
     return resp
 
 
-def _resolve_scope_params(
-    scope: str | None, scope_id: str | None, auth: AuthContext
-) -> tuple[str | None, str | None]:
-    """Map read-side scope query params onto (scope_type, scope_id).
-
-    Read-only: unlike ``set_prompt`` this does not verify the target exists,
-    because a miss resolves to 404 from the core lookup anyway.
-    """
-    if scope in (None, "global"):
-        return None, None
-    if scope == "org":
-        return "org", auth.org_id
-    if scope == "user":
-        if not auth.user_id:
-            raise HTTPException(status_code=422, detail="user scope requires user auth")
-        return "user", auth.user_id
-    if scope in {"experiment", "task", "trial"}:
-        if not scope_id:
-            raise HTTPException(
-                status_code=422, detail=f"{scope} scope requires scope_id"
-            )
-        return scope, scope_id
-    raise HTTPException(
-        status_code=422,
-        detail="scope must be global, org, user, experiment, task, or trial",
-    )
+_resolve_scope_params = resolve_read_scope
 
 
 @router.get("/prompts", response_model=list[PromptResponse])
@@ -194,34 +168,9 @@ async def set_prompt(
     auth.require_scope(APIKeyScope.FULL)
     async with get_session() as session:
         ref, existing_prompt = await _validated_ref(session, key_or_id, auth)
-        resolved_scope: str | None
-        resolved_scope_id: str | None
-        if scope == "global":
-            require_operator_org(auth)
-            resolved_scope = resolved_scope_id = None
-        elif scope == "org":
-            resolved_scope, resolved_scope_id = "org", auth.org_id
-        elif scope == "user":
-            if not auth.user_id:
-                raise HTTPException(status_code=422, detail="user scope requires user auth")
-            resolved_scope, resolved_scope_id = "user", auth.user_id
-        elif scope in {"experiment", "task", "trial"}:
-            if not scope_id:
-                raise HTTPException(status_code=422, detail=f"{scope} scope requires scope_id")
-            model = {
-                "experiment": ExperimentModel,
-                "task": TaskModel,
-                "trial": TrialModel,
-            }[scope]
-            target = await session.get(model, scope_id)
-            if target is None or target.org_id != auth.org_id:
-                raise HTTPException(status_code=404, detail=f"{scope} not found")
-            resolved_scope, resolved_scope_id = scope, scope_id
-        else:
-            raise HTTPException(
-                status_code=422,
-                detail="scope must be global, org, user, experiment, task, or trial",
-            )
+        resolved_scope, resolved_scope_id = await resolve_write_scope(
+            session, scope, scope_id, auth
+        )
         if (
             existing_prompt is not None
             and existing_prompt.kind != ref
