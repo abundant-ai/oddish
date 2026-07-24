@@ -184,10 +184,14 @@ async def resolve_prompt_core(
     trial_id: str | None,
 ) -> tuple[PromptModel, PromptVersionModel]:
     """Resolve the narrowest available override, then the global default."""
+    # task and experiment are NOT nested (a task spans experiments, an experiment
+    # spans tasks), so this order is a deliberate call, not a containment fact:
+    # experiment wins so pinning a prompt to an experiment (e.g. for an A/B) can't
+    # be silently overridden by a task-level override inside it.
     candidates = [
         ("trial", trial_id),
-        ("task", task_id),
         ("experiment", experiment_id),
+        ("task", task_id),
         ("user", user_id),
         ("org", org_id),
     ]

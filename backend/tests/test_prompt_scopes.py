@@ -86,8 +86,8 @@ async def test_narrowest_scope_wins_across_all_levels(scoped_kind):
     ladder = [
         ("org", "org_a", "org"),
         ("user", "user_a", "user"),
-        ("experiment", "exp_a", "experiment"),
         ("task", "task_a", "task"),
+        ("experiment", "exp_a", "experiment"),
         ("trial", "trial_a", "trial"),
     ]
     scopes = {**_NO_SCOPES, "org_id": "org_a"}
@@ -103,6 +103,34 @@ async def test_narrowest_scope_wins_across_all_levels(scoped_kind):
         async with get_session() as session:
             _, ver = await resolve_prompt_core(session, scoped_kind, **scopes)
         assert ver.content == content, f"{scope_type} override did not win"
+
+
+@pytest.mark.asyncio
+async def test_experiment_scope_beats_task_scope(scoped_kind):
+    # Task and experiment are not nested (a task spans experiments, an
+    # experiment spans tasks). A trial belonging to both must resolve the
+    # experiment override, so pinning a prompt to an experiment for an A/B
+    # can't be silently overridden by a task-level override inside it.
+    await _write(scoped_kind, "global")
+    await _write(
+        scoped_kind, "task", scope_type="task", scope_id="task_a", org_id="org_a"
+    )
+    await _write(
+        scoped_kind, "experiment",
+        scope_type="experiment", scope_id="exp_a", org_id="org_a",
+    )
+    async with get_session() as session:
+        _, ver = await resolve_prompt_core(
+            session,
+            scoped_kind,
+            **{
+                **_NO_SCOPES,
+                "org_id": "org_a",
+                "task_id": "task_a",
+                "experiment_id": "exp_a",
+            },
+        )
+    assert ver.content == "experiment"
 
 
 @pytest.mark.asyncio
