@@ -71,6 +71,7 @@ class SandboxAnalyzerLLMClient:
         runtime: ClaudeCodeRuntime,
         model: str | None = None,
         json_schema: str | None = None,
+        add_dirs: tuple[str, ...] = (),
         daytona_session_id: str = _DAYTONA_SESSION_ID,
         internal_api_key_id: str | None = None,
     ) -> None:
@@ -79,6 +80,7 @@ class SandboxAnalyzerLLMClient:
         self._runtime = runtime
         self._model = model
         self._json_schema = json_schema
+        self._add_dirs = add_dirs
         self._session_id = daytona_session_id
         self._internal_api_key_id = internal_api_key_id
         # Filled from claude-code's stream-json ``result`` event, which carries
@@ -88,14 +90,17 @@ class SandboxAnalyzerLLMClient:
     async def stream(
         self, prompt: str, *, system_prompt: str | None = None
     ) -> AsyncIterator[str]:
+        stream_kwargs = {
+            "content": prompt,
+            "claude_session_id": None,
+            "daytona_session_id": self._session_id,
+            "system_prompt": system_prompt,
+            "json_schema": self._json_schema,
+        }
+        if self._add_dirs:
+            stream_kwargs["add_dirs"] = self._add_dirs
         async for event in self._runtime.stream_chat(
-            self._client,
-            self._sandbox,
-            content=prompt,
-            claude_session_id=None,
-            daytona_session_id=self._session_id,
-            system_prompt=system_prompt,
-            json_schema=self._json_schema,
+            self._client, self._sandbox, **stream_kwargs
         ):
             if event.get("type") == "result":
                 self.last_usage = parse_cli_usage(
@@ -230,6 +235,7 @@ async def create_sandbox_llm_client(
         runtime=runtime,
         model=model,
         json_schema=sandbox_config.json_schema,
+        add_dirs=sandbox_config.add_dirs,
         daytona_session_id=sandbox_config.session_id,
         internal_api_key_id=internal_api_key_id,
     )

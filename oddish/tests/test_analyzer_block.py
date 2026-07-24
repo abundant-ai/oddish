@@ -152,6 +152,7 @@ async def test_post_trial_sandbox_opt_in_uploads_the_snapshot(monkeypatch, tmp_p
     setup = " ".join(block._sandbox_config.setup_commands)
     assert str(task_dir.parent) in setup
     assert "-C /" in setup
+    assert block._sandbox_config.add_dirs == (str(task_dir), str(trial_dir))
 
 
 @pytest.mark.asyncio

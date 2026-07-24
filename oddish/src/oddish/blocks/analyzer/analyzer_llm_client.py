@@ -81,6 +81,9 @@ class SandboxConfig:
     labels: dict[str, str] = field(default_factory=dict)
     files_to_upload: dict[str, bytes] = field(default_factory=dict)
     setup_commands: tuple[str, ...] = ()
+    # Filesystem roots Claude Code may read outside its sandbox workspace.
+    # Paths must refer to their post-setup locations inside the sandbox.
+    add_dirs: tuple[str, ...] = ()
     auto_stop_minutes: int | None = None
     auto_delete_minutes: int | None = None
     snapshot: str | None = None

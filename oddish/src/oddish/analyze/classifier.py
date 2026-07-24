@@ -458,6 +458,7 @@ class TrialClassifier:
                     f"mkdir -p {parents} && tar -xzf {_SNAPSHOT_ARCHIVE} -C /",
                 ),
                 json_schema=_classification_schema_json(),
+                add_dirs=(str(task_dir), str(trial_dir)),
             )
 
         metadata = {
