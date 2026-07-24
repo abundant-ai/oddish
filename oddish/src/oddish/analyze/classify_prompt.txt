@@ -320,12 +320,23 @@ If no subtype fits, propose one with a clear label and explanation. Accurate roo
 
 {file_access_context}
 
-If pre-trial action items are provided, populate `exploitation` with one entry
-per item you can assess: set `links_to` to its id, `exploited` true if the agent
-took advantage of that weakness, `exploit_evidence` with a step index/quote, and
-`causal` true if the agent's behavior resulted from it. Use the file/line refs
-and the file-access metadata to check whether the agent touched the implicated
-files. Add any NEW weaknesses you find to `action_items` (source="post_trial").
+If pre-trial action items are provided, populate `exploitation` with exactly
+one entry per item. Set `links_to` to its id. Set `exploited=true` only when the
+trajectory shows that the agent took advantage of that specific weakness, and
+cite a step index and minimal quote in `exploit_evidence`. Set `causal=true`
+only when that exploitation affected the agent's approach or result. File
+access alone is supporting evidence, not proof of exploitation. If the
+trajectory does not establish exploitation, set `exploited=false`,
+`causal=false`, and explain the absence or insufficiency of evidence briefly
+in `exploit_evidence`.
+
+Add every NEW task-authoring weakness revealed by the trajectory to
+`action_items` with `source="post_trial"`. Use the same closed taxonomy as the
+pre-trial audit: `dimension` is `verifier`, `oracle`, or `info_leakage`;
+`problem_type` is `incompleteness` or `mismatch`; and `tier` is `must_fix`,
+`should_fix`, or `optional`. Do not duplicate a pre-trial item: assess it in
+`exploitation` instead. Cite the trajectory step plus a real task-relative
+file and line range where possible.
 
 ---
 
@@ -338,7 +349,29 @@ Output ONLY valid JSON with this exact structure (no markdown, no code blocks, n
   "subtype": "specific subtype from the taxonomy above",
   "evidence": "Quote specific test names, error messages, or code snippets that support your classification",
   "root_cause": "1-2 sentence explanation of what specifically caused this outcome",
-  "recommendation": "If BAD_FAILURE or BAD_SUCCESS, explain how to fix the task. Otherwise write 'N/A - task is fine'"
+  "recommendation": "If BAD_FAILURE or BAD_SUCCESS, explain how to fix the task. Otherwise write 'N/A - task is fine'",
+  "action_items": [
+    {{
+      "source": "post_trial",
+      "problem_type": "incompleteness | mismatch",
+      "dimension": "verifier | oracle | info_leakage",
+      "file": "task-relative/path",
+      "line_start": 1,
+      "line_end": 1,
+      "title": "short summary",
+      "detail": "what is wrong and the trajectory evidence that revealed it",
+      "recommendation": "concrete task-authoring fix",
+      "tier": "must_fix | should_fix | optional"
+    }}
+  ],
+  "exploitation": [
+    {{
+      "links_to": "pre-trial action item id",
+      "exploited": true,
+      "exploit_evidence": "trajectory step and minimal quote",
+      "causal": true
+    }}
+  ]
 }}
 
 **Field guidance:**

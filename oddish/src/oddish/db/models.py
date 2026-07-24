@@ -675,6 +675,15 @@ class AnalyzerRunModel(TimestampedMixin, Base):
     """Lineage for one execution of one analyzer prompt version."""
 
     __tablename__ = "analyzer_runs"
+    __table_args__ = (
+        Index(
+            "uq_analyzer_runs_assignment_event",
+            "qa_assignment_id",
+            "stage_event_key",
+            unique=True,
+            postgresql_where=text("qa_assignment_id IS NOT NULL"),
+        ),
+    )
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     prompt_version_id: Mapped[str] = mapped_column(
@@ -695,6 +704,14 @@ class AnalyzerRunModel(TimestampedMixin, Base):
     output: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # NULL for ad-hoc `oddish qa` runs, set for assignment-driven ones. The
+    # partial UNIQUE on (qa_assignment_id, stage_event_key) then makes "run this
+    # assignment at most once per event" a database invariant, while leaving
+    # ad-hoc runs exempt.
+    qa_assignment_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("qa_assignments.id", ondelete="SET NULL"), nullable=True
+    )
+    stage_event_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class TaskModel(TimestampedMixin, Base):
@@ -2355,6 +2372,15 @@ class PromptKind(str, Enum):
     TRAJECTORY_SUMMARY = "TRAJECTORY_SUMMARY"
 
 
+class QAStage(str, Enum):
+    """The QA lifecycle point an assignment fires at. Values match the
+    corresponding ``AnalyzerType`` so a stage and the block it runs read the
+    same in logs. Stored as a plain string column, like ``PromptKind``."""
+
+    PRE_TRIAL = "pre_trial"
+    POST_TRIAL = "post_trial"
+
+
 class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     """An LLM provider API key whose spend is excluded from cost accounting.
 
@@ -2450,6 +2476,43 @@ class PromptVersionModel(Base):
     )
 
 
+class QAAssignmentModel(TimestampedMixin, Base):
+    """A reusable prompt job attached to a QA lifecycle scope."""
+
+    __tablename__ = "qa_assignments"
+    __table_args__ = (
+        Index("ix_qa_assignments_org_scope", "org_id", "scope_type", "scope_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # A direct FK to one prompt row -- including that row's own scope -- rather
+    # than a kind string, so execution never re-runs kind resolution.
+    prompt_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("prompts.id", ondelete="CASCADE"), nullable=False
+    )
+    # NULL inherits the registry's latest-wins; set to pin one version.
+    prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Unlike ``prompts``, both columns are NOT NULL, so installation-wide rows
+    # are spelled ("global", "") rather than (NULL, NULL). See GLOBAL_SCOPE_ID
+    # in oddish.core.qa_assignments -- writes normalize through it.
+    scope_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    reasoning_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    llm_client_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    allow_oddish_cli: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # false at a narrow scope suppresses a broader row for the same
+    # (stage, prompt kind) instead of adding a job.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+
+
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
@@ -2469,4 +2532,5 @@ register_soft_delete_models(
     DocumentModel,
     CostExcludedLlmKeyModel,
     PromptModel,
+    QAAssignmentModel,
 )

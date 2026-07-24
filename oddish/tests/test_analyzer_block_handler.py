@@ -6,7 +6,123 @@ import pytest
 import oddish.workers.jobs.handlers as job_handlers
 import oddish.workers.queue.analyzer_block_handler as handler
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.blocks.analyzer.analyzer_block import AnalyzerType
 from oddish.db.models import AnalyzerRunModel, JobStatus, PromptVersionModel
+
+
+def test_automatic_run_uses_lifecycle_analyzer_type():
+    assert (
+        handler._analyzer_type_for_config({"automatic": True, "stage": "pre_trial"})
+        == AnalyzerType.PRE_TRIAL
+    )
+    assert (
+        handler._analyzer_type_for_config({"automatic": True, "stage": "post_trial"})
+        == AnalyzerType.POST_TRIAL
+    )
+    assert (
+        handler._analyzer_type_for_config({"automatic": False, "stage": "post_trial"})
+        == AnalyzerType.CUSTOM_QA
+    )
+
+
+def test_subject_linkage_matches_the_lifecycle_cost_contract():
+    """POST_TRIAL charges its trial (analyzer_id) and carries task_id; PRE_TRIAL
+    charges its task; both leave attribution_org_id unset so _cost_attribution
+    resolves the subject and set no explicit subject_type/subject_id. CUSTOM_QA
+    keeps the ad-hoc org attribution and passes its own scope as the subject so
+    the cost row is not left scope-less."""
+    post = SimpleNamespace(
+        id="run_1", org_id="org_1", scope_type="trial", scope_id="trial_9"
+    )
+    assert handler._subject_linkage(
+        AnalyzerType.POST_TRIAL, post, {"trial_id": "trial_9", "task_id": "task_3"}
+    ) == ("trial_9", "task_3", None, None, None)
+
+    pre = SimpleNamespace(
+        id="run_2", org_id="org_1", scope_type="task", scope_id="task_3"
+    )
+    assert handler._subject_linkage(
+        AnalyzerType.PRE_TRIAL, pre, {"task_id": "task_3"}
+    ) == (None, "task_3", None, None, None)
+
+    assert handler._subject_linkage(AnalyzerType.CUSTOM_QA, post, {}) == (
+        "run_1",
+        None,
+        "org_1",
+        "trial",
+        "trial_9",
+    )
+
+    # Older runs whose run_config predates these keys fall back to scope_id.
+    assert handler._subject_linkage(AnalyzerType.POST_TRIAL, post, {}) == (
+        "trial_9",
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_trial_run_reaches_the_block_with_its_trial_subject(monkeypatch):
+    """End-to-end through the handler: a lifecycle POST_TRIAL run must build the
+    block with the trial as its cost subject, not the analyzer-run id and org
+    that the ad-hoc (CUSTOM_QA) path uses."""
+    run = SimpleNamespace(
+        id="run_pt",
+        org_id="org_1",
+        prompt_version_id="version_pt",
+        triggered_by_user_id="user_1",
+        model="test-model",
+        reasoning_effort=None,
+        llm_client_type=LLMClientType.API.value,
+        scope_id="trial_9",
+        run_config={
+            "automatic": True,
+            "stage": "post_trial",
+            "scope": {"type": "trial", "id": "trial_9"},
+            "trial_id": "trial_9",
+            "task_id": "task_3",
+            "system_prompt": "Inspect the trial",
+        },
+        analyzer_block_id=None,
+        status=JobStatus.QUEUED,
+        output=None,
+        error=None,
+    )
+    version = SimpleNamespace(id="version_pt", content="Audit this")
+    captured: dict = {}
+
+    class FakeSession:
+        async def get(self, model, row_id, **kwargs):
+            if model is AnalyzerRunModel:
+                return run
+            if model is PromptVersionModel:
+                return version
+            return None
+
+    @asynccontextmanager
+    async def get_session():
+        yield FakeSession()
+
+    class FakeBlock:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.id = "block_pt"
+            self.error = None
+
+        async def run(self):
+            return SimpleNamespace(output={"ok": True})
+
+    monkeypatch.setattr(handler, "get_session", get_session)
+    monkeypatch.setattr(handler, "AnalyzerBlock", FakeBlock)
+
+    await handler.run_analyzer_block_job(run.id)
+
+    assert captured["analyzer_type"] is AnalyzerType.POST_TRIAL
+    assert captured["analyzer_id"] == "trial_9"
+    assert captured["task_id"] == "task_3"
+    assert captured["attribution_org_id"] is None
 
 
 @pytest.mark.asyncio
