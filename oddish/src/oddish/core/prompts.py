@@ -51,6 +51,24 @@ async def _get_prompt(
     return prompt
 
 
+async def get_prompt_row_core(
+    session: AsyncSession,
+    ref: str,
+    *,
+    scope_type: str | None = None,
+    scope_id: str | None = None,
+    org_id: str | None = None,
+) -> PromptModel | None:
+    """Resolve a prompt row without requiring it to have any versions."""
+    return await _get_prompt(
+        session,
+        ref,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        org_id=org_id,
+    )
+
+
 async def set_prompt_core(
     session: AsyncSession,
     *,
@@ -254,6 +272,15 @@ async def resolve_prompt_core(
             versions = await prompt.awaitable_attrs.versions
             if versions:
                 return prompt, max(versions, key=lambda v: v.version)
+    fallback_prompt = await _get_prompt(session, kind)
+    if (
+        fallback_prompt is not None
+        and fallback_prompt.org_id is not None
+        and fallback_prompt.org_id != org_id
+    ):
+        # ``kind`` may be an opaque prompt id. The global fallback must not
+        # turn that id into a cross-tenant lookup.
+        raise HTTPException(status_code=404, detail=f"Prompt '{kind}' not found")
     return await get_prompt_core(session, kind)
 
 
