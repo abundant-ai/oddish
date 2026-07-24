@@ -50,9 +50,13 @@ async def seed_prompts(session: AsyncSession) -> list[str]:
     created: list[str] = []
     for kind, (description, content) in PROMPT_SEEDS.items():
         existing = await session.execute(
-            select(PromptModel.id).where(PromptModel.kind == kind)
+            select(PromptModel.id).where(
+                PromptModel.kind == kind,
+                PromptModel.scope_type.is_(None),
+                PromptModel.scope_id.is_(None),
+            )
         )
-        if existing.scalar_one_or_none() is not None:
+        if existing.first() is not None:
             continue
         await set_prompt_core(
             session, kind=kind, content=content, description=description

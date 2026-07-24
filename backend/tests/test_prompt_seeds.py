@@ -93,3 +93,50 @@ async def test_seed_upgrades_legacy_post_trial_stub_but_not_operator_edits():
             session, PromptKind.QA_POST_TRIAL.value
         )
         assert content == "my custom prompt"
+
+
+@pytest.mark.asyncio
+async def test_seed_completes_when_scoped_row_already_exists_for_seeded_kind():
+    """A scoped override coexisting with the global row for a seeded kind must
+    not break the existence probe. Before the fix, the probe matched by
+    ``kind`` alone -- global plus an org override made it return two rows,
+    and ``scalar_one_or_none()`` raised ``MultipleResultsFound``, aborting
+    seeding for every kind in ``PROMPT_SEEDS``, not just this one."""
+    from oddish.core.prompts import set_prompt_core
+
+    kind = PromptKind.QA_PRE_TRIAL.value
+    org_id = "org-scoped-seed-guard"
+
+    # Establish the normal global row first (idempotent if already seeded).
+    async with get_session() as session:
+        await seed_prompts(session)
+        await session.commit()
+
+    async with get_session() as session:
+        await set_prompt_core(
+            session,
+            kind=kind,
+            content="org override",
+            scope_type="org",
+            scope_id=org_id,
+            org_id=org_id,
+        )
+        await session.commit()
+
+    try:
+        async with get_session() as session:
+            created = await seed_prompts(session)
+            await session.commit()
+        # The global row already existed, so this kind is not re-created --
+        # this also proves the probe didn't mistake the org row for it.
+        assert kind not in created
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                PromptModel.__table__.delete().where(
+                    PromptModel.kind == kind,
+                    PromptModel.scope_type == "org",
+                    PromptModel.scope_id == org_id,
+                )
+            )
+            await session.commit()

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.config import settings
-from oddish.core.prompts import get_prompt_core
+from oddish.core.prompts import resolve_prompt_core
 from oddish.db.models import (
     ExperimentModel,
     JobStatus,
@@ -91,6 +91,35 @@ def _assert_prompt_visible(prompt: PromptModel, *, org_id: str | None) -> None:
         raise HTTPException(status_code=404, detail="Prompt not found")
 
 
+async def _resolve_variant(
+    session: AsyncSession,
+    kind: str,
+    *,
+    version: int | None,
+    org_id: str | None,
+    scope_type: str,
+    scope_id: str,
+) -> tuple[PromptModel, PromptVersionModel]:
+    """Resolve a QA variant by the run's own scope (org override -> global),
+    then pick the pinned version if one was requested. Only the domain scope
+    the run targets is passed to ``resolve_prompt_core``; the rest stay
+    ``None`` since a custom QA run has no user/other-domain context to offer."""
+    domain_scope = {"experiment_id": None, "task_id": None, "trial_id": None}
+    domain_scope[f"{scope_type}_id"] = scope_id
+    prompt, latest = await resolve_prompt_core(
+        session, kind, org_id=org_id, user_id=None, **domain_scope
+    )
+    if version is None:
+        return prompt, latest
+    versions = await prompt.awaitable_attrs.versions
+    for v in versions:
+        if v.version == version:
+            return prompt, v
+    raise HTTPException(
+        status_code=404, detail=f"Prompt '{kind}' has no version {version}"
+    )
+
+
 async def run_custom_qa_core(
     session: AsyncSession,
     *,
@@ -116,8 +145,13 @@ async def run_custom_qa_core(
     )
     pending: list[tuple[PromptModel, PromptVersionModel, AnalyzerRunModel]] = []
     for variant in data.variants:
-        prompt, version = await get_prompt_core(
-            session, variant.kind.strip(), version=variant.version
+        prompt, version = await _resolve_variant(
+            session,
+            variant.kind.strip(),
+            version=variant.version,
+            org_id=org_id,
+            scope_type=data.scope_type,
+            scope_id=data.scope_id,
         )
         _assert_prompt_visible(prompt, org_id=org_id)
         digest = hashlib.sha256(version.content.encode()).hexdigest()
@@ -136,6 +170,8 @@ async def run_custom_qa_core(
         config = {
             "scope": {"type": data.scope_type, "id": data.scope_id},
             "prompt_id": prompt.id,
+            "prompt_key": prompt.kind,
+            "prompt_version": version.version,
             "prompt": {
                 "id": prompt.id,
                 "kind": prompt.kind,

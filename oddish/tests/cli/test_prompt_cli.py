@@ -155,6 +155,60 @@ def test_view_prints_per_version_counts(monkeypatch):
     assert "v1: 3 block(s)" in result.stdout
 
 
+def test_seed_sends_global_scope_on_get_and_put(monkeypatch):
+    """`oddish prompt seed` must probe and write the installation-wide row
+    explicitly, not rely on each endpoint's default (GET defaults to global
+    already, but PUT defaults to org -- an implicit PUT would silently create
+    an org override and never seed the global row the GET just checked for)."""
+    from oddish.core.prompt_seeds import PROMPT_SEEDS
+
+    get_calls = []
+    put_calls = []
+
+    class _GetResp:
+        status_code = 404
+        text = "{}"
+
+        def json(self):
+            return {}
+
+    class _PutResp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"latest_version": 1}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, **k):
+            get_calls.append({"url": url, "params": k.get("params")})
+            return _GetResp()
+
+        def put(self, url, **k):
+            put_calls.append({"url": url, "params": k.get("params")})
+            return _PutResp()
+
+    monkeypatch.setenv("ODDISH_API_KEY", "test-key")
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    result = runner.invoke(prompt_app, ["seed"])
+
+    assert result.exit_code == 0
+    assert len(get_calls) == len(PROMPT_SEEDS)
+    assert len(put_calls) == len(PROMPT_SEEDS)
+    for call in get_calls + put_calls:
+        assert call["params"] == {"scope": "global"}
+
+
 def test_list_output_includes_id(monkeypatch):
     _fake_client(
         monkeypatch,

@@ -304,14 +304,21 @@ def seed(
     url = _resolve(api_url)
     with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
         for kind, (description, content) in PROMPT_SEEDS.items():
-            got = client.get(f"{url}/prompts/{kind}")
+            got = client.get(f"{url}/prompts/{kind}", params={"scope": "global"})
             if got.status_code == 200:
                 console.print(f"[dim]{kind}: exists, skipping[/dim]")
                 continue
             resp = client.put(
                 f"{url}/prompts/{kind}",
+                params={"scope": "global"},
                 json={"content": content, "description": description},
             )
+            if resp.status_code == 403:
+                console.print(
+                    "[red]Not permitted:[/red] seeding the installation-wide "
+                    "prompt registry requires operator access."
+                )
+                raise typer.Exit(1)
             if resp.status_code != 200:
                 _fail(resp)
             console.print(f"[green]Seeded {kind}[/green]")
