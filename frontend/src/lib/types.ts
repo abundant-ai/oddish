@@ -270,6 +270,7 @@ export interface TaskBrowseItem {
   billed_trial_count: number;
   billed_has_estimated: boolean;
   billed_has_native: boolean;
+  qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
@@ -332,6 +333,7 @@ interface TaskCostTotals {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   total_trials: number;
+  qa_cost_usd?: number;
 }
 
 /** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.

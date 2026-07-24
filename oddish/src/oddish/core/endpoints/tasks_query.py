@@ -72,6 +72,7 @@ from oddish.schemas import (
     UserTagRef,
 )
 from oddish.core.cost_basis import not_combine_copy_filter
+from oddish.core.endpoints.qa_cost import get_task_qa_costs
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
     EligibleTrialScope,
@@ -2277,6 +2278,11 @@ async def browse_tasks_core(
         else {}
     )
 
+    # QA spend is a separate ledger with its own grain (one row per analysis
+    # job, not per trial), so it is a second aggregate rather than another
+    # branch of the loop above.
+    qa_by_task = await get_task_qa_costs(session, task_ids=task_ids, org_id=org_id)
+
     build_started_at = now()
     response = TaskBrowseResponse(
         items=[
@@ -2351,6 +2357,11 @@ async def browse_tasks_core(
                 ),
                 billed_has_native=bool(
                     cost_by_task.get(str(row["task_id"]), {}).get("billed_has_native")
+                ),
+                qa_cost_usd=(
+                    qa_by_task[str(row["task_id"])].qa_cost_usd
+                    if str(row["task_id"]) in qa_by_task
+                    else 0.0
                 ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),

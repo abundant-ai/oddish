@@ -870,6 +870,9 @@ class TaskCostTotals(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     total_trials: int = 0
+    # QA/analysis spend for this task's trials, joined through ``trials``
+    # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
+    qa_cost_usd: float = 0.0
 
 
 class ExperimentCostTotals(BaseModel):
@@ -1342,6 +1345,9 @@ class TaskBrowseItem(BaseModel):
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    # QA/analysis spend for this task's trials, joined through ``trials``
+    # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
+    qa_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
