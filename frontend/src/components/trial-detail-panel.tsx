@@ -1042,7 +1042,21 @@ export function TrialDetailPanel({
                 >
                   <CardContent className="px-4 py-3">
                     <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
-                      QA Assessment
+                      <span>QA Assessment</span>
+                      {trial.analysis?.prompt_version != null && (
+                        <span
+                          className="ml-2 normal-case font-normal tracking-normal"
+                          title={
+                            trial.analysis.prompt_scope_id
+                              ? `${trial.analysis.prompt_scope} override: ${trial.analysis.prompt_scope_id}`
+                              : `${trial.analysis.prompt_scope ?? "global"} prompt`
+                          }
+                        >
+                          {trial.analysis.prompt_kind ?? "QA_POST_TRIAL"} v
+                          {trial.analysis.prompt_version} ·{" "}
+                          {trial.analysis.prompt_scope ?? "global"}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-start gap-3">
                       {trial.analysis_status === "running" ||

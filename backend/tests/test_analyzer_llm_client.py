@@ -266,8 +266,11 @@ async def test_sandbox_client_streams_json_lines_and_closes():
             claude_session_id,
             daytona_session_id="cc",
             system_prompt=None,
+            json_schema=None,
+            add_dirs=(),
         ):
             sent["content"] = content
+            sent["add_dirs"] = add_dirs
             for d in [{"type": "text", "text": "one"}, {"type": "text", "text": "two"}]:
                 yield d
 
@@ -283,12 +286,14 @@ async def test_sandbox_client_streams_json_lines_and_closes():
         sandbox=_FakeSandbox(),
         daytona_client=daytona,
         runtime=_FakeRuntime(),
+        add_dirs=("/tmp/task", "/tmp/trial"),
         daytona_session_id="analyzer",
     )
     out = []
     async for chunk in client.stream("my prompt"):
         out.append(chunk)
     assert sent["content"] == "my prompt"
+    assert sent["add_dirs"] == ("/tmp/task", "/tmp/trial")
     assert [__import__("json").loads(c) for c in out] == [
         {"type": "text", "text": "one"},
         {"type": "text", "text": "two"},

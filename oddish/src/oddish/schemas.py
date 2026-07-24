@@ -2076,6 +2076,9 @@ class PromptResponse(BaseModel):
     id: str
     kind: str
     description: str
+    scope_type: str | None = None
+    scope_id: str | None = None
+    org_id: str | None = None
     latest_version: int | None = None  # populated by the router, not the ORM
     version: int | None = None  # the resolved version content belongs to
     created_at: datetime

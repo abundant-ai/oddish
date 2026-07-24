@@ -1169,6 +1169,15 @@ class Settings(BaseSettings):
     # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
     # import backend/, so this lives here rather than as a shared constant.
     pre_trial_timeout: float = 180.0
+
+    # Run post-trial QA classification inside a Daytona sandbox instead of a
+    # worker-local Claude Code subprocess. Off by default: the classifier is
+    # restricted to Read/Glob over two already-downloaded directories, so it
+    # gains no isolation from a sandbox while paying provisioning latency and
+    # compute for every classified trial -- the highest-volume analysis path
+    # there is. Enable only to give the classifier capabilities (shell, the
+    # verifier) that the local subprocess deliberately withholds.
+    post_trial_sandbox_enabled: bool = False
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``

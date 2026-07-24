@@ -244,6 +244,8 @@ class ClaudeCodeRuntime:
         claude_session_id: str | None,
         daytona_session_id: str = "cc",
         system_prompt: str | None = None,
+        json_schema: str | None = None,
+        add_dirs: tuple[str, ...] = (),
     ) -> AsyncIterator[dict]:
         parts = [
             _CLAUDE_BIN,
@@ -252,11 +254,18 @@ class ClaudeCodeRuntime:
             "--verbose",
             *_PERMISSION_FLAGS,
         ]
+        # Constrains generation and puts the object on the final `result` event
+        # as `structured_output`. Unlike the prompt this stays in argv: a schema
+        # is orders of magnitude under MAX_ARG_STRLEN.
+        if json_schema:
+            parts += ["--json-schema", shlex.quote(json_schema)]
         # Appended rather than replacing: Claude Code's own system prompt is what
         # makes its tools work, so --system-prompt would break Bash and the agent
         # could not run the CLI at all.
         if system_prompt:
             parts += ["--append-system-prompt", shlex.quote(system_prompt)]
+        for add_dir in add_dirs:
+            parts += ["--add-dir", shlex.quote(add_dir)]
         if claude_session_id:
             parts += ["--resume", shlex.quote(claude_session_id)]
 
