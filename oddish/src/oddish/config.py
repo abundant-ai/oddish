@@ -1151,9 +1151,15 @@ class Settings(BaseSettings):
     live_tail_interval_sec: float = 30.0
 
     harbor_source_repo: str = "abundant-ai/harbor"
-    # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
-    # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "main"
+    # Ref the probe `harbor src` command fetches (a codeload tarball, which takes
+    # a branch, tag, or commit alike). It is HARBOR_DEFAULT_SHA -- the exact
+    # commit baked into the worker image -- and not the floating branch the
+    # dependency source tracks: a branch here would resolve to whatever main is
+    # at request time, so the moment harbor main moved past the lock a probe
+    # would read different code than the trial it is probing. Deriving it from
+    # the constant keeps the two aligned by construction, so a re-pin cannot
+    # move the worker without moving the probe.
+    harbor_source_ref: str = HARBOR_DEFAULT_SHA
 
     registry_auth_key: str | None = None
 
