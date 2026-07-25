@@ -111,8 +111,9 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-# abundant-ai/harbor main. uv.lock records the exact commit used by the worker image.
-harbor = { git = "https://github.com/abundant-ai/harbor", branch = "main" }
+# Immutable Harbor revision containing the verified Daytona Compose egress
+# implementation.
+harbor = { git = "https://github.com/abundant-ai/harbor", rev = "7490929fd2c2c0737884b38f2a89f2970b5aa59f" }
 
 [tool.uv]
 override-dependencies = ["harbor==0.16.1"]

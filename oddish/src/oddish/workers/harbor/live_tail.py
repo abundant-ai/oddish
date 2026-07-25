@@ -15,6 +15,7 @@ from oddish.db import TrialEventModel, TrialModel
 from oddish.db.connection import get_session
 from oddish.model_pricing import estimate_cost_usd
 from oddish.transcript_safety import sanitize_transcript_text, sanitize_transcript_value
+from oddish.workers.harbor.redaction import redact_exact_bytes, redact_exact_value
 from oddish.workers.queue.shared import console
 
 # Keep the same ~51 KiB/s drain capacity as the original 256 KiB / 5s
@@ -26,6 +27,17 @@ MAX_CONSECUTIVE_FAILURES = 5
 MAX_TRIAL_EVENTS = 5000
 PAYLOAD_CLIP_CHARS = 2048
 _SKIP_TICK = object()
+_runtime_redactions: dict[str, dict[str, str]] = {}
+
+
+def configure_runtime_redactions(trial_id: str, replacements: dict[str, str]) -> None:
+    """Stage trial-private exact replacements until its tailer is created."""
+    if replacements:
+        _runtime_redactions[trial_id] = dict(replacements)
+
+
+def clear_runtime_redactions(trial_id: str) -> None:
+    _runtime_redactions.pop(trial_id, None)
 
 
 class TailExecError(RuntimeError):
@@ -744,6 +756,7 @@ class LiveTailer:
         log_path: str,
         fold: Fold,
         snapshot: bool = False,
+        runtime_redactions: dict[str, str] | None = None,
     ):
         self.trial_id = trial_id
         self.environment = environment
@@ -751,6 +764,7 @@ class LiveTailer:
         self.log_path = log_path
         self.fold = fold
         self.snapshot = snapshot
+        self.runtime_redactions = dict(runtime_redactions or {})
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -770,7 +784,11 @@ class LiveTailer:
         finally:
             if self.carry and not self.replaced:
                 with contextlib.suppress(Exception):
-                    self._buffer_events(self.fold.feed_line(self.carry))
+                    self._buffer_events(
+                        self.fold.feed_line(
+                            redact_exact_bytes(self.carry, self.runtime_redactions)
+                        )
+                    )
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._persist_tick())
 
@@ -809,7 +827,11 @@ class LiveTailer:
         if self.snapshot:
             snapshot_raw = await self._read_snapshot()
             if snapshot_raw:
-                self._buffer_events(self.fold.feed_line(snapshot_raw))
+                self._buffer_events(
+                    self.fold.feed_line(
+                        redact_exact_bytes(snapshot_raw, self.runtime_redactions)
+                    )
+                )
         else:
             tail_raw = await self._read_tail()
             if isinstance(tail_raw, bytes) and tail_raw:
@@ -865,7 +887,9 @@ class LiveTailer:
         lines, self.carry = split_lines(self.carry + raw)
         self.offset += len(raw)
         for line in lines:
-            self._buffer_events(self.fold.feed_line(line))
+            self._buffer_events(
+                self.fold.feed_line(redact_exact_bytes(line, self.runtime_redactions))
+            )
 
     def _buffer_events(self, rendered: list[dict[str, Any]]) -> None:
         if self.replaced or self.capped:
@@ -916,16 +940,21 @@ class LiveTailer:
         return len(rows)
 
     def _sanitize_event(self, event: dict[str, Any]) -> dict[str, Any]:
-        payload = event.get("payload")
+        original_payload = event.get("payload")
+        payload = redact_exact_value(original_payload, self.runtime_redactions)
+        # redact_exact_value scrubs known runtime secrets. Its effect must be counted
+        # here too: if it redacted something but the general sanitizer reports no further
+        # change, returning the original event would persist the raw secret.
+        exact_redacted = payload != original_payload
         safe_payload = sanitize_transcript_value(
             payload if isinstance(payload, dict) else {}
         )
         clipped_payload, truncated = _clip_payload_strings(safe_payload.value)
-        if not safe_payload.changed and not truncated:
+        if not exact_redacted and not safe_payload.changed and not truncated:
             return event
         normalized = dict(event)
         normalized["payload"] = dict(clipped_payload)
-        if safe_payload.changed:
+        if exact_redacted or safe_payload.changed:
             normalized["payload"]["sanitized"] = True
         if truncated:
             normalized["payload"]["truncated"] = True
@@ -997,6 +1026,7 @@ def start(
         log_path=adapter.log_path,
         fold=adapter.make_fold(model),
         snapshot=adapter.snapshot,
+        runtime_redactions=_runtime_redactions.get(trial_id),
     )
     old = _tailers.pop(trial_id, None)
     if old:

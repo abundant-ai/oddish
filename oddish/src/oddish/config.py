@@ -146,8 +146,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Pin of abundant-ai/harbor@main (upstream-style NetworkPolicy; no fork Modal CIDR stack).
-HARBOR_DEFAULT_SHA = "12929b0ec9386f983ec9243b5daadd6b80d1010a"
+# Exact Harbor PR #8 revision baked into this preview worker.
+HARBOR_DEFAULT_SHA = "7490929fd2c2c0737884b38f2a89f2970b5aa59f"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -945,22 +945,39 @@ def _normalize_model_provider(provider: str) -> str | None:
 
 
 def _get_provider_from_model(model_name: str) -> str | None:
+    """Canonical provider for a model id, or ``None`` when not classifiable.
+
+    Shares the single resolution ladder in ``_infer_provider_prefix`` with
+    ``infer_model_provider_prefix`` so a future provider or alias fix lands in
+    one place. This caller differs only in two explicit policies: it does not
+    apply the bare-id heuristics, and it does not fall back to the raw prefix
+    for a provider the normalizer does not recognise -- an unknown provider must
+    stay ``None`` here rather than leak an unnormalized name to callers.
+    """
     if looks_like_bedrock_model_id(model_name):
         return "bedrock"
-    provider_prefix, _ = split_provider_model_name(model_name)
-    if provider_prefix:
-        return _normalize_model_provider(provider_prefix)
-    try:
-        _, llm_provider, _, _ = get_llm_provider(model=model_name)
-    except Exception:
-        llm_provider = None
-    if llm_provider:
-        return _normalize_model_provider(str(llm_provider))
-    return None
+    prefix = _infer_provider_prefix(model_name, allow_bare_heuristics=False)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix)
 
 
-def _infer_provider_prefix(model_name: str) -> str | None:
-    """Infer a canonical provider prefix for a model name, if possible."""
+def _infer_provider_prefix(
+    model_name: str, *, allow_bare_heuristics: bool = True
+) -> str | None:
+    """Infer a canonical provider prefix for a model name, if possible.
+
+    The single resolution ladder shared by ``infer_model_provider_prefix`` and
+    ``_get_provider_from_model``: explicit ``provider/`` prefix, then litellm,
+    then -- only when *allow_bare_heuristics* -- the bare-id heuristics. Callers
+    that must not guess from an unprefixed id pass ``allow_bare_heuristics=False``.
+
+    Adding a rung ABOVE the ``allow_bare_heuristics`` gate changes both callers,
+    and ``_get_provider_from_model`` decides whether Azure credentials are minted
+    (``_trial_uses_openai_provider``) and which provider key a job-scoped token
+    carries (``job_tokens.scoped_model_env``) -- so a rung meant only for host
+    inference must go BELOW the gate.
+    """
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         normalized = provider_prefix.strip().lower()
@@ -973,6 +990,9 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     if llm_provider:
         normalized = str(llm_provider).strip().lower()
         return normalized or None
+
+    if not allow_bare_heuristics:
+        return None
 
     # Heuristic fallback for common bare model aliases.
     lowered = model_name.strip().lower()
@@ -994,6 +1014,29 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         return XAI_PROVIDER
 
     return None
+
+
+def infer_model_provider_prefix(model_name: str | None) -> str | None:
+    """Canonical provider for a model id, bare or slash-prefixed.
+
+    Resolves ``openai/gpt-x`` and bare ``gpt-x`` / ``o3`` alike to their provider
+    so transport-key derivation does not depend on the id being slash-prefixed,
+    and normalizes provider aliases (``claude`` -> ``anthropic``, ``vertex_ai`` /
+    ``palm`` -> ``gemini``, ``moonshotai`` -> ``moonshot``, ...) to their canonical
+    name so key/host maps keyed on the canonical provider match. Falls back to the
+    raw prefix when the provider is unknown to the normalizer.
+    """
+    if not model_name:
+        return None
+    # Bare Bedrock ids (e.g. ``global.anthropic.*``) carry no slash prefix and
+    # are not litellm-classifiable, so resolve them explicitly the way
+    # _get_provider_from_model does before falling through to prefix inference.
+    if looks_like_bedrock_model_id(model_name):
+        return "bedrock"
+    prefix = _infer_provider_prefix(model_name)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix) or prefix
 
 
 # Canonical deployed-backend API base URLs (single source of truth; the CLI in
@@ -1109,7 +1152,7 @@ class Settings(BaseSettings):
     harbor_source_repo: str = "abundant-ai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "main"
+    harbor_source_ref: str = "7490929fd2c2c0737884b38f2a89f2970b5aa59f"
 
     registry_auth_key: str | None = None
 
