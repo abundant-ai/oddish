@@ -170,6 +170,11 @@ _CURSOR_RUNTIME_SECRET_KEYS = ("CURSOR_API_KEY",)
 # absent from os.environ is a no-op, so this never over-redacts.
 _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     "openai": ("OPENAI_API_KEY",),
+    # Oddish routes OpenAI-family jobs through Azure OpenAI by default, and an
+    # explicit ``azure/`` id is a first-class restricted provider (it resolves
+    # real transport keys and a real host), so its ambient credentials need the
+    # same redaction coverage as every other provider here.
+    "azure": ("AZURE_API_KEY", "AZURE_OPENAI_API_KEY", "OPENAI_API_KEY"),
     "anthropic": (
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -275,6 +280,47 @@ def _resolved_runtime_transport_env(
                 if key not in _KNOWN_TRANSPORT_BASE_URL_KEYS or key in allowed
             }
     return runtime_env
+
+
+def _drop_nonconsumed_agent_transport_routes(
+    agent_config: HarborAgentConfig,
+) -> None:
+    """Drop worker-minted transport routes the effective agent never consumes.
+
+    Job-scoped credential injection (``job_tokens.scoped_model_env``) writes the
+    model provider's full route env -- for OpenAI-family that includes
+    ``OPENAI_BASE_URL`` and the Azure aliases -- into ``agent_config.env``, a
+    channel the worker-transport filter above never sees. Caller-submitted
+    routes were already rejected (``reject_submitted_restricted_routes``), so
+    any known transport key still present here is worker-minted. An agent that
+    fronts its own transport (e.g. Cursor on an ``openai/`` model) does not
+    consume those routes: left in place they trip the fail-closed "does not
+    consume" guard and kill an otherwise valid trial before ``Job.create``, and
+    they would hand the worker's private endpoint to a sandbox that never dials
+    it. Credentials and non-route keys are preserved; an indeterminate
+    effective agent (``consumed`` is ``None``) is left untouched, matching
+    ``_resolved_runtime_transport_env``.
+    """
+    consumed = consumed_transport_base_url_keys(agent_config)
+    if consumed is None:
+        return
+    allowed = frozenset(consumed)
+
+    def _filtered(mapping: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in mapping.items()
+            if key not in _KNOWN_TRANSPORT_BASE_URL_KEYS or key in allowed
+        }
+
+    if agent_config.env:
+        agent_config.env = _filtered(agent_config.env)
+    kwargs = agent_config.kwargs or {}
+    extra_env = kwargs.get("extra_env")
+    if isinstance(extra_env, Mapping):
+        kwargs = dict(kwargs)
+        kwargs["extra_env"] = _filtered(extra_env)
+        agent_config.kwargs = kwargs
 
 
 def _resolved_agent_profile_env(
@@ -1345,6 +1391,12 @@ async def run_harbor_trial_async(
                     openai_env,
                     agent_config=agent_config,
                 )
+                # Same consumed-route drop for the agent-env channel:
+                # job-scoped token injection lands the provider's routes in
+                # agent_config.env, which the worker-transport filter above
+                # never sees. Runs after the deployment->public swap for the
+                # same reason as the resolution above.
+                _drop_nonconsumed_agent_transport_routes(agent_config)
 
             if restricted_compose_kind == "static" and not (
                 is_static_restricted_agent_supported(agent_config)

@@ -806,7 +806,9 @@ def test_agent_fronts_own_model_service_identifies_self_fronting_harnesses():
     assert agent_fronts_own_model_service(cfg("codex")) is False
     assert agent_fronts_own_model_service(cfg("mini-swe-agent")) is False
     assert agent_fronts_own_model_service(cfg("mini-swe-agent", "gpt-4o")) is False
-    assert agent_fronts_own_model_service(cfg("claude-code", "anthropic/claude")) is False
+    assert (
+        agent_fronts_own_model_service(cfg("claude-code", "anthropic/claude")) is False
+    )
     assert agent_fronts_own_model_service(cfg("grok-build", "xai/grok")) is False
     assert agent_fronts_own_model_service(cfg("gemini-cli", "google/gemini")) is False
     assert agent_fronts_own_model_service(cfg("nop")) is False
@@ -910,3 +912,193 @@ def test_submitted_environment_routes_are_rejected():
             },
         }
     )
+
+
+def test_azure_transport_aliases_are_fail_closed_routes():
+    """Azure aliases name the same OpenAI-family transport as OPENAI_BASE_URL.
+
+    get_openai_agent_env emits AZURE_API_BASE / AZURE_OPENAI_ENDPOINT next to
+    OPENAI_BASE_URL, so they must sit inside the fail-closed boundary: a caller
+    cannot smuggle an unattested route in under an alias, and the worker's
+    private Azure endpoint must not survive into an agent that fronts its own
+    transport. They stay out of the public discovery tuple, which gains no host
+    from them.
+    """
+    from oddish.workers.harbor import model_hosts
+
+    for key in model_hosts.AZURE_BASE_URL_KEYS:
+        assert key in model_hosts.KNOWN_TRANSPORT_BASE_URL_KEYS
+        with pytest.raises(RestrictedNetworkProfileError) as excinfo:
+            reject_submitted_restricted_routes(
+                {"agent_config": {"env": {key: "https://attacker.example/v1"}}}
+            )
+        # The error names the field path, never the submitted value.
+        assert key in str(excinfo.value)
+        assert "attacker.example" not in str(excinfo.value)
+
+    # Not in discovery: public-path allowlists are unchanged by this addition.
+    assert set(model_hosts.AZURE_BASE_URL_KEYS).isdisjoint(
+        model_hosts._BASE_URL_ENV_KEYS
+    )
+
+
+def test_azure_routed_openai_trial_still_resolves_one_host():
+    """The fail-closed guard must not reject Oddish's default Azure routing.
+
+    AZURE_OPENAI_ENDPOINT is the bare resource endpoint while OPENAI_BASE_URL /
+    AZURE_API_BASE carry the ``/openai/v1`` suffix, so the aliases differ as
+    strings but name one host. That is one transport, not a conflict.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        _selected_transport_hosts,
+        consumed_transport_base_url_keys,
+    )
+
+    azure_base = "https://foo.openai.azure.com/openai/v1"
+    worker_env = {
+        "OPENAI_BASE_URL": azure_base,
+        "AZURE_API_BASE": azure_base,
+        "AZURE_OPENAI_ENDPOINT": "https://foo.openai.azure.com",
+    }
+    agent_config = AgentConfig(name="codex", model_name="openai/gpt-5.6-sol")
+    hosts = _selected_transport_hosts(
+        agent_config,
+        worker_env,
+        base_url_keys=consumed_transport_base_url_keys(agent_config),
+    )
+    assert hosts == ("foo.openai.azure.com",)
+
+
+def test_conflicting_alias_hosts_still_fail_closed():
+    """Relaxing the raw-string check must not weaken the boundary."""
+    from oddish.workers.harbor.restricted_network import (
+        _selected_transport_hosts,
+        consumed_transport_base_url_keys,
+    )
+
+    agent_config = AgentConfig(name="codex", model_name="openai/gpt-5.6-sol")
+    with pytest.raises(RestrictedNetworkProfileError):
+        _selected_transport_hosts(
+            agent_config,
+            {
+                "OPENAI_BASE_URL": "https://a.example/v1",
+                "AZURE_API_BASE": "https://b.example/v1",
+            },
+            base_url_keys=consumed_transport_base_url_keys(agent_config),
+        )
+
+
+def test_self_fronting_agent_drops_worker_azure_route():
+    """The runner filter must drop the worker's Azure route for cursor.
+
+    Exercises _resolved_runtime_transport_env itself rather than asserting a
+    property of the key registry, so a regression in the filter is caught.
+    """
+    from oddish.workers.harbor import runner as harbor_runner
+
+    azure_base = "https://foo.openai.azure.com/openai/v1"
+    worker_env = {
+        "OPENAI_BASE_URL": azure_base,
+        "AZURE_API_BASE": azure_base,
+        "AZURE_OPENAI_ENDPOINT": "https://foo.openai.azure.com",
+    }
+    agent_config = AgentConfig(name="cursor-cli", model_name="cursor/composer")
+    resolved = harbor_runner._resolved_runtime_transport_env(
+        dict(worker_env), agent_config=agent_config
+    )
+    assert "AZURE_API_BASE" not in resolved
+    assert "AZURE_OPENAI_ENDPOINT" not in resolved
+    assert "OPENAI_BASE_URL" not in resolved
+
+
+def test_alias_scheme_downgrade_and_unparseable_alias_fail_closed():
+    """Path-only alias differences are fine; scheme/invalid ones are not.
+
+    Comparing only the resolved host would let an ``http`` alias through (it
+    ships the API key in cleartext) and would silently discard an alias that
+    resolves to no host at all, leaving one apparently-unanimous route.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        _selected_transport_hosts,
+        consumed_transport_base_url_keys,
+    )
+
+    agent_config = AgentConfig(name="codex", model_name="openai/gpt-5.6-sol")
+    keys = consumed_transport_base_url_keys(agent_config)
+    for bad_alias in ("http://h.example/v1", "https://"):
+        with pytest.raises(RestrictedNetworkProfileError):
+            _selected_transport_hosts(
+                agent_config,
+                {
+                    "OPENAI_BASE_URL": "https://h.example/v1",
+                    "AZURE_API_BASE": bad_alias,
+                },
+                base_url_keys=keys,
+            )
+
+
+def test_azure_and_vertex_model_ids_are_not_silently_transport_free():
+    """A provider missing from the key map reads as 'needs no egress'.
+
+    ``azure/`` and ``vertex_ai/`` are canonical providers, so they must resolve
+    real transport keys and a real host instead of an empty set, which would
+    attest a model-calling agent as deliberately transport-free.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        _selected_transport_hosts,
+        consumed_transport_base_url_keys,
+    )
+
+    for model in ("azure/my-deployment", "azure_openai/my-deployment"):
+        config = AgentConfig(name="mini-swe-agent", model_name=model)
+        keys = consumed_transport_base_url_keys(config)
+        assert "OPENAI_BASE_URL" in (keys or ())
+        azure_base = "https://foo.openai.azure.com/openai/v1"
+        assert _selected_transport_hosts(
+            config,
+            {"OPENAI_BASE_URL": azure_base, "AZURE_API_BASE": azure_base},
+            base_url_keys=keys,
+        ) == ("foo.openai.azure.com",)
+
+    vertex = AgentConfig(name="mini-swe-agent", model_name="vertex_ai/gemini-2")
+    assert _selected_transport_hosts(
+        vertex, {}, base_url_keys=consumed_transport_base_url_keys(vertex)
+    ) == ("generativelanguage.googleapis.com",)
+
+
+def test_host_arms_never_outrun_the_transport_key_map():
+    """A prefix that resolves a host must also resolve transport keys.
+
+    The failure mode this pins is subtle: if a spelling resolves a HOST but an
+    empty KEY set, the runner drops the operator's real (private) route and the
+    inference fallback then grants the public host instead -- a silent route
+    substitution *and* a widening. Every provider spelling the host switch
+    matches must therefore also be carried by the model-transport key map.
+
+    Scoped to the model-driven (litellm / mini-swe) transports. Harness-fronted
+    agents such as cursor deliberately have no row in that map -- their keys
+    come from the agent-class profile, which is what makes them
+    transport-authoritative.
+    """
+    from oddish.workers.harbor import model_hosts
+    from oddish.workers.harbor.restricted_network import (
+        _model_transport_base_url_keys,
+    )
+
+    for model in (
+        "openai/gpt-4o",
+        "azure/my-deployment",
+        "anthropic/claude-sonnet-5",
+        "gemini/pro",
+        "google/gemini-test",
+        "vertex_ai/gemini-2.5-pro",
+    ):
+        hosts = model_hosts.outbound_hosts_for_model(model)
+        keys = _model_transport_base_url_keys(model)
+        if hosts:
+            assert keys, f"{model} resolves hosts {hosts} but no transport keys"
+
+    # A spelling the alias map does not carry must resolve NEITHER, so it can
+    # never substitute a public host for the operator's private route.
+    assert model_hosts.outbound_hosts_for_model("vertex-ai/gemini-2.5-pro") == []
+    assert _model_transport_base_url_keys("vertex-ai/gemini-2.5-pro") == ()

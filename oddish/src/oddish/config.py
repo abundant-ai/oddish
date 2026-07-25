@@ -945,22 +945,39 @@ def _normalize_model_provider(provider: str) -> str | None:
 
 
 def _get_provider_from_model(model_name: str) -> str | None:
+    """Canonical provider for a model id, or ``None`` when not classifiable.
+
+    Shares the single resolution ladder in ``_infer_provider_prefix`` with
+    ``infer_model_provider_prefix`` so a future provider or alias fix lands in
+    one place. This caller differs only in two explicit policies: it does not
+    apply the bare-id heuristics, and it does not fall back to the raw prefix
+    for a provider the normalizer does not recognise -- an unknown provider must
+    stay ``None`` here rather than leak an unnormalized name to callers.
+    """
     if looks_like_bedrock_model_id(model_name):
         return "bedrock"
-    provider_prefix, _ = split_provider_model_name(model_name)
-    if provider_prefix:
-        return _normalize_model_provider(provider_prefix)
-    try:
-        _, llm_provider, _, _ = get_llm_provider(model=model_name)
-    except Exception:
-        llm_provider = None
-    if llm_provider:
-        return _normalize_model_provider(str(llm_provider))
-    return None
+    prefix = _infer_provider_prefix(model_name, allow_bare_heuristics=False)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix)
 
 
-def _infer_provider_prefix(model_name: str) -> str | None:
-    """Infer a canonical provider prefix for a model name, if possible."""
+def _infer_provider_prefix(
+    model_name: str, *, allow_bare_heuristics: bool = True
+) -> str | None:
+    """Infer a canonical provider prefix for a model name, if possible.
+
+    The single resolution ladder shared by ``infer_model_provider_prefix`` and
+    ``_get_provider_from_model``: explicit ``provider/`` prefix, then litellm,
+    then -- only when *allow_bare_heuristics* -- the bare-id heuristics. Callers
+    that must not guess from an unprefixed id pass ``allow_bare_heuristics=False``.
+
+    Adding a rung ABOVE the ``allow_bare_heuristics`` gate changes both callers,
+    and ``_get_provider_from_model`` decides whether Azure credentials are minted
+    (``_trial_uses_openai_provider``) and which provider key a job-scoped token
+    carries (``job_tokens.scoped_model_env``) -- so a rung meant only for host
+    inference must go BELOW the gate.
+    """
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         normalized = provider_prefix.strip().lower()
@@ -973,6 +990,9 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     if llm_provider:
         normalized = str(llm_provider).strip().lower()
         return normalized or None
+
+    if not allow_bare_heuristics:
+        return None
 
     # Heuristic fallback for common bare model aliases.
     lowered = model_name.strip().lower()

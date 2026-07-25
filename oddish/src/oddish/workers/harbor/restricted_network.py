@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
+from urllib.parse import urlparse
 
 from harbor.agents.factory import AgentFactory
 from harbor.agents.installed.acp_registry import is_acp_registry_shorthand
@@ -37,11 +38,12 @@ from .model_hosts import (
     _GEMINI_HOSTS as _GEMINI_RUNTIME_HOSTS,
     _OPENAI_HOSTS as _OPENAI_RUNTIME_HOSTS,
     _XAI_HOSTS as _XAI_RUNTIME_HOSTS,
+    AZURE_BASE_URL_KEYS as _AZURE_BASE_URL_KEYS,
     CURSOR_BASE_URL_KEYS as _CURSOR_BASE_URL_KEYS,
     GEMINI_BASE_URL_KEYS as _GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS as _GEMINI_OAUTH_ENV_KEYS,
     KNOWN_TRANSPORT_BASE_URL_KEYS as _KNOWN_TRANSPORT_BASE_URL_KEYS,
-    OPENAI_BASE_URL_KEYS as _OPENAI_BASE_URL_KEYS,
+    OPENAI_BASE_URL_KEYS as _STOCK_OPENAI_BASE_URL_KEYS,
     outbound_hosts_for_model,
 )
 
@@ -87,12 +89,21 @@ class RestrictedNetworkProfileProvider(Protocol):
 
 
 # Both the runtime allowlist host tuples AND the transport base-URL key groups
-# (``_KNOWN_TRANSPORT_BASE_URL_KEYS`` / ``_OPENAI_BASE_URL_KEYS`` /
-# ``_GEMINI_BASE_URL_KEYS`` / ``_CURSOR_BASE_URL_KEYS``) are the single source in
-# model_hosts and imported above (aliased). Filtering here and host discovery
-# there therefore read the same keys and cannot drift. Only the non-host
-# web-tool constant lives here.
+# (``_KNOWN_TRANSPORT_BASE_URL_KEYS`` / ``_STOCK_OPENAI_BASE_URL_KEYS`` /
+# ``_AZURE_BASE_URL_KEYS`` / ``_GEMINI_BASE_URL_KEYS`` /
+# ``_CURSOR_BASE_URL_KEYS``) are the single source in model_hosts and imported
+# above (aliased). Filtering here and host discovery there therefore read the
+# same keys and cannot drift. Only the non-host web-tool constant lives here.
 _CLAUDE_WEB_TOOLS = "WebSearch WebFetch"
+
+# The OpenAI-family transport an agent actually consumes. Oddish routes
+# OpenAI-family jobs through Azure OpenAI by default, and
+# ``get_openai_agent_env`` emits the Azure aliases for the same endpoint next to
+# ``OPENAI_BASE_URL`` -- so an OpenAI-provider agent consumes all of them. They
+# must be listed here as well as in the fail-closed known set: a key that is
+# known but not consumed trips the "does not consume" guard, which would reject
+# every Azure-routed restricted-Compose trial.
+_OPENAI_BASE_URL_KEYS = (*_STOCK_OPENAI_BASE_URL_KEYS, *_AZURE_BASE_URL_KEYS)
 
 # These are deliberately ordinary underscore attributes rather than Pydantic
 # fields. Harbor receives the values in memory, while JobConfig/TrialConfig
@@ -346,18 +357,38 @@ def _selected_transport_hosts(
         )
 
     selected = {key: configured[key] for key in base_url_keys if key in configured}
-    canonical_values = {value.rstrip("/") for value in selected.values()}
-    if len(canonical_values) > 1:
-        raise RestrictedNetworkProfileError(
-            "Restricted agent transport received conflicting aliases for its "
-            f"selected base URL: {', '.join(sorted(selected))}."
-        )
     if selected:
-        hosts = {
-            host
-            for value in selected.values()
-            if (host := normalize_domain_or_url(value))
+        # Compare each alias by its resolved ``(scheme, host)`` rather than by
+        # the raw URL string. Legitimate aliases for one transport can differ by
+        # PATH -- Azure emits AZURE_OPENAI_ENDPOINT as the bare resource
+        # endpoint while OPENAI_BASE_URL / AZURE_API_BASE carry the
+        # ``/openai/v1`` suffix -- and rejecting that would fail every
+        # Azure-routed trial while granting no additional egress (the allowlist
+        # is host-based, so a differing path grants nothing).
+        #
+        # Scheme deliberately stays in the comparison so a DIVERGENT scheme
+        # (one alias downgraded to ``http`` while its siblings stay ``https``)
+        # still fails closed -- host-only comparison would silently accept it,
+        # and that alias would ship the API key in cleartext. This is a
+        # disagreement check, not a TLS policy: aliases that are uniformly
+        # ``http`` agree and are accepted, exactly as before this change. An
+        # alias that resolves to no host at all is invalid rather than silently
+        # ignored -- dropping it could leave one apparently-unanimous host and
+        # mask a misconfigured route.
+        resolved = {
+            key: (urlparse(value).scheme, normalize_domain_or_url(value))
+            for key, value in selected.items()
         }
+        if any(host is None for _scheme, host in resolved.values()):
+            raise RestrictedNetworkProfileError(
+                "Restricted agent transport base URL is invalid."
+            )
+        if len(set(resolved.values())) > 1:
+            raise RestrictedNetworkProfileError(
+                "Restricted agent transport received conflicting aliases for its "
+                f"selected base URL: {', '.join(sorted(selected))}."
+            )
+        hosts = {host for _scheme, host in resolved.values()}
         if len(hosts) != 1:
             raise RestrictedNetworkProfileError(
                 "Restricted agent transport base URL is invalid."
@@ -383,12 +414,22 @@ def _model_transport_base_url_keys(model_name: str | None) -> tuple[str, ...]:
     ``o3`` both resolve to ``openai`` (via litellm + heuristic fallback), so a
     mini-swe trial on an unprefixed OpenAI model still consumes -- and is granted
     -- its OpenAI transport rather than an empty key set.
+
+    A provider missing from this map resolves to an EMPTY key set, which makes
+    the trial look deliberately transport-free and grants it no model egress at
+    all -- a silent failure rather than a fail-closed one. ``azure`` /
+    ``azure_openai`` are therefore listed explicitly: they are canonical
+    providers (harbor ``PROVIDER_KEYS``, and ``job_tokens`` treats them as
+    OpenAI-family), and an ``azure/<deployment>`` id names the same
+    OpenAI-family transport as ``openai/``.
     """
     provider = (infer_model_provider_prefix(model_name) or "").strip().lower()
     return {
         "anthropic": ("ANTHROPIC_BASE_URL",),
         "anthropic-hdo": ("ANTHROPIC_BASE_URL",),
         "openai": _OPENAI_BASE_URL_KEYS,
+        "azure": _OPENAI_BASE_URL_KEYS,
+        "azure_openai": _OPENAI_BASE_URL_KEYS,
         "meta": ("META_BASE_URL", *_OPENAI_BASE_URL_KEYS),
         "openrouter": ("OPENROUTER_BASE_URL",),
         "fireworks": ("FIREWORKS_BASE_URL",),

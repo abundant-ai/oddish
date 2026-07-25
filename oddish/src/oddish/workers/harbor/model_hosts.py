@@ -82,8 +82,19 @@ _BASE_URL_ENV_KEYS = (
     *CURSOR_BASE_URL_KEYS,
 )
 
+# Azure aliases for the SAME OpenAI-family transport that ``OPENAI_BASE_URL``
+# already carries: ``get_openai_agent_env`` emits ``AZURE_API_BASE`` (LiteLLM
+# route) and ``AZURE_OPENAI_ENDPOINT`` (Azure SDK route) alongside it. They are
+# deliberately kept out of the discovery tuple above -- discovery would gain no
+# host from them (``OPENAI_BASE_URL`` holds the same URL) and adding them would
+# change public-path allowlists. They belong in the fail-closed set below so a
+# caller cannot submit an unattested route under an alias, and so the
+# consumed-route filter drops the worker's private Azure endpoint for agents
+# that front their own transport.
+AZURE_BASE_URL_KEYS = ("AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT")
+
 # Full known-transport key set for the restricted-egress fail-closed filter.
-KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset(_BASE_URL_ENV_KEYS)
+KNOWN_TRANSPORT_BASE_URL_KEYS = frozenset((*_BASE_URL_ENV_KEYS, *AZURE_BASE_URL_KEYS))
 
 _ANTHROPIC_HOSTS = ("api.anthropic.com", "mcp-proxy.anthropic.com")
 _OPENAI_HOSTS = ("api.openai.com", "ab.chatgpt.com")
@@ -252,7 +263,24 @@ def outbound_hosts_for_model(
                 azure_host = _host_from_url(settings.azure_openai_endpoint)
                 if azure_host:
                     hosts.append(azure_host)
-        elif head in ("gemini", "google"):
+        elif head in ("azure", "azure_openai"):
+            # An explicit ``azure/`` id names the Azure OpenAI transport, so
+            # resolve the configured Azure endpoint rather than the public
+            # OpenAI hosts -- granting api.openai.com here would widen egress to
+            # a service this trial never calls. Like every other arm this UNIONS
+            # with any routed base URL discovered from the env above; only the
+            # bare-``claude-`` arm is guarded on ``not hosts``.
+            azure_host = _host_from_url(settings.azure_openai_endpoint)
+            if azure_host:
+                hosts.append(azure_host)
+        elif head in ("gemini", "google", "vertex_ai"):
+            # ``vertex_ai`` is spelled exactly as litellm spells it, which is
+            # also the key _MODEL_PROVIDER_ALIASES folds into ``gemini`` for
+            # transport-key selection. Adding a spelling that the alias map does
+            # NOT carry (e.g. a hyphenated ``vertex-ai``) would recreate the
+            # drift this arm exists to prevent: the id would resolve a host here
+            # while _model_transport_base_url_keys returned an empty key set,
+            # dropping the operator's real route and granting the public one.
             hosts.extend(_GEMINI_HOSTS)
         elif head == "cursor":
             hosts.extend(_CURSOR_RUNTIME_HOSTS)

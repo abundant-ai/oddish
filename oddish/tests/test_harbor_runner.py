@@ -377,6 +377,65 @@ def test_cursor_ambient_api_key_enters_redaction_map(monkeypatch):
     assert replacements["cursor-secret"] == "[REDACTED]"
 
 
+def test_scoped_token_routes_dropped_for_nonconsuming_agent():
+    """Job-scoped token injection must not kill a self-fronting agent's trial.
+
+    job_tokens.scoped_model_env writes the model provider's full route env
+    (OPENAI_BASE_URL + the Azure aliases for OpenAI-family) into
+    agent_config.env -- a channel the worker-transport filter never sees. For an
+    agent that fronts its own transport (cursor on an openai/ model) those
+    routes are not consumed: unfiltered, they trip the fail-closed "does not
+    consume" guard before Job.create. The drop must remove only non-consumed
+    ROUTE keys -- credentials and non-route keys stay, and a consuming agent
+    (codex) keeps everything.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        RestrictedNetworkProfileError,
+        _selected_transport_hosts,
+        consumed_transport_base_url_keys,
+    )
+
+    azure_base = "https://foo.openai.azure.com/openai/v1"
+    scoped = {
+        "OPENAI_API_KEY": "sk-azure",
+        "OPENAI_BASE_URL": azure_base,
+        "AZURE_API_BASE": azure_base,
+        "AZURE_OPENAI_ENDPOINT": "https://foo.openai.azure.com",
+        "AZURE_OPENAI_DEPLOYMENT": "dep-1",
+    }
+
+    cursor = HarborAgentConfig(
+        name="cursor-cli", model_name="openai/gpt-5.6-sol", env=dict(scoped)
+    )
+    consumed = consumed_transport_base_url_keys(cursor)
+    with pytest.raises(RestrictedNetworkProfileError):
+        _selected_transport_hosts(
+            cursor,
+            harbor_runner._resolved_agent_profile_env(cursor),
+            base_url_keys=consumed,
+        )
+
+    harbor_runner._drop_nonconsumed_agent_transport_routes(cursor)
+    for route_key in ("OPENAI_BASE_URL", "AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT"):
+        assert route_key not in cursor.env
+    assert cursor.env["OPENAI_API_KEY"] == "sk-azure"
+    assert cursor.env["AZURE_OPENAI_DEPLOYMENT"] == "dep-1"
+    # Profile resolution now succeeds on cursor's own transport.
+    assert _selected_transport_hosts(
+        cursor,
+        harbor_runner._resolved_agent_profile_env(cursor),
+        base_url_keys=consumed,
+        default_hosts=("*.cursor.sh",),
+        infer_model=False,
+    ) == ("*.cursor.sh",)
+
+    codex = HarborAgentConfig(
+        name="codex", model_name="openai/gpt-5.6-sol", env=dict(scoped)
+    )
+    harbor_runner._drop_nonconsumed_agent_transport_routes(codex)
+    assert codex.env == scoped
+
+
 def test_gemini_runtime_env_keys_are_single_sourced_from_model_hosts():
     # The runner's Gemini fold must derive its base-URL + OAuth key names from the
     # model_hosts single source rather than re-listing them, so it cannot drift
@@ -394,7 +453,10 @@ def test_gemini_runtime_env_keys_are_single_sourced_from_model_hosts():
         model_hosts.GEMINI_OAUTH_ENV_KEYS
     )
     # ...but they must ride in the safe-profile allowlist from that same source.
-    assert set(model_hosts.GEMINI_OAUTH_ENV_KEYS) <= restricted_network._SAFE_PROFILE_ENV_KEYS
+    assert (
+        set(model_hosts.GEMINI_OAUTH_ENV_KEYS)
+        <= restricted_network._SAFE_PROFILE_ENV_KEYS
+    )
 
 
 def test_deployment_redaction_substitutes_public_model_over_redacted():
