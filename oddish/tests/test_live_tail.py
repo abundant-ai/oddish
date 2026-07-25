@@ -65,6 +65,37 @@ def test_fold_keeps_last_usage_per_message_id():
     assert totals.model == "claude-opus-4-8"
 
 
+def test_live_tail_exact_redaction_happens_before_event_buffering():
+    runtime_endpoint = "https://private-runtime-route.test/v1"
+    runtime_secret = "private-runtime-secret"
+    tailer = make_tailer(FakeEnv([]))
+    tailer.runtime_redactions = {
+        runtime_endpoint: "https://runtime-model-endpoint.invalid",
+        runtime_secret: "[REDACTED]",
+    }
+    content = [
+        {
+            "type": "text",
+            "text": f"warning={runtime_endpoint} token={runtime_secret}",
+        }
+    ]
+
+    tailer._feed_tail_chunk(
+        assistant_line(
+            "msg_redacted",
+            {"input_tokens": 1, "output_tokens": 1},
+            content=content,
+        )
+        + b"\n"
+    )
+
+    buffered = json.dumps(tailer.pending_events)
+    assert runtime_endpoint not in buffered
+    assert runtime_secret not in buffered
+    assert "runtime-model-endpoint.invalid" in buffered
+    assert "[REDACTED]" in buffered
+
+
 def test_claude_fold_suppresses_exact_duplicate_assistant_content():
     fold = ClaudeUsageFold()
     content = [{"type": "text", "text": "hello"}]

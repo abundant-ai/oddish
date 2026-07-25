@@ -50,6 +50,13 @@ from oddish.core.endpoints.task_detail import (
     set_task_default_version_core,
 )
 from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
+from oddish.core.endpoints.qa_cost import (
+    ExperimentQaCostTotals,
+    QaCostTotals,
+    get_experiment_qa_cost_totals,
+    get_task_qa_costs,
+    get_trial_qa_costs,
+)
 from oddish.core.endpoints.tasks_query import (
     _build_browse_author_filter,
     _task_freetext_match,
@@ -71,6 +78,8 @@ from oddish.core.endpoints.trials import (
 )
 
 __all__ = [
+    "ExperimentQaCostTotals",
+    "QaCostTotals",
     "USER_CANCELLED_MESSAGE",
     "_COMBINE_TRIAL_RESULT_FIELDS",
     "_aggregate_task_detail_rollups",
@@ -90,14 +99,17 @@ __all__ = [
     "delete_task_core",
     "delete_trial_core",
     "get_experiment_cost_totals",
+    "get_experiment_qa_cost_totals",
     "get_task_detail_core",
     "get_task_for_org_core",
+    "get_task_qa_costs",
     "get_task_status_core",
     "get_task_version_core",
     "get_trial_by_index_core",
     "get_trial_for_org_core",
     "get_trial_logs_core",
     "get_trial_logs_structured_core",
+    "get_trial_qa_costs",
     "get_trial_response_for_org_core",
     "get_trial_result_core",
     "get_trial_trajectory_core",

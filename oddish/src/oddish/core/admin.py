@@ -1515,6 +1515,18 @@ _SERIES_TOP_N = 8
 _SERIES_OTHER_KEY = "__other__"
 
 
+def _add_cost(
+    per_bucket: dict[datetime, dict[str, float]],
+    totals: dict[str, float],
+    bstart: datetime,
+    key: str,
+    cost: float,
+) -> None:
+    slot = per_bucket.setdefault(bstart, {})
+    slot[key] = slot.get(key, 0.0) + cost
+    totals[key] = totals.get(key, 0.0) + cost
+
+
 def _build_dimension_series(
     dimension: str,
     *,
@@ -1628,17 +1640,6 @@ async def _cost_time_series(
     user_labels: dict[str, str] = {}
     trials_per_bucket: dict[datetime, int] = {}
 
-    def _add(
-        per_bucket: dict[datetime, dict[str, float]],
-        totals: dict[str, float],
-        bstart: datetime,
-        key: str,
-        cost: float,
-    ) -> None:
-        slot = per_bucket.setdefault(bstart, {})
-        slot[key] = slot.get(key, 0.0) + cost
-        totals[key] = totals.get(key, 0.0) + cost
-
     for row in rows:
         cost = settled_cost_from_row(row)
         bstart = row.bucket
@@ -1648,9 +1649,9 @@ async def _cost_time_series(
         )
         if u_label is not None:
             user_labels[u_key] = u_label
-        _add(agent_per_bucket, agent_totals, bstart, row.agent or "unknown", cost)
-        _add(model_per_bucket, model_totals, bstart, _model_label(row.model), cost)
-        _add(user_per_bucket, user_totals, bstart, u_key, cost)
+        _add_cost(agent_per_bucket, agent_totals, bstart, row.agent or "unknown", cost)
+        _add_cost(model_per_bucket, model_totals, bstart, _model_label(row.model), cost)
+        _add_cost(user_per_bucket, user_totals, bstart, u_key, cost)
         trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
             row.trial_count or 0
         )
@@ -1689,7 +1690,8 @@ async def _qa_cost_time_series(
     *,
     since: datetime | None,
     bucket: str,
-      org_id: str | None = None,
+    org_id: str | None = None,
+    billed_user_id: str | None = None,
 ) -> tuple[CostSeries, CostSeries]:
     """QA/analysis spend over time, stacked by model and analysis type.
 
@@ -1712,6 +1714,8 @@ async def _qa_cost_time_series(
         query = query.where(AnalysisCostModel.created_at >= since)
     if org_id is not None:
         query = query.where(AnalysisCostModel.org_id == org_id)
+    if billed_user_id is not None:
+        query = query.where(AnalysisCostModel.billed_user_id == billed_user_id)
 
     per_bucket: dict[datetime, dict[str, float]] = {}
     totals: dict[str, float] = {}
@@ -1775,6 +1779,7 @@ async def _compute_cost_time_series(
     since: datetime | None,
     bucket: str,
     org_id: str | None = None,
+    billed_user_id: str | None = None,
 ) -> CostSeries:
     bucket_col = _utc_date_trunc(bucket, ModalCostSpanModel.finished_at)
     query = (
@@ -1794,6 +1799,8 @@ async def _compute_cost_time_series(
         query = query.where(ModalCostSpanModel.finished_at >= since)
     if org_id is not None:
         query = query.where(ModalCostSpanModel.org_id == org_id)
+    if billed_user_id is not None:
+        query = query.where(ModalCostSpanModel.billed_user_id == billed_user_id)
 
     per_bucket: dict[datetime, dict[str, float]] = {}
     totals: dict[str, float] = {}
@@ -2651,7 +2658,12 @@ class UserCostBreakdownResponse(BaseModel):
     github_username: str | None = None
     window_days: int | None
     bucket: str
+    series_by_agent: CostSeries
     series_by_model: CostSeries
+    series_by_type: CostSeries
+    series_qa_by_model: CostSeries
+    series_by_analysis_type: CostSeries
+    series_compute_by_provider: CostSeries
     totals: UserCostTotals
     tasks: list[CostTaskBreakdown]
     experiments: list[UserCostExperimentBreakdown] = []
@@ -2722,29 +2734,30 @@ async def get_user_cost_breakdown_core(
     series_query = (
         select(
             bucket_col.label("bucket"),
+            TrialModel.agent.label("agent"),
             TrialModel.model.label("model"),
             *settled_cost_columns(),
             func.count(TrialModel.id).label("trial_count"),
         )
         .where(*filters)
-        .group_by(bucket_col, TrialModel.model)
+        .group_by(bucket_col, TrialModel.agent, TrialModel.model)
         .execution_options(include_deleted=True)
     )
 
     detail_rows = (await session.execute(detail_query)).all()
     series_rows = (await session.execute(series_query)).all()
 
+    agent_per_bucket: dict[datetime, dict[str, float]] = {}
+    agent_totals: dict[str, float] = {}
     model_per_bucket: dict[datetime, dict[str, float]] = {}
     model_totals: dict[str, float] = {}
     trials_per_bucket: dict[datetime, int] = {}
 
     for row in series_rows:
-        model = _model_label(row.model)
         cost = settled_cost_from_row(row)
         bstart = row.bucket
-        slot = model_per_bucket.setdefault(bstart, {})
-        slot[model] = slot.get(model, 0.0) + cost
-        model_totals[model] = model_totals.get(model, 0.0) + cost
+        _add_cost(agent_per_bucket, agent_totals, bstart, row.agent or "unknown", cost)
+        _add_cost(model_per_bucket, model_totals, bstart, _model_label(row.model), cost)
         trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
             row.trial_count or 0
         )
@@ -2813,6 +2826,14 @@ async def get_user_cost_breakdown_core(
         )
 
     bucket_starts = sorted(trials_per_bucket.keys())
+    series_by_agent = _build_dimension_series(
+        "agent",
+        bucket_starts=bucket_starts,
+        per_bucket=agent_per_bucket,
+        totals=agent_totals,
+        trials_per_bucket=trials_per_bucket,
+        labels={},
+    )
     series_by_model = _build_dimension_series(
         "model",
         bucket_starts=bucket_starts,
@@ -2820,6 +2841,23 @@ async def get_user_cost_breakdown_core(
         totals=model_totals,
         trials_per_bucket=trials_per_bucket,
         labels={},
+    )
+    series_qa_by_model, series_by_analysis_type = await _qa_cost_time_series(
+        session,
+        since=since,
+        bucket=bucket,
+        org_id=org_id,
+        billed_user_id=billed_user_id,
+    )
+    series_compute_by_provider = await _compute_cost_time_series(
+        session,
+        since=since,
+        bucket=bucket,
+        org_id=org_id,
+        billed_user_id=billed_user_id,
+    )
+    series_by_type = _build_type_series(
+        series_by_model, series_qa_by_model, series_compute_by_provider
     )
 
     exp_query = (
@@ -2946,7 +2984,12 @@ async def get_user_cost_breakdown_core(
         org_id=org_id,
         window_days=window_days,
         bucket=bucket,
+        series_by_agent=series_by_agent,
         series_by_model=series_by_model,
+        series_by_type=series_by_type,
+        series_qa_by_model=series_qa_by_model,
+        series_by_analysis_type=series_by_analysis_type,
+        series_compute_by_provider=series_compute_by_provider,
         totals=totals,
         tasks=tasks_out,
         experiments=experiments_out,

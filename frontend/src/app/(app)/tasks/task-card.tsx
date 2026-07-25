@@ -11,6 +11,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ExperimentsList } from "@/components/experiments-list";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagChip } from "@/components/tag-chip";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
 import { formatCostUsd } from "@/lib/format";
@@ -407,10 +408,16 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
                 Cost
               </div>
-              <div className="mt-1 text-sm font-semibold tabular-nums">
-                {task.cost_trial_count > 0
-                  ? `${task.cost_has_estimated && !task.cost_has_native ? "~" : ""}${formatCostUsd(task.cost_usd)}`
-                  : "—"}
+              <div className="mt-1 flex items-baseline gap-1.5 text-sm font-semibold tabular-nums">
+                <span>
+                  {task.cost_trial_count > 0
+                    ? `${task.cost_has_estimated && !task.cost_has_native ? "~" : ""}${formatCostUsd(task.cost_usd)}`
+                    : "—"}
+                </span>
+                <QaCostSuffix
+                  costUsd={task.qa_cost_usd}
+                  title="QA/analysis spend for this task's trials. Not included in the cost figure."
+                />
               </div>
               {task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">

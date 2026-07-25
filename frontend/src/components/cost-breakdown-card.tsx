@@ -529,7 +529,7 @@ function MethodologyNote() {
 // Top-level card
 // =============================================================================
 
-type ChartDimension =
+export type ChartDimension =
   | "agent"
   | "model"
   | "user"
@@ -560,6 +560,33 @@ const EMPTY_COMPUTE_SERIES: CostSeries = {
   keys: [],
   buckets: [],
 };
+
+export function StackBySelector({
+  dimensions,
+  value,
+  onChange,
+}: {
+  dimensions: ChartDimension[];
+  value: ChartDimension;
+  onChange: (dimension: ChartDimension) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 text-xs">
+      <span className="text-muted-foreground mr-1">stack by</span>
+      {dimensions.map((dim) => (
+        <Button
+          key={dim}
+          variant={value === dim ? "secondary" : "ghost"}
+          size="sm"
+          className="h-7 px-2 text-xs"
+          onClick={() => onChange(dim)}
+        >
+          {DIMENSION_LABELS[dim]}
+        </Button>
+      ))}
+    </div>
+  );
+}
 
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("1");
@@ -652,20 +679,11 @@ export function CostBreakdownCard() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">Cost over time</h3>
-                <div className="flex items-center gap-1 text-xs">
-                  <span className="text-muted-foreground mr-1">stack by</span>
-                  {CHART_DIMENSIONS.map((dim) => (
-                    <Button
-                      key={dim}
-                      variant={dimension === dim ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => setDimension(dim)}
-                    >
-                      {DIMENSION_LABELS[dim]}
-                    </Button>
-                  ))}
-                </div>
+                <StackBySelector
+                  dimensions={CHART_DIMENSIONS}
+                  value={dimension}
+                  onChange={setDimension}
+                />
               </div>
               <CostChart series={series} bucket={data.bucket} />
             </div>
@@ -715,6 +733,17 @@ export function CostBreakdownCard() {
   );
 }
 
+function ComponentStat({ label, cost }: { label: string; cost: number }) {
+  return (
+    <div className="min-w-0 flex-1 px-1 text-center">
+      <div className="text-sm font-bold tabular-nums">
+        {formatCostUsd(cost)}
+      </div>
+      <div className="text-muted-foreground truncate text-[10px]">{label}</div>
+    </div>
+  );
+}
+
 function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
   const prev = totals.prev_cost_usd;
   const diff = prev == null ? null : totals.cost_usd - prev;
@@ -752,38 +781,18 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
               <Info className="text-muted-foreground ml-1 inline h-3 w-3 cursor-help align-text-top" />
             </TooltipTrigger>
             <TooltipContent className="max-w-[280px]">
-              <span className="tabular-nums">
-                {formatCostUsd(totals.cost_usd)} inference ·{" "}
-                {formatCostUsd(qaCost)} QA · {formatCostUsd(computeCost)} sandbox
-                (compute)
-              </span>
+              Model inference plus QA plus compute, each broken out alongside.
+              Compute is a sandbox-runtime estimate, not a provider invoice.
             </TooltipContent>
           </Tooltip>
         </div>
       </div>
-      <div className="bg-background/70 flex flex-col justify-center gap-1 rounded-md border border-[#6f88b4]/18 p-2">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-muted-foreground text-[10px]">
-            Model inference
-          </span>
-          <span className="text-sm font-bold tabular-nums">
-            {formatCostUsd(totals.cost_usd)}
-          </span>
-        </div>
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-muted-foreground text-[10px]">QA</span>
-          <span className="text-sm font-bold tabular-nums">
-            {formatCostUsd(qaCost)}
-          </span>
-        </div>
-      </div>
-      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
-        <div className="text-base font-bold tabular-nums">
-          {formatCostUsd(computeCost)}
-        </div>
-        <div className="text-muted-foreground text-[10px]">
-          Compute estimate
-        </div>
+      <div className="bg-background/70 flex items-center rounded-md border border-[#6f88b4]/18 p-2 lg:col-span-2">
+        <ComponentStat label="Model inference" cost={totals.cost_usd} />
+        <span className="bg-border h-8 w-px shrink-0" />
+        <ComponentStat label="QA" cost={qaCost} />
+        <span className="bg-border h-8 w-px shrink-0" />
+        <ComponentStat label="Compute est." cost={computeCost} />
       </div>
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">

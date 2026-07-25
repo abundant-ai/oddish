@@ -72,6 +72,7 @@ import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -807,7 +808,11 @@ export function TrialDetailPanel({
             </Card>
             {(trial.cost_usd != null ||
               trial.input_tokens != null ||
-              trial.output_tokens != null) && (
+              trial.output_tokens != null ||
+              // A trial can be QA'd without the agent ever reporting a cost;
+              // keep the card so its QA sidecar isn't hidden. QaCostSuffix
+              // still self-guards on qa_cost_usd > 0.
+              (trial.qa_cost_usd != null && trial.qa_cost_usd > 0)) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -840,6 +845,10 @@ export function TrialDetailPanel({
                             </span>
                           );
                         })()}
+                      <QaCostSuffix
+                        costUsd={trial.qa_cost_usd}
+                        title="QA/analysis spend for this trial. Not included in the cost figure."
+                      />
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (
@@ -1037,7 +1046,21 @@ export function TrialDetailPanel({
                 >
                   <CardContent className="px-4 py-3">
                     <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
-                      QA Assessment
+                      <span>QA Assessment</span>
+                      {trial.analysis?.prompt_version != null && (
+                        <span
+                          className="ml-2 normal-case font-normal tracking-normal"
+                          title={
+                            trial.analysis.prompt_scope_id
+                              ? `${trial.analysis.prompt_scope} override: ${trial.analysis.prompt_scope_id}`
+                              : `${trial.analysis.prompt_scope ?? "global"} prompt`
+                          }
+                        >
+                          {trial.analysis.prompt_kind ?? "QA_POST_TRIAL"} v
+                          {trial.analysis.prompt_version} ·{" "}
+                          {trial.analysis.prompt_scope ?? "global"}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-start gap-3">
                       {trial.analysis_status === "running" ||
