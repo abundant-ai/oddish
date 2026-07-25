@@ -207,10 +207,25 @@ def outbound_hosts_for_model(
     # (meta, fireworks, anthropic-hdo) still require an explicit prefix, as before.
     # The single-container union path leaves bare ids untouched (infer_bare_provider
     # is False there), so it does not widen beyond the routed transport.
-    if infer_bare_provider and model_name and "/" not in model_name:
-        _bare_provider = infer_model_provider_prefix(model_name)
-        if _bare_provider:
-            model_name = f"{_bare_provider}/{model_name}"
+    if infer_bare_provider and model_name:
+        if "/" not in model_name:
+            _bare_provider = infer_model_provider_prefix(model_name)
+            if _bare_provider:
+                model_name = f"{_bare_provider}/{model_name}"
+        else:
+            # An ALIAS prefix must resolve the same host as the canonical
+            # provider it normalizes to. The transport-key map keys off the
+            # canonical name (``claude/`` -> anthropic, ``palm/`` -> gemini,
+            # ``glm/`` -> zai), so without this the classifiers and prefix
+            # switch below -- which match the raw head -- resolve transport
+            # KEYS but no HOST. On restricted Compose that is an empty
+            # allowlist for an agent with no default hosts (mini-swe): the
+            # agent phase silently cannot reach the model API. Rewriting to the
+            # canonical prefix keeps the two boundaries in agreement.
+            _head, _, _tail = model_name.partition("/")
+            _canonical = infer_model_provider_prefix(model_name)
+            if _canonical and _canonical != _head.strip().lower():
+                model_name = f"{_canonical}/{_tail}"
 
     if is_fireworks_model(model_name):
         host = _default_host(

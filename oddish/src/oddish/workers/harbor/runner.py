@@ -67,7 +67,7 @@ from .restricted_network import (
     _KNOWN_TRANSPORT_BASE_URL_KEYS,
     RestrictedNetworkProfile,
     RestrictedNetworkProfileError,
-    agent_fronts_own_model_service,
+    agent_keeps_public_model_identity,
     apply_restricted_network_profile,
     assert_no_serialized_restricted_routes,
     consumed_transport_base_url_keys,
@@ -1404,7 +1404,7 @@ async def run_harbor_trial_async(
             if (
                 restricted_compose_kind == "dynamic"
                 and uses_openai_provider
-                and not agent_fronts_own_model_service(agent_config)
+                and not agent_keeps_public_model_identity(agent_config)
                 and settings.get_openai_provider() != OPENAI_PROVIDER_OPENAI
                 and agent_config.model_name
                 and openai_model

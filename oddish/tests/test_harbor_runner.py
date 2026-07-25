@@ -380,11 +380,12 @@ def test_cursor_ambient_api_key_enters_redaction_map(monkeypatch):
 def test_route_drop_runs_after_the_gemini_wrapper_swaps_the_class():
     """The drop must see the FINAL effective class, not the pre-wrapper one.
 
-    _apply_gemini_cli_oddish_wrapper swaps stock GeminiCli (absent from the
-    compatibility registry, so consumption resolves to None and the drop is a
-    no-op) for OddishGeminiCli. Dropping before the swap therefore left
-    worker-minted routes in the agent env and the profile then failed closed on
-    routes Gemini does not consume -- the exact failure the drop prevents.
+    _apply_gemini_cli_oddish_wrapper swaps stock GeminiCli for OddishGeminiCli.
+    Dropping before the swap left worker-minted routes in the agent env and the
+    profile then failed closed on routes Gemini does not consume -- the exact
+    failure the drop prevents. The stock class is now registered for transport
+    identity, so consumption resolves even pre-wrapper; the ordering guarantee
+    still matters, because only the wrapper's spec is the attested profile.
     """
     from pathlib import Path
     from unittest.mock import patch
@@ -404,8 +405,14 @@ def test_route_drop_runs_after_the_gemini_wrapper_swaps_the_class():
     agent_config = HarborAgentConfig(
         name="gemini-cli", model_name="openai/gpt-4o", env=dict(minted)
     )
-    # Pre-wrapper the stock class is unregistered, so a drop here is a no-op.
-    assert consumed_transport_base_url_keys(agent_config) is None
+    # Pre-wrapper the stock class resolves the SAME transport identity as its
+    # wrapper (identity-only registry entry), so the ordering fix cannot be
+    # silently undone by consumption resolving differently on either side.
+    assert consumed_transport_base_url_keys(agent_config) == (
+        "GOOGLE_GEMINI_BASE_URL",
+        "GEMINI_API_BASE_URL",
+        "GOOGLE_API_BASE_URL",
+    )
 
     with patch.object(
         harbor_runner,

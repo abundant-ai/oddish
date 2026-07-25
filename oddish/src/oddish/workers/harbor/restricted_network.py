@@ -485,6 +485,14 @@ class _RestrictedAgentSpec:
     # the worker-private provider/Azure deployment id must not be swapped onto
     # their running model -- they need the public model identity.
     fronts_own_model_service: bool = False
+    # True for harnesses whose profile PINS egress to one provider
+    # (``infer_model=False``): cursor -> its own API, gemini-cli -> Gemini,
+    # grok-build -> xAI. Distinct from fronts_own_model_service, which is the
+    # narrower "this harness's service fronts arbitrary models" (only Cursor).
+    # Both imply the model identity must survive: an agent that cannot reach the
+    # OpenAI/Azure endpoint must not carry the worker-private Azure deployment
+    # id, which its pinned transport could never resolve.
+    pins_own_transport: bool = False
 
 
 def _consumed_base_url_keys_for_class(
@@ -658,10 +666,47 @@ def _gemini_profile(
     )
 
 
+def _unattested_stock_harness_profile(
+    agent_class: type[Any],
+    agent_config: AgentConfig,
+    resolved_env: Mapping[str, str],
+) -> RestrictedNetworkProfile:
+    """Registered for transport IDENTITY only -- never attested for a profile.
+
+    Oddish swaps these stock harnesses for their Oddish wrapper, but not until
+    after ``_build_agent_config`` has already run the deployment-swap gate,
+    which reads ``fronts_own_model_service`` off the class resolved at that
+    moment. Absent from the registry, the gate saw no spec and treated a
+    transport-authoritative harness as one that talks to the provider directly,
+    substituting the worker-private Azure deployment id onto a model whose
+    egress is pinned to xAI/Gemini.
+
+    Registering the stock class fixes that window while deliberately refusing to
+    attest it: the Oddish wrapper is what disables provider-side web tools, so a
+    trial pinned to the stock class by ``import_path`` (which the wrapper skips)
+    must keep failing closed exactly as it did before.
+    """
+    raise RestrictedNetworkProfileError(
+        f"{_class_path(agent_class)} does not declare a safe restricted-network "
+        "profile; run this harness through its Oddish wrapper instead."
+    )
+
+
 # Temporary exact-class adapters for the stock implementations Oddish operates.
 # A subclass is new executable code and must either appear here explicitly or
 # define its own local capability hook; inheriting a trusted profile is unsafe.
 _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
+    # Identity-only entries; see _unattested_stock_harness_profile.
+    "harbor.agents.installed.gemini_cli:GeminiCli": _RestrictedAgentSpec(
+        _unattested_stock_harness_profile,
+        _gemini_base_url_keys,
+        pins_own_transport=True,
+    ),
+    "harbor.agents.installed.grok_build:GrokBuild": _RestrictedAgentSpec(
+        _unattested_stock_harness_profile,
+        _no_base_url_keys,
+        pins_own_transport=True,
+    ),
     "harbor.agents.nop:NopAgent": _RestrictedAgentSpec(
         _transport_free_profile, _no_base_url_keys
     ),
@@ -675,7 +720,10 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
         _codex_profile, _openai_base_url_keys
     ),
     "harbor.agents.installed.cursor_cli:CursorCli": _RestrictedAgentSpec(
-        _cursor_profile, _cursor_base_url_keys, fronts_own_model_service=True
+        _cursor_profile,
+        _cursor_base_url_keys,
+        fronts_own_model_service=True,
+        pins_own_transport=True,
     ),
     "harbor.agents.installed.mini_swe_agent:MiniSweAgent": _RestrictedAgentSpec(
         _mini_swe_profile, _mini_swe_base_url_keys
@@ -692,11 +740,18 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     "oddish.workers.agents.codex:AzureCompatibleCodex": _RestrictedAgentSpec(
         _codex_profile, _openai_base_url_keys
     ),
+    # grok-build and gemini-cli are transport-authoritative in exactly the sense
+    # Cursor is: their profiles pin egress to xAI / Gemini (infer_model=False),
+    # so the worker-private Azure deployment id must not be substituted for the
+    # running model -- the sandbox would carry that identity while only being
+    # able to reach a transport that has never heard of it. For their own
+    # providers this changes nothing, since the deployment swap is gated on the
+    # trial using the OpenAI provider in the first place.
     "oddish.workers.agents.grok_build:OddishGrokBuild": _RestrictedAgentSpec(
-        _grok_profile, _no_base_url_keys
+        _grok_profile, _no_base_url_keys, pins_own_transport=True
     ),
     "oddish.workers.agents.gemini_cli:OddishGeminiCli": _RestrictedAgentSpec(
-        _gemini_profile, _gemini_base_url_keys
+        _gemini_profile, _gemini_base_url_keys, pins_own_transport=True
     ),
     "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent": _RestrictedAgentSpec(
         _mini_swe_profile, _mini_swe_base_url_keys
@@ -741,12 +796,16 @@ def consumed_transport_base_url_keys(
 def agent_fronts_own_model_service(agent_config: AgentConfig) -> bool:
     """Whether the effective agent routes the model through its own service.
 
-    Such harnesses (e.g. Cursor) select the model on their side and talk to
-    their own API, never the model provider's endpoint, so the worker-private
-    provider/Azure deployment id must not be substituted for the running model
-    -- they need the submitted public model identity. Agents that talk to the
-    provider directly (codex, mini-swe) return False here, regardless of whether
-    the model id is written ``openai/gpt-x`` or the bare ``gpt-x`` form.
+    Such harnesses (Cursor, gemini-cli, grok-build) select the model on their
+    side and talk to their own API, never the model provider's endpoint, so the
+    worker-private provider/Azure deployment id must not be substituted for the
+    running model -- they need the submitted public model identity. This is the
+    same property their profiles express as ``infer_model=False``: an agent that
+    pins its transport must also keep its model identity, or the sandbox ends up
+    carrying a deployment id that its pinned transport cannot resolve. Agents
+    that talk to the provider directly (codex, mini-swe) return False here,
+    regardless of whether the model id is written ``openai/gpt-x`` or the bare
+    ``gpt-x`` form.
 
     Only known stock harnesses can be attested as self-fronting; a custom import
     path that cannot be resolved (e.g. not importable at build time) is treated
@@ -759,6 +818,29 @@ def agent_fronts_own_model_service(agent_config: AgentConfig) -> bool:
         return False
     spec = _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
     return bool(spec and spec.fronts_own_model_service)
+
+
+def agent_keeps_public_model_identity(agent_config: AgentConfig) -> bool:
+    """Whether the worker-private deployment id must NOT be swapped onto the model.
+
+    True for a harness that fronts its own model service (Cursor) and for any
+    harness whose profile pins egress to one provider (gemini-cli, grok-build).
+    Both cases share the same consequence: the running agent cannot reach the
+    OpenAI/Azure endpoint, so giving it the private Azure deployment id hands a
+    worker-only identity to a sandbox that can never resolve it, while the
+    submitted public model is what the harness actually needs.
+
+    Agents that talk to the OpenAI/Azure endpoint directly (codex, mini-swe)
+    return False and still receive the deployment rewrite.
+    """
+    try:
+        agent_class = resolve_effective_agent_class(agent_config)
+    except Exception:
+        return False
+    spec = _COMPATIBILITY_PROFILES.get(_class_path(agent_class))
+    if spec is None:
+        return False
+    return bool(spec.fronts_own_model_service or spec.pins_own_transport)
 
 
 def _safe_hook_context(

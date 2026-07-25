@@ -1102,3 +1102,104 @@ def test_host_arms_never_outrun_the_transport_key_map():
     # never substitute a public host for the operator's private route.
     assert model_hosts.outbound_hosts_for_model("vertex-ai/gemini-2.5-pro") == []
     assert _model_transport_base_url_keys("vertex-ai/gemini-2.5-pro") == ()
+
+
+def test_every_provider_alias_resolves_a_host_not_just_keys():
+    """Exhaustive: an alias prefix must never yield keys with an empty allowlist.
+
+    _model_transport_base_url_keys normalizes aliases to their canonical
+    provider, so ``claude/`` resolves ANTHROPIC_BASE_URL and ``palm/`` the Gemini
+    keys. Host resolution matched the RAW head, so those ids resolved transport
+    keys and no host -- and on restricted Compose an agent with no default hosts
+    (mini-swe) then got an empty allowlist and silently could not reach the model
+    API. Assert over the whole alias map so a newly added alias cannot regress.
+    """
+    from oddish.config import _MODEL_PROVIDER_ALIASES
+    from oddish.workers.harbor import model_hosts
+    from oddish.workers.harbor.restricted_network import (
+        _model_transport_base_url_keys,
+    )
+
+    offenders = []
+    for alias in sorted(_MODEL_PROVIDER_ALIASES):
+        model = f"{alias}/some-model"
+        keys = _model_transport_base_url_keys(model)
+        hosts = model_hosts.outbound_hosts_for_model(model, infer_bare_provider=True)
+        if keys and not hosts:
+            offenders.append(alias)
+    assert not offenders, f"aliases resolve transport keys but no host: {offenders}"
+
+    # Canonical spellings are unchanged by the alias canonicalization.
+    assert model_hosts.outbound_hosts_for_model(
+        "anthropic/claude", infer_bare_provider=True
+    ) == ["api.anthropic.com", "mcp-proxy.anthropic.com"]
+    # The public / single-container path does not canonicalize, so its
+    # allowlists are untouched.
+    assert model_hosts.outbound_hosts_for_model("claude/opus") == []
+
+
+def test_transport_authoritative_agents_keep_their_model_identity():
+    """Pinned transport and pinned model identity must travel together.
+
+    gemini-cli and grok-build pin egress (infer_model=False) exactly as Cursor
+    does, so the worker-private Azure deployment id must not be swapped onto
+    their model -- the sandbox would carry an identity its pinned transport
+    cannot resolve. The gate runs inside _build_agent_config, BEFORE the Oddish
+    wrapper is applied, so the stock classes must report this too.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        agent_keeps_public_model_identity,
+    )
+
+    for name in ("cursor-cli", "gemini-cli", "grok-build"):
+        config = AgentConfig(name=name, model_name="openai/gpt-4o")
+        assert agent_keeps_public_model_identity(config), name
+    for name in ("codex", "mini-swe-agent", "claude-code"):
+        config = AgentConfig(name=name, model_name="openai/gpt-4o")
+        assert not agent_keeps_public_model_identity(config), name
+
+    # The narrower property is unchanged: only Cursor's own service fronts
+    # arbitrary models. gemini-cli/grok-build are pinned provider clients.
+    assert agent_fronts_own_model_service(AgentConfig(name="cursor-cli")) is True
+    assert agent_fronts_own_model_service(AgentConfig(name="gemini-cli")) is False
+    assert agent_fronts_own_model_service(AgentConfig(name="grok-build")) is False
+
+
+def test_stock_harnesses_are_identity_only_and_still_fail_closed():
+    """Registering the stock classes must not attest them.
+
+    The Oddish wrapper is what disables provider-side web tools, so a trial
+    pinned to the stock class by import_path (which the wrapper skips) must keep
+    failing closed -- the registry entry exists only so the pre-wrapper
+    deployment-swap gate reads the right transport identity.
+    """
+    from oddish.workers.harbor.restricted_network import (
+        agent_keeps_public_model_identity,
+    )
+
+    for import_path in (
+        "harbor.agents.installed.gemini_cli:GeminiCli",
+        "harbor.agents.installed.grok_build:GrokBuild",
+    ):
+        config = AgentConfig(import_path=import_path, model_name="gemini/pro")
+        assert agent_keeps_public_model_identity(config)
+        with pytest.raises(RestrictedNetworkProfileError):
+            restricted_network_profile_for_config(config, resolved_env={})
+
+    # The wrappers themselves still resolve their real pinned profiles.
+    gemini = restricted_network_profile_for_config(
+        AgentConfig(
+            import_path="oddish.workers.agents.gemini_cli:OddishGeminiCli",
+            model_name="gemini/pro",
+        ),
+        resolved_env={},
+    )
+    assert gemini.outbound_hosts == ("generativelanguage.googleapis.com",)
+    grok = restricted_network_profile_for_config(
+        AgentConfig(
+            import_path="oddish.workers.agents.grok_build:OddishGrokBuild",
+            model_name="xai/grok-4",
+        ),
+        resolved_env={},
+    )
+    assert grok.outbound_hosts == ("api.x.ai",)
