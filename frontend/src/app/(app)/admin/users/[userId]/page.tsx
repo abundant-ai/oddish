@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/tooltip";
 import type {
   CostModelBreakdown,
+  CostSeries,
   UserCostBreakdownResponse,
   UserCostExperimentBreakdown,
   UserCostTaskBreakdown,
@@ -38,7 +39,11 @@ import type {
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
-import { CostChart } from "@/components/cost-breakdown-card";
+import {
+  CostChart,
+  StackBySelector,
+  type ChartDimension,
+} from "@/components/cost-breakdown-card";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { ArrowLeft, DollarSign, Info } from "lucide-react";
 
@@ -51,6 +56,41 @@ const WINDOW_OPTIONS: { value: string; label: string }[] = [
 ];
 
 const TASK_LIMIT = 100;
+
+// Every dimension the dashboard offers but "user" — this page is one user.
+const CHART_DIMENSIONS: ChartDimension[] = [
+  "agent",
+  "model",
+  "type",
+  "analysis_type",
+  "compute",
+];
+
+const EMPTY_SERIES: CostSeries = { dimension: "none", keys: [], buckets: [] };
+
+// Falls back to the always-present by-model series when an older backend has
+// not yet shipped the dimension the picker asked for.
+function seriesFor(
+  data: UserCostBreakdownResponse,
+  dimension: ChartDimension
+): CostSeries {
+  switch (dimension) {
+    case "agent":
+      return data.series_by_agent ?? data.series_by_model;
+    case "type":
+      return data.series_by_type ?? data.series_by_model;
+    case "analysis_type":
+      return data.series_by_analysis_type ?? EMPTY_SERIES;
+    case "compute":
+      return data.series_compute_by_provider ?? EMPTY_SERIES;
+    default:
+      return data.series_by_model;
+  }
+}
+
+function seriesTotal(series: CostSeries | undefined): number {
+  return (series?.buckets ?? []).reduce((sum, b) => sum + b.cost_usd, 0);
+}
 
 function estimatedPct(cost: number, estimated: number): number {
   if (cost <= 0) return 0;
@@ -300,6 +340,7 @@ export default function AdminUserCostPage({
   const [windowDays, setWindowDays] = useState(() =>
     WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7"
   );
+  const [dimension, setDimension] = useState<ChartDimension>("model");
 
   const { data, error, isLoading } = useSWR<UserCostBreakdownResponse>(
     `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}`,
@@ -387,7 +428,7 @@ export default function AdminUserCostPage({
           <TooltipProvider delayDuration={150}>
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
-                total {formatCostUsd(data.totals.cost_usd)}
+                inference {formatCostUsd(data.totals.cost_usd)}
                 <EstimateMarker
                   cost={data.totals.cost_usd}
                   estimated={data.totals.cost_estimated_usd}
@@ -395,6 +436,13 @@ export default function AdminUserCostPage({
               </Badge>
               <Badge variant="outline">
                 estimated {formatCostUsd(data.totals.cost_estimated_usd)}
+              </Badge>
+              <Badge variant="outline">
+                QA {formatCostUsd(seriesTotal(data.series_qa_by_model))}
+              </Badge>
+              <Badge variant="outline">
+                compute{" "}
+                {formatCostUsd(seriesTotal(data.series_compute_by_provider))}
               </Badge>
               <Badge variant="outline">
                 {data.totals.trial_count.toLocaleString()} trials
@@ -405,8 +453,18 @@ export default function AdminUserCostPage({
             </div>
 
             <div className="space-y-2">
-              <h3 className="text-sm font-medium">Cost over time</h3>
-              <CostChart series={data.series_by_model} bucket={data.bucket} />
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-medium">Cost over time</h3>
+                <StackBySelector
+                  dimensions={CHART_DIMENSIONS}
+                  value={dimension}
+                  onChange={setDimension}
+                />
+              </div>
+              <CostChart
+                series={seriesFor(data, dimension)}
+                bucket={data.bucket}
+              />
             </div>
 
             <section className="space-y-2">
