@@ -1071,7 +1071,14 @@ export interface UserCostBreakdownResponse {
   totals: UserCostTotals;
   tasks: UserCostTaskBreakdown[];
   experiments?: UserCostExperimentBreakdown[];
+  // Optional like their CostBreakdownResponse siblings: the frontend and the
+  // Modal backend deploy separately, so a new page can hit an older API.
+  series_by_agent?: CostSeries;
   series_by_model: CostSeries;
+  series_by_type?: CostSeries;
+  series_qa_by_model?: CostSeries;
+  series_by_analysis_type?: CostSeries;
+  series_compute_by_provider?: CostSeries;
   timestamp: string;
 }
 
