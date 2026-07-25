@@ -1004,11 +1004,22 @@ def _inject_restricted_agent_model_hosts(
     # worker-private route is ever serialized here" true regardless of what
     # model_name happens to be, so a later runtime-model swap on this path
     # cannot turn the union back into a leak.
+    # Resolve only the routes THIS agent actually consumes. The worker mints one
+    # provider env per trial, but the effective agent may front its own
+    # transport (cursor-cli -> *.cursor.sh) or talk to a different provider
+    # entirely (claude-code -> Anthropic), in which case the OpenAI/Azure route
+    # in that env is one the agent never dials -- granting it would widen the
+    # agent phase for nothing. This is the same consumed-route filter the
+    # Compose path applies; an indeterminate effective agent leaves the env
+    # untouched, exactly as it does there.
     worker_hosts: tuple[str, ...] = ()
     if runtime_transport_env:
+        consumed_env = _resolved_runtime_transport_env(
+            runtime_transport_env, agent_config=agent_config
+        )
         worker_hosts = tuple(
             normalize_allowed_hosts(
-                outbound_hosts_for_model(None, agent_env=runtime_transport_env)
+                outbound_hosts_for_model(None, agent_env=consumed_env)
             )
         )
     if worker_hosts:

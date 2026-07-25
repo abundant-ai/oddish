@@ -4049,3 +4049,57 @@ def test_worker_route_is_enforced_in_the_agent_phase_policy(tmp_path):
         task_config, agent_config, task_config.environment.resolve_baseline()
     )
     assert azure_host in (policy.allowed_hosts or [])
+
+
+@pytest.mark.parametrize(
+    "environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL]
+)
+def test_single_container_grants_only_routes_the_agent_consumes(
+    tmp_path, environment_type
+):
+    """The worker mints one provider env; not every agent dials it.
+
+    A harness that fronts its own transport (cursor-cli) or talks to a different
+    provider (claude-code) must NOT be granted the worker's OpenAI/Azure route
+    just because it happens to be in the minted env -- that widens the agent
+    phase to a host the agent never contacts. This mirrors the consumed-route
+    filter the Compose path applies.
+    """
+    from oddish.workers.harbor.restricted_network import RUNTIME_ALLOWED_HOSTS_ATTR
+
+    azure_base = "https://private-worker.openai.azure.com/openai/v1"
+    worker_env = {
+        "OPENAI_BASE_URL": azure_base,
+        "AZURE_API_BASE": azure_base,
+        "OPENAI_API_KEY": "sk-azure",
+    }
+
+    task_path = _write_network_policy_task(tmp_path, compose=False)
+
+    def run(agent_config):
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=task_path,
+            environment_config=HarborEnvironmentConfig(type=environment_type),
+            agent_config=agent_config,
+            runtime_transport_env=dict(worker_env),
+        )
+        return (
+            getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR, ()),
+            agent_config.extra_allowed_hosts,
+        )
+
+    # Consumes the OpenAI transport -> granted, privately.
+    runtime, serialized = run(HarborAgentConfig(name="codex", model_name="gpt-5.6-sol"))
+    assert runtime == ("private-worker.openai.azure.com",)
+    assert "private-worker.openai.azure.com" not in serialized
+
+    # Does NOT consume it -> not granted, and each keeps its own transport.
+    for name, model, expected in (
+        ("cursor-cli", "cursor/composer", "*.cursor.sh"),
+        ("claude-code", "anthropic/claude-sonnet-5", "api.anthropic.com"),
+        ("grok-build", "xai/grok-4", "api.x.ai"),
+    ):
+        runtime, serialized = run(HarborAgentConfig(name=name, model_name=model))
+        assert runtime == (), f"{name} was granted a route it never dials"
+        assert expected in serialized, name
+        assert "private-worker.openai.azure.com" not in serialized, name
