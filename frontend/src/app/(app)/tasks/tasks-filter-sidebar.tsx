@@ -112,6 +112,8 @@ function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
   return [];
 }
 
+const FILTERS_BODY_ID = "tasks-filters-body";
+
 export function TasksFilterSidebar() {
   // Facets are fetched client-side once so a router.refresh() of the task
   // results never reloads the filter options. revalidateOnFocus stays off and
@@ -329,6 +331,17 @@ export function TasksFilterSidebar() {
   };
 
   const activeCount = activeFilterCount(values);
+  const filtersLabel = (
+    <>
+      <Filter className="h-3.5 w-3.5" />
+      Filters
+      {activeCount > 0 ? (
+        <span className="text-muted-foreground text-[11px]">
+          ({activeCount})
+        </span>
+      ) : null}
+    </>
+  );
 
   return (
     <aside className="w-full shrink-0 sm:w-56">
@@ -336,23 +349,23 @@ export function TasksFilterSidebar() {
           would pin a full-height panel over the list. */}
       <div className="bg-card/95 rounded-lg border border-[#6f88b4]/20 p-3 shadow-xs sm:sticky sm:top-4">
         <div className="mb-2 flex items-center justify-between">
+          {/* Only the phone layout hides the body, so only it gets a control —
+              at sm+ a toggle would be a no-op reporting a false expanded state. */}
           <button
             type="button"
             onClick={() => setMobileOpen((open) => !open)}
             aria-expanded={mobileOpen}
-            className="flex items-center gap-1.5 text-sm font-medium sm:cursor-default"
+            aria-controls={FILTERS_BODY_ID}
+            className="flex items-center gap-1.5 text-sm font-medium sm:hidden"
           >
-            <Filter className="h-3.5 w-3.5" />
-            Filters
-            {activeCount > 0 ? (
-              <span className="text-muted-foreground text-[11px]">
-                ({activeCount})
-              </span>
-            ) : null}
+            {filtersLabel}
             <ChevronDown
-              className={`h-3.5 w-3.5 transition-transform sm:hidden ${mobileOpen ? "rotate-180" : ""}`}
+              className={`h-3.5 w-3.5 transition-transform ${mobileOpen ? "rotate-180" : ""}`}
             />
           </button>
+          <span className="hidden items-center gap-1.5 text-sm font-medium sm:flex">
+            {filtersLabel}
+          </span>
           <div className="flex items-center gap-1">
             <SavedFiltersMenu />
             {activeCount > 0 || searchQuery.trim().length > 0 ? (
@@ -372,7 +385,10 @@ export function TasksFilterSidebar() {
           </div>
         </div>
 
-        <div className={mobileOpen ? undefined : "hidden sm:block"}>
+        <div
+          id={FILTERS_BODY_ID}
+          className={mobileOpen ? undefined : "hidden sm:block"}
+        >
           <div className="mb-3 border-b border-[#6f88b4]/10 pb-3">
             <div className="relative">
               <Input

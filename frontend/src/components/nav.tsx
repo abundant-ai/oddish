@@ -54,9 +54,13 @@ const navSwitcherAppearance = {
   },
   elements: {
     rootBox: "flex items-center",
-    // Capped on phones so a long org name truncates instead of widening the bar.
+    // Capped on phones so a long org name truncates instead of widening the
+    // bar. Every flex ancestor of the label needs min-w-0, or its min-content
+    // width wins over the cap and the name overflows instead of truncating.
     organizationSwitcherTrigger:
-      "max-w-[35vw] rounded-full border border-[#6f88b4]/20 bg-background/70 px-2.5 py-1.5 text-sm text-foreground hover:border-[#85b85c]/20 hover:bg-muted data-[state=open]:bg-muted sm:max-w-none",
+      "max-w-[35vw] overflow-hidden rounded-full border border-[#6f88b4]/20 bg-background/70 px-2.5 py-1.5 text-sm text-foreground hover:border-[#85b85c]/20 hover:bg-muted data-[state=open]:bg-muted sm:max-w-none",
+    organizationPreview: "min-w-0",
+    organizationPreviewTextContainer: "min-w-0",
     organizationPreviewMainIdentifier:
       "truncate text-sm font-medium text-foreground",
     organizationSwitcherTriggerIcon: "text-muted-foreground",
