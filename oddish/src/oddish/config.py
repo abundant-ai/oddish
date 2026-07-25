@@ -146,8 +146,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Pin of abundant-ai/harbor@main (upstream-style NetworkPolicy; no fork Modal CIDR stack).
-HARBOR_DEFAULT_SHA = "12929b0ec9386f983ec9243b5daadd6b80d1010a"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #8
+# (fail-closed Compose DinD egress) merged as this commit.
+HARBOR_DEFAULT_SHA = "4d3c4790fdb81d099200fa031ec798213b363dc0"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -945,22 +946,39 @@ def _normalize_model_provider(provider: str) -> str | None:
 
 
 def _get_provider_from_model(model_name: str) -> str | None:
+    """Canonical provider for a model id, or ``None`` when not classifiable.
+
+    Shares the single resolution ladder in ``_infer_provider_prefix`` with
+    ``infer_model_provider_prefix`` so a future provider or alias fix lands in
+    one place. This caller differs only in two explicit policies: it does not
+    apply the bare-id heuristics, and it does not fall back to the raw prefix
+    for a provider the normalizer does not recognise -- an unknown provider must
+    stay ``None`` here rather than leak an unnormalized name to callers.
+    """
     if looks_like_bedrock_model_id(model_name):
         return "bedrock"
-    provider_prefix, _ = split_provider_model_name(model_name)
-    if provider_prefix:
-        return _normalize_model_provider(provider_prefix)
-    try:
-        _, llm_provider, _, _ = get_llm_provider(model=model_name)
-    except Exception:
-        llm_provider = None
-    if llm_provider:
-        return _normalize_model_provider(str(llm_provider))
-    return None
+    prefix = _infer_provider_prefix(model_name, allow_bare_heuristics=False)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix)
 
 
-def _infer_provider_prefix(model_name: str) -> str | None:
-    """Infer a canonical provider prefix for a model name, if possible."""
+def _infer_provider_prefix(
+    model_name: str, *, allow_bare_heuristics: bool = True
+) -> str | None:
+    """Infer a canonical provider prefix for a model name, if possible.
+
+    The single resolution ladder shared by ``infer_model_provider_prefix`` and
+    ``_get_provider_from_model``: explicit ``provider/`` prefix, then litellm,
+    then -- only when *allow_bare_heuristics* -- the bare-id heuristics. Callers
+    that must not guess from an unprefixed id pass ``allow_bare_heuristics=False``.
+
+    Adding a rung ABOVE the ``allow_bare_heuristics`` gate changes both callers,
+    and ``_get_provider_from_model`` decides whether Azure credentials are minted
+    (``_trial_uses_openai_provider``) and which provider key a job-scoped token
+    carries (``job_tokens.scoped_model_env``) -- so a rung meant only for host
+    inference must go BELOW the gate.
+    """
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         normalized = provider_prefix.strip().lower()
@@ -973,6 +991,9 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     if llm_provider:
         normalized = str(llm_provider).strip().lower()
         return normalized or None
+
+    if not allow_bare_heuristics:
+        return None
 
     # Heuristic fallback for common bare model aliases.
     lowered = model_name.strip().lower()
@@ -994,6 +1015,29 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         return XAI_PROVIDER
 
     return None
+
+
+def infer_model_provider_prefix(model_name: str | None) -> str | None:
+    """Canonical provider for a model id, bare or slash-prefixed.
+
+    Resolves ``openai/gpt-x`` and bare ``gpt-x`` / ``o3`` alike to their provider
+    so transport-key derivation does not depend on the id being slash-prefixed,
+    and normalizes provider aliases (``claude`` -> ``anthropic``, ``vertex_ai`` /
+    ``palm`` -> ``gemini``, ``moonshotai`` -> ``moonshot``, ...) to their canonical
+    name so key/host maps keyed on the canonical provider match. Falls back to the
+    raw prefix when the provider is unknown to the normalizer.
+    """
+    if not model_name:
+        return None
+    # Bare Bedrock ids (e.g. ``global.anthropic.*``) carry no slash prefix and
+    # are not litellm-classifiable, so resolve them explicitly the way
+    # _get_provider_from_model does before falling through to prefix inference.
+    if looks_like_bedrock_model_id(model_name):
+        return "bedrock"
+    prefix = _infer_provider_prefix(model_name)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix) or prefix
 
 
 # Canonical deployed-backend API base URLs (single source of truth; the CLI in
@@ -1107,9 +1151,15 @@ class Settings(BaseSettings):
     live_tail_interval_sec: float = 30.0
 
     harbor_source_repo: str = "abundant-ai/harbor"
-    # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
-    # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "main"
+    # Ref the probe `harbor src` command fetches (a codeload tarball, which takes
+    # a branch, tag, or commit alike). It is HARBOR_DEFAULT_SHA -- the exact
+    # commit baked into the worker image -- and not the floating branch the
+    # dependency source tracks: a branch here would resolve to whatever main is
+    # at request time, so the moment harbor main moved past the lock a probe
+    # would read different code than the trial it is probing. Deriving it from
+    # the constant keeps the two aligned by construction, so a re-pin cannot
+    # move the worker without moving the probe.
+    harbor_source_ref: str = HARBOR_DEFAULT_SHA
 
     registry_auth_key: str | None = None
 
@@ -1129,7 +1179,15 @@ class Settings(BaseSettings):
     # once stopped for ``daytona_auto_delete_interval_mins`` it is deleted.
     # This is the backstop for sandboxes that escape explicit teardown via
     # ``cancel_job_by_worker``; 0 disables auto-stop, so keep it positive.
-    daytona_auto_stop_interval_mins: int = 30
+    # Ephemeral sandboxes (below) force ``auto_delete_interval=0`` harbor-side,
+    # so an auto-stop there is an immediate delete. 30min was short enough
+    # that the idle window during a separate-verifier artifact upload
+    # (GB-scale ``.lake`` payloads on the formal-verification tasks) got the
+    # verifier sandbox reaped mid-upload -- surfacing as ``DaytonaError 404:
+    # not found: sandbox <id> ... (it has been deleted)`` on
+    # ``/toolbox/<id>/files/bulk-upload``. 16 trials in experiment
+    # ``e127df61`` died that way on 2026-07-24.
+    daytona_auto_stop_interval_mins: int = 120
     daytona_auto_delete_interval_mins: int = 60
 
     # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
