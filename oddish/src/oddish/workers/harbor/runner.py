@@ -158,6 +158,13 @@ _GROK_RUNTIME_SECRET_KEYS = (
 # (cursor_cli.py reads CURSOR_API_KEY from os.environ). Folded into the redaction
 # map for the same reason -- credential, not a route: redaction coverage only.
 _CURSOR_RUNTIME_SECRET_KEYS = ("CURSOR_API_KEY",)
+# Ambient Azure OpenAI credentials, shared by both spellings of the provider
+# below so the two rows cannot drift apart.
+_AZURE_RUNTIME_SECRET_KEYS = (
+    "AZURE_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "OPENAI_API_KEY",
+)
 # Provider-driven credential fold for stock agents (notably mini-swe) that
 # authenticate from the worker os.environ by the model's provider rather than a
 # fixed agent harness. Keyed on the CANONICAL provider from
@@ -173,8 +180,13 @@ _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
     # Oddish routes OpenAI-family jobs through Azure OpenAI by default, and an
     # explicit ``azure/`` id is a first-class restricted provider (it resolves
     # real transport keys and a real host), so its ambient credentials need the
-    # same redaction coverage as every other provider here.
-    "azure": ("AZURE_API_KEY", "AZURE_OPENAI_API_KEY", "OPENAI_API_KEY"),
+    # same redaction coverage as every other provider here. Both spellings are
+    # listed for the same reason _model_transport_base_url_keys lists both:
+    # ``azure_openai`` is not in the normalizer's provider set, so
+    # infer_model_provider_prefix passes it through verbatim and a map keyed on
+    # only ``azure`` would silently miss every ``azure_openai/`` trial.
+    "azure": _AZURE_RUNTIME_SECRET_KEYS,
+    "azure_openai": _AZURE_RUNTIME_SECRET_KEYS,
     "anthropic": (
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -284,33 +296,51 @@ def _resolved_runtime_transport_env(
 
 def _drop_nonconsumed_agent_transport_routes(
     agent_config: HarborAgentConfig,
+    worker_minted_env: Mapping[str, str] | None = None,
 ) -> None:
-    """Drop worker-minted transport routes the effective agent never consumes.
+    """Drop WORKER-MINTED transport routes the effective agent never consumes.
 
     Job-scoped credential injection (``job_tokens.scoped_model_env``) writes the
     model provider's full route env -- for OpenAI-family that includes
     ``OPENAI_BASE_URL`` and the Azure aliases -- into ``agent_config.env``, a
-    channel the worker-transport filter above never sees. Caller-submitted
-    routes were already rejected (``reject_submitted_restricted_routes``), so
-    any known transport key still present here is worker-minted. An agent that
-    fronts its own transport (e.g. Cursor on an ``openai/`` model) does not
+    channel the worker-transport filter above never sees. An agent that fronts
+    its own transport (e.g. Cursor or Gemini on an ``openai/`` model) does not
     consume those routes: left in place they trip the fail-closed "does not
-    consume" guard and kill an otherwise valid trial before ``Job.create``, and
-    they would hand the worker's private endpoint to a sandbox that never dials
-    it. Credentials and non-route keys are preserved; an indeterminate
-    effective agent (``consumed`` is ``None``) is left untouched, matching
-    ``_resolved_runtime_transport_env``.
+    consume" guard and kill an otherwise valid trial before ``Job.create``.
+    Dropping them also keeps the worker's private endpoint out of a sandbox that
+    never dials it -- but only in combination with the profile pinning its own
+    transport (``infer_model=False``), since host inference would otherwise
+    re-derive that same endpoint from the model id after this drop.
+
+    Only routes present in *worker_minted_env* (same key AND same value) are
+    dropped. Everything else is deliberately left for the fail-closed guard,
+    because silently deleting it would turn that guard into a no-op: a submitted
+    ``extra_env`` naming an irrelevant transport still fails the trial rather
+    than disappearing. That deliberately errs toward failing closed --
+    *worker_minted_env* carries the provider env and job-scoped token env, not
+    routes ``_build_agent_config`` shapes in (e.g. the ``ANTHROPIC_BASE_URL`` a
+    z.ai/Fireworks claude-code trial gets), so those survive here too. For every
+    stock shape that is harmless, since the class that receives such a route
+    also consumes it; a mismatched caller ``import_path`` would fail closed.
+
+    Credentials and non-route keys are preserved, and an indeterminate effective
+    agent (``consumed`` is ``None``) is left untouched, matching
+    ``_resolved_runtime_transport_env``. Passing no *worker_minted_env* drops
+    nothing, so the default is fail-closed rather than fail-open.
     """
     consumed = consumed_transport_base_url_keys(agent_config)
     if consumed is None:
         return
     allowed = frozenset(consumed)
+    minted = dict(worker_minted_env or {})
 
     def _filtered(mapping: Mapping[str, Any]) -> dict[str, Any]:
         return {
             key: value
             for key, value in mapping.items()
-            if key not in _KNOWN_TRANSPORT_BASE_URL_KEYS or key in allowed
+            if key not in _KNOWN_TRANSPORT_BASE_URL_KEYS
+            or key in allowed
+            or minted.get(key) != value
         }
 
     if agent_config.env:
@@ -359,7 +389,14 @@ def _runtime_transport_redactions(
     # swap (e.g. Cursor, which keeps the public model and never registers a
     # deployment->public replacement); for agents that do swap, that later
     # replacement simply overrides this one.
-    sensitive_fragments = ("key", "token", "secret", "password", "credential", "deployment")
+    sensitive_fragments = (
+        "key",
+        "token",
+        "secret",
+        "password",
+        "credential",
+        "deployment",
+    )
     route_fragments = ("url", "base", "endpoint")
     for key, value in runtime_env.items():
         if not value:
@@ -385,9 +422,7 @@ def _redact_trial_hook_event(
     if not replacements:
         return event
     updates = {
-        name: redact_exact_value(
-            getattr(event, name), replacements, _depth=1
-        )
+        name: redact_exact_value(getattr(event, name), replacements, _depth=1)
         for name in type(event).model_fields
         if name != "environment"
     }
@@ -631,9 +666,7 @@ def capture_verifier_resources(
         for step in task.steps or [None]:
             env = resolve_effective_verifier_env_config(task, step)
             if env is not None:
-                return _resources_from_environment_config(
-                    env, hc.environment, provider
-                )
+                return _resources_from_environment_config(env, hc.environment, provider)
         return None
     except Exception:
         return None
@@ -685,7 +718,11 @@ def capture_live_sandbox_resources(
             price_multiplier=Decimal(1),
             container_class="sandbox",
             spec_source=(
-                "override" if has_override else "pinned" if pinned else "provider_default"
+                "override"
+                if has_override
+                else "pinned"
+                if pinned
+                else "provider_default"
             ),
             cpu_enforcement_mode=cpu_mode.value,
             mem_enforcement_mode=mem_mode.value,
@@ -953,6 +990,7 @@ def _apply_daytona_compose_restricted_network_profile(
     environment_config: HarborEnvironmentConfig,
     agent_config: HarborAgentConfig,
     runtime_transport_env: dict[str, str] | None = None,
+    worker_minted_env: Mapping[str, str] | None = None,
 ) -> RestrictedNetworkProfile | None:
     """Apply the class capability contract only to Daytona Compose/DinD."""
     if not _supports_daytona_compose_restricted_agent_network(
@@ -965,6 +1003,14 @@ def _apply_daytona_compose_restricted_network_profile(
     # this restricted Compose phase. Public and non-Compose trials retain the
     # stock Harbor agent class.
     _apply_gemini_cli_oddish_wrapper(agent_config)
+    # Drop non-consumed routes only once the EFFECTIVE class is final. The
+    # wrapper above swaps stock ``GeminiCli`` -- which is absent from the
+    # compatibility registry, so consumption resolves to ``None`` and the drop
+    # is a no-op -- for ``OddishGeminiCli``. Filtering before the swap would
+    # therefore leave worker-minted routes in the agent env and fail closed
+    # here on routes Gemini does not consume, the exact failure the drop exists
+    # to prevent.
+    _drop_nonconsumed_agent_transport_routes(agent_config, worker_minted_env)
     resolved_env = _resolved_agent_profile_env(agent_config)
     resolved_env.update(
         _resolved_runtime_transport_env(
@@ -985,6 +1031,7 @@ def _apply_restricted_agent_network_defaults(
     environment_config: HarborEnvironmentConfig,
     agent_config: HarborAgentConfig,
     runtime_transport_env: dict[str, str] | None = None,
+    worker_minted_env: Mapping[str, str] | None = None,
 ) -> RestrictedNetworkProfile | None:
     """Apply the Compose bridge without changing existing phase behavior."""
     profile = _apply_daytona_compose_restricted_network_profile(
@@ -992,6 +1039,7 @@ def _apply_restricted_agent_network_defaults(
         environment_config=environment_config,
         agent_config=agent_config,
         runtime_transport_env=runtime_transport_env,
+        worker_minted_env=worker_minted_env,
     )
     if profile is not None:
         return profile
@@ -1391,13 +1439,6 @@ async def run_harbor_trial_async(
                     openai_env,
                     agent_config=agent_config,
                 )
-                # Same consumed-route drop for the agent-env channel:
-                # job-scoped token injection lands the provider's routes in
-                # agent_config.env, which the worker-transport filter above
-                # never sees. Runs after the deployment->public swap for the
-                # same reason as the resolution above.
-                _drop_nonconsumed_agent_transport_routes(agent_config)
-
             if restricted_compose_kind == "static" and not (
                 is_static_restricted_agent_supported(agent_config)
             ):
@@ -1432,6 +1473,14 @@ async def run_harbor_trial_async(
                 environment_config=env_config,
                 agent_config=agent_config,
                 runtime_transport_env=runtime_transport_env,
+                # Routes the WORKER minted for this trial: the provider env it
+                # resolved, plus any job-scoped token env it injected into the
+                # agent config. Only these may be dropped as non-consumed; any
+                # other transport key keeps failing closed.
+                worker_minted_env={
+                    **(openai_env or {}),
+                    **(extra_agent_env or {}),
+                },
             )
             # Neither restricted kind serializes extra_allowed_hosts: the
             # dynamic Compose profile grants hosts via the runtime-only

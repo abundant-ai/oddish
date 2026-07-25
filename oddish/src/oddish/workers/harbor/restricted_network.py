@@ -397,9 +397,7 @@ def _selected_transport_hosts(
 
     inferred = (
         tuple(
-            outbound_hosts_for_model(
-                agent_config.model_name, infer_bare_provider=True
-            )
+            outbound_hosts_for_model(agent_config.model_name, infer_bare_provider=True)
         )
         if infer_model
         else ()
@@ -639,7 +637,16 @@ def _gemini_profile(
         agent_config,
         resolved_env,
         base_url_keys=_consumed_base_url_keys_for_class(agent_class, agent_config),
+        # gemini-cli is transport-authoritative: it always fronts the Gemini API
+        # (or the explicit base URL above), so pin its host and do NOT let
+        # model-id inference substitute another provider's host -- mirroring
+        # _cursor_profile and _grok_profile. Without this, a gemini-cli trial
+        # carrying a non-Gemini model id resolved that provider's hosts instead
+        # (for OpenAI-family: api.openai.com plus the worker's private Azure
+        # endpoint), granting egress the CLI never dials while never granting
+        # the Gemini host it does.
         default_hosts=_GEMINI_RUNTIME_HOSTS,
+        infer_model=False,
     )
     return RestrictedNetworkProfile(
         outbound_hosts=hosts,

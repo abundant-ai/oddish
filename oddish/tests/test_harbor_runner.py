@@ -377,6 +377,134 @@ def test_cursor_ambient_api_key_enters_redaction_map(monkeypatch):
     assert replacements["cursor-secret"] == "[REDACTED]"
 
 
+def test_route_drop_runs_after_the_gemini_wrapper_swaps_the_class():
+    """The drop must see the FINAL effective class, not the pre-wrapper one.
+
+    _apply_gemini_cli_oddish_wrapper swaps stock GeminiCli (absent from the
+    compatibility registry, so consumption resolves to None and the drop is a
+    no-op) for OddishGeminiCli. Dropping before the swap therefore left
+    worker-minted routes in the agent env and the profile then failed closed on
+    routes Gemini does not consume -- the exact failure the drop prevents.
+    """
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from oddish.workers.harbor.restricted_network import (
+        consumed_transport_base_url_keys,
+        resolve_effective_agent_class,
+    )
+
+    azure_base = "https://foo.openai.azure.com/openai/v1"
+    minted = {
+        "OPENAI_API_KEY": "sk-azure",
+        "OPENAI_BASE_URL": azure_base,
+        "AZURE_API_BASE": azure_base,
+        "AZURE_OPENAI_ENDPOINT": "https://foo.openai.azure.com",
+    }
+    agent_config = HarborAgentConfig(
+        name="gemini-cli", model_name="openai/gpt-4o", env=dict(minted)
+    )
+    # Pre-wrapper the stock class is unregistered, so a drop here is a no-op.
+    assert consumed_transport_base_url_keys(agent_config) is None
+
+    with patch.object(
+        harbor_runner,
+        "_supports_daytona_compose_restricted_agent_network",
+        return_value=True,
+    ):
+        profile = harbor_runner._apply_daytona_compose_restricted_network_profile(
+            task_path=Path("/tmp"),
+            environment_config=None,
+            agent_config=agent_config,
+            runtime_transport_env={},
+            worker_minted_env=minted,
+        )
+
+    assert profile is not None
+    assert "OddishGeminiCli" in resolve_effective_agent_class(agent_config).__qualname__
+    for route_key in ("OPENAI_BASE_URL", "AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT"):
+        assert route_key not in agent_config.env
+    assert agent_config.env["OPENAI_API_KEY"] == "sk-azure"
+
+
+def test_gemini_profile_pins_its_transport_instead_of_inferring():
+    """gemini-cli fronts the Gemini API, so a foreign model id must not reroute it.
+
+    With host inference on, a gemini-cli trial carrying an ``openai/`` model
+    resolved OpenAI-family hosts -- api.openai.com plus the worker's PRIVATE
+    Azure endpoint -- while never granting the Gemini host the CLI actually
+    dials. Pinning (infer_model=False) matches _cursor_profile/_grok_profile.
+    """
+    from pathlib import Path
+    from unittest.mock import patch
+
+    azure_base = "https://private-worker.openai.azure.com/openai/v1"
+    minted = {
+        "OPENAI_API_KEY": "sk-azure",
+        "OPENAI_BASE_URL": azure_base,
+        "AZURE_API_BASE": azure_base,
+        "AZURE_OPENAI_ENDPOINT": "https://private-worker.openai.azure.com",
+    }
+    agent_config = HarborAgentConfig(
+        name="gemini-cli", model_name="openai/gpt-4o", env=dict(minted)
+    )
+    with patch.object(
+        harbor_runner,
+        "_supports_daytona_compose_restricted_agent_network",
+        return_value=True,
+    ):
+        profile = harbor_runner._apply_daytona_compose_restricted_network_profile(
+            task_path=Path("/tmp"),
+            environment_config=None,
+            agent_config=agent_config,
+            runtime_transport_env={},
+            worker_minted_env=minted,
+        )
+
+    assert profile.outbound_hosts == ("generativelanguage.googleapis.com",)
+    assert not any("azure" in host for host in profile.outbound_hosts)
+
+    # An explicit Gemini route still wins over the pinned default.
+    routed = HarborAgentConfig(
+        name="gemini-cli",
+        model_name="gemini/pro",
+        env={"GOOGLE_GEMINI_BASE_URL": "https://relay.corp/v1"},
+    )
+    with patch.object(
+        harbor_runner,
+        "_supports_daytona_compose_restricted_agent_network",
+        return_value=True,
+    ):
+        routed_profile = (
+            harbor_runner._apply_daytona_compose_restricted_network_profile(
+                task_path=Path("/tmp"),
+                environment_config=None,
+                agent_config=routed,
+                runtime_transport_env={},
+            )
+        )
+    assert routed_profile.outbound_hosts == ("relay.corp",)
+
+
+def test_both_azure_provider_spellings_fold_ambient_credentials(monkeypatch):
+    """``azure_openai`` is passed through verbatim by the provider normalizer.
+
+    Transport selection already treats it as first-class, so a redaction map
+    keyed only on ``azure`` would silently miss every ``azure_openai/`` trial.
+    """
+    monkeypatch.setenv("AZURE_API_KEY", "azure-secret")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-openai-secret")
+
+    for model in ("azure/my-deployment", "azure_openai/my-deployment"):
+        runtime_env = harbor_runner._resolved_runtime_transport_env(
+            {},
+            agent_config=HarborAgentConfig(name="mini-swe-agent", model_name=model),
+        )
+        replacements = harbor_runner._runtime_transport_redactions(runtime_env)
+        assert replacements.get("azure-secret") == "[REDACTED]", model
+        assert replacements.get("azure-openai-secret") == "[REDACTED]", model
+
+
 def test_scoped_token_routes_dropped_for_nonconsuming_agent():
     """Job-scoped token injection must not kill a self-fronting agent's trial.
 
@@ -415,7 +543,7 @@ def test_scoped_token_routes_dropped_for_nonconsuming_agent():
             base_url_keys=consumed,
         )
 
-    harbor_runner._drop_nonconsumed_agent_transport_routes(cursor)
+    harbor_runner._drop_nonconsumed_agent_transport_routes(cursor, scoped)
     for route_key in ("OPENAI_BASE_URL", "AZURE_API_BASE", "AZURE_OPENAI_ENDPOINT"):
         assert route_key not in cursor.env
     assert cursor.env["OPENAI_API_KEY"] == "sk-azure"
@@ -432,8 +560,40 @@ def test_scoped_token_routes_dropped_for_nonconsuming_agent():
     codex = HarborAgentConfig(
         name="codex", model_name="openai/gpt-5.6-sol", env=dict(scoped)
     )
-    harbor_runner._drop_nonconsumed_agent_transport_routes(codex)
+    harbor_runner._drop_nonconsumed_agent_transport_routes(codex, scoped)
     assert codex.env == scoped
+
+    # A route the worker did NOT mint keeps failing closed rather than being
+    # silently deleted -- otherwise the drop would disable the guard.
+    unattested = HarborAgentConfig(
+        name="cursor-cli",
+        model_name="openai/gpt-5.6-sol",
+        env={"ANTHROPIC_BASE_URL": "https://unattested-route.test/v1"},
+    )
+    harbor_runner._drop_nonconsumed_agent_transport_routes(unattested, scoped)
+    assert unattested.env["ANTHROPIC_BASE_URL"] == "https://unattested-route.test/v1"
+
+    # Same key as a minted route but a DIFFERENT value is not worker-minted
+    # either: the drop must not treat key-match alone as attestation.
+    swapped = HarborAgentConfig(
+        name="cursor-cli",
+        model_name="openai/gpt-5.6-sol",
+        env={"OPENAI_BASE_URL": "https://attacker-swapped.test/v1"},
+    )
+    harbor_runner._drop_nonconsumed_agent_transport_routes(swapped, scoped)
+    assert swapped.env["OPENAI_BASE_URL"] == "https://attacker-swapped.test/v1"
+    with pytest.raises(RestrictedNetworkProfileError):
+        _selected_transport_hosts(
+            swapped,
+            harbor_runner._resolved_agent_profile_env(swapped),
+            base_url_keys=consumed_transport_base_url_keys(swapped),
+        )
+    with pytest.raises(RestrictedNetworkProfileError):
+        _selected_transport_hosts(
+            unattested,
+            harbor_runner._resolved_agent_profile_env(unattested),
+            base_url_keys=consumed_transport_base_url_keys(unattested),
+        )
 
 
 def test_gemini_runtime_env_keys_are_single_sourced_from_model_hosts():
