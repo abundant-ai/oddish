@@ -1012,15 +1012,34 @@ def _inject_restricted_agent_model_hosts(
     # agent phase for nothing. This is the same consumed-route filter the
     # Compose path applies; an indeterminate effective agent leaves the env
     # untouched, exactly as it does there.
+    # An EMPTY consumed-key set is ambiguous, so it cannot be the whole filter:
+    # it means "transport-free by design" for nop/oracle, but also "model-driven
+    # agent whose id was rewritten to an opaque deployment" for mini-swe --
+    # ``azure-gpt-5-4`` classifies as no provider at all. Filtering on that alone
+    # would re-break exactly the trials this function exists to fix, for every
+    # deployment an operator did not happen to name after the model.
+    #
+    # Resolve the ambiguity by CLASS, which no model rewrite can perturb:
+    # transport-free integrity agents and agents that supply their own transport
+    # get nothing; everyone else is granted the route the worker minted,
+    # narrowed by their consumed keys when those are known.
     worker_hosts: tuple[str, ...] = ()
-    if runtime_transport_env:
-        consumed_env = _resolved_runtime_transport_env(
-            runtime_transport_env, agent_config=agent_config
-        )
+    if (
+        runtime_transport_env
+        and not agent_keeps_public_model_identity(agent_config)
+        and not is_static_restricted_agent_supported(agent_config)
+    ):
+        routed = dict(runtime_transport_env)
+        consumed = consumed_transport_base_url_keys(agent_config)
+        if consumed:
+            allowed = frozenset(consumed)
+            routed = {
+                key: value
+                for key, value in routed.items()
+                if key not in _KNOWN_TRANSPORT_BASE_URL_KEYS or key in allowed
+            }
         worker_hosts = tuple(
-            normalize_allowed_hosts(
-                outbound_hosts_for_model(None, agent_env=consumed_env)
-            )
+            normalize_allowed_hosts(outbound_hosts_for_model(None, agent_env=routed))
         )
     if worker_hosts:
         private = set(worker_hosts)

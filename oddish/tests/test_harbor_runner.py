@@ -4093,6 +4093,25 @@ def test_single_container_grants_only_routes_the_agent_consumes(
     assert runtime == ("private-worker.openai.azure.com",)
     assert "private-worker.openai.azure.com" not in serialized
 
+    # A model-driven harness must be granted it too, for ANY deployment name.
+    # An operator names deployments freely (ODDISH_AZURE_OPENAI_DEPLOYMENTS
+    # documents "azure-gpt-5-4"), and such an id classifies as no provider at
+    # all -- so a consumed-key filter alone would strip the route and re-break
+    # exactly the trials this fix restores.
+    for deployment in ("gpt-4o", "azure-gpt-5-4", "my-deployment"):
+        runtime, serialized = run(
+            HarborAgentConfig(name="mini-swe-agent", model_name=deployment)
+        )
+        assert runtime == ("private-worker.openai.azure.com",), deployment
+        assert "private-worker.openai.azure.com" not in serialized, deployment
+
+    # Transport-free integrity agents are granted nothing, even though their
+    # consumed-key set is empty for a different reason.
+    for name in ("nop", "oracle"):
+        runtime, serialized = run(HarborAgentConfig(name=name, model_name="gpt-4o"))
+        assert runtime == (), name
+        assert "private-worker.openai.azure.com" not in serialized, name
+
     # Does NOT consume it -> not granted, and each keeps its own transport.
     for name, model, expected in (
         ("cursor-cli", "cursor/composer", "*.cursor.sh"),
