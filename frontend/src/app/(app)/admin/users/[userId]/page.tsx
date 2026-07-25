@@ -351,6 +351,13 @@ export default function AdminUserCostPage({
   const windowLabel =
     WINDOW_OPTIONS.find((o) => o.value === windowDays)?.label ?? windowDays;
   const status = (error as { status?: number } | undefined)?.status;
+  // totals.cost_usd is inference alone; the header badge reads as this user's
+  // whole window spend, so it sums the three parts broken out below it.
+  const grandTotal = data
+    ? data.totals.cost_usd +
+      seriesTotal(data.series_qa_by_model) +
+      seriesTotal(data.series_compute_by_provider)
+    : 0;
 
   return (
     <Card>
@@ -363,8 +370,7 @@ export default function AdminUserCostPage({
             </CardTitle>
             {data && (
               <Badge variant="outline" className="text-xs">
-                {formatCostUsd(data.totals.cost_usd)} ·{" "}
-                {windowLabel.toLowerCase()}
+                total {formatCostUsd(grandTotal)} · {windowLabel.toLowerCase()}
               </Badge>
             )}
           </div>
