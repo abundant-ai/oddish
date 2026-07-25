@@ -146,8 +146,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Exact Harbor PR #8 revision baked into this preview worker.
-HARBOR_DEFAULT_SHA = "7490929fd2c2c0737884b38f2a89f2970b5aa59f"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #8
+# (fail-closed Compose DinD egress) merged as this commit.
+HARBOR_DEFAULT_SHA = "4d3c4790fdb81d099200fa031ec798213b363dc0"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1152,7 +1153,7 @@ class Settings(BaseSettings):
     harbor_source_repo: str = "abundant-ai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "7490929fd2c2c0737884b38f2a89f2970b5aa59f"
+    harbor_source_ref: str = "main"
 
     registry_auth_key: str | None = None
 
