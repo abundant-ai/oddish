@@ -231,6 +231,7 @@ export function TasksFilterSidebar() {
   }, [searchQuery]);
 
   const [addedKeys, setAddedKeys] = useState<string[]>([]);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   // Optional filters are shown when explicitly added OR already active (e.g.
   // restored from the URL on load).
@@ -331,9 +332,16 @@ export function TasksFilterSidebar() {
 
   return (
     <aside className="w-full shrink-0 sm:w-56">
-      <div className="bg-card/95 sticky top-4 rounded-lg border border-[#6f88b4]/20 p-3 shadow-xs">
+      {/* Sticky only beside the results; stacked above them on a phone it
+          would pin a full-height panel over the list. */}
+      <div className="bg-card/95 rounded-lg border border-[#6f88b4]/20 p-3 shadow-xs sm:sticky sm:top-4">
         <div className="mb-2 flex items-center justify-between">
-          <span className="flex items-center gap-1.5 text-sm font-medium">
+          <button
+            type="button"
+            onClick={() => setMobileOpen((open) => !open)}
+            aria-expanded={mobileOpen}
+            className="flex items-center gap-1.5 text-sm font-medium sm:cursor-default"
+          >
             <Filter className="h-3.5 w-3.5" />
             Filters
             {activeCount > 0 ? (
@@ -341,7 +349,10 @@ export function TasksFilterSidebar() {
                 ({activeCount})
               </span>
             ) : null}
-          </span>
+            <ChevronDown
+              className={`h-3.5 w-3.5 transition-transform sm:hidden ${mobileOpen ? "rotate-180" : ""}`}
+            />
+          </button>
           <div className="flex items-center gap-1">
             <SavedFiltersMenu />
             {activeCount > 0 || searchQuery.trim().length > 0 ? (
@@ -361,91 +372,101 @@ export function TasksFilterSidebar() {
           </div>
         </div>
 
-        <div className="mb-3 border-b border-[#6f88b4]/10 pb-3">
-          <div className="relative">
-            <Input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder="Search anything..."
-              className="h-8 w-full border-[#6f88b4]/20 pr-7"
-            />
-            <SearchSyntaxHelp>
-              <p className="font-medium">Search syntax</p>
-              <p className="text-muted-foreground">
-                Matches task name or author. Use the Tags filter below for tag
-                filtering.
-              </p>
-              <SearchSyntaxRow
-                example="node vulnerability"
-                hint="every word must match (AND)"
+        <div className={mobileOpen ? undefined : "hidden sm:block"}>
+          <div className="mb-3 border-b border-[#6f88b4]/10 pb-3">
+            <div className="relative">
+              <Input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search anything..."
+                className="h-8 w-full border-[#6f88b4]/20 pr-7"
               />
-              <SearchSyntaxRow example="auth OR rbac" hint="either word (OR)" />
-              <SearchSyntaxRow example={'"command exec"'} hint="exact phrase" />
-              <SearchSyntaxRow example="-no-skill" hint="exclude" />
-              <SearchSyntaxMultiRow
-                examples={["github:alice", "author:alice", "user:alice"]}
-                hint="by author — GitHub handle, email, or name"
-              />
-            </SearchSyntaxHelp>
+              <SearchSyntaxHelp>
+                <p className="font-medium">Search syntax</p>
+                <p className="text-muted-foreground">
+                  Matches task name or author. Use the Tags filter below for tag
+                  filtering.
+                </p>
+                <SearchSyntaxRow
+                  example="node vulnerability"
+                  hint="every word must match (AND)"
+                />
+                <SearchSyntaxRow
+                  example="auth OR rbac"
+                  hint="either word (OR)"
+                />
+                <SearchSyntaxRow
+                  example={'"command exec"'}
+                  hint="exact phrase"
+                />
+                <SearchSyntaxRow example="-no-skill" hint="exclude" />
+                <SearchSyntaxMultiRow
+                  examples={["github:alice", "author:alice", "user:alice"]}
+                  hint="by author — GitHub handle, email, or name"
+                />
+              </SearchSyntaxHelp>
+            </div>
           </div>
-        </div>
 
-        <div className="space-y-3">
-          {visibleDefs.map((def) => (
-            <FilterGroup
-              key={def.key}
-              def={def}
-              values={values}
-              set={set}
-              facets={facets}
-              facetsLoading={facetsLoading}
-              facetsError={Boolean(facetsError)}
-              onRetryFacets={() => mutateFacets()}
-              onRemove={def.pinned ? undefined : () => clearKey(def.key)}
-            />
-          ))}
-        </div>
+          <div className="space-y-3">
+            {visibleDefs.map((def) => (
+              <FilterGroup
+                key={def.key}
+                def={def}
+                values={values}
+                set={set}
+                facets={facets}
+                facetsLoading={facetsLoading}
+                facetsError={Boolean(facetsError)}
+                onRetryFacets={() => mutateFacets()}
+                onRemove={def.pinned ? undefined : () => clearKey(def.key)}
+              />
+            ))}
+          </div>
 
-        {inactiveDefs.length > 0 ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-3 w-full border-dashed text-xs"
+          {inactiveDefs.length > 0 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 w-full border-dashed text-xs"
+                >
+                  <Plus className="mr-1 h-3.5 w-3.5" />
+                  Add filter
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="z-30 max-h-80 overflow-auto"
               >
-                <Plus className="mr-1 h-3.5 w-3.5" />
-                Add filter
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="z-30 max-h-80 overflow-auto"
-            >
-              {(["Task", "Trial"] as const).map((group) => {
-                const groupDefs = inactiveDefs.filter((d) => d.group === group);
-                if (!groupDefs.length) return null;
-                return (
-                  <div key={group}>
-                    <DropdownMenuLabel className="text-muted-foreground text-[11px] uppercase">
-                      {group}
-                    </DropdownMenuLabel>
-                    {groupDefs.map((def) => (
-                      <DropdownMenuItem
-                        key={def.key}
-                        onSelect={() =>
-                          setAddedKeys((prev) => [...prev, def.key])
-                        }
-                      >
-                        {def.label}
-                      </DropdownMenuItem>
-                    ))}
-                  </div>
-                );
-              })}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
+                {(["Task", "Trial"] as const).map((group) => {
+                  const groupDefs = inactiveDefs.filter(
+                    (d) => d.group === group
+                  );
+                  if (!groupDefs.length) return null;
+                  return (
+                    <div key={group}>
+                      <DropdownMenuLabel className="text-muted-foreground text-[11px] uppercase">
+                        {group}
+                      </DropdownMenuLabel>
+                      {groupDefs.map((def) => (
+                        <DropdownMenuItem
+                          key={def.key}
+                          onSelect={() =>
+                            setAddedKeys((prev) => [...prev, def.key])
+                          }
+                        >
+                          {def.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </div>
+                  );
+                })}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </div>
       </div>
     </aside>
   );
