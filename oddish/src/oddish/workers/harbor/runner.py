@@ -73,6 +73,7 @@ from .restricted_network import (
     consumed_transport_base_url_keys,
     is_static_restricted_agent_supported,
     reject_submitted_restricted_routes,
+    set_runtime_allowed_hosts,
     set_runtime_model_name,
 )
 from .modal_debug import (
@@ -960,6 +961,7 @@ def _inject_restricted_agent_model_hosts(
     task_path: Path,
     environment_config: HarborEnvironmentConfig,
     agent_config: HarborAgentConfig,
+    runtime_transport_env: Mapping[str, str] | None = None,
 ) -> None:
     """Preserve the existing single-container model-host injection."""
     if not _supports_auto_restricted_agent_network(
@@ -979,9 +981,42 @@ def _inject_restricted_agent_model_hosts(
             agent_kwargs=agent_kwargs,
         )
     )
-    agent_config.extra_allowed_hosts = list(
-        dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts])
-    )
+    hosts = list(dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts]))
+
+    # The route the WORKER minted for this trial, resolved from the base URL it
+    # actually set rather than from a provider prefix. _build_agent_config
+    # rewrites model_name to the bare Azure deployment id, so the union above has
+    # no prefix to classify and grants nothing -- the restricted agent phase then
+    # starts with an empty allowlist and the agent cannot reach its own model
+    # API. Passing model_name=None selects precedence rule 1 of
+    # outbound_hosts_for_model (routed env only, no model heuristics), so this
+    # can only ever grant a host the worker itself routed to.
+    #
+    # That host is worker-private and must never reach config.json / result.json
+    # / lock files / uploaded artifacts, so it is granted through the same
+    # non-serialized runtime attribute restricted Compose uses, and SUBTRACTED
+    # from the serialized list. apply_harbor_patches() installs the consumer --
+    # the resolve_agent_phase_policy wrapper -- as the first statement of
+    # run_harbor_trial_async, before any Compose classification, so the channel
+    # is already live here and on Modal.
+    #
+    # Subtract rather than only top up what the union missed: that keeps "no
+    # worker-private route is ever serialized here" true regardless of what
+    # model_name happens to be, so a later runtime-model swap on this path
+    # cannot turn the union back into a leak.
+    worker_hosts: tuple[str, ...] = ()
+    if runtime_transport_env:
+        worker_hosts = tuple(
+            normalize_allowed_hosts(
+                outbound_hosts_for_model(None, agent_env=runtime_transport_env)
+            )
+        )
+    if worker_hosts:
+        private = set(worker_hosts)
+        hosts = [host for host in hosts if host not in private]
+        set_runtime_allowed_hosts(agent_config, worker_hosts)
+
+    agent_config.extra_allowed_hosts = hosts
 
 
 def _apply_daytona_compose_restricted_network_profile(
@@ -1053,6 +1088,7 @@ def _apply_restricted_agent_network_defaults(
         task_path=task_path,
         environment_config=environment_config,
         agent_config=agent_config,
+        runtime_transport_env=runtime_transport_env,
     )
     _apply_restricted_agent_web_tool_defaults(agent_config)
     return None

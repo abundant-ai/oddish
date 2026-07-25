@@ -3946,3 +3946,106 @@ def test_claude_code_environment_hosts_follow_routed_base_url():
 
     assert "api.z.ai" in hosts
     assert "api.anthropic.com" not in hosts
+
+
+@pytest.mark.parametrize(
+    "environment_type", [EnvironmentType.DAYTONA, EnvironmentType.MODAL]
+)
+def test_single_container_restricted_phase_grants_worker_model_route(
+    tmp_path, environment_type
+):
+    """A restricted single-container agent phase must reach its own model API.
+
+    _build_agent_config rewrites an Azure-routed model to the bare DEPLOYMENT id,
+    which strips the provider prefix the host union classifies on -- so the phase
+    started with an EMPTY allowlist and codex died with
+    "stream disconnected ... openai.azure.com" before running anything. Resolve
+    the route the worker actually minted instead, and grant it through the
+    non-serialized runtime channel so the private endpoint never lands in
+    persisted artifacts.
+    """
+    from oddish.workers.harbor.restricted_network import RUNTIME_ALLOWED_HOSTS_ATTR
+
+    azure_host = "worker-private.openai.azure.com"
+    worker_env = {
+        "OPENAI_API_KEY": "sk-azure",
+        "OPENAI_BASE_URL": f"https://{azure_host}/openai/v1",
+        "AZURE_API_BASE": f"https://{azure_host}/openai/v1",
+        "AZURE_OPENAI_ENDPOINT": f"https://{azure_host}",
+    }
+    task_path = _write_network_policy_task(tmp_path, compose=False)
+    agent_config = HarborAgentConfig(
+        import_path="oddish.workers.agents.codex:AzureCompatibleCodex",
+        model_name="gpt-5.6-sol",
+    )
+
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=HarborEnvironmentConfig(type=environment_type),
+        agent_config=agent_config,
+        runtime_transport_env=dict(worker_env),
+    )
+
+    # Granted where the agent phase can use it...
+    assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR, ()) == (azure_host,)
+    # ...and nowhere that gets persisted.
+    assert azure_host not in (agent_config.extra_allowed_hosts or [])
+    assert azure_host not in agent_config.model_dump_json()
+
+
+def test_single_container_injection_unchanged_without_worker_routes(tmp_path):
+    """Every shape that works today must stay byte-identical.
+
+    The worker route is additive and only resolves from an explicitly passed
+    transport env, so agents whose provider prefix survives (claude-code, grok)
+    and callers that pass no worker env keep exactly their current allowlist.
+    """
+    from oddish.workers.harbor.restricted_network import RUNTIME_ALLOWED_HOSTS_ATTR
+
+    for name, model, expected in (
+        (
+            "claude-code",
+            "anthropic/claude",
+            ["api.anthropic.com", "mcp-proxy.anthropic.com"],
+        ),
+        ("grok-build", "xai/grok-4", ["api.x.ai"]),
+        ("codex", "openai/gpt-4o", ["api.openai.com", "ab.chatgpt.com"]),
+    ):
+        agent_config = HarborAgentConfig(name=name, model_name=model)
+        harbor_runner._apply_restricted_agent_network_defaults(
+            task_path=_write_network_policy_task(tmp_path / name, compose=False),
+            environment_config=HarborEnvironmentConfig(type=EnvironmentType.DAYTONA),
+            agent_config=agent_config,
+        )
+        assert agent_config.extra_allowed_hosts == expected, name
+        assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR, ()) == (), name
+
+
+def test_worker_route_is_enforced_in_the_agent_phase_policy(tmp_path):
+    """End-to-end: the runtime grant must survive into the policy Harbor enforces."""
+    from harbor.models.task.config import TaskConfig as HarborTaskConfigModel
+    from harbor.trial import network_policy as network_policy_module
+
+    from oddish.workers.harbor.patches import apply_harbor_patches
+
+    apply_harbor_patches()
+    azure_host = "worker-private.openai.azure.com"
+    task_path = _write_network_policy_task(tmp_path, compose=False)
+    agent_config = HarborAgentConfig(
+        import_path="oddish.workers.agents.codex:AzureCompatibleCodex",
+        model_name="gpt-5.6-sol",
+    )
+    harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=HarborEnvironmentConfig(type=EnvironmentType.DAYTONA),
+        agent_config=agent_config,
+        runtime_transport_env={"OPENAI_BASE_URL": f"https://{azure_host}/openai/v1"},
+    )
+
+    task_config = HarborTaskConfigModel.model_validate_toml(
+        (task_path / "task.toml").read_text()
+    )
+    policy = network_policy_module.resolve_agent_phase_policy(
+        task_config, agent_config, task_config.environment.resolve_baseline()
+    )
+    assert azure_host in (policy.allowed_hosts or [])
