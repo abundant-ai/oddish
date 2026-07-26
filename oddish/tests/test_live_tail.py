@@ -772,15 +772,33 @@ def test_grok_fold_skips_blank_and_unparsable_lines():
     assert fold.feed_line(grok_line({"type": "end"})) == []
 
 
-def test_grok_fold_flushes_a_long_run_at_the_payload_clip():
+def test_grok_fold_flushes_a_long_run_before_it_overflows_the_payload_clip():
     fold = GrokBuildFold()
-    chunk = "x" * (live_tail.PAYLOAD_CLIP_CHARS // 2)
+    chunk = "x" * (live_tail.PAYLOAD_CLIP_CHARS // 2 + 1)
     assert fold.feed_line(grok_line({"type": "text", "text": chunk})) == []
-    # Second chunk reaches the clip, so the run flushes without a kind change.
+    # The second chunk would overflow the clip, so the buffered run is emitted
+    # first: no payload is ever built past the clip and truncated.
     assert fold.feed_line(grok_line({"type": "text", "text": chunk})) == [
-        {"kind": "message", "payload": {"text": chunk + chunk}}
+        {"kind": "message", "payload": {"text": chunk}}
     ]
-    assert fold.feed_line(grok_line({"type": "end"})) == []
+    assert fold.flush() == [{"kind": "message", "payload": {"text": chunk}}]
+
+
+def test_grok_fold_flush_gives_up_a_quiet_partial_run():
+    fold = GrokBuildFold()
+    fold.feed_line(grok_line({"type": "text", "text": "short answer"}))
+    assert fold.flush() == [{"kind": "message", "payload": {"text": "short answer"}}]
+    # The buffer is spent, so a second flush (next tick, or run teardown) is a
+    # no-op rather than a duplicate.
+    assert fold.flush() == []
+
+
+@pytest.mark.parametrize(
+    "fold",
+    [ClaudeUsageFold(), CodexUsageFold(), CursorUsageFold(), MiniSweUsageFold()],
+)
+def test_per_line_folds_have_nothing_to_flush(fold):
+    assert fold.flush() == []
 
 
 def test_grok_fold_drops_the_partial_buffer_on_truncate():
@@ -818,6 +836,32 @@ async def test_grok_tick_tails_stdout_and_skips_the_usage_checkpoint(monkeypatch
     ]
     # Grok's stdout carries no token usage, so the trial row is never updated.
     assert update_params(session) == []
+
+
+@pytest.mark.asyncio
+async def test_grok_tick_emits_a_partial_run_without_waiting_for_end(monkeypatch):
+    """A quiet same-kind stream must reach the panel on the tick, not at 2048 chars."""
+    session = patch_db(monkeypatch)
+    raw = grok_line({"type": "text", "text": "still working"}) + b"\n"
+    env = FakeEnv([b64(raw)])
+    tailer = make_tailer(env, agent="grok-build")
+    await tailer._tick()
+    assert [row["payload"]["text"] for row in insert_params(session)] == [
+        "still working"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_grok_run_teardown_emits_the_buffered_tail(monkeypatch):
+    """A run that dies before grok writes ``end`` still persists its last text."""
+    session = patch_db(monkeypatch)
+    # An empty tail reply, so the only text in play is what the fold already
+    # buffered before the run was told to stop.
+    tailer = make_tailer(FakeEnv([]), agent="grok-build")
+    tailer._feed_tail_chunk(grok_line({"type": "text", "text": "last words"}) + b"\n")
+    tailer.request_stop()
+    await tailer.run()
+    assert [row["payload"]["text"] for row in insert_params(session)] == ["last words"]
 
 
 def mini_trajectory(messages, model="anthropic/claude-opus-4-8", cost=None):

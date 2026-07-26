@@ -55,6 +55,15 @@ class Fold(Protocol):
 
     def totals(self) -> UsageTotals: ...
 
+    def flush(self) -> list[dict[str, Any]]:
+        """Emit anything buffered across lines, at end of tick and end of run.
+
+        Folds that emit per line have nothing to add and return ``[]``; a fold
+        that coalesces lines must give its buffer up here or lose it when the
+        stream goes quiet or the run ends.
+        """
+        ...
+
     def on_truncate(self) -> None:
         """Called when the tailed log shrinks (a new session re-teed the file)."""
         ...
@@ -209,6 +218,9 @@ class ClaudeUsageFold:
     @property
     def has_usage(self) -> bool:
         return bool(self.usage_by_id)
+
+    def flush(self) -> list[dict[str, Any]]:
+        return []
 
     def on_truncate(self) -> None:
         # Usage keys off unique per-message ids, so a re-teed log's fresh ids
@@ -373,6 +385,9 @@ class CodexUsageFold:
     def has_usage(self) -> bool:
         return self.usage is not None or self.banked != UsageTotals()
 
+    def flush(self) -> list[dict[str, Any]]:
+        return []
+
     def on_truncate(self) -> None:
         # turn.completed usage is cumulative per codex session; a re-teed log
         # restarts that counter, so bank the last session's total before it is
@@ -479,6 +494,9 @@ class CursorUsageFold:
     def has_usage(self) -> bool:
         return self._seen_usage
 
+    def flush(self) -> list[dict[str, Any]]:
+        return []
+
     def on_truncate(self) -> None:
         self._totals = UsageTotals(model=self.model)
         self._seen_usage = False
@@ -548,14 +566,20 @@ class GrokBuildFold:
     and no token usage** -- those live in the CLI's on-disk session store, which
     is copied into the trial logs only after the run ends -- so this fold never
     reports usage and the trial's token/cost columns stay untouched while it is
-    live. The ``--output-format json`` fallback arms emit a single blob at exit
-    rather than a stream, so those runs simply produce their events at the end.
+    live. Only the ``streaming-json`` arms feed this fold: the
+    ``--output-format json`` fallback arms emit one blob at exit, which yields a
+    live transcript only if it happens to be a single-line JSON object -- a
+    pretty-printed or array-shaped blob is not line-parsable and the panel stays
+    empty for that run. Those runs still get the full post-run trajectory, which
+    parses the blob whole (``grok_build_trajectory.py``).
 
     Grok streams text in small chunks. Emitting one event per chunk would burn
     the ``MAX_TRIAL_EVENTS`` budget on a fraction of a run, so consecutive
-    chunks of the same kind are coalesced and flushed when the kind changes, at
-    end of stream, or once the buffer reaches the payload clip -- beyond which
-    a longer buffer would only be truncated anyway.
+    chunks of the same kind are coalesced. The buffer is given up on a kind
+    change, at ``end``, at the end of every poll tick (via :meth:`flush`, so a
+    quiet same-kind stream still reaches the panel and nothing is stranded when
+    the run ends), and before an append that would overflow the payload clip --
+    past which the payload would be truncated and the overflow lost.
     """
 
     model: str | None = None
@@ -579,20 +603,22 @@ class GrokBuildFold:
             return []
         kind = str(event.get("type") or event.get("kind") or "").lower()
         if kind == "end":
-            return self._flush()
+            return self.flush()
         text = _grok_text(event)
         if not text:
             return []
         kind = "thought" if kind in {"thought", "thinking", "reasoning"} else "text"
-        rendered = self._flush() if kind != self._kind else []
+        rendered = (
+            self.flush()
+            if kind != self._kind or self._buffered + len(text) > PAYLOAD_CLIP_CHARS
+            else []
+        )
         self._kind = kind
         self._parts.append(text)
         self._buffered += len(text)
-        if self._buffered >= PAYLOAD_CLIP_CHARS:
-            rendered.extend(self._flush())
         return rendered
 
-    def _flush(self) -> list[dict[str, Any]]:
+    def flush(self) -> list[dict[str, Any]]:
         text = "".join(self._parts)
         self._reset()
         return [_event("message", "text", text)] if text else []
@@ -660,6 +686,9 @@ class MiniSweUsageFold:
     @property
     def has_usage(self) -> bool:
         return self._has_usage
+
+    def flush(self) -> list[dict[str, Any]]:
+        return []
 
     def on_truncate(self) -> None:
         return None
@@ -851,6 +880,9 @@ class LiveTailer:
             if self.carry and not self.replaced:
                 with contextlib.suppress(Exception):
                     self._buffer_events(self.fold.feed_line(self.carry))
+            if not self.replaced:
+                with contextlib.suppress(Exception):
+                    self._buffer_events(self.fold.flush())
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._persist_tick())
 
@@ -894,6 +926,7 @@ class LiveTailer:
             tail_raw = await self._read_tail()
             if isinstance(tail_raw, bytes) and tail_raw:
                 self._feed_tail_chunk(tail_raw)
+        self._buffer_events(self.fold.flush())
         await self._persist_tick()
 
     async def _read_tail(self) -> bytes | object | None:
