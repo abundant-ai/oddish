@@ -76,21 +76,43 @@ def _pull_experiment(client, tasks, tmp_path):
 # --- the scoped list fetch ---------------------------------------------------
 
 
+class _CapturingClient:
+    def __init__(self, payload):
+        self.captured: dict = {}
+        self._payload = payload
+
+    def get(self, url, params=None):
+        self.captured = {"url": url, "params": params or {}}
+        return _Resp(200, self._payload)
+
+
 def test_list_tasks_for_experiment_requests_scoped_embedded_trials():
-    captured: dict = {}
-
-    class _Client:
-        def get(self, url, params=None):
-            captured["url"] = url
-            captured["params"] = params
-            return _Resp(200, [{"id": "task-a", "experiment_id": "EXP", "trials": []}])
-
-    pull_mod._list_tasks_for_experiment(_Client(), "EXP")
-    assert captured["url"] == "/tasks"
-    assert captured["params"]["experiment_id"] == "EXP"
+    client = _CapturingClient([{"id": "task-a", "experiment_id": "EXP", "trials": []}])
+    pull_mod._list_tasks_for_experiment(client, "EXP", include_trials=True)
+    assert client.captured["url"] == "/tasks"
+    assert client.captured["params"]["experiment_id"] == "EXP"
     # Ask the server for experiment-scoped trials instead of re-fetching per task.
-    assert captured["params"]["include_trials"] == "true"
-    assert captured["params"]["compact_trials"] == "true"
+    assert client.captured["params"]["include_trials"] == "true"
+    assert client.captured["params"]["compact_trials"] == "true"
+
+
+def test_list_tasks_for_experiment_is_light_by_default():
+    # The default must not embed trials — the watch completion poll uses it and
+    # must not drag every trial on each iteration.
+    client = _CapturingClient([{"id": "task-a", "experiment_id": "EXP"}])
+    pull_mod._list_tasks_for_experiment(client, "EXP")
+    assert "include_trials" not in client.captured["params"]
+    assert "compact_trials" not in client.captured["params"]
+
+
+def test_experiment_terminal_poll_does_not_fetch_trials():
+    # `pull --watch` calls _is_experiment_terminal every interval; it only reads
+    # task status, so it must issue the light (trial-free) list request.
+    client = _CapturingClient(
+        [{"id": "task-a", "status": "completed", "experiment_id": "EXP"}]
+    )
+    assert pull_mod._is_experiment_terminal(client, "EXP") is True
+    assert "include_trials" not in client.captured["params"]
 
 
 # --- the fallback filter -----------------------------------------------------

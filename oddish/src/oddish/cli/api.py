@@ -2164,6 +2164,12 @@ def _task_error_summary(task: dict) -> dict:
     ``used/max`` for a representative trial that exhausted its retries — the
     "needs a fresh launch, not a re-read" signal.
     """
+    # ``failed`` is the authoritative count and drives both this cell and the
+    # header, so they always agree. It stays consistent with the embedded
+    # trials below because the server derives both from one trial set: for an
+    # experiment fetch the counters and the embedded rows come from the same
+    # experiment-scoped, non-probe ``task_trials`` (build_task_status_response),
+    # so there is no probe/scope skew between the count and the detail.
     errored = task.get("failed") or 0
     errored_trials = [
         t for t in (task.get("trials") or []) if t.get("status") == "failed"

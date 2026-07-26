@@ -138,22 +138,20 @@ def _download_presigned_bytes(url: str) -> tuple[bytes | None, str | None]:
     return response.content, None
 
 
-def _list_tasks_for_experiment(client: httpx.Client, experiment_id: str) -> list[dict]:
+def _list_tasks_for_experiment(
+    client: httpx.Client, experiment_id: str, *, include_trials: bool = False
+) -> list[dict]:
     # ``include_trials`` embeds each task's trials scoped to this experiment
     # (siblings sharing a task id are excluded server-side), so the pull stays
-    # within the experiment instead of re-fetching every trial on the task.
-    # ``compact_trials`` keeps the payload light — we only need each trial's id
-    # and owning experiment_id here.
-    private_data = _get_json(
-        client,
-        "/tasks",
-        None,
-        params={
-            "experiment_id": experiment_id,
-            "include_trials": "true",
-            "compact_trials": "true",
-        },
-    )
+    # within the experiment instead of re-fetching every trial on the task;
+    # ``compact_trials`` keeps that payload light. It is off by default because
+    # the watch completion poll only reads task status and must not drag every
+    # trial on each iteration.
+    params: dict[str, str] = {"experiment_id": experiment_id}
+    if include_trials:
+        params["include_trials"] = "true"
+        params["compact_trials"] = "true"
+    private_data = _get_json(client, "/tasks", None, params=params)
     if isinstance(private_data, list) and private_data:
         return private_data
 
@@ -556,7 +554,7 @@ def _resolve_target(
     if task:
         return "task", value, task
 
-    experiment_tasks = _list_tasks_for_experiment(client, value)
+    experiment_tasks = _list_tasks_for_experiment(client, value, include_trials=True)
     if experiment_tasks:
         return "experiment", value, experiment_tasks
 
@@ -695,7 +693,7 @@ def _pull_once(
     tasks = (
         cached_data
         if isinstance(cached_data, list)
-        else _list_tasks_for_experiment(client, target_id)
+        else _list_tasks_for_experiment(client, target_id, include_trials=True)
     )
     if not tasks:
         raise typer.BadParameter(f"Experiment '{target_id}' not found or has no tasks.")
