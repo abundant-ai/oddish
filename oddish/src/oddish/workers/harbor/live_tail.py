@@ -67,6 +67,15 @@ class Fold(Protocol):
 
     def totals(self) -> UsageTotals: ...
 
+    def flush(self) -> list[dict[str, Any]]:
+        """Emit anything buffered across lines, at end of tick and end of run.
+
+        Folds that emit per line have nothing to add and return ``[]``; a fold
+        that coalesces lines must give its buffer up here or lose it when the
+        stream goes quiet or the run ends.
+        """
+        ...
+
     def on_truncate(self) -> None:
         """Called when the tailed log shrinks (a new session re-teed the file)."""
         ...
@@ -221,6 +230,9 @@ class ClaudeUsageFold:
     @property
     def has_usage(self) -> bool:
         return bool(self.usage_by_id)
+
+    def flush(self) -> list[dict[str, Any]]:
+        return []
 
     def on_truncate(self) -> None:
         # Usage keys off unique per-message ids, so a re-teed log's fresh ids
@@ -385,6 +397,9 @@ class CodexUsageFold:
     def has_usage(self) -> bool:
         return self.usage is not None or self.banked != UsageTotals()
 
+    def flush(self) -> list[dict[str, Any]]:
+        return []
+
     def on_truncate(self) -> None:
         # turn.completed usage is cumulative per codex session; a re-teed log
         # restarts that counter, so bank the last session's total before it is
@@ -491,6 +506,9 @@ class CursorUsageFold:
     def has_usage(self) -> bool:
         return self._seen_usage
 
+    def flush(self) -> list[dict[str, Any]]:
+        return []
+
     def on_truncate(self) -> None:
         self._totals = UsageTotals(model=self.model)
         self._seen_usage = False
@@ -537,6 +555,104 @@ class CursorUsageFold:
             output_tokens=self._totals.output_tokens,
             model=self.model,
         )
+
+
+def _grok_text(event: dict[str, Any]) -> str:
+    """Reads a grok stream event's text, whichever field carries it.
+
+    Same field aliases the post-run trajectory converter accepts
+    (``grok_build_trajectory.py``), so both readers see one event grammar.
+    """
+    for key in ("data", "text", "content", "message", "output"):
+        value = event.get(key)
+        # Skip an alias that is present but empty rather than reading it as the
+        # event's text: grok sends both `data` and `text` on some events, and an
+        # empty leading alias would drop a chunk that the next one carries.
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+@dataclass
+class GrokBuildFold:
+    """Reads grok's headless ``--output-format streaming-json`` stdout.
+
+    Assistant text and reasoning only. Grok's stdout carries **no tool calls
+    and no token usage** -- those live in the CLI's on-disk session store, which
+    is copied into the trial logs only after the run ends -- so this fold never
+    reports usage and the trial's token/cost columns stay untouched while it is
+    live. Only the ``streaming-json`` arms feed this fold: the
+    ``--output-format json`` fallback arms emit one blob at exit, which yields a
+    live transcript only if it happens to be a single-line JSON object -- a
+    pretty-printed or array-shaped blob is not line-parsable and the panel stays
+    empty for that run. Those runs still get the full post-run trajectory, which
+    parses the blob whole (``grok_build_trajectory.py``).
+
+    Grok streams text in small chunks. Emitting one event per chunk would burn
+    the ``MAX_TRIAL_EVENTS`` budget on a fraction of a run, so consecutive
+    chunks of the same kind are coalesced. The buffer is given up on a kind
+    change, at ``end``, at the end of every poll tick (via :meth:`flush`, so a
+    quiet same-kind stream still reaches the panel and nothing is stranded when
+    the run ends), and before an append that would overflow the payload clip.
+    An individual chunk larger than the clip is split across events so none of
+    its text is truncated.
+    """
+
+    model: str | None = None
+    _kind: str | None = None
+    _parts: list[str] = field(default_factory=list)
+    _buffered: int = 0
+
+    @property
+    def has_usage(self) -> bool:
+        return False
+
+    def on_truncate(self) -> None:
+        # A fallback arm re-ran and truncated stdout; the tailer replays the new
+        # file from byte 0, so drop the partial buffer to avoid splicing the
+        # dead arm's text onto the new one's.
+        self._reset()
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        event = _parse_json_line(line)
+        if event is None:
+            return []
+        kind = str(event.get("type") or event.get("kind") or "").lower()
+        if kind == "end":
+            return self.flush()
+        text = _grok_text(event)
+        if not text:
+            return []
+        kind = "thought" if kind in {"thought", "thinking", "reasoning"} else "text"
+        rendered = []
+        if kind != self._kind or (
+            self._buffered and self._buffered + len(text) > PAYLOAD_CLIP_CHARS
+        ):
+            rendered.extend(self.flush())
+        while len(text) > PAYLOAD_CLIP_CHARS:
+            self._kind = kind
+            self._parts.append(text[:PAYLOAD_CLIP_CHARS])
+            self._buffered = PAYLOAD_CLIP_CHARS
+            rendered.extend(self.flush())
+            text = text[PAYLOAD_CLIP_CHARS:]
+        if text:
+            self._kind = kind
+            self._parts.append(text)
+            self._buffered += len(text)
+        return rendered
+
+    def flush(self) -> list[dict[str, Any]]:
+        text = "".join(self._parts)
+        self._reset()
+        return [_event("message", "text", text)] if text else []
+
+    def _reset(self) -> None:
+        self._kind = None
+        self._parts = []
+        self._buffered = 0
+
+    def totals(self) -> UsageTotals:
+        return UsageTotals(model=self.model)
 
 
 def _mini_message_usage(message: dict[str, Any]) -> tuple[int, int, int]:
@@ -593,6 +709,9 @@ class MiniSweUsageFold:
     @property
     def has_usage(self) -> bool:
         return self._has_usage
+
+    def flush(self) -> list[dict[str, Any]]:
+        return []
 
     def on_truncate(self) -> None:
         return None
@@ -710,6 +829,7 @@ ADAPTERS: tuple[Adapter, ...] = (
     Adapter("claude-code", "/logs/agent/claude-code.txt", ClaudeUsageFold),
     Adapter("codex", "/logs/agent/codex.txt", CodexUsageFold),
     Adapter("cursor-cli", "/logs/agent/cursor-cli.txt", CursorUsageFold),
+    Adapter("grok-build", "/logs/agent/grok-build.json", GrokBuildFold),
     Adapter(
         "mini-swe-agent",
         "/logs/agent/mini-swe-agent.trajectory.json",
@@ -789,6 +909,9 @@ class LiveTailer:
                             redact_exact_bytes(self.carry, self.runtime_redactions)
                         )
                     )
+            if not self.replaced:
+                with contextlib.suppress(Exception):
+                    self._buffer_events(self.fold.flush())
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._persist_tick())
 
@@ -826,7 +949,7 @@ class LiveTailer:
     async def _tick(self) -> None:
         if self.snapshot:
             snapshot_raw = await self._read_snapshot()
-            if snapshot_raw:
+            if snapshot_raw and not self.replaced:
                 self._buffer_events(
                     self.fold.feed_line(
                         redact_exact_bytes(snapshot_raw, self.runtime_redactions)
@@ -834,8 +957,13 @@ class LiveTailer:
                 )
         else:
             tail_raw = await self._read_tail()
-            if isinstance(tail_raw, bytes) and tail_raw:
+            if isinstance(tail_raw, bytes) and tail_raw and not self.replaced:
                 self._feed_tail_chunk(tail_raw)
+        # Ask for the buffer only if this tailer will keep it: a replaced tailer
+        # shares its fold with the replacement, and draining it here would hand
+        # the text to _buffer_events, which discards it.
+        if not (self.replaced or self.capped):
+            self._buffer_events(self.fold.flush())
         await self._persist_tick()
 
     async def _read_tail(self) -> bytes | object | None:
