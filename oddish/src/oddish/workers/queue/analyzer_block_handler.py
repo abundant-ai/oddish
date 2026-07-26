@@ -118,7 +118,9 @@ async def run_analyzer_block_job(
                         if oddish_cli_enabled
                         else None
                     ),
-                    oddish_api_scope="tasks" if oddish_cli_enabled else "read",
+                    oddish_api_scope=(
+                        "read" if analyzer_type is AnalyzerType.CUSTOM_QA else "tasks"
+                    ),
                     reasoning_effort=run.reasoning_effort,
                     session_id=stage or "custom-qa",
                 )

@@ -57,14 +57,25 @@ async def test_custom_qa_enqueues_one_analyzer_block_job(monkeypatch):
             scope_type="task",
             scope_id="task_1",
             variants=[{"kind": "QA_PRE_TRIAL"}],
-            backend="api",
+            backend="sandbox",
+            allow_oddish_cli=True,
         ),
         org_id="org_1",
         user_id="user_1",
+        oddish_api_base_url="https://api.test",
     )
 
     assert len(added) == 1
     assert added[0].status == JobStatus.QUEUED
+    config = added[0].run_config
+    assert config["oddish_api_scope"] == "read"
+    assert config["oddish_cli_policy"] == (
+        "read-only; inspection only; submissions and mutations forbidden"
+    )
+    assert config["oddish_api_base_url"] == "https://api.test"
+    assert "read-only access" in config["system_prompt"]
+    assert "Do not submit or mutate" in config["system_prompt"]
+    assert "inspect or submit" not in config["system_prompt"]
     assert len(enqueued) == 1
     assert enqueued[0].kind == WorkerJobKind.ANALYZER_BLOCK
     assert enqueued[0].subject_table == "analyzer_runs"

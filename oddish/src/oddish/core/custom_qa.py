@@ -168,8 +168,8 @@ async def run_custom_qa_core(
         if data.allow_oddish_cli:
             system_prompt += (
                 " The oddish CLI is installed and authenticated in this ephemeral sandbox. "
-                "You may execute it to inspect or submit runs, including oracle/nop and "
-                "lazy-degenerate solution checks. Clearly report every command and created ID."
+                "It has read-only access and may be used only to inspect existing data. "
+                "Do not submit or mutate any Oddish resource. Clearly report every command."
             )
         ref = f"{prompt.kind}@{version.version}"
         config = {
@@ -187,7 +187,13 @@ async def run_custom_qa_core(
             "model": data.model,
             "reasoning_effort": data.reasoning_effort,
             "backend": data.backend,
-            "oddish_cli_enabled": bool(data.allow_oddish_cli),
+            "oddish_cli_enabled": data.allow_oddish_cli,
+            "oddish_api_scope": "read" if data.allow_oddish_cli else None,
+            "oddish_cli_policy": (
+                "read-only; inspection only; submissions and mutations forbidden"
+                if data.allow_oddish_cli
+                else None
+            ),
             "oddish_api_base_url": (
                 oddish_api_base_url if data.allow_oddish_cli else None
             ),

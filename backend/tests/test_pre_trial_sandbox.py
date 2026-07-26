@@ -2,6 +2,7 @@ import pytest
 
 from api.services.blocks.analyzer import sandbox_llm_client as mod
 from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
+from oddish.db.models import APIKeyScope
 
 
 class _FakeRuntime:
@@ -46,9 +47,16 @@ def _wire(monkeypatch, *, provisioner=_FakeProvisioner, runtime=_FakeRuntime):
 
 
 @pytest.mark.asyncio
-async def test_factory_mints_key_and_installs_oddish(monkeypatch):
+async def test_factory_mints_read_key_and_installs_oddish(monkeypatch):
     _FakeRuntime.installed = []
     _wire(monkeypatch)
+    minted_scopes = []
+
+    async def mint(session, *, org_id, name, ttl_minutes, scope):
+        minted_scopes.append(scope)
+        return "key_id", "ok_secret"
+
+    monkeypatch.setattr(mod, "mint_internal_api_key", mint)
 
     client = await mod.create_sandbox_llm_client(
         model="claude-sonnet-5",
@@ -56,10 +64,12 @@ async def test_factory_mints_key_and_installs_oddish(monkeypatch):
             install_oddish_cli=True,
             oddish_org_id="org_1",
             oddish_api_base_url="https://api.test",
-            session_id="pre-trial",
+            oddish_api_scope="read",
+            session_id="custom-qa",
         ),
     )
 
+    assert minted_scopes == [APIKeyScope.READ]
     assert _FakeProvisioner.last_env["ODDISH_API_KEY"] == "ok_secret"
     assert _FakeProvisioner.last_env["ODDISH_API_BASE_URL"] == "https://api.test"
     assert ("oddish", "ok_secret", "https://api.test") in _FakeRuntime.installed

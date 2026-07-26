@@ -134,12 +134,14 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         triggered_by_user_id="user_1",
         model="test-model",
         reasoning_effort=None,
-        llm_client_type=LLMClientType.API.value,
+        llm_client_type=LLMClientType.SANDBOX.value,
         scope_type="task",
         scope_id="task_1",
         run_config={
             "scope": {"type": "task", "id": "task_1"},
             "system_prompt": "Inspect the task",
+            "oddish_cli_enabled": True,
+            "oddish_api_base_url": "https://api.test",
         },
         analyzer_block_id=None,
         status=JobStatus.QUEUED,
@@ -198,6 +200,10 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
     assert len(blocks) == 1
     assert blocks[0].kwargs["subject_type"] == run.scope_type
     assert blocks[0].kwargs["subject_id"] == run.scope_id
+    sandbox_config = blocks[0].kwargs["sandbox_config"]
+    assert sandbox_config.install_oddish_cli is True
+    assert sandbox_config.oddish_api_base_url == "https://api.test"
+    assert sandbox_config.oddish_api_scope == "read"
 
 
 @pytest.mark.asyncio
