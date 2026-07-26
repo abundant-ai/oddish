@@ -553,7 +553,10 @@ def _grok_text(event: dict[str, Any]) -> str:
     """
     for key in ("data", "text", "content", "message", "output"):
         value = event.get(key)
-        if isinstance(value, str):
+        # Skip an alias that is present but empty rather than reading it as the
+        # event's text: grok sends both `data` and `text` on some events, and an
+        # empty leading alias would drop a chunk that the next one carries.
+        if isinstance(value, str) and value:
             return value
     return ""
 
@@ -926,7 +929,11 @@ class LiveTailer:
             tail_raw = await self._read_tail()
             if isinstance(tail_raw, bytes) and tail_raw:
                 self._feed_tail_chunk(tail_raw)
-        self._buffer_events(self.fold.flush())
+        # Ask for the buffer only if this tailer will keep it: a replaced tailer
+        # shares its fold with the replacement, and draining it here would hand
+        # the text to _buffer_events, which discards it.
+        if not (self.replaced or self.capped):
+            self._buffer_events(self.fold.flush())
         await self._persist_tick()
 
     async def _read_tail(self) -> bytes | object | None:

@@ -772,6 +772,12 @@ def test_grok_fold_skips_blank_and_unparsable_lines():
     assert fold.feed_line(grok_line({"type": "end"})) == []
 
 
+def test_grok_fold_reads_past_an_empty_alias_to_the_populated_one():
+    fold = GrokBuildFold()
+    fold.feed_line(grok_line({"type": "text", "data": "", "text": "hello"}))
+    assert fold.flush() == [{"kind": "message", "payload": {"text": "hello"}}]
+
+
 def test_grok_fold_flushes_a_long_run_before_it_overflows_the_payload_clip():
     fold = GrokBuildFold()
     chunk = "x" * (live_tail.PAYLOAD_CLIP_CHARS // 2 + 1)
@@ -848,6 +854,19 @@ async def test_grok_tick_emits_a_partial_run_without_waiting_for_end(monkeypatch
     await tailer._tick()
     assert [row["payload"]["text"] for row in insert_params(session)] == [
         "still working"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_grok_tick_leaves_the_buffer_alone_once_replaced(monkeypatch):
+    """A replaced tailer shares its fold, so it must not drain what it will drop."""
+    patch_db(monkeypatch)
+    tailer = make_tailer(FakeEnv([]), agent="grok-build")
+    tailer._feed_tail_chunk(grok_line({"type": "text", "text": "mid-flight"}) + b"\n")
+    tailer.replaced = True
+    await tailer._tick()
+    assert tailer.fold.flush() == [
+        {"kind": "message", "payload": {"text": "mid-flight"}}
     ]
 
 
