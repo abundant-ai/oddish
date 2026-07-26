@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-26]
+
+### Added
+
+- Daytona Docker Compose trials with a public setup phase and a restricted agent phase now run behind a preview egress bridge: the runner classifies each trial (dynamic vs. static), rejects caller-supplied `extra_allowed_hosts` and transport base URLs, and applies a per-effective-agent network profile (codex, claude, cursor, gemini-cli, grok, mini-swe) that declares exact outbound hosts and fails closed on conflicting or unconsumed `*_BASE_URL` keys — unrelated or conflicting configuration narrows egress rather than widening it. Runtime-only worker hosts and model names are swapped in via Harbor patches so serialized task configs keep the public model identity while the sandbox talks to the worker deployment, and a shared redaction module scrubs exact worker routes/credentials from lifecycle events, live-tail output, errors, and uploaded artifacts. A new `OddishGeminiCli` wrapper adds a non-bypassable system-level switch to disable Gemini's server-side web tools. Modal, Kubernetes, Daytona single-container, and public Compose trials are unaffected (#848).
+- The admin per-user cost drilldown now offers the same "stack by" picker as the org-wide cost dashboard (agent, model, cost type, analyzer, compute) instead of only cost-over-time-by-model. QA and compute series are filtered to the target user's `billed_user_id` so another member's spend can't leak into their chart, and the page gained QA/compute badges and a grand-total header that sums inference, QA, and compute instead of showing inference alone (#927).
+
+### Changed
+
+- The admin Cost Breakdown dashboard folds the separate "Compute estimate" tile into the model-inference/QA tile, laying model inference, QA, and compute out horizontally in one wide tile so the stat row still fits five columns on large screens; the Total tooltip drops the now-redundant figures and instead notes that compute is a sandbox-runtime estimate, not a provider invoice (#926).
+
+### Fixed
+
+- The app nav and task filters no longer force horizontal scrolling on phone viewports: below the `sm` breakpoint, primary nav links and the docs link collapse into a hamburger menu, the Clerk org switcher truncates long org names instead of stretching the bar, and the tasks filter sidebar stops being sticky and collapses by default behind an accessible "Filters" toggle so it no longer pushes the task list off screen (#929).
+- Re-pinned the Harbor dependency to track `abundant-ai/harbor@main` again (lockfiles now resolve commit `4d3c4790`, the squash-merge of Harbor #8), after a prior temporary pin to an immutable rev (#848) was left resolving from a commit that existed only on an undeleted PR branch — `main` would have broken the next build the moment that branch was deleted. `harbor_source_ref`, the ref the probe fetches, is now derived from `HARBOR_DEFAULT_SHA` so the worker image and probe stay pinned to the same commit even as the dependency source tracks a floating branch (#925).
+
+---
+
 ## [2026-07-20]
 
 ### Changed
