@@ -25,7 +25,7 @@ from typing import cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from oddish.config import (
     NOP_ORACLE_QUEUE_KEY,
@@ -100,6 +100,12 @@ STALE_VERDICT_PENDING_BATCH_LIMIT = 200
 STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
+)
+
+_TAG_PROJECT_ACTIVE_CONSTRAINT = "uq_worker_jobs_tag_project_active"
+_TAG_PROJECT_SUPERSEDED_REASON = (
+    "Stale TAG_PROJECT worker was superseded by an active follow-up for the "
+    "same subject."
 )
 
 # Backstop for trials stranded with a non-terminal ``analysis_status`` by a QA
@@ -659,6 +665,154 @@ async def _maybe_reconcile_tag_projections(session) -> int:
 # =============================================================================
 
 
+def _is_tag_project_active_collision(exc: IntegrityError) -> bool:
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+
+        diag = getattr(current, "diag", None)
+        constraint_name = getattr(diag, "constraint_name", None) or getattr(
+            current, "constraint_name", None
+        )
+        if constraint_name == _TAG_PROJECT_ACTIVE_CONSTRAINT:
+            return True
+
+        for attr in ("orig", "__cause__", "__context__"):
+            nested = getattr(current, attr, None)
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+
+    # asyncpg wrappers have not exposed ``diag.constraint_name`` consistently
+    # across versions, but their error text still includes the exact index.
+    return _TAG_PROJECT_ACTIVE_CONSTRAINT in str(exc)
+
+
+async def _transition_stale_worker_job(
+    session,
+    *,
+    job_id: str,
+    stale_after_minutes: int,
+    force_tag_project_terminal: bool = False,
+):
+    return (
+        (
+            await session.execute(
+                text(
+                    """
+                    WITH candidate AS (
+                        SELECT id,
+                               kind,
+                               subject_table,
+                               subject_id,
+                               attempts,
+                               max_attempts
+                        FROM worker_jobs
+                        WHERE id = :job_id
+                          AND status::text = 'RUNNING'
+                          AND (
+                              heartbeat_at IS NULL
+                              OR heartbeat_at < NOW() - make_interval(
+                                  mins => :stale_after_minutes
+                              )
+                          )
+                        FOR UPDATE
+                    ),
+                    decision AS (
+                        SELECT candidate.id,
+                               candidate.attempts < candidate.max_attempts
+                                   AS has_retries,
+                               (
+                                   candidate.kind = 'TAG_PROJECT'
+                                   AND (
+                                       :force_tag_project_terminal
+                                       OR EXISTS (
+                                           SELECT 1
+                                           FROM worker_jobs followup
+                                           WHERE followup.id <> candidate.id
+                                             AND followup.kind = 'TAG_PROJECT'
+                                             AND followup.subject_table
+                                                 IS NOT DISTINCT FROM
+                                                 candidate.subject_table
+                                             AND followup.subject_id
+                                                 IS NOT DISTINCT FROM
+                                                 candidate.subject_id
+                                             AND followup.status
+                                                 IN ('QUEUED', 'RETRYING')
+                                       )
+                                   )
+                               ) AS tag_project_superseded
+                        FROM candidate
+                    )
+                    UPDATE worker_jobs job
+                    SET    status = CASE
+                               WHEN decision.has_retries
+                                    AND NOT decision.tag_project_superseded
+                                   THEN 'RETRYING'::worker_job_status
+                               ELSE 'FAILED'::worker_job_status
+                           END,
+                           payload = CASE
+                               WHEN decision.has_retries
+                                    AND NOT decision.tag_project_superseded
+                                   THEN job.payload
+                               ELSE job.payload - 'registry_auth_enc'
+                           END,
+                           stale_reaped_at = NOW(),
+                           finished_at = CASE
+                               WHEN decision.has_retries
+                                    AND NOT decision.tag_project_superseded
+                                   THEN job.finished_at
+                               ELSE NOW()
+                           END,
+                           current_worker_id = NULL,
+                           current_queue_slot = NULL,
+                           modal_function_call_id = NULL,
+                           error_message = CASE
+                               WHEN decision.tag_project_superseded
+                                   THEN :tag_project_superseded_reason
+                               WHEN heartbeat_failure_count > 0
+                                    AND last_heartbeat_error IS NOT NULL
+                                   THEN 'Worker heartbeat stalled for over '
+                                        || :stale_after_minutes
+                                        || ' minutes. Worker reported '
+                                        || heartbeat_failure_count
+                                        || ' write failures; last error: '
+                                        || last_heartbeat_error
+                               ELSE 'Worker heartbeat stalled for over '
+                                    || :stale_after_minutes
+                                    || ' minutes.'
+                           END
+                    FROM decision
+                    WHERE job.id = decision.id
+                    RETURNING job.id,
+                              job.kind::text AS kind,
+                              job.status::text AS new_status,
+                              job.subject_table,
+                              job.subject_id,
+                              job.attempts,
+                              job.max_attempts,
+                              job.error_message,
+                              job.provider,
+                              job.external_id,
+                              decision.tag_project_superseded
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "stale_after_minutes": stale_after_minutes,
+                    "force_tag_project_terminal": force_tag_project_terminal,
+                    "tag_project_superseded_reason": _TAG_PROJECT_SUPERSEDED_REASON,
+                },
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+
+
 async def _reap_stale_worker_jobs(
     session, *, stale_after_minutes: int
 ) -> tuple[int, int, list[str], set[tuple[str, str]]]:
@@ -698,68 +852,13 @@ async def _reap_stale_worker_jobs(
     worker_targets: set[tuple[str, str]] = set()
 
     for stale_job_id in stale_candidate_ids:
+        row = None
         try:
             async with session.begin_nested():
-                row = (
-                    (
-                        await session.execute(
-                            text(
-                                """
-                    UPDATE worker_jobs
-                    SET    status = CASE
-                               WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
-                               ELSE 'FAILED'::worker_job_status
-                           END,
-                           payload = CASE
-                               WHEN attempts < max_attempts THEN payload
-                               ELSE payload - 'registry_auth_enc'
-                           END,
-                           stale_reaped_at = NOW(),
-                           finished_at = CASE
-                               WHEN attempts < max_attempts THEN finished_at
-                               ELSE NOW()
-                           END,
-                           current_worker_id = NULL,
-                           current_queue_slot = NULL,
-                           modal_function_call_id = NULL,
-                           error_message = CASE
-                               WHEN heartbeat_failure_count > 0 AND last_heartbeat_error IS NOT NULL
-                                   THEN 'Worker heartbeat stalled for over '
-                                        || :stale_after_minutes
-                                        || ' minutes. Worker reported '
-                                        || heartbeat_failure_count
-                                        || ' write failures; last error: '
-                                        || last_heartbeat_error
-                               ELSE 'Worker heartbeat stalled for over '
-                                    || :stale_after_minutes
-                                    || ' minutes.'
-                           END
-                    WHERE  id = :job_id
-                      AND  status::text = 'RUNNING'
-                      AND  (
-                          heartbeat_at IS NULL
-                          OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                      )
-                    RETURNING id,
-                              kind::text AS kind,
-                              status::text AS new_status,
-                              subject_table,
-                              subject_id,
-                              attempts,
-                              max_attempts,
-                              error_message,
-                              provider,
-                              external_id
-                                """
-                            ),
-                            {
-                                "job_id": stale_job_id,
-                                "stale_after_minutes": stale_after_minutes,
-                            },
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                row = await _transition_stale_worker_job(
+                    session,
+                    job_id=stale_job_id,
+                    stale_after_minutes=stale_after_minutes,
                 )
                 if row is None:
                     continue  # another actor already progressed this job
@@ -771,6 +870,29 @@ async def _reap_stale_worker_jobs(
                 # let a later ``_DomainRowLocked`` rollback revert an
                 # already-terminal job's domain mirror).
                 await session.flush()
+        except IntegrityError as exc:
+            if not _is_tag_project_active_collision(exc):
+                raise
+
+            # A TAG_PROJECT enqueue can win the unique-index race after the
+            # decision query's snapshot. The failed UPDATE has already rolled
+            # back to its savepoint; retry only this stale job as terminal.
+            async with session.begin_nested():
+                row = await _transition_stale_worker_job(
+                    session,
+                    job_id=stale_job_id,
+                    stale_after_minutes=stale_after_minutes,
+                    force_tag_project_terminal=True,
+                )
+                if row is None:
+                    continue
+                committed_trial_id = await _mirror_stale_job_to_domain_row(session, row)
+                await session.flush()
+            console.print(
+                f"metric=tag_project_stale_reap_superseded id={stale_job_id} "
+                f"subject={row['subject_table']}/{row['subject_id']} "
+                "reason=active_followup_race"
+            )
         except _DomainRowLocked:
             console.print(
                 f"metric=worker_job_stale_reap_deferred id={stale_job_id} "
