@@ -27,6 +27,7 @@ import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { fetcher } from "@/lib/api";
 import {
   buildExperimentAgentSummaries,
@@ -999,13 +1000,20 @@ export function TaskDetailClient({
                   : "no trials yet"
             }
           >
-            <CostBadge
-              cost={totals?.cost_usd ?? 0}
-              trialCount={totals?.cost_trial_count ?? 0}
-              hasEstimated={totals?.cost_has_estimated ?? false}
-              hasNative={totals?.cost_has_native ?? false}
-              size="lg"
-            />
+            <span className="flex items-baseline gap-1.5">
+              <CostBadge
+                cost={totals?.cost_usd ?? 0}
+                trialCount={totals?.cost_trial_count ?? 0}
+                hasEstimated={totals?.cost_has_estimated ?? false}
+                hasNative={totals?.cost_has_native ?? false}
+                size="lg"
+              />
+              <QaCostSuffix
+                costUsd={totals?.qa_cost_usd}
+                size="tile"
+                title="QA/analysis spend for this task's trials. Not included in the cost figure."
+              />
+            </span>
             {allVersionsSummary.tokenTrialCount > 0 && (
               <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
                 {formatTokenCount(allVersionsSummary.tokenCount)}

@@ -19,6 +19,7 @@ export function formatTokenCount(value: number): string {
 
 export interface TaskTrialCost {
   costUsd: number;
+  qaCostUsd: number;
   pricedCount: number;
   hasEstimated: boolean;
   hasNative: boolean;
@@ -32,19 +33,23 @@ export function sumTaskTrialCost(
   trials: Trial[] | null | undefined,
 ): TaskTrialCost {
   let costUsd = 0;
+  let qaCostUsd = 0;
   let pricedCount = 0;
   let hasEstimated = false;
   let hasNative = false;
   for (const trial of trials ?? []) {
     if (trial.is_probe) continue;
     if (trial.superseded_by_trial_id) continue;
+    // Outside the cost_usd guard below: QA can exist on a trial whose agent
+    // cost was never reported.
+    if (trial.qa_cost_usd != null) qaCostUsd += trial.qa_cost_usd;
     if (trial.cost_usd == null) continue;
     costUsd += trial.cost_usd;
     pricedCount += 1;
     if (trial.cost_is_estimated) hasEstimated = true;
     else hasNative = true;
   }
-  return { costUsd, pricedCount, hasEstimated, hasNative };
+  return { costUsd, qaCostUsd, pricedCount, hasEstimated, hasNative };
 }
 
 // Estimate markers matching the experiment header (#599): "~" prefix when every

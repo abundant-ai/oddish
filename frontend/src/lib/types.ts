@@ -101,6 +101,11 @@ interface TrialAnalysis {
   root_cause?: string;
   recommendation?: string;
   reward?: number | null;
+  prompt_kind?: string;
+  prompt_version?: number;
+  prompt_id?: string;
+  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
+  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -147,6 +152,10 @@ export interface Trial {
   tool_counts?: Record<string, number> | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  // QA/analysis spend for this trial. Null/undefined = not resolved by the
+  // endpoint that served this trial (most do not) -- distinct from 0, which
+  // would mean "resolved, and there was no QA".
+  qa_cost_usd?: number | null;
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
@@ -270,6 +279,7 @@ export interface TaskBrowseItem {
   billed_trial_count: number;
   billed_has_estimated: boolean;
   billed_has_native: boolean;
+  qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
@@ -332,6 +342,7 @@ interface TaskCostTotals {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   total_trials: number;
+  qa_cost_usd?: number;
 }
 
 /** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.
@@ -369,6 +380,9 @@ export interface ExperimentCostTotals {
   billed_token_count: number;
   billed_token_trial_count: number;
   total_trials: number;
+  qa_cost_usd?: number;
+  owned_qa_cost_usd?: number;
+  qa_has_estimated?: boolean;
 }
 
 export interface TaskDetailResponse {
@@ -1057,7 +1071,14 @@ export interface UserCostBreakdownResponse {
   totals: UserCostTotals;
   tasks: UserCostTaskBreakdown[];
   experiments?: UserCostExperimentBreakdown[];
+  // Optional like their CostBreakdownResponse siblings: the frontend and the
+  // Modal backend deploy separately, so a new page can hit an older API.
+  series_by_agent?: CostSeries;
   series_by_model: CostSeries;
+  series_by_type?: CostSeries;
+  series_qa_by_model?: CostSeries;
+  series_by_analysis_type?: CostSeries;
+  series_compute_by_provider?: CostSeries;
   timestamp: string;
 }
 

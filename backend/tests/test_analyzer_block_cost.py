@@ -128,6 +128,24 @@ async def test_records_usage_and_attribution(monkeypatch):
     await b.record_cost()
     row = added[0]
     assert (row.trial_id, row.org_id) == ("trial-1", "org-1")
+
+
+@pytest.mark.asyncio
+async def test_post_trial_cost_prefers_trial_attribution_over_task(monkeypatch):
+    added: list = []
+    _session(monkeypatch, added, task_row=TASK_ROW)
+    block = _make_block(
+        analyzer_type=AnalyzerType.POST_TRIAL,
+        task_id="task-1",
+    )
+    block.usage = USAGE
+    await block.record_cost()
+    row = added[0]
+    assert row.job_kind == "post_trial"
+    assert row.trial_id == "trial-1"
+    assert row.task_id == "task-1"
+    assert row.org_id == "org-1"
+    assert row.experiment_id == "exp-1"
     assert (row.experiment_id, row.billed_user_id) == ("exp-1", "user-1")
     assert row.cost_usd == 0.42
     assert row.input_tokens == 1600
@@ -354,6 +372,7 @@ def test_summary_block_carries_the_triggering_user():
         triggered_by_user_id="viewer-7",
         prompt_template="INSTRUCTIONS",
         prompt_version=1,
+        prompt_id="prompt-test-id",
     )
     assert block.triggered_by_user_id == "viewer-7"
 
@@ -387,6 +406,7 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
             triggered_by_user_id="viewer-7",
             prompt_template="INSTRUCTIONS",
             prompt_version=1,
+            prompt_id="prompt-test-id",
         )
     except _StopBeforeRun:
         pass

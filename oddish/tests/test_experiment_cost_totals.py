@@ -710,6 +710,67 @@ async def test_trials_on_earlier_task_versions_still_count_as_spend(session):
 
 
 @pytest.mark.asyncio
+async def test_totals_carry_qa_spend_in_both_scopes(session):
+    """QA rides along on the same rollup the tiles already fetch.
+
+    Uses a gathered trial so the member/owned split is exercised: the tile and
+    its QA sidecar must describe the same population.
+    """
+    from sqlalchemy import insert as _insert
+
+    from oddish.db.models import AnalysisCostModel
+
+    task, home = await _fixture(session, "qa-home")
+    _task2, collection = await _fixture(session, "qa-coll")
+
+    homed = _trial(task, collection, cost_usd=1.00)
+    gathered = _trial(task, home, cost_usd=2.00)
+    session.add_all([homed, gathered])
+    await session.flush()
+
+    await session.execute(
+        _insert(experiment_trials).values(
+            experiment_id=collection.id, trial_id=gathered.id
+        )
+    )
+    session.add_all(
+        [
+            AnalysisCostModel(
+                job_kind="trial_classifier",
+                trial_id=homed.id,
+                org_id=_ORG,
+                model="claude-haiku-4-5",
+                cost_usd=0.02,
+                cost_source="estimated",
+            ),
+            AnalysisCostModel(
+                job_kind="trial_classifier",
+                trial_id=gathered.id,
+                org_id=_ORG,
+                model="claude-haiku-4-5",
+                cost_usd=0.05,
+                cost_source="estimated",
+            ),
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+
+    # Member scope covers both; owned covers only the homed trial -- the same
+    # split the agent figures use.
+    assert totals.qa_cost_usd == pytest.approx(0.07)
+    assert totals.owned_qa_cost_usd == pytest.approx(0.02)
+    assert totals.qa_has_estimated is True
+
+    # QA must not have leaked into the agent figure.
+    assert totals.cost_usd == pytest.approx(3.00)
+    assert totals.owned_cost_usd == pytest.approx(1.00)
+
+
+@pytest.mark.asyncio
 async def test_empty_experiment_yields_zeroed_totals(session):
     _task, experiment = await _fixture(session, "empty")
 

@@ -86,6 +86,43 @@ def usage_from_api_message(
     )
 
 
+def usage_from_openai_completion(
+    usage: object | None, model: str | None
+) -> AnalysisUsage | None:
+    """Extract usage from an OpenAI chat completion's ``usage``.
+
+    Mirrors :func:`usage_from_api_message` for the OpenAI path, with one
+    inverted convention: OpenAI's ``prompt_tokens`` *already includes* the
+    cached tokens that ``prompt_tokens_details.cached_tokens`` reports, whereas
+    Anthropic reports uncached input with its cache counts additive. So the
+    total is taken as-is here -- summing them would double-count the cache and
+    overprice every row. There is no prompt-cache *write* concept on this path.
+    """
+    if usage is None:
+        return None
+
+    def _count(value: object) -> int | None:
+        return int(value) if isinstance(value, (int, float)) else None
+
+    total_input = _count(getattr(usage, "prompt_tokens", None))
+    output = _count(getattr(usage, "completion_tokens", None))
+    cache_read = _count(
+        getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", None)
+    )
+    if total_input is None and output is None:
+        return None
+
+    return AnalysisUsage(
+        cost_usd=estimate_cost_usd(model, total_input, output, cache_read, None),
+        input_tokens=total_input,
+        output_tokens=output,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=None,
+        model=model,
+        source="estimated",
+    )
+
+
 def build_analysis_cost_row(
     *,
     job_kind: str,

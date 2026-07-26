@@ -39,6 +39,22 @@ def require_operator_org(auth: AuthContext) -> None:
         raise HTTPException(status_code=403, detail="Operator access required")
 
 
+def assert_org_access(row: object, auth: AuthContext, *, detail: str) -> None:
+    """Re-check a row resolved from a caller-supplied id against the caller's org.
+
+    Lookups that accept an opaque id resolve across scopes -- an id names any
+    row in the installation, not just the caller's -- so every id-resolved row
+    needs this before it is read or written. A row with no ``org_id`` is the
+    installation-wide default and is visible to everyone.
+
+    404 rather than 403: a foreign row's *existence* is itself not the caller's
+    to learn.
+    """
+    org_id = getattr(row, "org_id", None)
+    if org_id and org_id != auth.org_id:
+        raise HTTPException(status_code=404, detail=detail)
+
+
 def can_create_api_keys(auth: AuthContext) -> bool:
     """Return whether this user may create organization API keys.
 
