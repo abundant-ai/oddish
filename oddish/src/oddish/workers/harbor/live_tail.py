@@ -941,7 +941,7 @@ class LiveTailer:
     async def _tick(self) -> None:
         if self.snapshot:
             snapshot_raw = await self._read_snapshot()
-            if snapshot_raw:
+            if snapshot_raw and not self.replaced:
                 self._buffer_events(
                     self.fold.feed_line(
                         redact_exact_bytes(snapshot_raw, self.runtime_redactions)
@@ -949,7 +949,7 @@ class LiveTailer:
                 )
         else:
             tail_raw = await self._read_tail()
-            if isinstance(tail_raw, bytes) and tail_raw:
+            if isinstance(tail_raw, bytes) and tail_raw and not self.replaced:
                 self._feed_tail_chunk(tail_raw)
         # Ask for the buffer only if this tailer will keep it: a replaced tailer
         # shares its fold with the replacement, and draining it here would hand

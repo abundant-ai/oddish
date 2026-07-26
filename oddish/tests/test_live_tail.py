@@ -892,10 +892,15 @@ async def test_grok_tick_emits_a_partial_run_without_waiting_for_end(monkeypatch
 async def test_grok_tick_leaves_the_buffer_alone_once_replaced(monkeypatch):
     """A replaced tailer shares its fold, so it must not drain what it will drop."""
     patch_db(monkeypatch)
-    tailer = make_tailer(FakeEnv([]), agent="grok-build")
-    tailer._feed_tail_chunk(grok_line({"type": "text", "text": "mid-flight"}) + b"\n")
+    raw = grok_line({"type": "text", "text": "replacement output"}) + b"\n"
+    tailer = make_tailer(FakeEnv([b64(raw)]), agent="grok-build")
+    tailer._feed_tail_chunk(
+        grok_line({"type": "thought", "text": "mid-flight"}) + b"\n"
+    )
+    offset = tailer.offset
     tailer.replaced = True
     await tailer._tick()
+    assert tailer.offset == offset
     assert tailer.fold.flush() == [
         {"kind": "message", "payload": {"text": "mid-flight"}}
     ]
