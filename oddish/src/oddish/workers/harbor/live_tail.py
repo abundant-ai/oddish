@@ -527,6 +527,85 @@ class CursorUsageFold:
         )
 
 
+def _grok_text(event: dict[str, Any]) -> str:
+    """Reads a grok stream event's text, whichever field carries it.
+
+    Same field aliases the post-run trajectory converter accepts
+    (``grok_build_trajectory.py``), so both readers see one event grammar.
+    """
+    for key in ("data", "text", "content", "message", "output"):
+        value = event.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+@dataclass
+class GrokBuildFold:
+    """Reads grok's headless ``--output-format streaming-json`` stdout.
+
+    Assistant text and reasoning only. Grok's stdout carries **no tool calls
+    and no token usage** -- those live in the CLI's on-disk session store, which
+    is copied into the trial logs only after the run ends -- so this fold never
+    reports usage and the trial's token/cost columns stay untouched while it is
+    live. The ``--output-format json`` fallback arms emit a single blob at exit
+    rather than a stream, so those runs simply produce their events at the end.
+
+    Grok streams text in small chunks. Emitting one event per chunk would burn
+    the ``MAX_TRIAL_EVENTS`` budget on a fraction of a run, so consecutive
+    chunks of the same kind are coalesced and flushed when the kind changes, at
+    end of stream, or once the buffer reaches the payload clip -- beyond which
+    a longer buffer would only be truncated anyway.
+    """
+
+    model: str | None = None
+    _kind: str | None = None
+    _parts: list[str] = field(default_factory=list)
+    _buffered: int = 0
+
+    @property
+    def has_usage(self) -> bool:
+        return False
+
+    def on_truncate(self) -> None:
+        # A fallback arm re-ran and truncated stdout; the tailer replays the new
+        # file from byte 0, so drop the partial buffer to avoid splicing the
+        # dead arm's text onto the new one's.
+        self._reset()
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        event = _parse_json_line(line)
+        if event is None:
+            return []
+        kind = str(event.get("type") or event.get("kind") or "").lower()
+        if kind == "end":
+            return self._flush()
+        text = _grok_text(event)
+        if not text:
+            return []
+        kind = "thought" if kind in {"thought", "thinking", "reasoning"} else "text"
+        rendered = self._flush() if kind != self._kind else []
+        self._kind = kind
+        self._parts.append(text)
+        self._buffered += len(text)
+        if self._buffered >= PAYLOAD_CLIP_CHARS:
+            rendered.extend(self._flush())
+        return rendered
+
+    def _flush(self) -> list[dict[str, Any]]:
+        text = "".join(self._parts)
+        self._reset()
+        return [_event("message", "text", text)] if text else []
+
+    def _reset(self) -> None:
+        self._kind = None
+        self._parts = []
+        self._buffered = 0
+
+    def totals(self) -> UsageTotals:
+        return UsageTotals(model=self.model)
+
+
 def _mini_message_usage(message: dict[str, Any]) -> tuple[int, int, int]:
     """Reads a mini-swe message's input, output, and cached token counts."""
     extra = message.get("extra")
@@ -698,6 +777,7 @@ ADAPTERS: tuple[Adapter, ...] = (
     Adapter("claude-code", "/logs/agent/claude-code.txt", ClaudeUsageFold),
     Adapter("codex", "/logs/agent/codex.txt", CodexUsageFold),
     Adapter("cursor-cli", "/logs/agent/cursor-cli.txt", CursorUsageFold),
+    Adapter("grok-build", "/logs/agent/grok-build.json", GrokBuildFold),
     Adapter(
         "mini-swe-agent",
         "/logs/agent/mini-swe-agent.trajectory.json",
