@@ -678,6 +678,7 @@ _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Without it, Bedrock rejects every call with "data retention mode
     # 'default' is not available for this model".
     "claude-fable-5": "global.anthropic.claude-fable-5",
+    "claude-opus-5": "global.anthropic.claude-opus-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
