@@ -139,16 +139,42 @@ def _download_presigned_bytes(url: str) -> tuple[bytes | None, str | None]:
 
 
 def _list_tasks_for_experiment(client: httpx.Client, experiment_id: str) -> list[dict]:
+    # ``include_trials`` embeds each task's trials scoped to this experiment
+    # (siblings sharing a task id are excluded server-side), so the pull stays
+    # within the experiment instead of re-fetching every trial on the task.
+    # ``compact_trials`` keeps the payload light — we only need each trial's id
+    # and owning experiment_id here.
     private_data = _get_json(
         client,
         "/tasks",
         None,
-        params={"experiment_id": experiment_id},
+        params={
+            "experiment_id": experiment_id,
+            "include_trials": "true",
+            "compact_trials": "true",
+        },
     )
     if isinstance(private_data, list) and private_data:
         return private_data
 
     return []
+
+
+def _scope_trials_to_experiment(task: dict, experiment_id: str) -> dict:
+    """Drop embedded trials that belong to a different experiment.
+
+    Used only on the fallback path where a task arrived via ``GET /tasks/{id}``
+    (which returns every trial on the task, regardless of experiment).
+    Filtering by each trial's own ``experiment_id`` keeps the pull scoped to the
+    requested experiment instead of leaking sibling experiments' trials that
+    merely share the task id.
+    """
+    trials = task.get("trials")
+    if not isinstance(trials, list):
+        return task
+    scoped = dict(task)
+    scoped["trials"] = [t for t in trials if t.get("experiment_id") == experiment_id]
+    return scoped
 
 
 def _download_trial_file(
@@ -274,11 +300,16 @@ def _pull_trial(
     include_logs: bool,
     include_files: bool,
     include_structured_logs: bool,
+    experiment_id: str | None = None,
     status_update: StatusCallback | None = None,
 ) -> dict:
     trial_root = output_root / "trials" / trial_id
-    summary: dict[str, int | str] = {
+    summary: dict[str, int | str | None] = {
         "trial_id": trial_id,
+        # The owning experiment of this trial, so a manifest that pulled an
+        # experiment records which experiment each trial actually belongs to
+        # (a task can be shared by several experiments).
+        "experiment_id": experiment_id,
         "logs_saved": 0,
         "files_saved": 0,
         "files_skipped": 0,
@@ -618,8 +649,12 @@ def _pull_once(
             }
         )
 
-        trial_ids = [t.get("id") for t in (task.get("trials", []) or []) if t.get("id")]
-        total_trials = len(trial_ids)
+        trial_work = [
+            (t.get("id"), t.get("experiment_id"))
+            for t in (task.get("trials", []) or [])
+            if t.get("id")
+        ]
+        total_trials = len(trial_work)
         if status_update and total_trials:
             status_update(
                 f"Pulling task {target_id}: downloading trials (0/{total_trials})"
@@ -634,9 +669,10 @@ def _pull_once(
                     include_logs=include_logs,
                     include_files=include_files,
                     include_structured_logs=include_structured_logs,
+                    experiment_id=trial_experiment_id,
                     status_update=None,
                 ): tid
-                for tid in trial_ids
+                for tid, trial_experiment_id in trial_work
             }
             completed_trials = 0
             for future in as_completed(futures):
@@ -664,7 +700,7 @@ def _pull_once(
     if not tasks:
         raise typer.BadParameter(f"Experiment '{target_id}' not found or has no tasks.")
 
-    all_trial_work: list[tuple[str, str]] = []
+    all_trial_work: list[tuple[str, str, str | None]] = []
     total_tasks = len(tasks)
     for task_index, task in enumerate(tasks, start=1):
         task_id = task.get("id")
@@ -674,11 +710,15 @@ def _pull_once(
             status_update(
                 f"Pulling experiment {target_id}: preparing task {task_index}/{total_tasks} ({task_id})"
             )
-        full_task = (
-            task
-            if task.get("trials") is not None
-            else (_get_task_status(client, task_id) or task)
-        )
+        # ``_list_tasks_for_experiment`` embeds experiment-scoped trials, so this
+        # keeps the pull within the experiment. The ``_get_task_status`` fallback
+        # is only for the (unexpected) case of a task arriving without them; it
+        # returns every trial on the task, so guard it with an experiment filter.
+        if task.get("trials") is not None:
+            full_task = task
+        else:
+            full_task = _get_task_status(client, task_id) or task
+            full_task = _scope_trials_to_experiment(full_task, target_id)
         _write_json(output_root / "tasks" / task_id / "task.json", full_task)
         task_summary: dict = {
             "task_id": task_id,
@@ -688,7 +728,7 @@ def _pull_once(
         for trial in full_task.get("trials", []) or []:
             trial_id = trial.get("id")
             if trial_id:
-                all_trial_work.append((task_id, trial_id))
+                all_trial_work.append((task_id, trial_id, trial.get("experiment_id")))
         if include_task_files and include_files:
             task_summary |= _pull_task_files(
                 client,
@@ -713,9 +753,10 @@ def _pull_once(
                 include_logs=include_logs,
                 include_files=include_files,
                 include_structured_logs=include_structured_logs,
+                experiment_id=trial_experiment_id,
                 status_update=None,
             ): trial_id
-            for _task_id, trial_id in all_trial_work
+            for _task_id, trial_id, trial_experiment_id in all_trial_work
         }
         completed_trials = 0
         for future in as_completed(futures):
@@ -757,9 +798,7 @@ def _debug_files(
         if json_output:
             print_json({"error": response.text, "status": response.status_code})
         else:
-            console.print(
-                f"[red]Failed to list debug files:[/red] {response.text}"
-            )
+            console.print(f"[red]Failed to list debug files:[/red] {response.text}")
         raise typer.Exit(1)
 
     data = response.json()

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import tarfile
 import tempfile
@@ -14,6 +15,7 @@ import time
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
+from collections import Counter
 from collections.abc import Iterable, MutableMapping, MutableSequence
 from typing import Any, cast
 
@@ -2085,8 +2087,14 @@ def _summarize_experiment_tasks(tasks: list[dict]) -> dict:
     task_pending = total_tasks - task_completed - task_running
 
     total_trials = sum(t.get("total", 0) or 0 for t in tasks)
+    # ``completed`` counts trials whose execution finished (TrialStatus.SUCCESS,
+    # regardless of test result); ``failed`` counts trials that errored out on a
+    # harness/infra failure; ``skipped`` counts baseline-cancelled trials. All
+    # three are terminal, so their sum is what the per-task row calls "finished".
     completed_trials = sum(t.get("completed", 0) or 0 for t in tasks)
     failed_trials = sum(t.get("failed", 0) or 0 for t in tasks)
+    skipped_trials = sum(t.get("skipped", 0) or 0 for t in tasks)
+    finished_trials = completed_trials + failed_trials + skipped_trials
 
     reward_success = sum(t.get("reward_success", 0) or 0 for t in tasks)
     reward_total = sum(t.get("reward_total", 0) or 0 for t in tasks)
@@ -2099,9 +2107,123 @@ def _summarize_experiment_tasks(tasks: list[dict]) -> dict:
         "total_trials": total_trials,
         "completed_trials": completed_trials,
         "failed_trials": failed_trials,
+        "skipped_trials": skipped_trials,
+        "finished_trials": finished_trials,
         "reward_success": reward_success,
         "reward_total": reward_total,
     }
+
+
+# Errored trials record failures as free text in ``error_message`` (there is no
+# dedicated error-class column), so these patterns lift the most recognizable,
+# stable token out of it for a compact one-line label.
+_SANDBOX_STATE_RE = re.compile(r"SandboxState\.[A-Z_]+")
+_IMAGE_BUILD_RE = re.compile(r"Image build for im-\S+ failed", re.IGNORECASE)
+_ERROR_CLASS_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)")
+_QUOTED_SPAN_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _short_error_reason(error_message: str | None) -> str | None:
+    """Distil a trial's free-text ``error_message`` into a short, stable label.
+
+    A failed trial's cause is only ever free text, so lift out the most
+    recognizable structured token — a Daytona ``SandboxState.X`` state, a Modal
+    image-build signature, or a ``FooError``/``FooException`` class — and
+    otherwise fall back to the first line with environment-specific quoted spans
+    elided. Returns ``None`` when there is nothing usable to show.
+    """
+    if not error_message:
+        return None
+    text = error_message.strip()
+    if not text:
+        return None
+
+    match = _SANDBOX_STATE_RE.search(text)
+    if match:
+        return match.group(0)
+    if _IMAGE_BUILD_RE.search(text):
+        return "ImageBuildFailed"
+    match = _ERROR_CLASS_RE.search(text)
+    if match:
+        return match.group(0)
+
+    first_line = _QUOTED_SPAN_RE.sub("…", text.splitlines()[0]).strip()
+    if len(first_line) > 60:
+        first_line = first_line[:59].rstrip() + "…"
+    return first_line or None
+
+
+def _task_error_summary(task: dict) -> dict:
+    """Summarise a task's errored trials for the experiment rollup.
+
+    ``errored`` is the count of harness/infra-failed trials, taken from the
+    task-level counter so it is available even without embedded trials.
+    ``reason`` and ``attempts`` are best-effort and only populated when the
+    caller fetched embedded (experiment-scoped) trials: ``reason`` is the most
+    common short error label across the errored trials, and ``attempts`` is
+    ``used/max`` for a representative trial that exhausted its retries — the
+    "needs a fresh launch, not a re-read" signal.
+    """
+    errored = task.get("failed") or 0
+    errored_trials = [
+        t for t in (task.get("trials") or []) if t.get("status") == "failed"
+    ]
+
+    reason: str | None = None
+    attempts: str | None = None
+    if errored_trials:
+        reasons = [
+            label
+            for label in (
+                _short_error_reason(t.get("error_message")) for t in errored_trials
+            )
+            if label
+        ]
+        if reasons:
+            reason = Counter(reasons).most_common(1)[0][0]
+
+        exhausted = next(
+            (
+                t
+                for t in errored_trials
+                if (t.get("attempts") or 0) >= (t.get("max_attempts") or 0) > 0
+            ),
+            None,
+        )
+        if exhausted is not None:
+            attempts = f"{exhausted.get('attempts')}/{exhausted.get('max_attempts')}"
+
+    return {"errored": errored, "reason": reason, "attempts": attempts}
+
+
+def _build_experiment_error_details(tasks: list[dict]) -> str | None:
+    """Full-width per-task failure detail to print beneath the rollup table.
+
+    Returns ``None`` unless embedded trials surfaced a reason or retry
+    exhaustion; the narrow ``Rewards`` cell can only fit the count, so the
+    failure class (e.g. ``SandboxState.BUILD_FAILED``) and ``used/max`` attempts
+    live here where they are not truncated. ``6/6`` attempts is the signal that
+    a trial is spent and needs a fresh launch rather than a re-read.
+    """
+    lines = []
+    for task in tasks:
+        error_summary = _task_error_summary(task)
+        if not error_summary["errored"]:
+            continue
+        if not (error_summary["reason"] or error_summary["attempts"]):
+            continue
+        detail = [f"{error_summary['errored']} errored"]
+        if error_summary["attempts"]:
+            detail.append(f"{error_summary['attempts']} attempts")
+        if error_summary["reason"]:
+            detail.append(escape(error_summary["reason"]))
+        lines.append(
+            f"  [cyan]{escape(str(task.get('id', '?')))}[/cyan]: "
+            f"[red]{' · '.join(detail)}[/red]"
+        )
+    if not lines:
+        return None
+    return "[bold]Errored trials:[/bold]\n" + "\n".join(lines)
 
 
 def _build_experiment_table(experiment_id: str, tasks: list[dict]) -> Table:
@@ -2120,8 +2242,14 @@ def _build_experiment_table(experiment_id: str, tasks: list[dict]) -> Table:
     for task in tasks:
         reward_total = task.get("reward_total")
         reward_success = task.get("reward_success")
+        error_summary = _task_error_summary(task)
         if reward_total:
             reward_display = f"{reward_success}/{reward_total}"
+        elif error_summary["errored"]:
+            # A bare "-" reads as "the grader recorded no reward"; "N errored"
+            # marks it as an infrastructure failure. The failure class and retry
+            # count are too wide for this column — see _build_experiment_error_details.
+            reward_display = f"[red]{error_summary['errored']} errored[/red]"
         else:
             reward_display = "-"
 
@@ -2148,7 +2276,7 @@ def _build_experiment_table(experiment_id: str, tasks: list[dict]) -> Table:
     if summary["task_pending"]:
         summary_parts.append(f"[dim]{summary['task_pending']} pending[/dim]")
     if summary["failed_trials"]:
-        summary_parts.append(f"[red]{summary['failed_trials']} failed trials[/red]")
+        summary_parts.append(f"[red]{summary['failed_trials']} errored[/red]")
     if summary["reward_total"]:
         summary_parts.append(
             f"[green]{summary['reward_success']}✓[/green]/"
@@ -2160,17 +2288,27 @@ def _build_experiment_table(experiment_id: str, tasks: list[dict]) -> Table:
 
 
 def get_experiment_tasks(
-    api_url: str, experiment_id: str, *, include_trials: bool = False
+    api_url: str,
+    experiment_id: str,
+    *,
+    include_trials: bool = False,
+    compact_trials: bool = False,
 ) -> list[dict] | None:
     """Fetch all tasks for an experiment by ID.
 
     ``include_trials`` embeds each task's trial rows (needed to select
-    individual trials); it is off by default because callers that only read
-    task-level counters pay for a much larger payload otherwise.
+    individual trials or read per-trial failure detail); it is off by default
+    because callers that only read task-level counters pay for a much larger
+    payload otherwise. The embedded trials are scoped to this experiment
+    server-side, so siblings sharing a task id are excluded. ``compact_trials``
+    trims each embedded trial to a lighter column set (still carrying status,
+    reward, attempts, and error_message).
     """
     params: dict[str, str] = {"experiment_id": experiment_id}
     if include_trials:
         params["include_trials"] = "true"
+    if compact_trials:
+        params["compact_trials"] = "true"
     try:
         with httpx.Client(
             timeout=60.0 if include_trials else 10.0, headers=get_auth_headers()
@@ -2199,6 +2337,17 @@ def print_experiment_status(api_url: str, experiment_id: str) -> bool:
         )
         return False
 
+    # When trials errored, re-fetch with embedded (experiment-scoped) trials so
+    # the rollup can name the failure and flag retry exhaustion instead of an
+    # ambiguous "-". Only pay for the heavier payload when there is something to
+    # explain; healthy experiments keep the cheap counters-only fetch.
+    if any((task.get("failed") or 0) for task in tasks):
+        enriched = get_experiment_tasks(
+            api_url, experiment_id, include_trials=True, compact_trials=True
+        )
+        if enriched:
+            tasks = enriched
+
     summary = _summarize_experiment_tasks(tasks)
     console.print(f"[bold]Experiment:[/bold] {experiment_id}")
     experiment_name = tasks[0].get("experiment_name")
@@ -2208,9 +2357,21 @@ def print_experiment_status(api_url: str, experiment_id: str) -> bool:
         f"[bold]Tasks:[/bold] {summary['total_tasks']} total"
         f" ({summary['task_running']} running, {summary['task_completed']} done)"
     )
-    console.print(
-        f"[bold]Trials:[/bold] {summary['completed_trials']}/{summary['total_trials']} completed"
+    # Speak in the same "finished" (terminal) vocabulary the per-task Progress
+    # column uses, then break out the non-passing terminal states so an
+    # all-errored run cannot be misread as "0 completed".
+    trials_line = (
+        f"[bold]Trials:[/bold] "
+        f"{summary['finished_trials']}/{summary['total_trials']} finished"
     )
+    breakdown = []
+    if summary["failed_trials"]:
+        breakdown.append(f"[red]{summary['failed_trials']} errored[/red]")
+    if summary["skipped_trials"]:
+        breakdown.append(f"[dim]{summary['skipped_trials']} skipped[/dim]")
+    if breakdown:
+        trials_line += " · " + ", ".join(breakdown)
+    console.print(trials_line)
     if summary["reward_total"]:
         console.print(
             f"[bold]Rewards:[/bold] {summary['reward_success']}/{summary['reward_total']} passed"
@@ -2218,6 +2379,10 @@ def print_experiment_status(api_url: str, experiment_id: str) -> bool:
 
     console.print()
     console.print(_build_experiment_table(experiment_id, tasks))
+    error_details = _build_experiment_error_details(tasks)
+    if error_details:
+        console.print()
+        console.print(error_details)
     return True
 
 
