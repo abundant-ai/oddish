@@ -593,8 +593,9 @@ class GrokBuildFold:
     chunks of the same kind are coalesced. The buffer is given up on a kind
     change, at ``end``, at the end of every poll tick (via :meth:`flush`, so a
     quiet same-kind stream still reaches the panel and nothing is stranded when
-    the run ends), and before an append that would overflow the payload clip --
-    past which the payload would be truncated and the overflow lost.
+    the run ends), and before an append that would overflow the payload clip.
+    An individual chunk larger than the clip is split across events so none of
+    its text is truncated.
     """
 
     model: str | None = None
@@ -623,14 +624,21 @@ class GrokBuildFold:
         if not text:
             return []
         kind = "thought" if kind in {"thought", "thinking", "reasoning"} else "text"
-        rendered = (
-            self.flush()
-            if kind != self._kind or self._buffered + len(text) > PAYLOAD_CLIP_CHARS
-            else []
-        )
-        self._kind = kind
-        self._parts.append(text)
-        self._buffered += len(text)
+        rendered = []
+        if kind != self._kind or (
+            self._buffered and self._buffered + len(text) > PAYLOAD_CLIP_CHARS
+        ):
+            rendered.extend(self.flush())
+        while len(text) > PAYLOAD_CLIP_CHARS:
+            self._kind = kind
+            self._parts.append(text[:PAYLOAD_CLIP_CHARS])
+            self._buffered = PAYLOAD_CLIP_CHARS
+            rendered.extend(self.flush())
+            text = text[PAYLOAD_CLIP_CHARS:]
+        if text:
+            self._kind = kind
+            self._parts.append(text)
+            self._buffered += len(text)
         return rendered
 
     def flush(self) -> list[dict[str, Any]]:

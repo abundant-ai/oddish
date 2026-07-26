@@ -821,6 +821,19 @@ def test_grok_fold_flushes_a_long_run_before_it_overflows_the_payload_clip():
     assert fold.flush() == [{"kind": "message", "payload": {"text": chunk}}]
 
 
+def test_grok_fold_splits_one_oversized_stream_chunk_without_losing_text():
+    fold = GrokBuildFold()
+    text = "x" * (live_tail.PAYLOAD_CLIP_CHARS + 952)
+    rendered = fold.feed_line(grok_line({"type": "thought", "data": text}))
+    rendered.extend(fold.flush())
+    assert [event["payload"]["text"] for event in rendered] == [
+        text[: live_tail.PAYLOAD_CLIP_CHARS],
+        text[live_tail.PAYLOAD_CLIP_CHARS :],
+    ]
+    assert "".join(event["payload"]["text"] for event in rendered) == text
+    assert all("truncated" not in event["payload"] for event in rendered)
+
+
 def test_grok_fold_flush_gives_up_a_quiet_partial_run():
     fold = GrokBuildFold()
     fold.feed_line(grok_line({"type": "text", "text": "short answer"}))
