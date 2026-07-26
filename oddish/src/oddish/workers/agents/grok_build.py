@@ -85,6 +85,21 @@ _RESUME_PROMPT = (
     "Continue the original task from where you left off."
 )
 
+# Fetching https://x.ai/cli/install.sh (and the packages apt/apk pull first)
+# rides the sandbox's freshly started network, and a transient DNS or connect
+# blip ("curl: (6) Could not resolve host: x.ai") surfaces as a
+# NetworkConnectionError that kills the trial during agent setup -- before a
+# single agent turn has run. Such blips clear in seconds, but the trial-level
+# re-queue restarts from a fresh sandbox (environment rebuild and all) and is
+# picked up fast enough that a minutes-long resolver outage can burn every
+# attempt on the same error. So retry the install in place with a short
+# exponential backoff instead: 4 tries with 5s/10s/20s waits (~35s of sleep
+# worst case) fits comfortably inside Harbor's 360s agent-setup timeout, and an
+# outage that outlives the budget still fails the attempt and falls back to the
+# trial-level re-queue as before.
+_INSTALL_ATTEMPTS = 4
+_INSTALL_RETRY_BACKOFF_SEC = 5
+
 # The rendered instruction is staged inside the sandbox as a file and read back
 # via ``"$(cat ...)"`` instead of being inlined into the ``grok -p`` argv. Modal
 # rejects any ``exec`` whose CMD arguments exceed 65536 bytes (ARG_MAX), and a
@@ -95,6 +110,27 @@ _RESUME_PROMPT = (
 # the far larger in-sandbox Linux ARG_MAX), so grok still receives the full
 # instruction as its ``-p`` argument.
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
+
+
+def _with_install_retries(command: str) -> str:
+    """Wrap a network-touching install command in a bounded retry loop.
+
+    The braces make the whole ``command`` (pipelines, ``if``/``fi`` chains) the
+    ``until`` condition, whose failure is exempt from ``set -e`` in the caller,
+    so the loop -- not errexit -- decides when to give up. The final exit code
+    is the last attempt's real code (e.g. curl's 6), preserving what Harbor's
+    error classifier and the trial logs see today.
+    """
+    return (
+        f"attempt=1; delay={_INSTALL_RETRY_BACKOFF_SEC}; "
+        f"until {{ {command}; }}; do "
+        "rc=$?; "
+        f"if [ $attempt -ge {_INSTALL_ATTEMPTS} ]; then exit $rc; fi; "
+        'echo "install attempt $attempt failed (rc=$rc); '
+        'retrying in ${delay}s" >&2; '
+        'sleep "$delay"; attempt=$((attempt+1)); delay=$((delay*2)); '
+        "done"
+    )
 
 
 def _positive_int(name: str, value: int | str | None) -> int | None:
@@ -161,7 +197,7 @@ class OddishGrokBuild(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         await self.exec_as_root(
             environment,
-            command=(
+            command=_with_install_retries(
                 "if command -v apt-get >/dev/null 2>&1; then "
                 "DEBIAN_FRONTEND=noninteractive apt-get update && "
                 "DEBIAN_FRONTEND=noninteractive apt-get install -y curl bash; "
@@ -170,11 +206,20 @@ class OddishGrokBuild(BaseInstalledAgent):
                 "fi"
             ),
         )
+        # --connect-timeout bounds each try's connect phase: without it a
+        # black-holed connect eats curl's 300s default per attempt and the
+        # retry budget alone would blow the 360s agent-setup timeout.
+        install_grok = (
+            "curl -fsSL --connect-timeout 20 https://x.ai/cli/install.sh | bash"
+        )
+        # The verification stays outside the retry loop: grok missing from PATH
+        # after a "successful" install is deterministic, and replaying the
+        # installer would only delay the same failure.
         await self.exec_as_agent(
             environment,
             command=(
                 "set -euo pipefail; "
-                "curl -fsSL https://x.ai/cli/install.sh | bash; "
+                f"{_with_install_retries(install_grok)}; "
                 'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; '
                 "command -v grok; "
                 "grok --version"

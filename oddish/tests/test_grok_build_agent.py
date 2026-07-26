@@ -372,6 +372,156 @@ async def test_session_captured_even_when_agent_fails(tmp_path, monkeypatch):
     assert any("grok-session" in c for c in agent_commands)
 
 
+async def _generated_install_commands(tmp_path, monkeypatch) -> list[str]:
+    """Return the [root, agent] commands ``install`` would exec, in order."""
+    agent = OddishGrokBuild(logs_dir=tmp_path)
+    commands: list[str] = []
+
+    async def _record(self, environment, *, command, **kwargs):
+        commands.append(command)
+
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_root", _record)
+    monkeypatch.setattr(OddishGrokBuild, "exec_as_agent", _record)
+    await agent.install(environment=object())
+    return commands
+
+
+def _run_install_in_shell(command: str, tmp_path, curl_stub_body: str):
+    """Execute the generated install command under bash against a stubbed curl.
+
+    The stub shadows the real curl via PATH; when it "succeeds" it emits a tiny
+    installer script that the piped bash runs, dropping a fake ``grok`` into
+    the throwaway HOME so the post-install verification has something to find.
+    This pins the retry loop's actual shell behavior (attempt bound, exit-code
+    propagation), not just the command text.
+    """
+    home = tmp_path / "home"
+    logdir = tmp_path / "logs"
+    stubdir = tmp_path / "stubs"
+    home.mkdir()
+    logdir.mkdir()
+    stubdir.mkdir()
+    stub = stubdir / "curl"
+    stub.write_text("#!/bin/bash\n" + curl_stub_body, encoding="utf-8")
+    stub.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            "HOME": str(home),
+            "LOGDIR": str(logdir),
+            "PATH": f"{stubdir}:/usr/bin:/bin",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    calls_path = logdir / "curl-calls.log"
+    calls = (
+        calls_path.read_text(encoding="utf-8").splitlines()
+        if calls_path.exists()
+        else []
+    )
+    return proc.returncode, calls, proc.stdout
+
+
+# Fails twice with curl's DNS exit code (the exact death from production trial
+# setup: "curl: (6) Could not resolve host: x.ai"), then hands the piped bash
+# an installer that drops a fake grok into $HOME/.local/bin.
+_DNS_BLIP_CURL_STUB = """
+echo "$*" >> "$LOGDIR/curl-calls.log"
+n=$(wc -l < "$LOGDIR/curl-calls.log")
+if [ "$n" -le 2 ]; then
+  echo "curl: (6) Could not resolve host: x.ai" >&2
+  exit 6
+fi
+cat <<'EOS'
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/bash\\necho grok 9.9.9\\n' > "$HOME/.local/bin/grok"
+chmod +x "$HOME/.local/bin/grok"
+EOS
+"""
+
+_DNS_DEAD_CURL_STUB = """
+echo "$*" >> "$LOGDIR/curl-calls.log"
+echo "curl: (6) Could not resolve host: x.ai" >&2
+exit 6
+"""
+
+
+@pytest.mark.asyncio
+async def test_install_retries_ride_out_a_dns_blip(tmp_path, monkeypatch):
+    """A transient resolver failure must not kill the trial during setup.
+
+    A "Could not resolve host: x.ai" blip clears in seconds, but without the
+    in-place loop it raises NetworkConnectionError and burns a whole trial
+    attempt on a fresh sandbox that may re-queue into the same outage window.
+    """
+    monkeypatch.setattr(grok_build_module, "_INSTALL_RETRY_BACKOFF_SEC", 0)
+    _, agent_command = await _generated_install_commands(tmp_path, monkeypatch)
+    rc, calls, stdout = _run_install_in_shell(
+        agent_command, tmp_path, _DNS_BLIP_CURL_STUB
+    )
+    assert rc == 0
+    # Two DNS failures, then the fetch that lands.
+    assert len(calls) == 3
+    # The post-install verification ran against the installed binary.
+    assert "grok 9.9.9" in stdout
+
+
+@pytest.mark.asyncio
+async def test_install_retry_budget_is_bounded_and_preserves_exit_code(
+    tmp_path, monkeypatch
+):
+    """An outage that outlives the budget still fails the attempt as before.
+
+    The loop must give up after its bounded tries and exit with the last real
+    failure code (curl's 6), so Harbor's stderr-pattern classifier still labels
+    the death NetworkConnectionError and the trial-level re-queue still fires.
+    """
+    monkeypatch.setattr(grok_build_module, "_INSTALL_RETRY_BACKOFF_SEC", 0)
+    _, agent_command = await _generated_install_commands(tmp_path, monkeypatch)
+    rc, calls, stdout = _run_install_in_shell(
+        agent_command, tmp_path, _DNS_DEAD_CURL_STUB
+    )
+    assert rc == 6
+    assert len(calls) == 4
+    # The verification never ran: the loop exits, it does not fall through.
+    assert "grok" not in stdout
+
+
+@pytest.mark.asyncio
+async def test_install_succeeds_first_try_without_retry_noise(tmp_path, monkeypatch):
+    monkeypatch.setattr(grok_build_module, "_INSTALL_RETRY_BACKOFF_SEC", 0)
+    _, agent_command = await _generated_install_commands(tmp_path, monkeypatch)
+    always_ok = _DNS_BLIP_CURL_STUB.replace('"$n" -le 2', '"$n" -le 0')
+    rc, calls, _ = _run_install_in_shell(agent_command, tmp_path, always_ok)
+    assert rc == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_install_backoff_is_real_and_wraps_both_network_steps(
+    tmp_path, monkeypatch
+):
+    """Pin the backoff shape and coverage.
+
+    The doubling (5s, 10s, 20s) keeps the loop useful against blips measured in
+    tens of seconds while fitting Harbor's 360s agent-setup timeout; both the
+    package install (apt/apk) and the CLI fetch cross the network, so both get
+    the loop. --connect-timeout bounds each try's connect phase so a black-holed
+    connect cannot eat the whole setup budget before the retries run.
+    """
+    root_command, agent_command = await _generated_install_commands(
+        tmp_path, monkeypatch
+    )
+    for command in (root_command, agent_command):
+        assert "delay=5;" in command
+        assert 'sleep "$delay"; attempt=$((attempt+1)); delay=$((delay*2));' in command
+        assert "attempt -ge 4" in command
+    assert "apt-get" in root_command
+    assert "--connect-timeout 20" in agent_command
+
+
 def _agent_with_no_xai_env(tmp_path, monkeypatch) -> OddishGrokBuild:
     """Build an agent with both key vars unset.
 
