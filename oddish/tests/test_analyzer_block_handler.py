@@ -75,7 +75,7 @@ async def test_post_trial_run_reaches_the_block_with_its_trial_subject(monkeypat
         triggered_by_user_id="user_1",
         model="test-model",
         reasoning_effort=None,
-        llm_client_type=LLMClientType.API.value,
+        llm_client_type=LLMClientType.SANDBOX.value,
         scope_id="trial_9",
         run_config={
             "automatic": True,
@@ -84,6 +84,8 @@ async def test_post_trial_run_reaches_the_block_with_its_trial_subject(monkeypat
             "trial_id": "trial_9",
             "task_id": "task_3",
             "system_prompt": "Inspect the trial",
+            "oddish_cli_enabled": True,
+            "oddish_api_base_url": "https://api.test",
         },
         analyzer_block_id=None,
         status=JobStatus.QUEUED,
@@ -123,6 +125,7 @@ async def test_post_trial_run_reaches_the_block_with_its_trial_subject(monkeypat
     assert captured["analyzer_id"] == "trial_9"
     assert captured["task_id"] == "task_3"
     assert captured["attribution_org_id"] is None
+    assert captured["sandbox_config"].oddish_api_scope == "tasks"
 
 
 @pytest.mark.asyncio
