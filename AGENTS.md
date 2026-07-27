@@ -60,7 +60,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
 ├── deploy.py                   # Modal app entrypoint
-├── modal_app.py                # Modal image, volumes, shared runtime, env knobs
+├── modal_app.py                # Modal image, volumes, shared runtime, env knobs; default Harbor provider is Daytona
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
