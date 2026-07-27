@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from oddish.config import QuotaMode, settings
 from oddish.core import quota_enforcement
@@ -86,7 +87,7 @@ def _enforced_quota(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
+async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     session, monkeypatch
 ):
     suffix = uuid.uuid4().hex[:8]
@@ -96,6 +97,7 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
     experiment_id = f"exp-qc-{suffix}"
     exhausted_task_id = f"task-exhausted-qc-{suffix}"
     mixed_task_id = f"task-mixed-qc-{suffix}"
+    advance_task_id = f"task-advance-qc-{suffix}"
     now = datetime.now(timezone.utc)
 
     async def no_org_limit(*_args):
@@ -108,7 +110,7 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
     monkeypatch.setattr(quota_enforcement, "get_effective_limit", user_limit)
 
     session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id=org_id))
-    for task_id in (exhausted_task_id, mixed_task_id):
+    for task_id in (exhausted_task_id, mixed_task_id, advance_task_id):
         session.add(
             TaskModel(
                 id=task_id,
@@ -124,6 +126,7 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
                 verdict_status=(
                     VerdictStatus.RUNNING if task_id == mixed_task_id else None
                 ),
+                run_analysis=task_id == advance_task_id,
             )
         )
 
@@ -131,6 +134,8 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
     exhausted_id = f"{exhausted_task_id}-1"
     mixed_target_id = f"{mixed_task_id}-0"
     mixed_other_id = f"{mixed_task_id}-1"
+    advance_target_id = f"{advance_task_id}-0"
+    advance_other_id = f"{advance_task_id}-1"
     session.add_all(
         [
             _trial(
@@ -162,6 +167,23 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
             _trial(
                 trial_id=mixed_other_id,
                 task_id=mixed_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id=other_user_id,
+                status=TrialStatus.SUCCESS,
+                finished_at=now,
+            ),
+            _trial(
+                trial_id=advance_target_id,
+                task_id=advance_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id=user_id,
+                status=TrialStatus.RUNNING,
+            ),
+            _trial(
+                trial_id=advance_other_id,
+                task_id=advance_task_id,
                 experiment_id=experiment_id,
                 org_id=org_id,
                 billed_user_id=other_user_id,
@@ -221,7 +243,7 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
         await session.refresh(job)
 
     assert result["scope"] == "user"
-    assert result["trials_cancelled"] == 2
+    assert result["trials_cancelled"] == 3
     assert result["tasks_cancelled"] == 1
     assert set(result["modal_function_call_ids"]) == {
         "fc-mixed-target",
@@ -240,6 +262,20 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
     mixed_task = await session.get(TaskModel, mixed_task_id)
     assert mixed_task.status == TaskStatus.VERDICT_PENDING
     assert mixed_task.verdict_status == VerdictStatus.RUNNING
+    advance_task = await session.get(TaskModel, advance_task_id)
+    assert advance_task.status == TaskStatus.VERDICT_PENDING
+    assert advance_task.verdict_status == VerdictStatus.QUEUED
+    qa_jobs = (
+        await session.scalars(
+            select(WorkerJobModel).where(
+                WorkerJobModel.subject_table == "tasks",
+                WorkerJobModel.subject_id == advance_task_id,
+                WorkerJobModel.kind == WorkerJobKind.QA,
+            )
+        )
+    ).all()
+    assert len(qa_jobs) == 1
+    assert qa_jobs[0].status == WorkerJobStatus.QUEUED
     assert (await session.get(WorkerJobModel, exhausted_job.id)).status == (
         WorkerJobStatus.CANCELLED
     )

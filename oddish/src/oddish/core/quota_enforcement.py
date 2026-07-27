@@ -209,7 +209,8 @@ async def cancel_trials_if_quota_reached(
 
     now = utcnow()
     trial_ids = [trial.id for trial in trials]
-    affected_task_ids = list(dict.fromkeys(trial.task_id for trial in trials))
+    trial_id_by_task = {trial.task_id: trial.id for trial in trials}
+    affected_task_ids = list(trial_id_by_task)
     for trial in trials:
         trial.status = TrialStatus.FAILED
         trial.error_message = QUOTA_CANCELLED_MESSAGE
@@ -257,6 +258,15 @@ async def cancel_trials_if_quota_reached(
         for task_id in affected_task_ids
         if task_id not in tasks_with_preserved_trials
     ]
+    preserved_task_ids = (
+        [
+            task_id
+            for task_id in affected_task_ids
+            if task_id in tasks_with_preserved_trials
+        ]
+        if scope == "user"
+        else []
+    )
     tasks_cancelled = 0
     if exhausted_task_ids:
         tasks = list(
@@ -284,6 +294,12 @@ async def cancel_trials_if_quota_reached(
                 task.verdict_status = VerdictStatus.FAILED
                 task.verdict_error = QUOTA_CANCELLED_MESSAGE
                 task.verdict_finished_at = now
+
+    if preserved_task_ids:
+        from oddish.queue import maybe_start_qa_stage
+
+        for task_id in preserved_task_ids:
+            await maybe_start_qa_stage(session, trial_id_by_task[task_id])
 
     modal_ids, caller_modal_ids, worker_targets = await _cancel_worker_jobs(
         session,
