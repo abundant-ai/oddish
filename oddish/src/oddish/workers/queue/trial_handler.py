@@ -653,7 +653,13 @@ async def _worker_still_owns_trial(
     )
 
 
-def _settle_trial_metering(trial, outcome: HarborOutcome, byok_env):
+def _settle_trial_metering(
+    trial,
+    outcome: HarborOutcome,
+    byok_env,
+    *,
+    preserve_checkpointed_cost: bool = False,
+):
     """Persist billed usage independently from terminal outcome ownership."""
     prev_cost_usd = trial.cost_usd
     trial.input_tokens = outcome.input_tokens
@@ -674,6 +680,9 @@ def _settle_trial_metering(trial, outcome: HarborOutcome, byok_env):
         cache_tokens=outcome.cache_tokens,
         cache_write_tokens=outcome.cache_write_tokens,
     )
+    if preserve_checkpointed_cost and prev_cost_usd is not None:
+        if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
+            trial.cost_usd = prev_cost_usd
     # Stamp the key this trial ran on -- the BYOK overlay's key when one was
     # injected, else the worker's platform key -- so its spend can be dropped
     # from cost accounting when that key is on the admin exclusion list.
@@ -716,7 +725,10 @@ async def _store_trial_results(
         if user_cancelled or (runtime_cancelled and not is_modal_image_build_error):
             if outcome:
                 _, provider, native_cost_trusted = _settle_trial_metering(
-                    trial, outcome, byok_env
+                    trial,
+                    outcome,
+                    byok_env,
+                    preserve_checkpointed_cost=True,
                 )
                 log_unpriced_trial_if_needed(
                     cost_usd=trial.cost_usd,

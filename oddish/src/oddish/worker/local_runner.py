@@ -766,6 +766,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         # and analysis below are run outcomes and must not overwrite it.
         agent_result = getattr(result, "agent_result", None) if result else None
         if agent_result is not None and not agent_result.is_empty():
+            prev_cost_usd = trial.cost_usd
             cache_write_tokens = cache_write_tokens_from_trajectory(trajectory)
             trial.input_tokens = agent_result.n_input_tokens
             trial.cache_tokens = agent_result.n_cache_tokens
@@ -787,6 +788,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 cache_tokens=agent_result.n_cache_tokens,
                 cache_write_tokens=cache_write_tokens,
             )
+            if not owns_outcome and prev_cost_usd is not None:
+                if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
+                    trial.cost_usd = prev_cost_usd
             # Local-mode trials land in the same cost accounting as queue
             # trials, so stamp the platform key hash here too (see
             # workers/queue/trial_handler settlement).

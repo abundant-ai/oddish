@@ -1500,7 +1500,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
         cache_tokens=None,
         cache_write_tokens=None,
         output_tokens=None,
-        cost_usd=None,
+        cost_usd=0.25,
         llm_key_hash=None,
         phase_timing=None,
         has_trajectory=False,
@@ -1563,7 +1563,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     assert trial.cache_tokens == 25
     assert trial.cache_write_tokens == 10
     assert trial.output_tokens == 50
-    assert trial.cost_usd == 0.12
+    assert trial.cost_usd == 0.25
     assert trial.llm_key_hash == "settled-key-hash"
     assert stored == (True, False)
 
