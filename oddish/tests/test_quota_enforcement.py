@@ -347,6 +347,12 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     assert (await session.get(TrialModel, gate_blocked_id)).status == TrialStatus.QUEUED
     assert gate_blocked_job.status == WorkerJobStatus.BLOCKED
 
+    # A late result write must not turn a cancellation into quality evidence.
+    # The persisted cancelled stage remains authoritative even for historical
+    # rows that already gained a reward before this race was closed.
+    gate_cancelled_baseline = await session.get(TrialModel, gate_baseline_id)
+    assert gate_cancelled_baseline.harbor_stage == "cancelled"
+    gate_cancelled_baseline.reward = 0.0
     gate_other_baseline = await session.get(TrialModel, gate_other_baseline_id)
     gate_other_baseline.status = TrialStatus.SUCCESS
     gate_other_baseline.reward = 1.0

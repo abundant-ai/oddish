@@ -753,10 +753,17 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial = await session.get(TrialModel, trial_id, with_for_update=True)
         if trial is None:
             return
-        trial.harbor_result_path = str(trials_dir)
-        if reward_value is not None:
-            trial.reward = reward_value
-        trial.result = _strip_nul(result_payload)
+        owns_outcome = trial.status == TrialStatus.RUNNING
+        if owns_outcome:
+            trial.harbor_result_path = str(trials_dir)
+            if reward_value is not None:
+                trial.reward = reward_value
+            trial.result = _strip_nul(result_payload)
+
+        # Metering belongs to the billed attempt even when a concurrent
+        # cancellation wins the terminal row. Persist only these accounting
+        # fields after cancellation; reward, artifacts, trajectory metadata,
+        # and analysis below are run outcomes and must not overwrite it.
         agent_result = getattr(result, "agent_result", None) if result else None
         if agent_result is not None and not agent_result.is_empty():
             cache_write_tokens = cache_write_tokens_from_trajectory(trajectory)
@@ -798,12 +805,18 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 native_cost_usd=agent_result.cost_usd,
                 native_cost_trusted=native_cost_trusted,
             )
-        trial.total_steps = _trajectory_total_steps(trajectory)
-        trial.has_trajectory = trajectory is not None
-        if trial.status == TrialStatus.RUNNING:
+        if owns_outcome:
+            trial.total_steps = _trajectory_total_steps(trajectory)
+            trial.has_trajectory = trajectory is not None
             if analyzer_summary is not None:
                 trial.analysis = _strip_nul(analyzer_summary)
             trial.analysis_status = analyzer_status
             trial.analysis_error = analyzer_error
             trial.analysis_started_at = analysis_started_at
             trial.analysis_finished_at = analysis_finished_at
+        else:
+            logger.info(
+                "local_runner: discarded Harbor outcome for terminal trial %s (%s)",
+                trial_id,
+                trial.status.value,
+            )

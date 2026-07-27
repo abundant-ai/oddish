@@ -1623,8 +1623,8 @@ async def _resolve_baseline_gate_for_scope(
     # the terminal trial makes this safe when a later sibling completion is the
     # call that finally resolves the gate.
     cancelled_baseline = any(
-        harbor_stage == CANCELLED_HARBOR_STAGE and reward is None
-        for _agent, reward, harbor_stage in baseline_rows
+        harbor_stage == CANCELLED_HARBOR_STAGE
+        for _agent, _reward, harbor_stage in baseline_rows
     )
     if cancelled_baseline:
         await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
