@@ -194,3 +194,158 @@ async def test_stale_running_claim_is_retaken(session, monkeypatch):
         await _cleanup(
             session, task_id=task_id, experiment_id=experiment_id, trial_id=trial_id
         )
+
+
+@pytest.mark.asyncio
+async def test_orphaned_owner_still_stores_so_the_trial_is_not_reclassified(
+    session, monkeypatch
+):
+    """A classification outliving its QA job must still land a terminal status.
+
+    The tokens are spent the moment the classifier returns. If the owning
+    worker job died in the meantime and the result is dropped without stamping
+    ``analysis_status``, the trial keeps its own RUNNING claim, ages past
+    ANALYSIS_CLAIM_TTL_MINUTES, and the next QA sweep classifies it again --
+    paying a second time for a classification that already succeeded.
+    """
+    from oddish.workers.queue import analysis_handler as ah
+
+    trial_id = f"trial-orphan-{uuid.uuid4().hex[:8]}"
+    experiment_id = f"exp-{uuid.uuid4().hex[:8]}"
+    task_id = await _seed(session, trial_id, experiment_id=experiment_id)
+
+    calls = 0
+
+    async def _fake_classify(self, **kwargs):
+        nonlocal calls
+        calls += 1
+        self.last_usage = _usage()
+        return _fake_classification()
+
+    monkeypatch.setattr(TrialClassifier, "classify_trial", _fake_classify)
+    _stub_directories(monkeypatch, ah)
+
+    async def _owner_is_gone(_session) -> bool:
+        return False
+
+    try:
+        status = await ah.classify_trial_and_store(
+            trial_id, should_store=_owner_is_gone
+        )
+        assert calls == 1
+        assert status == AnalysisStatus.SUCCESS
+
+        await session.rollback()
+        trial = await session.get(TrialModel, trial_id)
+        await session.refresh(trial)
+        assert trial.analysis_status == AnalysisStatus.SUCCESS, (
+            "a paid classification was dropped without a terminal status"
+        )
+        assert trial.analysis is not None
+
+        # Age the claim past the TTL, exactly as a later sweep would find it,
+        # and confirm the trial is no longer eligible for re-classification.
+        trial.analysis_started_at = utcnow() - timedelta(
+            minutes=ah.ANALYSIS_CLAIM_TTL_MINUTES + 5
+        )
+        await session.commit()
+
+        await ah.classify_trial_and_store(trial_id)
+        assert calls == 1, "an already-classified trial was re-classified and re-billed"
+    finally:
+        await _cleanup(
+            session, task_id=task_id, experiment_id=experiment_id, trial_id=trial_id
+        )
+
+
+@pytest.mark.asyncio
+async def test_result_is_dropped_when_another_worker_retook_the_claim(
+    session, monkeypatch
+):
+    """A slow classification must not clobber the newer owner's analysis.
+
+    Storing unconditionally would fix the re-billing but reintroduce a worse
+    bug: a worker whose claim expired mid-run finishing last and overwriting
+    the result of the worker that legitimately retook the trial.
+    """
+    from oddish.workers.queue import analysis_handler as ah
+
+    trial_id = f"trial-retaken-{uuid.uuid4().hex[:8]}"
+    experiment_id = f"exp-{uuid.uuid4().hex[:8]}"
+    task_id = await _seed(session, trial_id, experiment_id=experiment_id)
+
+    async def _fake_classify(self, **kwargs):
+        # Simulate a peer retaking the expired claim while this run is in
+        # flight: the stamp this call wrote is replaced by the peer's.
+        async with ah._trial_session(trial_id) as (_s, t):
+            t.analysis_started_at = utcnow()
+        self.last_usage = _usage()
+        return _fake_classification()
+
+    monkeypatch.setattr(TrialClassifier, "classify_trial", _fake_classify)
+    _stub_directories(monkeypatch, ah)
+
+    try:
+        status = await ah.classify_trial_and_store(trial_id)
+
+        await session.rollback()
+        trial = await session.get(TrialModel, trial_id)
+        await session.refresh(trial)
+        assert trial.analysis is None, "a superseded run overwrote the current owner"
+        assert trial.analysis_status == AnalysisStatus.RUNNING
+        # The peer is still working, so the caller must keep waiting. Reporting
+        # the FAILED initializer here would let _classify_waiting_out_peer_claim
+        # return and QA synthesize a verdict without this trial.
+        assert status == AnalysisStatus.RUNNING
+    finally:
+        await _cleanup(
+            session, task_id=task_id, experiment_id=experiment_id, trial_id=trial_id
+        )
+
+
+@pytest.mark.asyncio
+async def test_late_store_does_not_resurrect_a_cancelled_trial(session, monkeypatch):
+    """A cancel that lands mid-classification must stay terminal.
+
+    Cancelling stamps ``analysis_status = FAILED`` but leaves
+    ``analysis_started_at`` untouched (``queue.cancel_task``,
+    ``core.endpoints.qa``), so the claim stamp still matches this run. Only the
+    status check stops the shielded late write from flipping the trial back to
+    SUCCESS and undoing the user's cancel.
+    """
+    from oddish.workers.queue import analysis_handler as ah
+
+    trial_id = f"trial-cancel-{uuid.uuid4().hex[:8]}"
+    experiment_id = f"exp-{uuid.uuid4().hex[:8]}"
+    task_id = await _seed(session, trial_id, experiment_id=experiment_id)
+
+    async def _fake_classify(self, **kwargs):
+        # Cancel lands while the classifier is running: terminal status, same
+        # analysis_started_at.
+        async with ah._trial_session(trial_id) as (_s, t):
+            t.analysis_status = AnalysisStatus.FAILED
+            t.analysis_error = "Cancelled by user"
+            t.analysis_finished_at = utcnow()
+        self.last_usage = _usage()
+        return _fake_classification()
+
+    monkeypatch.setattr(TrialClassifier, "classify_trial", _fake_classify)
+    _stub_directories(monkeypatch, ah)
+
+    try:
+        status = await ah.classify_trial_and_store(trial_id)
+
+        await session.rollback()
+        trial = await session.get(TrialModel, trial_id)
+        await session.refresh(trial)
+        assert trial.analysis_status == AnalysisStatus.FAILED, (
+            "a late store resurrected a cancelled trial"
+        )
+        assert trial.analysis is None
+        assert trial.analysis_error == "Cancelled by user"
+        # Terminal, so the caller must not wait for a peer that will never come.
+        assert status == AnalysisStatus.FAILED
+    finally:
+        await _cleanup(
+            session, task_id=task_id, experiment_id=experiment_id, trial_id=trial_id
+        )
