@@ -241,11 +241,12 @@ async def test_post_trial_sandbox_serves_qa_context_refs(monkeypatch, tmp_path):
     trial_dir = tmp_path / "trial-local"
     task_dir.mkdir()
     trial_dir.mkdir()
-    qa_dir, pre_trial_context, file_access_context = _write_qa_context(
-        trial_dir, [{"id": "a1"}], [{"step": 0}]
+    qa_dir, pre_trial_context, file_access_context, traj_context = _write_qa_context(
+        trial_dir, [{"id": "a1"}], [{"step": 0}], [{"trajectory_component": "debugging"}]
     )
     assert str(qa_dir) in pre_trial_context
     assert str(qa_dir) in file_access_context
+    assert str(qa_dir) in traj_context
 
     captured = {}
     monkeypatch.setattr(settings, "post_trial_sandbox_enabled", True)
@@ -259,7 +260,7 @@ async def test_post_trial_sandbox_serves_qa_context_refs(monkeypatch, tmp_path):
 
     monkeypatch.setattr(AnalyzerBlock, "run", fake_run)
     await TrialClassifier(model="anthropic/test")._run_in_analyzer_block(
-        prompt=f"{pre_trial_context}\n{file_access_context}",
+        prompt=f"{pre_trial_context}\n{file_access_context}\n{traj_context}",
         trial_dir=trial_dir,
         task_dir=task_dir,
         extra_dirs=[qa_dir],
@@ -269,6 +270,7 @@ async def test_post_trial_sandbox_serves_qa_context_refs(monkeypatch, tmp_path):
     prompt = captured["block"].prompt
     assert f"{qa_dir}/pre_trial.json" in prompt
     assert f"{qa_dir}/file_access.json" in prompt
+    assert f"{qa_dir}/trajectory_components.json" in prompt
 
 
 @pytest.mark.asyncio
