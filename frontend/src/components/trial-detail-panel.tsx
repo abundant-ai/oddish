@@ -54,6 +54,7 @@ import {
   costEstimateMarks,
   formatCostUsd,
   formatTokenCount,
+  hasDisplayableCostUsd,
   sumTaskTrialCost,
 } from "@/lib/format";
 import {
@@ -810,9 +811,8 @@ export function TrialDetailPanel({
               trial.input_tokens != null ||
               trial.output_tokens != null ||
               // A trial can be QA'd without the agent ever reporting a cost;
-              // keep the card so its QA sidecar isn't hidden. QaCostSuffix
-              // still self-guards on qa_cost_usd > 0.
-              (trial.qa_cost_usd != null && trial.qa_cost_usd > 0)) && (
+              // keep the card so its QA sidecar isn't hidden.
+              hasDisplayableCostUsd(trial.qa_cost_usd)) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -821,7 +821,7 @@ export function TrialDetailPanel({
                     </div>
                     <div className="mt-1 flex items-baseline gap-1">
                       <span className="font-mono text-sm leading-none font-bold tabular-nums">
-                        {trial.cost_usd != null ? (
+                        {hasDisplayableCostUsd(trial.cost_usd) ? (
                           <>
                             {trial.cost_is_estimated ? "~" : ""}
                             {formatCostUsd(trial.cost_usd)}
@@ -830,8 +830,9 @@ export function TrialDetailPanel({
                           "—"
                         )}
                       </span>
-                      {trial.cost_usd != null &&
+                      {hasDisplayableCostUsd(trial.cost_usd) &&
                         taskCost.pricedCount > 1 &&
+                        hasDisplayableCostUsd(taskCost.costUsd) &&
                         (() => {
                           const marks = costEstimateMarks(
                             taskCost.hasEstimated,

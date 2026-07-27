@@ -1,4 +1,4 @@
-import { formatCostUsd } from "@/lib/format";
+import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
 
 // QA spend rendered as a muted sidecar to the agent-cost figure it annotates.
 // Deliberately NOT summed into that figure: the headline number keeps its
@@ -19,9 +19,9 @@ export function QaCostSuffix({
   size?: keyof typeof SIZES;
   title?: string;
 }) {
-  // Nothing, not "+$0.00 QA" -- most trials have no QA and the suffix would be
-  // pure noise. formatCostUsd(0) returns "$0.00", so the guard has to be here.
-  if (costUsd == null || !Number.isFinite(costUsd) || costUsd <= 0) return null;
+  // Nothing, not "+$0.00 QA" -- most trials have no QA, and sub-cent QA rounds
+  // away. formatCostUsd never returns "", so the guard has to be here.
+  if (!hasDisplayableCostUsd(costUsd)) return null;
 
   return (
     <span

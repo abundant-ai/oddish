@@ -38,6 +38,7 @@ import {
   formatCostUsd,
   formatDurationSec,
   formatTokenCount,
+  hasDisplayableCostUsd,
   trialDurationSec,
 } from "@/lib/format";
 import {
@@ -150,7 +151,9 @@ function CostBadge({
               : ". Reported by the agent runtime."
         }`;
 
-  if (trialCount === 0) {
+  // Sub-cent totals round to "$0.00", which reads as free; show the same dash
+  // as "no data" rather than a zero the ledger doesn't mean.
+  if (trialCount === 0 || !hasDisplayableCostUsd(cost)) {
     return (
       <span
         className={`font-display ${valueClass} leading-none tracking-[-0.02em] text-[color:var(--paper-ink-3)]`}
@@ -626,7 +629,9 @@ function AgentCard({
           <span title="Mean cost per priced trial">
             <span className="text-[color:var(--paper-ink-3)]">avg cost</span>{" "}
             <span className="text-[color:var(--paper-ink)]">
-              {avgCostUsd != null ? formatCostUsd(avgCostUsd) : "—"}
+              {hasDisplayableCostUsd(avgCostUsd)
+                ? formatCostUsd(avgCostUsd)
+                : "—"}
             </span>
           </span>
           <span title="Mean wall-clock duration (started_at → finished_at)">
