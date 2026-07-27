@@ -1696,24 +1696,14 @@ async def _cancel_gated_llm_trials(
     """
     if not trial_ids:
         return
+    # Quota cancellation locks trial rows in ID order before worker jobs. Do
+    # the same here explicitly: an UPDATE may otherwise acquire multiple row
+    # locks in a plan-dependent order and deadlock with quota cancellation.
     await session.execute(
-        text(
-            """
-            UPDATE worker_jobs
-            SET    status = 'CANCELLED',
-                   finished_at = NOW(),
-                   error_message = :reason,
-                   current_worker_id = NULL,
-                   current_queue_slot = NULL,
-                   modal_function_call_id = NULL,
-                   payload = payload - 'registry_auth_enc'
-            WHERE  subject_table = 'trials'
-              AND  kind::text = 'TRIAL'
-              AND  subject_id = ANY(:trial_ids)
-              AND  status::text = 'BLOCKED'
-            """
-        ),
-        {"trial_ids": trial_ids, "reason": reason},
+        select(TrialModel.id)
+        .where(TrialModel.id.in_(trial_ids))
+        .order_by(TrialModel.id)
+        .with_for_update()
     )
     await session.execute(
         update(TrialModel)
@@ -1732,6 +1722,25 @@ async def _cancel_gated_llm_trials(
             current_worker_id=None,
             current_queue_slot=None,
         )
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL,
+                   payload = payload - 'registry_auth_enc'
+            WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text = 'BLOCKED'
+            """
+        ),
+        {"trial_ids": trial_ids, "reason": reason},
     )
 
 

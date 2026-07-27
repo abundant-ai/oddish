@@ -5,7 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import QuotaMode, settings
@@ -103,15 +103,19 @@ async def _cancel_worker_jobs(
     task_ids: list[str],
     caller_trial_id: str | None,
 ) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    trial_branch = (
+        "(subject_table = 'trials' AND subject_id = ANY(:trial_ids))"
+        if trial_ids
+        else "FALSE"
+    )
     task_branch = (
         "(subject_table = 'tasks' AND subject_id = ANY(:task_ids))"
         if task_ids
         else "FALSE"
     )
-    params: dict[str, Any] = {
-        "reason": QUOTA_CANCELLED_MESSAGE,
-        "trial_ids": trial_ids,
-    }
+    params: dict[str, Any] = {"reason": QUOTA_CANCELLED_MESSAGE}
+    if trial_ids:
+        params["trial_ids"] = trial_ids
     if task_ids:
         params["task_ids"] = task_ids
     rows = (
@@ -123,8 +127,7 @@ async def _cancel_worker_jobs(
                            modal_function_call_id, provider, external_id
                     FROM worker_jobs
                     WHERE status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                      AND ((subject_table = 'trials' AND subject_id = ANY(:trial_ids))
-                           OR {task_branch})
+                      AND ({trial_branch} OR {task_branch})
                     ORDER BY id
                     FOR UPDATE
                 )
@@ -187,6 +190,9 @@ async def cancel_trials_if_quota_reached(
         "caller_modal_function_call_ids": [],
         "worker_targets": [],
         "released_trial_ids": [],
+        "affected_task_ids": [],
+        "cancelled_trial_ids": [],
+        "quota_billed_user_id": billed_user_id,
     }
     if settings.quota_mode != QuotaMode.ENFORCE or org_id is None:
         return result
@@ -214,9 +220,7 @@ async def cancel_trials_if_quota_reached(
 
     now = utcnow()
     trial_ids = [trial.id for trial in trials]
-    cancelled_trial_ids = set(trial_ids)
-    trial_id_by_task = {trial.task_id: trial.id for trial in trials}
-    affected_task_ids = list(trial_id_by_task)
+    affected_task_ids = list(dict.fromkeys(trial.task_id for trial in trials))
     for trial in trials:
         trial.status = TrialStatus.FAILED
         trial.error_message = QUOTA_CANCELLED_MESSAGE
@@ -231,93 +235,17 @@ async def cancel_trials_if_quota_reached(
             trial.analysis_finished_at = now
     await session.flush()
 
-    preserved_trial = and_(
-        TrialModel.finished_at.is_(None),
-        TrialModel.status.in_(_ACTIVE_TRIAL_STATUSES),
-    )
-    if scope == "user":
-        preserved_trial = or_(
-            preserved_trial,
-            and_(
-                TrialModel.billed_user_id.is_not(None),
-                TrialModel.billed_user_id != billed_user_id,
-            ),
-        )
-    tasks_with_preserved_trials = set(
-        (
-            await session.execute(
-                select(TrialModel.task_id)
-                .where(
-                    TrialModel.task_id.in_(affected_task_ids),
-                    TrialModel.deleted_at.is_(None),
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    preserved_trial,
-                )
-                .execution_options(include_deleted=True)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    exhausted_task_ids = [
-        task_id
-        for task_id in affected_task_ids
-        if task_id not in tasks_with_preserved_trials
-    ]
-    preserved_task_ids = [
-        task_id
-        for task_id in affected_task_ids
-        if task_id in tasks_with_preserved_trials
-    ]
-    tasks_cancelled = 0
-    if exhausted_task_ids:
-        tasks = list(
-            (
-                await session.execute(
-                    select(TaskModel)
-                    .where(TaskModel.id.in_(exhausted_task_ids))
-                    .order_by(TaskModel.id)
-                    .with_for_update()
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for task in tasks:
-            if task.status in _ACTIVE_TASK_STATUSES:
-                task.status = TaskStatus.FAILED
-                task.finished_at = now
-                tasks_cancelled += 1
-            if task.verdict_status in (
-                VerdictStatus.PENDING,
-                VerdictStatus.QUEUED,
-                VerdictStatus.RUNNING,
-            ):
-                task.verdict_status = VerdictStatus.FAILED
-                task.verdict_error = QUOTA_CANCELLED_MESSAGE
-                task.verdict_finished_at = now
-
-    if preserved_task_ids:
-        from oddish.queue import maybe_start_qa_stage, release_gate_after_quota_cancel
-
-        released_trial_ids: list[str] = []
-        for trial in trials:
-            if trial.task_id in tasks_with_preserved_trials:
-                released_trial_ids.extend(
-                    await release_gate_after_quota_cancel(session, trial.id)
-                )
-        for task_id in preserved_task_ids:
-            await maybe_start_qa_stage(session, trial_id_by_task[task_id])
-        result["released_trial_ids"] = [
-            trial_id
-            for trial_id in dict.fromkeys(released_trial_ids)
-            if trial_id not in cancelled_trial_ids
-        ]
+    # Do not lock tasks or drive gates while this transaction holds trial rows.
+    # A different payer's post-trial hook locks its trial before the task, so
+    # persist cancellation first and let post-commit reconciliation acquire all
+    # affected trial locks before taking task locks in the same order.
+    result["affected_task_ids"] = affected_task_ids
+    result["cancelled_trial_ids"] = trial_ids
 
     modal_ids, caller_modal_ids, worker_targets = await _cancel_worker_jobs(
         session,
         trial_ids=trial_ids,
-        task_ids=exhausted_task_ids,
+        task_ids=[],
         caller_trial_id=caller_trial_id,
     )
     await session.flush()
@@ -325,13 +253,192 @@ async def cancel_trials_if_quota_reached(
         {
             "scope": scope,
             "trials_cancelled": len(trials),
-            "tasks_cancelled": tasks_cancelled,
+            "tasks_cancelled": 0,
             "modal_function_call_ids": modal_ids,
             "caller_modal_function_call_ids": caller_modal_ids,
             "worker_targets": worker_targets,
         }
     )
     return result
+
+
+async def _reconcile_cancelled_tasks(
+    session: AsyncSession, result: dict[str, Any]
+) -> None:
+    """Advance affected tasks after the cancellation transaction commits."""
+    task_ids = list(dict.fromkeys(result.get("affected_task_ids", [])))
+    if not task_ids:
+        return
+
+    # Match the post-trial and quota-cancellation lock order: Trial -> Task ->
+    # WorkerJob. Lock every existing child in a stable order before its parent,
+    # then derive preservation from current rows rather than the pre-commit
+    # snapshot (a trial may have been appended while reconciliation waited).
+    trials = list(
+        (
+            await session.execute(
+                select(TrialModel)
+                .where(TrialModel.task_id.in_(task_ids))
+                .order_by(TrialModel.id)
+                .with_for_update()
+                .execution_options(include_deleted=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    tasks = list(
+        (
+            await session.execute(
+                select(TaskModel)
+                .where(TaskModel.id.in_(task_ids))
+                .order_by(TaskModel.id)
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # An append that already held the task lock may have inserted a trial after
+    # the pre-lock query above, then committed before we acquired the task.
+    # Re-read current child state now that future task-serialized appends are
+    # blocked. This query deliberately does not lock: a just-started post-trial
+    # hook may own the new child while waiting for this task, and waiting on that
+    # child here would recreate the Task -> Trial half of the deadlock cycle.
+    current_trials = (
+        await session.execute(
+            select(
+                TrialModel.task_id,
+                TrialModel.finished_at,
+                TrialModel.status,
+                TrialModel.billed_user_id,
+                TrialModel.deleted_at,
+                TrialModel.superseded_by_trial_id,
+            )
+            .where(TrialModel.task_id.in_(task_ids))
+            .execution_options(include_deleted=True)
+        )
+    ).all()
+
+    scope = result.get("scope")
+    billed_user_id = result.get("quota_billed_user_id")
+    preserved_task_ids = {
+        task_id
+        for (
+            task_id,
+            finished_at,
+            status,
+            trial_billed_user_id,
+            deleted_at,
+            superseded_by_trial_id,
+        ) in current_trials
+        if deleted_at is None
+        and superseded_by_trial_id is None
+        and (
+            (finished_at is None and status in _ACTIVE_TRIAL_STATUSES)
+            or (
+                scope == "user"
+                and trial_billed_user_id is not None
+                and trial_billed_user_id != billed_user_id
+            )
+        )
+    }
+    exhausted_task_ids = [
+        task_id for task_id in task_ids if task_id not in preserved_task_ids
+    ]
+
+    now = utcnow()
+    tasks_cancelled = 0
+    exhausted = set(exhausted_task_ids)
+    for task in tasks:
+        if task.id not in exhausted:
+            continue
+        if task.status in _ACTIVE_TASK_STATUSES:
+            task.status = TaskStatus.FAILED
+            task.finished_at = now
+            tasks_cancelled += 1
+        if task.verdict_status in (
+            VerdictStatus.PENDING,
+            VerdictStatus.QUEUED,
+            VerdictStatus.RUNNING,
+        ):
+            task.verdict_status = VerdictStatus.FAILED
+            task.verdict_error = QUOTA_CANCELLED_MESSAGE
+            task.verdict_finished_at = now
+
+    released_trial_ids: list[str] = []
+    cancelled_trial_ids = set(result.get("cancelled_trial_ids", []))
+    preserved_cancelled_trials = [
+        trial
+        for trial in trials
+        if trial.id in cancelled_trial_ids
+        and trial.task_id in preserved_task_ids
+        and trial.deleted_at is None
+        and trial.superseded_by_trial_id is None
+    ]
+    if preserved_cancelled_trials:
+        from oddish.queue import maybe_start_qa_stage, release_gate_after_quota_cancel
+
+        for trial in preserved_cancelled_trials:
+            released_trial_ids.extend(
+                await release_gate_after_quota_cancel(session, trial.id)
+            )
+        stage_trial_ids = {
+            trial.task_id: trial.id for trial in preserved_cancelled_trials
+        }
+        for trial_id in stage_trial_ids.values():
+            await maybe_start_qa_stage(session, trial_id)
+
+    newly_released = [
+        trial_id for trial_id in released_trial_ids if trial_id not in cancelled_trial_ids
+    ]
+    # Merge attempt metadata monotonically before commit. A rollback can leave
+    # candidates in memory, but an ambiguous successful commit followed by a
+    # retry may no longer be able to rediscover released jobs or remote handles.
+    # Extra candidates are safe: local dispatch atomically self-claims QUEUED
+    # jobs, and remote termination is idempotent for stale/already-ended handles.
+    result["released_trial_ids"] = list(
+        dict.fromkeys([*result.get("released_trial_ids", []), *newly_released])
+    )
+    result["tasks_cancelled"] = max(
+        int(result.get("tasks_cancelled", 0)), tasks_cancelled
+    )
+
+    modal_ids, caller_modal_ids, worker_targets = await _cancel_worker_jobs(
+        session,
+        trial_ids=[],
+        task_ids=exhausted_task_ids,
+        caller_trial_id=None,
+    )
+    result["modal_function_call_ids"] = list(
+        dict.fromkeys([*result.get("modal_function_call_ids", []), *modal_ids])
+    )
+    result["caller_modal_function_call_ids"] = list(
+        dict.fromkeys(
+            [*result.get("caller_modal_function_call_ids", []), *caller_modal_ids]
+        )
+    )
+    result["worker_targets"] = sorted(
+        set(result.get("worker_targets", [])) | set(worker_targets)
+    )
+    await session.flush()
+
+
+async def _reconcile_cancelled_tasks_until_complete(result: dict[str, Any]) -> None:
+    if not result.get("affected_task_ids"):
+        return
+
+    retry_delay = _RETRY_INITIAL_SECONDS
+    while True:
+        try:
+            async with get_session() as session:
+                await _reconcile_cancelled_tasks(session, result)
+            return
+        except Exception:
+            logger.exception("Quota task reconciliation failed; retrying")
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)
 
 
 async def enforce_trial_quotas(
@@ -359,6 +466,7 @@ async def enforce_trial_quotas(
         return None
 
     try:
+        await _reconcile_cancelled_tasks_until_complete(result)
         if after_gate_release is not None:
             await after_gate_release(list(result.get("released_trial_ids", [])))
         if after_check is not None:

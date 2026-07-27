@@ -305,6 +305,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
         billed_user_id=user_id,
         caller_trial_id=exhausted_id,
     )
+    await quota_enforcement._reconcile_cancelled_tasks(session, result)
     for job in (
         exhausted_job,
         mixed_target_job,
@@ -495,6 +496,7 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     result = await cancel_trials_if_quota_reached(
         session, org_id=org_id, billed_user_id="user-a"
     )
+    await quota_enforcement._reconcile_cancelled_tasks(session, result)
 
     assert result["scope"] == "org"
     assert result["trials_cancelled"] == 4
@@ -585,6 +587,63 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
             "worker_targets": [("daytona", "sandbox-caller")],
         },
         {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_task_reconciliation_starts_after_cancellation_commit(monkeypatch):
+    events = []
+    sessions = iter(["cancel-session", "reconcile-session"])
+
+    @asynccontextmanager
+    async def fake_get_session():
+        session = next(sessions)
+        events.append(f"enter:{session}")
+        yield session
+        events.append(f"commit:{session}")
+
+    async def fake_cancel(session, **_kwargs):
+        assert session == "cancel-session"
+        return {
+            "scope": "user",
+            "trials_cancelled": 0,
+            "tasks_cancelled": 0,
+            "modal_function_call_ids": [],
+            "caller_modal_function_call_ids": [],
+            "worker_targets": [],
+            "released_trial_ids": [],
+            "affected_task_ids": ["task-preserved"],
+            "cancelled_trial_ids": ["trial-cancelled"],
+            "quota_billed_user_id": "user-1",
+        }
+
+    async def fake_reconcile(session, _result):
+        assert session == "reconcile-session"
+        assert events == [
+            "enter:cancel-session",
+            "commit:cancel-session",
+            "enter:reconcile-session",
+        ]
+        events.append("reconciled")
+
+    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        quota_enforcement, "cancel_trials_if_quota_reached", fake_cancel
+    )
+    monkeypatch.setattr(quota_enforcement, "_reconcile_cancelled_tasks", fake_reconcile)
+
+    assert (
+        await enforce_trial_quotas(
+            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+        )
+        == 0
+    )
+    assert events == [
+        "enter:cancel-session",
+        "commit:cancel-session",
+        "enter:reconcile-session",
+        "reconciled",
+        "commit:reconcile-session",
     ]
 
 
