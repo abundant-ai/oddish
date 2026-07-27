@@ -570,6 +570,12 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`grok_build_session.py`). If the session store is missing it falls back to
   the text-only stdout trajectory. Do not "fix" trajectories by parsing stdout —
   the tool calls are only in the session store.
+- The grok **live** transcript is the one reader that does parse stdout
+  (`GrokBuildFold` in `live_tail.py` tails `/logs/agent/grok-build.json`): the
+  session store is copied into the trial logs only after the run, so it cannot
+  feed a live view. That panel is therefore text and reasoning only, with no
+  tool calls and no running token/cost counters; it is not the trajectory and
+  must not be used to build one.
 
 Storage defaults:
 

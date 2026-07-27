@@ -42,6 +42,15 @@ jobs:
             /tmp/oddish-release/bin/oddish "$command" --help >/dev/null
           done
           uv pip install --python /tmp/oddish-release/bin/python "${WHEEL}[worker]"
+          # The [worker] extra pins the public PyPI harbor release, which lacks
+          # fork-only modules (e.g. harbor.environments.kube_ops, imported by
+          # oddish.workers.harbor.runner). Hosted workers install harbor from the
+          # abundant-ai fork via uv sources; a published wheel can't carry a git
+          # dependency, so the fork can't ride along on PyPI. Install it here to
+          # smoke-test the harbor workers actually run. harbor's litellm floor
+          # (>=1.83.14) is satisfied by oddish's pin, so this leaves the rest of
+          # the resolution untouched.
+          uv pip install --python /tmp/oddish-release/bin/python "harbor @ git+https://github.com/abundant-ai/harbor@main"
           /tmp/oddish-release/bin/python -c 'from oddish.workers.agents.codex import AzureCompatibleCodex; from oddish.workers.agents.grok_build import OddishGrokBuild; from oddish.workers.agents.mini_swe_agent import OddishMetaMiniSweAgent; assert OddishGrokBuild.SUPPORTS_ATIF'
 
       - uses: actions/upload-artifact@v4
