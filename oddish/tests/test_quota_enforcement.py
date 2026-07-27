@@ -67,17 +67,18 @@ def _job(
     subject_table: str,
     subject_id: str,
     kind: WorkerJobKind,
-    modal_id: str,
+    modal_id: str | None,
+    status: WorkerJobStatus = WorkerJobStatus.RUNNING,
 ) -> WorkerJobModel:
     return WorkerJobModel(
         kind=kind,
-        status=WorkerJobStatus.RUNNING,
+        status=status,
         queue_key="openai/gpt-5",
         subject_table=subject_table,
         subject_id=subject_id,
         modal_function_call_id=modal_id,
-        provider="daytona",
-        external_id=f"sandbox-{modal_id}",
+        provider="daytona" if modal_id else None,
+        external_id=f"sandbox-{modal_id}" if modal_id else None,
     )
 
 
@@ -91,8 +92,6 @@ def _enforced_quota(monkeypatch):
 async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     session, monkeypatch
 ):
-    import oddish.queue as queue_module
-
     suffix = uuid.uuid4().hex[:8]
     org_id = f"org-qc-{suffix}"
     user_id = f"user-qc-{suffix}"
@@ -101,6 +100,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     exhausted_task_id = f"task-exhausted-qc-{suffix}"
     mixed_task_id = f"task-mixed-qc-{suffix}"
     advance_task_id = f"task-advance-qc-{suffix}"
+    gate_task_id = f"task-gate-qc-{suffix}"
     now = datetime.now(timezone.utc)
 
     async def no_org_limit(*_args):
@@ -111,17 +111,14 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
 
     monkeypatch.setattr(quota_enforcement, "get_effective_org_limit", no_org_limit)
     monkeypatch.setattr(quota_enforcement, "get_effective_limit", user_limit)
-    gate_calls = []
-    real_gate = queue_module.maybe_gate_llm_trials
-
-    async def record_gate(session, trial_id):
-        gate_calls.append(trial_id)
-        return await real_gate(session, trial_id)
-
-    monkeypatch.setattr(queue_module, "maybe_gate_llm_trials", record_gate)
 
     session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id=org_id))
-    for task_id in (exhausted_task_id, mixed_task_id, advance_task_id):
+    for task_id in (
+        exhausted_task_id,
+        mixed_task_id,
+        advance_task_id,
+        gate_task_id,
+    ):
         session.add(
             TaskModel(
                 id=task_id,
@@ -148,6 +145,8 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     advance_target_id = f"{advance_task_id}-0"
     advance_other_id = f"{advance_task_id}-1"
     advance_baseline_id = f"{advance_task_id}-baseline"
+    gate_baseline_id = f"{gate_task_id}-baseline"
+    gate_blocked_id = f"{gate_task_id}-blocked"
     session.add_all(
         [
             _trial(
@@ -211,6 +210,23 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
                 status=TrialStatus.RUNNING,
                 agent="nop",
             ),
+            _trial(
+                trial_id=gate_baseline_id,
+                task_id=gate_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id=user_id,
+                status=TrialStatus.RUNNING,
+                agent="nop",
+            ),
+            _trial(
+                trial_id=gate_blocked_id,
+                task_id=gate_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id=other_user_id,
+                status=TrialStatus.QUEUED,
+            ),
         ]
     )
     exhausted_job = _job(
@@ -243,8 +259,22 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
         kind=WorkerJobKind.QA,
         modal_id="fc-mixed-qa",
     )
+    gate_blocked_job = _job(
+        subject_table="trials",
+        subject_id=gate_blocked_id,
+        kind=WorkerJobKind.TRIAL,
+        modal_id=None,
+        status=WorkerJobStatus.BLOCKED,
+    )
     session.add_all(
-        [exhausted_job, mixed_target_job, mixed_other_job, qa_job, mixed_qa_job]
+        [
+            exhausted_job,
+            mixed_target_job,
+            mixed_other_job,
+            qa_job,
+            mixed_qa_job,
+            gate_blocked_job,
+        ]
     )
     await session.flush()
 
@@ -260,17 +290,13 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
         mixed_other_job,
         qa_job,
         mixed_qa_job,
+        gate_blocked_job,
     ):
         await session.refresh(job)
 
     assert result["scope"] == "user"
-    assert result["trials_cancelled"] == 4
+    assert result["trials_cancelled"] == 5
     assert result["tasks_cancelled"] == 1
-    assert set(gate_calls) == {
-        mixed_target_id,
-        advance_target_id,
-        advance_baseline_id,
-    }
     assert set(result["modal_function_call_ids"]) == {
         "fc-mixed-target",
         "fc-qa",
@@ -302,6 +328,9 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     ).all()
     assert len(qa_jobs) == 1
     assert qa_jobs[0].status == WorkerJobStatus.QUEUED
+    assert (await session.get(TaskModel, gate_task_id)).status == TaskStatus.RUNNING
+    assert (await session.get(TrialModel, gate_blocked_id)).status == TrialStatus.QUEUED
+    assert gate_blocked_job.status == WorkerJobStatus.QUEUED
     assert (await session.get(WorkerJobModel, exhausted_job.id)).status == (
         WorkerJobStatus.CANCELLED
     )
@@ -512,6 +541,47 @@ async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
     }
     assert termination_calls == [sibling_harvest] * 8 + [caller_harvest] * 2
     assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 1.0]
+
+
+@pytest.mark.asyncio
+async def test_enforcement_tears_down_remotes_when_after_check_fails(monkeypatch):
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    async def fake_cancel(*_args, **_kwargs):
+        return {
+            "scope": "user",
+            "trials_cancelled": 1,
+            "tasks_cancelled": 1,
+            "modal_function_call_ids": ["fc-sibling"],
+            "caller_modal_function_call_ids": ["fc-caller"],
+            "worker_targets": [],
+        }
+
+    async def fail_after_check():
+        raise RuntimeError("post-trial hook failed")
+
+    termination_calls = []
+
+    async def fake_terminate(result):
+        termination_calls.append(list(result["modal_function_call_ids"]))
+
+    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        quota_enforcement, "cancel_trials_if_quota_reached", fake_cancel
+    )
+    monkeypatch.setattr(quota_enforcement, "terminate_run_harvest", fake_terminate)
+
+    with pytest.raises(RuntimeError, match="post-trial hook failed"):
+        await enforce_trial_quotas(
+            org_id="org-1",
+            billed_user_id="user-1",
+            caller_trial_id="trial-1",
+            after_check=fail_after_check,
+        )
+
+    assert termination_calls == [["fc-sibling"], ["fc-caller"]]
 
 
 @pytest.mark.asyncio

@@ -297,11 +297,11 @@ async def cancel_trials_if_quota_reached(
                 task.verdict_finished_at = now
 
     if preserved_task_ids:
-        from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+        from oddish.queue import maybe_start_qa_stage, release_gate_after_quota_cancel
 
         for trial in trials:
             if trial.task_id in tasks_with_preserved_trials:
-                await maybe_gate_llm_trials(session, trial.id)
+                await release_gate_after_quota_cancel(session, trial.id)
         for task_id in preserved_task_ids:
             await maybe_start_qa_stage(session, trial_id_by_task[task_id])
 
@@ -345,17 +345,20 @@ async def enforce_trial_quotas(
         )
         return None
 
-    if after_check is not None:
-        await after_check()
+    try:
+        if after_check is not None:
+            await after_check()
+    finally:
+        if result["trials_cancelled"]:
+            await _terminate_quota_harvest(
+                modal_function_call_ids=result["modal_function_call_ids"],
+                worker_targets=result["worker_targets"],
+                caller_modal_function_call_ids=result["caller_modal_function_call_ids"],
+                org_id=org_id,
+                billed_user_id=billed_user_id,
+            )
 
     if result["trials_cancelled"]:
-        await _terminate_quota_harvest(
-            modal_function_call_ids=result["modal_function_call_ids"],
-            worker_targets=result["worker_targets"],
-            caller_modal_function_call_ids=result["caller_modal_function_call_ids"],
-            org_id=org_id,
-            billed_user_id=billed_user_id,
-        )
         logger.warning(
             "metric=quota.trials_cancelled scope=%s org_id=%s "
             "billed_user_id=%s trials=%s tasks=%s",
