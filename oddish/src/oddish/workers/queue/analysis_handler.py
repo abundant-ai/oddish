@@ -44,8 +44,12 @@ def classification_to_result_dict(classification) -> dict:
         "root_cause": classification.root_cause,
         "recommendation": classification.recommendation,
         "reward": classification.reward,
-        "action_items": [i.model_dump(mode="json") for i in classification.action_items],
-        "exploitation": [e.model_dump(mode="json") for e in classification.exploitation],
+        "action_items": [
+            i.model_dump(mode="json") for i in classification.action_items
+        ],
+        "exploitation": [
+            e.model_dump(mode="json") for e in classification.exploitation
+        ],
     }
 
 
@@ -112,6 +116,13 @@ async def classify_trial_and_store(
     nothing will be until that peer finishes. Callers that aggregate several
     classifications must wait it out rather than proceed on a partial set; see
     ``qa_handler._classify_waiting_out_peer_claim``.
+
+    A classification that runs to completion always lands a terminal
+    ``analysis_status`` unless a peer has retaken the claim, even when
+    ``should_store`` reports the owning job gone. The spend is committed when
+    the classifier returns, so a result dropped without a terminal status is
+    paid for twice: the trial keeps its own RUNNING claim, ages past
+    ``ANALYSIS_CLAIM_TTL_MINUTES``, and the next sweep reclassifies it.
     """
     from oddish.analyze import TrialClassifier
 
@@ -148,8 +159,12 @@ async def classify_trial_and_store(
             )
             return AnalysisStatus.RUNNING
 
+        # Kept so the store step can prove this run still owns the trial: the
+        # stamp is unique per claim, so a peer that retook an expired claim
+        # replaces it and our late write backs off instead of overwriting.
+        claim_stamp = utcnow()
         trial.analysis_status = AnalysisStatus.RUNNING
-        trial.analysis_started_at = utcnow()
+        trial.analysis_started_at = claim_stamp
 
         # Get task info for downloads
         task = await session.get(TaskModel, trial.task_id)
@@ -355,11 +370,28 @@ async def classify_trial_and_store(
                     f"[dim]Analysis {trial_id} ignored; trial was deleted[/dim]"
                 )
                 return
-            if should_store is not None and not await should_store(session):
+            # A peer retook the claim after ours aged past the TTL, so its
+            # classification is the trial's current one. Ours finished late;
+            # drop it rather than overwrite a newer analysis.
+            if trial.analysis_started_at != claim_stamp:
                 console.print(
-                    f"[dim]Analysis {trial_id} ignored; owner was cancelled[/dim]"
+                    f"[dim]Analysis {trial_id} dropped; another worker holds "
+                    "the claim[/dim]"
                 )
                 return
+
+            if should_store is not None and not await should_store(session):
+                # The owning QA job died while this classification was running.
+                # The tokens were spent the moment the classifier returned, so
+                # the result is stored anyway -- dropping it leaves the trial
+                # non-terminal, and the next sweep pays to classify it again
+                # once this claim expires. Owner liveness is deliberately
+                # advisory here; the claim check above is what prevents a stale
+                # run from clobbering the current owner.
+                console.print(
+                    f"[yellow]Analysis {trial_id} outlived its QA job; storing "
+                    "it anyway so it is not re-classified[/yellow]"
+                )
 
             if classification_result:
                 trial.analysis = classification_result
