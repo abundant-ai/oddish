@@ -28,6 +28,48 @@ ANALYSIS_HEARTBEAT_INTERVAL_SECONDS = 30
 ANALYSIS_CLAIM_TTL_MINUTES = 30
 
 
+# The trajectory-summary seam. Building a summary needs the backend-only
+# TrajectoryBlock, which oddish/ can't import, so a hosted implementation
+# (read-through cache over get_or_generate_summary) is injected here the same
+# way pre-trial synth is. Takes a trial_id, returns the summary dict (whose
+# ``components`` feed the post-trial classifier) or None when the trial has no
+# trajectory. None until registered -- standalone oddish workers classify
+# without a component map.
+TrajectorySummaryProviderFn = Callable[[str], Awaitable[dict | None]]
+
+_trajectory_summary_provider: TrajectorySummaryProviderFn | None = None
+
+
+def register_trajectory_summary_provider(fn: TrajectorySummaryProviderFn) -> None:
+    """Install the hosted trajectory-summary provider."""
+    global _trajectory_summary_provider
+    _trajectory_summary_provider = fn
+
+
+async def _resolve_trajectory_components(trial_id: str) -> list[dict] | None:
+    """Ensure a trajectory summary exists and return its component map.
+
+    Best-effort: with no provider registered (standalone oddish) or on any
+    generation failure, returns None so classification proceeds exactly as it
+    did before components existed. The provider owns its own session and the
+    summary LLM call, so this must run outside the trial claim's row lock.
+    """
+    provider = _trajectory_summary_provider
+    if provider is None:
+        return None
+    try:
+        summary = await provider(trial_id)
+    except Exception as exc:
+        console.print(
+            f"[yellow]Trajectory summary unavailable for {trial_id}; classifying "
+            f"without a component map: {exc}[/yellow]"
+        )
+        return None
+    if not summary:
+        return None
+    return summary.get("components") or None
+
+
 def classification_to_result_dict(classification) -> dict:
     """Render a ``TrialClassification`` for storage on ``trial.analysis``.
 
@@ -291,6 +333,11 @@ async def classify_trial_and_store(
                 fa.__dict__ for fa in parse_trajectory_file_access(trial_dir_to_use)
             ] or None
 
+            # Ensure the trajectory summary exists (generating on miss via the
+            # hosted seam) and hand its labeled component map to the classifier.
+            # Best-effort: None when unavailable, and never inside the claim lock.
+            trajectory_components = await _resolve_trajectory_components(trial_id)
+
             console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
             classification = await classifier.classify_trial(
                 trial_dir=trial_dir_to_use,
@@ -298,6 +345,7 @@ async def classify_trial_and_store(
                 trial_agent=trial_agent,
                 pre_trial_items=pre_trial_items,
                 file_access=file_access,
+                trajectory_components=trajectory_components,
                 analyzer_block_context={
                     "trial_id": trial_id,
                     "task_id": task_id,

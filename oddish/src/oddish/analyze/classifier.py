@@ -115,20 +115,22 @@ def _write_qa_context(
     trial_dir: Path,
     pre_trial_items: list[dict] | None,
     file_access: list[dict] | None,
-) -> tuple[Path | None, str | None, str | None]:
+    trajectory_components: list[dict] | None = None,
+) -> tuple[Path | None, str | None, str | None, str | None]:
     """Write post-trial-linkage inputs to ``<trial_dir>/.qa_context/*.json``.
 
-    Returns ``(qa_context_dir, pre_trial_context, file_access_context)``. The
-    dir and each context string are ``None`` when the corresponding input was
-    not provided, so absent inputs never touch disk or the prompt.
+    Returns ``(qa_context_dir, pre_trial_context, file_access_context,
+    trajectory_components_context)``. The dir and each context string are
+    ``None`` when the corresponding input was not provided, so absent inputs
+    never touch disk or the prompt.
 
     Each context string cites the file by absolute path. The sandbox restores
     the snapshot at those same paths, so an absolute reference resolves there
     too -- a relative ``.qa_context/...`` ref would resolve against the
     sandbox's own cwd, where nothing exists.
     """
-    if pre_trial_items is None and file_access is None:
-        return None, None, None
+    if pre_trial_items is None and file_access is None and trajectory_components is None:
+        return None, None, None, None
 
     qa_context_dir = trial_dir / ".qa_context"
     qa_context_dir.mkdir(parents=True, exist_ok=True)
@@ -151,7 +153,25 @@ def _write_qa_context(
             "files_read/files_written/commands."
         )
 
-    return qa_context_dir, pre_trial_context, file_access_context
+    trajectory_components_context = None
+    if trajectory_components is not None:
+        (qa_context_dir / "trajectory_components.json").write_text(
+            json.dumps(trajectory_components, indent=2)
+        )
+        trajectory_components_context = (
+            f"A trajectory component map ({len(trajectory_components)} labeled phase "
+            f"segment(s)) is available. See {qa_context_dir}/trajectory_components.json "
+            "for each segment's step_ids, phase label, summary, tool_count, and "
+            "duration_ms -- use it to locate the relevant steps before reading the raw "
+            "trajectory."
+        )
+
+    return (
+        qa_context_dir,
+        pre_trial_context,
+        file_access_context,
+        trajectory_components_context,
+    )
 
 
 def build_classify_prompt(
@@ -162,6 +182,7 @@ def build_classify_prompt(
     trial_agent_context: str,
     pre_trial_context: str | None = None,
     file_access_context: str | None = None,
+    trajectory_components_context: str | None = None,
     template: str | None = None,
 ) -> str:
     """Render the classification prompt.
@@ -169,6 +190,7 @@ def build_classify_prompt(
     Extracted so the pre-trial/file-access placeholder wiring is unit-testable
     without spawning the Claude CLI subprocess. ``template`` overrides the
     packaged prompt (cloud QA passes the latest QA_POST_TRIAL registry version).
+    A registry template that predates a placeholder simply ignores its kwarg.
     """
     return (template or _CLASSIFY_PROMPT).format(
         result=result_str,
@@ -177,6 +199,7 @@ def build_classify_prompt(
         trial_agent_context=trial_agent_context,
         pre_trial_context=pre_trial_context or "(none)",
         file_access_context=file_access_context or "(none)",
+        trajectory_components_context=trajectory_components_context or "(none)",
     )
 
 
@@ -190,6 +213,7 @@ def classify_trial(
     timeout: int = 300,
     pre_trial_items: list[dict] | None = None,
     file_access: list[dict] | None = None,
+    trajectory_components: list[dict] | None = None,
 ) -> TrialClassification:
     """Classify a single trial outcome."""
     classifier = TrialClassifier(model=model, verbose=verbose, timeout=timeout)
@@ -199,6 +223,7 @@ def classify_trial(
         trial_agent=trial_agent,
         pre_trial_items=pre_trial_items,
         file_access=file_access,
+        trajectory_components=trajectory_components,
     )
 
 
@@ -240,6 +265,7 @@ class TrialClassifier:
         trial_agent: str | None = None,
         pre_trial_items: list[dict] | None = None,
         file_access: list[dict] | None = None,
+        trajectory_components: list[dict] | None = None,
         analyzer_block_context: dict[str, Any] | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
@@ -307,8 +333,13 @@ class TrialClassifier:
         else:
             result_str = "unknown"
 
-        qa_context_dir, pre_trial_context, file_access_context = _write_qa_context(
-            trial_dir, pre_trial_items, file_access
+        (
+            qa_context_dir,
+            pre_trial_context,
+            file_access_context,
+            trajectory_components_context,
+        ) = _write_qa_context(
+            trial_dir, pre_trial_items, file_access, trajectory_components
         )
 
         prompt = build_classify_prompt(
@@ -319,6 +350,7 @@ class TrialClassifier:
             trial_agent_context=_get_trial_agent_context(trial_agent),
             pre_trial_context=pre_trial_context,
             file_access_context=file_access_context,
+            trajectory_components_context=trajectory_components_context,
         )
 
         try:
@@ -597,6 +629,7 @@ class TrialClassifier:
         trial_agent: str | None = None,
         pre_trial_items: list[dict] | None = None,
         file_access: list[dict] | None = None,
+        trajectory_components: list[dict] | None = None,
     ) -> TrialClassification:
         return asyncio.run(
             self.classify_trial(
@@ -605,6 +638,7 @@ class TrialClassifier:
                 trial_agent=trial_agent,
                 pre_trial_items=pre_trial_items,
                 file_access=file_access,
+                trajectory_components=trajectory_components,
             )
         )
 
