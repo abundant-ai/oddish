@@ -915,15 +915,23 @@ async def _finish_trial_settlement(
     billed_user_id: str | None,
     run_post_trial_hooks: bool,
 ) -> None:
-    from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
+    async def finish() -> None:
+        from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
 
-    await enforce_trial_quotas_until_checked(
-        org_id=org_id,
-        billed_user_id=billed_user_id,
-        caller_trial_id=trial_id,
-    )
-    if run_post_trial_hooks:
-        await _run_post_trial_hooks(trial_id)
+        await enforce_trial_quotas_until_checked(
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+            caller_trial_id=trial_id,
+        )
+        if run_post_trial_hooks:
+            await _run_post_trial_hooks(trial_id)
+
+    task = asyncio.ensure_future(finish())
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
 
 
 async def _upload_probe_assets(

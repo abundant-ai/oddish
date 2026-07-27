@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import QuotaMode, settings
@@ -224,16 +224,27 @@ async def cancel_trials_if_quota_reached(
             trial.analysis_finished_at = now
     await session.flush()
 
-    tasks_with_live_trials = set(
+    preserved_trial = and_(
+        TrialModel.finished_at.is_(None),
+        TrialModel.status.in_(_ACTIVE_TRIAL_STATUSES),
+    )
+    if scope == "user":
+        preserved_trial = or_(
+            preserved_trial,
+            and_(
+                TrialModel.billed_user_id.is_not(None),
+                TrialModel.billed_user_id != billed_user_id,
+            ),
+        )
+    tasks_with_preserved_trials = set(
         (
             await session.execute(
                 select(TrialModel.task_id)
                 .where(
                     TrialModel.task_id.in_(affected_task_ids),
-                    TrialModel.finished_at.is_(None),
                     TrialModel.deleted_at.is_(None),
                     TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.status.in_(_ACTIVE_TRIAL_STATUSES),
+                    preserved_trial,
                 )
                 .execution_options(include_deleted=True)
             )
@@ -244,7 +255,7 @@ async def cancel_trials_if_quota_reached(
     exhausted_task_ids = [
         task_id
         for task_id in affected_task_ids
-        if task_id not in tasks_with_live_trials
+        if task_id not in tasks_with_preserved_trials
     ]
     tasks_cancelled = 0
     if exhausted_task_ids:
@@ -314,22 +325,13 @@ async def enforce_trial_quotas(
         return None
 
     if result["trials_cancelled"]:
-        caller_modal_ids = result.pop("caller_modal_function_call_ids")
-        try:
-            await terminate_run_harvest(result)
-            if caller_modal_ids:
-                await terminate_run_harvest(
-                    {
-                        "modal_function_call_ids": caller_modal_ids,
-                        "worker_targets": [],
-                    }
-                )
-        except Exception:
-            logger.exception(
-                "Quota remote termination failed for org_id=%s billed_user_id=%s",
-                org_id,
-                billed_user_id,
-            )
+        await _terminate_quota_harvest(
+            modal_function_call_ids=result["modal_function_call_ids"],
+            worker_targets=result["worker_targets"],
+            caller_modal_function_call_ids=result["caller_modal_function_call_ids"],
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+        )
         logger.warning(
             "metric=quota.trials_cancelled scope=%s org_id=%s "
             "billed_user_id=%s trials=%s tasks=%s",
@@ -340,6 +342,40 @@ async def enforce_trial_quotas(
             result["tasks_cancelled"],
         )
     return int(result["trials_cancelled"])
+
+
+async def _terminate_quota_harvest(
+    *,
+    modal_function_call_ids: list[str],
+    worker_targets: list[tuple[str, str]],
+    caller_modal_function_call_ids: list[str],
+    org_id: str | None,
+    billed_user_id: str | None,
+) -> None:
+    for modal_ids, targets in (
+        (modal_function_call_ids, worker_targets),
+        (caller_modal_function_call_ids, []),
+    ):
+        if not modal_ids and not targets:
+            continue
+        retry_delay = _RETRY_INITIAL_SECONDS
+        while True:
+            try:
+                await terminate_run_harvest(
+                    {
+                        "modal_function_call_ids": list(modal_ids),
+                        "worker_targets": list(targets),
+                    }
+                )
+                break
+            except Exception:
+                logger.exception(
+                    "Quota remote termination failed for org_id=%s billed_user_id=%s",
+                    org_id,
+                    billed_user_id,
+                )
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)
 
 
 async def enforce_trial_quotas_until_checked(

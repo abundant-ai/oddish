@@ -1580,6 +1580,45 @@ async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
     assert calls == ["quota", "post"]
 
 
+@pytest.mark.asyncio
+async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def _enforce(**_kwargs):
+        calls.append("quota")
+        started.set()
+        await release.wait()
+
+    async def _post_hooks(_trial_id):
+        calls.append("post")
+
+    monkeypatch.setattr(
+        "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
+    )
+    monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
+
+    settlement = asyncio.create_task(
+        trial_handler._finish_trial_settlement(
+            trial_id="trial-1",
+            org_id="org-1",
+            billed_user_id="user-1",
+            run_post_trial_hooks=True,
+        )
+    )
+    await started.wait()
+    settlement.cancel()
+    await asyncio.sleep(0)
+    assert not settlement.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await settlement
+
+    assert calls == ["quota", "post"]
+
+
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
     monkeypatch, tmp_path
 ):

@@ -22,6 +22,7 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
+    VerdictStatus,
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
@@ -115,7 +116,14 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
                 org_id=org_id,
                 user="tester",
                 task_path="s3://test-bucket/quota-cancel-task",
-                status=TaskStatus.RUNNING,
+                status=(
+                    TaskStatus.VERDICT_PENDING
+                    if task_id == mixed_task_id
+                    else TaskStatus.RUNNING
+                ),
+                verdict_status=(
+                    VerdictStatus.RUNNING if task_id == mixed_task_id else None
+                ),
             )
         )
 
@@ -157,7 +165,8 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
                 experiment_id=experiment_id,
                 org_id=org_id,
                 billed_user_id=other_user_id,
-                status=TrialStatus.RUNNING,
+                status=TrialStatus.SUCCESS,
+                finished_at=now,
             ),
         ]
     )
@@ -185,7 +194,15 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
         kind=WorkerJobKind.QA,
         modal_id="fc-qa",
     )
-    session.add_all([exhausted_job, mixed_target_job, mixed_other_job, qa_job])
+    mixed_qa_job = _job(
+        subject_table="tasks",
+        subject_id=mixed_task_id,
+        kind=WorkerJobKind.QA,
+        modal_id="fc-mixed-qa",
+    )
+    session.add_all(
+        [exhausted_job, mixed_target_job, mixed_other_job, qa_job, mixed_qa_job]
+    )
     await session.flush()
 
     result = await cancel_trials_if_quota_reached(
@@ -194,7 +211,13 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
         billed_user_id=user_id,
         caller_trial_id=exhausted_id,
     )
-    for job in (exhausted_job, mixed_target_job, mixed_other_job, qa_job):
+    for job in (
+        exhausted_job,
+        mixed_target_job,
+        mixed_other_job,
+        qa_job,
+        mixed_qa_job,
+    ):
         await session.refresh(job)
 
     assert result["scope"] == "user"
@@ -212,9 +235,11 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
     assert (await session.get(TrialModel, mixed_target_id)).analysis_status == (
         AnalysisStatus.FAILED
     )
-    assert (await session.get(TrialModel, mixed_other_id)).status == TrialStatus.RUNNING
+    assert (await session.get(TrialModel, mixed_other_id)).status == TrialStatus.SUCCESS
     assert (await session.get(TaskModel, exhausted_task_id)).status == TaskStatus.FAILED
-    assert (await session.get(TaskModel, mixed_task_id)).status == TaskStatus.RUNNING
+    mixed_task = await session.get(TaskModel, mixed_task_id)
+    assert mixed_task.status == TaskStatus.VERDICT_PENDING
+    assert mixed_task.verdict_status == VerdictStatus.RUNNING
     assert (await session.get(WorkerJobModel, exhausted_job.id)).status == (
         WorkerJobStatus.CANCELLED
     )
@@ -225,6 +250,9 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
         WorkerJobStatus.CANCELLED
     )
     assert (await session.get(WorkerJobModel, mixed_other_job.id)).status == (
+        WorkerJobStatus.RUNNING
+    )
+    assert (await session.get(WorkerJobModel, mixed_qa_job.id)).status == (
         WorkerJobStatus.RUNNING
     )
 
@@ -292,6 +320,7 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     assert result["trials_cancelled"] == 2
     assert (await session.get(TrialModel, f"{task_id}-1")).status == TrialStatus.FAILED
     assert (await session.get(TrialModel, f"{task_id}-2")).status == TrialStatus.FAILED
+    assert (await session.get(TaskModel, task_id)).status == TaskStatus.FAILED
 
 
 @pytest.mark.asyncio
@@ -339,14 +368,79 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
     assert cancelled == 2
     assert termination_calls == [
         {
-            "scope": "user",
-            "trials_cancelled": 2,
-            "tasks_cancelled": 1,
             "modal_function_call_ids": ["fc-sibling"],
             "worker_targets": [("daytona", "sandbox-caller")],
         },
         {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
     ]
+
+
+@pytest.mark.asyncio
+async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    async def fake_cancel(*_args, **_kwargs):
+        return {
+            "scope": "user",
+            "trials_cancelled": 2,
+            "tasks_cancelled": 1,
+            "modal_function_call_ids": ["fc-sibling"],
+            "caller_modal_function_call_ids": ["fc-caller"],
+            "worker_targets": [("daytona", "sandbox-sibling")],
+        }
+
+    termination_calls = []
+    sleeps = []
+    sibling_failures = 7
+    caller_failures = 1
+
+    async def flaky_terminate(result):
+        nonlocal sibling_failures, caller_failures
+        termination_calls.append(
+            {
+                "modal_function_call_ids": list(result["modal_function_call_ids"]),
+                "worker_targets": list(result["worker_targets"]),
+            }
+        )
+        caller = result["modal_function_call_ids"] == ["fc-caller"]
+        should_fail = caller_failures if caller else sibling_failures
+        result.pop("modal_function_call_ids")
+        result.pop("worker_targets")
+        if should_fail:
+            if caller:
+                caller_failures -= 1
+            else:
+                sibling_failures -= 1
+            raise RuntimeError("temporary teardown failure")
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        quota_enforcement, "cancel_trials_if_quota_reached", fake_cancel
+    )
+    monkeypatch.setattr(quota_enforcement, "terminate_run_harvest", flaky_terminate)
+    monkeypatch.setattr(quota_enforcement.asyncio, "sleep", record_sleep)
+
+    assert (
+        await enforce_trial_quotas(
+            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+        )
+        == 2
+    )
+    sibling_harvest = {
+        "modal_function_call_ids": ["fc-sibling"],
+        "worker_targets": [("daytona", "sandbox-sibling")],
+    }
+    caller_harvest = {
+        "modal_function_call_ids": ["fc-caller"],
+        "worker_targets": [],
+    }
+    assert termination_calls == [sibling_harvest] * 8 + [caller_harvest] * 2
+    assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 1.0]
 
 
 @pytest.mark.asyncio
