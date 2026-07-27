@@ -663,29 +663,26 @@ async def _store_trial_results(
     worker_id: str | None = None,
     worker_job_id: str | None = None,
     byok_env: Mapping[str, str] | None = None,
-) -> bool:
-    """Persist the trial outcome. Returns True when the trial is left in a
-    terminal state (SUCCESS/FAILED with finished_at set), False when it stays
-    inflight (RETRYING) or the update was skipped. Callers use this to decide
-    whether the live transcript can be purged."""
+) -> tuple[bool, bool]:
+    """Return whether the trial is terminal and whether this call completed it."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
         session,
         trial,
     ):
         if not trial:
-            return False
+            return False, False
         if trial.superseded_by_trial_id is not None:
             console.print(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
             )
-            return False
+            return False, False
         if not await _worker_still_owns_trial(
             session, trial, worker_id=worker_id, worker_job_id=worker_job_id
         ):
             console.print(
                 f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
             )
-            return False
+            return False, False
 
         is_modal_image_build_error = bool(
             outcome and is_modal_image_build_failure(outcome.error)
@@ -702,7 +699,7 @@ async def _store_trial_results(
             # These rows are already terminal (finished_at stamped by the cancel
             # path / CANCEL hook); report that so the caller runs the terminal
             # live-event purge instead of leaning on the 24h TTL sweeper.
-            return trial.finished_at is not None
+            return trial.finished_at is not None, False
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -863,44 +860,70 @@ async def _store_trial_results(
             trial.analysis_started_at = probe_analysis["analysis_started_at"]
             trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
 
-        if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-            from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
-            from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+        terminal = trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED)
+        return terminal, terminal
 
-            try:
-                async with session.begin_nested():
-                    await enqueue_qa_assignment_runs_core(
-                        session,
-                        stage="post_trial",
-                        stage_event_key=f"trial:{trial.id}",
-                        org_id=getattr(trial, "org_id", None),
-                        user_id=getattr(trial, "billed_user_id", None),
-                        experiment_id=getattr(trial, "experiment_id", None),
-                        task_id=trial.task_id,
-                        trial_id=trial.id,
-                        run_scope_type="trial",
-                        run_scope_id=trial.id,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                # Assignment analyzers are additive. A configuration or queue
-                # failure must never roll a successfully persisted trial back
-                # into RUNNING or prevent the built-in QA stage from starting.
-                console.print(
-                    f"[red]Post-trial assignment enqueue failed for {trial.id}: "
-                    f"{type(exc).__name__}: {exc}[/red]"
+
+async def _run_post_trial_hooks(trial_id: str) -> None:
+    from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
+    from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+
+    async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
+        session,
+        trial,
+    ):
+        if (
+            trial is None
+            or trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED)
+            or trial.harbor_stage == "cancelled"
+        ):
+            return
+        task = await session.get(TaskModel, trial.task_id, with_for_update=True)
+        if task is None or task.status == TaskStatus.FAILED:
+            return
+        try:
+            async with session.begin_nested():
+                await enqueue_qa_assignment_runs_core(
+                    session,
+                    stage="post_trial",
+                    stage_event_key=f"trial:{trial.id}",
+                    org_id=trial.org_id,
+                    user_id=trial.billed_user_id,
+                    experiment_id=trial.experiment_id,
+                    task_id=trial.task_id,
+                    trial_id=trial.id,
+                    run_scope_type="trial",
+                    run_scope_id=trial.id,
                 )
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[red]Post-trial assignment enqueue failed for {trial.id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
 
-            # Resolve the baseline gate first: a faulty-task cancel drops the
-            # LLM trials from the pending set so the task can advance below; a
-            # release adds them back so QA correctly waits for them.
-            await maybe_gate_llm_trials(session, trial_id)
-            started = await maybe_start_qa_stage(session, trial_id)
-            if started:
-                console.print(
-                    f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
-                )
+        await maybe_gate_llm_trials(session, trial_id)
+        if await maybe_start_qa_stage(session, trial_id):
+            console.print(
+                f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
+            )
 
-        return trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED)
+
+async def _finish_trial_settlement(
+    *,
+    trial_id: str,
+    org_id: str | None,
+    billed_user_id: str | None,
+    run_post_trial_hooks: bool,
+) -> None:
+    from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
+
+    await enforce_trial_quotas_until_checked(
+        org_id=org_id,
+        billed_user_id=billed_user_id,
+        caller_trial_id=trial_id,
+    )
+    if run_post_trial_hooks:
+        await _run_post_trial_hooks(trial_id)
 
 
 async def _upload_probe_assets(
@@ -1458,7 +1481,7 @@ async def run_trial_job(
         except ProbeCredsError as exc:
             # Record the failure on the trial row so the operator sees why the
             # probe failed; _execute_trial's handler never runs in this path.
-            await asyncio.shield(
+            _, run_post_trial_hooks = await asyncio.shield(
                 _store_trial_results(
                     trial_id=trial_id,
                     outcome=None,
@@ -1467,6 +1490,12 @@ async def run_trial_job(
                     worker_id=worker_id,
                     worker_job_id=worker_job_id,
                 )
+            )
+            await _finish_trial_settlement(
+                trial_id=trial_id,
+                org_id=prepared_trial.org_id,
+                billed_user_id=prepared_trial.billed_user_id,
+                run_post_trial_hooks=run_post_trial_hooks,
             )
             if temp_task_dir and temp_task_dir.exists():
                 shutil.rmtree(temp_task_dir, ignore_errors=True)
@@ -1622,7 +1651,7 @@ async def run_trial_job(
         if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
             _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
 
-        trial_terminal = await asyncio.shield(
+        trial_terminal, run_post_trial_hooks = await asyncio.shield(
             _store_trial_results(
                 trial_id=trial_id,
                 outcome=execution.outcome,
@@ -1634,12 +1663,11 @@ async def run_trial_job(
                 byok_env=byok_resolution.env if byok_resolution else None,
             )
         )
-        from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
-
-        await enforce_trial_quotas_until_checked(
+        await _finish_trial_settlement(
+            trial_id=trial_id,
             org_id=prepared_trial.org_id,
             billed_user_id=prepared_trial.billed_user_id,
-            caller_trial_id=trial_id,
+            run_post_trial_hooks=run_post_trial_hooks,
         )
     finally:
         # Purge the live transcript only once the trial is terminal. Doing it

@@ -28,6 +28,7 @@ from oddish.config import settings  # noqa: E402
 from oddish.core import quota_enforcement  # noqa: E402
 from oddish.core.baseline_gate import GATE_SKIP_MESSAGE  # noqa: E402
 from oddish.db import (  # noqa: E402
+    AnalysisStatus,
     TaskModel,
     TrialModel,
     TrialStatus,
@@ -183,6 +184,74 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
         }
     ]
     assert await _trial_status(oracle_id) == TrialStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_local_runner_preserves_concurrent_cancellation(
+    monkeypatch, cleanup_task_ids
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    quota_checks = []
+    post_hooks = []
+
+    async def _run(_trial_id: str) -> None:
+        started.set()
+        await release.wait()
+
+    async def _check_quota(**kwargs) -> int:
+        quota_checks.append(kwargs)
+        return 0
+
+    async def _post_hooks(*_args, **_kwargs) -> None:
+        post_hooks.append(True)
+
+    monkeypatch.setattr(local_runner, "_run_harbor_trial", _run)
+    monkeypatch.setattr(local_runner, "_local_post_trial_hooks", _post_hooks)
+    monkeypatch.setattr(
+        quota_enforcement, "enforce_trial_quotas_until_checked", _check_quota
+    )
+
+    task_id = f"local-cancel-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(
+            session,
+            _mixed_submission("cancel"),
+            task_id=task_id,
+            org_id="org-local",
+            billed_user_id="user-local",
+        )
+
+    oracle_id = await _trial_id(task_id, "oracle")
+    runner = asyncio.create_task(run_trial_locally(oracle_id, dry_run=False))
+    await asyncio.wait_for(started.wait(), timeout=10)
+    async with get_session() as session:
+        trial = await session.get(TrialModel, oracle_id, with_for_update=True)
+        trial.status = TrialStatus.FAILED
+        trial.error_message = "Cancelled because quota was reached"
+        trial.analysis_status = AnalysisStatus.FAILED
+        trial.analysis_error = "Cancelled because quota was reached"
+        trial.finished_at = utcnow()
+        trial.harbor_stage = "cancelled"
+
+    release.set()
+    await asyncio.wait_for(runner, timeout=10)
+
+    async with get_session() as session:
+        trial = await session.get(TrialModel, oracle_id)
+        assert trial.status == TrialStatus.FAILED
+        assert trial.analysis_status == AnalysisStatus.FAILED
+        assert trial.analysis_error == "Cancelled because quota was reached"
+    assert quota_checks == [
+        {
+            "org_id": "org-local",
+            "billed_user_id": "user-local",
+            "caller_trial_id": oracle_id,
+        }
+    ]
+    assert post_hooks == []
 
 
 @pytest.mark.asyncio

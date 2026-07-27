@@ -1314,7 +1314,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
         has_trajectory=True,
     )
 
-    asyncio.run(
+    stored = asyncio.run(
         trial_handler._store_trial_results(
             trial_id="trial-1",
             outcome=outcome,
@@ -1330,6 +1330,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
     assert trial.total_steps == 7
     assert trial.cost_usd == 0.12
     assert trial.has_trajectory is True
+    assert stored == (True, True)
 
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
@@ -1454,7 +1455,7 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
         job_dir=None,
     )
 
-    asyncio.run(
+    stored = asyncio.run(
         trial_handler._store_trial_results(
             trial_id="trial-1",
             outcome=outcome,
@@ -1467,6 +1468,116 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     assert trial.harbor_stage == "cancelled"
     assert trial.error_message == "Cancelled by user"
     assert trial.finished_at is original_finished_at
+    assert stored == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
+    trial = SimpleNamespace(
+        id="trial-1",
+        status=trial_handler.TrialStatus.FAILED,
+        harbor_stage="cancelled",
+    )
+    calls = []
+
+    @asynccontextmanager
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
+        assert with_for_update is True
+        yield SimpleNamespace(), trial
+
+    async def _called(*_args, **_kwargs):
+        calls.append(True)
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _called
+    )
+    monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _called)
+    monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _called)
+
+    await trial_handler._run_post_trial_hooks("trial-1")
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
+    trial = SimpleNamespace(
+        id="trial-1",
+        task_id="task-1",
+        experiment_id="exp-1",
+        org_id="org-1",
+        billed_user_id="user-1",
+        status=trial_handler.TrialStatus.SUCCESS,
+        harbor_stage="completed",
+    )
+    calls = []
+
+    class _Session:
+        @asynccontextmanager
+        async def begin_nested(self):
+            yield
+
+        async def get(self, model, obj_id, with_for_update=False):
+            assert model is trial_handler.TaskModel
+            assert obj_id == "task-1"
+            assert with_for_update is True
+            return SimpleNamespace(status=trial_handler.TaskStatus.RUNNING)
+
+    @asynccontextmanager
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
+        assert with_for_update is True
+        yield _Session(), trial
+
+    async def _assignment(*_args, **_kwargs):
+        calls.append("assignment")
+
+    async def _gate(*_args, **_kwargs):
+        calls.append("gate")
+
+    async def _qa(*_args, **_kwargs):
+        calls.append("qa")
+        return False
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _assignment
+    )
+    monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _gate)
+    monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _qa)
+
+    await trial_handler._run_post_trial_hooks("trial-1")
+
+    assert calls == ["assignment", "gate", "qa"]
+
+
+@pytest.mark.asyncio
+async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
+    calls = []
+
+    async def _enforce(**_kwargs):
+        calls.append("quota")
+
+    async def _post_hooks(_trial_id):
+        calls.append("post")
+
+    monkeypatch.setattr(
+        "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
+    )
+    monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
+
+    await trial_handler._finish_trial_settlement(
+        trial_id="trial-1",
+        org_id="org-1",
+        billed_user_id="user-1",
+        run_post_trial_hooks=True,
+    )
+
+    assert calls == ["quota", "post"]
 
 
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(

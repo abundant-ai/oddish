@@ -365,36 +365,48 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             await _run_harbor_trial(trial_id)
     except Exception as exc:
         logger.exception("local_runner: trial %s failed", trial_id)
-        async with get_session() as session:
-            trial = await session.get(TrialModel, trial_id)
-            if trial is not None:
-                trial.status = TrialStatus.FAILED
-                trial.error_message = str(exc)
-                trial.finished_at = datetime.now(timezone.utc)
         failure = exc
-    else:
-        async with get_session() as session:
-            trial = await session.get(TrialModel, trial_id)
-            if trial is None:
+
+    completed = False
+    async with get_session() as session:
+        trial = await session.get(TrialModel, trial_id, with_for_update=True)
+        if trial is None:
+            if failure is None:
                 raise ValueError(
                     f"Trial {trial_id} disappeared mid-run; cannot mark SUCCESS"
                 )
-            trial.status = TrialStatus.SUCCESS
+        elif trial.status == TrialStatus.RUNNING:
+            if failure is not None:
+                trial.status = TrialStatus.FAILED
+                trial.error_message = str(failure)
+            else:
+                trial.status = TrialStatus.SUCCESS
+                logger.info("local_runner: trial %s -> SUCCESS", trial_id)
             trial.finished_at = datetime.now(timezone.utc)
-            logger.info("local_runner: trial %s -> SUCCESS", trial_id)
+            completed = True
+        else:
+            logger.info(
+                "local_runner: trial %s completion ignored; status is %s",
+                trial_id,
+                trial.status.value,
+            )
 
     from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
 
+    # Harbor may have settled cost before a concurrent user/quota cancellation
+    # won the terminal row. Always enforce that spend, but only a completion
+    # owned by this runner may release downstream work.
     await enforce_trial_quotas_until_checked(
         org_id=org_id,
         billed_user_id=billed_user_id,
         caller_trial_id=trial_id,
     )
 
-    # The trial is terminal now. Modal drives the baseline gate + QA stage from
-    # the trial handler/dispatcher; local mode has neither, so run them here and
-    # locally dispatch any LLM trials the gate just released.
-    await _local_post_trial_hooks(trial_id, dry_run=dry_run)
+    if completed:
+        # The trial is terminal now. Modal drives the baseline gate + QA stage from
+        # the trial handler/dispatcher; local mode has neither, so run them here and
+        # locally dispatch any LLM trials the gate just released.
+        await _local_post_trial_hooks(trial_id, dry_run=dry_run)
 
     if failure is not None:
         raise failure
@@ -736,7 +748,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     analysis_finished_at = datetime.now(timezone.utc)
 
     async with get_session() as session:
-        trial = await session.get(TrialModel, trial_id)
+        trial = await session.get(TrialModel, trial_id, with_for_update=True)
         if trial is None:
             return
         trial.harbor_result_path = str(trials_dir)
@@ -786,9 +798,10 @@ async def _run_harbor_trial(trial_id: str) -> None:
             )
         trial.total_steps = _trajectory_total_steps(trajectory)
         trial.has_trajectory = trajectory is not None
-        if analyzer_summary is not None:
-            trial.analysis = _strip_nul(analyzer_summary)
-        trial.analysis_status = analyzer_status
-        trial.analysis_error = analyzer_error
-        trial.analysis_started_at = analysis_started_at
-        trial.analysis_finished_at = analysis_finished_at
+        if trial.status == TrialStatus.RUNNING:
+            if analyzer_summary is not None:
+                trial.analysis = _strip_nul(analyzer_summary)
+            trial.analysis_status = analyzer_status
+            trial.analysis_error = analyzer_error
+            trial.analysis_started_at = analysis_started_at
+            trial.analysis_finished_at = analysis_finished_at
