@@ -91,7 +91,10 @@ def extract_claude_result(payload: dict) -> Any:
     if isinstance(result, str):
         from oddish.blocks.block import Block
 
-        return json.loads(Block.strip_code_fences(result))
+        # parse_json, not json.loads(strip_code_fences(...)): the CLI backend is
+        # where pre-trial actually runs, so this -- not Block.parse -- is the
+        # path that has to survive a model that writes prose around its JSON.
+        return Block.parse_json(result)
     raise RuntimeError("claude-code envelope carried no structured result")
 
 

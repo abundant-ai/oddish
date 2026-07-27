@@ -65,7 +65,7 @@ class Block:
 
     @staticmethod
     def _embedded_json(text: str) -> str | None:
-        """The first JSON value embedded in prose, or None.
+        """The first substantive JSON value embedded in prose, or None.
 
         ``strip_code_fences`` only fires when the fence opens the string, so a
         model that writes a sentence *before* its fenced block (or emits a bare
@@ -75,40 +75,27 @@ class Block:
         """
         fence = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
         candidates = [fence.group(1)] if fence else []
-        # Ordered by where the value starts, so a bare array is not shadowed by
+        # Every opener is a candidate, in position order: audit prose quotes
+        # code constantly, so a brace before the payload is the common case.
+        # Scanning only the first one loses the audit to `{task_id}` and
+        # (worse) silently returns `{}` for "the runner returns {} on timeout".
+        # Ordering by position also keeps a bare array from being shadowed by
         # an object nested inside it.
-        spans: list[tuple[int, str]] = []
-        for opener, closer in (("{", "}"), ("[", "]")):
-            start = text.find(opener)
-            if start == -1:
-                continue
-            depth, in_string, escaped = 0, False, False
-            for index in range(start, len(text)):
-                char = text[index]
-                if escaped:
-                    escaped = False
-                    continue
-                if char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = not in_string
-                elif in_string:
-                    continue
-                elif char == opener:
-                    depth += 1
-                elif char == closer:
-                    depth -= 1
-                    if depth == 0:
-                        spans.append((start, text[start : index + 1]))
-                        break
-        candidates.extend(value for _, value in sorted(spans))
+        candidates.extend(text[i:] for i, char in enumerate(text) if char in "{[")
+        decoder = json.JSONDecoder()
+        empty: str | None = None
         for candidate in candidates:
             try:
-                json.loads(candidate)
-            except json.JSONDecodeError:
+                value, end = decoder.raw_decode(candidate)
+            except ValueError:
                 continue
-            return candidate
-        return None
+            if value:
+                return candidate[:end]
+            # An empty container is far more likely prose punctuation than the
+            # audit, so keep looking -- but return it if nothing better exists.
+            if empty is None:
+                empty = candidate[:end]
+        return empty
 
     @classmethod
     def parse_json(cls, text: str) -> Any:
