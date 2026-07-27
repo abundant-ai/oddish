@@ -19,7 +19,11 @@ import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
 import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
-import { formatCostUsd, formatTokenCount } from "@/lib/format";
+import {
+  formatCostUsd,
+  formatTokenCount,
+  hasDisplayableCostUsd,
+} from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
@@ -717,7 +721,8 @@ function ExperimentSummaryBar({
         >
           {costPending ? (
             <span className="text-[color:var(--paper-ink-3)]">—</span>
-          ) : summary.costTrialCount > 0 ? (
+          ) : summary.costTrialCount > 0 &&
+            hasDisplayableCostUsd(summary.costUsd) ? (
             <>
               {summary.costHasEstimated && !summary.costHasNative && (
                 <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">

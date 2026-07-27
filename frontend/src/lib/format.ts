@@ -2,10 +2,17 @@ import type { Trial } from "@/lib/types";
 
 export function formatCostUsd(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "$0.00";
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  if (value < 1) return `$${value.toFixed(3)}`;
   if (value < 100) return `$${value.toFixed(2)}`;
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
+// Costs render to the cent, so anything under half a cent formats as "$0.00" —
+// a figure that reads as free. Standalone cost figures hide themselves (or fall
+// back to "—") instead of printing it; prose and breakdown rows still say $0.00.
+export function hasDisplayableCostUsd(
+  value: number | null | undefined,
+): value is number {
+  return value != null && Number.isFinite(value) && value >= 0.005;
 }
 
 export function formatTokenCount(value: number): string {

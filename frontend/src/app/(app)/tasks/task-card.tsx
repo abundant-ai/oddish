@@ -14,7 +14,7 @@ import { ExperimentsList } from "@/components/experiments-list";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagChip } from "@/components/tag-chip";
 import { isBaselineAgentName } from "@/lib/experiment-agent-grouping";
-import { formatCostUsd } from "@/lib/format";
+import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -410,7 +410,8 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               </div>
               <div className="mt-1 flex items-baseline gap-1.5 text-sm font-semibold tabular-nums">
                 <span>
-                  {task.cost_trial_count > 0
+                  {task.cost_trial_count > 0 &&
+                  hasDisplayableCostUsd(task.cost_usd)
                     ? `${task.cost_has_estimated && !task.cost_has_native ? "~" : ""}${formatCostUsd(task.cost_usd)}`
                     : "—"}
                 </span>
