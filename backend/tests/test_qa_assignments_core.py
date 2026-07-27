@@ -339,6 +339,50 @@ def test_domain_scope_requires_an_id():
 
 
 @pytest.mark.asyncio
+async def test_pre_trial_lifecycle_run_records_the_task_version(kinds):
+    """The pre-trial enqueue must carry the audited task_version_id in run_config
+    so the analyzer-block runner pins file access to that exact version (closing
+    the re-upload race), rather than reading the task's latest mirror."""
+    kind = kinds("automatic")
+    await _assign(
+        await _prompt(
+            kind,
+            scope_type="task",
+            scope_id="task_pin",
+            org_id="org_a",
+            content="audit the task source",
+        ),
+        stage=PRE,
+        scope_type="task",
+        scope_id="task_pin",
+        org_id="org_a",
+    )
+
+    async with get_session() as session:
+        runs = await enqueue_qa_assignment_runs_core(
+            session,
+            stage=PRE,
+            stage_event_key="task_version:task_pin-v3",
+            org_id="org_a",
+            user_id="user_a",
+            experiment_id=None,
+            task_id="task_pin",
+            trial_id=None,
+            task_version_id="task_pin-v3",
+            run_scope_type="task",
+            run_scope_id="task_pin",
+        )
+        await session.commit()
+
+    assert len(runs) == 1
+    assert runs[0].run_config["task_version_id"] == "task_pin-v3"
+
+    # The run FK-references the prompt version, so drop it before the kinds
+    # fixture tears the prompt down.
+    await _delete_runs(runs[0].id)
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_event_enqueues_analyzer_block_once(kinds):
     kind = kinds("automatic")
     assignment_id = await _assign(
@@ -427,9 +471,7 @@ async def _delete_runs(*run_ids):
                 )
             )
             await session.execute(
-                AnalyzerRunModel.__table__.delete().where(
-                    AnalyzerRunModel.id == run_id
-                )
+                AnalyzerRunModel.__table__.delete().where(AnalyzerRunModel.id == run_id)
             )
         await session.commit()
 
