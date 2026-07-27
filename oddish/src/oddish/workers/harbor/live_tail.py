@@ -877,6 +877,8 @@ class LiveTailer:
         fold: Fold,
         snapshot: bool = False,
         runtime_redactions: dict[str, str] | None = None,
+        org_id: str | None = None,
+        billed_user_id: str | None = None,
     ):
         self.trial_id = trial_id
         self.environment = environment
@@ -885,6 +887,8 @@ class LiveTailer:
         self.fold = fold
         self.snapshot = snapshot
         self.runtime_redactions = dict(runtime_redactions or {})
+        self.org_id = org_id
+        self.billed_user_id = billed_user_id
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -1054,6 +1058,12 @@ class LiveTailer:
             del self.pending_events[:flushed_count]
         if checkpoint_ack is not None:
             self._last_written, self._last_cost = checkpoint_ack
+            if self.org_id is not None:
+                from oddish.core.quota_enforcement import enforce_trial_quotas
+
+                await enforce_trial_quotas(
+                    org_id=self.org_id, billed_user_id=self.billed_user_id
+                )
 
     async def _flush_events(self, session) -> int:
         if not self.pending_events or self.replaced:
@@ -1141,6 +1151,8 @@ def start(
     attempt: int,
     agent: str | None,
     model: str | None,
+    org_id: str | None = None,
+    billed_user_id: str | None = None,
 ) -> None:
     if not settings.live_tail_enabled:
         return
@@ -1155,6 +1167,8 @@ def start(
         fold=adapter.make_fold(model),
         snapshot=adapter.snapshot,
         runtime_redactions=_runtime_redactions.get(trial_id),
+        org_id=org_id,
+        billed_user_id=billed_user_id,
     )
     old = _tailers.pop(trial_id, None)
     if old:

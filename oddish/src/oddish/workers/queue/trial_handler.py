@@ -937,7 +937,7 @@ async def _handle_harbor_event(
 ) -> None:
     """Update a trial from Harbor lifecycle events."""
     event = hook_event.event
-    live_tail_spawn: tuple[int, str, str | None] | None = None
+    live_tail_spawn: tuple[int, str, str | None, str | None, str | None] | None = None
     sandbox_transition: tuple[str, str, SpanResources] | None = None
     observed_at = getattr(hook_event, "timestamp", None)
     if not isinstance(observed_at, datetime):
@@ -1076,7 +1076,13 @@ async def _handle_harbor_event(
                 )
             elif event == TrialEvent.AGENT_START:
                 trial.harbor_stage = "agent_running"
-                live_tail_spawn = (trial.attempts, trial.agent, trial.model)
+                live_tail_spawn = (
+                    trial.attempts,
+                    trial.agent,
+                    trial.model,
+                    trial.org_id,
+                    trial.billed_user_id,
+                )
                 console.print(f"[cyan]Trial {trial_id} agent started[/cyan]")
             elif event == TrialEvent.VERIFICATION_START:
                 trial.harbor_stage = "verification"
@@ -1175,6 +1181,8 @@ async def _handle_harbor_event(
                 attempt=live_tail_spawn[0],
                 agent=live_tail_spawn[1],
                 model=live_tail_spawn[2],
+                org_id=live_tail_spawn[3],
+                billed_user_id=live_tail_spawn[4],
             )
         elif event in (TrialEvent.AGENT_END, TrialEvent.END, TrialEvent.CANCEL):
             live_tail.request_stop(trial_id)
@@ -1625,6 +1633,12 @@ async def run_trial_job(
                 worker_job_id=worker_job_id,
                 byok_env=byok_resolution.env if byok_resolution else None,
             )
+        )
+        from oddish.core.quota_enforcement import enforce_trial_quotas
+
+        await enforce_trial_quotas(
+            org_id=prepared_trial.org_id,
+            billed_user_id=prepared_trial.billed_user_id,
         )
     finally:
         # Purge the live transcript only once the trial is terminal. Doing it

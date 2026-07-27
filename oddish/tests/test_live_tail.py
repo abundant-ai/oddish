@@ -520,6 +520,28 @@ async def test_codex_tick_tails_codex_log_and_checkpoints(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
+    from oddish.core import quota_enforcement
+
+    patch_db(monkeypatch, price=0.25)
+    calls = []
+
+    async def record_enforcement(*, org_id, billed_user_id):
+        calls.append((org_id, billed_user_id))
+        return 0
+
+    monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", record_enforcement)
+    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
+    tailer = make_tailer(env)
+    tailer.org_id = "org-1"
+    tailer.billed_user_id = "user-1"
+
+    await tailer._tick()
+
+    assert calls == [("org-1", "user-1")]
+
+
+@pytest.mark.asyncio
 async def test_codex_tick_without_usage_skips_checkpoint(monkeypatch):
     session = patch_db(monkeypatch)
     env = FakeEnv([b64(codex_item({"type": "agent_message", "text": "hi"}) + b"\n")])
