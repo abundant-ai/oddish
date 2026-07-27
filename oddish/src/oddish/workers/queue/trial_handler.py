@@ -653,6 +653,34 @@ async def _worker_still_owns_trial(
     )
 
 
+def _settle_trial_metering(trial, outcome: HarborOutcome, byok_env):
+    """Persist billed usage independently from terminal outcome ownership."""
+    prev_cost_usd = trial.cost_usd
+    trial.input_tokens = outcome.input_tokens
+    trial.cache_tokens = outcome.cache_tokens
+    trial.cache_write_tokens = outcome.cache_write_tokens
+    trial.output_tokens = outcome.output_tokens
+    provider = settings.get_provider_for_trial(getattr(trial, "agent", ""), trial.model)
+    native_cost_trusted = is_native_cost_trusted(
+        agent=getattr(trial, "agent", None),
+        provider=provider,
+    )
+    trial.cost_usd = settle_cost_usd(
+        outcome.cost_usd,
+        native_cost_trusted=native_cost_trusted,
+        model=trial.model,
+        input_tokens=outcome.input_tokens,
+        output_tokens=outcome.output_tokens,
+        cache_tokens=outcome.cache_tokens,
+        cache_write_tokens=outcome.cache_write_tokens,
+    )
+    # Stamp the key this trial ran on -- the BYOK overlay's key when one was
+    # injected, else the worker's platform key -- so its spend can be dropped
+    # from cost accounting when that key is on the admin exclusion list.
+    trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
+    return prev_cost_usd, provider, native_cost_trusted
+
+
 async def _store_trial_results(
     *,
     trial_id: str,
@@ -686,8 +714,26 @@ async def _store_trial_results(
         )
         runtime_cancelled = trial.harbor_stage == "cancelled"
         if user_cancelled or (runtime_cancelled and not is_modal_image_build_error):
+            if outcome:
+                _, provider, native_cost_trusted = _settle_trial_metering(
+                    trial, outcome, byok_env
+                )
+                log_unpriced_trial_if_needed(
+                    cost_usd=trial.cost_usd,
+                    trial_id=trial.id,
+                    model=trial.model,
+                    agent=getattr(trial, "agent", None),
+                    provider=provider,
+                    attempt=trial.attempts,
+                    input_tokens=outcome.input_tokens,
+                    cache_tokens=outcome.cache_tokens,
+                    cache_write_tokens=outcome.cache_write_tokens,
+                    output_tokens=outcome.output_tokens,
+                    native_cost_usd=outcome.cost_usd,
+                    native_cost_trusted=native_cost_trusted,
+                )
             console.print(
-                f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
+                f"[dim]Trial {trial_id} was cancelled; stored metering only[/dim]"
             )
             # These rows are already terminal (finished_at stamped by the cancel
             # path / CANCEL hook); report that so the caller runs the terminal
@@ -725,37 +771,13 @@ async def _store_trial_results(
             )
             trial.trial_s3_key = trial_s3_key
 
-            prev_cost_usd = trial.cost_usd
-
-            trial.input_tokens = outcome.input_tokens
-            trial.cache_tokens = outcome.cache_tokens
-            trial.cache_write_tokens = outcome.cache_write_tokens
-            trial.output_tokens = outcome.output_tokens
+            prev_cost_usd, provider, native_cost_trusted = _settle_trial_metering(
+                trial, outcome, byok_env
+            )
             trial.total_steps = outcome.total_steps
             trial.trajectory_duration_seconds = outcome.trajectory_duration_seconds
             trial.total_tool_calls = outcome.total_tool_calls
             trial.tool_counts = outcome.tool_counts
-            provider = settings.get_provider_for_trial(
-                getattr(trial, "agent", ""), trial.model
-            )
-            native_cost_trusted = is_native_cost_trusted(
-                agent=getattr(trial, "agent", None),
-                provider=provider,
-            )
-            trial.cost_usd = settle_cost_usd(
-                outcome.cost_usd,
-                native_cost_trusted=native_cost_trusted,
-                model=trial.model,
-                input_tokens=outcome.input_tokens,
-                output_tokens=outcome.output_tokens,
-                cache_tokens=outcome.cache_tokens,
-                cache_write_tokens=outcome.cache_write_tokens,
-            )
-            # Stamp the key this trial ran on -- the BYOK overlay's key when
-            # one was injected, else the worker's platform key -- so its spend
-            # can be dropped from cost accounting when that key is on the admin
-            # exclusion list. Forward-only; NULL when the key can't be resolved.
-            trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
 
             trial.phase_timing = outcome.phase_timing
             # Verifier-reported benchmark metrics (the metrics.json contract),

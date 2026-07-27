@@ -1477,6 +1477,97 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     assert stored == (True, False)
 
 
+def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
+    finished_at = object()
+    cancelled_result = {"state": "cancelled"}
+    cancelled_analysis = {"state": "cancelled"}
+    trial = SimpleNamespace(
+        id="trial-1",
+        task_id="task-1",
+        model="gpt-5",
+        agent="codex",
+        status=trial_handler.TrialStatus.FAILED,
+        attempts=1,
+        max_attempts=1,
+        error_message="Cancelled because quota was reached",
+        harbor_stage="cancelled",
+        reward=None,
+        result=cancelled_result,
+        analysis=cancelled_analysis,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        cache_write_tokens=None,
+        output_tokens=None,
+        cost_usd=None,
+        llm_key_hash=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id=None,
+        current_queue_slot=None,
+        heartbeat_at=None,
+        finished_at=finished_at,
+        superseded_by_trial_id=None,
+        deleted_at=None,
+    )
+
+    @asynccontextmanager
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
+        yield SimpleNamespace(), trial
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        trial_handler,
+        "trial_llm_key_hash",
+        lambda *_args: "settled-key-hash",
+    )
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        input_tokens=100,
+        cache_tokens=25,
+        cache_write_tokens=10,
+        output_tokens=50,
+        cost_usd=0.12,
+        has_trajectory=True,
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key="tasks/task-1/trials/trial-1/",
+            execution_error=None,
+            worker_id="worker-1",
+            worker_job_id="job-1",
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.harbor_stage == "cancelled"
+    assert trial.finished_at is finished_at
+    assert trial.reward is None
+    assert trial.result is cancelled_result
+    assert trial.analysis is cancelled_analysis
+    assert trial.harbor_result_path is None
+    assert trial.trial_s3_key is None
+    assert trial.input_tokens == 100
+    assert trial.cache_tokens == 25
+    assert trial.cache_write_tokens == 10
+    assert trial.output_tokens == 50
+    assert trial.cost_usd == 0.12
+    assert trial.llm_key_hash == "settled-key-hash"
+    assert stored == (True, False)
+
+
 @pytest.mark.asyncio
 async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
     trial = SimpleNamespace(
