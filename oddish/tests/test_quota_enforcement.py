@@ -361,12 +361,13 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     gate_cancelled_baseline.reward = 0.0
     gate_other_baseline = await session.get(TrialModel, gate_other_baseline_id)
     gate_other_baseline.status = TrialStatus.SUCCESS
-    gate_other_baseline.reward = 1.0
+    gate_other_baseline.reward = 0.0
     gate_other_baseline.finished_at = now
     await session.flush()
     assert await maybe_gate_llm_trials(session, gate_other_baseline_id)
     await session.refresh(gate_blocked_job)
-    assert gate_blocked_job.status == WorkerJobStatus.QUEUED
+    assert gate_blocked_job.status == WorkerJobStatus.CANCELLED
+    assert (await session.get(TrialModel, gate_blocked_id)).status == TrialStatus.SKIPPED
     assert (await session.get(WorkerJobModel, exhausted_job.id)).status == (
         WorkerJobStatus.CANCELLED
     )

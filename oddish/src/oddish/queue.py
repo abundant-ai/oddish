@@ -1633,23 +1633,20 @@ async def _resolve_baseline_gate_for_scope(
         )
     ).all()
 
-    # A cancelled baseline has no quality verdict. Wait for every sibling
-    # baseline above, then release the gated trials without interpreting that
-    # missing reward as evidence that the task is faulty. Keeping the signal on
-    # the terminal trial makes this safe when a later sibling completion is the
-    # call that finally resolves the gate.
-    cancelled_baseline = any(
-        harbor_stage == CANCELLED_HARBOR_STAGE
-        for _agent, _reward, harbor_stage in baseline_rows
-    )
-    if cancelled_baseline:
+    # A cancelled baseline has no quality verdict. Ignore only that row: any
+    # completed sibling can still prove the task valid or faulty. If quota
+    # cancellation removed every baseline, there is no evidence to gate on.
+    evaluable_baselines = [
+        (agent, reward)
+        for agent, reward, harbor_stage in baseline_rows
+        if harbor_stage != CANCELLED_HARBOR_STAGE
+    ]
+    if not evaluable_baselines:
         await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
         await session.flush()
         return list(blocked_trial_ids)
 
-    outcome, reason = evaluate_baseline_gate(
-        [(agent, reward) for agent, reward, _harbor_stage in baseline_rows]
-    )
+    outcome, reason = evaluate_baseline_gate(evaluable_baselines)
 
     if outcome == GateOutcome.VALID:
         await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
