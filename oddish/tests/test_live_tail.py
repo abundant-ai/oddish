@@ -526,8 +526,8 @@ async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
     patch_db(monkeypatch, price=0.25)
     calls = []
 
-    async def record_enforcement(*, org_id, billed_user_id):
-        calls.append((org_id, billed_user_id))
+    async def record_enforcement(*, org_id, billed_user_id, caller_trial_id):
+        calls.append((org_id, billed_user_id, caller_trial_id))
         return 0
 
     monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", record_enforcement)
@@ -538,7 +538,7 @@ async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
 
     await tailer._tick()
 
-    assert calls == [("org-1", "user-1")]
+    assert calls == [("org-1", "user-1", "t1")]
 
 
 @pytest.mark.asyncio

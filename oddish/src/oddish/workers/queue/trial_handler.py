@@ -1639,6 +1639,7 @@ async def run_trial_job(
         await enforce_trial_quotas(
             org_id=prepared_trial.org_id,
             billed_user_id=prepared_trial.billed_user_id,
+            caller_trial_id=trial_id,
         )
     finally:
         # Purge the live transcript only once the trial is terminal. Doing it

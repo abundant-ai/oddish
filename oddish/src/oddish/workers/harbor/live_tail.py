@@ -1062,7 +1062,9 @@ class LiveTailer:
                 from oddish.core.quota_enforcement import enforce_trial_quotas
 
                 await enforce_trial_quotas(
-                    org_id=self.org_id, billed_user_id=self.billed_user_id
+                    org_id=self.org_id,
+                    billed_user_id=self.billed_user_id,
+                    caller_trial_id=self.trial_id,
                 )
 
     async def _flush_events(self, session) -> int:

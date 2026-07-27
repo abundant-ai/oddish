@@ -20,6 +20,7 @@ from oddish.core.quotas import (
     sum_org_cost_usd,
 )
 from oddish.db import (
+    AnalysisStatus,
     TaskModel,
     TaskStatus,
     TrialModel,
@@ -99,7 +100,8 @@ async def _cancel_worker_jobs(
     *,
     trial_ids: list[str],
     task_ids: list[str],
-) -> tuple[list[str], list[tuple[str, str]]]:
+    caller_trial_id: str | None,
+) -> tuple[list[str], list[str], list[tuple[str, str]]]:
     task_branch = (
         "(subject_table = 'tasks' AND subject_id = ANY(:task_ids))"
         if task_ids
@@ -116,7 +118,8 @@ async def _cancel_worker_jobs(
             text(
                 f"""
                 WITH to_cancel AS (
-                    SELECT id, modal_function_call_id, provider, external_id
+                    SELECT id, subject_table, subject_id,
+                           modal_function_call_id, provider, external_id
                     FROM worker_jobs
                     WHERE status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
                       AND ((subject_table = 'trials' AND subject_id = ANY(:trial_ids))
@@ -134,7 +137,9 @@ async def _cancel_worker_jobs(
                     payload = w.payload - 'registry_auth_enc'
                 FROM to_cancel
                 WHERE w.id = to_cancel.id
-                RETURNING to_cancel.modal_function_call_id,
+                RETURNING to_cancel.subject_table,
+                          to_cancel.subject_id,
+                          to_cancel.modal_function_call_id,
                           to_cancel.provider,
                           to_cancel.external_id
                 """
@@ -142,15 +147,28 @@ async def _cancel_worker_jobs(
             params,
         )
     ).all()
-    modal_ids = list(dict.fromkeys(str(row[0]) for row in rows if row[0]))
+    caller_modal_ids = list(
+        dict.fromkeys(
+            str(row[2])
+            for row in rows
+            if row[0] == "trials" and row[1] == caller_trial_id and row[2] is not None
+        )
+    )
+    modal_ids = list(
+        dict.fromkeys(
+            str(row[2])
+            for row in rows
+            if row[2] is not None and str(row[2]) not in caller_modal_ids
+        )
+    )
     worker_targets = sorted(
         {
-            (str(row[1]), str(row[2]))
+            (str(row[3]), str(row[4]))
             for row in rows
-            if row[1] is not None and row[2] is not None
+            if row[3] is not None and row[4] is not None
         }
     )
-    return modal_ids, worker_targets
+    return modal_ids, caller_modal_ids, worker_targets
 
 
 async def cancel_trials_if_quota_reached(
@@ -158,12 +176,14 @@ async def cancel_trials_if_quota_reached(
     *,
     org_id: str | None,
     billed_user_id: str | None,
+    caller_trial_id: str | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "scope": None,
         "trials_cancelled": 0,
         "tasks_cancelled": 0,
         "modal_function_call_ids": [],
+        "caller_modal_function_call_ids": [],
         "worker_targets": [],
     }
     if settings.quota_mode != QuotaMode.ENFORCE or org_id is None:
@@ -201,6 +221,10 @@ async def cancel_trials_if_quota_reached(
         trial.max_attempts = trial.attempts
         trial.current_worker_id = None
         trial.current_queue_slot = None
+        if trial.analysis_status not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED):
+            trial.analysis_status = AnalysisStatus.FAILED
+            trial.analysis_error = QUOTA_CANCELLED_MESSAGE
+            trial.analysis_finished_at = now
     await session.flush()
 
     tasks_with_live_trials = set(
@@ -253,10 +277,11 @@ async def cancel_trials_if_quota_reached(
                 task.verdict_error = QUOTA_CANCELLED_MESSAGE
                 task.verdict_finished_at = now
 
-    modal_ids, worker_targets = await _cancel_worker_jobs(
+    modal_ids, caller_modal_ids, worker_targets = await _cancel_worker_jobs(
         session,
         trial_ids=trial_ids,
         task_ids=exhausted_task_ids,
+        caller_trial_id=caller_trial_id,
     )
     await session.flush()
     return {
@@ -264,17 +289,24 @@ async def cancel_trials_if_quota_reached(
         "trials_cancelled": len(trials),
         "tasks_cancelled": tasks_cancelled,
         "modal_function_call_ids": modal_ids,
+        "caller_modal_function_call_ids": caller_modal_ids,
         "worker_targets": worker_targets,
     }
 
 
 async def enforce_trial_quotas(
-    *, org_id: str | None, billed_user_id: str | None
+    *,
+    org_id: str | None,
+    billed_user_id: str | None,
+    caller_trial_id: str | None = None,
 ) -> int:
     try:
         async with get_session() as session:
             result = await cancel_trials_if_quota_reached(
-                session, org_id=org_id, billed_user_id=billed_user_id
+                session,
+                org_id=org_id,
+                billed_user_id=billed_user_id,
+                caller_trial_id=caller_trial_id,
             )
     except Exception:
         logger.exception(
@@ -285,8 +317,16 @@ async def enforce_trial_quotas(
         return 0
 
     if result["trials_cancelled"]:
+        caller_modal_ids = result.pop("caller_modal_function_call_ids")
         try:
             await terminate_run_harvest(result)
+            if caller_modal_ids:
+                await terminate_run_harvest(
+                    {
+                        "modal_function_call_ids": caller_modal_ids,
+                        "worker_targets": [],
+                    }
+                )
         except Exception:
             logger.exception(
                 "Quota remote termination failed for org_id=%s billed_user_id=%s",
