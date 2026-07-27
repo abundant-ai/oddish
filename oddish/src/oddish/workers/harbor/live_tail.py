@@ -1057,15 +1057,17 @@ class LiveTailer:
         if flushed_count:
             del self.pending_events[:flushed_count]
         if checkpoint_ack is not None:
-            self._last_written, self._last_cost = checkpoint_ack
             if self.org_id is not None:
                 from oddish.core.quota_enforcement import enforce_trial_quotas
 
-                await enforce_trial_quotas(
+                cancelled = await enforce_trial_quotas(
                     org_id=self.org_id,
                     billed_user_id=self.billed_user_id,
                     caller_trial_id=self.trial_id,
                 )
+                if cancelled is None:
+                    return
+            self._last_written, self._last_cost = checkpoint_ack
 
     async def _flush_events(self, session) -> int:
         if not self.pending_events or self.replaced:

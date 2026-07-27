@@ -10,6 +10,7 @@ from oddish.config import QuotaMode, settings
 from oddish.core.cost_basis import not_excluded_llm_key_filter
 from oddish.core.helpers import terminate_run_harvest
 from oddish.core.quotas import (
+    acquire_quota_locks,
     get_effective_limit,
     get_effective_org_limit,
     inflight_reserved_usd,
@@ -53,12 +54,9 @@ async def _quota_scope_reached(
     org_id: str,
     billed_user_id: str | None,
 ) -> str | None:
+    await acquire_quota_locks(session, org_id, billed_user_id)
     org_limit = await get_effective_org_limit(session, org_id)
     if org_limit is not None:
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-            {"key": f"quota:org:{org_id}"},
-        )
         org_used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
         org_reserved = await org_inflight_reserved_usd(session, org_id)
         if org_used + org_reserved >= org_limit:
@@ -67,10 +65,6 @@ async def _quota_scope_reached(
     if billed_user_id is None:
         return None
 
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-        {"key": f"quota:user:{org_id}:{billed_user_id}"},
-    )
     user_limit = await get_effective_limit(session, org_id, billed_user_id)
     user_used = await sum_cost_usd(
         session, org_id, billed_user_id, quota_window_start()
@@ -299,7 +293,7 @@ async def enforce_trial_quotas(
     org_id: str | None,
     billed_user_id: str | None,
     caller_trial_id: str | None = None,
-) -> int:
+) -> int | None:
     try:
         async with get_session() as session:
             result = await cancel_trials_if_quota_reached(
@@ -314,7 +308,7 @@ async def enforce_trial_quotas(
             org_id,
             billed_user_id,
         )
-        return 0
+        return None
 
     if result["trials_cancelled"]:
         caller_modal_ids = result.pop("caller_modal_function_call_ids")

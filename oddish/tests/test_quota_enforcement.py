@@ -15,6 +15,7 @@ from oddish.core.quota_enforcement import (
     enforce_trial_quotas,
 )
 from oddish.db import (
+    AnalysisStatus,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -208,7 +209,7 @@ async def test_user_quota_cancels_only_payers_trials_and_exhausted_tasks(
     )
     assert (await session.get(TrialModel, mixed_target_id)).status == TrialStatus.FAILED
     assert (await session.get(TrialModel, mixed_target_id)).analysis_status == (
-        TrialStatus.FAILED
+        AnalysisStatus.FAILED
     )
     assert (await session.get(TrialModel, mixed_other_id)).status == TrialStatus.RUNNING
     assert (await session.get(TaskModel, exhausted_task_id)).status == TaskStatus.FAILED
@@ -345,3 +346,25 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
         },
         {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
     ]
+
+
+@pytest.mark.asyncio
+async def test_enforcement_failure_is_reported_for_live_tail_retry(monkeypatch):
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    async def fail_cancel(*_args, **_kwargs):
+        raise RuntimeError("temporary database failure")
+
+    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        quota_enforcement, "cancel_trials_if_quota_reached", fail_cancel
+    )
+
+    assert (
+        await enforce_trial_quotas(
+            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+        )
+        is None
+    )
