@@ -25,6 +25,7 @@ from sqlalchemy import select, update
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import settings  # noqa: E402
+from oddish.core import quota_enforcement  # noqa: E402
 from oddish.core.baseline_gate import GATE_SKIP_MESSAGE  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
@@ -140,18 +141,32 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
     """Two concurrent dispatches of one trial run Harbor exactly once."""
     monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
     calls: list[str] = []
+    quota_checks = []
 
     async def _spy(trial_id: str) -> None:
         # Yield so both coroutines reach the claim before either finishes.
         await asyncio.sleep(0)
         calls.append(trial_id)
 
+    async def _check_quota(**kwargs) -> int:
+        quota_checks.append(kwargs)
+        return 0
+
     monkeypatch.setattr(local_runner, "_run_harbor_trial", _spy)
+    monkeypatch.setattr(
+        quota_enforcement, "enforce_trial_quotas_until_checked", _check_quota
+    )
 
     task_id = f"local-double-{_RUN}"
     cleanup_task_ids.append(task_id)
     async with get_session() as session:
-        await create_task(session, _mixed_submission("double"), task_id=task_id)
+        await create_task(
+            session,
+            _mixed_submission("double"),
+            task_id=task_id,
+            org_id="org-local",
+            billed_user_id="user-local",
+        )
 
     oracle_id = await _trial_id(task_id, "oracle")
     await asyncio.gather(
@@ -160,6 +175,13 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
     )
 
     assert calls == [oracle_id]  # claimed and ran once, not twice
+    assert quota_checks == [
+        {
+            "org_id": "org-local",
+            "billed_user_id": "user-local",
+            "caller_trial_id": oracle_id,
+        }
+    ]
     assert await _trial_status(oracle_id) == TrialStatus.SUCCESS
 
 

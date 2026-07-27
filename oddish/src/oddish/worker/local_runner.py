@@ -327,26 +327,28 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # releases it. ``run_trial_locally`` is the only dispatch entrypoint, so
     # this claim is the single choke point that prevents double-dispatch.
     async with get_session() as session:
-        claimed = await session.scalar(
-            update(TrialModel)
-            .where(
-                TrialModel.id == trial_id,
-                TrialModel.status == TrialStatus.QUEUED,
-                ~exists().where(
-                    and_(
-                        WorkerJobModel.kind == WorkerJobKind.TRIAL,
-                        WorkerJobModel.subject_table == "trials",
-                        WorkerJobModel.subject_id == TrialModel.id,
-                        WorkerJobModel.status == WorkerJobStatus.BLOCKED,
-                    )
-                ),
+        claimed = (
+            await session.execute(
+                update(TrialModel)
+                .where(
+                    TrialModel.id == trial_id,
+                    TrialModel.status == TrialStatus.QUEUED,
+                    ~exists().where(
+                        and_(
+                            WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                            WorkerJobModel.subject_table == "trials",
+                            WorkerJobModel.subject_id == TrialModel.id,
+                            WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+                        )
+                    ),
+                )
+                .values(
+                    status=TrialStatus.RUNNING,
+                    started_at=datetime.now(timezone.utc),
+                )
+                .returning(TrialModel.org_id, TrialModel.billed_user_id)
             )
-            .values(
-                status=TrialStatus.RUNNING,
-                started_at=datetime.now(timezone.utc),
-            )
-            .returning(TrialModel.id)
-        )
+        ).one_or_none()
     if claimed is None:
         logger.info(
             "local_runner: trial %s not claimable (already dispatched, gated, "
@@ -354,6 +356,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             trial_id,
         )
         return
+    org_id, billed_user_id = claimed
     logger.info("local_runner: trial %s -> RUNNING", trial_id)
 
     failure: Exception | None = None
@@ -379,6 +382,14 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             trial.status = TrialStatus.SUCCESS
             trial.finished_at = datetime.now(timezone.utc)
             logger.info("local_runner: trial %s -> SUCCESS", trial_id)
+
+    from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
+
+    await enforce_trial_quotas_until_checked(
+        org_id=org_id,
+        billed_user_id=billed_user_id,
+        caller_trial_id=trial_id,
+    )
 
     # The trial is terminal now. Modal drives the baseline gate + QA stage from
     # the trial handler/dispatcher; local mode has neither, so run them here and

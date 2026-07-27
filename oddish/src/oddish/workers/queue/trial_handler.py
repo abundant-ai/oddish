@@ -1634,9 +1634,9 @@ async def run_trial_job(
                 byok_env=byok_resolution.env if byok_resolution else None,
             )
         )
-        from oddish.core.quota_enforcement import enforce_trial_quotas
+        from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
 
-        await enforce_trial_quotas(
+        await enforce_trial_quotas_until_checked(
             org_id=prepared_trial.org_id,
             billed_user_id=prepared_trial.billed_user_id,
             caller_trial_id=trial_id,

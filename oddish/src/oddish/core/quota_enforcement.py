@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -34,6 +35,8 @@ from oddish.db import (
 logger = logging.getLogger(__name__)
 
 QUOTA_CANCELLED_MESSAGE = "Cancelled because quota was reached"
+_RETRY_INITIAL_SECONDS = 1.0
+_RETRY_MAX_SECONDS = 30.0
 
 _ACTIVE_TRIAL_STATUSES = (
     TrialStatus.PENDING,
@@ -337,3 +340,25 @@ async def enforce_trial_quotas(
             result["tasks_cancelled"],
         )
     return int(result["trials_cancelled"])
+
+
+async def enforce_trial_quotas_until_checked(
+    *,
+    org_id: str | None,
+    billed_user_id: str | None,
+    caller_trial_id: str | None = None,
+) -> int:
+    """Retry until a final settlement quota check completes."""
+    if settings.quota_mode != QuotaMode.ENFORCE or org_id is None:
+        return 0
+    retry_delay = _RETRY_INITIAL_SECONDS
+    while True:
+        cancelled = await enforce_trial_quotas(
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+            caller_trial_id=caller_trial_id,
+        )
+        if cancelled is not None:
+            return cancelled
+        await asyncio.sleep(retry_delay)
+        retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)

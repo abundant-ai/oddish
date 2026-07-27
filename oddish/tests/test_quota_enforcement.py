@@ -13,6 +13,7 @@ from oddish.core.quota_enforcement import (
     QUOTA_CANCELLED_MESSAGE,
     cancel_trials_if_quota_reached,
     enforce_trial_quotas,
+    enforce_trial_quotas_until_checked,
 )
 from oddish.db import (
     AnalysisStatus,
@@ -367,4 +368,43 @@ async def test_enforcement_failure_is_reported_for_live_tail_retry(monkeypatch):
             org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
         )
         is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_settlement_enforcement_retries_until_check_succeeds(monkeypatch):
+    outcomes = [None] * 7 + [2]
+    sleeps = []
+
+    async def enforce_once(**_kwargs):
+        return outcomes.pop(0)
+
+    async def record_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", enforce_once)
+    monkeypatch.setattr(quota_enforcement.asyncio, "sleep", record_sleep)
+
+    assert (
+        await enforce_trial_quotas_until_checked(
+            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+        )
+        == 2
+    )
+    assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0]
+
+
+@pytest.mark.asyncio
+async def test_settlement_retry_skips_when_quota_is_not_enforced(monkeypatch):
+    async def unexpected_check(**_kwargs):
+        raise AssertionError("quota check should be skipped")
+
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
+    monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", unexpected_check)
+
+    assert (
+        await enforce_trial_quotas_until_checked(
+            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+        )
+        == 0
     )
