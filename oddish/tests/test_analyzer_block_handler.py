@@ -182,7 +182,7 @@ async def test_pre_trial_assignment_runs_worker_local_not_sandbox(
         async def run(self):
             return SimpleNamespace(output={"items": []})
 
-    async def fake_resolve_task_source(task_id, task_version_id):
+    async def fake_resolve_task_source_location(task_id, task_version_id=None):
         # Pins to the version this event is for, not the task's latest mirror.
         assert task_id == "task_3"
         assert task_version_id == "task_3-v1"
@@ -193,7 +193,9 @@ async def test_pre_trial_assignment_runs_worker_local_not_sandbox(
 
     monkeypatch.setattr(handler, "get_session", get_session)
     monkeypatch.setattr(handler, "AnalyzerBlock", FakeBlock)
-    monkeypatch.setattr(handler, "_resolve_task_source", fake_resolve_task_source)
+    monkeypatch.setattr(
+        handler, "resolve_task_source_location", fake_resolve_task_source_location
+    )
     monkeypatch.setattr(handler, "resolve_task_directory", fake_resolve_task_directory)
 
     await handler.run_analyzer_block_job(run.id)

@@ -10,7 +10,7 @@ from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from worker.pre_trial_synth import synthesize_task_pre_trial
 
 
-async def _fake_resolve_version_files(task_version_id, task_id):
+async def _fake_resolve_task_source_location(task_id, task_version_id=None):
     return None, f"/fake/{task_id}/path"
 
 
@@ -19,9 +19,11 @@ async def _fake_resolve_task_directory(task_id, *, task_s3_key, task_path):
 
 
 def _wire_task_source(monkeypatch):
-    """Fake the version-file lookup + task download so the synth builds its
-    CLAUDE_CLI block without a real task-version row or S3 object."""
-    monkeypatch.setattr(mod, "_resolve_version_files", _fake_resolve_version_files)
+    """Fake the source lookup + task download so the synth builds its CLAUDE_CLI
+    block without a real task-version row or S3 object."""
+    monkeypatch.setattr(
+        mod, "resolve_task_source_location", _fake_resolve_task_source_location
+    )
     monkeypatch.setattr(mod, "resolve_task_directory", _fake_resolve_task_directory)
 
 

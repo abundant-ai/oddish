@@ -298,21 +298,19 @@ async def _release_pre_trial_claim(task_version_id: str) -> None:
             version.pre_trial_started_at = None
 
 
-async def _pre_trial_store_allowed(
-    session, worker_job_id: str | None, task_id: str, task_version_id: str
-) -> bool:
-    """Gate for persisting a pre-trial result: the QA job must still be
-    running AND the audited version must still be the task's current version.
-    The sandbox agent pulls the task's *current* source, so if a new upload
-    landed mid-audit the findings describe the new snapshot, not the claimed
-    row -- discard them and let the next QA run audit the new version.
+async def _pre_trial_store_allowed(session, worker_job_id: str | None) -> bool:
+    """Gate for persisting a pre-trial result: only that the QA job is still
+    running.
+
+    The audit is pinned to a specific, immutable task version, so its findings
+    stay valid for that version's row even if a re-upload made a newer version
+    current mid-audit -- the newer version gets its own audit on the next QA
+    run. (Before the CLAUDE_CLI switch the sandbox agent pulled the task's
+    *current* source, so a mid-audit re-upload meant the findings described the
+    wrong snapshot and had to be discarded; version pinning removes that
+    mismatch, so gating on current-version equality would only drop valid data.)
     """
-    if not await _worker_job_is_running(session, worker_job_id):
-        return False
-    current = await session.scalar(
-        select(TaskModel.current_version_id).where(TaskModel.id == task_id)
-    )
-    return current == task_version_id
+    return await _worker_job_is_running(session, worker_job_id)
 
 
 async def _run_pre_trial_audit(
@@ -353,7 +351,7 @@ async def _run_pre_trial_audit(
                     payload=build_pre_trial_payload(pre_trial_items),
                     error=None,
                     should_store=lambda session: _pre_trial_store_allowed(
-                        session, worker_job_id, task_id, pre_trial_version_id
+                        session, worker_job_id
                     ),
                 )
     except Exception as exc:  # noqa: BLE001
@@ -374,7 +372,7 @@ async def _run_pre_trial_audit(
                     payload=None,
                     error=exc,
                     should_store=lambda session: _pre_trial_store_allowed(
-                        session, worker_job_id, task_id, pre_trial_version_id
+                        session, worker_job_id
                     ),
                 )
         except Exception as sync_exc:  # noqa: BLE001

@@ -6,8 +6,6 @@ import asyncio
 import shutil
 from pathlib import Path
 
-from sqlalchemy import select
-
 from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerBlock,
     AnalyzerInput,
@@ -17,8 +15,8 @@ from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType, SandboxCon
 from oddish.blocks.analyzer.claude_cli_client import CliConfig
 from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from oddish.config import settings
+from oddish.core.task_source import resolve_task_source_location
 from oddish.db import AnalyzerRunModel, JobStatus, PromptVersionModel, get_session
-from oddish.db.models import TaskModel, TaskVersionModel
 from oddish.db.storage import resolve_task_directory
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
@@ -76,39 +74,6 @@ def _subject_linkage(
     return run.id, None, run.org_id, run.scope_type, run.scope_id
 
 
-async def _resolve_task_source(
-    task_id: str, task_version_id: str | None
-) -> tuple[str | None, str | None]:
-    """The task source location (S3 key / local path).
-
-    Pins to the specific audited version when the assignment run carries one
-    (mirroring the built-in synth), so a re-upload between enqueue and execution
-    can't swap the source out from under the older version's event. Falls back
-    to the task's latest-version mirror for runs enqueued before
-    ``task_version_id`` was recorded on the config.
-    """
-    async with get_session() as session:
-        if task_version_id:
-            row = (
-                await session.execute(
-                    select(
-                        TaskVersionModel.task_s3_key, TaskVersionModel.task_path
-                    ).where(TaskVersionModel.id == task_version_id)
-                )
-            ).first()
-        else:
-            row = (
-                await session.execute(
-                    select(TaskModel.task_s3_key, TaskModel.task_path).where(
-                        TaskModel.id == task_id
-                    )
-                )
-            ).first()
-    if row is None:
-        raise RuntimeError(f"task source not found for pre-trial QA (task {task_id})")
-    return row.task_s3_key, row.task_path
-
-
 async def _build_pre_trial_cli_block(
     *,
     task_id: str,
@@ -125,7 +90,9 @@ async def _build_pre_trial_cli_block(
     so it never needs a sandbox regardless of the assignment's stored backend.
     Returns the block plus the temp dir to clean up once it has run.
     """
-    task_s3_key, task_path = await _resolve_task_source(task_id, task_version_id)
+    task_s3_key, task_path = await resolve_task_source_location(
+        task_id, task_version_id
+    )
     task_dir, temp_task_dir, _ = await resolve_task_directory(
         task_id, task_s3_key=task_s3_key, task_path=task_path
     )

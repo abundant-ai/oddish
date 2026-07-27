@@ -30,8 +30,9 @@ from oddish.blocks.analyzer.claude_cli_client import CliConfig
 from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from oddish.config import settings
 from oddish.core.prompts import resolve_prompt_core
+from oddish.core.task_source import resolve_task_source_location
 from oddish.db import PromptKind, get_session
-from oddish.db.models import TaskModel, TaskVersionModel
+from oddish.db.models import TaskModel
 from oddish.db.storage import resolve_task_directory
 from oddish.workers.queue.qa_handler import (
     register_pre_trial_enabled_check,
@@ -62,31 +63,6 @@ async def _resolve_org_pre_trial(task_id: str) -> tuple[str | None, bool]:
         return row.org_id, (
             enabled if isinstance(enabled, bool) else settings.pre_trial_enabled
         )
-
-
-async def _resolve_version_files(
-    task_version_id: str, task_id: str
-) -> tuple[str | None, str]:
-    """The ``(task_s3_key, task_path)`` of the exact version being audited.
-
-    Pinning file access to the claimed version -- not ``TaskModel``'s
-    latest-version mirror -- means a re-upload landing mid-audit can't swap the
-    source out from under the auditor (the race the old ``oddish pull`` path
-    could hit). Raises if the version row is gone.
-    """
-    async with get_session() as session:
-        row = (
-            await session.execute(
-                select(TaskVersionModel.task_s3_key, TaskVersionModel.task_path).where(
-                    TaskVersionModel.id == task_version_id
-                )
-            )
-        ).first()
-    if row is None:
-        raise RuntimeError(
-            f"Cannot resolve task version {task_version_id} for task {task_id}"
-        )
-    return row.task_s3_key, row.task_path
 
 
 async def synthesize_task_pre_trial(
@@ -131,7 +107,9 @@ async def synthesize_task_pre_trial(
         task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
     )
 
-    task_s3_key, task_path = await _resolve_version_files(task_version_id, task_id)
+    task_s3_key, task_path = await resolve_task_source_location(
+        task_id, task_version_id
+    )
     task_dir, temp_task_dir, _ = await resolve_task_directory(
         task_id, task_s3_key=task_s3_key, task_path=task_path
     )
