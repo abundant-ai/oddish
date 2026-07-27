@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -327,3 +328,266 @@ def test_collect_with_only_empty_pins_fails_locally_without_posting(monkeypatch)
 
     assert result.exit_code == 1, result.output
     assert "Nothing to collect" in result.output
+
+
+class _RecordingCreateClient:
+    """Records the create + publish calls so the create path can be pinned down."""
+
+    calls: list = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def post(self, url, json=None):
+        type(self).calls.append(("POST", url, json))
+        if url.endswith("/experiments/collections"):
+            return httpx.Response(200, json=_COLLECTION_JSON)
+        if url.endswith("/publish"):
+            return httpx.Response(200, json={"public_token": "tok"})
+        raise AssertionError(f"unexpected url {url}")
+
+
+def test_collect_create_path_is_unchanged_by_into(monkeypatch):
+    # Adding --into must not perturb the default create+publish flow.
+    _RecordingCreateClient.calls = []
+    monkeypatch.setattr(httpx, "Client", _RecordingCreateClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--task", "mytask", "-n", "roll"])
+
+    assert result.exit_code == 0, result.output
+    assert [c[1] for c in _RecordingCreateClient.calls] == [
+        "https://api.example.test/experiments/collections",
+        "https://api.example.test/experiments/c1/publish",
+    ]
+    assert _RecordingCreateClient.calls[0][2] == {
+        "name": "roll",
+        "task_ids": ["mytask"],
+        "trial_ids": [],
+    }
+    assert "Created collection c1" in result.output
+    assert "/share/tok" in result.output
+
+
+# ---------------------------------------------------------------------------
+# --into: append / rename an existing collection
+# ---------------------------------------------------------------------------
+
+# CollectionMutationResponse serializes every field, so the rename response
+# really does carry zeroed counters that must not clobber the append's.
+_ADD_JSON = {
+    "id": "c1",
+    "name": "old name",
+    "trials_added": 3,
+    "trials_removed": 0,
+    "trials_total": 7,
+    "tasks_linked": 1,
+    "tasks_unlinked": 0,
+    "trials_skipped": 0,
+}
+_RENAME_JSON = {
+    "id": "c1",
+    "name": "new name",
+    "trials_added": 0,
+    "trials_removed": 0,
+    "trials_total": 0,
+    "tasks_linked": 0,
+    "tasks_unlinked": 0,
+    "trials_skipped": 0,
+}
+
+
+def _mutate_client(*, rename_status=200, add_status=200, pin_trials=None):
+    """Fake httpx.Client for --into mode, plus the list it records calls into."""
+    calls: list = []
+
+    class _C:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, params=None):
+            calls.append(("GET", url, params))
+            if url.endswith("/tasks/mytask"):
+                return httpx.Response(200, json={"id": "mytask-abc12345"})
+            if url.endswith("/trials"):
+                return httpx.Response(200, json=pin_trials or [])
+            raise AssertionError(f"unexpected url {url}")
+
+        def post(self, url, json=None):
+            calls.append(("POST", url, json))
+            if url.endswith("/collection/trials"):
+                return httpx.Response(
+                    add_status, json=_ADD_JSON if add_status == 200 else {}
+                )
+            raise AssertionError(f"unexpected post {url}")
+
+        def patch(self, url, json=None):
+            calls.append(("PATCH", url, json))
+            return httpx.Response(
+                rename_status, json=_RENAME_JSON if rename_status == 200 else {}
+            )
+
+    return _C, calls
+
+
+def test_collect_into_rename_only(monkeypatch):
+    client, calls = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--into", "c1", "-n", "new name"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "PATCH",
+            "https://api.example.test/experiments/c1/collection",
+            {"name": "new name"},
+        )
+    ]
+    assert "Updated collection c1" in result.output
+    assert "Renamed to" in result.output
+
+
+def test_collect_into_append_only(monkeypatch):
+    client, calls = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["collect", "--into", "c1", "--task", "mytask", "trial-a"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            "POST",
+            "https://api.example.test/experiments/c1/collection/trials",
+            {
+                "trial_ids": ["trial-a"],
+                "task_ids": ["mytask"],
+                "from_experiment_ids": [],
+            },
+        )
+    ]
+    assert "Trials added:       3" in result.output
+
+
+def test_collect_into_append_and_rename(monkeypatch):
+    client, calls = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["collect", "--into", "c1", "--task", "mytask", "-n", "new name"]
+    )
+
+    assert result.exit_code == 0, result.output
+    # Append first: it needs only TASKS, so a non-admin key still lands trials.
+    assert [c[0] for c in calls] == ["POST", "PATCH"]
+    assert "Trials added:       3" in result.output
+    assert "new name" in result.output
+
+
+def test_collect_into_never_publishes(monkeypatch):
+    # publish defaults to True; --into must not fire it (the collection exists
+    # and may already be shared).
+    client, calls = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--into", "c1", "--task", "mytask"])
+
+    assert result.exit_code == 0, result.output
+    assert not any("/publish" in c[1] for c in calls)
+
+
+def test_collect_into_without_name_or_sources_errors(monkeypatch):
+    client, calls = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--into", "c1"])
+
+    assert result.exit_code == 1, result.output
+    assert "Nothing to do" in result.output
+    assert calls == []
+
+
+def test_collect_into_rename_403_explains_the_scope(monkeypatch):
+    client, _ = _mutate_client(rename_status=403)
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--into", "c1", "-n", "new name"])
+
+    assert result.exit_code == 1, result.output
+    assert "Rename failed" in result.output
+    assert "admin API key" in result.output
+
+
+def test_collect_into_expands_version_pins(monkeypatch):
+    client, calls = _mutate_client(
+        pin_trials=[
+            {
+                "id": "T-16a",
+                "task_version_id": "mytask-abc12345-v16",
+                "status": "success",
+                "is_probe": False,
+                "superseded_by_trial_id": None,
+            }
+        ]
+    )
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--into", "c1", "--task", "mytask@16"])
+
+    assert result.exit_code == 0, result.output
+    post = [c for c in calls if c[0] == "POST"][0]
+    assert post[2] == {
+        "trial_ids": ["T-16a"],
+        "task_ids": [],
+        "from_experiment_ids": [],
+    }
+
+
+def test_collect_into_with_only_empty_pins_fails_locally(monkeypatch):
+    client, calls = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["collect", "--into", "c1", "--task", "mytask@16"])
+
+    assert result.exit_code == 1, result.output
+    assert "Nothing to append" in result.output
+    assert not any(c[0] in ("POST", "PATCH") for c in calls)
+
+
+def test_collect_into_json_output(monkeypatch):
+    client, _ = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app,
+        ["collect", "--into", "c1", "--task", "mytask", "-n", "new name", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    # Append's counters survive; only the name comes from the rename response.
+    assert payload["trials_added"] == 3
+    assert payload["name"] == "new name"
