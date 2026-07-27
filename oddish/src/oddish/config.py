@@ -46,7 +46,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 # Plain Anthropic-style id (no Bedrock inference-profile mapping): the
 # classifier and trajectory analyzers route non-Bedrock Claude ids to the
 # direct Anthropic API.
-ANALYSIS_MODEL = "claude-haiku-4-5"
+ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
