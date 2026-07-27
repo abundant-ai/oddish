@@ -18,6 +18,7 @@ from oddish.core.quota_enforcement import (
 )
 from oddish.db import (
     AnalysisStatus,
+    CostExcludedLlmKeyModel,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -44,6 +45,7 @@ def _trial(
     agent: str = "codex",
     queue_key: str = "openai/gpt-5",
     imported_at: datetime | None = None,
+    llm_key_hash: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=trial_id,
@@ -63,6 +65,7 @@ def _trial(
         cost_usd=cost_usd,
         finished_at=finished_at,
         imported_at=imported_at,
+        llm_key_hash=llm_key_hash,
     )
 
 
@@ -386,6 +389,8 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     org_id = f"org-org-qc-{suffix}"
     experiment_id = f"exp-org-qc-{suffix}"
     task_id = f"task-org-qc-{suffix}"
+    preserved_task_id = f"task-org-preserved-qc-{suffix}"
+    excluded_key_hash = ("e" * 56) + suffix
     now = datetime.now(timezone.utc)
 
     async def org_limit(*_args):
@@ -393,14 +398,24 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
 
     monkeypatch.setattr(quota_enforcement, "get_effective_org_limit", org_limit)
     session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id=org_id))
+    session.add_all(
+        [
+            TaskModel(
+                id=current_task_id,
+                name=current_task_id,
+                org_id=org_id,
+                user="tester",
+                task_path="s3://test-bucket/org-quota-cancel-task",
+                status=TaskStatus.RUNNING,
+            )
+            for current_task_id in (task_id, preserved_task_id)
+        ]
+    )
     session.add(
-        TaskModel(
-            id=task_id,
-            name=task_id,
-            org_id=org_id,
-            user="tester",
-            task_path="s3://test-bucket/org-quota-cancel-task",
-            status=TaskStatus.RUNNING,
+        CostExcludedLlmKeyModel(
+            key_hash=excluded_key_hash,
+            key_hint="excluded",
+            label="sponsored",
         )
     )
     session.add_all(
@@ -431,8 +446,50 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
                 billed_user_id="user-b",
                 status=TrialStatus.QUEUED,
             ),
+            _trial(
+                trial_id=f"{preserved_task_id}-baseline",
+                task_id=preserved_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id="user-b",
+                status=TrialStatus.RUNNING,
+                agent="nop",
+                queue_key=NOP_ORACLE_QUEUE_KEY,
+            ),
+            _trial(
+                trial_id=f"{preserved_task_id}-excluded",
+                task_id=preserved_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id="user-b",
+                status=TrialStatus.QUEUED,
+                llm_key_hash=excluded_key_hash,
+            ),
+            _trial(
+                trial_id=f"{preserved_task_id}-cancelled",
+                task_id=preserved_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id="user-b",
+                status=TrialStatus.QUEUED,
+            ),
         ]
     )
+    preserved_job = _job(
+        subject_table="trials",
+        subject_id=f"{preserved_task_id}-excluded",
+        kind=WorkerJobKind.TRIAL,
+        modal_id=None,
+        status=WorkerJobStatus.BLOCKED,
+    )
+    cancelled_job = _job(
+        subject_table="trials",
+        subject_id=f"{preserved_task_id}-cancelled",
+        kind=WorkerJobKind.TRIAL,
+        modal_id=None,
+        status=WorkerJobStatus.BLOCKED,
+    )
+    session.add_all([preserved_job, cancelled_job])
     await session.flush()
 
     result = await cancel_trials_if_quota_reached(
@@ -440,10 +497,27 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     )
 
     assert result["scope"] == "org"
-    assert result["trials_cancelled"] == 2
+    assert result["trials_cancelled"] == 4
     assert (await session.get(TrialModel, f"{task_id}-1")).status == TrialStatus.FAILED
     assert (await session.get(TrialModel, f"{task_id}-2")).status == TrialStatus.FAILED
     assert (await session.get(TaskModel, task_id)).status == TaskStatus.FAILED
+    assert (
+        await session.get(TrialModel, f"{preserved_task_id}-baseline")
+    ).status == TrialStatus.FAILED
+    assert (
+        await session.get(TrialModel, f"{preserved_task_id}-excluded")
+    ).status == TrialStatus.QUEUED
+    assert (
+        await session.get(TrialModel, f"{preserved_task_id}-cancelled")
+    ).status == TrialStatus.FAILED
+    assert (
+        await session.get(TaskModel, preserved_task_id)
+    ).status == TaskStatus.RUNNING
+    await session.refresh(preserved_job)
+    await session.refresh(cancelled_job)
+    assert preserved_job.status == WorkerJobStatus.QUEUED
+    assert cancelled_job.status == WorkerJobStatus.CANCELLED
+    assert result["released_trial_ids"] == [f"{preserved_task_id}-excluded"]
 
 
 @pytest.mark.asyncio
@@ -470,14 +544,19 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
             "modal_function_call_ids": ["fc-sibling"],
             "caller_modal_function_call_ids": ["fc-caller"],
             "worker_targets": [("daytona", "sandbox-caller")],
+            "released_trial_ids": ["trial-released"],
         }
 
     termination_calls = []
     check_finished = False
+    gate_release_calls = []
 
     async def after_check():
         nonlocal check_finished
         check_finished = True
+
+    async def after_gate_release(trial_ids):
+        gate_release_calls.append(list(trial_ids))
 
     async def fake_terminate(result):
         assert check_finished
@@ -495,9 +574,11 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
         billed_user_id="user-1",
         caller_trial_id="trial-1",
         after_check=after_check,
+        after_gate_release=after_gate_release,
     )
 
     assert cancelled == 2
+    assert gate_release_calls == [["trial-released"]]
     assert termination_calls == [
         {
             "modal_function_call_ids": ["fc-sibling"],

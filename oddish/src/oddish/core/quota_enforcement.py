@@ -186,6 +186,7 @@ async def cancel_trials_if_quota_reached(
         "modal_function_call_ids": [],
         "caller_modal_function_call_ids": [],
         "worker_targets": [],
+        "released_trial_ids": [],
     }
     if settings.quota_mode != QuotaMode.ENFORCE or org_id is None:
         return result
@@ -213,6 +214,7 @@ async def cancel_trials_if_quota_reached(
 
     now = utcnow()
     trial_ids = [trial.id for trial in trials]
+    cancelled_trial_ids = set(trial_ids)
     trial_id_by_task = {trial.task_id: trial.id for trial in trials}
     affected_task_ids = list(trial_id_by_task)
     for trial in trials:
@@ -262,15 +264,11 @@ async def cancel_trials_if_quota_reached(
         for task_id in affected_task_ids
         if task_id not in tasks_with_preserved_trials
     ]
-    preserved_task_ids = (
-        [
-            task_id
-            for task_id in affected_task_ids
-            if task_id in tasks_with_preserved_trials
-        ]
-        if scope == "user"
-        else []
-    )
+    preserved_task_ids = [
+        task_id
+        for task_id in affected_task_ids
+        if task_id in tasks_with_preserved_trials
+    ]
     tasks_cancelled = 0
     if exhausted_task_ids:
         tasks = list(
@@ -302,11 +300,19 @@ async def cancel_trials_if_quota_reached(
     if preserved_task_ids:
         from oddish.queue import maybe_start_qa_stage, release_gate_after_quota_cancel
 
+        released_trial_ids: list[str] = []
         for trial in trials:
             if trial.task_id in tasks_with_preserved_trials:
-                await release_gate_after_quota_cancel(session, trial.id)
+                released_trial_ids.extend(
+                    await release_gate_after_quota_cancel(session, trial.id)
+                )
         for task_id in preserved_task_ids:
             await maybe_start_qa_stage(session, trial_id_by_task[task_id])
+        result["released_trial_ids"] = [
+            trial_id
+            for trial_id in dict.fromkeys(released_trial_ids)
+            if trial_id not in cancelled_trial_ids
+        ]
 
     modal_ids, caller_modal_ids, worker_targets = await _cancel_worker_jobs(
         session,
@@ -315,14 +321,17 @@ async def cancel_trials_if_quota_reached(
         caller_trial_id=caller_trial_id,
     )
     await session.flush()
-    return {
-        "scope": scope,
-        "trials_cancelled": len(trials),
-        "tasks_cancelled": tasks_cancelled,
-        "modal_function_call_ids": modal_ids,
-        "caller_modal_function_call_ids": caller_modal_ids,
-        "worker_targets": worker_targets,
-    }
+    result.update(
+        {
+            "scope": scope,
+            "trials_cancelled": len(trials),
+            "tasks_cancelled": tasks_cancelled,
+            "modal_function_call_ids": modal_ids,
+            "caller_modal_function_call_ids": caller_modal_ids,
+            "worker_targets": worker_targets,
+        }
+    )
+    return result
 
 
 async def enforce_trial_quotas(
@@ -331,6 +340,7 @@ async def enforce_trial_quotas(
     billed_user_id: str | None,
     caller_trial_id: str | None = None,
     after_check: Callable[[], Awaitable[None]] | None = None,
+    after_gate_release: Callable[[list[str]], Awaitable[None]] | None = None,
 ) -> int | None:
     try:
         async with get_session() as session:
@@ -349,6 +359,8 @@ async def enforce_trial_quotas(
         return None
 
     try:
+        if after_gate_release is not None:
+            await after_gate_release(list(result.get("released_trial_ids", [])))
         if after_check is not None:
             await after_check()
     finally:
@@ -414,6 +426,7 @@ async def enforce_trial_quotas_until_checked(
     billed_user_id: str | None,
     caller_trial_id: str | None = None,
     after_check: Callable[[], Awaitable[None]] | None = None,
+    after_gate_release: Callable[[list[str]], Awaitable[None]] | None = None,
 ) -> int:
     """Retry until a final settlement quota check completes."""
     if settings.quota_mode != QuotaMode.ENFORCE or org_id is None:
@@ -427,6 +440,7 @@ async def enforce_trial_quotas_until_checked(
             billed_user_id=billed_user_id,
             caller_trial_id=caller_trial_id,
             after_check=after_check,
+            after_gate_release=after_gate_release,
         )
         if cancelled is not None:
             return cancelled

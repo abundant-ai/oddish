@@ -138,12 +138,14 @@ async def test_local_runner_skips_blocked_trial(monkeypatch, cleanup_task_ids):
 
 
 @pytest.mark.asyncio
-async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
-    """Two concurrent dispatches of one trial run Harbor exactly once."""
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids, dry_run):
+    """Two concurrent dispatches claim once and preserve the dry-run mode."""
     monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
     calls: list[str] = []
     quota_checks = []
     settlement_order = []
+    local_dispatches = []
 
     async def _spy(trial_id: str) -> None:
         # Yield so both coroutines reach the claim before either finishes.
@@ -152,8 +154,10 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
 
     async def _check_quota(**kwargs) -> int:
         after_check = kwargs.pop("after_check")
+        after_gate_release = kwargs.pop("after_gate_release")
         quota_checks.append(kwargs)
         settlement_order.append("quota_checked")
+        await after_gate_release(["released-by-quota"])
         await after_check()
         settlement_order.append("remote_teardown")
         return 0
@@ -161,8 +165,12 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
     async def _post_hooks(*_args, **_kwargs) -> None:
         settlement_order.append("post_hooks")
 
+    async def _dispatch_spy(trial_id: str, *, dry_run: bool = False) -> None:
+        local_dispatches.append((trial_id, dry_run))
+
     monkeypatch.setattr(local_runner, "_run_harbor_trial", _spy)
     monkeypatch.setattr(local_runner, "_local_post_trial_hooks", _post_hooks)
+    monkeypatch.setattr(local_runner, "run_trial_locally", _dispatch_spy)
     monkeypatch.setattr(
         quota_enforcement, "enforce_trial_quotas_until_checked", _check_quota
     )
@@ -180,11 +188,12 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
 
     oracle_id = await _trial_id(task_id, "oracle")
     await asyncio.gather(
-        run_trial_locally(oracle_id, dry_run=False),
-        run_trial_locally(oracle_id, dry_run=False),
+        run_trial_locally(oracle_id, dry_run=dry_run),
+        run_trial_locally(oracle_id, dry_run=dry_run),
     )
+    await _drain_pending()
 
-    assert calls == [oracle_id]  # claimed and ran once, not twice
+    assert calls == ([] if dry_run else [oracle_id])
     assert quota_checks == [
         {
             "org_id": "org-local",
@@ -193,6 +202,7 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
         }
     ]
     assert settlement_order == ["quota_checked", "post_hooks", "remote_teardown"]
+    assert local_dispatches == [("released-by-quota", dry_run)]
     assert await _trial_status(oracle_id) == TrialStatus.SUCCESS
 
 
@@ -212,7 +222,9 @@ async def test_local_runner_preserves_concurrent_cancellation(
 
     async def _check_quota(**kwargs) -> int:
         after_check = kwargs.pop("after_check")
+        after_gate_release = kwargs.pop("after_gate_release")
         quota_checks.append(kwargs)
+        await after_gate_release([])
         await after_check()
         return 0
 

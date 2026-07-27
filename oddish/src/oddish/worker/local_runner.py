@@ -403,11 +403,16 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             # them here and locally dispatch any LLM trials the gate just released.
             await _local_post_trial_hooks(trial_id, dry_run=dry_run)
 
+    async def after_gate_release(released_trial_ids: list[str]) -> None:
+        for released_trial_id in released_trial_ids:
+            asyncio.create_task(run_trial_locally(released_trial_id, dry_run=dry_run))
+
     await enforce_trial_quotas_until_checked(
         org_id=org_id,
         billed_user_id=billed_user_id,
         caller_trial_id=trial_id,
         after_check=after_check,
+        after_gate_release=after_gate_release,
     )
 
     if failure is not None:

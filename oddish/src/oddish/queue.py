@@ -1498,22 +1498,35 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     if not trial or not is_nop_oracle_agent(trial.agent):
         return False
 
-    return await _resolve_baseline_gate_for_scope(
+    released = await _resolve_baseline_gate_for_scope(
         session,
         task_id=trial.task_id,
         task_version_id=trial.task_version_id,
         experiment_id=trial.experiment_id,
     )
+    return released is not None
 
 
-async def release_gate_after_quota_cancel(session: AsyncSession, trial_id: str) -> bool:
+async def release_gate_after_quota_cancel(
+    session: AsyncSession, trial_id: str
+) -> list[str]:
     """Re-drive a baseline gate after quota cancellation.
 
     The shared resolver waits for any sibling baselines and remembers terminal
     cancellation via ``harbor_stage``. This call therefore cannot release LLM
     work while another baseline is still running.
     """
-    return await maybe_gate_llm_trials(session, trial_id)
+    trial = await session.get(TrialModel, trial_id)
+    if not trial or not is_nop_oracle_agent(trial.agent):
+        return []
+
+    released = await _resolve_baseline_gate_for_scope(
+        session,
+        task_id=trial.task_id,
+        task_version_id=trial.task_version_id,
+        experiment_id=trial.experiment_id,
+    )
+    return released or []
 
 
 async def _resolve_baseline_gate_for_scope(
@@ -1522,15 +1535,16 @@ async def _resolve_baseline_gate_for_scope(
     task_id: str,
     task_version_id: str | None,
     experiment_id: str | None,
-) -> bool:
+) -> list[str] | None:
     """Release or cancel a (task version, experiment) scope's BLOCKED LLM trials.
 
     Locks the task row FOR UPDATE so the decision is serialized against
     concurrent baseline completions *and* new-trial enqueues on the same task.
-    No-op (returns False) when the scope has no BLOCKED LLM trials or its
+    No-op (returns ``None``) when the scope has no BLOCKED LLM trials or its
     baselines are still running. When all the scope's baselines are terminal it
-    evaluates them: VALID releases the BLOCKED LLM trials to QUEUED, FAULTY
-    cancels them (mirrored to FAILED).
+    evaluates them: VALID releases the BLOCKED LLM trials to QUEUED and returns
+    their IDs, while FAULTY cancels them (mirrored to FAILED) and returns an
+    empty list.
     """
     # Cheap, lock-free skip: if the task has no BLOCKED trial jobs at all there
     # is nothing to resolve, so don't take the task lock. This keeps the release
@@ -1551,13 +1565,13 @@ async def _resolve_baseline_gate_for_scope(
         .limit(1)
     )
     if has_blocked is None:
-        return False
+        return None
 
     locked = await session.scalar(
         select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
     )
     if locked is None:
-        return False
+        return None
 
     blocked_trial_ids = (
         (
@@ -1584,7 +1598,7 @@ async def _resolve_baseline_gate_for_scope(
         .all()
     )
     if not blocked_trial_ids:
-        return False
+        return None
 
     pending_baselines = await session.scalar(
         select(func.count(TrialModel.id)).where(
@@ -1599,7 +1613,7 @@ async def _resolve_baseline_gate_for_scope(
         )
     )
     if pending_baselines:
-        return False
+        return None
 
     baseline_rows = (
         await session.execute(
@@ -1631,7 +1645,7 @@ async def _resolve_baseline_gate_for_scope(
     if cancelled_baseline:
         await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
         await session.flush()
-        return True
+        return list(blocked_trial_ids)
 
     outcome, reason = evaluate_baseline_gate(
         [(agent, reward) for agent, reward, _harbor_stage in baseline_rows]
@@ -1639,11 +1653,13 @@ async def _resolve_baseline_gate_for_scope(
 
     if outcome == GateOutcome.VALID:
         await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
+        released = list(blocked_trial_ids)
     else:
         await _cancel_gated_llm_trials(session, list(blocked_trial_ids), reason)
+        released = []
 
     await session.flush()
-    return True
+    return released
 
 
 async def _unblock_worker_jobs_for_trials(
