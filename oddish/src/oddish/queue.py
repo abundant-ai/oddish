@@ -23,6 +23,7 @@ from oddish.core.baseline_gate import (
     GateOutcome,
     evaluate_baseline_gate,
 )
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.db import (
@@ -54,7 +55,6 @@ from oddish.workers.jobs.enqueue import (
 logger = logging.getLogger(__name__)
 
 USER_CANCELLED_MESSAGE = "Cancelled by user"
-CANCELLED_HARBOR_STAGE = "cancelled"
 
 
 class TrialSupersedeConflict(RuntimeError):
@@ -1443,6 +1443,8 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
                     TrialModel.task_id == task_id,
                     TrialModel.superseded_by_trial_id.is_(None),
                     TrialModel.imported_at.is_(None),
+                    func.coalesce(TrialModel.harbor_stage, "")
+                    != CANCELLED_HARBOR_STAGE,
                     TrialModel.status != TrialStatus.SKIPPED,
                     func.coalesce(TrialModel.error_message, "").notlike(
                         f"{GATE_SKIP_PREFIX}%"

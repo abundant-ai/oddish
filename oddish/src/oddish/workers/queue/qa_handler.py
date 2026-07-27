@@ -10,6 +10,7 @@ from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
@@ -457,6 +458,11 @@ async def _load_live_trials_for_classification(
                     # Exclude bulk-migrated Sauron trials (see docstring): too
                     # costly to classify ~1M historical rows.
                     TrialModel.imported_at.is_(None),
+                    # A cancelled trial has no outcome to classify. This also
+                    # keeps quota cancellation from manufacturing an empty QA
+                    # job when all surviving trials are otherwise excluded.
+                    func.coalesce(TrialModel.harbor_stage, "")
+                    != CANCELLED_HARBOR_STAGE,
                     # Gate-skipped trials never ran (no logs to classify); a
                     # classifier run on them would emit phantom failures and
                     # pollute the verdict + the agent's pass/fail metrics. New

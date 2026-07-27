@@ -43,6 +43,7 @@ def _trial(
     finished_at: datetime | None = None,
     agent: str = "codex",
     queue_key: str = "openai/gpt-5",
+    imported_at: datetime | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=trial_id,
@@ -61,6 +62,7 @@ def _trial(
         status=status,
         cost_usd=cost_usd,
         finished_at=finished_at,
+        imported_at=imported_at,
     )
 
 
@@ -203,6 +205,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
                 billed_user_id=other_user_id,
                 status=TrialStatus.SUCCESS,
                 finished_at=now,
+                imported_at=now,
             ),
             _trial(
                 trial_id=advance_baseline_id,
@@ -330,8 +333,8 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     assert mixed_task.status == TaskStatus.VERDICT_PENDING
     assert mixed_task.verdict_status == VerdictStatus.RUNNING
     advance_task = await session.get(TaskModel, advance_task_id)
-    assert advance_task.status == TaskStatus.VERDICT_PENDING
-    assert advance_task.verdict_status == VerdictStatus.QUEUED
+    assert advance_task.status == TaskStatus.COMPLETED
+    assert advance_task.verdict_status is None
     qa_jobs = (
         await session.scalars(
             select(WorkerJobModel).where(
@@ -341,8 +344,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
             )
         )
     ).all()
-    assert len(qa_jobs) == 1
-    assert qa_jobs[0].status == WorkerJobStatus.QUEUED
+    assert qa_jobs == []
     assert (await session.get(TaskModel, gate_task_id)).status == TaskStatus.RUNNING
     assert (await session.get(TrialModel, gate_blocked_id)).status == TrialStatus.QUEUED
     assert gate_blocked_job.status == WorkerJobStatus.BLOCKED

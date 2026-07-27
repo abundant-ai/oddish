@@ -9,7 +9,10 @@ from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import QuotaMode, settings
-from oddish.core.cost_basis import not_excluded_llm_key_filter
+from oddish.core.cost_basis import (
+    CANCELLED_HARBOR_STAGE,
+    not_excluded_llm_key_filter,
+)
 from oddish.core.helpers import terminate_run_harvest
 from oddish.core.quotas import (
     acquire_quota_locks,
@@ -216,7 +219,7 @@ async def cancel_trials_if_quota_reached(
         trial.status = TrialStatus.FAILED
         trial.error_message = QUOTA_CANCELLED_MESSAGE
         trial.finished_at = now
-        trial.harbor_stage = "cancelled"
+        trial.harbor_stage = CANCELLED_HARBOR_STAGE
         trial.max_attempts = trial.attempts
         trial.current_worker_id = None
         trial.current_queue_slot = None
