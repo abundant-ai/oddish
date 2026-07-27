@@ -15,7 +15,6 @@ the caller's version claim.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 
 from sqlalchemy import select
@@ -163,9 +162,13 @@ async def synthesize_task_pre_trial(
                 "prompt_id": prompt_id,
             },
         )
-        result = await asyncio.wait_for(
-            block.run(), timeout=timeout or settings.pre_trial_timeout
-        )
+        # CliConfig.timeout (set above) is the sole deadline: it bounds the
+        # claude subprocess from inside and kills it cleanly on expiry. An outer
+        # asyncio.wait_for would race that inner timeout and, if it won, cancel
+        # the run mid-communicate() -- orphaning the subprocess (the CLI
+        # client's aclose is a no-op) and prematurely failing successful audits.
+        # Mirrors the classifier's CLAUDE_CLI path.
+        result = await block.run()
     finally:
         # The worker owns the downloaded temp dir now (no sandbox aclose to
         # delete it), so clean it up on every exit path or worker disk fills.

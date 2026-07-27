@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 from pathlib import Path
 
@@ -177,6 +178,36 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     _wire_task_source(monkeypatch)
 
     items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
+    assert items == []
+
+
+@pytest.mark.asyncio
+async def test_synth_imposes_no_outer_deadline_around_the_block(monkeypatch):
+    """The claude subprocess is bounded by CliConfig.timeout (which kills it
+    cleanly on expiry). An outer asyncio.wait_for would race that inner timeout
+    and, if it won, orphan the subprocess. Guard: a block.run() slower than the
+    passed timeout still completes -- there is no outer cancellation."""
+
+    async def fake_resolve_prompt_core(session, key, **scope):
+        return _FakePrompt(), _FakePromptVersion("Audit {task_id}.")
+
+    async def fake_resolve_org_pre_trial(task_id):
+        return "org_1", True
+
+    class _SlowAnalyzerBlock(_FakeAnalyzerBlock):
+        async def run(self) -> _FakeAnalyzerResult:
+            # Longer than the tiny timeout passed below; a leftover outer
+            # wait_for would cancel this and raise instead of returning.
+            await asyncio.sleep(0.05)
+            return _FakeAnalyzerResult({"items": []})
+
+    monkeypatch.setattr(mod, "get_session", lambda: _fake_session_ctx())
+    monkeypatch.setattr(mod, "resolve_prompt_core", fake_resolve_prompt_core)
+    monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
+    monkeypatch.setattr(mod, "AnalyzerBlock", _SlowAnalyzerBlock)
+    _wire_task_source(monkeypatch)
+
+    items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=0.01)
     assert items == []
 
 
