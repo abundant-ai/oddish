@@ -332,10 +332,15 @@ async def _run_pre_trial_audit(
     pre_trial_version_id: str | None = None
     pre_trial_stored: str | None = None
     try:
-        if (
-            settings.pre_trial_enabled
-            and _pre_trial_synth_fn is not None
-            and (_pre_trial_enabled_fn is None or await _pre_trial_enabled_fn(task_id))
+        # settings.pre_trial_enabled is the *default* the registered check falls
+        # back to per org, not a master switch: gating on it first made an org
+        # opt-in unable to enable anything, which is how prod (default off) ran
+        # the audit exactly zero times while the orgs API happily accepted the
+        # opt-in. Standalone oddish stays a no-op via _pre_trial_synth_fn.
+        if _pre_trial_synth_fn is not None and (
+            await _pre_trial_enabled_fn(task_id)
+            if _pre_trial_enabled_fn is not None
+            else settings.pre_trial_enabled
         ):
             pre_trial_version_id = await _claim_pre_trial_version(task_id)
         if pre_trial_version_id is not None:
