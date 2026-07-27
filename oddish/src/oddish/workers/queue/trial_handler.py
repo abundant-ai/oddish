@@ -676,13 +676,6 @@ async def _store_trial_results(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
             )
             return False, False
-        if not await _worker_still_owns_trial(
-            session, trial, worker_id=worker_id, worker_job_id=worker_job_id
-        ):
-            console.print(
-                f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
-            )
-            return False, False
 
         is_modal_image_build_error = bool(
             outcome and is_modal_image_build_failure(outcome.error)
@@ -700,6 +693,14 @@ async def _store_trial_results(
             # path / CANCEL hook); report that so the caller runs the terminal
             # live-event purge instead of leaning on the 24h TTL sweeper.
             return trial.finished_at is not None, False
+
+        if not await _worker_still_owns_trial(
+            session, trial, worker_id=worker_id, worker_job_id=worker_job_id
+        ):
+            console.print(
+                f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
+            )
+            return False, False
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -918,13 +919,16 @@ async def _finish_trial_settlement(
     async def finish() -> None:
         from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
 
+        async def after_check() -> None:
+            if run_post_trial_hooks:
+                await _run_post_trial_hooks(trial_id)
+
         await enforce_trial_quotas_until_checked(
             org_id=org_id,
             billed_user_id=billed_user_id,
             caller_trial_id=trial_id,
+            after_check=after_check,
         )
-        if run_post_trial_hooks:
-            await _run_post_trial_hooks(trial_id)
 
     task = asyncio.ensure_future(finish())
     try:

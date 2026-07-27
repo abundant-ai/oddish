@@ -1434,9 +1434,13 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     )
     original_finished_at = trial.finished_at
 
+    class _Result:
+        def one_or_none(self):
+            return trial_handler.WorkerJobStatus.CANCELLED, None
+
     class _Session:
-        async def get(self, model, obj_id):
-            return None
+        async def execute(self, _query):
+            return _Result()
 
     @asynccontextmanager
     async def _fake_trial_session(
@@ -1461,6 +1465,8 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            worker_id="worker-1",
+            worker_job_id="job-1",
         )
     )
 
@@ -1561,6 +1567,8 @@ async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
 
     async def _enforce(**_kwargs):
         calls.append("quota")
+        await _kwargs["after_check"]()
+        calls.append("teardown")
 
     async def _post_hooks(_trial_id):
         calls.append("post")
@@ -1577,7 +1585,7 @@ async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
         run_post_trial_hooks=True,
     )
 
-    assert calls == ["quota", "post"]
+    assert calls == ["quota", "post", "teardown"]
 
 
 @pytest.mark.asyncio
@@ -1588,8 +1596,10 @@ async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkey
 
     async def _enforce(**_kwargs):
         calls.append("quota")
+        await _kwargs["after_check"]()
         started.set()
         await release.wait()
+        calls.append("teardown")
 
     async def _post_hooks(_trial_id):
         calls.append("post")
@@ -1616,7 +1626,7 @@ async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkey
     with pytest.raises(asyncio.CancelledError):
         await settlement
 
-    assert calls == ["quota", "post"]
+    assert calls == ["quota", "post", "teardown"]
 
 
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(

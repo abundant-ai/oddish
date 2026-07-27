@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import and_, or_, select, text
@@ -296,8 +297,11 @@ async def cancel_trials_if_quota_reached(
                 task.verdict_finished_at = now
 
     if preserved_task_ids:
-        from oddish.queue import maybe_start_qa_stage
+        from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
 
+        for trial in trials:
+            if trial.task_id in tasks_with_preserved_trials:
+                await maybe_gate_llm_trials(session, trial.id)
         for task_id in preserved_task_ids:
             await maybe_start_qa_stage(session, trial_id_by_task[task_id])
 
@@ -323,6 +327,7 @@ async def enforce_trial_quotas(
     org_id: str | None,
     billed_user_id: str | None,
     caller_trial_id: str | None = None,
+    after_check: Callable[[], Awaitable[None]] | None = None,
 ) -> int | None:
     try:
         async with get_session() as session:
@@ -339,6 +344,9 @@ async def enforce_trial_quotas(
             billed_user_id,
         )
         return None
+
+    if after_check is not None:
+        await after_check()
 
     if result["trials_cancelled"]:
         await _terminate_quota_harvest(
@@ -399,9 +407,12 @@ async def enforce_trial_quotas_until_checked(
     org_id: str | None,
     billed_user_id: str | None,
     caller_trial_id: str | None = None,
+    after_check: Callable[[], Awaitable[None]] | None = None,
 ) -> int:
     """Retry until a final settlement quota check completes."""
     if settings.quota_mode != QuotaMode.ENFORCE or org_id is None:
+        if after_check is not None:
+            await after_check()
         return 0
     retry_delay = _RETRY_INITIAL_SECONDS
     while True:
@@ -409,6 +420,7 @@ async def enforce_trial_quotas_until_checked(
             org_id=org_id,
             billed_user_id=billed_user_id,
             caller_trial_id=caller_trial_id,
+            after_check=after_check,
         )
         if cancelled is not None:
             return cancelled

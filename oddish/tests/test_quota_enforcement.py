@@ -40,6 +40,7 @@ def _trial(
     status: TrialStatus,
     cost_usd: float | None = None,
     finished_at: datetime | None = None,
+    agent: str = "codex",
 ) -> TrialModel:
     return TrialModel(
         id=trial_id,
@@ -48,7 +49,7 @@ def _trial(
         experiment_id=experiment_id,
         org_id=org_id,
         billed_user_id=billed_user_id,
-        agent="codex",
+        agent=agent,
         provider="openai",
         queue_key="openai/gpt-5",
         model="gpt-5",
@@ -90,6 +91,8 @@ def _enforced_quota(monkeypatch):
 async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     session, monkeypatch
 ):
+    import oddish.queue as queue_module
+
     suffix = uuid.uuid4().hex[:8]
     org_id = f"org-qc-{suffix}"
     user_id = f"user-qc-{suffix}"
@@ -108,6 +111,14 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
 
     monkeypatch.setattr(quota_enforcement, "get_effective_org_limit", no_org_limit)
     monkeypatch.setattr(quota_enforcement, "get_effective_limit", user_limit)
+    gate_calls = []
+    real_gate = queue_module.maybe_gate_llm_trials
+
+    async def record_gate(session, trial_id):
+        gate_calls.append(trial_id)
+        return await real_gate(session, trial_id)
+
+    monkeypatch.setattr(queue_module, "maybe_gate_llm_trials", record_gate)
 
     session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id=org_id))
     for task_id in (exhausted_task_id, mixed_task_id, advance_task_id):
@@ -136,6 +147,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     mixed_other_id = f"{mixed_task_id}-1"
     advance_target_id = f"{advance_task_id}-0"
     advance_other_id = f"{advance_task_id}-1"
+    advance_baseline_id = f"{advance_task_id}-baseline"
     session.add_all(
         [
             _trial(
@@ -190,6 +202,15 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
                 status=TrialStatus.SUCCESS,
                 finished_at=now,
             ),
+            _trial(
+                trial_id=advance_baseline_id,
+                task_id=advance_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id=user_id,
+                status=TrialStatus.RUNNING,
+                agent="nop",
+            ),
         ]
     )
     exhausted_job = _job(
@@ -243,8 +264,13 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
         await session.refresh(job)
 
     assert result["scope"] == "user"
-    assert result["trials_cancelled"] == 3
+    assert result["trials_cancelled"] == 4
     assert result["tasks_cancelled"] == 1
+    assert set(gate_calls) == {
+        mixed_target_id,
+        advance_target_id,
+        advance_baseline_id,
+    }
     assert set(result["modal_function_call_ids"]) == {
         "fc-mixed-target",
         "fc-qa",
@@ -386,8 +412,14 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
         }
 
     termination_calls = []
+    check_finished = False
+
+    async def after_check():
+        nonlocal check_finished
+        check_finished = True
 
     async def fake_terminate(result):
+        assert check_finished
         termination_calls.append(dict(result))
         return len(result["modal_function_call_ids"])
 
@@ -398,7 +430,10 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
     monkeypatch.setattr(quota_enforcement, "terminate_run_harvest", fake_terminate)
 
     cancelled = await enforce_trial_quotas(
-        org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+        org_id="org-1",
+        billed_user_id="user-1",
+        caller_trial_id="trial-1",
+        after_check=after_check,
     )
 
     assert cancelled == 2
@@ -526,15 +561,25 @@ async def test_settlement_enforcement_retries_until_check_succeeds(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_settlement_retry_skips_when_quota_is_not_enforced(monkeypatch):
+    check_finished = False
+
     async def unexpected_check(**_kwargs):
         raise AssertionError("quota check should be skipped")
+
+    async def after_check():
+        nonlocal check_finished
+        check_finished = True
 
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
     monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", unexpected_check)
 
     assert (
         await enforce_trial_quotas_until_checked(
-            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+            org_id="org-1",
+            billed_user_id="user-1",
+            caller_trial_id="trial-1",
+            after_check=after_check,
         )
         == 0
     )
+    assert check_finished
