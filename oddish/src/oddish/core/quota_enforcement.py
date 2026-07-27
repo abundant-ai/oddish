@@ -425,7 +425,11 @@ async def _reconcile_cancelled_tasks(
     await session.flush()
 
 
-async def _reconcile_cancelled_tasks_until_complete(result: dict[str, Any]) -> None:
+async def _reconcile_cancelled_tasks_until_complete(
+    result: dict[str, Any],
+    *,
+    after_failure: Callable[[], Awaitable[None]] | None = None,
+) -> None:
     if not result.get("affected_task_ids"):
         return
 
@@ -437,6 +441,8 @@ async def _reconcile_cancelled_tasks_until_complete(result: dict[str, Any]) -> N
             return
         except Exception:
             logger.exception("Quota task reconciliation failed; retrying")
+            if after_failure is not None:
+                await after_failure()
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)
 
@@ -465,21 +471,49 @@ async def enforce_trial_quotas(
         )
         return None
 
+    terminated_modal_ids: set[str] = set()
+    terminated_worker_targets: set[tuple[str, str]] = set()
+    terminated_caller_modal_ids: set[str] = set()
+
+    async def teardown() -> None:
+        modal_ids = [
+            modal_id
+            for modal_id in result["modal_function_call_ids"]
+            if modal_id not in terminated_modal_ids
+        ]
+        worker_targets = [
+            target
+            for target in result["worker_targets"]
+            if target not in terminated_worker_targets
+        ]
+        caller_modal_ids = [
+            modal_id
+            for modal_id in result["caller_modal_function_call_ids"]
+            if modal_id not in terminated_caller_modal_ids
+        ]
+        if not modal_ids and not worker_targets and not caller_modal_ids:
+            return
+        await _terminate_quota_harvest(
+            modal_function_call_ids=modal_ids,
+            worker_targets=worker_targets,
+            caller_modal_function_call_ids=caller_modal_ids,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+        )
+        terminated_modal_ids.update(modal_ids)
+        terminated_worker_targets.update(worker_targets)
+        terminated_caller_modal_ids.update(caller_modal_ids)
+
     try:
-        await _reconcile_cancelled_tasks_until_complete(result)
+        await _reconcile_cancelled_tasks_until_complete(
+            result, after_failure=teardown
+        )
         if after_gate_release is not None:
             await after_gate_release(list(result.get("released_trial_ids", [])))
         if after_check is not None:
             await after_check()
     finally:
-        if result["trials_cancelled"]:
-            await _terminate_quota_harvest(
-                modal_function_call_ids=result["modal_function_call_ids"],
-                worker_targets=result["worker_targets"],
-                caller_modal_function_call_ids=result["caller_modal_function_call_ids"],
-                org_id=org_id,
-                billed_user_id=billed_user_id,
-            )
+        await teardown()
 
     if result["trials_cancelled"]:
         logger.warning(

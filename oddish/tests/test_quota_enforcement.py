@@ -648,6 +648,102 @@ async def test_task_reconciliation_starts_after_cancellation_commit(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_reconciliation_failure_does_not_block_remote_teardown(monkeypatch):
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    async def fake_cancel(*_args, **_kwargs):
+        return {
+            "scope": "user",
+            "trials_cancelled": 1,
+            "tasks_cancelled": 0,
+            "modal_function_call_ids": ["fc-sibling"],
+            "caller_modal_function_call_ids": ["fc-caller"],
+            "worker_targets": [("daytona", "sandbox-sibling")],
+            "released_trial_ids": [],
+            "affected_task_ids": ["task-1"],
+            "cancelled_trial_ids": ["trial-1"],
+            "quota_billed_user_id": "user-1",
+        }
+
+    reconcile_attempts = 0
+
+    async def flaky_reconcile(_session, result):
+        nonlocal reconcile_attempts
+        reconcile_attempts += 1
+        if reconcile_attempts == 1:
+            raise RuntimeError("database unavailable")
+        if reconcile_attempts == 2:
+            result["modal_function_call_ids"].append("fc-task-rollback")
+            result["worker_targets"].append(("daytona", "sandbox-task-rollback"))
+            raise RuntimeError("commit outcome unknown")
+        result["modal_function_call_ids"].append("fc-task")
+        result["worker_targets"].append(("daytona", "sandbox-task"))
+
+    termination_calls = []
+
+    async def fake_terminate(payload):
+        termination_calls.append(dict(payload))
+
+    retry_delays = []
+
+    async def retry(delay):
+        retry_delays.append(delay)
+        expected_calls = [
+            {
+                "modal_function_call_ids": ["fc-sibling"],
+                "worker_targets": [("daytona", "sandbox-sibling")],
+            },
+            {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
+        ]
+        if len(retry_delays) == 2:
+            expected_calls.append(
+                {
+                    "modal_function_call_ids": ["fc-task-rollback"],
+                    "worker_targets": [("daytona", "sandbox-task-rollback")],
+                }
+            )
+        assert termination_calls == expected_calls
+
+    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        quota_enforcement, "cancel_trials_if_quota_reached", fake_cancel
+    )
+    monkeypatch.setattr(
+        quota_enforcement, "_reconcile_cancelled_tasks", flaky_reconcile
+    )
+    monkeypatch.setattr(quota_enforcement, "terminate_run_harvest", fake_terminate)
+    monkeypatch.setattr(quota_enforcement.asyncio, "sleep", retry)
+
+    assert (
+        await enforce_trial_quotas(
+            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
+        )
+        == 1
+    )
+
+    # The finalizer does not repeat completed teardown, but it does terminate
+    # task-job handles discovered by the successful reconciliation retry.
+    assert termination_calls == [
+        {
+            "modal_function_call_ids": ["fc-sibling"],
+            "worker_targets": [("daytona", "sandbox-sibling")],
+        },
+        {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
+        {
+            "modal_function_call_ids": ["fc-task-rollback"],
+            "worker_targets": [("daytona", "sandbox-task-rollback")],
+        },
+        {
+            "modal_function_call_ids": ["fc-task"],
+            "worker_targets": [("daytona", "sandbox-task")],
+        },
+    ]
+    assert retry_delays == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
 async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
     @asynccontextmanager
     async def fake_get_session():
