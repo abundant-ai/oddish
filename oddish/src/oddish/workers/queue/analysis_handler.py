@@ -27,6 +27,10 @@ ANALYSIS_HEARTBEAT_INTERVAL_SECONDS = 30
 # presumed abandoned so a worker that died mid-run can't strand the trial.
 ANALYSIS_CLAIM_TTL_MINUTES = 30
 
+# A trial whose analysis reached one of these is decided: no claim applies and
+# no caller should wait on it.
+_TERMINAL_ANALYSIS_STATUSES = (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+
 
 def classification_to_result_dict(classification) -> dict:
     """Render a ``TrialClassification`` for storage on ``trial.analysis``.
@@ -139,7 +143,7 @@ async def classify_trial_and_store(
             return None
 
         # Skip if already analyzed
-        if trial.analysis_status in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED):
+        if trial.analysis_status in _TERMINAL_ANALYSIS_STATUSES:
             console.print(
                 f"[yellow]Trial {trial_id} already analyzed, skipping[/yellow]"
             )
@@ -370,13 +374,29 @@ async def classify_trial_and_store(
                     f"[dim]Analysis {trial_id} ignored; trial was deleted[/dim]"
                 )
                 return
-            # A peer retook the claim after ours aged past the TTL, so its
-            # classification is the trial's current one. Ours finished late;
-            # drop it rather than overwrite a newer analysis.
-            if trial.analysis_started_at != claim_stamp:
+            # This run still owns the trial only while it is RUNNING under the
+            # exact stamp this call wrote. Both halves are load-bearing: a peer
+            # that retook an expired claim replaces the stamp, while a cancel
+            # terminalizes analysis_status and leaves analysis_started_at alone
+            # (queue.cancel_task, endpoints.qa cancel), so the stamp on its own
+            # would let a late write flip a cancelled trial back to SUCCESS.
+            if (
+                trial.analysis_status != AnalysisStatus.RUNNING
+                or trial.analysis_started_at != claim_stamp
+            ):
+                # Report what the trial actually is, not the FAILED initializer:
+                # a terminal status means someone already decided this trial and
+                # the caller must not wait, while anything else means a live peer
+                # owns it and ``_classify_waiting_out_peer_claim`` should keep
+                # waiting rather than let QA reach the verdict without it.
+                stored_status = (
+                    trial.analysis_status
+                    if trial.analysis_status in _TERMINAL_ANALYSIS_STATUSES
+                    else AnalysisStatus.RUNNING
+                )
                 console.print(
-                    f"[dim]Analysis {trial_id} dropped; another worker holds "
-                    "the claim[/dim]"
+                    f"[dim]Analysis {trial_id} dropped; the trial is "
+                    f"{stored_status.value} under another owner[/dim]"
                 )
                 return
 
