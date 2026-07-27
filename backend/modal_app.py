@@ -532,6 +532,18 @@ ENV_VARS = {
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
+    # Pre-trial task-source audit. This is the ONLY writer of
+    # task_versions.pre_trial, which is in turn the only source of the
+    # post-trial classifier's {pre_trial_context} -- so with it off, post-trial
+    # never sees pre-trial findings no matter how many audits the QA-job
+    # assignment path (which this flag does not gate) has run.
+    #
+    # Enabling is deployment-wide on purpose: qa_handler checks this flag
+    # BEFORE the per-org pre_trial_analysis_enabled setting, so while it is off
+    # an org cannot opt itself in -- the org setting can only ever opt OUT.
+    # Post-trial runs for task versions with no audit are unaffected:
+    # pre_trial_items stays None and {pre_trial_context} renders "(none)".
+    "ODDISH_PRE_TRIAL_ENABLED": os.environ.get("ODDISH_PRE_TRIAL_ENABLED", "1"),
     # GKE coordinates resolved at deploy time (process env wins over
     # backend/.env, mirroring _effective_gke_cluster_name), baked into the
     # image like MODAL_APP_NAME above. The oddish-gcp secret gate and the
