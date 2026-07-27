@@ -21,11 +21,20 @@ ANALYSIS_TIMEOUT = 900  # 15 minutes
 # slow classification can't drift across the reap threshold mid-run.
 # 30s matches the trial heartbeat interval for consistency.
 ANALYSIS_HEARTBEAT_INTERVAL_SECONDS = 30
+# Wall-clock cap on the trajectory-summary seam. Generation is a single
+# unbounded streamed LLM call behind an in-process per-trial lock, so without a
+# cap here one hung summary spends the whole claim TTL before classification
+# even starts. Bounded and best-effort: on expiry the trial classifies without
+# a component map, which is the same outcome as an unregistered provider.
+TRAJECTORY_SUMMARY_TIMEOUT_SECONDS = 300
 # How long a RUNNING claim is trusted to belong to a live worker. Must exceed
-# the worst-case classification (``ANALYSIS_TIMEOUT`` plus the S3 task/trial
-# download and sandbox provisioning that precede it); past it the claim is
-# presumed abandoned so a worker that died mid-run can't strand the trial.
-ANALYSIS_CLAIM_TTL_MINUTES = 30
+# the worst-case run: the two bounded phases (``TRAJECTORY_SUMMARY_TIMEOUT_SECONDS``
+# + ``ANALYSIS_TIMEOUT`` = 20 min) plus the S3 task/trial download and sandbox
+# provisioning around them. Past it the claim is presumed abandoned so a worker
+# that died mid-run can't strand the trial -- so it must not be reachable by a
+# worker that is merely slow, or a peer retakes the trial and both write
+# ``trial.analysis``.
+ANALYSIS_CLAIM_TTL_MINUTES = 35
 
 
 # The trajectory-summary seam. Building a summary needs the backend-only
@@ -49,16 +58,26 @@ def register_trajectory_summary_provider(fn: TrajectorySummaryProviderFn) -> Non
 async def _resolve_trajectory_components(trial_id: str) -> list[dict] | None:
     """Ensure a trajectory summary exists and return its component map.
 
-    Best-effort: with no provider registered (standalone oddish) or on any
-    generation failure, returns None so classification proceeds exactly as it
-    did before components existed. The provider owns its own session and the
-    summary LLM call, so this must run outside the trial claim's row lock.
+    Best-effort: with no provider registered (standalone oddish), on timeout,
+    or on any generation failure, returns None so classification proceeds
+    exactly as it did before components existed. The provider owns its own
+    session and the summary LLM call, so this must run outside the trial
+    claim's row lock -- and under a timeout, so it cannot outlive the claim.
     """
     provider = _trajectory_summary_provider
     if provider is None:
         return None
     try:
-        summary = await provider(trial_id)
+        summary = await asyncio.wait_for(
+            provider(trial_id), timeout=TRAJECTORY_SUMMARY_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        console.print(
+            f"[yellow]Trajectory summary for {trial_id} exceeded "
+            f"{TRAJECTORY_SUMMARY_TIMEOUT_SECONDS}s; classifying without a "
+            f"component map[/yellow]"
+        )
+        return None
     except Exception as exc:
         console.print(
             f"[yellow]Trajectory summary unavailable for {trial_id}; classifying "
