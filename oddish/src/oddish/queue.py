@@ -1505,17 +1505,13 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
 
 
 async def release_gate_after_quota_cancel(session: AsyncSession, trial_id: str) -> bool:
-    """Release blocked trials when quota cancellation invalidates a baseline."""
-    trial = await session.get(TrialModel, trial_id)
-    if not trial or not is_nop_oracle_agent(trial.agent):
-        return False
-    return await _resolve_baseline_gate_for_scope(
-        session,
-        task_id=trial.task_id,
-        task_version_id=trial.task_version_id,
-        experiment_id=trial.experiment_id,
-        release_without_evaluation=True,
-    )
+    """Re-drive a baseline gate after quota cancellation.
+
+    The shared resolver waits for any sibling baselines and remembers terminal
+    cancellation via ``harbor_stage``. This call therefore cannot release LLM
+    work while another baseline is still running.
+    """
+    return await maybe_gate_llm_trials(session, trial_id)
 
 
 async def _resolve_baseline_gate_for_scope(
@@ -1524,7 +1520,6 @@ async def _resolve_baseline_gate_for_scope(
     task_id: str,
     task_version_id: str | None,
     experiment_id: str | None,
-    release_without_evaluation: bool = False,
 ) -> bool:
     """Release or cancel a (task version, experiment) scope's BLOCKED LLM trials.
 
@@ -1589,11 +1584,6 @@ async def _resolve_baseline_gate_for_scope(
     if not blocked_trial_ids:
         return False
 
-    if release_without_evaluation:
-        await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
-        await session.flush()
-        return True
-
     pending_baselines = await session.scalar(
         select(func.count(TrialModel.id)).where(
             and_(
@@ -1611,7 +1601,11 @@ async def _resolve_baseline_gate_for_scope(
 
     baseline_rows = (
         await session.execute(
-            select(TrialModel.agent, TrialModel.reward).where(
+            select(
+                TrialModel.agent,
+                TrialModel.reward,
+                TrialModel.harbor_stage,
+            ).where(
                 and_(
                     TrialModel.task_id == task_id,
                     TrialModel.experiment_id == experiment_id,
@@ -1622,8 +1616,23 @@ async def _resolve_baseline_gate_for_scope(
             )
         )
     ).all()
+
+    # A cancelled baseline has no quality verdict. Wait for every sibling
+    # baseline above, then release the gated trials without interpreting that
+    # missing reward as evidence that the task is faulty. Keeping the signal on
+    # the terminal trial makes this safe when a later sibling completion is the
+    # call that finally resolves the gate.
+    cancelled_baseline = any(
+        harbor_stage == CANCELLED_HARBOR_STAGE and reward is None
+        for _agent, reward, harbor_stage in baseline_rows
+    )
+    if cancelled_baseline:
+        await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
+        await session.flush()
+        return True
+
     outcome, reason = evaluate_baseline_gate(
-        [(agent, reward) for agent, reward in baseline_rows]
+        [(agent, reward) for agent, reward, _harbor_stage in baseline_rows]
     )
 
     if outcome == GateOutcome.VALID:

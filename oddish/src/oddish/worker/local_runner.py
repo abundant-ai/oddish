@@ -396,17 +396,19 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # Harbor may have settled cost before a concurrent user/quota cancellation
     # won the terminal row. Always enforce that spend, but only a completion
     # owned by this runner may release downstream work.
+    async def after_check() -> None:
+        if completed:
+            # The trial is terminal now. Modal drives the baseline gate + QA stage
+            # from the trial handler/dispatcher; local mode has neither, so run
+            # them here and locally dispatch any LLM trials the gate just released.
+            await _local_post_trial_hooks(trial_id, dry_run=dry_run)
+
     await enforce_trial_quotas_until_checked(
         org_id=org_id,
         billed_user_id=billed_user_id,
         caller_trial_id=trial_id,
+        after_check=after_check,
     )
-
-    if completed:
-        # The trial is terminal now. Modal drives the baseline gate + QA stage from
-        # the trial handler/dispatcher; local mode has neither, so run them here and
-        # locally dispatch any LLM trials the gate just released.
-        await _local_post_trial_hooks(trial_id, dry_run=dry_run)
 
     if failure is not None:
         raise failure

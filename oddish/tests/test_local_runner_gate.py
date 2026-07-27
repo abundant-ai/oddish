@@ -143,6 +143,7 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
     monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
     calls: list[str] = []
     quota_checks = []
+    settlement_order = []
 
     async def _spy(trial_id: str) -> None:
         # Yield so both coroutines reach the claim before either finishes.
@@ -150,10 +151,18 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
         calls.append(trial_id)
 
     async def _check_quota(**kwargs) -> int:
+        after_check = kwargs.pop("after_check")
         quota_checks.append(kwargs)
+        settlement_order.append("quota_checked")
+        await after_check()
+        settlement_order.append("remote_teardown")
         return 0
 
+    async def _post_hooks(*_args, **_kwargs) -> None:
+        settlement_order.append("post_hooks")
+
     monkeypatch.setattr(local_runner, "_run_harbor_trial", _spy)
+    monkeypatch.setattr(local_runner, "_local_post_trial_hooks", _post_hooks)
     monkeypatch.setattr(
         quota_enforcement, "enforce_trial_quotas_until_checked", _check_quota
     )
@@ -183,6 +192,7 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids):
             "caller_trial_id": oracle_id,
         }
     ]
+    assert settlement_order == ["quota_checked", "post_hooks", "remote_teardown"]
     assert await _trial_status(oracle_id) == TrialStatus.SUCCESS
 
 
@@ -201,7 +211,9 @@ async def test_local_runner_preserves_concurrent_cancellation(
         await release.wait()
 
     async def _check_quota(**kwargs) -> int:
+        after_check = kwargs.pop("after_check")
         quota_checks.append(kwargs)
+        await after_check()
         return 0
 
     async def _post_hooks(*_args, **_kwargs) -> None:

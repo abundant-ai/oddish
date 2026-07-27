@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from oddish.config import QuotaMode, settings
+from oddish.config import NOP_ORACLE_QUEUE_KEY, QuotaMode, settings
 from oddish.core import quota_enforcement
 from oddish.core.quota_enforcement import (
     QUOTA_CANCELLED_MESSAGE,
@@ -28,6 +28,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
+from oddish.queue import maybe_gate_llm_trials
 
 
 def _trial(
@@ -41,6 +42,7 @@ def _trial(
     cost_usd: float | None = None,
     finished_at: datetime | None = None,
     agent: str = "codex",
+    queue_key: str = "openai/gpt-5",
 ) -> TrialModel:
     return TrialModel(
         id=trial_id,
@@ -51,7 +53,7 @@ def _trial(
         billed_user_id=billed_user_id,
         agent=agent,
         provider="openai",
-        queue_key="openai/gpt-5",
+        queue_key=queue_key,
         model="gpt-5",
         is_probe=False,
         attempts=1,
@@ -146,6 +148,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     advance_other_id = f"{advance_task_id}-1"
     advance_baseline_id = f"{advance_task_id}-baseline"
     gate_baseline_id = f"{gate_task_id}-baseline"
+    gate_other_baseline_id = f"{gate_task_id}-other-baseline"
     gate_blocked_id = f"{gate_task_id}-blocked"
     session.add_all(
         [
@@ -209,6 +212,7 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
                 billed_user_id=user_id,
                 status=TrialStatus.RUNNING,
                 agent="nop",
+                queue_key=NOP_ORACLE_QUEUE_KEY,
             ),
             _trial(
                 trial_id=gate_baseline_id,
@@ -218,6 +222,17 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
                 billed_user_id=user_id,
                 status=TrialStatus.RUNNING,
                 agent="nop",
+                queue_key=NOP_ORACLE_QUEUE_KEY,
+            ),
+            _trial(
+                trial_id=gate_other_baseline_id,
+                task_id=gate_task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id=other_user_id,
+                status=TrialStatus.RUNNING,
+                agent="oracle",
+                queue_key=NOP_ORACLE_QUEUE_KEY,
             ),
             _trial(
                 trial_id=gate_blocked_id,
@@ -330,6 +345,15 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     assert qa_jobs[0].status == WorkerJobStatus.QUEUED
     assert (await session.get(TaskModel, gate_task_id)).status == TaskStatus.RUNNING
     assert (await session.get(TrialModel, gate_blocked_id)).status == TrialStatus.QUEUED
+    assert gate_blocked_job.status == WorkerJobStatus.BLOCKED
+
+    gate_other_baseline = await session.get(TrialModel, gate_other_baseline_id)
+    gate_other_baseline.status = TrialStatus.SUCCESS
+    gate_other_baseline.reward = 1.0
+    gate_other_baseline.finished_at = now
+    await session.flush()
+    assert await maybe_gate_llm_trials(session, gate_other_baseline_id)
+    await session.refresh(gate_blocked_job)
     assert gate_blocked_job.status == WorkerJobStatus.QUEUED
     assert (await session.get(WorkerJobModel, exhausted_job.id)).status == (
         WorkerJobStatus.CANCELLED
