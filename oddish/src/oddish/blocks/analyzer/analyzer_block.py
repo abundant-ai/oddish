@@ -42,10 +42,11 @@ class AnalyzerType(str, enum.Enum):
 
 
 # The backend each analyzer needs, keyed by what the analyzer is permitted to
-# do rather than by what happens to be importable in this process. POST_TRIAL
-# reads two already-downloaded directories through Read/Glob and executes
-# nothing, so a worker-local subprocess is sufficient; PRE_TRIAL runs
-# ``oddish pull`` and the verifier, so isolation is a hard requirement.
+# do rather than by what happens to be importable in this process. Both
+# POST_TRIAL and PRE_TRIAL read directories the worker already downloaded
+# through Read/Glob and execute nothing, so a worker-local subprocess is
+# sufficient -- pre-trial audits the task source the worker fetches for it,
+# rather than pulling it itself inside a sandbox.
 # Anything unlisted has no filesystem to bind to and talks to the provider API.
 # Ceiling on the network round-trip that tears a client down (for SANDBOX, a
 # Daytona delete). Generous, but bounded -- see the close in ``run``.
@@ -54,7 +55,7 @@ _CLIENT_CLOSE_TIMEOUT = 60.0
 
 _REQUIRED_SUBSTRATE: dict[AnalyzerType, LLMClientType] = {
     AnalyzerType.POST_TRIAL: LLMClientType.CLAUDE_CLI,
-    AnalyzerType.PRE_TRIAL: LLMClientType.SANDBOX,
+    AnalyzerType.PRE_TRIAL: LLMClientType.CLAUDE_CLI,
 }
 
 

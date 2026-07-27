@@ -40,18 +40,22 @@ def test_sandbox_opt_in_without_a_registered_backend_raises():
         )
 
 
-def test_pre_trial_always_requires_the_sandbox():
-    # Pre-trial runs `oddish pull` and the verifier, so isolation is a hard
-    # requirement, not a preference.
+def test_pre_trial_runs_worker_local_like_post_trial():
+    # Pre-trial now reads the task source the worker already downloaded
+    # (Read/Glob over a local dir), the same as post-trial -- no sandbox and no
+    # `oddish pull`, so nothing to install and no version pin to publish.
     assert (
         resolve_substrate(AnalyzerType.PRE_TRIAL, sandbox_available=True)
-        is LLMClientType.SANDBOX
+        is LLMClientType.CLAUDE_CLI
     )
 
 
-def test_pre_trial_without_a_sandbox_backend_raises():
-    with pytest.raises(RuntimeError, match="sandbox"):
+def test_pre_trial_does_not_require_a_sandbox_backend():
+    # It never needs a sandbox, so it must resolve even when none is registered.
+    assert (
         resolve_substrate(AnalyzerType.PRE_TRIAL, sandbox_available=False)
+        is LLMClientType.CLAUDE_CLI
+    )
 
 
 # ---- classifier wiring ----

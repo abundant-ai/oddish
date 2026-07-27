@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from oddish.blocks.analyzer.claude_cli_client import parse_cli_envelope
 from oddish.blocks.block import Block
 from oddish.analyze.models import PreTrialActionItems
 
@@ -17,11 +18,14 @@ class _EmptyInput(BaseModel):
 
 class PreTrialBlock(Block):
     """Audits task source for verifier/oracle/info-leakage defects and emits
-    a list of ActionItems. The agent runs ``oddish pull`` in its sandbox."""
+    a list of ActionItems. The agent reads the task source from a local
+    directory the worker downloaded for it (Read/Glob), not a sandbox."""
 
     output_schema = PreTrialActionItems
 
-    def __init__(self, task_id: str, trial_ids: list[str], prompt_template: str) -> None:
+    def __init__(
+        self, task_id: str, trial_ids: list[str], prompt_template: str
+    ) -> None:
         self.task_id = task_id
         self.trial_ids = trial_ids
         self.prompt_template = prompt_template
@@ -58,3 +62,18 @@ class PreTrialBlock(Block):
 
     def to_action_items(self, raw: str) -> dict:
         return self.parse(raw).model_dump()
+
+    def to_action_items_from_cli(self, raw: str) -> dict:
+        """``output_transform`` for the CLAUDE_CLI backend.
+
+        The worker-local claude-code run yields a single ``--output-format json``
+        envelope, not the model's bare answer, so unwrap it before validating.
+        Feeding the envelope straight to ``to_action_items`` would validate
+        against ``PreTrialActionItems`` (extra keys ignored, ``items`` defaults
+        to empty) and silently produce zero findings on every run.
+        """
+        obj = parse_cli_envelope(raw)
+        if isinstance(obj, list):
+            # Mirror parse_json: tolerate a bare array instead of the envelope.
+            obj = {"items": obj}
+        return self.filter_output(self.output_schema(**obj)).model_dump()

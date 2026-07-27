@@ -5,7 +5,23 @@ import pytest
 
 import oddish.workers.queue.qa_handler as qa_handler
 import worker.pre_trial_synth as mod
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from worker.pre_trial_synth import synthesize_task_pre_trial
+
+
+async def _fake_resolve_version_files(task_version_id, task_id):
+    return None, f"/fake/{task_id}/path"
+
+
+async def _fake_resolve_task_directory(task_id, *, task_s3_key, task_path):
+    return Path(task_path or f"/fake/{task_id}/dir"), None, None
+
+
+def _wire_task_source(monkeypatch):
+    """Fake the version-file lookup + task download so the synth builds its
+    CLAUDE_CLI block without a real task-version row or S3 object."""
+    monkeypatch.setattr(mod, "_resolve_version_files", _fake_resolve_version_files)
+    monkeypatch.setattr(mod, "resolve_task_directory", _fake_resolve_task_directory)
 
 
 def test_flag_defaults_off():
@@ -112,6 +128,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     monkeypatch.setattr(mod, "resolve_prompt_core", fake_resolve_prompt_core)
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
+    _wire_task_source(monkeypatch)
 
     items = await synthesize_task_pre_trial(
         "task_xyz", "task_xyz-v1", ["t1", "t2"], timeout=30.0
@@ -128,12 +145,12 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
         "prompt_version": 7,
         "prompt_id": "prompt_fake_id",
     }
-    sandbox_config = _FakeAnalyzerBlock.last_kwargs["sandbox_config"]
-    assert sandbox_config.install_oddish_cli is True
-    assert sandbox_config.oddish_org_id == "org_1"
-    assert sandbox_config.session_id == "pre-trial"
-    assert _FakeAnalyzerBlock.last_kwargs["client_creation_timeout"] == (
-        mod.PRE_TRIAL_LEASE_MARGIN_SECONDS
+    # Runs worker-local (CLAUDE_CLI) over the downloaded task dir -- no sandbox,
+    # no oddish-CLI install.
+    assert _FakeAnalyzerBlock.last_kwargs["llm_client_type"] is LLMClientType.CLAUDE_CLI
+    assert "sandbox_config" not in _FakeAnalyzerBlock.last_kwargs
+    assert (
+        str(_FakeAnalyzerBlock.last_kwargs["cli_config"].cwd) == "/fake/task_xyz/path"
     )
 
     assert len(items) == 1
@@ -157,6 +174,7 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     monkeypatch.setattr(mod, "resolve_prompt_core", fake_resolve_prompt_core)
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "AnalyzerBlock", _EmptyAnalyzerBlock)
+    _wire_task_source(monkeypatch)
 
     items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
     assert items == []
@@ -229,6 +247,7 @@ async def test_synth_prefers_task_scoped_prompt_over_global(monkeypatch):
     try:
         monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
         monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
+        _wire_task_source(monkeypatch)
 
         await synthesize_task_pre_trial(task_id, f"{task_id}-v1", ["t1"], timeout=30.0)
 
@@ -271,6 +290,7 @@ async def test_synth_falls_back_to_global_with_no_scoped_rows(monkeypatch):
 
     monkeypatch.setattr(mod, "_resolve_org_pre_trial", fake_resolve_org_pre_trial)
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
+    _wire_task_source(monkeypatch)
 
     await synthesize_task_pre_trial(
         "task_with_no_overrides", "task_with_no_overrides-v1", ["t1"], timeout=30.0
