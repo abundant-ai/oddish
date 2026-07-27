@@ -27,6 +27,10 @@ async def provide_trajectory_summary(trial_id: str) -> dict | None:
     ``None`` when the trial is missing or has no trajectory. Raises
     ``SummaryGenerationError`` on generation failure -- the core caller treats
     that as best-effort and classifies without a component map.
+
+    The session spans generation but holds no connection across it:
+    ``get_or_generate_summary`` commits before the LLM call, which is what keeps
+    this NullPool-safe on workers.
     """
     async with get_session() as session:
         trial = await session.get(TrialModel, trial_id)

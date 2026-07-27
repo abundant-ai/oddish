@@ -436,8 +436,75 @@ async def test_get_or_generate_persists_on_miss():
         result = await get_or_generate_summary(session, trial)
     assert result == fresh
     session.execute.assert_awaited_once()  # the mirror UPDATE
-    session.commit.assert_awaited_once()
+    # One commit releases the connection before generation, one lands the mirror.
+    assert session.commit.await_count == 2
     assert gen.await_args.kwargs["prompt_id"] == "prompt-test-id"
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_holds_no_transaction_across_generation():
+    """No DB transaction may be open while the summary LLM call runs.
+
+    Worker containers use NullPool so long work never holds a connection; an
+    open read transaction here pins a Supavisor backend for the whole
+    generation and can be dropped (idle_in_transaction_session_timeout) before
+    the mirror write, stranding a block that was generated and paid for.
+    """
+    trial = _fake_trial(has_trajectory=True)
+    session = _fake_session()
+    open_txn = {"value": False}
+
+    async def _reads(*_a, **_kw):
+        open_txn["value"] = True  # a real SELECT autobegins a transaction
+
+    async def fake_fresh(*a, **kw):
+        await _reads()
+        return None
+
+    async def fake_prompt(*a, **kw):
+        await _reads()
+        return ("INSTRUCTIONS {{taxonomy}}", 1, "prompt-test-id")
+
+    async def fake_execute(*a, **kw):
+        open_txn["value"] = True
+
+    async def fake_commit(*a, **kw):
+        open_txn["value"] = False
+
+    session.execute = AsyncMock(side_effect=fake_execute)
+    session.commit = AsyncMock(side_effect=fake_commit)
+
+    txn_during_generation: list[bool] = []
+    fresh = {"schema_version": "5", "summary": "ok", "highlights": [], "components": []}
+
+    async def fake_generate(*a, **kw):
+        txn_during_generation.append(open_txn["value"])
+        return fresh
+
+    async def fake_traj(_t):
+        txn_during_generation.append(open_txn["value"])
+        return {"steps": [{"step_id": 1}]}
+
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new=fake_fresh,
+        ),
+        patch(
+            "api.services.summarize_trajectory._load_summary_prompt", new=fake_prompt
+        ),
+        patch("api.services.summarize_trajectory.read_trial_trajectory", new=fake_traj),
+        patch(
+            "api.services.summarize_trajectory.build_task_context",
+            new=AsyncMock(return_value=_minimal_ctx()),
+        ),
+        patch("api.services.summarize_trajectory.generate", new=fake_generate),
+    ):
+        assert await get_or_generate_summary(session, trial) == fresh
+
+    assert txn_during_generation == [False, False]
+    session.execute.assert_awaited_once()  # the mirror UPDATE still lands
+    assert open_txn["value"] is False  # and is committed
 
 
 @pytest.mark.asyncio

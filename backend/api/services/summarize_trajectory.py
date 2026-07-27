@@ -419,6 +419,15 @@ async def get_or_generate_summary(
             trial_id=trial.id,
         )
 
+        # End the read transaction before the S3 reads + summary LLM call.
+        # Otherwise the reads above pin a pooled backend "idle in transaction"
+        # for the whole generation (worker containers use NullPool precisely so
+        # long work holds no connection), and Supavisor can drop that
+        # transaction before the mirror write below ever runs -- leaving a block
+        # generated and paid for but no summary returned. Safe because the
+        # session factory sets expire_on_commit=False, so `trial` stays loaded.
+        await session.commit()
+
         trajectory, task_context = await asyncio.gather(
             read_trial_trajectory(trial),
             build_task_context(trial),
