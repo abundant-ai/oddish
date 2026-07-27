@@ -133,18 +133,35 @@ class ClaudeCodeRuntime:
 
         Mirrors ``_install_harbor``'s pinned pip install, but is load-bearing
         here (the pre-trial agent's whole job is pulling task data via the
-        CLI), so unlike harbor a failure is raised rather than swallowed.
+        CLI), so unlike harbor a failure is raised rather than swallowed --
+        after one unpinned retry, which covers the window where the pinned
+        version exists in the repo but is not on PyPI yet.
         ``api_key``/``api_base_url`` are accepted for interface symmetry with
         the runtime's other install hooks; the caller injects them into the
         sandbox env separately via ``Provisioner.create(env_vars=...)``.
         """
         from oddish.workers.agents.claude_code import _pinned_oddish_requirement
 
+        async def _pip_install(requirement: str) -> tuple[int, str]:
+            return await client.exec_sync(
+                sandbox,
+                command=f"pip install --user --quiet {shlex.quote(requirement)} 2>&1",
+            )
+
         requirement = _pinned_oddish_requirement() or "oddish"
-        exit_code, output = await client.exec_sync(
-            sandbox,
-            command=f"pip install --user --quiet {shlex.quote(requirement)} 2>&1",
-        )
+        exit_code, output = await _pip_install(requirement)
+        if exit_code != 0 and requirement != "oddish":
+            # The pin is the orchestrator's *installed* version, which leads
+            # PyPI whenever a release lands in the repo before it is published:
+            # every sandbox then dies on `oddish==<unpublished>`. Schema skew
+            # against a slightly older published CLI is survivable; having no
+            # CLI at all is not, since pulling task data is the agent's job.
+            log.warning(
+                "oddish CLI pin %s did not resolve; retrying unpinned: %s",
+                requirement,
+                output[-300:],
+            )
+            exit_code, output = await _pip_install("oddish")
         if exit_code != 0:
             raise RuntimeError(
                 f"oddish CLI install failed (exit={exit_code}): {output[-500:]}"
