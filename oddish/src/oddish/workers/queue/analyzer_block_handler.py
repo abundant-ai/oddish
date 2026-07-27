@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+from pathlib import Path
+
+from sqlalchemy import select
 
 from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerBlock,
@@ -10,7 +14,12 @@ from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerType,
 )
 from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType, SandboxConfig
+from oddish.blocks.analyzer.claude_cli_client import CliConfig
+from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
+from oddish.config import settings
 from oddish.db import AnalyzerRunModel, JobStatus, PromptVersionModel, get_session
+from oddish.db.models import TaskModel
+from oddish.db.storage import resolve_task_directory
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 _HEARTBEAT_INTERVAL_SECONDS = 30
@@ -67,6 +76,62 @@ def _subject_linkage(
     return run.id, None, run.org_id, run.scope_type, run.scope_id
 
 
+async def _resolve_task_source(task_id: str) -> tuple[str | None, str | None]:
+    """The current task version's source location (S3 key / local path)."""
+    async with get_session() as session:
+        row = (
+            await session.execute(
+                select(TaskModel.task_s3_key, TaskModel.task_path).where(
+                    TaskModel.id == task_id
+                )
+            )
+        ).first()
+    if row is None:
+        raise RuntimeError(f"task {task_id} not found for pre-trial QA")
+    return row.task_s3_key, row.task_path
+
+
+async def _build_pre_trial_cli_block(
+    *,
+    task_id: str,
+    prompt_content: str,
+    trial_id: str | None,
+    model: str,
+    triggered_by_user_id: str | None,
+    block_metadata: dict,
+) -> tuple[AnalyzerBlock, Path | None]:
+    """Build a pre-trial assignment's block on the worker-local CLAUDE_CLI
+    backend, the same way the built-in synth does: the worker downloads the task
+    source and the agent reads it with Read/Glob. Pre-trial audits static source,
+    so it never needs a sandbox regardless of the assignment's stored backend.
+    Returns the block plus the temp dir to clean up once it has run.
+    """
+    task_s3_key, task_path = await _resolve_task_source(task_id)
+    task_dir, temp_task_dir, _ = await resolve_task_directory(
+        task_id, task_s3_key=task_s3_key, task_path=task_path
+    )
+    block_obj = PreTrialBlock(
+        task_id=task_id,
+        trial_ids=[trial_id] if trial_id else [],
+        prompt_template=prompt_content,
+    )
+    block = AnalyzerBlock(
+        analyzer_type=AnalyzerType.PRE_TRIAL,
+        llm_client_type=LLMClientType.CLAUDE_CLI,
+        input=AnalyzerInput(input={"task_id": task_id}),
+        prompt=block_obj.build_prompt(),
+        task_id=task_id,
+        model=model,
+        triggered_by_user_id=triggered_by_user_id,
+        # The CLI yields a --output-format json envelope, not the model's bare
+        # answer; this unwraps it before schema validation.
+        output_transform=block_obj.to_action_items_from_cli,
+        cli_config=CliConfig(cwd=task_dir, timeout=settings.pre_trial_timeout),
+        block_metadata=block_metadata,
+    )
+    return block, temp_task_dir
+
+
 async def _heartbeat(worker_job_id: str, stop: asyncio.Event) -> None:
     while True:
         try:
@@ -86,6 +151,7 @@ async def run_analyzer_block_job(
 ) -> None:
     """Reconstruct and execute the AnalyzerBlock described by an analyzer run."""
     missing_version_error: str | None = None
+    temp_task_dir: Path | None = None
     async with get_session() as session:
         run = await session.get(AnalyzerRunModel, analyzer_run_id, with_for_update=True)
         if run is None:
@@ -108,45 +174,61 @@ async def run_analyzer_block_job(
                 subject_type,
                 subject_id,
             ) = _subject_linkage(analyzer_type, run, config)
-            sandbox_config = None
-            if client_type == LLMClientType.SANDBOX:
-                sandbox_config = SandboxConfig(
-                    install_oddish_cli=oddish_cli_enabled,
-                    oddish_org_id=run.org_id if oddish_cli_enabled else None,
-                    oddish_api_base_url=(
-                        config.get("oddish_api_base_url")
-                        if oddish_cli_enabled
-                        else None
-                    ),
-                    oddish_api_scope="tasks" if oddish_cli_enabled else "read",
-                    reasoning_effort=run.reasoning_effort,
-                    session_id=stage or "custom-qa",
+            if analyzer_type is AnalyzerType.PRE_TRIAL:
+                # Pre-trial audits static task source, so run it worker-local
+                # (CLAUDE_CLI, Read/Glob over the downloaded source) like the
+                # built-in synth -- never in a sandbox, whatever backend the
+                # assignment stored. Charges the task via task_id, matching
+                # _subject_linkage's pre-trial contract.
+                block, temp_task_dir = await _build_pre_trial_cli_block(
+                    task_id=task_id,
+                    prompt_content=version.content,
+                    trial_id=config.get("trial_id"),
+                    model=run.model,
+                    triggered_by_user_id=run.triggered_by_user_id,
+                    block_metadata=config,
                 )
+            else:
+                sandbox_config = None
+                if client_type == LLMClientType.SANDBOX:
+                    sandbox_config = SandboxConfig(
+                        install_oddish_cli=oddish_cli_enabled,
+                        oddish_org_id=run.org_id if oddish_cli_enabled else None,
+                        oddish_api_base_url=(
+                            config.get("oddish_api_base_url")
+                            if oddish_cli_enabled
+                            else None
+                        ),
+                        oddish_api_scope="tasks" if oddish_cli_enabled else "read",
+                        reasoning_effort=run.reasoning_effort,
+                        session_id=stage or "custom-qa",
+                    )
 
-            block = AnalyzerBlock(
-                analyzer_type=analyzer_type,
-                llm_client_type=client_type,
-                input=AnalyzerInput(
-                    input={
-                        "scope": config.get("scope"),
-                        "analyzer_run_id": run.id,
-                    }
-                ),
-                prompt=version.content,
-                system_prompt=config.get("system_prompt"),
-                analyzer_id=analyzer_id,
-                task_id=task_id,
-                model=run.model,
-                triggered_by_user_id=run.triggered_by_user_id,
-                attribution_org_id=attribution_org_id,
-                # What the run is about. Lifecycle blocks resolve their subject
-                # via analyzer_id/task_id, so this is set only for custom QA --
-                # without it the org override leaves its cost row scope-less.
-                subject_type=subject_type,
-                subject_id=subject_id,
-                sandbox_config=sandbox_config,
-                block_metadata=config,
-            )
+                block = AnalyzerBlock(
+                    analyzer_type=analyzer_type,
+                    llm_client_type=client_type,
+                    input=AnalyzerInput(
+                        input={
+                            "scope": config.get("scope"),
+                            "analyzer_run_id": run.id,
+                        }
+                    ),
+                    prompt=version.content,
+                    system_prompt=config.get("system_prompt"),
+                    analyzer_id=analyzer_id,
+                    task_id=task_id,
+                    model=run.model,
+                    triggered_by_user_id=run.triggered_by_user_id,
+                    attribution_org_id=attribution_org_id,
+                    # What the run is about. Lifecycle blocks resolve their
+                    # subject via analyzer_id/task_id, so this is set only for
+                    # custom QA -- without it the org override leaves its cost
+                    # row scope-less.
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    sandbox_config=sandbox_config,
+                    block_metadata=config,
+                )
             run.analyzer_block_id = block.id
             run.status = JobStatus.RUNNING
             run.error = None
@@ -189,6 +271,8 @@ async def run_analyzer_block_job(
         if heartbeat_task is not None:
             heartbeat_stop.set()
             await heartbeat_task
+        if temp_task_dir is not None:
+            shutil.rmtree(temp_task_dir, ignore_errors=True)
 
 
 __all__ = ["MissingPromptVersionError", "run_analyzer_block_job"]
