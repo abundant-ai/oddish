@@ -695,8 +695,7 @@ async def test_reconciliation_failure_does_not_block_remote_teardown(monkeypatch
             {
                 "modal_function_call_ids": ["fc-sibling"],
                 "worker_targets": [("daytona", "sandbox-sibling")],
-            },
-            {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
+            }
         ]
         if len(retry_delays) == 2:
             expected_calls.append(
@@ -724,14 +723,14 @@ async def test_reconciliation_failure_does_not_block_remote_teardown(monkeypatch
         == 1
     )
 
-    # The finalizer does not repeat completed teardown, but it does terminate
-    # task-job handles discovered by the successful reconciliation retry.
+    # Retries keep their caller alive to finish reconciliation. Each failure
+    # tears down newly discovered siblings; the finalizer stops the remaining
+    # task job and then the caller last.
     assert termination_calls == [
         {
             "modal_function_call_ids": ["fc-sibling"],
             "worker_targets": [("daytona", "sandbox-sibling")],
         },
-        {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
         {
             "modal_function_call_ids": ["fc-task-rollback"],
             "worker_targets": [("daytona", "sandbox-task-rollback")],
@@ -740,6 +739,7 @@ async def test_reconciliation_failure_does_not_block_remote_teardown(monkeypatch
             "modal_function_call_ids": ["fc-task"],
             "worker_targets": [("daytona", "sandbox-task")],
         },
+        {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
     ]
     assert retry_delays == [1.0, 2.0]
 

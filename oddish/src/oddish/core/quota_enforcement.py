@@ -475,7 +475,7 @@ async def enforce_trial_quotas(
     terminated_worker_targets: set[tuple[str, str]] = set()
     terminated_caller_modal_ids: set[str] = set()
 
-    async def teardown() -> None:
+    async def teardown(*, include_caller: bool = True) -> None:
         modal_ids = [
             modal_id
             for modal_id in result["modal_function_call_ids"]
@@ -486,11 +486,15 @@ async def enforce_trial_quotas(
             for target in result["worker_targets"]
             if target not in terminated_worker_targets
         ]
-        caller_modal_ids = [
-            modal_id
-            for modal_id in result["caller_modal_function_call_ids"]
-            if modal_id not in terminated_caller_modal_ids
-        ]
+        caller_modal_ids = (
+            [
+                modal_id
+                for modal_id in result["caller_modal_function_call_ids"]
+                if modal_id not in terminated_caller_modal_ids
+            ]
+            if include_caller
+            else []
+        )
         if not modal_ids and not worker_targets and not caller_modal_ids:
             return
         await _terminate_quota_harvest(
@@ -504,9 +508,14 @@ async def enforce_trial_quotas(
         terminated_worker_targets.update(worker_targets)
         terminated_caller_modal_ids.update(caller_modal_ids)
 
+    async def teardown_before_retry() -> None:
+        # This caller is executing reconciliation. Stop every sibling now, but
+        # keep the caller alive until task state and task jobs are settled.
+        await teardown(include_caller=False)
+
     try:
         await _reconcile_cancelled_tasks_until_complete(
-            result, after_failure=teardown
+            result, after_failure=teardown_before_retry
         )
         if after_gate_release is not None:
             await after_gate_release(list(result.get("released_trial_ids", [])))
