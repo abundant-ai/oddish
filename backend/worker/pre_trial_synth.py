@@ -1,19 +1,21 @@
 """Hosted pre-trial synthesis: audits a task's source (verifier/oracle/info-
-leakage) via AnalyzerBlock + PreTrialBlock, running the agent in a Daytona
-sandbox that can ``oddish pull`` the task files.
+leakage) via AnalyzerBlock + PreTrialBlock. The worker downloads the task
+source from S3 and a worker-local claude-code run reads it with Read/Glob --
+the same CLAUDE_CLI backend the post-trial classifier uses, with no sandbox and
+no oddish-CLI install.
 
 Registered into core's pre-trial hook (``register_pre_trial_synth``) at worker
-container load. oddish/ can't import backend/, so the sandbox-provisioning
-implementation is injected here the same way the sandbox LLM-client factory is.
-``run_task_qa_job`` invokes the registered hook only when
-``settings.pre_trial_enabled``; this module then resolves the per-organization
-override (``pre_trial_analysis_enabled`` in org settings) and returns ``None``
-when the org has opted out, which releases the caller's version claim.
+container load. oddish/ can't import backend/, so this implementation is
+injected the same way the sandbox LLM-client factory is. ``run_task_qa_job``
+invokes the registered hook only when ``settings.pre_trial_enabled``; this
+module then resolves the per-organization override (``pre_trial_analysis_enabled``
+in org settings) and returns ``None`` when the org has opted out, which releases
+the caller's version claim.
 """
 
 from __future__ import annotations
 
-import asyncio
+import shutil
 
 from sqlalchemy import select
 
@@ -23,26 +25,20 @@ from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerInput,
     AnalyzerType,
 )
-from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType, SandboxConfig
+from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+from oddish.blocks.analyzer.claude_cli_client import CliConfig
 from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
-from oddish.config import api_base_url_for_modal_app, settings
+from oddish.config import settings
 from oddish.core.prompts import resolve_prompt_core
+from oddish.core.task_source import resolve_task_source_location
 from oddish.db import PromptKind, get_session
 from oddish.db.models import TaskModel
+from oddish.db.storage import resolve_task_directory
 from oddish.workers.queue.qa_handler import (
-    PRE_TRIAL_LEASE_MARGIN_SECONDS,
     register_pre_trial_enabled_check,
     register_pre_trial_synth,
 )
 from models import OrganizationModel
-
-# Provisioning (sandbox create + claude-code/harbor/oddish-CLI installs) runs
-# before the block-run wait_for. Provisioning is bounded by the provisioning
-# margin; core adds a separate scheduling/transaction jitter buffer to the
-# claim lease so a healthy run is not reclaimable at the exact timeout edge.
-# A timed-out provision may leak a half-created sandbox; Daytona's
-# auto_delete_minutes reaps it.
-_PROVISION_TIMEOUT_SECONDS = PRE_TRIAL_LEASE_MARGIN_SECONDS
 
 
 _PRE_TRIAL_ANALYSIS_SETTING = "pre_trial_analysis_enabled"
@@ -74,26 +70,21 @@ async def synthesize_task_pre_trial(
 ) -> list[ActionItem] | None:
     """PreTrialSynthFn implementation backed by PreTrialBlock/AnalyzerBlock.
 
-    Self-provisions a sandbox client that can ``oddish pull`` the task's
-    source, then runs the audit through an AnalyzerBlock (the same runner the
-    verdict path uses). ``task_version_id`` is the version being audited (the
-    task's current version, claimed by the caller); the sandbox pulls the
-    task's *current* source, so the two match unless a new upload lands
-    mid-audit -- the caller's store gate (``_pre_trial_store_allowed``)
-    detects that and discards the result rather than persisting findings
-    against the wrong snapshot. Never completes the task and never touches
-    verdict state -- that boundary lives in ``sync_pre_trial_to_task_version``,
-    which the caller (``run_task_qa_job``) invokes with these items. Returns
-    ``None`` (skip; the caller releases its claim) when the task's org has
-    opted out of pre-trial analysis.
+    Downloads the audited task version's source to a temp directory and runs the
+    audit through an AnalyzerBlock on the worker-local CLAUDE_CLI backend (the
+    same runner the post-trial classifier uses). ``task_version_id`` is the
+    version being audited (claimed by the caller); file access is pinned to it,
+    so the snapshot the auditor reads matches the version the findings are
+    stored against. Never completes the task and never touches verdict state --
+    that boundary lives in ``sync_pre_trial_to_task_version``, which the caller
+    (``run_task_qa_job``) invokes with these items. Returns ``None`` (skip; the
+    caller releases its claim) when the task's org has opted out of pre-trial
+    analysis.
     """
     org_id, enabled = await _resolve_org_pre_trial(task_id)
     if not enabled:
         return None
     if org_id is None:
-        # mint_internal_read_key's org_id is typed `str`, not `str | None` --
-        # fail loudly here instead of letting a missing/deleted task's org
-        # surface as a confusing type error (or a None-scoped key) downstream.
         raise RuntimeError(f"Cannot resolve org_id for task {task_id}")
 
     async with get_session() as session:
@@ -115,40 +106,52 @@ async def synthesize_task_pre_trial(
     block_obj = PreTrialBlock(
         task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
     )
-    # Explicit override wins; otherwise derive from the Modal app identity so
-    # prod and PR previews resolve automatically (mirrors api/app.py's cc_chat
-    # orchestrator wiring).
-    api_base_url = settings.public_api_base_url or api_base_url_for_modal_app()
-    block = AnalyzerBlock(
-        analyzer_type=AnalyzerType.PRE_TRIAL,
-        llm_client_type=LLMClientType.SANDBOX,
-        input=AnalyzerInput(
-            input={
-                "task_id": task_id,
-                "task_version_id": task_version_id,
-                "trial_ids": trial_ids,
-            }
-        ),
-        task_id=task_id,
-        prompt=block_obj.build_prompt(),
-        model=settings.pre_trial_model,
-        output_transform=block_obj.to_action_items,
-        sandbox_config=SandboxConfig(
-            install_oddish_cli=True,
-            oddish_org_id=org_id,
-            oddish_api_base_url=api_base_url,
-            session_id="pre-trial",
-        ),
-        client_creation_timeout=_PROVISION_TIMEOUT_SECONDS,
-        block_metadata={
-            "prompt_key": PromptKind.QA_PRE_TRIAL.value,
-            "prompt_version": prompt_version,
-            "prompt_id": prompt_id,
-        },
+
+    task_s3_key, task_path = await resolve_task_source_location(
+        task_id, task_version_id
     )
-    result = await asyncio.wait_for(
-        block.run(), timeout=timeout or settings.pre_trial_timeout
+    task_dir, temp_task_dir, _ = await resolve_task_directory(
+        task_id, task_s3_key=task_s3_key, task_path=task_path
     )
+    try:
+        block = AnalyzerBlock(
+            analyzer_type=AnalyzerType.PRE_TRIAL,
+            llm_client_type=LLMClientType.CLAUDE_CLI,
+            input=AnalyzerInput(
+                input={
+                    "task_id": task_id,
+                    "task_version_id": task_version_id,
+                    "trial_ids": trial_ids,
+                }
+            ),
+            task_id=task_id,
+            prompt=block_obj.build_prompt(),
+            model=settings.pre_trial_model,
+            # The CLI yields a --output-format json envelope, not the model's
+            # bare answer; this unwraps it before schema validation.
+            output_transform=block_obj.to_action_items_from_cli,
+            cli_config=CliConfig(
+                cwd=task_dir,
+                timeout=timeout or settings.pre_trial_timeout,
+            ),
+            block_metadata={
+                "prompt_key": PromptKind.QA_PRE_TRIAL.value,
+                "prompt_version": prompt_version,
+                "prompt_id": prompt_id,
+            },
+        )
+        # CliConfig.timeout (set above) is the sole deadline: it bounds the
+        # claude subprocess from inside and kills it cleanly on expiry. An outer
+        # asyncio.wait_for would race that inner timeout and, if it won, cancel
+        # the run mid-communicate() -- orphaning the subprocess (the CLI
+        # client's aclose is a no-op) and prematurely failing successful audits.
+        # Mirrors the classifier's CLAUDE_CLI path.
+        result = await block.run()
+    finally:
+        # The worker owns the downloaded temp dir now (no sandbox aclose to
+        # delete it), so clean it up on every exit path or worker disk fills.
+        if temp_task_dir is not None:
+            shutil.rmtree(temp_task_dir, ignore_errors=True)
 
     data = result.output or {"items": []}
     return [ActionItem(**it) for it in data.get("items", [])]

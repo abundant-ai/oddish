@@ -126,6 +126,91 @@ async def test_post_trial_run_reaches_the_block_with_its_trial_subject(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_pre_trial_assignment_runs_worker_local_not_sandbox(
+    monkeypatch, tmp_path
+):
+    """A pre-trial QA-job assignment (Path B) must run on the worker-local
+    CLAUDE_CLI backend -- worker downloads the task source, agent Read/Globs it --
+    even when the assignment stored a sandbox backend. No sandbox, no oddish-CLI
+    install, so nothing depends on a published CLI version."""
+    run = SimpleNamespace(
+        id="run_pre",
+        org_id="org_1",
+        prompt_version_id="version_pre",
+        triggered_by_user_id="user_1",
+        model="claude-haiku-4-5",
+        reasoning_effort=None,
+        # Stored sandbox backend -- must be overridden for pre-trial.
+        llm_client_type=LLMClientType.SANDBOX.value,
+        scope_id="task_3",
+        run_config={
+            "automatic": True,
+            "stage": "pre_trial",
+            "scope": {"type": "task", "id": "task_3"},
+            "task_id": "task_3",
+            "trial_id": "trial_9",
+            "task_version_id": "task_3-v1",
+            "oddish_cli_enabled": True,
+            "system_prompt": "sandbox-flavored instructions",
+        },
+        analyzer_block_id=None,
+        status=JobStatus.QUEUED,
+        output=None,
+        error=None,
+    )
+    version = SimpleNamespace(id="version_pre", content="Audit the source at cwd.")
+    captured: dict = {}
+
+    class FakeSession:
+        async def get(self, model, row_id, **kwargs):
+            if model is AnalyzerRunModel:
+                return run
+            if model is PromptVersionModel:
+                return version
+            return None
+
+    @asynccontextmanager
+    async def get_session():
+        yield FakeSession()
+
+    class FakeBlock:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.id = "block_pre"
+            self.error = None
+
+        async def run(self):
+            return SimpleNamespace(output={"items": []})
+
+    async def fake_resolve_task_source_location(task_id, task_version_id=None):
+        # Pins to the version this event is for, not the task's latest mirror.
+        assert task_id == "task_3"
+        assert task_version_id == "task_3-v1"
+        return "s3://task_3/key", None
+
+    async def fake_resolve_task_directory(task_id, *, task_s3_key, task_path):
+        return tmp_path, None, task_s3_key
+
+    monkeypatch.setattr(handler, "get_session", get_session)
+    monkeypatch.setattr(handler, "AnalyzerBlock", FakeBlock)
+    monkeypatch.setattr(
+        handler, "resolve_task_source_location", fake_resolve_task_source_location
+    )
+    monkeypatch.setattr(handler, "resolve_task_directory", fake_resolve_task_directory)
+
+    await handler.run_analyzer_block_job(run.id)
+
+    assert captured["analyzer_type"] is AnalyzerType.PRE_TRIAL
+    assert captured["llm_client_type"] is LLMClientType.CLAUDE_CLI
+    assert "sandbox_config" not in captured
+    assert captured["cli_config"].cwd == tmp_path
+    # Charges the task, and keeps the assignment's configured model.
+    assert captured["task_id"] == "task_3"
+    assert captured["model"] == "claude-haiku-4-5"
+    assert run.status == JobStatus.SUCCESS
+
+
+@pytest.mark.asyncio
 async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
     run = SimpleNamespace(
         id="run_1",

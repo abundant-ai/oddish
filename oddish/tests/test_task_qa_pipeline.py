@@ -720,7 +720,7 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     async def fake_claim(_task_id):
         return version.id
 
-    async def fake_store_allowed(_session, _worker_job_id, _task_id, _version_id):
+    async def fake_store_allowed(_session, _worker_job_id):
         return True
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -745,7 +745,9 @@ async def test_run_task_qa_job_uses_injected_pre_trial_synth_fn(monkeypatch):
     assert not hasattr(task, "pre_trial")
     assert not hasattr(task, "pre_trial_status")
     # Pre-trial must never complete the task or touch verdict fields.
-    assert task.status == TaskStatus.COMPLETED  # completed by the verdict path, not pre-trial
+    assert (
+        task.status == TaskStatus.COMPLETED
+    )  # completed by the verdict path, not pre-trial
     assert task.verdict_status == VerdictStatus.SUCCESS
 
 
@@ -805,7 +807,7 @@ async def test_run_task_qa_job_pre_trial_failure_never_blocks_verdict(monkeypatc
     async def fake_claim(_task_id):
         return version.id
 
-    async def fake_store_allowed(_session, _worker_job_id, _task_id, _version_id):
+    async def fake_store_allowed(_session, _worker_job_id):
         return True
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)
@@ -887,7 +889,7 @@ async def test_run_task_qa_job_releases_claim_when_store_vetoed(monkeypatch):
     async def fake_claim(_task_id):
         return version.id
 
-    async def veto_store(_session, _worker_job_id, _task_id, _version_id):
+    async def veto_store(_session, _worker_job_id):
         return False
 
     monkeypatch.setattr(qa_handler, "get_session", fake_get_session)

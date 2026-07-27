@@ -363,6 +363,7 @@ async def enqueue_qa_assignment_runs_core(
     experiment_id: str | None,
     task_id: str | None,
     trial_id: str | None,
+    task_version_id: str | None = None,
     run_scope_type: str,
     run_scope_id: str,
 ) -> list[AnalyzerRunModel]:
@@ -443,6 +444,9 @@ async def enqueue_qa_assignment_runs_core(
             # task_id for lineage; a pre-trial run charges its task.
             "task_id": task_id,
             "trial_id": trial_id,
+            # Pins pre-trial file access to the exact version this event is for,
+            # so a re-upload between enqueue and execution can't swap the source.
+            "task_version_id": task_version_id,
             "stage": stage,
             "stage_event_key": stage_event_key,
             "qa_assignment_id": assignment.id,

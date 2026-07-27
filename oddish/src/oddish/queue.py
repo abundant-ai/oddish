@@ -794,6 +794,7 @@ async def _enqueue_pre_trial_assignment_runs(
                 experiment_id=experiment_id,
                 task_id=task_id,
                 trial_id=None,
+                task_version_id=task_version_id,
                 run_scope_type="task",
                 run_scope_id=task_id,
             )
