@@ -1227,7 +1227,12 @@ class Settings(BaseSettings):
 
     # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
     # import backend/, so this lives here rather than as a shared constant.
-    pre_trial_timeout: float = 180.0
+    # 180s was sized for the old sandbox path and proved to be right at the
+    # edge for the worker-local CLI audit: prod audits that finished took
+    # 108-142s, and the ones that hit the cap died at exactly 180.02s losing
+    # the whole run (the CLI buffers its envelope, so a timeout saves 0 bytes).
+    # The claim lease is pre_trial_timeout + 900 + 60, so it still outlives this.
+    pre_trial_timeout: float = 600.0
 
     # Run post-trial QA classification inside a Daytona sandbox instead of a
     # worker-local Claude Code subprocess. Off by default: the classifier is
