@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-27]
+
+### Added
+
+- `oddish` can now run trials on **Claude Opus 5** — registered `claude-opus-5` in the Anthropic-to-Bedrock model table (`global.anthropic.claude-opus-5`), following the same convention as Opus 4.8 and Fable 5 (#935).
+- The Live tab now streams **grok-build** trials instead of showing empty: a new `GrokBuildFold` tails Grok's streaming-JSON stdout and coalesces assistant text/reasoning chunks into the live transcript, flushing on each poll tick and at run teardown so buffered text is never stranded. Tool calls and token usage still only appear in the post-run trajectory, and the dashboard now shows a notice explaining this on grok-build trials (#931).
+
+### Fixed
+
+- `oddish status --experiment` no longer shows contradictory rollups when trials errored: the header now reports `finished` (terminal: success + errored + skipped) trials with an `N errored` breakdown instead of a `completed` count that could read `0/1` on the same row a task marked `1/1 finished`. The Rewards column now shows `N errored` instead of a bare `-` when trials failed on infrastructure, distinguishing that from a real `0/N` score; when trials errored, the CLI re-fetches experiment-scoped trial detail and prints the dominant failure class (e.g. `SandboxState.BUILD_FAILED`) plus exhausted `used/max` attempts (#932).
+- `oddish pull <experiment_id>` no longer pulls artifacts from sibling experiments that happen to share a task id — trial fetching and the `/tasks/{id}` fallback are now scoped to the owning experiment, and each pulled trial's manifest entry is labelled with its `experiment_id` (#932).
+
+---
+
 ## [2026-07-20]
 
 ### Changed
