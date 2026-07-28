@@ -117,6 +117,47 @@ async def test_answer_startup_failure_releases_claim_and_replies(monkeypatch):
     ]
 
 
+def test_empty_answer_failure_releases_claim_when_status_update_fails(monkeypatch):
+    import carl_agent
+
+    released = []
+    monkeypatch.setattr(
+        carl_agent,
+        "_update",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("Slack down")),
+    )
+    monkeypatch.setattr(carl_agent, "_release_event", released.append)
+
+    carl_agent._finish_empty_failure(
+        "C123", "100.2", ":warning:", "I hit an error", "Ev123"
+    )
+
+    assert released == ["Ev123"]
+
+
+@pytest.mark.parametrize(
+    ("turn_limit", "budget_limit", "reason"),
+    [
+        (True, False, "step limit"),
+        (False, True, "$1.00 cost limit"),
+    ],
+)
+def test_limit_answer_preserves_partial_text(turn_limit, budget_limit, reason):
+    import carl_agent
+
+    answer = carl_agent._limited_answer(
+        "",
+        "Partial analysis",
+        hit_turn_limit=turn_limit,
+        hit_budget_limit=budget_limit,
+        budget=1.0,
+    )
+
+    assert answer.startswith("Partial analysis\n\n")
+    assert reason in answer
+    assert "this is what I had so far" in answer
+
+
 def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     sdk = types.ModuleType("claude_agent_sdk")
 

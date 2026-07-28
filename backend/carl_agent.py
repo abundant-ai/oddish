@@ -72,6 +72,46 @@ SYSTEM_PROMPT = (
 )
 
 
+def _finish_empty_failure(
+    channel: str,
+    status_ts: str,
+    icon: str,
+    gist: str,
+    event_id: str | None,
+) -> None:
+    try:
+        _update(channel, status_ts, f"{icon} {gist} and gave up on this one.")
+    except Exception:
+        log.exception(
+            "error-notice update failed event_id=%s channel=%s",
+            event_id,
+            channel,
+        )
+    finally:
+        _release_event(event_id)
+
+
+def _limited_answer(
+    final: str,
+    last_text: str,
+    *,
+    hit_turn_limit: bool,
+    hit_budget_limit: bool,
+    budget: float,
+) -> str:
+    if final:
+        return final
+    if hit_turn_limit:
+        reason = "I hit my step limit before finishing"
+    elif hit_budget_limit:
+        reason = f"I hit my ${budget:.2f} cost limit before finishing"
+    else:
+        return final
+    if last_text:
+        return f"{last_text}\n\n_:warning: {reason}; this is what I had so far._"
+    return f"{reason}. Try narrowing the question."
+
+
 async def _carl_answer_impl(
     channel: str,
     thread: str,
@@ -180,22 +220,18 @@ async def _carl_answer_impl(
             )
             icon, gist = ":warning:", "I hit an error"
         if not final and not last_text:
-            try:
-                _update(channel, status_ts, f"{icon} {gist} and gave up on this one.")
-            except Exception:
-                log.exception(
-                    "error-notice update failed event_id=%s channel=%s",
-                    event_id,
-                    channel,
-                )
+            _finish_empty_failure(channel, status_ts, icon, gist, event_id)
             return
         if not final:
             final = f"{last_text}\n\n_{icon} {gist}; this is what I had so far._"
 
-    if hit_turn_limit and not final:
-        final = "I hit my step limit before finishing. Try narrowing the question."
-    if hit_budget_limit and not final:
-        final = f"I hit my ${budget:.2f} cost limit before finishing. Try narrowing the question."
+    final = _limited_answer(
+        final,
+        last_text,
+        hit_turn_limit=hit_turn_limit,
+        hit_budget_limit=hit_budget_limit,
+        budget=budget,
+    )
     body = final or last_text or "_(no answer)_"
     if cost is not None:
         body = f"{body}\n\n_this Carl answer cost ${cost:.4f}_"
