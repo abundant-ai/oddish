@@ -1191,6 +1191,7 @@ export function TaskDetailClient({
         <TaskPreTrialCard
           findings={selectedVersion?.pre_trial_findings}
           status={selectedVersion?.pre_trial_status}
+          error={selectedVersion?.pre_trial_error}
         />
 
         <div className="space-y-3">

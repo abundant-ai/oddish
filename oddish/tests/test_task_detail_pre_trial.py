@@ -87,3 +87,39 @@ def test_version_without_an_audit_reports_no_findings():
     # Distinguishable from "audited, found nothing" (status "success").
     assert versions[0].pre_trial_findings == []
     assert versions[0].pre_trial_status is None
+
+
+def test_failed_audit_carries_its_error_and_no_findings():
+    """A failed audit must not look like a clean one.
+
+    `sync_pre_trial_to_task_version` clears `pre_trial` when it records a
+    failure, so findings are empty for both outcomes -- only the status and
+    error distinguish them.
+    """
+    _totals, versions = _aggregate_task_detail_rollups(
+        trials=[],
+        version_rows=[
+            _version(
+                pre_trial=None,
+                pre_trial_status=VerdictStatus.FAILED,
+                pre_trial_error="TimeoutError()",
+            )
+        ],
+        current_version_id="v1",
+    )
+    assert versions[0].pre_trial_findings == []
+    assert versions[0].pre_trial_status == "failed"
+    assert versions[0].pre_trial_error == "TimeoutError()"
+
+
+def test_in_flight_audit_reports_running():
+    """The claim sets RUNNING before any agent work, so a version can sit in
+    `running` with no findings for the length of the audit."""
+    _totals, versions = _aggregate_task_detail_rollups(
+        trials=[],
+        version_rows=[_version(pre_trial=None, pre_trial_status=VerdictStatus.RUNNING)],
+        current_version_id="v1",
+    )
+    assert versions[0].pre_trial_findings == []
+    assert versions[0].pre_trial_status == "running"
+    assert versions[0].pre_trial_error is None

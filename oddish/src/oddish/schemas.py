@@ -823,6 +823,7 @@ class TaskVersionResponse(BaseModel):
     # audited and came back clean is distinguishable from one never audited.
     pre_trial: dict | None = None
     pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -859,6 +860,7 @@ class TaskVersionSummary(BaseModel):
     # SUCCESS means audited and clean.
     pre_trial_findings: list[dict] = Field(default_factory=list)
     pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)

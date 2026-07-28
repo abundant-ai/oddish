@@ -329,8 +329,10 @@ export interface TaskVersionSummary {
   billed_has_native: boolean;
   last_run_at?: string | null;
   pre_trial_findings?: PreTrialFinding[];
-  /** null when this version was never audited; "success" once one completed. */
+  /** null = never audited. Otherwise "running" | "success" | "failed": empty
+   *  findings mean something different for each, so never infer from the list. */
   pre_trial_status?: string | null;
+  pre_trial_error?: string | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
 }
