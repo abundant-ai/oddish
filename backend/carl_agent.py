@@ -72,8 +72,7 @@ SYSTEM_PROMPT = (
 )
 
 
-@app.function(image=carl_image, secrets=[runtime_secret], timeout=_ANSWER_TIMEOUT)
-async def carl_answer(
+async def _carl_answer_impl(
     channel: str,
     thread: str,
     prompt: str,
@@ -226,3 +225,45 @@ async def carl_answer(
                     channel,
                 )
         _release_event(event_id)
+
+
+async def _run_carl_answer(
+    channel: str,
+    thread: str,
+    prompt: str,
+    user: str | None,
+    event_id: str | None,
+) -> None:
+    try:
+        await _carl_answer_impl(channel, thread, prompt, user, event_id)
+    except Exception:
+        log.exception(
+            "answer startup failed event_id=%s channel=%s thread=%s",
+            event_id,
+            channel,
+            thread,
+        )
+        _release_event(event_id)
+        try:
+            _post(
+                channel,
+                thread,
+                ":warning: I couldn't start that answer. Please mention me again.",
+            )
+        except Exception:
+            log.exception(
+                "startup-failure notice failed event_id=%s channel=%s",
+                event_id,
+                channel,
+            )
+
+
+@app.function(image=carl_image, secrets=[runtime_secret], timeout=_ANSWER_TIMEOUT)
+async def carl_answer(
+    channel: str,
+    thread: str,
+    prompt: str,
+    user: str | None,
+    event_id: str | None,
+) -> None:
+    await _run_carl_answer(channel, thread, prompt, user, event_id)

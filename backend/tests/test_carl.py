@@ -90,6 +90,33 @@ def test_partial_overflow_delivery_reports_failure(monkeypatch):
     assert updates[-1][2].startswith("x")
 
 
+@pytest.mark.asyncio
+async def test_answer_startup_failure_releases_claim_and_replies(monkeypatch):
+    import carl_agent
+
+    async def fail_to_start(*_args):
+        raise ImportError("missing agent dependency")
+
+    released = []
+    posts = []
+    monkeypatch.setattr(carl_agent, "_carl_answer_impl", fail_to_start)
+    monkeypatch.setattr(carl_agent, "_release_event", released.append)
+    monkeypatch.setattr(carl_agent, "_post", lambda *args: posts.append(args))
+
+    await carl_agent._run_carl_answer(
+        "C123", "100.1", "what is queue health?", "UASKER", "Ev123"
+    )
+
+    assert released == ["Ev123"]
+    assert posts == [
+        (
+            "C123",
+            "100.1",
+            ":warning: I couldn't start that answer. Please mention me again.",
+        )
+    ]
+
+
 def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     sdk = types.ModuleType("claude_agent_sdk")
 
