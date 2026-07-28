@@ -5,6 +5,12 @@ from pathlib import Path
 import modal
 from dotenv import dotenv_values
 
+from modal_runtime import (
+    MODAL_APP_NAME,
+    MODAL_SECRET_ENVIRONMENT,
+    runtime_secret,
+)
+from modal_runtime import app as app
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
@@ -33,13 +39,10 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
-MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
-MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 SLACK_EXPENSE_SECRET_NAME = os.environ.get("ODDISH_SLACK_EXPENSE_SECRET_NAME", "")
 SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT", MODAL_SECRET_ENVIRONMENT
 )
-RUNTIME_SECRET_NAME = "oddish-prod"
 # Per-app webhook label so PR previews don't collide on the shared
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
 # the historical "api" label; previews derive a unique one from the app name.
@@ -89,8 +92,6 @@ LOCAL_DOTENV_VARS = {
     for key, value in dotenv_values(LOCAL_DOTENV_PATH).items()
     if value is not None
 }
-
-app = modal.App(MODAL_APP_NAME)
 
 # No shared Modal Volume: each container uses its own ephemeral ``/tmp`` for
 # Harbor scratch (see ``oddish.config.Settings.harbor_jobs_dir`` default of
@@ -326,9 +327,6 @@ def _resolve_gke_secret_plan(
     return [name for name in baked.split(",") if name]
 
 
-runtime_secret = modal.Secret.from_name(
-    RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
-)
 runtime_secrets = [runtime_secret]
 
 # AWS credentials for the sauron S3 mirror. Kept in a separate Modal
@@ -719,6 +717,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "endpoints",
             "idempotency_store",
             "modal_app",
+            "modal_runtime",
             "models",
             "observability",
             "pg_errors",

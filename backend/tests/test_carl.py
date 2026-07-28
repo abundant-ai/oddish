@@ -116,6 +116,9 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     assert "harbor_config" in carl_tools._validate_sql(
         "select harbor_config from trials"
     )
+    assert "public_token" in carl_tools._validate_sql(
+        "select public_token from experiments"
+    )
     assert "Whole-row" in carl_tools._validate_sql(
         "select to_jsonb(trials) from trials"
     )

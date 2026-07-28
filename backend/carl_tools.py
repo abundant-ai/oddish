@@ -36,6 +36,7 @@ _SQL_FORBIDDEN_NODES = {
 }
 _SQL_FORBIDDEN_COLUMNS = {
     "harbor_config",
+    "idempotency_key",
     "result",
     "last_heartbeat_error",
     "error_message",
@@ -49,11 +50,13 @@ _SQL_FORBIDDEN_COLUMNS = {
     "analysis_error",
     "task_path",
     "task_s3_key",
+    "api_key_id",
     "tags",
     "verdict",
     "verdict_error",
     "settings",
     "clerk_org_id",
+    "public_token",
 }
 _SQL_DANGEROUS_FUNCS = {
     "pg_read_file",

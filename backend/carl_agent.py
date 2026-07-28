@@ -8,7 +8,7 @@ import time
 import modal
 
 from carl import _deliver, _escape, _log, _post, _release_event, _update
-from modal_app import app, runtime_secret
+from modal_runtime import app, runtime_secret
 
 MODEL = "claude-opus-4-8"
 _ANSWER_TIMEOUT = 1800
@@ -31,7 +31,9 @@ carl_image = (
             "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
         }
     )
-    .add_local_python_source("carl", "carl_agent", "carl_tools", copy=True)
+    .add_local_python_source(
+        "carl", "carl_agent", "carl_tools", "modal_runtime", copy=True
+    )
 )
 
 SYSTEM_PROMPT = (
