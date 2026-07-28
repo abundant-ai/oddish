@@ -184,6 +184,12 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     )
     assert "users" in carl_tools._validate_sql("select id from users")
     assert "Wildcard" in carl_tools._validate_sql("select * from trials")
+    assert "intoClause" in carl_tools._validate_sql(
+        "select id into copied_trials from trials"
+    )
+    assert "lockingClause" in carl_tools._validate_sql(
+        "select id from trials for update"
+    )
     assert "harbor_config" in carl_tools._validate_sql(
         "select harbor_config from trials"
     )

@@ -448,6 +448,11 @@ def _validate_sql(sql: str) -> str | None:
                 walk(val, visible_ctes)
 
     def walk_select(stmt: dict, outer_ctes: set[str]) -> None:
+        nonlocal error
+        for key in _SQL_FORBIDDEN_NODES:
+            if stmt.get(key):
+                error = f"Only read-only SELECT queries are allowed (found `{key}`)."
+                return
         with_clause = stmt.get("withClause") or {}
         entries = with_clause.get("ctes") or []
         names = {
