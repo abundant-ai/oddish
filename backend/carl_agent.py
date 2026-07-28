@@ -7,14 +7,7 @@ import time
 
 import modal
 
-from carl import (
-    _deliver,
-    _escape,
-    _log,
-    _post,
-    _release_event,
-    _update,
-)
+from carl import _deliver, _escape, _log, _post, _release_event, _update
 from modal_app import app, runtime_secret
 
 MODEL = "claude-opus-4-8"
@@ -125,7 +118,6 @@ async def carl_answer(
     hit_turn_limit = False
     hit_budget_limit = False
     status_ok = True
-    partial_note = ""
 
     async def run() -> None:
         nonlocal final, last_text, last_edit, cost
@@ -168,8 +160,7 @@ async def carl_answer(
     try:
         await asyncio.wait_for(run(), _ANSWER_DEADLINE)
     except Exception as exc:
-        timed_out = isinstance(exc, TimeoutError)
-        if timed_out:
+        if isinstance(exc, TimeoutError):
             _log(
                 "timeout",
                 event_id=event_id,
@@ -197,19 +188,13 @@ async def carl_answer(
                 )
             return
         if not final:
-            final = last_text
-            partial_note = f"\n\n_{icon} {gist}; this is what I had so far._"
+            final = f"{last_text}\n\n_{icon} {gist}; this is what I had so far._"
 
     if hit_turn_limit and not final:
         final = "I hit my step limit before finishing. Try narrowing the question."
     if hit_budget_limit and not final:
-        final = (
-            f"I hit my ${budget:.2f} cost limit before finishing. "
-            "Try narrowing the question."
-        )
+        final = f"I hit my ${budget:.2f} cost limit before finishing. Try narrowing the question."
     body = final or last_text or "_(no answer)_"
-    if partial_note:
-        body = f"{body}{partial_note}"
     if cost is not None:
         body = f"{body}\n\n_this Carl answer cost ${cost:.4f}_"
     _log(

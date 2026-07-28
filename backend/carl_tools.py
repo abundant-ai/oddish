@@ -13,23 +13,11 @@ from pglast.parser import parse_sql_json
 _MAX_CHARS = 12000
 _LOG_TAIL_CHARS = 6000
 
-# Read-only SQL guardrails, layered:
-#   1. The DB role (ODDISH_DATABASE_URL_RO) should be a non-superuser granted
-#      SELECT only on the analytics tables -- the durable access boundary.
-#   2. A Postgres READ ONLY transaction (below) blocks every write.
-#   3. This code-level allow-list (AST-parsed with pglast) restricts which
-#      relations and functions a query may touch, so a prompt injection riding
-#      in on untrusted tool output cannot pivot oddish_sql into reading users,
-#      chat, documents, secrets, or calling file/exec functions.
 _SQL_MAX_ROWS = 200
 _SQL_MAX_CELL_CHARS = 200
 _SQL_STATEMENT_TIMEOUT_MS = 15000
 _SQL_CONNECT_TIMEOUT = 10
 
-# Relations oddish_sql may read (unqualified => public). Tunable via
-# ODDISH_SQL_TABLES (comma-separated). information_schema is always readable so
-# the agent can introspect columns. Deliberately excludes users/auth/chat/
-# document/secret tables.
 _SQL_DEFAULT_TABLES = (
     "analysis_costs",
     "trials",
@@ -38,23 +26,49 @@ _SQL_DEFAULT_TABLES = (
     "model_pricing",
     "orgs",
 )
-_SQL_ALLOWED_SCHEMAS = {None, "public", "information_schema"}
+_SQL_ALLOWED_SCHEMAS = {None, "public"}
 _SQL_ALLOWED_STMTS = {"RawStmt", "SelectStmt", "ExplainStmt", "VariableShowStmt"}
-# Node keys that mean "not a pure read": SELECT INTO / locking, and the XML /
-# table-function machinery (xmltable, XMLPARSE/XMLSERIALIZE, json_table) that a
-# cost tool never needs and that has been an XXE/file-read vector.
 _SQL_FORBIDDEN_NODES = {
-    "intoClause", "lockingClause", "XmlExpr", "XmlSerialize", "RangeTableFunc",
+    "intoClause",
+    "lockingClause",
+    "XmlExpr",
+    "XmlSerialize",
+    "RangeTableFunc",
 }
 _SQL_DANGEROUS_FUNCS = {
-    "pg_read_file", "pg_read_binary_file", "pg_ls_dir", "pg_stat_file",
-    "pg_ls_waldir", "pg_ls_logdir", "lo_export", "lo_import", "lo_get",
-    "lo_put", "lo_from_bytea", "dblink", "dblink_exec", "dblink_connect",
-    "dblink_connect_u", "set_config", "pg_sleep", "pg_sleep_for",
-    "pg_sleep_until", "pg_terminate_backend", "pg_cancel_backend",
-    "pg_reload_conf", "pg_read_server_files", "pg_logfile_rotate",
-    "xpath", "xpath_exists", "xmltable", "query_to_xml", "table_to_xml",
-    "database_to_xml", "schema_to_xml", "cursor_to_xml", "copy",
+    "pg_read_file",
+    "pg_read_binary_file",
+    "pg_ls_dir",
+    "pg_stat_file",
+    "pg_ls_waldir",
+    "pg_ls_logdir",
+    "lo_export",
+    "lo_import",
+    "lo_get",
+    "lo_put",
+    "lo_from_bytea",
+    "dblink",
+    "dblink_exec",
+    "dblink_connect",
+    "dblink_connect_u",
+    "set_config",
+    "pg_sleep",
+    "pg_sleep_for",
+    "pg_sleep_until",
+    "pg_terminate_backend",
+    "pg_cancel_backend",
+    "pg_reload_conf",
+    "pg_read_server_files",
+    "pg_logfile_rotate",
+    "xpath",
+    "xpath_exists",
+    "xmltable",
+    "query_to_xml",
+    "table_to_xml",
+    "database_to_xml",
+    "schema_to_xml",
+    "cursor_to_xml",
+    "copy",
 }
 
 
@@ -66,12 +80,8 @@ def _sql_tables() -> set[str]:
 
 
 def _cfg() -> tuple[str, dict]:
-    return (
-        os.environ.get(
-            "ODDISH_API_URL", "https://abundant-ai--api.modal.run"
-        ).rstrip("/"),
-        {"Authorization": f"Bearer {os.environ['ODDISH_API_KEY']}"},
-    )
+    url = os.environ.get("ODDISH_API_URL", "https://abundant-ai--api.modal.run")
+    return url.rstrip("/"), {"Authorization": f"Bearer {os.environ['ODDISH_API_KEY']}"}
 
 
 def _text(s: str) -> dict:
@@ -116,11 +126,15 @@ async def oddish_costs(args: dict) -> dict:
     for u in data.get("by_user", [])[:10]:
         label = u.get("name") or u.get("email") or u.get("label") or u.get("key") or "?"
         org = u.get("org_name") or u.get("org_id") or ""
-        lines.append(f"• {label} ({org}): ${u.get('cost_usd', 0):,.2f}, {u.get('trial_count', 0)} trials")
+        lines.append(
+            f"• {label} ({org}): ${u.get('cost_usd', 0):,.2f}, {u.get('trial_count', 0)} trials"
+        )
     lines.append("")
     lines.append("*Top models by spend*")
     for m in data.get("by_model", [])[:8]:
-        lines.append(f"• {m.get('model')} ({m.get('provider')}): ${m.get('cost_usd', 0):,.2f}")
+        lines.append(
+            f"• {m.get('model')} ({m.get('provider')}): ${m.get('cost_usd', 0):,.2f}"
+        )
     return _text("\n".join(lines))
 
 
@@ -157,7 +171,9 @@ async def oddish_user_costs(args: dict) -> dict:
         "",
         "*Top tasks*",
     ]
-    for task in sorted(data.get("tasks", []), key=lambda x: x.get("cost_usd", 0), reverse=True)[:10]:
+    for task in sorted(
+        data.get("tasks", []), key=lambda x: x.get("cost_usd", 0), reverse=True
+    )[:10]:
         lines.append(
             f"• {task.get('task_name') or task.get('task_id')}: "
             f"${task.get('cost_usd', 0):,.2f}, {task.get('trial_count', 0)} trials"
@@ -197,7 +213,11 @@ async def oddish_queue_health(args: dict) -> dict:
         comp = data.get(name)
         if comp:
             age = comp.get("age_seconds")
-            lines.append(f"• {name}: last beat {age:.0f}s ago" if age is not None else f"• {name}: no heartbeat")
+            lines.append(
+                f"• {name}: last beat {age:.0f}s ago"
+                if age is not None
+                else f"• {name}: no heartbeat"
+            )
     return _text("\n".join(lines))
 
 
@@ -251,7 +271,11 @@ async def oddish_trial_logs(args: dict) -> dict:
     },
 )
 async def oddish_tasks(args: dict) -> dict:
-    params = {"compact_tasks": True, "include_worker_jobs": False, "limit": args.get("limit") or 25}
+    params = {
+        "compact_tasks": True,
+        "include_worker_jobs": False,
+        "limit": args.get("limit") or 25,
+    }
     for k in ("status", "user", "experiment_id"):
         if args.get(k):
             params[k] = args[k]
@@ -266,17 +290,6 @@ async def oddish_tasks(args: dict) -> dict:
 
 
 def _sql_url() -> str:
-    """DSN for the read-only SQL tool. Fails closed on the RO credential.
-
-    Requires ``ODDISH_DATABASE_URL_RO`` -- a credential for a NON-superuser
-    Postgres role granted SELECT only on the analytics tables. We deliberately
-    do NOT fall back to the backend's read/write ``ODDISH_DATABASE_URL``: a
-    missing/mistyped RO secret must disable the tool, never silently hand it a
-    full-access role (the READ ONLY transaction blocks writes but does nothing
-    to restrict reads). ``asyncpg`` speaks the wire protocol directly and does
-    not understand SQLAlchemy's ``+asyncpg`` driver tag, so strip it (matching
-    ``scripts/backfill_analysis.py``).
-    """
     url = os.environ.get("ODDISH_DATABASE_URL_RO", "").strip()
     if not url:
         raise RuntimeError(
@@ -297,15 +310,6 @@ def _walk_json(node, cb) -> None:
 
 
 def _validate_sql(sql: str) -> str | None:
-    """Return an error string if ``sql`` isn't a single, allow-listed read.
-
-    Parses with pglast (the real Postgres grammar) rather than matching tokens,
-    then enforces: exactly one statement; only SELECT/EXPLAIN/SHOW (no write
-    statement, data-modifying CTE, ``SELECT INTO`` or locking clause anywhere in
-    the tree); every referenced relation is on the table allow-list (or
-    information_schema / a CTE name); and no dangerous function calls. This is
-    the code-level guard that a prompt injection can't talk its way past.
-    """
     if not sql.strip():
         return "Empty query."
     try:
@@ -321,38 +325,32 @@ def _validate_sql(sql: str) -> str | None:
         return "Only a single statement is allowed (no `;`-separated statements)."
 
     ctes: set[str] = set()
-    bad_node = {"key": None}
+    relations: list[tuple] = []
+    functions: list[str] = []
+    bad_node = [None]
 
     def collect(key, val):
-        if bad_node["key"] is None:
+        if bad_node[0] is None:
             if key.endswith("Stmt") and key not in _SQL_ALLOWED_STMTS:
-                bad_node["key"] = key
+                bad_node[0] = key
             elif key in _SQL_FORBIDDEN_NODES:
-                bad_node["key"] = key
+                bad_node[0] = key
         if key == "CommonTableExpr" and isinstance(val, dict) and val.get("ctename"):
             ctes.add(val["ctename"])
-
-    _walk_json(stmts, collect)
-    if bad_node["key"]:
-        return f"Only read-only SELECT queries are allowed (found `{bad_node['key']}`)."
-
-    tables = _sql_tables()
-    rels: list[tuple] = []
-    funcs: list[str] = []
-
-    def inspect(key, val):
-        if key == "RangeVar" and isinstance(val, dict):
-            rels.append((val.get("schemaname"), val.get("relname")))
+        elif key == "RangeVar" and isinstance(val, dict):
+            relations.append((val.get("schemaname"), val.get("relname")))
         elif key == "FuncCall" and isinstance(val, dict):
             parts = val.get("funcname") or []
             if parts and isinstance(parts[-1], dict) and "String" in parts[-1]:
-                name = parts[-1]["String"].get("sval")
-                if name:
-                    funcs.append(name.lower())
+                if name := parts[-1]["String"].get("sval"):
+                    functions.append(name.lower())
 
-    _walk_json(stmts, inspect)
+    _walk_json(stmts, collect)
+    if bad_node[0]:
+        return f"Only read-only SELECT queries are allowed (found `{bad_node[0]}`)."
 
-    for schema, rel in rels:
+    tables = _sql_tables()
+    for schema, rel in relations:
         if schema == "information_schema":
             continue
         if schema is None and rel in ctes:
@@ -364,19 +362,13 @@ def _validate_sql(sql: str) -> str | None:
                 f"Table `{rel}` is not on the allow-list. Readable tables: "
                 f"{', '.join(sorted(tables))} (plus information_schema)."
             )
-    for fn in funcs:
+    for fn in functions:
         if fn in _SQL_DANGEROUS_FUNCS:
             return f"Function `{fn}()` is not allowed."
     return None
 
 
 def _cell(v) -> str:
-    """One table cell: never None, single-line, and length-bounded.
-
-    A single wide field (JSON blob, log line) would otherwise blow the whole
-    12k ``_text`` budget and could truncate mid-fence, so cap each cell and
-    strip newlines that would break the Slack code block's row alignment.
-    """
     if v is None:
         return ""
     s = str(v).replace("\n", " ").replace("\r", " ")
@@ -388,8 +380,7 @@ def _format_rows(records: list[asyncpg.Record], truncated: bool) -> str:
         return "_(0 rows returned)_"
     cols = list(records[0].keys())
     lines = [" | ".join(cols), " | ".join("---" for _ in cols)]
-    for rec in records:
-        lines.append(" | ".join(_cell(v) for v in rec.values()))
+    lines += [" | ".join(_cell(v) for v in rec.values()) for rec in records]
     header = f"*{len(records)} row(s)*" + (
         f" _(capped at {_SQL_MAX_ROWS}; aggregate in SQL or add a tighter WHERE/LIMIT)_"
         if truncated
@@ -433,11 +424,10 @@ async def oddish_sql(args: dict) -> dict:
             url, statement_cache_size=0, timeout=_SQL_CONNECT_TIMEOUT
         )
     except Exception as e:  # noqa: BLE001 -- surface connection failures to Slack
-        return _text(f":warning: Could not connect to the database: {type(e).__name__}: {e}")
+        return _text(
+            f":warning: Could not connect to the database: {type(e).__name__}: {e}"
+        )
     try:
-        # readonly=True makes Postgres itself reject any write (INSERT/UPDATE/DDL/
-        # etc.) with "cannot execute ... in a read-only transaction" -- the actual
-        # guarantee behind this tool. SET LOCAL scopes both settings to this txn.
         async with conn.transaction(readonly=True):
             await conn.execute(
                 f"SET LOCAL statement_timeout = {_SQL_STATEMENT_TIMEOUT_MS}; "
@@ -466,18 +456,8 @@ _TOOLS = [
 
 
 def build_server():
-    return create_sdk_mcp_server(
-        name=SERVER_NAME,
-        version="1.0.0",
-        tools=_TOOLS,
-    )
+    return create_sdk_mcp_server(name=SERVER_NAME, version="1.0.0", tools=_TOOLS)
 
 
 def allowed_tool_names() -> list[str]:
-    """Fully-qualified MCP names (``mcp__<server>__<tool>``) for every tool.
-
-    Under ``permission_mode="dontAsk"`` the agent denies any tool not listed in
-    ``allowed_tools``, so this must enumerate the exact tool names rather than a
-    wildcard (wildcards are not an SDK-supported allow pattern).
-    """
     return [f"mcp__{SERVER_NAME}__{t.name}" for t in _TOOLS]

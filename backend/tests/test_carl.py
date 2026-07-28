@@ -6,7 +6,7 @@ import types
 import carl
 
 
-def _mention(**event_overrides):
+def _mention():
     event = {
         "type": "app_mention",
         "channel": "C123",
@@ -14,7 +14,6 @@ def _mention(**event_overrides):
         "ts": "100.1",
         "text": "<@UCARL> what is queue health?",
     }
-    event.update(event_overrides)
     return {
         "event_id": "Ev123",
         "team_id": "T123",

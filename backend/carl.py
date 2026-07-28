@@ -90,7 +90,6 @@ def _slack_call(method: str, **payload: Any) -> dict:
         if not data.get("ok"):
             raise RuntimeError(f"Slack {method} failed: {data.get('error', 'unknown')}")
         return data
-    raise RuntimeError(f"Slack {method} exhausted retries")
 
 
 def _escape(text: str) -> str:
@@ -162,12 +161,11 @@ def _spawn_answer(
     user: str | None,
     event_id: str | None,
 ) -> None:
-    answer = modal.Function.from_name(
+    modal.Function.from_name(
         os.environ.get("MODAL_APP_NAME", "oddish"),
         "carl_answer",
         environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
-    )
-    answer.spawn(channel, thread, prompt, user, event_id)
+    ).spawn(channel, thread, prompt, user, event_id)
 
 
 def dispatch_app_mention(payload: dict) -> None:
@@ -175,7 +173,6 @@ def dispatch_app_mention(payload: dict) -> None:
     channel: str | None = None
     thread: str | None = None
     claimed = False
-    handed_off = False
     try:
         event = payload.get("event") or {}
         if event.get("type") != "app_mention" or event.get("bot_id"):
@@ -231,11 +228,11 @@ def dispatch_app_mention(payload: dict) -> None:
             )
             return
         _spawn_answer(channel, thread, prompt, user, event_id)
-        handed_off = True
+        claimed = False
         _log("claimed", event_id=event_id, channel=channel, thread=thread, user=user)
     except Exception:
         log.exception("dispatch failed event_id=%s", event_id)
-        if claimed and not handed_off:
+        if claimed:
             _release_event(event_id)
         if channel and thread:
             try:
