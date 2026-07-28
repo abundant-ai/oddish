@@ -328,8 +328,26 @@ export interface TaskVersionSummary {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   last_run_at?: string | null;
+  pre_trial_findings?: PreTrialFinding[];
+  /** null when this version was never audited; "success" once one completed. */
+  pre_trial_status?: string | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
+}
+
+/** One defect the pre-trial source audit found in a task version. */
+export interface PreTrialFinding {
+  id?: string | null;
+  tier?: string | null;
+  dimension?: string | null;
+  problem_type?: string | null;
+  file?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  title?: string | null;
+  detail?: string | null;
+  recommendation?: string | null;
+  exploited?: boolean | null;
 }
 
 interface TaskCostTotals {

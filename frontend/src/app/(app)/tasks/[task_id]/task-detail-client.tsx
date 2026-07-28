@@ -23,6 +23,7 @@ import {
 import { TagEditor } from "@/components/tag-editor";
 import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ProbeLaunchButton } from "@/components/probe-launch-button";
+import { TaskPreTrialCard } from "@/components/task-pre-trial-card";
 import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -1185,6 +1186,11 @@ export function TaskDetailClient({
               error={judgeError}
             />
           }
+        />
+
+        <TaskPreTrialCard
+          findings={selectedVersion?.pre_trial_findings}
+          status={selectedVersion?.pre_trial_status}
         />
 
         <div className="space-y-3">
