@@ -207,17 +207,19 @@ async def carl_answer(
         turn_limit=hit_turn_limit,
         budget_limit=hit_budget_limit,
     )
-    if not _deliver(channel, status_ts, thread, body):
-        try:
-            _update(
-                channel,
-                status_ts,
-                ":warning: I computed an answer but couldn't post it. Please ask again.",
-            )
-        except Exception:
-            log.exception(
-                "delivery-failure fallback failed event_id=%s channel=%s",
-                event_id,
-                channel,
-            )
+    delivery = _deliver(channel, status_ts, thread, body)
+    if delivery != "complete":
+        if delivery == "failed":
+            try:
+                _update(
+                    channel,
+                    status_ts,
+                    ":warning: I computed an answer but couldn't post it. Please ask again.",
+                )
+            except Exception:
+                log.exception(
+                    "delivery-failure fallback failed event_id=%s channel=%s",
+                    event_id,
+                    channel,
+                )
         _release_event(event_id)

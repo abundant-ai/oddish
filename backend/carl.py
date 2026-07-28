@@ -4,13 +4,16 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import modal
 
 _MAX_SLACK = 3900
 _SLACK_RETRIES = 3
+_PARTIAL_SUFFIX = "\n\n:warning: Answer truncated; mention Carl again to retry."
+
+DeliveryStatus = Literal["complete", "partial", "failed"]
 
 log = logging.getLogger("oddish.carl")
 
@@ -126,18 +129,21 @@ def _notify(channel: str, thread: str, text: str, event_id: str | None) -> None:
         _release_event(event_id)
 
 
-def _deliver(channel: str, ts: str, thread: str, text: str) -> bool:
+def _deliver(channel: str, ts: str, thread: str, text: str) -> DeliveryStatus:
     text = _escape(text)
-    cut = _split_at(text, _MAX_SLACK)
+    first_limit = _MAX_SLACK - len(_PARTIAL_SUFFIX) if len(text) > _MAX_SLACK else _MAX_SLACK
+    cut = _split_at(text, first_limit)
+    first = text[:cut]
+    delivered_ts = ts
     try:
-        _update(channel, ts, text[:cut])
+        _update(channel, ts, first)
     except Exception:
         log.exception("first delivery chunk failed channel=%s", channel)
         try:
-            _post(channel, thread, text[:cut])
+            delivered_ts = _post(channel, thread, first)
         except Exception:
             log.exception("first-chunk repost failed channel=%s", channel)
-            return False
+            return "failed"
         try:
             _update(channel, ts, ":arrow_down: Answer posted below.")
         except Exception:
@@ -149,9 +155,13 @@ def _deliver(channel: str, ts: str, thread: str, text: str) -> bool:
             _post(channel, thread, rest[:cut])
         except Exception:
             log.exception("overflow delivery chunk failed channel=%s", channel)
-            return False
+            try:
+                _update(channel, delivered_ts, f"{first}{_PARTIAL_SUFFIX}")
+            except Exception:
+                log.exception("partial-delivery warning failed channel=%s", channel)
+            return "partial"
         rest = rest[cut:]
-    return True
+    return "complete"
 
 
 def _spawn_answer(

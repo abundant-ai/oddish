@@ -356,6 +356,7 @@ def _validate_sql(sql: str) -> str | None:
                 if parts and isinstance(parts[-1], dict) and "String" in parts[-1]:
                     if (name := parts[-1]["String"].get("sval", "").lower()) in _SQL_DANGEROUS_FUNCS:
                         error = f"Function `{name}()` is not allowed."
+                walk(val, visible_ctes)
             else:
                 walk(val, visible_ctes)
 

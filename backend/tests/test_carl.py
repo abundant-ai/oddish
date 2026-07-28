@@ -75,12 +75,18 @@ def test_bot_token_reuses_existing_carl_credentials(monkeypatch):
 
 
 def test_partial_overflow_delivery_reports_failure(monkeypatch):
-    monkeypatch.setattr(carl, "_update", lambda *_args: None)
+    updates = []
+    monkeypatch.setattr(carl, "_update", lambda *args: updates.append(args))
     monkeypatch.setattr(
         carl, "_post", lambda *_args: (_ for _ in ()).throw(RuntimeError("Slack down"))
     )
 
-    assert not carl._deliver("C123", "100.2", "100.1", "x" * (carl._MAX_SLACK + 1))
+    assert (
+        carl._deliver("C123", "100.2", "100.1", "x" * (carl._MAX_SLACK + 1))
+        == "partial"
+    )
+    assert updates[-1][2].endswith(carl._PARTIAL_SUFFIX)
+    assert updates[-1][2].startswith("x")
 
 
 def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
@@ -119,3 +125,9 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
         "select * from first"
     )
     assert "pg_read_file" in carl_tools._validate_sql("select pg_read_file('/etc/passwd')")
+    assert "pg_read_file" in carl_tools._validate_sql(
+        "select coalesce(pg_read_file('/etc/passwd'), '')"
+    )
+    assert "users" in carl_tools._validate_sql(
+        "select coalesce((select count(*) from users), 0)"
+    )
