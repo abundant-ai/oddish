@@ -35,6 +35,7 @@ from oddish.db import PromptKind, get_session
 from oddish.db.models import TaskModel
 from oddish.db.storage import resolve_task_directory
 from oddish.workers.queue.qa_handler import (
+    PreTrialSynthResult,
     register_pre_trial_enabled_check,
     register_pre_trial_synth,
 )
@@ -154,7 +155,11 @@ async def synthesize_task_pre_trial(
             shutil.rmtree(temp_task_dir, ignore_errors=True)
 
     data = result.output or {"items": []}
-    return [ActionItem(**it) for it in data.get("items", [])]
+    return PreTrialSynthResult(
+        items=[ActionItem(**it) for it in data.get("items", [])],
+        cost_usd=block.usage.cost_usd if block.usage else None,
+        block_id=block.id,
+    )
 
 
 async def _pre_trial_enabled(task_id: str) -> bool:

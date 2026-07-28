@@ -58,6 +58,7 @@ async def _attach_pre_trial_audit(
         version.pre_trial_status.value if version.pre_trial_status else None
     )
     response.pre_trial_error = version.pre_trial_error
+    response.pre_trial_cost_usd = (version.pre_trial or {}).get("cost_usd")
     return response
 
 

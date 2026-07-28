@@ -1144,6 +1144,9 @@ export function TrialDetailPanel({
                               : state === "clean"
                                 ? "no defects found"
                                 : `${items.length} finding${items.length === 1 ? "" : "s"}`}
+                          {hasDisplayableCostUsd(trial.pre_trial_cost_usd)
+                            ? ` · ${formatCostUsd(trial.pre_trial_cost_usd)}`
+                            : ""}
                         </span>
                       </div>
                       {state === "failed" && trial.pre_trial_error ? (

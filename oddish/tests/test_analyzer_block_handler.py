@@ -110,6 +110,8 @@ async def test_post_trial_run_reaches_the_block_with_its_trial_subject(monkeypat
             captured.update(kwargs)
             self.id = "block_pt"
             self.error = None
+            # Real AnalyzerBlock always sets this in __init__.
+            self.usage = None
 
         async def run(self):
             return SimpleNamespace(output={"ok": True})
@@ -178,6 +180,8 @@ async def test_pre_trial_assignment_runs_worker_local_not_sandbox(
             captured.update(kwargs)
             self.id = "block_pre"
             self.error = None
+            # Real AnalyzerBlock always sets this in __init__.
+            self.usage = None
 
         async def run(self):
             return SimpleNamespace(output={"items": []})
@@ -261,6 +265,8 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         def __init__(self, **kwargs):
             self.id = "block_1"
             self.error = None
+            # Real AnalyzerBlock always sets this in __init__.
+            self.usage = None
             self.kwargs = kwargs
             blocks.append(self)
 
@@ -421,6 +427,7 @@ async def test_pre_trial_run_mirrors_findings_onto_its_task_version(
         def __init__(self, **kwargs):
             self.id = "block_pre"
             self.error = None
+            self.usage = SimpleNamespace(cost_usd=0.146)
 
         async def run(self):
             return SimpleNamespace(output={"items": [finding]})
@@ -457,3 +464,7 @@ async def test_pre_trial_run_mirrors_findings_onto_its_task_version(
     # build_pre_trial_payload computes the stable id the exploited-aggregation
     # step later matches on; without it every item is unlinkable.
     assert items[0]["id"]
+    # The audit's spend rides on the payload: analysis_costs has no version
+    # reference, so this is the only place it can be attached to the version.
+    assert synced["payload"]["cost_usd"] == 0.146
+    assert synced["payload"]["block_id"] == "block_pre"

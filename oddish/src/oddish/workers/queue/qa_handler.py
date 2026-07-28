@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -91,6 +92,21 @@ async def synthesize_task_verdict(
     )
     out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
     return TaskVerdictModel(**out.output)
+
+
+@dataclass
+class PreTrialSynthResult:
+    """What a hosted pre-trial synth returns: the findings plus the spend.
+
+    Spend rides along because ``analysis_costs`` rows carry no block or version
+    reference -- a task with several audits has several rows and nothing to tell
+    them apart -- so the only place an audit's cost can be attached to its
+    version is where the block ran.
+    """
+
+    items: list
+    cost_usd: float | None = None
+    block_id: str | None = None
 
 
 # The pre-trial-synthesis seam: a hosted implementation (AnalyzerBlock-backed)
@@ -352,9 +368,17 @@ async def _run_pre_trial_audit(
                 settings.pre_trial_timeout,
             )
             if pre_trial_items is not None:
+                # The hosted synth may return a bare item list (older shape) or
+                # a result carrying its block's spend, which is only knowable
+                # there -- analysis_costs rows have no version reference.
+                items = getattr(pre_trial_items, "items", pre_trial_items)
                 pre_trial_stored = await sync_pre_trial_to_task_version(
                     pre_trial_version_id,
-                    payload=build_pre_trial_payload(pre_trial_items),
+                    payload=build_pre_trial_payload(
+                        items,
+                        cost_usd=getattr(pre_trial_items, "cost_usd", None),
+                        block_id=getattr(pre_trial_items, "block_id", None),
+                    ),
                     error=None,
                     should_store=lambda session: _pre_trial_store_allowed(
                         session, worker_job_id
