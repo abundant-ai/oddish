@@ -25,6 +25,7 @@ from oddish.core.trial_io import (
 from oddish.db import (
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     WorkerJobKind,
@@ -33,6 +34,31 @@ from oddish.db import (
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
+
+
+async def _attach_pre_trial_audit(
+    session: AsyncSession, response: TrialResponse, task_version_id: str | None
+) -> TrialResponse:
+    """Attach the pre-trial audit of the version this trial actually ran on.
+
+    Pinned to ``trials.task_version_id``, never the task's current version: a
+    task re-uploaded after the audit has findings describing a snapshot this
+    trial never saw, and showing those here would misattribute them.
+
+    Single-trial detail paths only. The grid's slim payload carries hundreds of
+    trials, and findings on each would balloon it.
+    """
+    if not task_version_id:
+        return response
+    version = await session.get(TaskVersionModel, task_version_id)
+    if version is None:
+        return response
+    response.pre_trial_findings = (version.pre_trial or {}).get("items") or []
+    response.pre_trial_status = (
+        version.pre_trial_status.value if version.pre_trial_status else None
+    )
+    response.pre_trial_error = version.pre_trial_error
+    return response
 
 
 async def get_trial_by_index_core(
@@ -60,13 +86,14 @@ async def get_trial_by_index_core(
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
     jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
     qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
-    return build_trial_response(
+    response = build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
         jobs=jobs_by_subject.get(("trials", trial.id), []),
         qa_cost_usd=qa_costs.get(trial.id),
     )
+    return await _attach_pre_trial_audit(session, response, trial.task_version_id)
 
 
 async def get_trial_response_for_org_core(
@@ -97,13 +124,14 @@ async def get_trial_response_for_org_core(
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
     jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
     qa_costs = await get_trial_qa_costs(session, trial_ids=[trial.id], org_id=org_id)
-    return build_trial_response(
+    response = build_trial_response(
         trial,
         task_path,
         queue_info=queue_info_by_trial_id.get(trial.id),
         jobs=jobs_by_subject.get(("trials", trial.id), []),
         qa_cost_usd=qa_costs.get(trial.id),
     )
+    return await _attach_pre_trial_audit(session, response, trial.task_version_id)
 
 
 async def retry_trial_core(

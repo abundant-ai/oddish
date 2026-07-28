@@ -58,6 +58,80 @@ export function preTrialAuditState(
 }
 
 /**
+ * The findings themselves, worst tier first, as one card with hairline rules.
+ *
+ * Shared so the trial sidebar renders findings identically to the task page
+ * rather than re-deriving the layout and drifting from it.
+ */
+export function PreTrialFindingList({ items }: { items: PreTrialFinding[] }) {
+  const sorted = [...items].sort(
+    (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
+  );
+  if (!sorted.length) return null;
+
+  return (
+    <div className="divide-y divide-[color:var(--paper-line)] overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+      {sorted.map((finding, index) => {
+        const tier = finding.tier ?? "optional";
+        const where = location(finding);
+        return (
+          <div
+            key={finding.id ?? `${finding.title}-${index}`}
+            className="space-y-2 px-4 py-3"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] ${
+                  TIER_CLASS[tier] ?? TIER_CLASS.optional
+                }`}
+              >
+                {TIER_LABEL[tier] ?? tier.toUpperCase()}
+              </span>
+              {finding.dimension ? (
+                <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+                  {finding.dimension}
+                  {finding.problem_type ? ` / ${finding.problem_type}` : ""}
+                </span>
+              ) : null}
+              {finding.exploited ? (
+                <span className="rounded-[4px] border border-[color:var(--paper-fail)] px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--paper-fail)]">
+                  EXPLOITED
+                </span>
+              ) : null}
+            </div>
+
+            <p className="text-[13px] font-medium text-[color:var(--paper-ink)]">
+              {finding.title}
+            </p>
+
+            {where ? (
+              <p className="font-mono text-[10.5px] break-all text-[color:var(--paper-ink-3)]">
+                {where}
+              </p>
+            ) : null}
+
+            {finding.detail ? (
+              <p className="text-[12px] whitespace-pre-wrap text-[color:var(--paper-ink-2)]">
+                {finding.detail}
+              </p>
+            ) : null}
+
+            {finding.recommendation ? (
+              <p className="text-[12px] text-[color:var(--paper-ink-2)]">
+                <span className="font-mono text-[10.5px] tracking-[0.06em] text-[color:var(--paper-ink-3)] uppercase">
+                  Fix{" "}
+                </span>
+                {finding.recommendation}
+              </p>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * Pre-trial source-audit findings for the selected task version.
  *
  * Renders nothing until a version has actually been audited.
@@ -110,66 +184,7 @@ export function TaskPreTrialCard({
         </div>
       ) : null}
 
-      {items.length ? (
-        <div className="divide-y divide-[color:var(--paper-line)] overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-          {items.map((finding, index) => {
-            const tier = finding.tier ?? "optional";
-            const where = location(finding);
-            return (
-              <div
-                key={finding.id ?? `${finding.title}-${index}`}
-                className="space-y-2 px-4 py-3"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <span
-                    className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] ${
-                      TIER_CLASS[tier] ?? TIER_CLASS.optional
-                    }`}
-                  >
-                    {TIER_LABEL[tier] ?? tier.toUpperCase()}
-                  </span>
-                  {finding.dimension ? (
-                    <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-                      {finding.dimension}
-                      {finding.problem_type ? ` / ${finding.problem_type}` : ""}
-                    </span>
-                  ) : null}
-                  {finding.exploited ? (
-                    <span className="rounded-[4px] border border-[color:var(--paper-fail)] px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--paper-fail)]">
-                      EXPLOITED
-                    </span>
-                  ) : null}
-                </div>
-
-                <p className="text-[13px] font-medium text-[color:var(--paper-ink)]">
-                  {finding.title}
-                </p>
-
-                {where ? (
-                  <p className="font-mono text-[10.5px] break-all text-[color:var(--paper-ink-3)]">
-                    {where}
-                  </p>
-                ) : null}
-
-                {finding.detail ? (
-                  <p className="text-[12px] whitespace-pre-wrap text-[color:var(--paper-ink-2)]">
-                    {finding.detail}
-                  </p>
-                ) : null}
-
-                {finding.recommendation ? (
-                  <p className="text-[12px] text-[color:var(--paper-ink-2)]">
-                    <span className="font-mono text-[10.5px] tracking-[0.06em] text-[color:var(--paper-ink-3)] uppercase">
-                      Fix{" "}
-                    </span>
-                    {finding.recommendation}
-                  </p>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
+      <PreTrialFindingList items={items} />
     </div>
   );
 }

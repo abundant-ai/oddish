@@ -143,6 +143,11 @@ export interface Trial {
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;
   task_version_id?: string | null;
+  /** Pre-trial audit of the version this trial ran on. Single-trial fetch only
+   *  (`GET /trials/{id}`); the grid's slim payload omits these. */
+  pre_trial_findings?: PreTrialFinding[];
+  pre_trial_status?: string | null;
+  pre_trial_error?: string | null;
   input_tokens?: number | null;
   cache_tokens?: number | null;
   output_tokens?: number | null;
