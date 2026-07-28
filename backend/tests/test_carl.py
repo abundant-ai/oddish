@@ -4,6 +4,7 @@ import sys
 import types
 
 import carl
+import pytest
 
 
 def _mention():
@@ -110,19 +111,26 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
         "with changed as (insert into trials(id) values ('x') returning id) "
         "select * from changed"
     )
-    assert "users" in carl_tools._validate_sql("select * from users")
+    assert "users" in carl_tools._validate_sql("select id from users")
+    assert "Wildcard" in carl_tools._validate_sql("select * from trials")
+    assert "harbor_config" in carl_tools._validate_sql(
+        "select harbor_config from trials"
+    )
+    assert "Whole-row" in carl_tools._validate_sql(
+        "select to_jsonb(trials) from trials"
+    )
     assert (
         carl_tools._validate_sql(
-            "with recent as (select * from trials) select * from recent"
+            "with recent as (select id from trials) select id from recent"
         )
         is None
     )
     assert "users" in carl_tools._validate_sql(
-        "with users as (select * from users) select * from users"
+        "with users as (select id from users) select id from users"
     )
     assert "users" in carl_tools._validate_sql(
-        "with first as (select * from users), users as (select * from trials) "
-        "select * from first"
+        "with first as (select id from users), users as (select id from trials) "
+        "select id from first"
     )
     assert "pg_read_file" in carl_tools._validate_sql("select pg_read_file('/etc/passwd')")
     assert "pg_read_file" in carl_tools._validate_sql(
@@ -131,3 +139,52 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     assert "users" in carl_tools._validate_sql(
         "select coalesce((select count(*) from users), 0)"
     )
+
+
+@pytest.mark.asyncio
+async def test_read_only_sql_sets_transaction_options_separately(monkeypatch):
+    import carl_tools
+
+    class Transaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Cursor:
+        async def fetch(self, _limit):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.commands = []
+
+        def transaction(self, *, readonly):
+            assert readonly
+            return Transaction()
+
+        async def execute(self, command):
+            self.commands.append(command)
+
+        async def cursor(self, _query):
+            return Cursor()
+
+        async def close(self):
+            return None
+
+    connection = Connection()
+
+    async def connect(*_args, **_kwargs):
+        return connection
+
+    monkeypatch.setenv("ODDISH_DATABASE_URL_RO", "postgresql://carl@example/oddish")
+    monkeypatch.setattr(carl_tools.asyncpg, "connect", connect)
+
+    result = await carl_tools.oddish_sql({"query": "select id from trials limit 1"})
+
+    assert result["content"][0]["text"] == "_(0 rows returned)_"
+    assert connection.commands == [
+        "SET LOCAL statement_timeout = 15000",
+        "SET LOCAL search_path = public, information_schema",
+    ]

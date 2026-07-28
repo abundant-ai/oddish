@@ -46,26 +46,47 @@ unchanged.
 
 ## Read-only SQL
 
-The database role is the durable access boundary. Provision a role that owns
-nothing, cannot bypass row security, and can only select from the non-sensitive
-analytics tables:
+The database role is the durable access boundary. Carl is an internal
+platform-operator tool, so its SQL analytics may span organizations; every user
+on `ODDISH_CARL_ALLOWED_USERS` must be a trusted platform operator. Provision a
+role that owns nothing, cannot bypass row security, and can only select the
+non-sensitive columns Carl needs:
 
 ```sql
 CREATE ROLE oddish_carl_ro LOGIN PASSWORD '…'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
 GRANT CONNECT ON DATABASE oddish TO oddish_carl_ro;
 GRANT USAGE ON SCHEMA public TO oddish_carl_ro;
-GRANT SELECT ON analysis_costs, trials, tasks, experiments, organizations
-  TO oddish_carl_ro;
+GRANT SELECT ON analysis_costs TO oddish_carl_ro;
+GRANT SELECT (
+  id, name, task_id, experiment_id, org_id, billed_user_id, agent, provider,
+  queue_key, model, environment, harbor_sha, is_probe, status, origin, attempts,
+  max_attempts, harbor_stage, created_at, started_at, finished_at, reward,
+  input_tokens, cache_tokens, cache_write_tokens, output_tokens, total_steps,
+  trajectory_duration_seconds, total_tool_calls, cost_usd, has_trajectory,
+  analysis_status, analysis_started_at, analysis_finished_at,
+  superseded_by_trial_id, deleted_at
+) ON trials TO oddish_carl_ro;
+GRANT SELECT (
+  id, name, org_id, created_by_user_id, "user", priority, status, link,
+  run_analysis, run_probe, started_at, finished_at, verdict_status,
+  created_at, updated_at, deleted_at
+) ON tasks TO oddish_carl_ro;
+GRANT SELECT (
+  id, name, org_id, last_activity_at, owner_user_id, owner, link, is_public,
+  is_collection, created_at, updated_at, deleted_at
+) ON experiments TO oddish_carl_ro;
+GRANT SELECT (id, name, slug, plan, is_active, created_at, updated_at)
+  ON organizations TO oddish_carl_ro;
 ```
 
 Keep those grants and `ODDISH_SQL_TABLES` aligned. Never grant access to users,
 authentication, chat, documents, API keys, BYOK, or other secret-bearing tables.
 
 The code adds three more layers: PostgreSQL `READ ONLY` transactions; an
-AST-parsed allow-list that rejects writes, stacked statements, dangerous
-functions, and non-analytics relations; and a 15-second timeout, 200-row cap,
-and per-cell output truncation.
+AST-parsed allow-list that rejects writes, stacked statements, wildcard column
+selection, sensitive columns, dangerous functions, and non-analytics
+relations; and a 15-second timeout, 200-row cap, and per-cell output truncation.
 
 ## Limitations
 
