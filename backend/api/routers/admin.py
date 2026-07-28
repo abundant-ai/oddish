@@ -15,7 +15,7 @@ from auth import AuthContext, require_admin
 from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, UserModel
 from auth.permissions import is_operator_org, require_operator_org
-from pg_errors import is_undefined_table_error
+from pg_errors import is_undefined_column_or_table_error
 from slack_alert_settings import (
     AlertSettings,
     clear_alert_settings,
@@ -331,6 +331,7 @@ async def backfill_task_expansions(
 
 class SlackAlertSettingsResponse(BaseModel):
     trial_escalation_usd: float
+    user_weekly_escalation_delta_usd: float
     always_ping_emails: list[str]
     # False means nobody has overridden anything and these are the values baked
     # into the deploy, which the UI labels rather than presenting as a choice.
@@ -350,6 +351,7 @@ async def get_operator_access(
 
 class SlackAlertSettingsRequest(BaseModel):
     trial_escalation_usd: float = Field(gt=0)
+    user_weekly_escalation_delta_usd: float = Field(gt=0)
     always_ping_emails: list[str] = Field(max_length=50)
 
     @field_validator("always_ping_emails")
@@ -369,7 +371,7 @@ def _settings_response(settings: AlertSettings) -> SlackAlertSettingsResponse:
 
 
 def _unavailable(exc: ProgrammingError) -> HTTPException:
-    if not is_undefined_table_error(exc):
+    if not is_undefined_column_or_table_error(exc):
         raise exc
     return HTTPException(
         status_code=503,
