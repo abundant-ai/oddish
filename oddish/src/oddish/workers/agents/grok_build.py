@@ -73,13 +73,32 @@ _IDLE_TIMEOUT_ALTERNATIVES = "idle timeout"
 # same failure, which is no worse than failing now.
 _RATE_LIMIT_ALTERNATIVES = "rate limit|rate_limit|too many requests|429"
 _RATE_LIMIT_PATTERN = f"'({_RATE_LIMIT_ALTERNATIVES})'"
-_RESUMABLE_ERROR_PATTERN = (
-    f"'({_IDLE_TIMEOUT_ALTERNATIVES}|{_RATE_LIMIT_ALTERNATIVES})'"
+
+# xAI server-side 5xx / overload ("API error (status 503 Service Unavailable):
+# unavailable: Service temporarily unavailable. The model did not respond to
+# this request.") is the third death that throws away an otherwise healthy run:
+# a single dropped stream on the shared deployment exits the CLI non-zero after
+# however many turns it has completed. Like the idle timeout the cure is landing
+# on a healthy replica, but during a sustained outage an instant replay just
+# re-hits the same dead deployment -- so these join the backoff branch (wait,
+# then resume) rather than resuming immediately. The failed call never committed
+# to the session store, so a resume loses at most one turn.
+_SERVER_ERROR_ALTERNATIVES = (
+    "50[0-9]|service unavailable|service temporarily unavailable|"
+    "temporarily unavailable|overloaded|bad gateway|gateway timeout"
 )
-# First backoff, doubled per resume: 60s, 120s, 240s (7m worst case, against a
-# multi-hour agent timeout).
+# Errors that resume AFTER a backoff (the server/account needs a moment to
+# recover); idle timeouts resume with no delay.
+_BACKOFF_PATTERN = f"'({_RATE_LIMIT_ALTERNATIVES}|{_SERVER_ERROR_ALTERNATIVES})'"
+_RESUMABLE_ERROR_PATTERN = (
+    f"'({_IDLE_TIMEOUT_ALTERNATIVES}|{_RATE_LIMIT_ALTERNATIVES}"
+    f"|{_SERVER_ERROR_ALTERNATIVES})'"
+)
+# First backoff, doubled per resume: 60s, 120s, 240s, 480s, 960s (~28m worst
+# case, against a multi-hour agent timeout). Raised from 3 resumes so a sustained
+# xAI 5xx window can outlast a few refill/recovery cycles rather than dying to it.
 _RATE_LIMIT_BACKOFF_SEC = 60
-_MAX_RESUMES = 3
+_MAX_RESUMES = 5
 _RESUME_PROMPT = (
     "The previous request failed with a transient API error. "
     "Continue the original task from where you left off."
@@ -431,18 +450,19 @@ class OddishGrokBuild(BaseInstalledAgent):
             "rc=$?; rv=5; "
             "fi; "
             # Resume (rather than fail the trial) when the run died to the
-            # stream watchdog or an xAI rate limit. Appending to stdout keeps
-            # the streamed event log whole; overwriting stderr makes each grep
-            # reflect only the latest attempt, so any other failure (flag error)
-            # still exits the loop. A rate-limited arm waits out the throttle
-            # first -- resuming instantly would just re-hit the same limit and
-            # burn the resume budget in seconds -- while an idle timeout, whose
-            # cure is landing on a fresh replica, resumes with no delay.
+            # stream watchdog, an xAI rate limit, or an xAI 5xx/overload.
+            # Appending to stdout keeps the streamed event log whole; overwriting
+            # stderr makes each grep reflect only the latest attempt, so any other
+            # failure (flag error) still exits the loop. A rate-limited or
+            # server-error arm waits out the backoff first -- resuming instantly
+            # would just re-hit the same throttle or dead deployment and burn the
+            # resume budget in seconds -- while an idle timeout, whose cure is
+            # landing on a fresh replica, resumes with no delay.
             f"resumes=0; delay={_RATE_LIMIT_BACKOFF_SEC}; "
             f"while [ $rc -ne 0 ] && [ $resumes -lt {_MAX_RESUMES} ] "
             f"&& grep -Eqi {_RESUMABLE_ERROR_PATTERN} {stderr_path}; do "
             "resumes=$((resumes+1)); "
-            f"if grep -Eqi {_RATE_LIMIT_PATTERN} {stderr_path}; then "
+            f"if grep -Eqi {_BACKOFF_PATTERN} {stderr_path}; then "
             'sleep "$delay"; delay=$((delay*2)); '
             "fi; "
             'case "$rv" in '
