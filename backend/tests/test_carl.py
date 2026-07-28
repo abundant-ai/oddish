@@ -142,12 +142,15 @@ def test_empty_answer_failure_releases_claim_when_status_update_fails(monkeypatc
         (False, True, "$1.00 cost limit"),
     ],
 )
-def test_limit_answer_preserves_partial_text(turn_limit, budget_limit, reason):
+@pytest.mark.parametrize("result_field", ["final", "last_text"])
+def test_limit_answer_preserves_partial_text(
+    turn_limit, budget_limit, reason, result_field
+):
     import carl_agent
 
     answer = carl_agent._limited_answer(
-        "",
-        "Partial analysis",
+        "Partial analysis" if result_field == "final" else "",
+        "Partial analysis" if result_field == "last_text" else "",
         hit_turn_limit=turn_limit,
         hit_budget_limit=budget_limit,
         budget=1.0,
@@ -206,6 +209,12 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     assert "pg_read_file" in carl_tools._validate_sql("select pg_read_file('/etc/passwd')")
     assert "pg_read_file" in carl_tools._validate_sql(
         "select coalesce(pg_read_file('/etc/passwd'), '')"
+    )
+    assert "query_to_xmlschema" in carl_tools._validate_sql(
+        "select query_to_xmlschema('select * from users', true, false, '')"
+    )
+    assert "table_to_xml_and_xmlschema" in carl_tools._validate_sql(
+        "select table_to_xml_and_xmlschema('users', true, false, '')"
     )
     assert "users" in carl_tools._validate_sql(
         "select coalesce((select count(*) from users), 0)"

@@ -93,6 +93,11 @@ _SQL_DANGEROUS_FUNCS = {
     "cursor_to_xml",
     "copy",
 }
+_SQL_DANGEROUS_FUNC_SUFFIXES = (
+    "_to_xml",
+    "_to_xmlschema",
+    "_to_xml_and_xmlschema",
+)
 
 
 def _sql_tables() -> set[str]:
@@ -433,7 +438,10 @@ def _validate_sql(sql: str) -> str | None:
             elif key == "FuncCall" and isinstance(val, dict):
                 parts = val.get("funcname") or []
                 if parts and isinstance(parts[-1], dict) and "String" in parts[-1]:
-                    if (name := parts[-1]["String"].get("sval", "").lower()) in _SQL_DANGEROUS_FUNCS:
+                    name = parts[-1]["String"].get("sval", "").lower()
+                    if name in _SQL_DANGEROUS_FUNCS or name.endswith(
+                        _SQL_DANGEROUS_FUNC_SUFFIXES
+                    ):
                         error = f"Function `{name}()` is not allowed."
                 walk(val, visible_ctes)
             else:

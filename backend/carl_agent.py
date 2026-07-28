@@ -99,16 +99,15 @@ def _limited_answer(
     hit_budget_limit: bool,
     budget: float,
 ) -> str:
-    if final:
-        return final
     if hit_turn_limit:
         reason = "I hit my step limit before finishing"
     elif hit_budget_limit:
         reason = f"I hit my ${budget:.2f} cost limit before finishing"
     else:
         return final
-    if last_text:
-        return f"{last_text}\n\n_:warning: {reason}; this is what I had so far._"
+    partial = final or last_text
+    if partial:
+        return f"{partial}\n\n_:warning: {reason}; this is what I had so far._"
     return f"{reason}. Try narrowing the question."
 
 
@@ -130,13 +129,6 @@ async def _carl_answer_impl(
 
     from carl_tools import allowed_tool_names, build_server
 
-    _log("spawned", event_id=event_id, channel=channel, thread=thread, user=user)
-    try:
-        status_ts = _post(channel, thread, "Thinking…")
-    except Exception:
-        log.exception("initial post failed event_id=%s channel=%s", event_id, channel)
-        _release_event(event_id)
-        return
     try:
         budget = float(os.environ.get("ODDISH_CARL_MAX_BUDGET_USD", "1.0"))
     except ValueError:
@@ -152,6 +144,14 @@ async def _carl_answer_impl(
         max_budget_usd=budget,
         system_prompt=SYSTEM_PROMPT,
     )
+
+    _log("spawned", event_id=event_id, channel=channel, thread=thread, user=user)
+    try:
+        status_ts = _post(channel, thread, "Thinking…")
+    except Exception:
+        log.exception("initial post failed event_id=%s channel=%s", event_id, channel)
+        _release_event(event_id)
+        return
 
     final = ""
     last_text = ""
