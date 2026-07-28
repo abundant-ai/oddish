@@ -15,10 +15,11 @@ const TIER_LABEL: Record<string, string> = {
   optional: "OPTIONAL",
 };
 
+// Red / yellow / brown, worst to least. Solid fills, like the status badges.
 const TIER_CLASS: Record<string, string> = {
-  must_fix: "border-[color:var(--paper-fail)] text-[color:var(--paper-fail)]",
-  should_fix: "border-[color:var(--paper-partial)] text-[color:var(--paper-partial)]",
-  optional: "border-[color:var(--paper-line)] text-[color:var(--paper-ink-3)]",
+  must_fix: "bg-[color:var(--paper-fail)] text-white",
+  should_fix: "bg-[color:var(--paper-partial)] text-slate-950",
+  optional: "bg-[color:var(--paper-minor)] text-white",
 };
 
 function location(finding: PreTrialFinding): string | null {
@@ -46,7 +47,7 @@ export type PreTrialAuditState =
  */
 export function preTrialAuditState(
   status: string | null | undefined,
-  findingCount: number,
+  findingCount: number
 ): PreTrialAuditState {
   if (!status) return "unaudited";
   const normalized = status.toLowerCase();
@@ -71,8 +72,7 @@ export function TaskPreTrialCard({
   error?: string | null;
 }) {
   const items = [...(findings ?? [])].sort(
-    (a, b) =>
-      (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3),
+    (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
   );
   const state = preTrialAuditState(status, items.length);
 
@@ -110,62 +110,66 @@ export function TaskPreTrialCard({
         </div>
       ) : null}
 
-      {items.map((finding, index) => {
-        const tier = finding.tier ?? "optional";
-        const where = location(finding);
-        return (
-          <div
-            key={finding.id ?? `${finding.title}-${index}`}
-            className="rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 space-y-2"
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={`rounded-[4px] border px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] ${
-                  TIER_CLASS[tier] ?? TIER_CLASS.optional
-                }`}
+      {items.length ? (
+        <div className="divide-y divide-[color:var(--paper-line)] overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+          {items.map((finding, index) => {
+            const tier = finding.tier ?? "optional";
+            const where = location(finding);
+            return (
+              <div
+                key={finding.id ?? `${finding.title}-${index}`}
+                className="space-y-2 px-4 py-3"
               >
-                {TIER_LABEL[tier] ?? tier.toUpperCase()}
-              </span>
-              {finding.dimension ? (
-                <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
-                  {finding.dimension}
-                  {finding.problem_type ? ` / ${finding.problem_type}` : ""}
-                </span>
-              ) : null}
-              {finding.exploited ? (
-                <span className="rounded-[4px] border border-[color:var(--paper-fail)] px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--paper-fail)]">
-                  EXPLOITED
-                </span>
-              ) : null}
-            </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded-[4px] px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] ${
+                      TIER_CLASS[tier] ?? TIER_CLASS.optional
+                    }`}
+                  >
+                    {TIER_LABEL[tier] ?? tier.toUpperCase()}
+                  </span>
+                  {finding.dimension ? (
+                    <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+                      {finding.dimension}
+                      {finding.problem_type ? ` / ${finding.problem_type}` : ""}
+                    </span>
+                  ) : null}
+                  {finding.exploited ? (
+                    <span className="rounded-[4px] border border-[color:var(--paper-fail)] px-1.5 py-0.5 font-mono text-[9.5px] tracking-[0.06em] text-[color:var(--paper-fail)]">
+                      EXPLOITED
+                    </span>
+                  ) : null}
+                </div>
 
-            <p className="text-[13px] font-medium text-[color:var(--paper-ink)]">
-              {finding.title}
-            </p>
+                <p className="text-[13px] font-medium text-[color:var(--paper-ink)]">
+                  {finding.title}
+                </p>
 
-            {where ? (
-              <p className="font-mono text-[10.5px] break-all text-[color:var(--paper-ink-3)]">
-                {where}
-              </p>
-            ) : null}
+                {where ? (
+                  <p className="font-mono text-[10.5px] break-all text-[color:var(--paper-ink-3)]">
+                    {where}
+                  </p>
+                ) : null}
 
-            {finding.detail ? (
-              <p className="text-[12px] whitespace-pre-wrap text-[color:var(--paper-ink-2)]">
-                {finding.detail}
-              </p>
-            ) : null}
+                {finding.detail ? (
+                  <p className="text-[12px] whitespace-pre-wrap text-[color:var(--paper-ink-2)]">
+                    {finding.detail}
+                  </p>
+                ) : null}
 
-            {finding.recommendation ? (
-              <p className="text-[12px] text-[color:var(--paper-ink-2)]">
-                <span className="font-mono text-[10.5px] tracking-[0.06em] text-[color:var(--paper-ink-3)] uppercase">
-                  Fix{" "}
-                </span>
-                {finding.recommendation}
-              </p>
-            ) : null}
-          </div>
-        );
-      })}
+                {finding.recommendation ? (
+                  <p className="text-[12px] text-[color:var(--paper-ink-2)]">
+                    <span className="font-mono text-[10.5px] tracking-[0.06em] text-[color:var(--paper-ink-3)] uppercase">
+                      Fix{" "}
+                    </span>
+                    {finding.recommendation}
+                  </p>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
