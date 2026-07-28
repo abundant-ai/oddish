@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-28]
+
+### Added
+
+- Post-trial QA classification now receives a trajectory component map (labeled phase segments such as `reading_files`, `debugging`, `writing_tests`) generated through a new backend seam (`register_trajectory_summary_provider`) so the classifier can orient before re-reading the raw trajectory; it's written to `.qa_context/trajectory_components.json` and surfaced via a new prompt section. Generation is best-effort and bounded (300s) — any failure or timeout falls back to classifying with no component map, same as before this change. `ANALYSIS_CLAIM_TTL_MINUTES` raised from 30 to 35 to keep the extra generation step inside a single claim (#939).
+
+### Changed
+
+- Pre-trial QA audits now run worker-local on the `CLAUDE_CLI` backend instead of provisioning a Daytona sandbox, matching how post-trial already works: the worker downloads the audited task version's source directly instead of having the agent `oddish pull` it inside a sandbox, removing the sandbox provisioning and CLI version-pin install that were breaking every pre-trial run. Findings are now pinned to the exact claimed `task_version_id` (closing a re-upload race) and a new `pre_trial_qa.v3` prompt tells the agent the source is already on disk (#941).
+- The pre-trial task-source audit is enabled deployment-wide (`ODDISH_PRE_TRIAL_ENABLED=1` baked into the Modal image), so it now actually writes `task_versions.pre_trial` in production for the first time — this is what feeds post-trial's `{pre_trial_context}` and makes the existing per-org opt-out toggle meaningful (#948).
+- Modal worker images now default `ODDISH_HARBOR_ENVIRONMENT` to `daytona` instead of `modal`; trials that explicitly select an environment are unaffected (#943).
+- The shared QA/analysis model (`ANALYSIS_MODEL`) reverts from `claude-haiku-4-5` back to `claude-sonnet-5`, moving post-trial classification, pre-trial QA, and trajectory summaries with it — and shifting the QA queue key's default concurrency from 128 back to 48 (#940).
+- Cost figures across the dashboard (trials table, task cards, KPI tiles, trial detail, admin cost dashboard, leaderboard) now render to the cent below $100 instead of up to 4 decimal places for sub-dollar amounts. Sub-cent totals that would round to a misleading "$0.00" now hide or fall back to "—" via a new `hasDisplayableCostUsd` guard, except where a literal $0.00 carries meaning (e.g. the experiment "New spend" tile, prose, and breakdown rows). The `+$X QA` sidecar is also dropped from the experiment trials table's per-task rows, since QA spend remains visible on the experiment Cost/New-spend tiles and task/trial detail views (#938).
+
+### Fixed
+
+- Pre-trial audits are no longer discarded when the model wraps its JSON response in prose or a code fence that doesn't open the string — `Block.parse_json` now falls back to extracting the first embedded JSON value (fenced or balanced-brace, string-aware) before raising. `pre_trial_timeout` also raised from 180s to 600s after production audits were found completing in 108-142s but dying right at the old 180s cap with no partial output saved (#949).
+- The oddish CLI install inside pre-trial sandboxes no longer fails outright when the orchestrator's exact pinned version isn't yet published to PyPI (e.g. a version bump landing before release) — it now retries once unpinned before raising, fixing the reason pre-trial audits had never completed successfully in production (#946).
+- Post-trial QA classifications are no longer billed multiple times when the owning QA job dies mid-run: `classify_trial_and_store` previously dropped a completed classification without stamping a terminal status whenever the owning job appeared gone, so the trial's claim expired and the next sweep re-classified (and re-billed) it. The store step now persists results whenever the run still owns its claim (verified via a per-claim stamp) and treats owner liveness as advisory rather than a hard gate, while a peer that legitimately retook an expired claim, or a user cancel, still wins (#947).
+
+---
+
 ## [2026-07-20]
 
 ### Changed
