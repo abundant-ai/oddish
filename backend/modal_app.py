@@ -48,6 +48,9 @@ ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 ENABLE_SLACK_EXPENSE_NOTIFICATIONS = _env_flag(
     "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", MODAL_APP_NAME == "oddish"
 )
+ENABLE_CARL_AGENT = _env_flag(
+    "ODDISH_ENABLE_CARL_AGENT", MODAL_APP_NAME == "oddish"
+)
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
 # Per-container request concurrency bounds the OOM *blast radius* -- it is
@@ -504,6 +507,7 @@ ENV_VARS = {
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
     "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
     "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,
+    "ODDISH_ENABLE_CARL_AGENT": str(ENABLE_CARL_AGENT).lower(),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -706,6 +710,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "api",
             "auth",
             "backfill_github_id",
+            "carl",
             "cloud_policy",
             "crypto",
             "dashboard_attribution",

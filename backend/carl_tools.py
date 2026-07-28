@@ -67,7 +67,9 @@ def _sql_tables() -> set[str]:
 
 def _cfg() -> tuple[str, dict]:
     return (
-        os.environ["ODDISH_API_URL"].rstrip("/"),
+        os.environ.get(
+            "ODDISH_API_URL", "https://abundant-ai--api.modal.run"
+        ).rstrip("/"),
         {"Authorization": f"Bearer {os.environ['ODDISH_API_KEY']}"},
     )
 

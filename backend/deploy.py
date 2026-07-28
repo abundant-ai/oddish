@@ -8,6 +8,7 @@ import modal
 
 from modal_app import (
     ENABLE_BACKGROUND_WORKERS,
+    ENABLE_CARL_AGENT,
     ENABLE_SLACK_EXPENSE_NOTIFICATIONS,
     app,
     assert_gke_cluster_exists,
@@ -21,6 +22,9 @@ if ENABLE_BACKGROUND_WORKERS:
 
 if ENABLE_SLACK_EXPENSE_NOTIFICATIONS:
     import slack_notifications  # noqa: F401
+
+if ENABLE_CARL_AGENT:
+    import carl_agent  # noqa: F401
 
 # Deploy-time only: containers import the registration modules above, never
 # execute this entrypoint locally, so the gate cannot run in workers.
