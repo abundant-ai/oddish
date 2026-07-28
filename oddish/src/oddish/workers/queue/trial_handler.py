@@ -32,9 +32,11 @@ from oddish.db import (
     TaskModel,
     TaskStatus,
     TaskVersionModel,
+    TrialModel,
     TrialStatus,
     WorkerJobModel,
     WorkerJobStatus,
+    get_session,
     utcnow,
 )
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
@@ -696,6 +698,7 @@ async def _store_trial_results(
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
+    trial_attempt: int,
     byok_env: Mapping[str, str] | None = None,
 ) -> tuple[bool, bool]:
     """Return whether the trial is terminal and whether this call completed it."""
@@ -710,6 +713,11 @@ async def _store_trial_results(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
             )
             return False, False
+        if trial.attempts != trial_attempt:
+            console.print(
+                f"[dim]Trial {trial_id} result ignored; attempt no longer owns it[/dim]"
+            )
+            return trial.finished_at is not None, False
 
         is_modal_image_build_error = bool(
             outcome and is_modal_image_build_failure(outcome.error)
@@ -898,17 +906,21 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
     from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
     from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
 
-    async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
-        session,
-        trial,
-    ):
+    async with get_session() as session:
+        if (
+            task_id := await session.scalar(
+                select(TrialModel.task_id).where(TrialModel.id == trial_id)
+            )
+        ) is None:
+            return
+        task = await session.get(TaskModel, task_id, with_for_update=True)
+        trial = await session.get(TrialModel, trial_id, with_for_update=True)
         if (
             trial is None
             or trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED)
             or trial.harbor_stage == "cancelled"
         ):
             return
-        task = await session.get(TaskModel, trial.task_id, with_for_update=True)
         if task is None or task.status == TaskStatus.FAILED:
             return
         try:
@@ -1461,7 +1473,35 @@ async def run_trial_job(
     if prepared_trial is None:
         return
 
-    # Session is now closed - connection returned to pool
+    byok_resolution = None
+    if byok.byok_resolver_registered() and not _harbor_config_is_ephemeral(
+        prepared_trial.trial_harbor_config
+    ):
+        byok_resolution = await byok.resolve_byok(
+            owner_user_id=prepared_trial.created_by_user_id,
+            org_id=prepared_trial.org_id,
+            experiment_name=prepared_trial.experiment_name,
+            model=prepared_trial.trial_model,
+            agent=prepared_trial.trial_agent,
+        )
+    byok_env = byok_resolution.env if byok_resolution else None
+    funding_key_hash = trial_llm_key_hash(
+        settings.get_provider_for_trial(
+            prepared_trial.trial_agent, prepared_trial.trial_model
+        ),
+        byok_env,
+    )
+    stamp = update(TrialModel).where(
+        TrialModel.id == trial_id,
+        TrialModel.finished_at.is_(None),
+        TrialModel.attempts == prepared_trial.trial_attempt,
+    )
+    if worker_id is not None:
+        stamp = stamp.where(TrialModel.current_worker_id == worker_id)
+    async with get_session() as session:
+        stamped = await session.execute(stamp.values(llm_key_hash=funding_key_hash))
+    if not stamped.rowcount:
+        return
 
     # Determine task path: download from S3 if needed, or use local path
     temp_task_dir = None
@@ -1530,6 +1570,7 @@ async def run_trial_job(
                     execution_error=f"ProbeCredsError: {exc}",
                     worker_id=worker_id,
                     worker_job_id=worker_job_id,
+                    trial_attempt=prepared_trial.trial_attempt,
                 )
             )
             await _finish_trial_settlement(
@@ -1546,23 +1587,6 @@ async def run_trial_job(
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
 
     should_upload_to_s3 = bool(resolved_task_s3_key)
-
-    # Per-user BYOK: when the owner has a stored key and the Statsig gate is on,
-    # layer it under any probe creds. Fully fail-open -- resolve_byok returns
-    # None (so the trial keeps the platform key) on anything unexpected. Skipped
-    # for the ephemeral engine, which can neither route nor safely persist a user
-    # key (see _harbor_config_is_ephemeral).
-    byok_resolution = None
-    if byok.byok_resolver_registered() and not _harbor_config_is_ephemeral(
-        prepared_trial.trial_harbor_config
-    ):
-        byok_resolution = await byok.resolve_byok(
-            owner_user_id=prepared_trial.created_by_user_id,
-            org_id=prepared_trial.org_id,
-            experiment_name=prepared_trial.experiment_name,
-            model=prepared_trial.trial_model,
-            agent=prepared_trial.trial_agent,
-        )
 
     span_provider = (
         prepared_trial.trial_environment or settings.harbor_environment
@@ -1612,10 +1636,7 @@ async def run_trial_job(
             cost_state=cost_state,
             extra_agent_env=job_tokens.merge_agent_env(
                 job_scoped_bundle,
-                byok.merge_byok_env(
-                    byok_resolution.env if byok_resolution else None,
-                    probe_agent_env,
-                ),
+                byok.merge_byok_env(byok_env, probe_agent_env),
             ),
         )
         await _settle_compute_costs(cost_state, execution.outcome)
@@ -1701,7 +1722,8 @@ async def run_trial_job(
                 probe_analysis=probe_analysis,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
-                byok_env=byok_resolution.env if byok_resolution else None,
+                trial_attempt=prepared_trial.trial_attempt,
+                byok_env=byok_env,
             )
         )
         await _finish_trial_settlement(

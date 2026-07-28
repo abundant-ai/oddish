@@ -366,6 +366,7 @@ async def create_task_sweep_core(
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
     from oddish.core.quota_admission import admit_trials
+    from oddish.core.quotas import acquire_quota_locks
 
     reservation: Reservation | None = None
     if idempotency_store is not None and idempotency_key and org_id:
@@ -457,6 +458,8 @@ async def create_task_sweep_core(
             submission = submission.model_copy(update={"link": github_meta.pr_url})
 
     if submission.append_to_task:
+        if org_id is not None:
+            await acquire_quota_locks(session, org_id, billed_user_id)
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )

@@ -155,3 +155,32 @@ async def test_terminate_run_harvest_noop_on_empty(monkeypatch):
 
     monkeypatch.setattr(core_helpers, "cancel_job_by_worker", must_not_run)
     assert await terminate_run_harvest({"status": "cancelled"}) == 0
+
+
+@pytest.mark.asyncio
+async def test_strict_terminate_reports_only_failed_handles(monkeypatch):
+    from oddish.dispatch.backends import modal as modal_backend
+
+    class _FakeDispatcher:
+        name = "modal"
+
+        async def cancel(self, handles):
+            return int(handles[0].id != "fc-bad")
+
+    async def teardown(_provider, external_id):
+        return external_id != "sb-bad"
+
+    monkeypatch.setattr(modal_backend, "ModalDispatcher", _FakeDispatcher)
+    monkeypatch.setattr(core_helpers, "cancel_job_by_worker", teardown)
+
+    with pytest.raises(core_helpers.HarvestTerminationError) as raised:
+        await terminate_run_harvest(
+            {
+                "modal_function_call_ids": ["fc-ok", "fc-bad"],
+                "worker_targets": [("daytona", "sb-ok"), ("daytona", "sb-bad")],
+            },
+            strict=True,
+        )
+
+    assert raised.value.modal_function_call_ids == ["fc-bad"]
+    assert raised.value.worker_targets == [("daytona", "sb-bad")]

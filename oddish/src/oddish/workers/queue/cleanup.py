@@ -504,6 +504,10 @@ async def cleanup_orphaned_queue_state(
         ) = await _reap_stale_worker_jobs(
             session, stale_after_minutes=stale_after_minutes
         )
+
+    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
+
+    async with get_session() as session:
         tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
             session, reaped_trial_ids
         )
@@ -541,7 +545,6 @@ async def cleanup_orphaned_queue_state(
     # These run AFTER the outer commit so a rolled-back sweep never tears down
     # remote handles / claim metadata the DB still points at. Best-effort; the
     # provider TTL and the next sweep are the backstops.
-    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
     stale_trial_events_purged = await purge_stale_trial_events()
 

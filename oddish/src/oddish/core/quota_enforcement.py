@@ -13,7 +13,7 @@ from oddish.core.cost_basis import (
     CANCELLED_HARBOR_STAGE,
     not_excluded_llm_key_filter,
 )
-from oddish.core.helpers import terminate_run_harvest
+from oddish.core.helpers import HarvestTerminationError, terminate_run_harvest
 from oddish.core.quotas import (
     acquire_quota_locks,
     get_effective_limit,
@@ -201,19 +201,32 @@ async def cancel_trials_if_quota_reached(
     if scope is None:
         return result
 
-    trials = list(
-        (
-            await session.execute(
-                select(TrialModel)
-                .where(*_active_trial_predicates(org_id, billed_user_id, scope=scope))
-                .order_by(TrialModel.id)
-                .with_for_update()
-                .execution_options(include_deleted=True)
-            )
+    task_ids = (
+        await session.scalars(
+            select(TrialModel.task_id)
+            .where(*_active_trial_predicates(org_id, billed_user_id, scope=scope))
+            .distinct()
+            .order_by(TrialModel.task_id)
+            .execution_options(include_deleted=True)
         )
-        .scalars()
-        .all()
-    )
+    ).all()
+    if task_ids:
+        await session.execute(
+            select(TaskModel.id)
+            .where(TaskModel.id.in_(task_ids))
+            .order_by(TaskModel.id)
+            .with_for_update()
+        )
+
+    trials = (
+        await session.scalars(
+            select(TrialModel)
+            .where(*_active_trial_predicates(org_id, billed_user_id, scope=scope))
+            .order_by(TrialModel.id)
+            .with_for_update()
+            .execution_options(include_deleted=True)
+        )
+    ).all()
     if not trials:
         result["scope"] = scope
         return result
@@ -235,8 +248,6 @@ async def cancel_trials_if_quota_reached(
             trial.analysis_finished_at = now
     await session.flush()
 
-    # Reconcile after commit so cancellation and post-trial hooks both acquire
-    # Trial locks before Task locks.
     result["affected_task_ids"] = affected_task_ids
     result["cancelled_trial_ids"] = trial_ids
 
@@ -256,6 +267,7 @@ async def cancel_trials_if_quota_reached(
             "worker_targets": worker_targets,
         }
     )
+    await _reconcile_cancelled_tasks(session, result)
     return result
 
 
@@ -266,46 +278,21 @@ async def _reconcile_cancelled_tasks(
     if not task_ids:
         return
 
-    # Preserve the global Trial -> Task -> WorkerJob lock order.
-    trials = list(
-        (
-            await session.execute(
-                select(TrialModel)
-                .where(TrialModel.task_id.in_(task_ids))
-                .order_by(TrialModel.id)
-                .with_for_update()
-                .execution_options(include_deleted=True)
-            )
+    # Preserve the global Task -> Trial -> WorkerJob lock order.
+    tasks = (
+        await session.scalars(
+            select(TaskModel)
+            .where(TaskModel.id.in_(task_ids))
+            .order_by(TaskModel.id)
+            .with_for_update()
         )
-        .scalars()
-        .all()
-    )
-    tasks = list(
-        (
-            await session.execute(
-                select(TaskModel)
-                .where(TaskModel.id.in_(task_ids))
-                .order_by(TaskModel.id)
-                .with_for_update()
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    # Include appends committed between the child and task locks. Do not lock on
-    # this reread: a post-trial hook may own the new child while awaiting Task.
-    current_trials = (
-        await session.execute(
-            select(
-                TrialModel.task_id,
-                TrialModel.finished_at,
-                TrialModel.status,
-                TrialModel.billed_user_id,
-                TrialModel.deleted_at,
-                TrialModel.superseded_by_trial_id,
-            )
+    ).all()
+    trials = (
+        await session.scalars(
+            select(TrialModel)
             .where(TrialModel.task_id.in_(task_ids))
+            .order_by(TrialModel.id)
+            .with_for_update()
             .execution_options(include_deleted=True)
         )
     ).all()
@@ -313,23 +300,16 @@ async def _reconcile_cancelled_tasks(
     scope = result["scope"]
     billed_user_id = result["quota_billed_user_id"]
     preserved_task_ids = {
-        task_id
-        for (
-            task_id,
-            finished_at,
-            status,
-            trial_billed_user_id,
-            deleted_at,
-            superseded_by_trial_id,
-        ) in current_trials
-        if deleted_at is None
-        and superseded_by_trial_id is None
+        trial.task_id
+        for trial in trials
+        if trial.deleted_at is None
+        and trial.superseded_by_trial_id is None
         and (
-            (finished_at is None and status in _ACTIVE_TRIAL_STATUSES)
+            (trial.finished_at is None and trial.status in _ACTIVE_TRIAL_STATUSES)
             or (
                 scope == "user"
-                and trial_billed_user_id is not None
-                and trial_billed_user_id != billed_user_id
+                and trial.billed_user_id is not None
+                and trial.billed_user_id != billed_user_id
             )
         )
     }
@@ -379,9 +359,10 @@ async def _reconcile_cancelled_tasks(
             await maybe_start_qa_stage(session, trial_id)
 
     released_trial_ids = [
-        trial_id for trial_id in released_trial_ids if trial_id not in cancelled_trial_ids
+        trial_id
+        for trial_id in released_trial_ids
+        if trial_id not in cancelled_trial_ids
     ]
-    # Keep metadata across ambiguous commits; dispatch and teardown are idempotent.
     result["released_trial_ids"] = list(
         dict.fromkeys([*result["released_trial_ids"], *released_trial_ids])
     )
@@ -400,28 +381,6 @@ async def _reconcile_cancelled_tasks(
         set(result["worker_targets"]) | set(worker_targets)
     )
     await session.flush()
-
-
-async def _reconcile_cancelled_tasks_until_complete(
-    result: dict[str, Any],
-    *,
-    after_failure: Callable[[], Awaitable[None]] | None = None,
-) -> None:
-    if not result.get("affected_task_ids"):
-        return
-
-    retry_delay = _RETRY_INITIAL_SECONDS
-    while True:
-        try:
-            async with get_session() as session:
-                await _reconcile_cancelled_tasks(session, result)
-            return
-        except Exception:
-            logger.exception("Quota task reconciliation failed; retrying")
-            if after_failure is not None:
-                await after_failure()
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)
 
 
 async def enforce_trial_quotas(
@@ -448,57 +407,19 @@ async def enforce_trial_quotas(
         )
         return None
 
-    terminated_modal_ids: set[str] = set()
-    terminated_worker_targets: set[tuple[str, str]] = set()
-    terminated_caller_modal_ids: set[str] = set()
-
-    async def teardown(*, include_caller: bool = True) -> None:
-        modal_ids = [
-            modal_id
-            for modal_id in result["modal_function_call_ids"]
-            if modal_id not in terminated_modal_ids
-        ]
-        worker_targets = [
-            target
-            for target in result["worker_targets"]
-            if target not in terminated_worker_targets
-        ]
-        caller_modal_ids = (
-            [
-                modal_id
-                for modal_id in result["caller_modal_function_call_ids"]
-                if modal_id not in terminated_caller_modal_ids
-            ]
-            if include_caller
-            else []
-        )
-        if not modal_ids and not worker_targets and not caller_modal_ids:
-            return
-        await _terminate_quota_harvest(
-            modal_function_call_ids=modal_ids,
-            worker_targets=worker_targets,
-            caller_modal_function_call_ids=caller_modal_ids,
-            org_id=org_id,
-            billed_user_id=billed_user_id,
-        )
-        terminated_modal_ids.update(modal_ids)
-        terminated_worker_targets.update(worker_targets)
-        terminated_caller_modal_ids.update(caller_modal_ids)
-
-    async def teardown_before_retry() -> None:
-        # The caller must stay alive to finish reconciliation.
-        await teardown(include_caller=False)
-
     try:
-        await _reconcile_cancelled_tasks_until_complete(
-            result, after_failure=teardown_before_retry
-        )
         if after_gate_release is not None:
-            await after_gate_release(list(result.get("released_trial_ids", [])))
+            await after_gate_release(list(result["released_trial_ids"]))
         if after_check is not None:
             await after_check()
     finally:
-        await teardown()
+        await _terminate_quota_harvest(
+            modal_function_call_ids=result["modal_function_call_ids"],
+            worker_targets=result["worker_targets"],
+            caller_modal_function_call_ids=result["caller_modal_function_call_ids"],
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+        )
 
     if result["trials_cancelled"]:
         logger.warning(
@@ -527,24 +448,36 @@ async def _terminate_quota_harvest(
     ):
         if not modal_ids and not targets:
             continue
+        pending_modal_ids = modal_ids
+        pending_targets = targets
         retry_delay = _RETRY_INITIAL_SECONDS
         while True:
             try:
                 await terminate_run_harvest(
                     {
-                        "modal_function_call_ids": list(modal_ids),
-                        "worker_targets": list(targets),
-                    }
+                        "modal_function_call_ids": pending_modal_ids,
+                        "worker_targets": pending_targets,
+                    },
+                    strict=True,
                 )
                 break
+            except HarvestTerminationError as exc:
+                pending_modal_ids = exc.modal_function_call_ids
+                pending_targets = exc.worker_targets
+                logger.exception(
+                    "Quota remote termination incomplete for org_id=%s "
+                    "billed_user_id=%s",
+                    org_id,
+                    billed_user_id,
+                )
             except Exception:
                 logger.exception(
                     "Quota remote termination failed for org_id=%s billed_user_id=%s",
                     org_id,
                     billed_user_id,
                 )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, _RETRY_MAX_SECONDS)
 
 
 async def enforce_trial_quotas_until_checked(

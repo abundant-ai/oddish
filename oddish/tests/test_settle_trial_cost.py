@@ -32,6 +32,7 @@ async def _store(monkeypatch, trial, outcome):
         outcome=outcome,
         trial_s3_key=None,
         execution_error=None,
+        trial_attempt=trial.attempts,
     )
 
 

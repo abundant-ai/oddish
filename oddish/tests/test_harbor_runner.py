@@ -1238,6 +1238,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1320,6 +1321,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
             outcome=outcome,
             trial_s3_key="tasks/task-1/trials/trial-1/",
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1397,6 +1399,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1467,6 +1470,7 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
             execution_error=None,
             worker_id="worker-1",
             worker_job_id="job-1",
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1548,6 +1552,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
             execution_error=None,
             worker_id="worker-1",
             worker_job_id="job-1",
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1568,26 +1573,80 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     assert stored == (True, False)
 
 
+def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
+    trial = SimpleNamespace(
+        id="trial-1",
+        attempts=2,
+        finished_at=object(),
+        superseded_by_trial_id=None,
+        input_tokens=7,
+        cost_usd=0.25,
+        llm_key_hash="current-key",
+    )
+
+    @asynccontextmanager
+    async def _fake_trial_session(*_args, **_kwargs):
+        yield SimpleNamespace(), trial
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+        input_tokens=100,
+        cost_usd=0.12,
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=1,
+        )
+    )
+
+    assert stored == (True, False)
+    assert (trial.input_tokens, trial.cost_usd, trial.llm_key_hash) == (
+        7,
+        0.25,
+        "current-key",
+    )
+
+
 @pytest.mark.asyncio
 async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
     trial = SimpleNamespace(
         id="trial-1",
+        task_id="task-1",
         status=trial_handler.TrialStatus.FAILED,
         harbor_stage="cancelled",
     )
     calls = []
 
+    class _Session:
+        async def scalar(self, _stmt):
+            return "task-1"
+
+        async def get(self, model, _obj_id, with_for_update=False):
+            assert with_for_update is True
+            if model is trial_handler.TaskModel:
+                return SimpleNamespace(status=trial_handler.TaskStatus.RUNNING)
+            assert model is trial_handler.TrialModel
+            return trial
+
     @asynccontextmanager
-    async def _fake_trial_session(
-        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
-    ):
-        assert with_for_update is True
-        yield SimpleNamespace(), trial
+    async def _fake_get_session():
+        yield _Session()
 
     async def _called(*_args, **_kwargs):
         calls.append(True)
 
-    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(trial_handler, "get_session", _fake_get_session)
     monkeypatch.setattr(
         "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _called
     )
@@ -1613,22 +1672,25 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
     calls = []
 
     class _Session:
+        async def scalar(self, _stmt):
+            return "task-1"
+
         @asynccontextmanager
         async def begin_nested(self):
             yield
 
         async def get(self, model, obj_id, with_for_update=False):
-            assert model is trial_handler.TaskModel
-            assert obj_id == "task-1"
             assert with_for_update is True
-            return SimpleNamespace(status=trial_handler.TaskStatus.RUNNING)
+            if model is trial_handler.TaskModel:
+                assert obj_id == "task-1"
+                return SimpleNamespace(status=trial_handler.TaskStatus.RUNNING)
+            assert model is trial_handler.TrialModel
+            assert obj_id == "trial-1"
+            return trial
 
     @asynccontextmanager
-    async def _fake_trial_session(
-        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
-    ):
-        assert with_for_update is True
-        yield _Session(), trial
+    async def _fake_get_session():
+        yield _Session()
 
     async def _assignment(*_args, **_kwargs):
         calls.append("assignment")
@@ -1640,7 +1702,7 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         calls.append("qa")
         return False
 
-    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(trial_handler, "get_session", _fake_get_session)
     monkeypatch.setattr(
         "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _assignment
     )
@@ -3356,6 +3418,7 @@ def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -3389,6 +3452,7 @@ def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -3421,6 +3485,7 @@ def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch)
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 

@@ -305,7 +305,6 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
         billed_user_id=user_id,
         caller_trial_id=exhausted_id,
     )
-    await quota_enforcement._reconcile_cancelled_tasks(session, result)
     for job in (
         exhausted_job,
         mixed_target_job,
@@ -364,7 +363,9 @@ async def test_user_quota_cancels_payer_trials_and_advances_preserved_tasks(
     assert await maybe_gate_llm_trials(session, gate_other_baseline_id)
     await session.refresh(gate_blocked_job)
     assert gate_blocked_job.status == WorkerJobStatus.CANCELLED
-    assert (await session.get(TrialModel, gate_blocked_id)).status == TrialStatus.SKIPPED
+    assert (
+        await session.get(TrialModel, gate_blocked_id)
+    ).status == TrialStatus.SKIPPED
     assert (await session.get(WorkerJobModel, exhausted_job.id)).status == (
         WorkerJobStatus.CANCELLED
     )
@@ -494,7 +495,6 @@ async def test_org_quota_cancels_every_users_active_trials(session, monkeypatch)
     result = await cancel_trials_if_quota_reached(
         session, org_id=org_id, billed_user_id="user-a"
     )
-    await quota_enforcement._reconcile_cancelled_tasks(session, result)
 
     assert result["scope"] == "org"
     assert result["trials_cancelled"] == 4
@@ -558,7 +558,8 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
     async def after_gate_release(trial_ids):
         gate_release_calls.append(list(trial_ids))
 
-    async def fake_terminate(result):
+    async def fake_terminate(result, *, strict):
+        assert strict
         assert check_finished
         termination_calls.append(dict(result))
         return len(result["modal_function_call_ids"])
@@ -589,156 +590,6 @@ async def test_enforcement_terminates_callers_modal_worker_last(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_task_reconciliation_starts_after_cancellation_commit(monkeypatch):
-    events = []
-    sessions = iter(["cancel-session", "reconcile-session"])
-
-    @asynccontextmanager
-    async def fake_get_session():
-        session = next(sessions)
-        events.append(f"enter:{session}")
-        yield session
-        events.append(f"commit:{session}")
-
-    async def fake_cancel(session, **_kwargs):
-        assert session == "cancel-session"
-        return {
-            "scope": "user",
-            "trials_cancelled": 0,
-            "tasks_cancelled": 0,
-            "modal_function_call_ids": [],
-            "caller_modal_function_call_ids": [],
-            "worker_targets": [],
-            "released_trial_ids": [],
-            "affected_task_ids": ["task-preserved"],
-            "cancelled_trial_ids": ["trial-cancelled"],
-            "quota_billed_user_id": "user-1",
-        }
-
-    async def fake_reconcile(session, _result):
-        assert session == "reconcile-session"
-        assert events == [
-            "enter:cancel-session",
-            "commit:cancel-session",
-            "enter:reconcile-session",
-        ]
-        events.append("reconciled")
-
-    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
-    monkeypatch.setattr(
-        quota_enforcement, "cancel_trials_if_quota_reached", fake_cancel
-    )
-    monkeypatch.setattr(quota_enforcement, "_reconcile_cancelled_tasks", fake_reconcile)
-
-    assert (
-        await enforce_trial_quotas(
-            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
-        )
-        == 0
-    )
-    assert events == [
-        "enter:cancel-session",
-        "commit:cancel-session",
-        "enter:reconcile-session",
-        "reconciled",
-        "commit:reconcile-session",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_reconciliation_failure_does_not_block_remote_teardown(monkeypatch):
-    @asynccontextmanager
-    async def fake_get_session():
-        yield object()
-
-    async def fake_cancel(*_args, **_kwargs):
-        return {
-            "scope": "user",
-            "trials_cancelled": 1,
-            "tasks_cancelled": 0,
-            "modal_function_call_ids": ["fc-sibling"],
-            "caller_modal_function_call_ids": ["fc-caller"],
-            "worker_targets": [("daytona", "sandbox-sibling")],
-            "released_trial_ids": [],
-            "affected_task_ids": ["task-1"],
-            "cancelled_trial_ids": ["trial-1"],
-            "quota_billed_user_id": "user-1",
-        }
-
-    reconcile_attempts = 0
-
-    async def flaky_reconcile(_session, result):
-        nonlocal reconcile_attempts
-        reconcile_attempts += 1
-        if reconcile_attempts == 1:
-            raise RuntimeError("database unavailable")
-        if reconcile_attempts == 2:
-            result["modal_function_call_ids"].append("fc-task-rollback")
-            result["worker_targets"].append(("daytona", "sandbox-task-rollback"))
-            raise RuntimeError("commit outcome unknown")
-        result["modal_function_call_ids"].append("fc-task")
-        result["worker_targets"].append(("daytona", "sandbox-task"))
-
-    termination_calls = []
-
-    async def fake_terminate(payload):
-        termination_calls.append(dict(payload))
-
-    retry_delays = []
-
-    async def retry(delay):
-        retry_delays.append(delay)
-        expected_calls = [
-            {
-                "modal_function_call_ids": ["fc-sibling"],
-                "worker_targets": [("daytona", "sandbox-sibling")],
-            }
-        ]
-        if len(retry_delays) == 2:
-            expected_calls.append(
-                {
-                    "modal_function_call_ids": ["fc-task-rollback"],
-                    "worker_targets": [("daytona", "sandbox-task-rollback")],
-                }
-            )
-        assert termination_calls == expected_calls
-
-    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
-    monkeypatch.setattr(
-        quota_enforcement, "cancel_trials_if_quota_reached", fake_cancel
-    )
-    monkeypatch.setattr(
-        quota_enforcement, "_reconcile_cancelled_tasks", flaky_reconcile
-    )
-    monkeypatch.setattr(quota_enforcement, "terminate_run_harvest", fake_terminate)
-    monkeypatch.setattr(quota_enforcement.asyncio, "sleep", retry)
-
-    assert (
-        await enforce_trial_quotas(
-            org_id="org-1", billed_user_id="user-1", caller_trial_id="trial-1"
-        )
-        == 1
-    )
-
-    assert termination_calls == [
-        {
-            "modal_function_call_ids": ["fc-sibling"],
-            "worker_targets": [("daytona", "sandbox-sibling")],
-        },
-        {
-            "modal_function_call_ids": ["fc-task-rollback"],
-            "worker_targets": [("daytona", "sandbox-task-rollback")],
-        },
-        {
-            "modal_function_call_ids": ["fc-task"],
-            "worker_targets": [("daytona", "sandbox-task")],
-        },
-        {"modal_function_call_ids": ["fc-caller"], "worker_targets": []},
-    ]
-    assert retry_delays == [1.0, 2.0]
-
-
-@pytest.mark.asyncio
 async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
     @asynccontextmanager
     async def fake_get_session():
@@ -749,18 +600,23 @@ async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
             "scope": "user",
             "trials_cancelled": 2,
             "tasks_cancelled": 1,
-            "modal_function_call_ids": ["fc-sibling"],
+            "modal_function_call_ids": ["fc-ok", "fc-sibling"],
             "caller_modal_function_call_ids": ["fc-caller"],
-            "worker_targets": [("daytona", "sandbox-sibling")],
+            "worker_targets": [
+                ("daytona", "sandbox-ok"),
+                ("daytona", "sandbox-sibling"),
+            ],
+            "released_trial_ids": [],
         }
 
     termination_calls = []
     sleeps = []
-    sibling_failures = 7
+    sibling_failures = 1
     caller_failures = 1
 
-    async def flaky_terminate(result):
+    async def flaky_terminate(result, *, strict):
         nonlocal sibling_failures, caller_failures
+        assert strict
         termination_calls.append(
             {
                 "modal_function_call_ids": list(result["modal_function_call_ids"]),
@@ -769,14 +625,15 @@ async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
         )
         caller = result["modal_function_call_ids"] == ["fc-caller"]
         should_fail = caller_failures if caller else sibling_failures
-        result.pop("modal_function_call_ids")
-        result.pop("worker_targets")
         if should_fail:
             if caller:
                 caller_failures -= 1
+                raise quota_enforcement.HarvestTerminationError(["fc-caller"], [])
             else:
                 sibling_failures -= 1
-            raise RuntimeError("temporary teardown failure")
+                raise quota_enforcement.HarvestTerminationError(
+                    ["fc-sibling"], [("daytona", "sandbox-sibling")]
+                )
 
     async def record_sleep(delay):
         sleeps.append(delay)
@@ -795,6 +652,13 @@ async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
         == 2
     )
     sibling_harvest = {
+        "modal_function_call_ids": ["fc-ok", "fc-sibling"],
+        "worker_targets": [
+            ("daytona", "sandbox-ok"),
+            ("daytona", "sandbox-sibling"),
+        ],
+    }
+    sibling_retry = {
         "modal_function_call_ids": ["fc-sibling"],
         "worker_targets": [("daytona", "sandbox-sibling")],
     }
@@ -802,8 +666,13 @@ async def test_enforcement_retries_harvested_handles_before_ack(monkeypatch):
         "modal_function_call_ids": ["fc-caller"],
         "worker_targets": [],
     }
-    assert termination_calls == [sibling_harvest] * 8 + [caller_harvest] * 2
-    assert sleeps == [1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 1.0]
+    assert termination_calls == [
+        sibling_harvest,
+        sibling_retry,
+        caller_harvest,
+        caller_harvest,
+    ]
+    assert sleeps == [1.0, 1.0]
 
 
 @pytest.mark.asyncio
@@ -820,6 +689,7 @@ async def test_enforcement_tears_down_remotes_when_after_check_fails(monkeypatch
             "modal_function_call_ids": ["fc-sibling"],
             "caller_modal_function_call_ids": ["fc-caller"],
             "worker_targets": [],
+            "released_trial_ids": [],
         }
 
     async def fail_after_check():
@@ -827,7 +697,8 @@ async def test_enforcement_tears_down_remotes_when_after_check_fails(monkeypatch
 
     termination_calls = []
 
-    async def fake_terminate(result):
+    async def fake_terminate(result, *, strict):
+        assert strict
         termination_calls.append(list(result["modal_function_call_ids"]))
 
     monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)

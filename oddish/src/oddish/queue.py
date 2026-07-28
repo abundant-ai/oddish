@@ -130,19 +130,6 @@ async def cancel_tasks_runs(
         task_id for task_id in requested_task_ids if task_id not in tasks_by_id
     ]
 
-    # Match worker domain-write order before touching worker_jobs:
-    # trial handlers update the trial row, then may lock/update the parent task
-    # as they advance task state. Locking tasks first can deadlock against a
-    # worker that already holds one of the child trials.
-    trial_rows = await session.execute(
-        select(TrialModel)
-        .where(TrialModel.task_id.in_(found_task_ids))
-        .order_by(TrialModel.id)
-        .with_for_update()
-    )
-    trials = list(trial_rows.scalars().all())
-    trial_ids = [trial.id for trial in trials]
-
     locked_task_query = (
         select(TaskModel)
         .where(TaskModel.id.in_(found_task_ids))
@@ -153,6 +140,15 @@ async def cancel_tasks_runs(
         locked_task_query = locked_task_query.where(TaskModel.org_id == org_id)
     locked_task_rows = await session.execute(locked_task_query)
     tasks = list(locked_task_rows.scalars().all())
+
+    trial_rows = await session.execute(
+        select(TrialModel)
+        .where(TrialModel.task_id.in_(found_task_ids))
+        .order_by(TrialModel.id)
+        .with_for_update()
+    )
+    trials = list(trial_rows.scalars().all())
+    trial_ids = [trial.id for trial in trials]
 
     now = utcnow()
 
