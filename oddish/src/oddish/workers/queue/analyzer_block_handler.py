@@ -16,8 +16,13 @@ from oddish.blocks.analyzer.claude_cli_client import CliConfig
 from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from oddish.config import settings
 from oddish.core.task_source import resolve_task_source_location
+from oddish.core.verdict_sync import (
+    build_pre_trial_payload,
+    sync_pre_trial_to_task_version,
+)
 from oddish.db import AnalyzerRunModel, JobStatus, PromptVersionModel, get_session
 from oddish.db.storage import resolve_task_directory
+from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 _HEARTBEAT_INTERVAL_SECONDS = 30
@@ -25,6 +30,43 @@ _HEARTBEAT_INTERVAL_SECONDS = 30
 
 class MissingPromptVersionError(RuntimeError):
     """The immutable prompt version referenced by an analyzer run is gone."""
+
+
+async def _mirror_pre_trial_to_task_version(
+    task_version_id: str | None, output: dict | None
+) -> None:
+    """Write an assignment-driven audit's findings onto the version it audited.
+
+    ``task_versions.pre_trial`` is the only source post-trial reads for
+    ``{pre_trial_context}``, and only the built-in audit ever wrote it. Without
+    this, an assignment-driven audit's findings live in ``analyzer_blocks`` and
+    reach nothing -- no post-trial context, and no ``exploited`` elevation,
+    since ``aggregate_exploited_into_pre_trial`` matches on the ids
+    ``build_pre_trial_payload`` computes here.
+
+    Best-effort by design: the block already succeeded and its output is
+    persisted on the run and in S3, so a mirroring failure must not fail the
+    job and lose the audit. Last write wins if the built-in audit also ran --
+    both produce the same kind of result for the same version.
+    """
+    if not task_version_id:
+        return
+    from oddish.analyze.models import ActionItem
+
+    items = (output or {}).get("items") or []
+    try:
+        await sync_pre_trial_to_task_version(
+            task_version_id,
+            payload=build_pre_trial_payload(
+                [ActionItem(**item) for item in items if isinstance(item, dict)]
+            ),
+            error=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(
+            f"[yellow]pre-trial findings not mirrored onto version "
+            f"{task_version_id}: {type(exc).__name__}: {exc}[/yellow]"
+        )
 
 
 def _analyzer_type_for_config(config: dict) -> AnalyzerType:
@@ -279,6 +321,12 @@ async def run_analyzer_block_job(
             run.status = JobStatus.SUCCESS
             run.output = result.output
             run.error = block.error
+        if pre_trial_build is not None:
+            # After the run is terminal: mirroring is a downstream convenience,
+            # never a reason to leave a finished run looking unfinished.
+            await _mirror_pre_trial_to_task_version(
+                pre_trial_build.get("task_version_id"), result.output
+            )
     finally:
         if heartbeat_task is not None:
             heartbeat_stop.set()
