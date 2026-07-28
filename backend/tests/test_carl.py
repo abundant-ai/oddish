@@ -7,6 +7,22 @@ import carl
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _mock_claude_agent_sdk(monkeypatch):
+    sdk = types.ModuleType("claude_agent_sdk")
+
+    def tool(name, _description, _schema):
+        def decorate(function):
+            function.name = name
+            return function
+
+        return decorate
+
+    sdk.tool = tool
+    sdk.create_sdk_mcp_server = lambda **kwargs: kwargs
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+
+
 def _mention():
     event = {
         "type": "app_mention",
@@ -161,20 +177,7 @@ def test_limit_answer_preserves_partial_text(
     assert "this is what I had so far" in answer
 
 
-def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
-    sdk = types.ModuleType("claude_agent_sdk")
-
-    def tool(name, _description, _schema):
-        def decorate(function):
-            function.name = name
-            return function
-
-        return decorate
-
-    sdk.tool = tool
-    sdk.create_sdk_mcp_server = lambda **kwargs: kwargs
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
-
+def test_read_only_sql_guard_rejects_writes_and_private_tables():
     import carl_tools
 
     assert carl_tools._validate_sql("select count(*) from trials") is None
