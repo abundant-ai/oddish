@@ -12,7 +12,7 @@ from slack_alert_settings import DEFAULT_ALERT_SETTINGS
 
 VALID = {
     "trial_escalation_usd": 1500,
-    "user_weekly_escalation_delta_usd": 5000,
+    "user_daily_overage_delta_usd": 5000,
     "always_ping_emails": ["ops@example.com", "sre@example.com"],
 }
 
@@ -86,8 +86,8 @@ async def test_get_returns_defaults_when_no_override_row(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["trial_escalation_usd"] == DEFAULT_ALERT_SETTINGS.trial_escalation_usd
-    assert body["user_weekly_escalation_delta_usd"] == (
-        DEFAULT_ALERT_SETTINGS.user_weekly_escalation_delta_usd
+    assert body["user_daily_overage_delta_usd"] == (
+        DEFAULT_ALERT_SETTINGS.user_daily_overage_delta_usd
     )
     assert body["always_ping_emails"] == list(DEFAULT_ALERT_SETTINGS.always_ping_emails)
     # The pane labels defaults differently from a deliberate override.
@@ -98,7 +98,7 @@ async def test_get_returns_defaults_when_no_override_row(monkeypatch):
 async def test_put_writes_the_override_and_echoes_it_back(monkeypatch):
     row = SimpleNamespace(
         trial_escalation_usd=1500,
-        user_weekly_escalation_delta_usd=5000,
+        user_daily_overage_delta_usd=5000,
         always_ping_emails=["ops@example.com", "sre@example.com"],
     )
     session = _Session(row=row)
@@ -130,8 +130,8 @@ async def test_delete_drops_the_override_and_returns_defaults(monkeypatch):
     [
         ("trial_escalation_usd", 0),
         ("trial_escalation_usd", -5),
-        ("user_weekly_escalation_delta_usd", 0),
-        ("user_weekly_escalation_delta_usd", -5),
+        ("user_daily_overage_delta_usd", 0),
+        ("user_daily_overage_delta_usd", -5),
         ("always_ping_emails", ["not-an-email"]),
     ],
 )

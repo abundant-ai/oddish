@@ -1,4 +1,4 @@
-"""add weekly user spend escalation threshold
+"""add per-user daily-overage escalation margin
 
 Revision ID: slack_user_spend_threshold_001
 Revises: user_alert_task_finished_001
@@ -19,10 +19,10 @@ def upgrade() -> None:
     op.execute(
         """
         ALTER TABLE slack_alert_settings
-            ADD COLUMN IF NOT EXISTS user_weekly_escalation_delta_usd
-                NUMERIC(12, 2) NOT NULL DEFAULT 5000
-                CONSTRAINT ck_slack_alert_settings_user_weekly_delta
-                CHECK (user_weekly_escalation_delta_usd > 0)
+            ADD COLUMN IF NOT EXISTS user_daily_overage_delta_usd
+                NUMERIC(12, 2) NOT NULL DEFAULT 1000
+                CONSTRAINT ck_slack_alert_settings_user_daily_overage
+                CHECK (user_daily_overage_delta_usd > 0)
         """
     )
 
@@ -31,6 +31,6 @@ def downgrade() -> None:
     op.execute(
         """
         ALTER TABLE slack_alert_settings
-            DROP COLUMN IF EXISTS user_weekly_escalation_delta_usd
+            DROP COLUMN IF EXISTS user_daily_overage_delta_usd
         """
     )
