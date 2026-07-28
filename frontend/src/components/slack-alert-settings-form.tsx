@@ -10,6 +10,7 @@ import { fetcher } from "@/lib/api";
 
 interface SlackAlertSettings {
   trial_escalation_usd: number;
+  user_weekly_escalation_delta_usd: number;
   always_ping_emails: string[];
   is_override: boolean;
 }
@@ -29,6 +30,9 @@ export function SlackAlertSettingsForm() {
     error: loadError,
   } = useSWR<SlackAlertSettings>(ENDPOINT, fetcher);
   const [escalation, setEscalation] = useState<number | null>(null);
+  const [userDeltaThousands, setUserDeltaThousands] = useState<number | null>(
+    null
+  );
   const [pingsText, setPingsText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,20 +40,23 @@ export function SlackAlertSettingsForm() {
   if (loadError) {
     const status = (loadError as { status?: number }).status;
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className="text-muted-foreground text-sm">
         {status === 403 ? "Admins only." : "Could not load alert settings."}
       </p>
     );
   }
   if (!data) {
-    return <p className="text-sm text-muted-foreground">Loading settings…</p>;
+    return <p className="text-muted-foreground text-sm">Loading settings…</p>;
   }
 
   const escalationUsd = escalation ?? data.trial_escalation_usd;
+  const userDeltaK =
+    userDeltaThousands ?? data.user_weekly_escalation_delta_usd / 1000;
   // The field keeps its own raw string so a half-typed address survives a
   // keystroke; the parsed list is only derived on save.
   const pings = pingsText ?? data.always_ping_emails.join(", ");
-  const dirty = escalation != null || pingsText != null;
+  const dirty =
+    escalation != null || userDeltaThousands != null || pingsText != null;
 
   async function send(method: "PUT" | "DELETE") {
     setSaving(true);
@@ -61,6 +68,7 @@ export function SlackAlertSettingsForm() {
         method === "PUT"
           ? JSON.stringify({
               trial_escalation_usd: escalationUsd,
+              user_weekly_escalation_delta_usd: userDeltaK * 1000,
               always_ping_emails: splitList(pings),
             })
           : undefined,
@@ -78,6 +86,7 @@ export function SlackAlertSettingsForm() {
       return;
     }
     setEscalation(null);
+    setUserDeltaThousands(null);
     setPingsText(null);
     void mutate();
   }
@@ -85,6 +94,10 @@ export function SlackAlertSettingsForm() {
   function save() {
     if (!Number.isFinite(escalationUsd) || escalationUsd <= 0) {
       setError("The escalation amount must be greater than $0.");
+      return;
+    }
+    if (!Number.isFinite(userDeltaK) || userDeltaK <= 0) {
+      setError("The weekly user-spend delta must be greater than $0.");
       return;
     }
     void send("PUT");
@@ -104,10 +117,29 @@ export function SlackAlertSettingsForm() {
             setEscalation(Number(e.target.value));
           }}
         />
-        <p className="text-xs text-muted-foreground">
-          Any single trial finished within the past 24 hours that costs more than
-          this posts to the shared channel and pings the list below. Owner DMs are
-          tuned per person in their own notification settings, not here.
+        <p className="text-muted-foreground text-xs">
+          Any running or retrying trial whose live cost rises above this posts
+          to the shared channel and pings the list below. Owner DMs after
+          completion are tuned per person in their own notification settings,
+          not here.
+        </p>
+      </div>
+      <div className="space-y-1">
+        <Label>User weekly spend above workspace average ($k)</Label>
+        <Input
+          type="number"
+          min={0.1}
+          step={0.5}
+          value={userDeltaK}
+          onChange={(e) => {
+            setError(null);
+            setUserDeltaThousands(Number(e.target.value));
+          }}
+        />
+        <p className="text-muted-foreground text-xs">
+          Ping the whole channel when a user&apos;s rolling seven-day spend,
+          including live running trials, exceeds their workspace&apos;s average
+          spender by this many thousands of dollars.
         </p>
       </div>
       <div className="space-y-1">
@@ -119,12 +151,12 @@ export function SlackAlertSettingsForm() {
             setPingsText(e.target.value);
           }}
         />
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           Matched to Slack accounts by email, so these must be the addresses on
           their Slack profiles.
         </p>
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-muted-foreground text-xs">
         {data.is_override
           ? "Overriding the deploy-time defaults. Applies to every org, within 5 minutes."
           : "Currently on the deploy-time defaults. Saving overrides them for every org."}
@@ -143,7 +175,7 @@ export function SlackAlertSettingsForm() {
             Reset to defaults
           </Button>
         ) : null}
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {error ? <p className="text-destructive text-xs">{error}</p> : null}
       </div>
     </div>
   );
