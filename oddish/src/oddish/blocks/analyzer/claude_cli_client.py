@@ -91,7 +91,12 @@ def extract_claude_result(payload: dict) -> Any:
     if isinstance(result, str):
         from oddish.blocks.block import Block
 
-        return json.loads(Block.strip_code_fences(result))
+        # parse_json, not json.loads(strip_code_fences(...)): a free-text result
+        # is the model talking, and it routinely writes a sentence before its
+        # fenced object. parse_json owns the recovery for that, and this path
+        # must not fork from it -- pre-trial audits reach validation only
+        # through here.
+        return Block.parse_json(result)
     raise RuntimeError("claude-code envelope carried no structured result")
 
 
