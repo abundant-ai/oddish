@@ -1510,12 +1510,6 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
 async def release_gate_after_quota_cancel(
     session: AsyncSession, trial_id: str
 ) -> list[str]:
-    """Re-drive a baseline gate after quota cancellation.
-
-    The shared resolver waits for any sibling baselines and remembers terminal
-    cancellation via ``harbor_stage``. This call therefore cannot release LLM
-    work while another baseline is still running.
-    """
     trial = await session.get(TrialModel, trial_id)
     if not trial or not is_nop_oracle_agent(trial.agent):
         return []
@@ -1536,16 +1530,7 @@ async def _resolve_baseline_gate_for_scope(
     task_version_id: str | None,
     experiment_id: str | None,
 ) -> list[str] | None:
-    """Release or cancel a (task version, experiment) scope's BLOCKED LLM trials.
-
-    Locks the task row FOR UPDATE so the decision is serialized against
-    concurrent baseline completions *and* new-trial enqueues on the same task.
-    No-op (returns ``None``) when the scope has no BLOCKED LLM trials or its
-    baselines are still running. When all the scope's baselines are terminal it
-    evaluates them: VALID releases the BLOCKED LLM trials to QUEUED and returns
-    their IDs, while FAULTY cancels them (mirrored to FAILED) and returns an
-    empty list.
-    """
+    """Return None until resolved, [] when cancelled, or released trial IDs."""
     # Cheap, lock-free skip: if the task has no BLOCKED trial jobs at all there
     # is nothing to resolve, so don't take the task lock. This keeps the release
     # path off the hot path (every baseline completion, every reconcile pass)
@@ -1633,9 +1618,7 @@ async def _resolve_baseline_gate_for_scope(
         )
     ).all()
 
-    # A cancelled baseline has no quality verdict. Ignore only that row: any
-    # completed sibling can still prove the task valid or faulty. If quota
-    # cancellation removed every baseline, there is no evidence to gate on.
+    # Cancelled baselines have no verdict; release if none remain evaluable.
     evaluable_baselines = [
         (agent, reward)
         for agent, reward, harbor_stage in baseline_rows
@@ -1693,9 +1676,7 @@ async def _cancel_gated_llm_trials(
     """
     if not trial_ids:
         return
-    # Quota cancellation locks trial rows in ID order before worker jobs. Do
-    # the same here explicitly: an UPDATE may otherwise acquire multiple row
-    # locks in a plan-dependent order and deadlock with quota cancellation.
+    # Match quota cancellation's ordered Trial -> WorkerJob locks.
     await session.execute(
         select(TrialModel.id)
         .where(TrialModel.id.in_(trial_ids))

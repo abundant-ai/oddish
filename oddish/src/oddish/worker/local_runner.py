@@ -393,14 +393,9 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
 
     from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
 
-    # Harbor may have settled cost before a concurrent user/quota cancellation
-    # won the terminal row. Always enforce that spend, but only a completion
-    # owned by this runner may release downstream work.
+    # Enforce settled spend, but run hooks only for the winning completion.
     async def after_check() -> None:
         if completed:
-            # The trial is terminal now. Modal drives the baseline gate + QA stage
-            # from the trial handler/dispatcher; local mode has neither, so run
-            # them here and locally dispatch any LLM trials the gate just released.
             await _local_post_trial_hooks(trial_id, dry_run=dry_run)
 
     async def after_gate_release(released_trial_ids: list[str]) -> None:
@@ -765,10 +760,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 trial.reward = reward_value
             trial.result = _strip_nul(result_payload)
 
-        # Metering belongs to the billed attempt even when a concurrent
-        # cancellation wins the terminal row. Persist only these accounting
-        # fields after cancellation; reward, artifacts, trajectory metadata,
-        # and analysis below are run outcomes and must not overwrite it.
+        # A cancellation owns outcome fields, but the attempt still owns metering.
         agent_result = getattr(result, "agent_result", None) if result else None
         if agent_result is not None and not agent_result.is_empty():
             prev_cost_usd = trial.cost_usd

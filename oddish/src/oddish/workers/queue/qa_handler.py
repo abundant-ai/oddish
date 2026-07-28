@@ -458,9 +458,7 @@ async def _load_live_trials_for_classification(
                     # Exclude bulk-migrated Sauron trials (see docstring): too
                     # costly to classify ~1M historical rows.
                     TrialModel.imported_at.is_(None),
-                    # A cancelled trial has no outcome to classify. This also
-                    # keeps quota cancellation from manufacturing an empty QA
-                    # job when all surviving trials are otherwise excluded.
+                    # Cancelled trials have no outcome to classify.
                     func.coalesce(TrialModel.harbor_stage, "")
                     != CANCELLED_HARBOR_STAGE,
                     # Gate-skipped trials never ran (no logs to classify); a

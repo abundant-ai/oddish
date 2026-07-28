@@ -140,7 +140,6 @@ async def test_local_runner_skips_blocked_trial(monkeypatch, cleanup_task_ids):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dry_run", [False, True])
 async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids, dry_run):
-    """Two concurrent dispatches claim once and preserve the dry-run mode."""
     monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
     calls: list[str] = []
     quota_checks = []

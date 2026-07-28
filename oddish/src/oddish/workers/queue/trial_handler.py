@@ -660,7 +660,6 @@ def _settle_trial_metering(
     *,
     preserve_checkpointed_cost: bool = False,
 ):
-    """Persist billed usage independently from terminal outcome ownership."""
     prev_cost_usd = trial.cost_usd
     trial.input_tokens = outcome.input_tokens
     trial.cache_tokens = outcome.cache_tokens
@@ -683,9 +682,7 @@ def _settle_trial_metering(
     if preserve_checkpointed_cost and prev_cost_usd is not None:
         if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
             trial.cost_usd = prev_cost_usd
-    # Stamp the key this trial ran on -- the BYOK overlay's key when one was
-    # injected, else the worker's platform key -- so its spend can be dropped
-    # from cost accounting when that key is on the admin exclusion list.
+    # Attribute spend to the BYOK overlay or platform key that funded the run.
     trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
     return prev_cost_usd, provider, native_cost_trusted
 
@@ -747,9 +744,7 @@ async def _store_trial_results(
             console.print(
                 f"[dim]Trial {trial_id} was cancelled; stored metering only[/dim]"
             )
-            # These rows are already terminal (finished_at stamped by the cancel
-            # path / CANCEL hook); report that so the caller runs the terminal
-            # live-event purge instead of leaning on the 24h TTL sweeper.
+            # Report terminal so the caller purges live events immediately.
             return trial.finished_at is not None, False
 
         if not await _worker_still_owns_trial(
