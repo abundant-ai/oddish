@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from oddish.db.models import AnalysisCostModel
-from oddish.model_pricing import estimate_cost_usd
+from oddish.model_pricing import estimate_cost_usd, settle_cost_usd
 
 
 @dataclass(frozen=True)
@@ -26,21 +26,50 @@ class AnalysisUsage:
 def parse_cli_usage(payload: dict, model_id: str | None) -> AnalysisUsage | None:
     """Extract usage from a Claude Code ``--output-format json`` envelope.
 
-    Returns ``None`` when the envelope carries no ``total_cost_usd`` — there is
-    no cost signal to record, and we never fabricate one.
+    Claude Code reports a native dollar cost for direct Anthropic calls, but
+    Bedrock envelopes can report zero or omit that value while still carrying
+    token usage. Settle those envelopes the same way as trial metering: prefer
+    a positive native cost, otherwise price the reported tokens.
     """
     total = payload.get("total_cost_usd")
-    if total is None:
-        return None
     usage = payload.get("usage") or {}
-    return AnalysisUsage(
-        cost_usd=float(total),
-        input_tokens=usage.get("input_tokens"),
-        output_tokens=usage.get("output_tokens"),
-        cache_read_tokens=usage.get("cache_read_input_tokens"),
-        cache_write_tokens=usage.get("cache_creation_input_tokens"),
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+    cache_read_tokens = usage.get("cache_read_input_tokens")
+    cache_write_tokens = usage.get("cache_creation_input_tokens")
+    if total is None and not any(
+        value is not None
+        for value in (
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
+    ):
+        return None
+
+    native_cost = float(total) if total is not None else None
+    cost_usd = settle_cost_usd(
+        native_cost,
+        native_cost_trusted=True,
         model=model_id,
-        source="native",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
+    used_native_cost = native_cost is not None and (
+        native_cost > 0
+        or not (input_tokens or output_tokens or cache_write_tokens)
+    )
+    return AnalysisUsage(
+        cost_usd=cost_usd,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        model=model_id,
+        source="native" if used_native_cost else "estimated",
     )
 
 

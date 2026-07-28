@@ -30,8 +30,36 @@ def test_parse_cli_usage_reads_native_cost_and_tokens() -> None:
     assert u.source == "native"
 
 
-def test_parse_cli_usage_none_when_no_cost() -> None:
-    assert parse_cli_usage({"usage": {"input_tokens": 5}}, "m") is None
+def test_parse_cli_usage_estimates_when_bedrock_omits_native_cost() -> None:
+    u = parse_cli_usage(
+        {"usage": {"input_tokens": 1_000, "output_tokens": 100}},
+        "global.anthropic.claude-haiku-4",
+    )
+    assert u is not None
+    assert u.cost_usd == 0.0015
+    assert u.source == "estimated"
+
+
+def test_parse_cli_usage_estimates_when_bedrock_reports_zero_cost() -> None:
+    u = parse_cli_usage(
+        {
+            "total_cost_usd": 0,
+            "usage": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "cache_read_input_tokens": 100,
+                "cache_creation_input_tokens": 100,
+            },
+        },
+        "global.anthropic.claude-haiku-4",
+    )
+    assert u is not None
+    assert u.cost_usd == 0.001435
+    assert u.source == "estimated"
+
+
+def test_parse_cli_usage_none_without_cost_or_tokens() -> None:
+    assert parse_cli_usage({}, "m") is None
 
 
 def test_parse_cli_usage_tolerates_missing_usage_block() -> None:
