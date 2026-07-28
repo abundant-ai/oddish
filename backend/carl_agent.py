@@ -55,7 +55,7 @@ SYSTEM_PROMPT = (
     "sides in one flat join double-counts inference cost. "
     '"Trial type" usually means `job_kind` or the trial\'s task. '
     "`oddish_sql` may only read analytics tables (analysis_costs, trials, tasks, experiments, "
-    "model_pricing, orgs); for per-user or per-model *platform* spend use the `oddish_costs` / "
+    "organizations); for per-user or per-model spend in Carl's configured organization use the `oddish_costs` / "
     "`oddish_user_costs` tools instead (the `users` table is intentionally off-limits to SQL). "
     "Format for Slack mrkdwn (*bold*, `code`, • bullets; never markdown headings or tables). "
     "Always include concrete numbers. Call tools rather than guessing. Today's date and all "

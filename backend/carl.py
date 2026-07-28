@@ -149,7 +149,7 @@ def _deliver(channel: str, ts: str, thread: str, text: str) -> bool:
             _post(channel, thread, rest[:cut])
         except Exception:
             log.exception("overflow delivery chunk failed channel=%s", channel)
-            break
+            return False
         rest = rest[cut:]
     return True
 

@@ -13,7 +13,7 @@ or replace the request URL with a second Modal endpoint.
 
 ## What Carl can answer
 
-Carl can report global and per-user spend, queue health, task and experiment
+Carl can report organization and per-user spend, queue health, task and experiment
 status, and why a trial failed. For questions the REST tools do not cover, it can
 run a read-only query against Oddish Postgres—for example, to break down QA cost
 from `analysis_costs` or aggregate spend by day, model, or trial type. Quota
@@ -31,7 +31,7 @@ subscribing Carl to mentions:
 | `ODDISH_CARL_ALLOWED_CHANNELS` | Optional comma-separated channel IDs. When set, answers are confined to these channels. |
 | `ODDISH_API_KEY` | Admin `FULL` API key used by Carl's GET-only REST tools. |
 | `ODDISH_DATABASE_URL_RO` | DSN for a dedicated non-superuser Postgres role granted `SELECT` only on the analytics tables below. There is no fallback to the backend's read/write DSN. |
-| `ODDISH_SQL_TABLES` | Optional table allow-list override. Defaults to `analysis_costs,trials,tasks,experiments,model_pricing,orgs`. |
+| `ODDISH_SQL_TABLES` | Optional table allow-list override. Defaults to `analysis_costs,trials,tasks,experiments,organizations`. |
 | `ODDISH_CARL_MAX_BUDGET_USD` | Optional per-question model cost ceiling. Defaults to `1.00`. |
 | `ODDISH_ENABLE_CARL_AGENT` | Enables the Modal answer function and mention routing. Defaults on only for the production `oddish` app. |
 
@@ -55,7 +55,7 @@ CREATE ROLE oddish_carl_ro LOGIN PASSWORD '…'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
 GRANT CONNECT ON DATABASE oddish TO oddish_carl_ro;
 GRANT USAGE ON SCHEMA public TO oddish_carl_ro;
-GRANT SELECT ON analysis_costs, trials, tasks, experiments, model_pricing, orgs
+GRANT SELECT ON analysis_costs, trials, tasks, experiments, organizations
   TO oddish_carl_ro;
 ```
 
@@ -71,8 +71,9 @@ and per-cell output truncation.
 
 - Mentions work in channels only; DMs are still reserved for deterministic
   notifications.
-- REST task and trial detail is scoped to the organization attached to Carl's
-  API key, while admin cost and queue tools are global.
+- REST task, trial, and cost data is scoped to the organization attached to
+  Carl's API key. Queue details are global only when that key belongs to the
+  operator organization.
 - If an answer worker is killed after posting `Thinking…`, mention Carl again to
   create a new Slack event and retry.
 - Before enabling mentions, verify that a prompt embedded in trial logs cannot
