@@ -33,7 +33,7 @@ subscribing Carl to mentions:
 | `ODDISH_DATABASE_URL_RO` | DSN for a dedicated non-superuser Postgres role granted `SELECT` only on the analytics tables below. There is no fallback to the backend's read/write DSN. |
 | `ODDISH_SQL_TABLES` | Optional table allow-list override. Defaults to `analysis_costs,trials,tasks,experiments,organizations`. |
 | `ODDISH_CARL_MAX_BUDGET_USD` | Optional per-question model cost ceiling. Defaults to `1.00`. |
-| `ODDISH_ENABLE_CARL_AGENT` | Enables the Modal answer function and mention routing. Defaults on only for the production `oddish` app. |
+| `ODDISH_ENABLE_CARL_AGENT` | Enables mention routing to the always-registered Modal answer function. Defaults on only for the production `oddish` app. |
 
 The API URL defaults to the production Oddish endpoint. `ODDISH_API_URL` may
 override it for another deployment.

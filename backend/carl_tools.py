@@ -406,13 +406,19 @@ def _validate_sql(sql: str) -> str | None:
                 f"{', '.join(sorted(tables))} (plus information_schema)."
             )
 
-    def walk(node, visible_ctes: set[str]) -> None:
+    def walk(
+        node,
+        visible_ctes: set[str],
+        base_relations: set[str],
+        allowed_aliases: set[str] | None = None,
+    ) -> None:
         nonlocal error
+        allowed_aliases = allowed_aliases or set()
         if error or not isinstance(node, (dict, list)):
             return
         if isinstance(node, list):
             for item in node:
-                walk(item, visible_ctes)
+                walk(item, visible_ctes, base_relations, allowed_aliases)
             return
         for key, val in node.items():
             if key.endswith("Stmt") and key not in _SQL_ALLOWED_STMTS:
@@ -422,7 +428,7 @@ def _validate_sql(sql: str) -> str | None:
                 error = f"Only read-only SELECT queries are allowed (found `{key}`)."
                 return
             if key == "SelectStmt":
-                walk_select(val, visible_ctes)
+                walk_select(val, visible_ctes, base_relations)
             elif key == "RangeVar" and isinstance(val, dict):
                 inspect_relation(val, visible_ctes)
             elif key == "ColumnRef" and isinstance(val, dict):
@@ -431,9 +437,21 @@ def _validate_sql(sql: str) -> str | None:
                     error = "Wildcard column selection is not allowed; name the required columns."
                 elif fields and "String" in fields[-1]:
                     column = fields[-1]["String"].get("sval", "").lower()
+                    qualifiers = {
+                        field["String"].get("sval", "").lower()
+                        for field in fields[:-1]
+                        if "String" in field
+                    }
+                    reads_base_column = bool(qualifiers & base_relations) or (
+                        len(fields) == 1 and bool(base_relations)
+                    )
                     if len(fields) == 1 and column in whole_row_names:
                         error = "Whole-row values are not allowed; name the required columns."
-                    elif column in _SQL_FORBIDDEN_COLUMNS:
+                    elif (
+                        column in _SQL_FORBIDDEN_COLUMNS
+                        and column not in allowed_aliases
+                        and reads_base_column
+                    ):
                         error = f"Column `{column}` is not readable via this tool."
             elif key == "FuncCall" and isinstance(val, dict):
                 parts = val.get("funcname") or []
@@ -443,11 +461,35 @@ def _validate_sql(sql: str) -> str | None:
                         _SQL_DANGEROUS_FUNC_SUFFIXES
                     ):
                         error = f"Function `{name}()` is not allowed."
-                walk(val, visible_ctes)
+                walk(val, visible_ctes, base_relations, allowed_aliases)
             else:
-                walk(val, visible_ctes)
+                walk(val, visible_ctes, base_relations, allowed_aliases)
 
-    def walk_select(stmt: dict, outer_ctes: set[str]) -> None:
+    def collect_base_relations(node, visible_ctes: set[str]) -> set[str]:
+        found: set[str] = set()
+        if isinstance(node, list):
+            for item in node:
+                found |= collect_base_relations(item, visible_ctes)
+        elif isinstance(node, dict):
+            if "RangeSubselect" in node:
+                return found
+            if "RangeVar" in node:
+                relation = node["RangeVar"]
+                schema, name = relation.get("schemaname"), relation.get("relname")
+                if schema != "information_schema" and not (
+                    schema is None and name in visible_ctes
+                ):
+                    found.add(name.lower())
+                    if alias := (relation.get("alias") or {}).get("aliasname"):
+                        found.add(alias.lower())
+                return found
+            for val in node.values():
+                found |= collect_base_relations(val, visible_ctes)
+        return found
+
+    def walk_select(
+        stmt: dict, outer_ctes: set[str], outer_base_relations: set[str]
+    ) -> None:
         nonlocal error
         for key in _SQL_FORBIDDEN_NODES:
             if stmt.get(key):
@@ -464,15 +506,28 @@ def _validate_sql(sql: str) -> str | None:
         for wrapped_cte in entries:
             cte = wrapped_cte.get("CommonTableExpr") or {}
             visible = outer_ctes | (names if with_clause.get("recursive") else prior)
-            walk(cte.get("ctequery"), visible)
+            walk(cte.get("ctequery"), visible, outer_base_relations)
             if name := cte.get("ctename"):
                 prior.add(name)
         visible = outer_ctes | names
+        base_relations = outer_base_relations | collect_base_relations(
+            stmt.get("fromClause") or [], visible
+        )
+        target_aliases = {
+            target["ResTarget"]["name"].lower()
+            for target in stmt.get("targetList") or []
+            if target.get("ResTarget", {}).get("name")
+        }
         for key, val in stmt.items():
             if key != "withClause":
-                walk(val, visible)
+                aliases = (
+                    target_aliases
+                    if key in {"sortClause", "groupClause", "distinctClause"}
+                    else set()
+                )
+                walk(val, visible, base_relations, aliases)
 
-    walk(stmts, set())
+    walk(stmts, set(), set())
     return error
 
 

@@ -196,6 +196,21 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     assert "public_token" in carl_tools._validate_sql(
         "select public_token from experiments"
     )
+    assert "result" in carl_tools._validate_sql("select result from trials")
+    assert "result" in carl_tools._validate_sql("select t.result from trials t")
+    assert (
+        carl_tools._validate_sql(
+            "with totals as (select count(id) as result from trials) "
+            "select result from totals order by result"
+        )
+        is None
+    )
+    assert (
+        carl_tools._validate_sql(
+            "select count(id) as analysis from trials order by analysis"
+        )
+        is None
+    )
     assert "Whole-row" in carl_tools._validate_sql(
         "select to_jsonb(trials) from trials"
     )
