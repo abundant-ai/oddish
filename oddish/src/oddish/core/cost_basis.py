@@ -31,14 +31,12 @@ from oddish.db import CostExcludedLlmKeyModel, TrialModel, TrialOrigin
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
-# a user cancel (``oddish.queue.CANCELLED_HARBOR_STAGE``), the stale-heartbeat /
+# a user cancel (``oddish.queue.cancel_tasks_runs``), the stale-heartbeat /
 # orphan reaper (``workers.queue.cleanup``), and a runtime CANCEL event
-# (``workers.queue.trial_handler``). None reach the settlement block that writes
-# input/output/cache tokens and ``cost_usd`` together, so a cancelled row has no
-# tokens -- its token estimate is already $0. Gating it out therefore changes
-# nothing unless the unpriced floor is re-enabled, where excluding abandoned
-# runs is the intent. Trials have no CANCELLED status, so this stage is the
-# canonical "cancelled" signal on the row.
+# (``workers.queue.trial_handler``). A late result may still settle the cancelled
+# attempt's tokens and cost, but it cannot replace the cancellation outcome.
+# Trials have no CANCELLED status, so this stage remains the canonical
+# "cancelled" signal on the row.
 CANCELLED_HARBOR_STAGE = "cancelled"
 
 # ``combine_experiments_core`` materializes a source trial as a brand-new row

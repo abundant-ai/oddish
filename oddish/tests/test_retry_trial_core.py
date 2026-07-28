@@ -443,6 +443,7 @@ async def test_store_trial_results_ignores_superseded_trial(monkeypatch):
         ),
         trial_s3_key="new-key",
         execution_error=None,
+        trial_attempt=trial.attempts,
     )
 
     assert trial.status == TrialStatus.RUNNING

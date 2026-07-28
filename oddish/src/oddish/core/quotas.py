@@ -43,6 +43,22 @@ def start_of_month_utc(now: datetime | None = None) -> datetime:
     )
 
 
+async def acquire_quota_locks(
+    session: AsyncSession,
+    org_id: str,
+    billed_user_id: str | None,
+) -> None:
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"quota:org:{org_id}"},
+    )
+    if billed_user_id is not None:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"quota:user:{org_id}:{billed_user_id}"},
+        )
+
+
 def start_of_today_utc(now: datetime | None = None) -> datetime:
     return (now or datetime.now(timezone.utc)).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -115,9 +131,9 @@ async def sum_cost_usd_by_user(
     )
     totals: dict[str, float] = {}
     for row in rows.all():
-        totals[row.billed_user_id] = (
-            totals.get(row.billed_user_id, 0.0) + settled_cost_from_row(row)
-        )
+        totals[row.billed_user_id] = totals.get(
+            row.billed_user_id, 0.0
+        ) + settled_cost_from_row(row)
     return {user_id: to_money_decimal(total) for user_id, total in totals.items()}
 
 

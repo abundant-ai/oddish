@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-27]
+
+### Changed
+
+- Enforced quotas now cancel every quota-counted nonterminal trial as soon as live or settled spend reaches the payer's rolling 24-hour cap or the organization's monthly cap. User caps stop that payer's trials; org caps stop all trials in the org, including queued and retrying work, and remote workers are terminated after the cancellation transaction commits.
+
+---
+
 ## [2026-07-20]
 
 ### Changed
