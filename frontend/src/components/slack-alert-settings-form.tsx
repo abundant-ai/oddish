@@ -30,9 +30,7 @@ export function SlackAlertSettingsForm() {
     error: loadError,
   } = useSWR<SlackAlertSettings>(ENDPOINT, fetcher);
   const [escalation, setEscalation] = useState<number | null>(null);
-  const [userDeltaThousands, setUserDeltaThousands] = useState<number | null>(
-    null
-  );
+  const [userDeltaText, setUserDeltaText] = useState<string | null>(null);
   const [pingsText, setPingsText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,13 +48,14 @@ export function SlackAlertSettingsForm() {
   }
 
   const escalationUsd = escalation ?? data.trial_escalation_usd;
-  const userDeltaK =
-    userDeltaThousands ?? data.user_weekly_escalation_delta_usd / 1000;
+  const userDeltaRaw =
+    userDeltaText ?? String(data.user_weekly_escalation_delta_usd / 1000);
+  const userDeltaK = Number(userDeltaRaw);
   // The field keeps its own raw string so a half-typed address survives a
   // keystroke; the parsed list is only derived on save.
   const pings = pingsText ?? data.always_ping_emails.join(", ");
   const dirty =
-    escalation != null || userDeltaThousands != null || pingsText != null;
+    escalation != null || userDeltaText != null || pingsText != null;
 
   async function send(method: "PUT" | "DELETE") {
     setSaving(true);
@@ -86,7 +85,7 @@ export function SlackAlertSettingsForm() {
       return;
     }
     setEscalation(null);
-    setUserDeltaThousands(null);
+    setUserDeltaText(null);
     setPingsText(null);
     void mutate();
   }
@@ -130,10 +129,10 @@ export function SlackAlertSettingsForm() {
           type="number"
           min={0.1}
           step={0.5}
-          value={userDeltaK}
+          value={userDeltaRaw}
           onChange={(e) => {
             setError(null);
-            setUserDeltaThousands(Number(e.target.value));
+            setUserDeltaText(e.target.value);
           }}
         />
         <p className="text-muted-foreground text-xs">
