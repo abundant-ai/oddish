@@ -1668,6 +1668,8 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         billed_user_id="user-1",
         status=trial_handler.TrialStatus.SUCCESS,
         harbor_stage="completed",
+        # An LLM agent: baselines take the skip path (test_qa_skips_baselines).
+        agent="claude-code",
     )
     calls = []
 

@@ -770,14 +770,24 @@ def _initial_trial_job_status(agent: str, *, gating: bool) -> WorkerJobStatus:
 async def _enqueue_pre_trial_assignment_runs(
     session: AsyncSession,
     *,
+    submission: TaskSubmission,
     task_id: str,
     task_version_id: str,
     experiment_id: str | None,
     org_id: str | None,
     user_id: str | None,
 ) -> None:
-    """Best-effort additive pre-trial analyzers for one task version."""
+    """Best-effort additive pre-trial analyzers for one task version.
+
+    Skipped for a baseline-only submission: nop and oracle exercise the task's
+    own scaffolding, so a run that adds nothing else has no agent behavior for
+    the audit to inform. Appending baselines to an already-audited task would
+    otherwise pay for a fresh audit of a version whose source never changed.
+    """
     from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
+
+    if all(is_nop_oracle_agent(spec.agent) for spec in submission.trials):
+        return
 
     try:
         async with session.begin_nested():
@@ -990,6 +1000,7 @@ async def create_task(
 
     await _enqueue_pre_trial_assignment_runs(
         session,
+        submission=submission,
         task_id=task_id,
         task_version_id=version_id,
         experiment_id=experiment.id,
@@ -1258,6 +1269,7 @@ async def append_trials_to_task(
 
     await _enqueue_pre_trial_assignment_runs(
         session,
+        submission=submission,
         task_id=task.id,
         task_version_id=current_version_id,
         experiment_id=trial_experiment_id,

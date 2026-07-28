@@ -4,12 +4,12 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, not_, select
 
 from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
-from oddish.core.baseline_gate import GATE_SKIP_PREFIX
+from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
@@ -450,6 +450,16 @@ async def _load_live_trials_for_classification(
     (``origin='imported'`` but ``imported_at IS NULL``), which keep the stock
     join-the-QA-job behavior. Migrated trials can still be analyzed manually
     via backfill_analysis.py.
+
+    nop/oracle baselines are excluded too: they run fixed scaffolding rather
+    than an agent, so there is no trajectory worth the classifier's cost.
+
+    Note this drops the verdict's view of baseline health. ``synthesize_task_verdict``
+    is still called with ``baseline=None``, so its ``baseline_summary`` reads
+    "Not run", and the classifier's ``task_pre_solved`` / broken-oracle rules no
+    longer fire on the trials that would trigger them. The baseline *gate*
+    (``evaluate_baseline_gate``) is unaffected -- it reads rewards directly and
+    still blocks LLM trials on a faulty task.
     """
     async with get_session() as session:
         rows = (
@@ -476,6 +486,8 @@ async def _load_live_trials_for_classification(
                     func.coalesce(TrialModel.error_message, "").notlike(
                         f"{GATE_SKIP_PREFIX}%"
                     ),
+                    # Deterministic baselines: no agent trajectory to classify.
+                    not_(baseline_agent_clause(TrialModel.agent)),
                 )
             )
         ).all()
