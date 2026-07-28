@@ -518,8 +518,8 @@ class SlackAlertSettingsModel(Base):
     trial_escalation_usd: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
     )
-    user_weekly_escalation_delta_usd: Mapped[Decimal] = mapped_column(
-        Numeric(12, 2), nullable=False, default=Decimal("5000")
+    user_daily_overage_delta_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("1000")
     )
     always_ping_emails: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, default=list

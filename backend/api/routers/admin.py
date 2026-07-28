@@ -331,7 +331,7 @@ async def backfill_task_expansions(
 
 class SlackAlertSettingsResponse(BaseModel):
     trial_escalation_usd: float
-    user_weekly_escalation_delta_usd: float
+    user_daily_overage_delta_usd: float
     always_ping_emails: list[str]
     # False means nobody has overridden anything and these are the values baked
     # into the deploy, which the UI labels rather than presenting as a choice.
@@ -351,7 +351,7 @@ async def get_operator_access(
 
 class SlackAlertSettingsRequest(BaseModel):
     trial_escalation_usd: float = Field(gt=0)
-    user_weekly_escalation_delta_usd: float = Field(gt=0)
+    user_daily_overage_delta_usd: float = Field(gt=0)
     always_ping_emails: list[str] = Field(max_length=50)
 
     @field_validator("always_ping_emails")
