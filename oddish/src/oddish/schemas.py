@@ -971,6 +971,12 @@ class TrialResponse(BaseModel):
     task_path: str
     task_version: int | None = None
     task_version_id: str | None = None
+    # Pre-trial source audit of the exact version THIS trial ran against.
+    # Populated only on the single-trial detail fetch: the grid's slim payload
+    # carries hundreds of trials and must not haul findings for each one.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
     experiment_id: str | None = None
     agent: str
     provider: str
