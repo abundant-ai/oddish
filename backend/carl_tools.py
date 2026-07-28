@@ -117,6 +117,48 @@ def _window(days) -> str:
     return "all-time" if not days else f"last {days} days"
 
 
+def _format_user_costs(data: dict, user_id: str) -> dict:
+    totals = data.get("totals", {})
+    who = (
+        data.get("name")
+        or data.get("email")
+        or data.get("github_username")
+        or user_id
+    )
+    lines = [
+        f"*Costs for {who}* ({_window(data.get('window_days'))})",
+        f"• total: ${totals.get('cost_usd', 0):,.2f}  "
+        f"trials: {totals.get('trial_count', 0):,}  "
+        f"tasks: {totals.get('task_count', 0)}",
+        "",
+        "*Top tasks*",
+    ]
+    for task in sorted(
+        data.get("tasks", []), key=lambda item: item.get("cost_usd", 0), reverse=True
+    )[:10]:
+        lines.append(
+            f"• {task.get('task_name') or task.get('task_id')}: "
+            f"${task.get('cost_usd', 0):,.2f}, {task.get('trial_count', 0)} trials"
+        )
+
+    series = data.get("series_by_model", {})
+    labels = {
+        item.get("key"): item.get("label") or item.get("key")
+        for item in series.get("keys", [])
+        if item.get("key")
+    }
+    model_costs: dict[str, float] = {}
+    for bucket in series.get("buckets", []):
+        for model, cost in bucket.get("costs", {}).items():
+            model_costs[model] = model_costs.get(model, 0) + float(cost or 0)
+    lines += ["", "*Top models*"]
+    for model, cost in sorted(
+        model_costs.items(), key=lambda item: item[1], reverse=True
+    )[:8]:
+        lines.append(f"• {labels.get(model, model)}: ${cost:,.2f}")
+    return _text("\n".join(lines))
+
+
 async def _get(path: str, params: dict | None = None) -> dict:
     url, headers = _cfg()
     async with httpx.AsyncClient(timeout=60) as client:
@@ -185,23 +227,7 @@ async def oddish_user_costs(args: dict) -> dict:
         if e.response.status_code == 404:
             return _text(f"No user found for id `{uid}`.")
         raise
-    t = data.get("totals", {})
-    who = data.get("name") or data.get("email") or data.get("github_username") or uid
-    lines = [
-        f"*Costs for {who}* ({_window(data.get('window_days'))})",
-        f"• total: ${t.get('cost_usd', 0):,.2f}  trials: {t.get('trial_count', 0):,}  "
-        f"tasks: {t.get('task_count', 0)}",
-        "",
-        "*Top tasks*",
-    ]
-    for task in sorted(
-        data.get("tasks", []), key=lambda x: x.get("cost_usd", 0), reverse=True
-    )[:10]:
-        lines.append(
-            f"• {task.get('task_name') or task.get('task_id')}: "
-            f"${task.get('cost_usd', 0):,.2f}, {task.get('trial_count', 0)} trials"
-        )
-    return _text("\n".join(lines))
+    return _format_user_costs(data, uid)
 
 
 @tool(

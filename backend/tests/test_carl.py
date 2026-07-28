@@ -171,6 +171,36 @@ def test_read_only_sql_guard_rejects_writes_and_private_tables(monkeypatch):
     )
 
 
+def test_user_costs_include_task_and_model_breakdowns():
+    import carl_tools
+
+    result = carl_tools._format_user_costs(
+        {
+            "name": "Ada",
+            "window_days": 7,
+            "totals": {"cost_usd": 4.5, "trial_count": 3, "task_count": 1},
+            "tasks": [
+                {"task_name": "proof", "cost_usd": 4.5, "trial_count": 3}
+            ],
+            "series_by_model": {
+                "keys": [
+                    {"key": "claude-opus-4-8", "label": "Claude Opus 4.8"},
+                    {"key": "grok", "label": "Grok"},
+                ],
+                "buckets": [
+                    {"costs": {"claude-opus-4-8": 1.25, "grok": 2.0}},
+                    {"costs": {"claude-opus-4-8": 1.25}},
+                ],
+            },
+        },
+        "U123",
+    )
+    text = result["content"][0]["text"]
+
+    assert "*Top tasks*\n• proof: $4.50, 3 trials" in text
+    assert "*Top models*\n• Claude Opus 4.8: $2.50\n• Grok: $2.00" in text
+
+
 @pytest.mark.asyncio
 async def test_read_only_sql_sets_transaction_options_separately(monkeypatch):
     import carl_tools
