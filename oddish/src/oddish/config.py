@@ -1272,6 +1272,15 @@ class Settings(BaseSettings):
     gke_idle_cluster_ttl_hours: float = 3.0
     gke_pod_ready_timeout_sec: int = 3600
 
+    # AgentENV execution backend. Oddish exposes it as Harbor's ``e2b``
+    # environment because AgentENV implements the E2B-compatible HTTP API. The
+    # backend is opt-in: setting this URL registers ``--env e2b`` for hosted
+    # runs, while the actual SDK wiring continues to read E2B_API_URL /
+    # E2B_SANDBOX_URL / E2B_API_KEY from the worker process environment.
+    agentenv_api_url: str | None = None
+    agentenv_sandbox_url: str | None = None
+    agentenv_api_key: str = "e2b_000000"
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000

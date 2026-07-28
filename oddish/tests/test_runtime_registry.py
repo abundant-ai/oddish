@@ -27,3 +27,23 @@ def test_get_backend_unknown_returns_none() -> None:
 def test_ordered_backends_is_cheap_first_daytona_then_modal() -> None:
     names = [b.name for b in ordered_backends()]
     assert names == ["daytona", "modal"]
+
+
+def test_agentenv_e2b_backend_registers_when_configured() -> None:
+    code = (
+        "from oddish.runtime.registry import ordered_backends;"
+        "print(','.join(b.name for b in ordered_backends()))"
+    )
+    import os
+    import subprocess
+
+    env = os.environ.copy()
+    env["ODDISH_AGENTENV_API_URL"] = "http://agentenv.test:8000"
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().split(",") == ["daytona", "modal", "e2b"]

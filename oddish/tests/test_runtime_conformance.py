@@ -16,6 +16,7 @@ from oddish.runtime.ports import (
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.fake import FakeBackend
 from oddish.runtime.backends.gke import GkeBackend
+from oddish.runtime.backends.agentenv import AgentenvBackend
 from oddish.runtime.backends.modal import ModalBackend
 
 # Real backends are added to this list as they are implemented.
@@ -23,6 +24,7 @@ CONFORMANCE_BACKENDS: list[ExecutionBackend] = [
     FakeBackend(),
     ModalBackend(),
     DaytonaBackend(),
+    AgentenvBackend(),
     GkeBackend(),
 ]
 

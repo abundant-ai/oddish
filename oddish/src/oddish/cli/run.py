@@ -57,6 +57,7 @@ console = Console()
 _HOSTED_PASSTHROUGH_ENVIRONMENTS = {
     EnvironmentType.MODAL,
     EnvironmentType.DAYTONA,
+    EnvironmentType.E2B,
     EnvironmentType.GKE,
 }
 
@@ -885,8 +886,8 @@ def run(
         and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
     ):
         console.print(
-            "[yellow]Oddish Cloud supports --env modal, --env daytona, and "
-            "--env gke; forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal, --env daytona, "
+            "--env e2b, and --env gke; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 
