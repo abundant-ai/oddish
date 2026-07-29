@@ -12,6 +12,7 @@ from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.result_focus_schema import normalize_findings_schema
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
@@ -48,6 +49,15 @@ QA_CLAIM_WAIT_POLL_SECONDS = 15
 # retakes it and the poll resolves on its own -- so this only fires if a peer
 # keeps renewing a claim forever, and exists purely so the wait can't hang.
 QA_CLAIM_WAIT_TIMEOUT_SECONDS = (ANALYSIS_CLAIM_TTL_MINUTES + 5) * 60
+
+# The verdict fallback's structured output. Anthropic accepts only a subset of
+# JSON Schema and requires ``additionalProperties: false`` on every object,
+# which ``model_json_schema()`` never emits -- the raw Pydantic schema 400s,
+# and a 400 is not a permanent provider failure, so the job would retry back
+# onto the blocked primary this fallback exists to route around.
+VERDICT_FALLBACK_SCHEMA = normalize_findings_schema(
+    TaskVerdictModel.model_json_schema()
+)
 
 
 async def synthesize_task_verdict(
@@ -101,7 +111,7 @@ async def synthesize_task_verdict(
             # OpenAI path, a JSON schema on the Anthropic one. Only the arm
             # that matches this model's provider is honored.
             response_format=None if fallback else TaskVerdictModel,
-            output_schema=TaskVerdictModel.model_json_schema() if fallback else None,
+            output_schema=VERDICT_FALLBACK_SCHEMA if fallback else None,
             block_metadata={"verdict_fallback": True} if fallback else None,
             output_transform=vb.to_verdict,
         )

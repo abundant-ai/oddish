@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oddish.analyze.models import Classification, TrialClassification
+from oddish.analyze.models import Classification, TaskVerdictModel, TrialClassification
 from oddish.config import settings
 from oddish.workers.queue import qa_handler
 
@@ -113,6 +113,43 @@ async def test_fallback_sends_a_json_schema_not_response_format(monkeypatch):
     assert fallback["output_schema"] is not None
     assert fallback["output_schema"]["properties"]["is_good"]
     assert fallback["response_format"] is None
+
+
+def _objects(node: object):
+    """Yield every object-typed subschema, so the assertion can't miss a nest."""
+    if isinstance(node, dict):
+        if node.get("type") == "object":
+            yield node
+        for value in node.values():
+            yield from _objects(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _objects(item)
+
+
+@pytest.mark.asyncio
+async def test_fallback_schema_is_accepted_by_structured_outputs(monkeypatch):
+    """Anthropic structured outputs require ``additionalProperties: false`` on
+    every object and ``model_json_schema()`` never emits it -- so sending the
+    raw Pydantic schema 400s. A 400 is not a permanent provider failure, so the
+    job would be retried straight back onto the blocked primary this fallback
+    exists to route around."""
+    seen = _install_fake_block(
+        monkeypatch,
+        behaviors=[PermissionDeniedError(AZURE_403), GOOD_OUTPUT],
+    )
+
+    await qa_handler.synthesize_task_verdict(
+        _classifications(), None, True, 30.0, task_id="task-1"
+    )
+
+    schema = seen[1]["output_schema"]
+    objects = list(_objects(schema))
+    assert objects, "expected at least the root object"
+    assert all(o.get("additionalProperties") is False for o in objects)
+    # The raw model schema is the shape that 400s -- if this ever stops being
+    # true the normalization above is dead weight, not a guard.
+    assert "additionalProperties" not in TaskVerdictModel.model_json_schema()
 
 
 @pytest.mark.asyncio
