@@ -42,7 +42,10 @@ from oddish.db import (
 from oddish.core.llm_key_fingerprint import trial_llm_key_hash
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
-from oddish.observability import log_unpriced_trial_if_needed
+from oddish.observability import (
+    log_missing_trial_metering_if_needed,
+    log_unpriced_trial_if_needed,
+)
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -689,6 +692,38 @@ def _settle_trial_metering(
     return prev_cost_usd, provider, native_cost_trusted
 
 
+def _log_trial_metering_integrity(
+    trial,
+    outcome: HarborOutcome,
+    *,
+    provider: str,
+    native_cost_trusted: bool,
+) -> None:
+    common = {
+        "cost_usd": trial.cost_usd,
+        "trial_id": trial.id,
+        "model": trial.model,
+        "agent": getattr(trial, "agent", None),
+        "provider": provider,
+        "attempt": trial.attempts,
+        "input_tokens": outcome.input_tokens,
+        "cache_tokens": outcome.cache_tokens,
+        "cache_write_tokens": outcome.cache_write_tokens,
+        "output_tokens": outcome.output_tokens,
+        "native_cost_usd": outcome.cost_usd,
+    }
+    log_unpriced_trial_if_needed(
+        **common,
+        native_cost_trusted=native_cost_trusted,
+    )
+    log_missing_trial_metering_if_needed(
+        **common,
+        has_execution_evidence=bool(
+            outcome.has_trajectory or (outcome.total_steps or 0) > 0
+        ),
+    )
+
+
 async def _store_trial_results(
     *,
     trial_id: str,
@@ -735,18 +770,10 @@ async def _store_trial_results(
                     byok_env,
                     preserve_checkpointed_cost=True,
                 )
-                log_unpriced_trial_if_needed(
-                    cost_usd=trial.cost_usd,
-                    trial_id=trial.id,
-                    model=trial.model,
-                    agent=getattr(trial, "agent", None),
+                _log_trial_metering_integrity(
+                    trial,
+                    outcome,
                     provider=provider,
-                    attempt=trial.attempts,
-                    input_tokens=outcome.input_tokens,
-                    cache_tokens=outcome.cache_tokens,
-                    cache_write_tokens=outcome.cache_write_tokens,
-                    output_tokens=outcome.output_tokens,
-                    native_cost_usd=outcome.cost_usd,
                     native_cost_trusted=native_cost_trusted,
                 )
             console.print(
@@ -864,18 +891,10 @@ async def _store_trial_results(
             # Retry reconciliation can restore a previously checkpointed cost.
             # Log only after that monotonic adjustment so we never report an
             # unpriced row that will actually retain a resolved cost.
-            log_unpriced_trial_if_needed(
-                cost_usd=trial.cost_usd,
-                trial_id=trial.id,
-                model=trial.model,
-                agent=getattr(trial, "agent", None),
+            _log_trial_metering_integrity(
+                trial,
+                outcome,
                 provider=provider,
-                attempt=trial.attempts,
-                input_tokens=outcome.input_tokens,
-                cache_tokens=outcome.cache_tokens,
-                cache_write_tokens=outcome.cache_write_tokens,
-                output_tokens=outcome.output_tokens,
-                native_cost_usd=outcome.cost_usd,
                 native_cost_trusted=native_cost_trusted,
             )
         else:

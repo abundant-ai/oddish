@@ -119,6 +119,49 @@ async def test_zero_cost_unpriceable_model_settles_to_none(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_bedrock_execution_without_usage_logs_missing_metering(monkeypatch):
+    trial = _trial(
+        agent="claude-code",
+        model="global.anthropic.claude-sonnet-4-6",
+    )
+    warnings = []
+    monkeypatch.setattr(
+        observability,
+        "log_warning",
+        lambda message, **attributes: warnings.append((message, attributes)),
+    )
+
+    await _store(
+        monkeypatch,
+        trial,
+        _outcome(
+            cost_usd=0.0,
+            input_tokens=None,
+            output_tokens=None,
+            total_steps=1,
+            has_trajectory=True,
+        ),
+    )
+
+    assert trial.cost_usd == 0.0
+    assert warnings == [
+        (
+            "Bedrock trial produced execution output but no token or cost metering",
+            {
+                "tags": ("cost-integrity", "missing-metering"),
+                "metric": "trial_cost_missing_metering",
+                "trial_id": trial.id,
+                "model": trial.model,
+                "agent": trial.agent,
+                "provider": "bedrock",
+                "attempt": trial.attempts,
+                "native_cost_usd": 0.0,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_priceable_model_does_not_log_unpriced_warning(monkeypatch):
     trial = _trial(agent="claude-code", model="zai/glm-x-preview[1m]")
     warnings = []
