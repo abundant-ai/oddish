@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-29]
+
+### Added
+
+- Task pages now show a "Pre-trial audit" card for the selected version: source-audit findings worst-tier first, each with dimension/problem type, file:line, detail, and recommended fix; a clean audit is now distinguishable from one that never ran, and the probe card's noisy "no probe run for this version yet" placeholder was dropped since the header alone (which carries the verdict badge) is enough (#955).
+- The trial sidebar now shows the pre-trial audit of the exact task version a trial ran against, pinned to that trial's `task_version_id` rather than the task's current version, so a trial on an older version never renders an audit written for a newer re-upload; the fields are populated only on single-trial detail endpoints, keeping the experiment grid's payload slim (#958).
+- Admin → Costs → Channel spend escalation gained a weekly per-user spend delta setting; a `<!channel>` Slack alert now fires when a user's rolling seven-day spend — including live checkpoint cost from currently running/retrying trials — exceeds their workspace's average spender by more than the configured dollar delta, and the alert re-arms once spend drops back below threshold (#956).
+
+### Changed
+
+- Pre-trial findings on the task page now render as one bordered card with hairline dividers between findings instead of a stack of separate boxes, and severity tiers (`MUST FIX` / `SHOULD FIX` / `OPTIONAL`) now use solid color fills matching the status badges — red, amber, and a new brown `--paper-minor` token — instead of near-neutral outlines that made `OPTIONAL` barely distinguishable from body text (#957).
+- The in-channel Slack trial-cost escalation now fires on running/retrying trials whose live settled cost exceeds the admin floor, instead of on already-completed trials; completed expensive trials remain DM-only to the owner and no longer also escalate to the shared channel (#956).
+
+### Fixed
+
+- Assignment-driven pre-trial QA runs (`qa-jobs assign … --pre-trial`) now mirror their findings onto `task_versions.pre_trial` — the only field post-trial reads for `{pre_trial_context}`, and the one `aggregate_exploited_into_pre_trial` matches stable ids against. Previously only the built-in audit wrote that column, so all 124 completed assignment-driven audits in production (231 findings, 83 must-fix) were invisible to post-trial classification and exploited-elevation. Mirroring is pinned to the version actually audited and is best-effort, so a mirroring failure can't fail an already-succeeded job (#954).
+- An org's `pre_trial_analysis_enabled` opt-in can now actually turn the pre-trial audit on. The global `pre_trial_enabled` flag was checked ahead of the per-org setting, so with the flag off by default in production, an admin enabling the audit for their org through the orgs API had no effect — the flag is now only the fallback default the org check uses when an org has no explicit setting (#951).
+- Pre-trial audits reaching the CLAUDE_CLI envelope path now recover JSON embedded in prose the same way every other analyzer path does. A previous fix taught `Block.parse_json` to recover JSON preceded by a prose preamble, but the envelope's free-text `result` field was parsed by an older, separate `json.loads(strip_code_fences(...))` that never reached it — so 96% of pre-trial audits were still being discarded on `Expecting value: line 1 column 1` after that fix shipped. `extract_claude_result` now calls `Block.parse_json` directly (#959).
+- Grok trials killed by an xAI server-side 5xx/overload error (e.g. "503 Service Unavailable") are no longer thrown away mid-run: the resume loop that already rescues idle-timeout and rate-limit deaths now also resumes on 5xx/overload responses, waiting out a doubling backoff before replaying — like rate limits — rather than instantly re-hitting the same dead deployment; the resume budget was also raised from 3 to 5 attempts to outlast longer outage windows. One production batch had silently lost 13 grok trials this way, including a run that had already spent 6 hours and 17M tokens (#944).
+
+---
+
 ## [2026-07-27]
 
 ### Changed
