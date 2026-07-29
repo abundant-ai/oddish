@@ -10,7 +10,7 @@ import { fetcher } from "@/lib/api";
 
 interface SlackAlertSettings {
   trial_escalation_usd: number;
-  user_weekly_escalation_delta_usd: number;
+  user_daily_overage_delta_usd: number;
   always_ping_emails: string[];
   is_override: boolean;
 }
@@ -49,8 +49,8 @@ export function SlackAlertSettingsForm() {
 
   const escalationUsd = escalation ?? data.trial_escalation_usd;
   const userDeltaRaw =
-    userDeltaText ?? String(data.user_weekly_escalation_delta_usd / 1000);
-  const userDeltaK = Number(userDeltaRaw);
+    userDeltaText ?? String(data.user_daily_overage_delta_usd);
+  const userDeltaUsd = Number(userDeltaRaw);
   // The field keeps its own raw string so a half-typed address survives a
   // keystroke; the parsed list is only derived on save.
   const pings = pingsText ?? data.always_ping_emails.join(", ");
@@ -67,7 +67,7 @@ export function SlackAlertSettingsForm() {
         method === "PUT"
           ? JSON.stringify({
               trial_escalation_usd: escalationUsd,
-              user_weekly_escalation_delta_usd: userDeltaK * 1000,
+              user_daily_overage_delta_usd: userDeltaUsd,
               always_ping_emails: splitList(pings),
             })
           : undefined,
@@ -95,8 +95,8 @@ export function SlackAlertSettingsForm() {
       setError("The escalation amount must be greater than $0.");
       return;
     }
-    if (!Number.isFinite(userDeltaK) || userDeltaK <= 0) {
-      setError("The weekly user-spend delta must be greater than $0.");
+    if (!Number.isFinite(userDeltaUsd) || userDeltaUsd <= 0) {
+      setError("The daily-overage margin must be greater than $0.");
       return;
     }
     void send("PUT");
@@ -124,11 +124,11 @@ export function SlackAlertSettingsForm() {
         </p>
       </div>
       <div className="space-y-1">
-        <Label>User weekly spend above workspace average ($k)</Label>
+        <Label>User daily spend above their 7-day average ($)</Label>
         <Input
           type="number"
-          min={0.1}
-          step={0.5}
+          min={1}
+          step={50}
           value={userDeltaRaw}
           onChange={(e) => {
             setError(null);
@@ -136,9 +136,9 @@ export function SlackAlertSettingsForm() {
           }}
         />
         <p className="text-muted-foreground text-xs">
-          Ping the whole channel when a user&apos;s rolling seven-day spend,
-          including live running trials, exceeds their workspace&apos;s average
-          spender by this many thousands of dollars.
+          Ping the whole channel when a user&apos;s spend over the past 24 hours,
+          including live running trials, runs above their own trailing seven-day
+          daily average by more than this many dollars.
         </p>
       </div>
       <div className="space-y-1">

@@ -1,8 +1,9 @@
 """Thresholds and ping list for shared-channel Slack cost escalations.
 
 These govern the in-channel pings raised by a very expensive live trial or by a
-user whose weekly spend is far above their workspace's average. The per-user DM
-alerts and their cutoffs live in ``user_alert_prefs`` and are not set here.
+user whose last-24h spend runs above their own trailing seven-day daily average
+by more than the margin. The per-user DM alerts and their cutoffs live in
+``user_alert_prefs`` and are not set here.
 
 The ``AlertSettings`` field defaults are the deploy-time defaults. A single
 ``slack_alert_settings`` row overrides them so an admin can retune the channel
@@ -43,7 +44,7 @@ DEFAULT_ALWAYS_PING_EMAILS: tuple[str, ...] = (
 @dataclass(frozen=True)
 class AlertSettings:
     trial_escalation_usd: float = 1000.0
-    user_weekly_escalation_delta_usd: float = 5000.0
+    user_daily_overage_delta_usd: float = 1000.0
     always_ping_emails: tuple[str, ...] = DEFAULT_ALWAYS_PING_EMAILS
     is_override: bool = False
 
@@ -68,7 +69,7 @@ async def get_alert_settings(session: AsyncSession) -> AlertSettings:
         return DEFAULT_ALERT_SETTINGS
     return AlertSettings(
         trial_escalation_usd=float(row.trial_escalation_usd),
-        user_weekly_escalation_delta_usd=float(row.user_weekly_escalation_delta_usd),
+        user_daily_overage_delta_usd=float(row.user_daily_overage_delta_usd),
         always_ping_emails=tuple(row.always_ping_emails),
         is_override=True,
     )
@@ -97,14 +98,14 @@ async def set_alert_settings(
     session: AsyncSession,
     *,
     trial_escalation_usd: float,
-    user_weekly_escalation_delta_usd: float,
+    user_daily_overage_delta_usd: float,
     always_ping_emails: list[str],
     updated_by_user_id: str | None,
 ) -> AlertSettings:
     values = {
         "trial_escalation_usd": Decimal(str(trial_escalation_usd)),
-        "user_weekly_escalation_delta_usd": Decimal(
-            str(user_weekly_escalation_delta_usd)
+        "user_daily_overage_delta_usd": Decimal(
+            str(user_daily_overage_delta_usd)
         ),
         "always_ping_emails": always_ping_emails,
         "updated_at": utcnow(),

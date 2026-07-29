@@ -97,8 +97,8 @@ class UserSpend:
     org_id: str
     user_id: str
     label: str
-    cost_usd: float
-    average_cost_usd: float
+    spend_24h_usd: float
+    daily_avg_7d_usd: float
     live_trial_count: int
 
 
@@ -409,20 +409,23 @@ def build_alerts(
         )
 
     for user in candidates.user_spend:
-        excess_usd = user.cost_usd - user.average_cost_usd
-        if excess_usd <= settings.user_weekly_escalation_delta_usd:
+        # Fire when a user's last-24h spend runs ahead of their own trailing
+        # seven-day daily pace by more than the admin margin -- a "spending
+        # unusually fast today" signal, not a comparison against other users.
+        overage_usd = user.spend_24h_usd - user.daily_avg_7d_usd
+        if overage_usd <= settings.user_daily_overage_delta_usd:
             continue
         alerts.append(
             SlackAlert(
-                key=f"user-weekly-escalation:{user.org_id}:{user.user_id}",
+                key=f"user-daily-overage:{user.org_id}:{user.user_id}",
                 text=(
                     "<!channel>\n"
-                    ":moneybag: *High weekly user spend*\n"
+                    ":moneybag: *User spend above their 7-day daily average*\n"
                     f"User: *{_escape(user.label)}*\n"
-                    f"Rolling seven-day spend: *${user.cost_usd:,.2f}*\n"
-                    f"Workspace spender average: *${user.average_cost_usd:,.2f}*\n"
-                    f"Above average by: *${excess_usd:,.2f}* "
-                    f"(alert above ${settings.user_weekly_escalation_delta_usd:,.2f})\n"
+                    f"Spend in past 24 hours: *${user.spend_24h_usd:,.2f}*\n"
+                    f"Seven-day daily average: *${user.daily_avg_7d_usd:,.2f}*\n"
+                    f"Above their daily average by: *${overage_usd:,.2f}* "
+                    f"(alert above ${settings.user_daily_overage_delta_usd:,.2f})\n"
                     f"Running or retrying trials included: {user.live_trial_count}\n"
                     f"<{dashboard_url}/admin|open admin costs>"
                 ),
@@ -730,6 +733,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 )
             ).all()
 
+        within_24h = case(
+            (or_(TrialModel.finished_at >= cost_cutoff, live_trial), True), else_=False
+        )
         user_spend_rows = (
             await session.execute(
                 select(
@@ -742,6 +748,10 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     func.count(TrialModel.id)
                     .filter(live_trial)
                     .label("live_trial_count"),
+                    # Split each model group into its last-24h slice and the
+                    # rest of the seven-day window, so one query yields both the
+                    # daily average (whole window / 7) and today's spend.
+                    within_24h.label("within_24h"),
                     *settled_cost_columns(),
                 )
                 .join(
@@ -764,6 +774,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     UserModel.github_username,
                     UserModel.email,
                     TrialModel.model,
+                    within_24h,
                 )
                 .execution_options(include_deleted=True)
             )
@@ -1034,30 +1045,31 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 "label": row.name
                 or (f"@{row.github_username}" if row.github_username else None)
                 or str(row.email).split("@", 1)[0],
-                "cost_usd": 0.0,
+                "spend_7d_usd": 0.0,
+                "spend_24h_usd": 0.0,
                 "live_trial_count": 0,
             },
         )
-        current["cost_usd"] = float(current["cost_usd"]) + settled_cost_from_row(row)
+        row_cost = settled_cost_from_row(row)
+        current["spend_7d_usd"] = float(current["spend_7d_usd"]) + row_cost
+        if row.within_24h:
+            current["spend_24h_usd"] = float(current["spend_24h_usd"]) + row_cost
         current["live_trial_count"] = int(current["live_trial_count"]) + int(
             row.live_trial_count or 0
         )
-    org_costs: dict[str, list[float]] = {}
-    for (org_id, _), values in user_totals.items():
-        cost_usd = float(values["cost_usd"])
-        if cost_usd > 0:
-            org_costs.setdefault(org_id, []).append(cost_usd)
     user_spend = [
         UserSpend(
             org_id=org_id,
             user_id=user_id,
             label=str(values["label"]),
-            cost_usd=float(values["cost_usd"]),
-            average_cost_usd=sum(org_costs[org_id]) / len(org_costs[org_id]),
+            spend_24h_usd=float(values["spend_24h_usd"]),
+            # The daily average is the whole rolling-seven-day spend spread over
+            # seven days; today's 24h slice is compared against it.
+            daily_avg_7d_usd=float(values["spend_7d_usd"]) / 7.0,
             live_trial_count=int(values["live_trial_count"]),
         )
         for (org_id, user_id), values in user_totals.items()
-        if float(values["cost_usd"]) > 0
+        if float(values["spend_7d_usd"]) > 0
     ]
     unpriced_models = [
         UnpricedModel(
@@ -1275,7 +1287,7 @@ async def _mark_alert_sent(*alert_keys: str) -> None:
 
 async def _rearm_user_spend_alerts(active_keys: set[str]) -> None:
     statement = SlackExpenseAlertModel.__table__.delete().where(
-        SlackExpenseAlertModel.alert_key.like("user-weekly-escalation:%"),
+        SlackExpenseAlertModel.alert_key.like("user-daily-overage:%"),
         SlackExpenseAlertModel.notified_at.isnot(None),
     )
     if active_keys:
@@ -1427,7 +1439,7 @@ async def send_slack_expense_notifications() -> None:
                 {
                     alert.key
                     for alert in alerts
-                    if alert.key.startswith("user-weekly-escalation:")
+                    if alert.key.startswith("user-daily-overage:")
                 }
             )
         await record_alerts(alerts, channel=bool(webhook_url), dms=bool(bot_token))
