@@ -450,6 +450,7 @@ jobs:
     defaults:
       run:
         working-directory: backend
+        shell: bash
     steps:
       - name: Checkout Oddish
         uses: actions/checkout@v5
