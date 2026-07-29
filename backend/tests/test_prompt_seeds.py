@@ -30,11 +30,16 @@ async def test_seed_is_idempotent_and_populates_content():
         content = await get_latest_prompt_content(
             session, PromptKind.QA_PRE_TRIAL.value
         )
-        assert "VERIFIER COMPLETENESS" in content
-        assert 'source="pre_trial"' in content
-        assert '`dimension="oracle"`' in content
-        assert "`incompleteness`" in content
-        assert "`must_fix`" in content
+        # The taxonomy has to be taught in the JSON spellings the model must
+        # emit. Teaching it as prose headings instead ("SEVERITY", "VERIFIER
+        # COMPLETENESS") is what produced items keyed `severity` and
+        # dimension="verifier_completeness" -- each one failing a whole audit.
+        assert '"source": "pre_trial"' in content
+        assert '"dimension": "verifier"' in content
+        assert '"tier": "must_fix"' in content
+        assert '`"oracle"`' in content
+        assert '`"incompleteness"`' in content
+        assert '`"should_fix"`' in content
 
         post_trial = await get_latest_prompt_content(
             session, PromptKind.QA_POST_TRIAL.value
@@ -136,7 +141,7 @@ async def test_seed_upgrades_known_pre_trial_v1_but_not_operator_edits():
     async with get_session() as session:
         content = await get_latest_prompt_content(session, kind)
         assert content == PROMPT_SEEDS[kind][1]
-        assert 'source="pre_trial"' in content
+        assert '"source": "pre_trial"' in content
 
         await set_prompt_core(session, kind=kind, content="my taxonomy override")
         await session.commit()
