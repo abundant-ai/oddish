@@ -68,7 +68,7 @@ async def _resolve_org_pre_trial(task_id: str) -> tuple[str | None, bool]:
 
 async def synthesize_task_pre_trial(
     task_id: str, task_version_id: str, trial_ids: list[str], timeout: float
-) -> list[ActionItem] | None:
+) -> PreTrialSynthResult | None:
     """PreTrialSynthFn implementation backed by PreTrialBlock/AnalyzerBlock.
 
     Downloads the audited task version's source to a temp directory and runs the
@@ -78,9 +78,10 @@ async def synthesize_task_pre_trial(
     so the snapshot the auditor reads matches the version the findings are
     stored against. Never completes the task and never touches verdict state --
     that boundary lives in ``sync_pre_trial_to_task_version``, which the caller
-    (``run_task_qa_job``) invokes with these items. Returns ``None`` (skip; the
-    caller releases its claim) when the task's org has opted out of pre-trial
-    analysis.
+    (``run_task_qa_job``) invokes with these items. The block's spend and id ride
+    back on the result because they are knowable only here, where the block that
+    ran is still in scope. Returns ``None`` (skip; the caller releases its claim)
+    when the task's org has opted out of pre-trial analysis.
     """
     org_id, enabled = await _resolve_org_pre_trial(task_id)
     if not enabled:
