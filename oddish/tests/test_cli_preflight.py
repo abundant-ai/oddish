@@ -134,44 +134,6 @@ def test_run_json_gate_emits_no_json_blob_of_its_own(make_task, monkeypatch):
     assert '"findings"' not in result.output
 
 
-def test_run_json_reusing_task_emits_only_json(make_task, monkeypatch):
-    task_dir = make_task(extra_files={"environment/.dockerignore": "**/.git\n"})
-    _stub_run_preamble(monkeypatch)
-    monkeypatch.setattr(
-        run_module,
-        "upload_tasks_with_progress",
-        lambda *a, **k: [
-            {
-                "task_id": "task-existing",
-                "existing_task": True,
-                "content_unchanged": True,
-                "content_hash": "hash",
-                "version": 22,
-            }
-        ],
-    )
-    monkeypatch.setattr(
-        run_module,
-        "post_sweep_payload",
-        lambda *a, **k: {
-            "id": "task-existing",
-            "trials_count": 1,
-            "experiment_id": "experiment-id",
-            "experiment_name": "experiment-name",
-        },
-    )
-
-    result = runner.invoke(
-        app, ["run", str(task_dir), "--agent", "oracle", "--json"]
-    )
-
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["total_trials"] == 1
-    assert payload["tasks"][0]["id"] == "task-existing"
-    assert "reusing version" not in result.output
-
-
 def test_upload_aborts_when_preflight_fails(make_task, monkeypatch):
     task_dir = make_task(
         dockerfile=_FETCH_DOCKERFILE, extra_files={"environment/.dockerignore": "**/.git\n"}

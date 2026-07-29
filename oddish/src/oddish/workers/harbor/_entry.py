@@ -23,8 +23,8 @@ ClaudeCode: Any = importlib.import_module(
 ).ClaudeCode
 
 # ``uv run --no-project --with <harbor pin>`` deliberately creates an isolated
-# Harbor overlay, so the parent worker's installed ``oddish`` distribution is
-# and its dependencies are not importable there.  Import the override Harbor
+# Harbor overlay, so the parent worker's installed ``oddish`` distribution and
+# its dependencies are not importable there. Import the override Harbor
 # above *before* exposing any parent paths, then append the package root
 # containing this entrypoint and the parent worker's site-packages as fallback
 # paths.  The already-loaded override Harbor owns ``harbor.__path__``, so the
@@ -39,9 +39,7 @@ _fallback_paths.extend(
 )
 for _fallback_path in _fallback_paths:
     if not os.path.isdir(_fallback_path):
-        raise RuntimeError(
-            f"Oddish child fallback path is missing: {_fallback_path!r}"
-        )
+        raise RuntimeError(f"Oddish child fallback path is missing: {_fallback_path!r}")
     if _fallback_path not in sys.path:
         sys.path.append(_fallback_path)
 

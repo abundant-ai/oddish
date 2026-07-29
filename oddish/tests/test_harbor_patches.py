@@ -801,7 +801,6 @@ def test_standalone_entry_preserves_patch_package_context(monkeypatch):
 
 def test_standalone_entry_exposes_oddish_without_parent_environment(tmp_path):
     entry_path = Path(harbor_entry.__file__).resolve()
-    source_root = entry_path.parents[3]
     script = f"""
 import runpy
 import sys
