@@ -16,6 +16,8 @@ from modal_app import image, runtime_secrets
 app = modal.App("preview-harbor-canary-key")
 
 _CANARY_ORG_ID = "8ebde5d0"
+_CANARY_USER_ID = "user_pr966_harbor_canary"
+_CANARY_USER_EMAIL = "pr-966-harbor-canary@oddish.invalid"
 
 
 @app.function(image=image, secrets=runtime_secrets, timeout=120)
@@ -29,7 +31,7 @@ async def mutate_key(action: str, raw_key: str) -> str:
 
     Settings.db_use_null_pool = True
 
-    from models import OrganizationModel
+    from models import OrganizationModel, UserModel, UserRole
     from oddish.db import get_session, utcnow
     from oddish.db.models import APIKeyModel, APIKeyScope
     from sqlalchemy import select
@@ -59,12 +61,34 @@ async def mutate_key(action: str, raw_key: str) -> str:
             if existing is not None:
                 raise RuntimeError("preview canary key already exists")
 
+            canary_user = await session.get(UserModel, _CANARY_USER_ID)
+            if canary_user is None:
+                canary_user = UserModel(
+                    id=_CANARY_USER_ID,
+                    org_id=_CANARY_ORG_ID,
+                    email=_CANARY_USER_EMAIL,
+                    name="PR #966 Harbor canary",
+                    role=UserRole.MEMBER,
+                    is_active=True,
+                )
+                session.add(canary_user)
+                await session.flush()
+            elif (
+                canary_user.org_id != _CANARY_ORG_ID
+                or canary_user.email != _CANARY_USER_EMAIL
+                or not canary_user.is_active
+                or canary_user.deleted_at is not None
+            ):
+                raise RuntimeError("preview canary user exists in an invalid state")
+
             api_key = APIKeyModel(
                 org_id=_CANARY_ORG_ID,
                 name="PR #966 hosted Harbor canary",
                 key_prefix=raw_key[:16],
                 key_hash=key_hash,
                 scope=APIKeyScope.FULL,
+                created_by_user_id=_CANARY_USER_ID,
+                created_by_role=UserRole.MEMBER.value,
                 expires_at=utcnow() + timedelta(minutes=75),
                 is_internal=True,
             )
