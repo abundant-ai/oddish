@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, func, not_, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from oddish.config import (
 from oddish.core.baseline_gate import (
     GATE_SKIP_PREFIX,
     GateOutcome,
+    baseline_agent_clause,
     evaluate_baseline_gate,
 )
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
@@ -1437,8 +1438,9 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
     # Only enqueue QA when there is actually something to classify. A task can
     # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
-    # trial is a bulk-migrated Sauron import (excluded on cost) or was skipped by
-    # the baseline gate (never ran, no logs). Enqueueing then produces a job that
+    # trial is a bulk-migrated Sauron import (excluded on cost), was skipped by
+    # the baseline gate (never ran, no logs), or is a nop/oracle baseline (fixed
+    # scaffolding, never classified). Enqueueing then produces a job that
     # can only no-op: run_task_qa_job would leave a non-terminal verdict, which
     # QaJobHandler reads back as a retryable failure -> the job burns all its
     # attempts and lands FAILED for what is not an error. Complete the task
@@ -1457,6 +1459,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
                     func.coalesce(TrialModel.error_message, "").notlike(
                         f"{GATE_SKIP_PREFIX}%"
                     ),
+                    not_(baseline_agent_clause(TrialModel.agent)),
                 )
             )
         )

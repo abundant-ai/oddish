@@ -58,11 +58,17 @@ async def cleanup_task_ids():
             )
 
 
-def _submission(name: str, agents: list[tuple[str, str | None]]) -> TaskSubmission:
+def _submission(
+    name: str,
+    agents: list[tuple[str, str | None]],
+    *,
+    run_analysis: bool = False,
+) -> TaskSubmission:
     return TaskSubmission(
         name=name,
         task_path="s3://test-bucket/qa-skip-fake-task",
         user="test",
+        run_analysis=run_analysis,
         trials=[TrialSpec(agent=a, model=m) for a, m in agents],
     )
 
@@ -107,6 +113,53 @@ async def test_classifier_skips_baselines_including_variants(cleanup_task_ids):
     for tid, agent in agent_by_id.items():
         if agent != _LLM_AGENT:
             assert tid not in live_ids, f"baseline {agent!r} was queued for QA"
+
+
+@pytest.mark.asyncio
+async def test_baseline_only_task_enqueues_no_qa_job(cleanup_task_ids):
+    """``maybe_start_qa_stage``'s eligibility count mirrors the classifier's.
+
+    A task whose only live trials are baselines has nothing left to classify, so
+    it must complete rather than enqueue a QA job that could only no-op. These
+    two filters drifting apart is the failure this guards.
+    """
+    from oddish.db import TaskStatus, WorkerJobKind, WorkerJobModel
+    from oddish.queue import maybe_start_qa_stage
+
+    task_id = f"qa-skip-stage-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(
+            session,
+            _submission(
+                "stage", [("nop", None), ("oracle", None)], run_analysis=True
+            ),
+            task_id=task_id,
+        )
+    await _finish_all_trials(task_id)
+
+    async with get_session() as session:
+        trial_id = (
+            await session.execute(
+                select(TrialModel.id).where(TrialModel.task_id == task_id).limit(1)
+            )
+        ).scalar_one()
+        assert await maybe_start_qa_stage(session, trial_id) is True
+
+    async with get_session() as session:
+        task = await session.get(TaskModel, task_id)
+        qa_jobs = (
+            await session.execute(
+                select(WorkerJobModel.id).where(
+                    WorkerJobModel.kind == WorkerJobKind.QA,
+                    WorkerJobModel.subject_id == task_id,
+                )
+            )
+        ).scalars().all()
+
+    assert qa_jobs == [], "a baseline-only task enqueued a QA job with nothing to QA"
+    assert task.status == TaskStatus.COMPLETED
+    assert task.verdict_status is None
 
 
 @pytest.mark.asyncio
