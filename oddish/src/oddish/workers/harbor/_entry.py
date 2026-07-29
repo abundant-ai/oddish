@@ -18,19 +18,32 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if sys.path and os.path.abspath(sys.path[0] or "") == _THIS_DIR:
     sys.path.pop(0)
 
-# ``uv run --no-project --with <harbor pin>`` deliberately creates an isolated
-# Harbor overlay, so the parent worker's installed ``oddish`` distribution is
-# not importable there.  Expose only the package root containing this entrypoint
-# (not the parent worker's site-packages, which would also expose its baked
-# Harbor and defeat the override).  This gives the sibling patch module normal
-# package context, including its relative imports.
-_ODDISH_IMPORT_ROOT = str(Path(_THIS_DIR).parents[2])
-if _ODDISH_IMPORT_ROOT not in sys.path:
-    sys.path.insert(0, _ODDISH_IMPORT_ROOT)
-
 ClaudeCode: Any = importlib.import_module(
     "harbor.agents.installed.claude_code"
 ).ClaudeCode
+
+# ``uv run --no-project --with <harbor pin>`` deliberately creates an isolated
+# Harbor overlay, so the parent worker's installed ``oddish`` distribution is
+# and its dependencies are not importable there.  Import the override Harbor
+# above *before* exposing any parent paths, then append the package root
+# containing this entrypoint and the parent worker's site-packages as fallback
+# paths.  The already-loaded override Harbor owns ``harbor.__path__``, so the
+# baked Harbor in the fallback site-packages cannot replace or extend it.
+_ODDISH_IMPORT_ROOT = str(Path(_THIS_DIR).parents[2])
+_PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
+_fallback_paths = [_ODDISH_IMPORT_ROOT]
+_fallback_paths.extend(
+    path
+    for path in os.environ.get(_PARENT_SITE_PACKAGES_ENV, "").split(os.pathsep)
+    if path
+)
+for _fallback_path in _fallback_paths:
+    if not os.path.isdir(_fallback_path):
+        raise RuntimeError(
+            f"Oddish child fallback path is missing: {_fallback_path!r}"
+        )
+    if _fallback_path not in sys.path:
+        sys.path.append(_fallback_path)
 
 logger = logging.getLogger("oddish.harbor_entry")
 

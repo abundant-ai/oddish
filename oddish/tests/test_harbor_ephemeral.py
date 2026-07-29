@@ -386,6 +386,41 @@ def test_spawn_args_defaults_to_docker_no_extra():
     assert req == harbor_git_requirement(_SOURCE, _SHA)
 
 
+def test_child_process_env_exposes_existing_parent_site_packages(monkeypatch, tmp_path):
+    first = tmp_path / "site-a"
+    second = tmp_path / "site-b"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(
+        harbor_ephemeral.site,
+        "getsitepackages",
+        lambda: [str(first), str(tmp_path / "missing"), str(second)],
+    )
+
+    env = harbor_ephemeral._child_process_env()
+
+    assert env["ODDISH_PARENT_SITE_PACKAGES"].split(os.pathsep) == [
+        str(first.resolve()),
+        str(second.resolve()),
+    ]
+
+
+def test_child_process_env_fails_loudly_without_parent_site_packages(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        harbor_ephemeral.site,
+        "getsitepackages",
+        lambda: [str(tmp_path / "missing")],
+    )
+
+    with pytest.raises(
+        HarborOverrideImportError,
+        match="cannot locate parent site-packages",
+    ):
+        harbor_ephemeral._child_process_env()
+
+
 _FAKE_CHILD = textwrap.dedent(
     """
     import json, sys
