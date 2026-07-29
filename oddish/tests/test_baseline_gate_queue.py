@@ -551,10 +551,12 @@ async def test_qa_classification_excludes_gate_skipped_and_cancelled(
 
     live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
     # Neither the gate-skipped (never-run) kimi nor the cancelled baseline has
-    # an outcome to classify; the other completed baseline remains eligible.
+    # an outcome to classify. The remaining completed baseline is excluded too,
+    # now that nop/oracle are never classified -- so this mixed task, whose only
+    # LLM trial was gate-skipped, has nothing left to QA at all.
     assert kimi_id not in live_ids
     assert baseline_id not in live_ids
-    assert live_ids
+    assert live_ids == set()
 
 
 # ---------------------------------------------------------------------------

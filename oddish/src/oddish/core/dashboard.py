@@ -23,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_basis import settled_cost_columns, settled_cost_parts
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.filters.trial_predicates import (
@@ -299,17 +300,8 @@ _STATUS_FILTER_OVERFETCH_CEILING = 200
 
 
 def _baseline_agent_clause():
-    """Match nop/oracle baseline agents, mirroring the frontend's
-    ``isBaselineAgentName`` so pass@1 excludes deterministic baselines."""
-    agent_lower = func.lower(func.coalesce(TrialModel.agent, ""))
-    return or_(
-        agent_lower == "nop",
-        agent_lower == "oracle",
-        agent_lower.like("nop-%"),
-        agent_lower.like("oracle-%"),
-        agent_lower.like("agent-nop%"),
-        agent_lower.like("agent-oracle%"),
-    )
+    """Match nop/oracle baseline agents so pass@1 excludes them."""
+    return baseline_agent_clause(TrialModel.agent)
 
 
 def _build_aggregates_for_experiment_ids(
