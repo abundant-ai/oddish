@@ -129,7 +129,7 @@ def test_alert_defaults_apply_when_no_admin_has_overridden() -> None:
     # they are worth pinning even though they are no longer immutable.
     assert DEFAULT_ALERT_SETTINGS == AlertSettings(
         trial_escalation_usd=1000.0,
-        user_weekly_escalation_delta_usd=5000.0,
+        user_daily_overage_delta_usd=1000.0,
         always_ping_emails=(
             "charles@abundant.ai",
             "ke@abundant.ai",
@@ -399,7 +399,7 @@ def test_build_alerts_honors_an_admin_override() -> None:
         ),
         settings=AlertSettings(
             trial_escalation_usd=50.0,
-            user_weekly_escalation_delta_usd=5000.0,
+            user_daily_overage_delta_usd=1000.0,
             always_ping_emails=("oncall@example.com",),
             is_override=True,
         ),
@@ -495,7 +495,7 @@ def test_build_alerts_does_not_channel_escalate_a_finished_trial() -> None:
     assert not any(alert.key.startswith("trial-escalation:") for alert in alerts)
 
 
-def test_build_alerts_pings_channel_for_user_above_weekly_average_delta() -> None:
+def test_build_alerts_pings_channel_for_user_above_daily_overage_margin() -> None:
     alerts = build_alerts(
         AlertCandidates(
             user_spend=[
@@ -503,8 +503,8 @@ def test_build_alerts_pings_channel_for_user_above_weekly_average_delta() -> Non
                     org_id="org-1",
                     user_id="user-1",
                     label="Pat <Admin>",
-                    cost_usd=10_001,
-                    average_cost_usd=5_000,
+                    spend_24h_usd=2_500,
+                    daily_avg_7d_usd=1_000,
                     live_trial_count=2,
                 )
             ]
@@ -514,29 +514,30 @@ def test_build_alerts_pings_channel_for_user_above_weekly_average_delta() -> Non
         dashboard_url="https://www.oddish.app",
     )
 
-    assert [alert.key for alert in alerts] == ["user-weekly-escalation:org-1:user-1"]
+    assert [alert.key for alert in alerts] == ["user-daily-overage:org-1:user-1"]
     assert alerts[0].text.splitlines() == [
         "<!channel>",
-        ":moneybag: *High weekly user spend*",
+        ":moneybag: *User spend above their 7-day daily average*",
         "User: *Pat &lt;Admin&gt;*",
-        "Rolling seven-day spend: *$10,001.00*",
-        "Workspace spender average: *$5,000.00*",
-        "Above average by: *$5,001.00* (alert above $5,000.00)",
+        "Spend in past 24 hours: *$2,500.00*",
+        "Seven-day daily average: *$1,000.00*",
+        "Above their daily average by: *$1,500.00* (alert above $1,000.00)",
         "Running or retrying trials included: 2",
         "<https://www.oddish.app/admin|open admin costs>",
     ]
     assert not alerts[0].dm_only
 
 
-def test_build_alerts_user_weekly_delta_is_exclusive_and_configurable() -> None:
-    candidate = UserSpend("org-1", "user-1", "Pat", 10_000, 5_000, 0)
+def test_build_alerts_user_daily_overage_is_exclusive_and_configurable() -> None:
+    # 24h spend $6,000 runs $5,000 above the $1,000 daily average.
+    candidate = UserSpend("org-1", "user-1", "Pat", 6_000, 1_000, 0)
 
     def keys(delta: float) -> list[str]:
         alerts = build_alerts(
             AlertCandidates(user_spend=[candidate]),
             settings=replace(
                 DEFAULT_ALERT_SETTINGS,
-                user_weekly_escalation_delta_usd=delta,
+                user_daily_overage_delta_usd=delta,
             ),
             recent_cutoff=datetime.now(timezone.utc) - timedelta(hours=24),
             dashboard_url="https://www.oddish.app",
@@ -544,7 +545,7 @@ def test_build_alerts_user_weekly_delta_is_exclusive_and_configurable() -> None:
         return [alert.key for alert in alerts]
 
     assert keys(5_000) == []
-    assert keys(4_999) == ["user-weekly-escalation:org-1:user-1"]
+    assert keys(4_999) == ["user-daily-overage:org-1:user-1"]
 
 
 def test_build_alerts_reports_unpriceable_models_once_each() -> None:
@@ -1867,7 +1868,7 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_load_alerts_weekly_user_spend_includes_live_running_trials(
+async def test_load_alerts_user_daily_overage_includes_live_running_trials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     suffix = uuid4().hex[:12]
@@ -1958,14 +1959,14 @@ async def test_load_alerts_weekly_user_spend_includes_live_running_trials(
                     alice_id,
                     1000,
                     TrialStatus.SUCCESS,
-                    now - timedelta(days=1),
+                    now - timedelta(days=2),
                 ),
                 trial(
                     f"{task_id}-bob-finished",
                     bob_id,
                     1000,
                     TrialStatus.SUCCESS,
-                    now - timedelta(days=1),
+                    now - timedelta(days=2),
                 ),
                 trial(
                     f"{task_id}-alice-running",
@@ -1981,16 +1982,22 @@ async def test_load_alerts_weekly_user_spend_includes_live_running_trials(
         alerts = await load_alerts(now)
         alert_by_key = {alert.key: alert for alert in alerts}
         live_key = f"trial-escalation:{task_id}-alice-running"
-        user_key = f"user-weekly-escalation:{org_id}:{alice_id}"
+        user_key = f"user-daily-overage:{org_id}:{alice_id}"
 
         assert live_key in alert_by_key
         assert "Live cost so far: *$11,000.00*" in alert_by_key[live_key].text
         assert user_key in alert_by_key
-        assert "Rolling seven-day spend: *$12,000.00*" in alert_by_key[user_key].text
-        assert "Workspace spender average: *$6,500.00*" in alert_by_key[user_key].text
+        # Alice's live $11,000 is her whole last-24h spend (the two $1,000
+        # finished trials settled two days ago), and her seven-day daily average
+        # is $12,000 / 7 = $1,714.29.
+        assert "Spend in past 24 hours: *$11,000.00*" in alert_by_key[user_key].text
+        assert (
+            "Seven-day daily average: *$1,714.29*" in alert_by_key[user_key].text
+        )
         assert "Running or retrying trials included: 1" in alert_by_key[user_key].text
+        # Bob spent nothing in the last 24h, so he never clears his own average.
         assert not any(
-            alert.key == f"user-weekly-escalation:{org_id}:{bob_id}" for alert in alerts
+            alert.key == f"user-daily-overage:{org_id}:{bob_id}" for alert in alerts
         )
     finally:
         async with get_session() as session:
@@ -2817,11 +2824,11 @@ async def test_database_outbox_is_durable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_weekly_user_alert_rearms_only_after_a_sent_breach_clears() -> None:
+async def test_daily_overage_user_alert_rearms_only_after_a_sent_breach_clears() -> None:
     suffix = uuid4().hex
-    active_key = f"user-weekly-escalation:org:{suffix}-active"
-    cleared_key = f"user-weekly-escalation:org:{suffix}-cleared"
-    pending_key = f"user-weekly-escalation:org:{suffix}-pending"
+    active_key = f"user-daily-overage:org:{suffix}-active"
+    cleared_key = f"user-daily-overage:org:{suffix}-cleared"
+    pending_key = f"user-daily-overage:org:{suffix}-pending"
     now = datetime.now(timezone.utc)
     keys = [active_key, cleared_key, pending_key]
 
