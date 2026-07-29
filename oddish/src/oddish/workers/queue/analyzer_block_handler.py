@@ -33,7 +33,11 @@ class MissingPromptVersionError(RuntimeError):
 
 
 async def _mirror_pre_trial_to_task_version(
-    task_version_id: str | None, output: dict | None
+    task_version_id: str | None,
+    output: dict | None,
+    *,
+    cost_usd: float | None = None,
+    block_id: str | None = None,
 ) -> None:
     """Write an assignment-driven audit's findings onto the version it audited.
 
@@ -58,7 +62,9 @@ async def _mirror_pre_trial_to_task_version(
         await sync_pre_trial_to_task_version(
             task_version_id,
             payload=build_pre_trial_payload(
-                [ActionItem(**item) for item in items if isinstance(item, dict)]
+                [ActionItem(**item) for item in items if isinstance(item, dict)],
+                cost_usd=cost_usd,
+                block_id=block_id,
             ),
             error=None,
         )
@@ -325,7 +331,12 @@ async def run_analyzer_block_job(
             # After the run is terminal: mirroring is a downstream convenience,
             # never a reason to leave a finished run looking unfinished.
             await _mirror_pre_trial_to_task_version(
-                pre_trial_build.get("task_version_id"), result.output
+                pre_trial_build.get("task_version_id"),
+                result.output,
+                # Only knowable here: analysis_costs rows carry no block or
+                # version reference, so this spend can't be re-derived later.
+                cost_usd=block.usage.cost_usd if block.usage else None,
+                block_id=block.id,
             )
     finally:
         if heartbeat_task is not None:

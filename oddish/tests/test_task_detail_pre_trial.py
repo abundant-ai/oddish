@@ -123,3 +123,34 @@ def test_in_flight_audit_reports_running():
     assert versions[0].pre_trial_findings == []
     assert versions[0].pre_trial_status == "running"
     assert versions[0].pre_trial_error is None
+
+
+def test_audit_cost_rides_on_the_version_payload():
+    """`analysis_costs` has no version reference, so the audit's spend is stored
+    in the payload at write time and read straight back out."""
+    _totals, versions = _aggregate_task_detail_rollups(
+        trials=[],
+        version_rows=[
+            _version(
+                pre_trial={"items": [_FINDING], "cost_usd": 0.146, "block_id": "b1"},
+                pre_trial_status=VerdictStatus.SUCCESS,
+            )
+        ],
+        current_version_id="v1",
+    )
+    assert versions[0].pre_trial_cost_usd == 0.146
+
+
+def test_audits_predating_cost_capture_report_none():
+    _totals, versions = _aggregate_task_detail_rollups(
+        trials=[],
+        version_rows=[
+            _version(
+                pre_trial={"items": [_FINDING]},
+                pre_trial_status=VerdictStatus.SUCCESS,
+            )
+        ],
+        current_version_id="v1",
+    )
+    # Absent, not zero: zero would claim the audit was free.
+    assert versions[0].pre_trial_cost_usd is None

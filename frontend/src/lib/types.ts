@@ -148,6 +148,9 @@ export interface Trial {
   pre_trial_findings?: PreTrialFinding[];
   pre_trial_status?: string | null;
   pre_trial_error?: string | null;
+  /** What the audit cost. Absent on audits predating cost capture — not zero,
+   *  which would claim it was free. */
+  pre_trial_cost_usd?: number | null;
   input_tokens?: number | null;
   cache_tokens?: number | null;
   output_tokens?: number | null;
@@ -338,6 +341,9 @@ export interface TaskVersionSummary {
    *  findings mean something different for each, so never infer from the list. */
   pre_trial_status?: string | null;
   pre_trial_error?: string | null;
+  /** What the audit cost. Absent on audits predating cost capture — not zero,
+   *  which would claim it was free. */
+  pre_trial_cost_usd?: number | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
 }

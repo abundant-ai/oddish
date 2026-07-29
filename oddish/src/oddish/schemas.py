@@ -861,6 +861,9 @@ class TaskVersionSummary(BaseModel):
     pre_trial_findings: list[dict] = Field(default_factory=list)
     pre_trial_status: str | None = None
     pre_trial_error: str | None = None
+    # What this audit cost. Captured at write time; absent on audits that
+    # predate that (analysis_costs has no version reference to recover it from).
+    pre_trial_cost_usd: float | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
@@ -977,6 +980,7 @@ class TrialResponse(BaseModel):
     pre_trial_findings: list[dict] = Field(default_factory=list)
     pre_trial_status: str | None = None
     pre_trial_error: str | None = None
+    pre_trial_cost_usd: float | None = None
     experiment_id: str | None = None
     agent: str
     provider: str

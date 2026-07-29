@@ -306,6 +306,7 @@ def _aggregate_task_detail_rollups(
             pre_trial_findings=((v.pre_trial or {}).get("items") or []),
             pre_trial_status=v.pre_trial_status,
             pre_trial_error=v.pre_trial_error,
+            pre_trial_cost_usd=(v.pre_trial or {}).get("cost_usd"),
         )
         for v in version_rows
     }

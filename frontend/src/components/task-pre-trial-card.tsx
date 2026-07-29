@@ -1,5 +1,6 @@
 "use client";
 
+import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
 import type { PreTrialFinding } from "@/lib/types";
 
 // Worst first: a must_fix can misgrade a trial, the rest are hygiene.
@@ -140,10 +141,12 @@ export function TaskPreTrialCard({
   findings,
   status,
   error,
+  costUsd,
 }: {
   findings?: PreTrialFinding[];
   status?: string | null;
   error?: string | null;
+  costUsd?: number | null;
 }) {
   const items = [...(findings ?? [])].sort(
     (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
@@ -175,6 +178,9 @@ export function TaskPreTrialCard({
           }`}
         >
           {summary}
+          {hasDisplayableCostUsd(costUsd)
+            ? ` · ${formatCostUsd(costUsd)}`
+            : ""}
         </span>
       </div>
 

@@ -1192,6 +1192,7 @@ export function TaskDetailClient({
           findings={selectedVersion?.pre_trial_findings}
           status={selectedVersion?.pre_trial_status}
           error={selectedVersion?.pre_trial_error}
+          costUsd={selectedVersion?.pre_trial_cost_usd}
         />
 
         <div className="space-y-3">
