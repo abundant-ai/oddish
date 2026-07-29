@@ -17,6 +17,7 @@ from oddish.core.cost_basis import (
     sum_settled_cost,
 )
 from oddish.db import AnalysisCostModel, ModalCostSpanModel, TrialModel, TrialStatus
+from oddish.db.pg_errors import is_missing_table
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +378,12 @@ async def effective_limits_by_org_user_all_orgs(
     try:
         async with session.begin_nested():
             return await _bump_aware_limits_by_org_user_all_orgs(session)
-    except ProgrammingError:
+    except ProgrammingError as exc:
+        # Only a MISSING table degrades. Any other SQL fault must surface: this
+        # fallback silently drops bumps, which is the very bug it exists to
+        # prevent, so it must not double as a catch-all for a broken query.
+        if not is_missing_table(exc):
+            raise
         logger.warning(
             "quota bumps unavailable (schema not migrated yet); reporting "
             "base-only limits",

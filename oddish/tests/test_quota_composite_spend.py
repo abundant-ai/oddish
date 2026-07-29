@@ -461,3 +461,48 @@ async def test_effective_limits_include_live_bump_without_quota_row(
         limits = await effective_limits_by_org_user_all_orgs(session)
 
     assert limits[(org_id, user_id)] == to_money_decimal(Decimal("240.00"))
+
+
+@pytest.mark.asyncio
+async def test_effective_limits_propagates_non_missing_table_sql_errors(monkeypatch):
+    """A broken query must NOT degrade to base-only limits.
+
+    The fallback exists so a missing ``quota_bumps`` (the last of the three quota
+    migrations) does not 500 the admin dashboard. If it also swallowed generic SQL
+    faults it would silently drop bumps -- exactly the bug it was added to fix.
+    """
+    from sqlalchemy.exc import ProgrammingError
+
+    from oddish.core import quotas as quotas_mod
+
+    async def _boom(_session):
+        raise ProgrammingError("SELECT bad", {}, Exception("syntax error"))
+
+    monkeypatch.setattr(
+        quotas_mod, "_bump_aware_limits_by_org_user_all_orgs", _boom
+    )
+    async with get_session() as session:
+        with pytest.raises(ProgrammingError):
+            await quotas_mod.effective_limits_by_org_user_all_orgs(session)
+
+
+@pytest.mark.asyncio
+async def test_effective_limits_degrades_only_on_missing_table(monkeypatch):
+    from sqlalchemy.exc import ProgrammingError
+
+    from oddish.core import quotas as quotas_mod
+
+    class _UndefinedTableError(Exception):
+        sqlstate = "42P01"
+
+    async def _missing(_session):
+        raise ProgrammingError("SELECT x", {}, _UndefinedTableError("no such table"))
+
+    monkeypatch.setattr(
+        quotas_mod, "_bump_aware_limits_by_org_user_all_orgs", _missing
+    )
+    async with get_session() as session:
+        # Falls back to the base-only read rather than raising.
+        assert isinstance(
+            await quotas_mod.effective_limits_by_org_user_all_orgs(session), dict
+        )

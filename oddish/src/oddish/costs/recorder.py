@@ -9,7 +9,6 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, update
-from sqlalchemy.exc import ProgrammingError
 
 from oddish.config import settings
 from oddish.costs.modal_cost import (
@@ -29,6 +28,7 @@ from oddish.db import (
     WorkerJobStatus,
     get_session,
 )
+from oddish.db.pg_errors import is_missing_table
 
 log = logging.getLogger(__name__)
 _missing_table_logged = False
@@ -57,19 +57,9 @@ class WorkerBillingSpec:
         )
 
 
-def _is_missing_table(exc: BaseException) -> bool:
-    if not isinstance(exc, ProgrammingError):
-        return False
-    orig = getattr(exc, "orig", None)
-    return (
-        getattr(orig, "sqlstate", None) == "42P01"
-        or "UndefinedTable" in type(orig).__name__
-    )
-
-
 def _record_failure(operation: str, exc: BaseException) -> None:
     global _missing_table_logged
-    if _is_missing_table(exc):
+    if is_missing_table(exc):
         if not _missing_table_logged:
             _missing_table_logged = True
             log.warning("Modal cost tables are not available; tracking is deferred")
