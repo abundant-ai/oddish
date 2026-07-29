@@ -87,3 +87,18 @@ test("does not relabel other Gemini models or non-Gemini harnesses", () => {
     "mini-swe-agent",
   ]);
 });
+
+test("labels the v9m Grok cohort as Grok 4.5", () => {
+  const grokTrials = [
+    trial("grok-build", "xai/v9m-rl-learnability-tp8", {
+      provider: "xai",
+    }),
+    trial("grok-build", "xai/grok-4.1-fast", { provider: "xai" }),
+  ];
+  const { agentSummaries } = buildExperimentAgentSummaries([task(grokTrials)]);
+
+  expect(agentSummaries.map(({ key, model }) => ({ key, model }))).toEqual([
+    { key: "grok-build/grok-4.5", model: "grok-4.5" },
+    { key: "grok-build/xai/grok-4.1-fast", model: "xai/grok-4.1-fast" },
+  ]);
+});

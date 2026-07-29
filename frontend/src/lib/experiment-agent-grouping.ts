@@ -11,6 +11,8 @@ const GEMINI_35_MODEL_ALIASES = new Set([
   "gemini/gemini-3.5-flash",
   "google/gemini-3.5-flash",
 ]);
+const GROK_45_DISPLAY_MODEL = "grok-4.5";
+const GROK_45_SOURCE_MODEL = "xai/v9m-rl-learnability-tp8";
 
 export const PROBE_AGENT_KEY = "probe";
 
@@ -58,6 +60,13 @@ function getDisplayAgentModel(
 ): Pick<Trial, "agent" | "model"> {
   const agent = trial.agent.trim().toLowerCase();
   const model = trial.model?.trim().toLowerCase() ?? null;
+
+  if (agent === "grok-build" && model === GROK_45_SOURCE_MODEL) {
+    return {
+      agent: trial.agent,
+      model: GROK_45_DISPLAY_MODEL,
+    };
+  }
 
   // These historical labels represent the same Gemini CLI + Flash 3.5
   // execution cohort. Canonicalize only the experiment display key; the
