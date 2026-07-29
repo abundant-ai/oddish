@@ -40,6 +40,7 @@ def upgrade() -> None:
             ALTER COLUMN user_daily_overage_delta_usd SET DEFAULT 1000
         """
     )
+    op.execute("UPDATE slack_alert_settings SET user_daily_overage_delta_usd = 1000")
     op.execute(
         """
         ALTER TABLE slack_alert_settings
@@ -62,6 +63,7 @@ def downgrade() -> None:
             ALTER COLUMN user_daily_overage_delta_usd SET DEFAULT 5000
         """
     )
+    op.execute("UPDATE slack_alert_settings SET user_daily_overage_delta_usd = 5000")
     op.execute(
         """
         ALTER TABLE slack_alert_settings

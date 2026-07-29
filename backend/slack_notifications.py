@@ -733,6 +733,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 )
             ).all()
 
+        within_24h = case(
+            (or_(TrialModel.finished_at >= cost_cutoff, live_trial), True), else_=False
+        )
         user_spend_rows = (
             await session.execute(
                 select(
@@ -748,13 +751,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     # Split each model group into its last-24h slice and the
                     # rest of the seven-day window, so one query yields both the
                     # daily average (whole window / 7) and today's spend.
-                    case(
-                        (
-                            or_(TrialModel.finished_at >= cost_cutoff, live_trial),
-                            True,
-                        ),
-                        else_=False,
-                    ).label("within_24h"),
+                    within_24h.label("within_24h"),
                     *settled_cost_columns(),
                 )
                 .join(
@@ -777,13 +774,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     UserModel.github_username,
                     UserModel.email,
                     TrialModel.model,
-                    case(
-                        (
-                            or_(TrialModel.finished_at >= cost_cutoff, live_trial),
-                            True,
-                        ),
-                        else_=False,
-                    ),
+                    within_24h,
                 )
                 .execution_options(include_deleted=True)
             )
