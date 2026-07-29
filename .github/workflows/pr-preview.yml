@@ -445,7 +445,7 @@ jobs:
       PREVIEW_API_URL: ${{ needs.detect-changes.outputs.preview_api_url }}
       PREVIEW_DASHBOARD_URL: https://pr-966.oddish.app
       SRE_WORLD_SHA: 831a89e07c298aff8469c6294bb385247335d15b
-      HARBOR_SHA: 2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299
+      HARBOR_SHA: 695cbf1c29097a92dfec30f23afe35e8da216866
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
     defaults:
       run:
