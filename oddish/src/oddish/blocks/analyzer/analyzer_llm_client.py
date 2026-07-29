@@ -334,6 +334,7 @@ async def create_llm_client(
     api_key: str | None = None,
     max_tokens: int | None = None,
     response_format: Any | None = None,
+    output_schema: dict | None = None,
     sandbox_config: SandboxConfig | None = None,
     cli_config: CliConfig | None = None,
 ) -> AnalyzerLLMClient:
@@ -344,6 +345,7 @@ async def create_llm_client(
             model=model or _DEFAULT_MODEL,
             max_tokens=max_tokens,
             response_format=response_format,
+            output_schema=output_schema,
             api_key=api_key,
         )
 

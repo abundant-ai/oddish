@@ -54,6 +54,11 @@ ANALYSIS_MODEL = "claude-sonnet-5"
 # TrialClassifier model. Normalized to a direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
 VERDICT_MODEL = "gpt-5.4"
+# Used only when VERDICT_MODEL's provider returns a permanent error (see
+# provider_failures). Deliberately a different *provider*, not just a different
+# model: the failure mode this exists for is a whole OpenAI/Azure resource
+# going away, which a sibling OpenAI model would share.
+VERDICT_FALLBACK_MODEL = ANALYSIS_MODEL
 PRE_TRIAL_MODEL = ANALYSIS_MODEL
 
 PROBE_MODEL_ROTATION: list[str] = [
@@ -1325,6 +1330,7 @@ class Settings(BaseSettings):
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
+    verdict_fallback_model: str = VERDICT_FALLBACK_MODEL
     pre_trial_model: str = PRE_TRIAL_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)

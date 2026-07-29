@@ -34,6 +34,7 @@ from oddish.workers.queue.analyzer_block_handler import (
     MissingPromptVersionError,
     run_analyzer_block_job,
 )
+from oddish.workers.queue.provider_failures import is_permanent_provider_failure
 from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.analyzer_handler import (
     default_eval_rows,
@@ -217,7 +218,13 @@ class QaJobHandler:
             if task.verdict_status == VerdictStatus.SUCCESS:
                 return JobOutcome.ok()
             if task.verdict_status == VerdictStatus.FAILED:
-                return _fail_retryable(task.verdict_error or f"QA {task_id} FAILED")
+                error_message = task.verdict_error or f"QA {task_id} FAILED"
+                # Re-running the whole QA job cannot clear a provider
+                # permission block, and each attempt re-hits the blocked
+                # endpoint -- which is what abuse monitoring is watching for.
+                if is_permanent_provider_failure(task.verdict_error):
+                    return _fail_permanent(error_message)
+                return _fail_retryable(error_message)
             return _fail_retryable(
                 f"QA {task_id} left in non-terminal status {task.verdict_status!r}"
             )
