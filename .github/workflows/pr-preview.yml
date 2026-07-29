@@ -638,6 +638,21 @@ jobs:
                   status = trial.get("status")
                   if status in {"success", "failed", "cancelled", "skipped"}:
                       if status != "success":
+                          for diagnostic_path in (
+                              "logs",
+                              "logs/structured",
+                              "result",
+                              "debug-files",
+                          ):
+                              diagnostic_response = client.get(
+                                  f"{api_url}/trials/{trial['id']}/{diagnostic_path}"
+                              )
+                              print(
+                                  f"--- trial diagnostic: {diagnostic_path} "
+                                  f"(HTTP {diagnostic_response.status_code}) ---",
+                                  flush=True,
+                              )
+                              print(diagnostic_response.text[-20_000:], flush=True)
                           raise SystemExit(
                               "hosted Harbor canary did not execute successfully: "
                               + json.dumps(concise, default=str)

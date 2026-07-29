@@ -995,7 +995,7 @@ def run(
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))
-            if not quiet and is_existing:
+            if not quiet and not json_output and is_existing:
                 ver = result.get("version", "?")
                 if result.get("content_unchanged"):
                     console.print(
