@@ -396,6 +396,20 @@ async def test_qa_handler_returns_permanent_fail_on_provider_403(monkeypatch):
     assert outcome.failure.retryable is False
 
 
+@pytest.mark.asyncio
+async def test_qa_handler_permanent_when_fallback_fails_after_403(monkeypatch):
+    """Both verdict models failing is still permanent: a retry would run the
+    blocked primary again before reaching the fallback."""
+    outcome = await _qa_failure_outcome(
+        monkeypatch,
+        "TimeoutError: claude timed out [verdict fallback "
+        "anthropic/claude-sonnet-5 failed after permanent primary failure -- "
+        "PermissionDeniedError: Error code: 403 - resource blocked]",
+    )
+
+    assert outcome.failure.retryable is False
+
+
 # ---------------------------------------------------------------------------
 # Handler registry side effects
 # ---------------------------------------------------------------------------

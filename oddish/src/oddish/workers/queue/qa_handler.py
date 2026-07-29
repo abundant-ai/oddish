@@ -83,7 +83,9 @@ async def synthesize_task_verdict(
     hours while the Claude-backed blocks in the same worker kept succeeding.
     Transient failures are re-raised untouched -- those are what the worker
     job's own retries are for, and burning the fallback on a timeout would
-    silently move verdicts to a different model.
+    silently move verdicts to a different model. If the fallback *also* fails,
+    the raised error names both, so the job is classified on the primary's
+    permanent failure rather than retried back onto the blocked endpoint.
     """
     import oddish.blocks.analyzer.analyzer_block as ab
     from oddish.analyze.classifier import VERDICT_MAX_TOKENS, VERDICT_TIMEOUT
@@ -120,14 +122,28 @@ async def synthesize_task_verdict(
     try:
         out = await _run(settings.verdict_model, fallback=False)
     except Exception as exc:
-        if not is_permanent_provider_failure(f"{type(exc).__name__}: {exc}"):
+        primary_error = f"{type(exc).__name__}: {exc}"
+        if not is_permanent_provider_failure(primary_error):
             raise
         console.print(
             f"[yellow]Verdict model {settings.verdict_model} is permanently "
             f"unavailable ({type(exc).__name__}); retrying on "
             f"{settings.verdict_fallback_model}[/yellow]"
         )
-        out = await _run(settings.verdict_fallback_model, fallback=True)
+        try:
+            out = await _run(settings.verdict_fallback_model, fallback=True)
+        except Exception as fallback_exc:
+            # Carry the primary's permanent failure into the raised message.
+            # It becomes ``task.verdict_error``, which is the only thing
+            # QaJobHandler classifies -- and a bare (retryable-looking)
+            # fallback error there sends every one of the job's 6 attempts
+            # back through the blocked primary first, which is the retry storm
+            # this whole path exists to stop.
+            raise RuntimeError(
+                f"{type(fallback_exc).__name__}: {fallback_exc} "
+                f"[verdict fallback {settings.verdict_fallback_model} failed "
+                f"after permanent primary failure -- {primary_error}]"
+            ) from fallback_exc
     return TaskVerdictModel(**out.output)
 
 

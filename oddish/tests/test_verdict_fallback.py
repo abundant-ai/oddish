@@ -16,6 +16,7 @@ import pytest
 from oddish.analyze.models import Classification, TaskVerdictModel, TrialClassification
 from oddish.config import settings
 from oddish.workers.queue import qa_handler
+from oddish.workers.queue.provider_failures import is_permanent_provider_failure
 
 
 AZURE_403 = (
@@ -167,18 +168,29 @@ async def test_transient_error_does_not_fall_back(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fallback_failure_propagates(monkeypatch):
+async def test_fallback_failure_still_reports_the_permanent_primary(monkeypatch):
+    """When both models fail, the error must still carry the primary's 403.
+
+    ``task.verdict_error`` is the only input QaJobHandler classifies. If it
+    holds just the fallback's (retryable-looking) error, all 6 attempts run the
+    blocked primary again -- the exact storm this fallback exists to stop.
+    """
     seen = _install_fake_block(
         monkeypatch,
-        behaviors=[PermissionDeniedError(AZURE_403), RuntimeError("claude down")],
+        behaviors=[PermissionDeniedError(AZURE_403), TimeoutError("claude down")],
     )
 
-    with pytest.raises(RuntimeError, match="claude down"):
+    with pytest.raises(Exception) as excinfo:
         await qa_handler.synthesize_task_verdict(
             _classifications(), None, True, 30.0, task_id="task-1"
         )
 
     assert len(seen) == 2
+    error = f"{type(excinfo.value).__name__}: {excinfo.value}"
+    assert is_permanent_provider_failure(error), error
+    # The fallback's own failure stays visible -- it is the actionable half.
+    assert "claude down" in error
+    assert excinfo.value.__cause__ is not None
 
 
 @pytest.mark.asyncio
