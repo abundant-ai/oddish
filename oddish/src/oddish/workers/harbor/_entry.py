@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import asyncio
 import importlib
-import importlib.util
 import json
 import logging
+import os
 import shlex
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -34,13 +33,7 @@ def _event_name(event: Any) -> str:
 
 
 def _apply_sibling_harbor_patches() -> None:
-    spec = importlib.util.spec_from_file_location(
-        "_oddish_harbor_patches", Path(_THIS_DIR) / "patches.py"
-    )
-    if spec is None or spec.loader is None:
-        return
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module("oddish.workers.harbor.patches")
     module.apply_harbor_patches()
 
 
