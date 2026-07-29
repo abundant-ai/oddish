@@ -1232,7 +1232,13 @@ class Settings(BaseSettings):
     # 108-142s, and the ones that hit the cap died at exactly 180.02s losing
     # the whole run (the CLI buffers its envelope, so a timeout saves 0 bytes).
     # The claim lease is pre_trial_timeout + 900 + 60, so it still outlives this.
-    pre_trial_timeout: float = 600.0
+    # 600s then reproduced the same shape one notch up, measured over the runs
+    # after #959 unblocked parsing: 46 audits finished (p50 309s, p90 480s, max
+    # 561s) while 13 more died at exactly 600.0s -- 18% of all runs, and 11 of
+    # those 13 tasks never got an audit at all. A cap only 1.25x p90 truncates
+    # the tail of a healthy distribution rather than catching runaways, and a
+    # timed-out audit is a total loss, so this is set clear of the observed max.
+    pre_trial_timeout: float = 1200.0
 
     # Run post-trial QA classification inside a Daytona sandbox instead of a
     # worker-local Claude Code subprocess. Off by default: the classifier is

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Classification(str, Enum):
@@ -231,6 +231,16 @@ class Dimension(str, Enum):
     INFO_LEAKAGE = "info_leakage"
 
 
+# Keyed by the heading text the prompt uses for each dimension. Only exact
+# heading spellings are mapped: anything else stays as-is and fails validation,
+# so a genuinely unknown dimension is still caught rather than coerced.
+_DIMENSION_HEADING_SPELLINGS = {
+    "verifier_completeness": Dimension.VERIFIER.value,
+    "oracle_correctness": Dimension.ORACLE.value,
+    "information_leakage": Dimension.INFO_LEAKAGE.value,
+}
+
+
 class ActionTier(str, Enum):
     MUST_FIX = "must_fix"
     SHOULD_FIX = "should_fix"
@@ -271,6 +281,29 @@ class ActionItem(BaseModel):
     causal: bool = Field(
         default=False, description="Did trajectory behavior result from this weakness?"
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_prompt_heading_spellings(cls, data: object) -> object:
+        """Take the field names the prompt's own headings invite.
+
+        The taxonomy is taught as prose sections -- "SEVERITY", "1. VERIFIER
+        COMPLETENESS" -- and models fill the JSON from the heading rather than
+        the field name: ``severity`` for ``tier``, ``verifier_completeness``
+        for ``verifier``. Both name the right concept, and discarding an audit
+        that cost minutes of agent time over the spelling is the worse error.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "tier" not in data and "severity" in data:
+            data["tier"] = data.pop("severity")
+        dimension = data.get("dimension")
+        if isinstance(dimension, str):
+            data["dimension"] = _DIMENSION_HEADING_SPELLINGS.get(
+                dimension.strip().lower(), dimension
+            )
+        return data
 
 
 class ExploitationAssessment(BaseModel):

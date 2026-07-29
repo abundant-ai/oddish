@@ -23,7 +23,7 @@ def _load(name: str) -> str:
 PROMPT_SEEDS: dict[str, tuple[str, str]] = {
     PromptKind.QA_PRE_TRIAL.value: (
         "Pre-trial QA auditor: verifier completeness, oracle correctness, info leakage.",
-        _load("pre_trial_qa.v3.txt"),
+        _load("pre_trial_qa.v4.txt"),
     ),
     PromptKind.QA_POST_TRIAL.value: (
         "Post-trial QA log analysis: classify a trial outcome from its task, trajectory, and verifier artifacts.",
@@ -51,11 +51,13 @@ _LEGACY_POST_TRIAL_STUB_OPENING = (
 # Operator-authored content is deliberately absent from this allowlist.
 _KNOWN_PREVIOUS_PROMPT_HASHES: dict[str, set[str]] = {
     PromptKind.QA_PRE_TRIAL.value: {
-        # v1 (original) and v2 (#917 taxonomy) built-ins: self-heal either to
-        # v3 (task source read locally, no `oddish pull`). Operator-edited
-        # content matches neither hash and is never touched.
+        # v1 (original), v2 (#917 taxonomy) and v3 (task source read locally,
+        # no `oddish pull`) built-ins: self-heal any of them to v4, which names
+        # the JSON fields in the taxonomy headings and shows a worked item.
+        # Operator-edited content matches no hash and is never touched.
         "7f97403dd933e42437eb10b61520527b9adadaf81b38e90d28216eeef93ce851",
         "d76958a450cf046054869030dc27be53551cf3ecd79d30dc19d862e283cff3a4",
+        "a305ad1dc1be4f8209534d95d13c021c49560bf73d7ae63901a9d70187955657",
     },
     PromptKind.QA_POST_TRIAL.value: {
         "6a2b88edea8d27959608c3bb68742e0906c7154f6bd8abcc8828f2df5470edf7",
