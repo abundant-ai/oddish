@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import settings  # noqa: E402
 from oddish.core.baseline_gate import GATE_SKIP_MESSAGE  # noqa: E402
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TaskStatus,
@@ -519,7 +520,9 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
 
 
 @pytest.mark.asyncio
-async def test_qa_classification_excludes_gate_skipped(monkeypatch, cleanup_task_ids):
+async def test_qa_classification_excludes_gate_skipped_and_cancelled(
+    monkeypatch, cleanup_task_ids
+):
     from oddish.workers.queue.qa_handler import (
         _load_live_trials_for_classification,
     )
@@ -534,6 +537,8 @@ async def test_qa_classification_excludes_gate_skipped(monkeypatch, cleanup_task
     )
     async with get_session() as session:
         await maybe_gate_llm_trials(session, baseline_id)
+        cancelled_baseline = await session.get(TrialModel, baseline_id)
+        cancelled_baseline.harbor_stage = CANCELLED_HARBOR_STAGE
 
     async with get_session() as session:
         kimi_id = (
@@ -545,10 +550,11 @@ async def test_qa_classification_excludes_gate_skipped(monkeypatch, cleanup_task
         ).scalar_one()
 
     live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
-    # The gate-skipped (never-run) kimi must not be handed to the classifier;
-    # the baselines (which produced verdicts) still are.
+    # Neither the gate-skipped (never-run) kimi nor the cancelled baseline has
+    # an outcome to classify; the other completed baseline remains eligible.
     assert kimi_id not in live_ids
-    assert live_ids  # baselines remain
+    assert baseline_id not in live_ids
+    assert live_ids
 
 
 # ---------------------------------------------------------------------------

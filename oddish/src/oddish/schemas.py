@@ -818,6 +818,12 @@ class TaskVersionResponse(BaseModel):
     message: str | None = None
     created_by_user_id: str | None = None
     created_at: datetime
+    # The pre-trial source audit for this exact snapshot: ``{"items": [...]}``
+    # once one has succeeded. Status is carried separately so a version that was
+    # audited and came back clean is distinguishable from one never audited.
+    pre_trial: dict | None = None
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -849,6 +855,12 @@ class TaskVersionSummary(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     last_run_at: datetime | None = None
+    # Pre-trial source audit for this version, flattened to the items the task
+    # page renders. Empty list + null status means never audited; empty list +
+    # SUCCESS means audited and clean.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
@@ -959,6 +971,12 @@ class TrialResponse(BaseModel):
     task_path: str
     task_version: int | None = None
     task_version_id: str | None = None
+    # Pre-trial source audit of the exact version THIS trial ran against.
+    # Populated only on the single-trial detail fetch: the grid's slim payload
+    # carries hundreds of trials and must not haul findings for each one.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
     experiment_id: str | None = None
     agent: str
     provider: str

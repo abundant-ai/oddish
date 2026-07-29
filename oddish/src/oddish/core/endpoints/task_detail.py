@@ -303,6 +303,9 @@ def _aggregate_task_detail_rollups(
             message=v.message,
             created_at=v.created_at,
             is_current=(v.id == current_version_id),
+            pre_trial_findings=((v.pre_trial or {}).get("items") or []),
+            pre_trial_status=v.pre_trial_status,
+            pre_trial_error=v.pre_trial_error,
         )
         for v in version_rows
     }

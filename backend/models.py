@@ -508,7 +508,7 @@ class SlackAlertSettingsModel(Base):
     are deployment-wide rather than org-scoped -- the cron scans every org --
     so there is nothing to key this by. A missing row means the defaults in
     ``slack_alert_settings.py`` stand. This covers only the in-channel
-    escalation floor and ping list; the per-user DM cutoffs live in
+    escalation thresholds and ping list; the per-user DM cutoffs live in
     ``user_alert_preferences``.
     """
 
@@ -517,6 +517,9 @@ class SlackAlertSettingsModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     trial_escalation_usd: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
+    )
+    user_weekly_escalation_delta_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("5000")
     )
     always_ping_emails: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, default=list

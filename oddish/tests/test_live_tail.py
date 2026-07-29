@@ -520,6 +520,56 @@ async def test_codex_tick_tails_codex_log_and_checkpoints(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
+    from oddish.core import quota_enforcement
+
+    patch_db(monkeypatch, price=0.25)
+    calls = []
+
+    async def record_enforcement(*, org_id, billed_user_id, caller_trial_id):
+        calls.append((org_id, billed_user_id, caller_trial_id))
+        return 0
+
+    monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", record_enforcement)
+    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
+    tailer = make_tailer(env)
+    tailer.org_id = "org-1"
+    tailer.billed_user_id = "user-1"
+
+    await tailer._tick()
+
+    assert calls == [("org-1", "user-1", "t1")]
+
+
+@pytest.mark.asyncio
+async def test_failed_quota_enforcement_retries_same_cost_checkpoint(monkeypatch):
+    from oddish.core import quota_enforcement
+
+    session = patch_db(monkeypatch, price=0.25)
+    outcomes = [None, 0]
+
+    async def enforce_once_then_succeed(**_kwargs):
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(
+        quota_enforcement, "enforce_trial_quotas", enforce_once_then_succeed
+    )
+    tailer = make_tailer(FakeEnv([]))
+    tailer.org_id = "org-1"
+    tailer.billed_user_id = "user-1"
+    tailer.fold.feed_line(assistant_line("m", {"input_tokens": 1}))
+
+    await tailer._persist_tick()
+    assert tailer._last_written is None
+    assert tailer._last_cost is None
+
+    await tailer._persist_tick()
+    assert len(update_params(session)) == 2
+    assert tailer._last_written is not None
+    assert tailer._last_cost == 0.25
+
+
+@pytest.mark.asyncio
 async def test_codex_tick_without_usage_skips_checkpoint(monkeypatch):
     session = patch_db(monkeypatch)
     env = FakeEnv([b64(codex_item({"type": "agent_message", "text": "hi"}) + b"\n")])

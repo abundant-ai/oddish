@@ -10,6 +10,7 @@ from oddish.analyze import BaselineValidation, TrialClassification
 from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
@@ -332,10 +333,15 @@ async def _run_pre_trial_audit(
     pre_trial_version_id: str | None = None
     pre_trial_stored: str | None = None
     try:
-        if (
-            settings.pre_trial_enabled
-            and _pre_trial_synth_fn is not None
-            and (_pre_trial_enabled_fn is None or await _pre_trial_enabled_fn(task_id))
+        # settings.pre_trial_enabled is the *default* the registered check falls
+        # back to per org, not a master switch: gating on it first made an org
+        # opt-in unable to enable anything, which is how prod (default off) ran
+        # the audit exactly zero times while the orgs API happily accepted the
+        # opt-in. Standalone oddish stays a no-op via _pre_trial_synth_fn.
+        if _pre_trial_synth_fn is not None and (
+            await _pre_trial_enabled_fn(task_id)
+            if _pre_trial_enabled_fn is not None
+            else settings.pre_trial_enabled
         ):
             pre_trial_version_id = await _claim_pre_trial_version(task_id)
         if pre_trial_version_id is not None:
@@ -457,6 +463,9 @@ async def _load_live_trials_for_classification(
                     # Exclude bulk-migrated Sauron trials (see docstring): too
                     # costly to classify ~1M historical rows.
                     TrialModel.imported_at.is_(None),
+                    # Cancelled trials have no outcome to classify.
+                    func.coalesce(TrialModel.harbor_stage, "")
+                    != CANCELLED_HARBOR_STAGE,
                     # Gate-skipped trials never ran (no logs to classify); a
                     # classifier run on them would emit phantom failures and
                     # pollute the verdict + the agent's pass/fail metrics. New

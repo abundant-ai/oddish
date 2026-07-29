@@ -159,6 +159,13 @@ High-level flow:
    identifiers. Claude message payloads also carry a `block_index` and
    `text_mode` (`append` or `replace`) so clients can assemble corrected text
    snapshots without concatenating stale content.
+   Each persisted cost checkpoint re-evaluates enforced quotas. Reaching a
+   payer's rolling-24h cap cancels every quota-counted nonterminal trial billed
+   to that payer; reaching the org's monthly cap cancels every quota-counted
+   nonterminal trial in the org. Final result settlement performs the same
+   check for agents without live usage. Cancellation retires queued, running,
+   blocked, and retrying worker jobs in the database before terminating remote
+   handles; a task is failed only when no other live trial remains.
 7. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier

@@ -54,6 +54,7 @@ from oddish.db import (
     TagState,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -425,6 +426,61 @@ def _build_aggregates_for_experiment_ids(
         .subquery()
     )
 
+    # Each task's effective version *within each experiment* -- the SQL twin of
+    # ``resolve_effective_version_id``: the task's explicit default wins when a
+    # visible trial represents it, else the latest represented version. Kept in
+    # SQL rather than reusing ``fetch_experiment_effective_version_ids`` because
+    # this builder is synchronous and returns subqueries. Ordered by the integer
+    # ``version``; lexicographic ordering on task_version_id gets v9 vs v10
+    # wrong.
+    effective_version = (
+        select(
+            member.c.experiment_id.label("experiment_id"),
+            TrialModel.task_id.label("task_id"),
+            TrialModel.task_version_id.label("task_version_id"),
+        )
+        .select_from(member)
+        .join(TrialModel, TrialModel.id == member.c.trial_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(
+            TrialModel.task_version_id.is_not(None),
+            TrialModel.is_probe.isnot(True),
+            TrialModel.superseded_by_trial_id.is_(None),
+        )
+        .order_by(
+            member.c.experiment_id.asc(),
+            TrialModel.task_id.asc(),
+            case(
+                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
+                else_=1,
+            ).asc(),
+            TaskVersionModel.version.desc(),
+        )
+        .distinct(member.c.experiment_id, TrialModel.task_id)
+        .subquery()
+    )
+
+    def _join_effective_version(query):
+        """LEFT JOIN ``effective_version`` onto a member-joined trial query."""
+        return query.join(
+            effective_version,
+            and_(
+                effective_version.c.experiment_id == member.c.experiment_id,
+                effective_version.c.task_id == TrialModel.task_id,
+            ),
+            isouter=True,
+        )
+
+    # A task with no effective version -- none of its trials carry a
+    # ``task_version_id`` -- keeps all of its trials, matching the fallback in
+    # ``build_task_status_responses_from_counts``. The LEFT JOIN is what makes
+    # the NULL branch reachable.
+    at_effective_version = or_(
+        effective_version.c.task_version_id.is_(None),
+        effective_version.c.task_version_id == TrialModel.task_version_id,
+    )
+
     trial_agg_query = (
         select(
             member.c.experiment_id.label("experiment_id"),
@@ -458,14 +514,29 @@ def _build_aggregates_for_experiment_ids(
                     )
                 )
             ).label("active_trials"),
-            func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-            func.sum(TrialModel.reward).label("reward_sum"),
-            func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
+            # Reward is scoped to each task's effective version so these agree
+            # with the per-task grid, which compares like with like. The status
+            # counters above stay unscoped on purpose: narrowing them would drop
+            # a still-RUNNING trial from ``active_trials`` the moment its task
+            # got a new version, reporting a live experiment as finished.
+            func.count(
+                case((and_(TrialModel.reward == 1, at_effective_version), 1))
+            ).label("reward_success"),
+            func.sum(case((at_effective_version, TrialModel.reward))).label(
+                "reward_sum"
+            ),
+            func.count(
+                case((and_(TrialModel.reward.isnot(None), at_effective_version), 1))
+            ).label("reward_total"),
         )
         .select_from(member)
         .join(TrialModel, TrialModel.id == member.c.trial_id)
-        .where(TrialModel.superseded_by_trial_id.is_(None))
+        .where(
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
+        )
     )
+    trial_agg_query = _join_effective_version(trial_agg_query)
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(member.c.experiment_id).subquery()
@@ -483,10 +554,14 @@ def _build_aggregates_for_experiment_ids(
         .join(TrialModel, TrialModel.id == member.c.trial_id)
         .where(
             TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
             TrialModel.reward.isnot(None),
             not_(_baseline_agent_clause()),
         )
         .group_by(member.c.experiment_id, TrialModel.task_id)
+    )
+    per_task_score_query = _join_effective_version(per_task_score_query).where(
+        at_effective_version
     )
     if org_id is not None:
         per_task_score_query = per_task_score_query.where(TrialModel.org_id == org_id)

@@ -71,6 +71,7 @@
   --color-paper-fail: var(--paper-fail);
   --color-paper-partial: var(--paper-partial);
   --color-paper-error: var(--paper-error);
+  --color-paper-minor: var(--paper-minor);
   --color-paper-queued: var(--paper-queued);
   --color-paper-running: var(--paper-running);
 
@@ -148,6 +149,9 @@
     --paper-partial-bg: oklch(95% 0.04 75);
     --paper-error: oklch(55% 0.03 70);
     --paper-error-bg: oklch(92% 0.006 70);
+    /* Third severity step below fail/partial; dark enough to carry white text
+       as a solid fill in both modes, so it needs no dark override. */
+    --paper-minor: oklch(48% 0.07 55);
     --paper-queued: oklch(62% 0.11 280);
     --paper-queued-bg: oklch(94% 0.03 280);
     --paper-running: oklch(65% 0.13 230);

@@ -13,6 +13,7 @@ from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.db.models import (
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     generate_id,
@@ -39,6 +40,8 @@ def _trial(
     org_id: str = "org1",
     status: TrialStatus = TrialStatus.SUCCESS,
     reward: float | None = None,
+    task_version_id: str | None = None,
+    is_probe: bool = False,
 ) -> TrialModel:
     trial_id = generate_id()
     return TrialModel(
@@ -53,6 +56,41 @@ def _trial(
         model="gpt-5.5",
         status=status,
         reward=reward,
+        task_version_id=task_version_id,
+        is_probe=is_probe,
+    )
+
+
+def _version(task: TaskModel, number: int) -> TaskVersionModel:
+    return TaskVersionModel(
+        id=f"{task.id}-v{number}",
+        task_id=task.id,
+        version=number,
+        task_path=f"s3://tasks/{task.name}/v{number}",
+    )
+
+
+async def _trial_row(session, trial_agg, experiment_id: str):
+    return (
+        (
+            await session.execute(
+                select(trial_agg).where(trial_agg.c.experiment_id == experiment_id)
+            )
+        )
+        .mappings()
+        .one()
+    )
+
+
+async def _score_row(session, score_agg, experiment_id: str):
+    return (
+        (
+            await session.execute(
+                select(score_agg).where(score_agg.c.experiment_id == experiment_id)
+            )
+        )
+        .mappings()
+        .one()
     )
 
 
@@ -137,3 +175,132 @@ async def test_normal_experiment_aggregate_unaffected_by_membership_union(sessio
     assert trial_row["total_trials"] == 2
     assert trial_row["completed_trials"] == 1
     assert trial_row["failed_trials"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reward_aggregate_excludes_probes(session):
+    """Probes are not experiment trials -- every per-task path drops them."""
+    task = _task("dash-probe-task")
+    session.add(task)
+    await session.flush()
+
+    home = _experiment("dash-probe-home")
+    session.add(home)
+    await session.flush()
+
+    session.add_all(
+        [
+            _trial(task, home, reward=0.0),
+            _trial(task, home, reward=1.0, is_probe=True),
+        ]
+    )
+    await session.flush()
+
+    _, trial_agg, score_agg = _build_aggregates_for_experiment_ids(
+        [home.id], org_id="org1"
+    )
+
+    trial_row = await _trial_row(session, trial_agg, home.id)
+    assert trial_row["reward_total"] == 1
+    assert trial_row["reward_success"] == 0
+    assert trial_row["total_trials"] == 1
+
+    score_row = await _score_row(session, score_agg, home.id)
+    assert score_row["avg_score"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_reward_aggregate_scoped_to_effective_version(session):
+    """Reward counts only the task's effective version, matching the grid."""
+    task = _task("dash-version-task")
+    session.add(task)
+    await session.flush()
+
+    v1, v2 = _version(task, 1), _version(task, 2)
+    session.add_all([v1, v2])
+    await session.flush()
+    task.current_version_id = v2.id
+
+    home = _experiment("dash-version-home")
+    session.add(home)
+    await session.flush()
+
+    session.add_all(
+        [
+            _trial(task, home, reward=0.0, task_version_id=v1.id),
+            _trial(task, home, reward=0.0, task_version_id=v1.id),
+            _trial(task, home, reward=1.0, task_version_id=v2.id),
+        ]
+    )
+    await session.flush()
+
+    _, trial_agg, score_agg = _build_aggregates_for_experiment_ids(
+        [home.id], org_id="org1"
+    )
+
+    trial_row = await _trial_row(session, trial_agg, home.id)
+    assert trial_row["reward_total"] == 1
+    assert trial_row["reward_success"] == 1
+    assert float(trial_row["reward_sum"]) == pytest.approx(1.0)
+
+    score_row = await _score_row(session, score_agg, home.id)
+    assert score_row["avg_score"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_status_counters_stay_unscoped_by_version(session):
+    """Deliberate: narrowing ``active_trials`` would report a running
+    experiment as finished the moment its task gets a new version."""
+    task = _task("dash-counter-task")
+    session.add(task)
+    await session.flush()
+
+    v1, v2 = _version(task, 1), _version(task, 2)
+    session.add_all([v1, v2])
+    await session.flush()
+    task.current_version_id = v2.id
+
+    home = _experiment("dash-counter-home")
+    session.add(home)
+    await session.flush()
+
+    session.add_all(
+        [
+            _trial(task, home, status=TrialStatus.RUNNING, task_version_id=v1.id),
+            _trial(task, home, reward=1.0, task_version_id=v2.id),
+        ]
+    )
+    await session.flush()
+
+    _, trial_agg, _ = _build_aggregates_for_experiment_ids([home.id], org_id="org1")
+
+    trial_row = await _trial_row(session, trial_agg, home.id)
+    assert trial_row["total_trials"] == 2
+    assert trial_row["active_trials"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reward_aggregate_keeps_trials_with_no_version(session):
+    """Fallback guard: a task whose trials carry no ``task_version_id`` has no
+    effective version, so all of its trials still count."""
+    task = _task("dash-nullver-task")
+    session.add(task)
+    await session.flush()
+
+    home = _experiment("dash-nullver-home")
+    session.add(home)
+    await session.flush()
+
+    session.add_all(
+        [
+            _trial(task, home, reward=1.0),
+            _trial(task, home, reward=0.0),
+        ]
+    )
+    await session.flush()
+
+    _, trial_agg, _ = _build_aggregates_for_experiment_ids([home.id], org_id="org1")
+
+    trial_row = await _trial_row(session, trial_agg, home.id)
+    assert trial_row["reward_total"] == 2
+    assert trial_row["reward_success"] == 1
