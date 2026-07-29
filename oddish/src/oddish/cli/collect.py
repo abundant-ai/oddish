@@ -43,17 +43,30 @@ def _share_url(api_url: str, public_token: str | None) -> str | None:
 
 
 def _call(
-    send: Callable[[], httpx.Response], *, label: str, hint_403: str | None = None
+    send: Callable[[], httpx.Response],
+    *,
+    label: str,
+    hint_403: str | None = None,
+    note_on_failure: str | None = None,
 ) -> dict:
+    """POST/PATCH and return the JSON body, exiting on any failure.
+
+    ``note_on_failure`` reports work that already committed server-side before
+    this call failed, so a partial success is never silently discarded.
+    """
     try:
         resp = send()
     except httpx.RequestError as e:
         console.print(f"[red]Failed to connect to API:[/red] {e}")
+        if note_on_failure:
+            console.print(f"  {note_on_failure}")
         raise typer.Exit(1)
     if resp.status_code != 200:
         console.print(f"[red]{label} failed:[/red] {resp.status_code} - {resp.text}")
         if resp.status_code == 403 and hint_403:
             console.print(f"  {hint_403}")
+        if note_on_failure:
+            console.print(f"  {note_on_failure}")
         raise typer.Exit(1)
     return resp.json()
 
@@ -69,6 +82,7 @@ def _mutate_collection(
 ) -> None:
     added: dict | None = None
     renamed: dict | None = None
+    append_failed = False
 
     with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
         plain_tasks, pinned_trial_ids = expand_task_refs(client, api_url, tasks)
@@ -81,7 +95,11 @@ def _mutate_collection(
                 "[red]Nothing to append: every --task pin resolved to zero "
                 "linkable trials.[/red]"
             )
-            raise typer.Exit(1)
+            # Empty pins say nothing about the rename, so fall through and let
+            # --name still land; the exit code below still reports the failure.
+            if not name:
+                raise typer.Exit(1)
+            append_failed = True
 
         if have_sources:
             added = _call(
@@ -110,6 +128,13 @@ def _mutate_collection(
                     "Renaming requires an admin API key; a TASKS-scoped key can "
                     "append but not rename."
                 ),
+                note_on_failure=(
+                    f"The collection was NOT renamed, but "
+                    f"{added.get('trials_added', 0)} trial(s) were already "
+                    f"appended and remain linked."
+                    if added
+                    else None
+                ),
             )
 
     # A rename response carries zeroed counters; keep the append's and take
@@ -121,6 +146,8 @@ def _mutate_collection(
 
     if json_output:
         console.print_json(data=data)
+        if append_failed:
+            raise typer.Exit(1)
         return
 
     console.print(
@@ -133,6 +160,9 @@ def _mutate_collection(
     if renamed:
         console.print(f"  Renamed to:         {renamed.get('name')}")
     console.print(f"  View: {get_dashboard_url(api_url)}/experiments/{data.get('id')}")
+
+    if append_failed:
+        raise typer.Exit(1)
 
 
 def collect(

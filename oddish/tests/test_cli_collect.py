@@ -576,6 +576,40 @@ def test_collect_into_with_only_empty_pins_fails_locally(monkeypatch):
     assert not any(c[0] in ("POST", "PATCH") for c in calls)
 
 
+def test_collect_into_empty_pins_still_renames(monkeypatch):
+    """Pins resolving to nothing fail the append but must not block --name."""
+    client, calls = _mutate_client()
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["collect", "--into", "c1", "--task", "mytask@16", "-n", "new name"]
+    )
+
+    # Non-zero because the append half genuinely failed...
+    assert result.exit_code == 1, result.output
+    assert "Nothing to append" in result.output
+    # ...but the rename, which never depended on those pins, still landed.
+    assert [c[0] for c in calls if c[0] in ("POST", "PATCH")] == ["PATCH"]
+    assert "Renamed to" in result.output
+
+
+def test_collect_into_rename_failure_reports_the_landed_append(monkeypatch):
+    """A rename 403 must not hide trials the append already committed."""
+    client, calls = _mutate_client(rename_status=403)
+    monkeypatch.setattr(httpx, "Client", client)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app, ["collect", "--into", "c1", "--task", "mytask", "-n", "new name"]
+    )
+
+    assert result.exit_code == 1, result.output
+    assert [c[0] for c in calls if c[0] in ("POST", "PATCH")] == ["POST", "PATCH"]
+    assert "Rename failed" in result.output
+    assert "3 trial(s) were already appended" in result.output
+
+
 def test_collect_into_json_output(monkeypatch):
     client, _ = _mutate_client()
     monkeypatch.setattr(httpx, "Client", client)
