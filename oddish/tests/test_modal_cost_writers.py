@@ -10,6 +10,7 @@ import pytest
 from harbor.trial.hooks import TrialEvent
 
 import oddish.costs.recorder as recorder
+from sqlalchemy.exc import ProgrammingError
 from oddish.costs.modal_cost import SpanResources
 from oddish.workers.harbor.runner import (
     capture_live_sandbox_resources,
@@ -346,7 +347,7 @@ def test_missing_table_warning_is_logged_once(caplog) -> None:
     class UndefinedTableError(Exception):
         sqlstate = "42P01"
 
-    exc = recorder.ProgrammingError("select", {}, UndefinedTableError())
+    exc = ProgrammingError("select", {}, UndefinedTableError())
     recorder._missing_table_logged = False
     with caplog.at_level("WARNING"):
         recorder._record_failure("first", exc)
