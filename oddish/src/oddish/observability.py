@@ -176,3 +176,57 @@ def log_unpriced_trial_if_needed(
         native_cost_trusted=native_cost_trusted,
     )
     return True
+
+
+def log_missing_trial_metering_if_needed(
+    *,
+    cost_usd: float | None,
+    trial_id: str,
+    model: str | None,
+    agent: str | None,
+    provider: str | None,
+    attempt: int,
+    input_tokens: int | None,
+    cache_tokens: int | None,
+    cache_write_tokens: int | None,
+    output_tokens: int | None,
+    native_cost_usd: float | None,
+    has_execution_evidence: bool,
+) -> bool:
+    """Warn when a likely-billable Bedrock run has no usable metering.
+
+    Claude Code normally exposes Bedrock usage through its streamed assistant
+    messages and Harbor's final result. If both sources are empty, token-based
+    pricing cannot distinguish a free pre-inference failure from lost usage.
+    Limit the warning to Bedrock Claude Code runs with independent evidence
+    that agent execution produced a trajectory.
+    """
+    if (
+        not has_execution_evidence
+        or "claude-code" not in (agent or "").strip().lower()
+        or (provider or "").strip().lower() != "bedrock"
+        or (cost_usd is not None and cost_usd > 0)
+        or any(
+            int(tokens or 0) > 0
+            for tokens in (
+                input_tokens,
+                cache_tokens,
+                cache_write_tokens,
+                output_tokens,
+            )
+        )
+    ):
+        return False
+
+    log_warning(
+        "Bedrock trial produced execution output but no token or cost metering",
+        tags=("cost-integrity", "missing-metering"),
+        metric="trial_cost_missing_metering",
+        trial_id=trial_id,
+        model=model or "unknown",
+        agent=agent or "unknown",
+        provider=provider or "unknown",
+        attempt=attempt,
+        native_cost_usd=native_cost_usd,
+    )
+    return True
