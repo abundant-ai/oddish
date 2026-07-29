@@ -538,8 +538,38 @@ jobs:
             uv run python - <<'PY'
           import json
           import os
+          import sys
 
-          payload = json.loads(os.environ["ODDISH_CANARY_SUBMISSION"])
+          raw = os.environ["ODDISH_CANARY_SUBMISSION"]
+          decoder = json.JSONDecoder()
+          payload = None
+          for offset, char in enumerate(raw):
+              if char != "{":
+                  continue
+              try:
+                  candidate, end = decoder.raw_decode(raw, offset)
+              except json.JSONDecodeError:
+                  continue
+              if (
+                  isinstance(candidate, dict)
+                  and isinstance(candidate.get("tasks"), list)
+                  and "total_trials" in candidate
+              ):
+                  payload = candidate
+                  prefix = raw[:offset]
+                  suffix = raw[end:]
+                  if prefix.strip() or suffix.strip():
+                      print(
+                          "oddish run emitted text outside its JSON payload: "
+                          f"prefix={prefix[:1000]!r} suffix={suffix[:1000]!r}",
+                          file=sys.stderr,
+                      )
+                  break
+          if payload is None:
+              raise SystemExit(
+                  "oddish run output did not contain submission JSON: "
+                  f"{raw[:2000]!r}"
+              )
           tasks = payload.get("tasks")
           if not isinstance(tasks, list) or len(tasks) != 1:
               raise SystemExit(f"expected exactly one submitted task, got {tasks!r}")
