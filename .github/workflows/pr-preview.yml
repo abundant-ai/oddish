@@ -416,6 +416,231 @@ jobs:
       - name: Post preview links
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/post_preview_links.py"
 
+  hosted-harbor-canary:
+    name: Hosted Harbor PR canary
+    needs:
+      - detect-changes
+      - require-working-preview
+    if: |
+      always() &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.number == 966 &&
+      needs.require-working-preview.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-966
+      MODAL_SECRET_ENVIRONMENT: main
+      PREVIEW_API_URL: ${{ needs.detect-changes.outputs.preview_api_url }}
+      PREVIEW_DASHBOARD_URL: https://pr-966.oddish.app
+      SRE_WORLD_SHA: 831a89e07c298aff8469c6294bb385247335d15b
+      HARBOR_SHA: 389312189c90e4257e6a208b1fc8d23af29a4403
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout Oddish
+        uses: actions/checkout@v5
+
+      - name: Checkout exact SRE task
+        uses: actions/checkout@v5
+        with:
+          repository: abundant-ai/sre-world
+          ref: ${{ env.SRE_WORLD_SHA }}
+          path: sre-world
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Run exact hosted Daytona canary
+        env:
+          TASK_PATH: ${{ github.workspace }}/sre-world/tasks/slack-spine/13-P1-distractor-volume-shell
+        run: |
+          set -euo pipefail
+
+          : "${MODAL_TOKEN_ID:?Missing MODAL_TOKEN_ID}"
+          : "${MODAL_TOKEN_SECRET:?Missing MODAL_TOKEN_SECRET}"
+          : "${PREVIEW_API_URL:?Missing PREVIEW_API_URL}"
+          : "${PREVIEW_DASHBOARD_URL:?Missing PREVIEW_DASHBOARD_URL}"
+          : "${TASK_PATH:?Missing TASK_PATH}"
+          : "${HARBOR_SHA:?Missing HARBOR_SHA}"
+          [ -d "$TASK_PATH" ] || {
+            echo "::error::Exact SRE canary task is missing at $TASK_PATH"
+            exit 1
+          }
+
+          canary_key="ok_pr-966_canary_$(openssl rand -hex 16)"
+          [ -n "$canary_key" ] || {
+            echo "::error::Failed to generate preview canary API key"
+            exit 1
+          }
+          echo "::add-mask::$canary_key"
+
+          key_minted=false
+          revoke_key() {
+            local prior_rc=$?
+            if [ "$key_minted" = "true" ]; then
+              if ! uv run modal run \
+                ops_preview_canary_key.py \
+                --action revoke \
+                --raw-key "$canary_key"; then
+                echo "::error::Failed to revoke preview canary API key"
+                exit 1
+              fi
+            fi
+            exit "$prior_rc"
+          }
+          trap revoke_key EXIT
+
+          uv run modal run \
+            ops_preview_canary_key.py \
+            --action mint \
+            --raw-key "$canary_key"
+          key_minted=true
+
+          export ODDISH_API_KEY="$canary_key"
+          export ODDISH_API_URL="$PREVIEW_API_URL"
+          export ODDISH_DASHBOARD_URL="$PREVIEW_DASHBOARD_URL"
+
+          submission="$(
+            uv run oddish run "$TASK_PATH" \
+              --agent oracle \
+              --env daytona \
+              --n-trials 1 \
+              --max-trial-attempts 1 \
+              --harbor "abundant-ai/harbor@$HARBOR_SHA" \
+              --environment-kwarg launcher=k3s \
+              --experiment harbor-pr11-preview-canary \
+              --api "$PREVIEW_API_URL" \
+              --json
+          )"
+          [ -n "$submission" ] || {
+            echo "::error::oddish run exited successfully but emitted no submission JSON"
+            exit 1
+          }
+          export ODDISH_CANARY_SUBMISSION="$submission"
+
+          task_id="$(
+            uv run python - <<'PY'
+          import json
+          import os
+
+          payload = json.loads(os.environ["ODDISH_CANARY_SUBMISSION"])
+          tasks = payload.get("tasks")
+          if not isinstance(tasks, list) or len(tasks) != 1:
+              raise SystemExit(f"expected exactly one submitted task, got {tasks!r}")
+          if payload.get("total_trials") != 1:
+              raise SystemExit(
+                  f"expected exactly one submitted trial, got {payload.get('total_trials')!r}"
+              )
+          task_id = tasks[0].get("id")
+          if not isinstance(task_id, str) or not task_id:
+              raise SystemExit(f"submission did not include a task id: {payload!r}")
+          print(task_id)
+          PY
+          )"
+          [ -n "$task_id" ] || {
+            echo "::error::Submission JSON produced an empty task id"
+            exit 1
+          }
+          export ODDISH_CANARY_TASK_ID="$task_id"
+          echo "Hosted canary task: $task_id"
+
+          uv run python - <<'PY'
+          import json
+          import os
+          import time
+
+          import httpx
+
+          api_url = os.environ["PREVIEW_API_URL"].rstrip("/")
+          api_key = os.environ["ODDISH_API_KEY"]
+          task_id = os.environ["ODDISH_CANARY_TASK_ID"]
+          deadline = time.monotonic() + 45 * 60
+          headers = {"Authorization": f"Bearer {api_key}"}
+          last_snapshot = None
+
+          with httpx.Client(timeout=30, headers=headers) as client:
+              while time.monotonic() < deadline:
+                  response = client.get(f"{api_url}/tasks/{task_id}")
+                  if response.status_code != 200:
+                      raise SystemExit(
+                          f"canary status request failed: HTTP {response.status_code}: "
+                          f"{response.text[:1000]}"
+                      )
+                  snapshot = response.json()
+                  trials = snapshot.get("trials")
+                  if not isinstance(trials, list):
+                      raise SystemExit(f"canary response has no trial list: {snapshot!r}")
+                  if len(trials) != 1:
+                      raise SystemExit(
+                          f"expected one canary trial, found {len(trials)}: {trials!r}"
+                      )
+
+                  trial = trials[0]
+                  concise = {
+                      "task_id": task_id,
+                      "task_status": snapshot.get("status"),
+                      "trial_id": trial.get("id"),
+                      "trial_status": trial.get("status"),
+                      "harbor_stage": trial.get("harbor_stage"),
+                      "reward": trial.get("reward"),
+                      "error": trial.get("error"),
+                  }
+                  if concise != last_snapshot:
+                      print(json.dumps(concise, default=str), flush=True)
+                      last_snapshot = concise
+
+                  status = trial.get("status")
+                  if status in {"success", "failed", "cancelled", "skipped"}:
+                      if status != "success":
+                          raise SystemExit(
+                              "hosted Harbor canary did not execute successfully: "
+                              + json.dumps(concise, default=str)
+                          )
+                      if trial.get("reward") != 1:
+                          raise SystemExit(
+                              "oracle canary completed without reward=1: "
+                              + json.dumps(concise, default=str)
+                          )
+                      print(
+                          "Hosted Harbor canary passed: "
+                          + json.dumps(concise, default=str),
+                          flush=True,
+                      )
+                      break
+                  time.sleep(10)
+              else:
+                  raise SystemExit(
+                      "hosted Harbor canary exceeded its 45-minute terminal deadline; "
+                      f"last state: {last_snapshot!r}"
+                  )
+          PY
+
+          {
+            echo "## Hosted Harbor canary"
+            echo
+            echo "- Oddish commit: \`${GITHUB_SHA}\`"
+            echo "- Harbor commit: \`${HARBOR_SHA}\`"
+            echo "- SRE task commit: \`${SRE_WORLD_SHA}\`"
+            echo "- Task: \`slack-spine/13-P1-distractor-volume-shell\`"
+            echo "- Backend: $PREVIEW_API_URL"
+            echo "- Experiment: $PREVIEW_DASHBOARD_URL/experiments/harbor-pr11-preview-canary"
+            echo "- Result: oracle passed on hosted Daytona/K3s"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   stop-preview:
     name: Stop preview
     if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
