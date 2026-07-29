@@ -62,12 +62,17 @@ def _oddish_platform_key(provider: str) -> str | None:
     return configured or os.environ.get(_ODDISH_PROVIDER_ENV_KEYS[provider])
 
 
-def _openai_platform_key() -> str | None:
-    """Key for the configured OpenAI-family route, or None."""
+def _openai_platform_key(model: str | None = None) -> str | None:
+    """Key for the OpenAI-family route this *model* resolves to, or None.
+
+    Per-model: an explicit ``openai/`` id is funded by the public platform
+    key and ``azure/`` by the Azure key; a bare id follows the
+    ODDISH_OPENAI_PROVIDER default (``get_openai_route_for_model``).
+    """
     from oddish.config import settings
 
     try:
-        route = settings.get_openai_provider()
+        route = settings.get_openai_route_for_model(model)
     except ValueError:
         return os.environ.get("OPENAI_API_KEY")
 
@@ -90,7 +95,9 @@ def _provider_key_var(provider: str) -> str | None:
 
 
 def trial_llm_key_hash(
-    provider: str | None, byok_env: Mapping[str, str] | None = None
+    provider: str | None,
+    byok_env: Mapping[str, str] | None = None,
+    model: str | None = None,
 ) -> str | None:
     """Hash of the key that funded one trial.
 
@@ -111,10 +118,12 @@ def trial_llm_key_hash(
         raw = (raw or "").strip()
         if raw:
             return hash_llm_key(raw)
-    return platform_key_hash_for_provider(provider)
+    return platform_key_hash_for_provider(provider, model=model)
 
 
-def platform_key_hash_for_provider(provider: str | None) -> str | None:
+def platform_key_hash_for_provider(
+    provider: str | None, model: str | None = None
+) -> str | None:
     """Hash of the platform API key configured for ``provider``, or None.
 
     An Oddish-wired provider resolves only through :func:`_oddish_platform_key`
@@ -130,7 +139,7 @@ def platform_key_hash_for_provider(provider: str | None) -> str | None:
 
     try:
         if provider == "openai":
-            raw = _openai_platform_key()
+            raw = _openai_platform_key(model)
         elif provider in _ODDISH_PROVIDER_ENV_KEYS:
             raw = _oddish_platform_key(provider)
         else:

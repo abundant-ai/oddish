@@ -16,9 +16,11 @@ from oddish.config import (
     OPENAI_PROVIDER_OPENAI,
     ZAI_DEFAULT_BASE_URL,
     anthropic_hdo_bare_model_id,
+    anthropic_platform_bare_model_id,
     fireworks_api_model_id,
     fireworks_bare_model_id,
     is_anthropic_hdo_model,
+    is_anthropic_platform_model,
     is_fireworks_model,
     is_meta_model,
     is_minimax_model,
@@ -32,6 +34,7 @@ from oddish.config import (
     settings,
     to_anthropic_api_model_id,
     to_anthropic_hdo_model_id,
+    to_anthropic_platform_model_id,
     to_bedrock_model_id,
     to_fireworks_model_id,
     to_minimax_model_id,
@@ -306,21 +309,26 @@ def _resolve_anthropic_hdo_api_key() -> str:
     return (os.environ.get("ANTHROPIC_HDO_API_KEY") or "").strip()
 
 
-def _inject_anthropic_hdo_api_key(
-    agent_config: AgentConfig, *, model_name: str | None
-) -> None:
-    """Overwrite ``ANTHROPIC_API_KEY`` with the HDO key for an HDO-prefixed trial.
+def _resolve_anthropic_platform_api_key() -> str:
+    """Return the platform Anthropic key from settings or the process environment."""
+    configured = (settings.anthropic_api_key or "").strip()
+    if configured:
+        return configured
+    return (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
 
-    Call while the model still carries the ``anthropic-hdo/`` prefix (or pass
-    that original id as *model_name*). Always overwrites: an empty HDO key must
-    not fall through to the platform Anthropic / Bedrock credentials.
+
+def _inject_direct_anthropic_env(
+    agent_config: AgentConfig, *, bare_model: str, api_key: str
+) -> None:
+    """Pin a trial to the direct Anthropic API with *api_key*.
+
+    Always overwrites: an empty key must not fall through to the Bedrock /
+    ambient Anthropic credentials, and the Bedrock routing toggles are blanked
+    so claude-code picks the direct API even on a Bedrock-equipped worker.
     """
-    if not is_anthropic_hdo_model(model_name):
-        return
-    bare_model = anthropic_hdo_bare_model_id(model_name or "")
     api_model = to_anthropic_api_model_id(bare_model) or bare_model
     env = dict(agent_config.env or {})
-    env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
+    env["ANTHROPIC_API_KEY"] = api_key
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
     if _is_claude_code_agent(agent_config) and api_model:
@@ -330,14 +338,51 @@ def _inject_anthropic_hdo_api_key(
     agent_config.env = env
 
 
+def _inject_anthropic_hdo_api_key(
+    agent_config: AgentConfig, *, model_name: str | None
+) -> None:
+    """Overwrite ``ANTHROPIC_API_KEY`` with the HDO key for an HDO-prefixed trial.
+
+    Call while the model still carries the ``anthropic-hdo/`` prefix (or pass
+    that original id as *model_name*).
+    """
+    if not is_anthropic_hdo_model(model_name):
+        return
+    _inject_direct_anthropic_env(
+        agent_config,
+        bare_model=anthropic_hdo_bare_model_id(model_name or ""),
+        api_key=_resolve_anthropic_hdo_api_key(),
+    )
+
+
+def _inject_anthropic_platform_api_key(
+    agent_config: AgentConfig, *, model_name: str | None
+) -> None:
+    """Pin an ``anthropic/``-prefixed trial to the direct Anthropic API.
+
+    Call while the model still carries the ``anthropic/`` prefix (or pass that
+    original id as *model_name*).
+    """
+    if not is_anthropic_platform_model(model_name):
+        return
+    _inject_direct_anthropic_env(
+        agent_config,
+        bare_model=anthropic_platform_bare_model_id(model_name or ""),
+        api_key=_resolve_anthropic_platform_api_key(),
+    )
+
+
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
-    """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
+    """Route Azure Codex trials through Oddish's transport-compatible wrapper.
+
+    Only called for trials whose model resolved to the Azure route
+    (``get_openai_route_for_model``); public-platform Codex trials keep the
+    stock ``OddishCodex`` wrapper against api.openai.com.
+    """
     if agent_config.import_path is not None:
         return
     agent_name = (agent_config.name or "").strip().lower()
     if agent_name != "codex":
-        return
-    if settings.get_openai_provider() != OPENAI_PROVIDER_AZURE:
         return
 
     agent_config.name = None
@@ -589,6 +634,22 @@ def _build_agent_config(
             bare = anthropic_hdo_bare_model_id(canonical or "")
             api_id = to_anthropic_api_model_id(bare) or bare
             agent_config.model_name = f"anthropic/{api_id}" if api_id else canonical
+    elif is_anthropic_platform_model(agent_config.model_name):
+        # Explicit ``anthropic/`` pins the trial to the direct Anthropic API
+        # with the platform key instead of the Bedrock default. Same shape as
+        # the HDO branch above, with the platform ANTHROPIC_API_KEY.
+        platform_model = agent_config.model_name
+        _inject_anthropic_platform_api_key(agent_config, model_name=platform_model)
+        canonical = to_anthropic_platform_model_id(platform_model)
+        if _is_claude_code_agent(agent_config):
+            # Keep the anthropic/ prefix for provider/queue/allowlist; the
+            # injector pins ANTHROPIC_MODEL to the bare Anthropic API id.
+            agent_config.model_name = canonical
+        else:
+            # litellm agents need anthropic/<api-id> plus ANTHROPIC_API_KEY.
+            bare = anthropic_platform_bare_model_id(canonical or "")
+            api_id = to_anthropic_api_model_id(bare) or bare
+            agent_config.model_name = f"anthropic/{api_id}" if api_id else canonical
     elif not _is_claude_code_agent(agent_config):
         # litellm-based agents need a "provider/model" id; claude-code is the
         # only agent that consumes the bare Bedrock inference-profile id.
@@ -613,20 +674,25 @@ def _build_agent_config(
     # endpoint, so its model must NOT be rewritten to the private Azure
     # deployment id -- it needs the public model identity, and a pinned
     # transport could never resolve a worker-private deployment id anyway.
-    # Agents that talk to OpenAI directly (codex, mini-swe on an openai model --
-    # prefixed or bare) still get the rewrite. This is the source the runner's
-    # runtime-model swap later undoes for serialization/redaction; both gate the
-    # same way.
+    # Agents that talk to the endpoint directly (codex, mini-swe) get the
+    # rewrite only on the Azure route: an explicit ``azure/`` id or a bare id
+    # under the Azure default. ``openai/`` ids run on the public platform and
+    # keep their public identity. This is the source the runner's runtime-model
+    # swap later undoes for serialization/redaction; both gate the same way.
     if _agent_uses_openai_provider(
         agent_config
     ) and not agent_keeps_public_model_identity(agent_config):
-        if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
-            warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
-        else:
+        route = settings.get_openai_route_for_model(agent_config.model_name)
+        if route == OPENAI_PROVIDER_AZURE:
             agent_config.model_name = settings.resolve_azure_openai_deployment(
                 agent_config.model_name
             )
             _apply_codex_azure_compat(agent_config)
+        elif settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+            # Public platform as the *global default* is the governance
+            # exception worth flagging; an explicit openai/ prefix is an
+            # intentional per-model choice and stays quiet.
+            warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
 
     _apply_codex_oddish_wrapper(agent_config)
     _apply_grok_build_oddish_wrapper(agent_config)
@@ -634,13 +700,23 @@ def _build_agent_config(
     _apply_mini_swe_agent(agent_config)
     _apply_claude_code_oddish_wrapper(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
-    # HDO key must win over probe/BYOK/platform ANTHROPIC_API_KEY merges above.
-    # Use the original *model* arg: non-claude-code agents rewrite model_name to
-    # anthropic/<id> and would otherwise lose the HDO signal.
+    # Direct-API keys must win over probe/BYOK/platform ANTHROPIC_API_KEY
+    # merges above. Use the original *model* arg: non-claude-code agents
+    # rewrite model_name to anthropic/<id> and would otherwise lose the
+    # prefix signal (and an ``anthropic/``-rewritten litellm id must not
+    # re-trigger the platform injector for a Bedrock-routed trial).
+    if is_anthropic_platform_model(model):
+        _inject_anthropic_platform_api_key(agent_config, model_name=model)
     if is_anthropic_hdo_model(model):
         _inject_anthropic_hdo_api_key(agent_config, model_name=model)
 
     return agent_config
+
+
+# Canonical providers that name the OpenAI-family transport (public platform
+# or Azure). Mirrors job_tokens._OPENAI_FAMILY; ``azure_openai`` rides along
+# because the normalizer passes it through verbatim.
+_OPENAI_FAMILY_PROVIDERS = frozenset({"openai", "azure", "azure_openai"})
 
 
 def _agent_uses_openai_provider(agent_config: AgentConfig) -> bool:
@@ -652,7 +728,7 @@ def _agent_uses_openai_provider(agent_config: AgentConfig) -> bool:
             agent,
             getattr(agent_config, "model_name", None),
         )
-        == "openai"
+        in _OPENAI_FAMILY_PROVIDERS
     )
 
 
@@ -684,7 +760,10 @@ def _trial_uses_openai_provider(
         model=model,
         raw_harbor_config=raw_harbor_config,
     )
-    return settings.get_provider_for_trial(agent_name, model_name) == "openai"
+    return (
+        settings.get_provider_for_trial(agent_name, model_name)
+        in _OPENAI_FAMILY_PROVIDERS
+    )
 
 
 @contextlib.contextmanager

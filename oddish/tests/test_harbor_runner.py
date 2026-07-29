@@ -914,10 +914,12 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
     monkeypatch.setattr(
         harbor_runner, "_trial_uses_openai_provider", lambda **kwargs: True
     )
+    # An explicit azure/ id is what routes a trial onto the Azure deployment
+    # rewrite this test scrubs (get_openai_route_for_model reads the prefix).
     monkeypatch.setattr(
         harbor_runner,
         "_trial_requested_model",
-        lambda **kwargs: ("codex", "openai/public-model"),
+        lambda **kwargs: ("codex", "azure/public-model"),
     )
     monkeypatch.setattr(
         harbor_runner,
@@ -958,7 +960,7 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
         harbor_runner.run_harbor_trial_async(
             task_path=task_path,
             agent="codex",
-            model="openai/public-model",
+            model="azure/public-model",
             jobs_dir=jobs_dir,
             environment=EnvironmentType.DAYTONA,
         )
@@ -967,7 +969,7 @@ def test_restricted_compose_runtime_route_is_private_and_artifacts_are_scrubbed(
     assert outcome.reward == 1.0
     config = captured["config"]
     agent_config = config.agents[0]
-    assert agent_config.model_name == "openai/public-model"
+    assert agent_config.model_name == "azure/public-model"
     assert agent_config.extra_allowed_hosts == []
     assert getattr(agent_config, RUNTIME_MODEL_NAME_ATTR) == runtime_deployment
     assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("private-model.test",)
@@ -1577,7 +1579,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     monkeypatch.setattr(
         trial_handler,
         "trial_llm_key_hash",
-        lambda *_args: "settled-key-hash",
+        lambda *_args, **_kwargs: "settled-key-hash",
     )
 
     outcome = harbor_runner.HarborOutcome(
@@ -2371,9 +2373,11 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
         {"openai/gpt-5.4": "oddish-gpt"},
     )
 
+    # An explicit azure/ id names the Azure route; the deployment map stays
+    # keyed by the conventional openai/ form.
     agent_config = harbor_runner._build_agent_config(
         agent="codex",
-        model="openai/gpt-5.4",
+        model="azure/gpt-5.4",
         raw_harbor_config={},
     )
 
@@ -3150,7 +3154,7 @@ def test_run_harbor_trial_async_scopes_azure_env(monkeypatch, tmp_path):
             task_path=task_path,
             agent="codex",
             jobs_dir=jobs_dir,
-            model="openai/gpt-5.4",
+            model="azure/gpt-5.4",
         )
     )
 

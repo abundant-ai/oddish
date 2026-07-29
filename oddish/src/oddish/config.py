@@ -633,6 +633,59 @@ def to_anthropic_hdo_model_id(model: str | None) -> str | None:
     return f"{ANTHROPIC_HDO_PROVIDER}/{anthropic_hdo_bare_model_id(model)}"
 
 
+# Direct Anthropic API with the platform ANTHROPIC_API_KEY. Opt-in with an
+# explicit ``anthropic/<model>`` prefix: the prefix names the Anthropic
+# platform the way ``bedrock/`` names Bedrock and ``anthropic-hdo/`` names the
+# HDO org. Prefix-only: bare Claude ids keep the default Bedrock chokepoint.
+ANTHROPIC_PLATFORM_PROVIDER = "anthropic"
+_ANTHROPIC_PLATFORM_PROVIDER_PREFIXES: frozenset[str] = frozenset({"anthropic"})
+
+
+def is_anthropic_platform_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects the direct Anthropic API."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_PLATFORM_PROVIDER_PREFIXES
+    )
+
+
+def anthropic_platform_bare_model_id(model: str) -> str:
+    """Strip the ``anthropic/`` prefix, returning the bare Anthropic model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _ANTHROPIC_PLATFORM_PROVIDER_PREFIXES
+    ):
+        bare_id = str(bare).strip()
+        # Accept the dotted marketing spelling ("claude-opus-4.8") as an alias
+        # of the canonical dashed API id, the same tolerance the Bedrock
+        # chokepoint applies -- the direct API only knows dashed ids.
+        if "claude" in bare_id.lower():
+            bare_id = bare_id.replace(".", "-")
+        return bare_id
+    return raw
+
+
+def to_anthropic_platform_model_id(model: str | None) -> str | None:
+    """Canonicalize a platform Claude reference to ``anthropic/<bare-id>``.
+
+    Keeps platform trials off the Bedrock provider/queue bucket so they get
+    their own concurrency key and the runner can pin the direct-API routing
+    env instead of Bedrock's.
+    """
+    if not is_anthropic_platform_model(model):
+        return model
+    assert model is not None
+    return f"{ANTHROPIC_PLATFORM_PROVIDER}/{anthropic_platform_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -684,6 +737,7 @@ _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # 'default' is not available for this model".
     "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-5": "global.anthropic.claude-opus-5",
+    "claude-sonnet-5": "global.anthropic.claude-sonnet-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -1450,8 +1504,12 @@ class Settings(BaseSettings):
     # tarball on every click.
     tasks_archive_cache_mb: int = 256
 
-    # OpenAI-family routing. Azure is the enterprise default; public OpenAI
-    # requires explicitly setting ODDISH_OPENAI_PROVIDER=openai.
+    # OpenAI-family routing default for BARE model ids (``gpt-x``, ``o3``).
+    # Explicit prefixes always win over this setting: ``openai/<slug>`` runs
+    # on the public OpenAI platform, ``azure/<slug>`` on Azure OpenAI (see
+    # get_openai_route_for_model). Azure stays the enterprise default for
+    # unprefixed ids; public OpenAI as the bare-id default requires
+    # explicitly setting ODDISH_OPENAI_PROVIDER=openai.
     openai_provider: str = OPENAI_PROVIDER_AZURE
 
     # API keys (read from env without ODDISH_ prefix)
@@ -1660,6 +1718,12 @@ class Settings(BaseSettings):
         # with ANTHROPIC_HDO_API_KEY — must win over the Bedrock chokepoint.
         if is_anthropic_hdo_model(cleaned):
             return to_anthropic_hdo_model_id(cleaned)
+        # Explicit ``anthropic/`` keeps Claude on the direct Anthropic API with
+        # the platform ANTHROPIC_API_KEY — must also win over the Bedrock
+        # chokepoint. Bare Claude ids (and ``bedrock/``/``claude/`` forms)
+        # still collapse to their Bedrock runtime id below.
+        if is_anthropic_platform_model(cleaned):
+            return to_anthropic_platform_model_id(cleaned)
 
         if strict:
             return to_bedrock_model_id(cleaned)
@@ -1680,6 +1744,12 @@ class Settings(BaseSettings):
             return "default"
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
+        # ``anthropic/`` names the direct Anthropic API: keep the prefixed id
+        # as its own queue bucket instead of collapsing it to the Bedrock id
+        # (``anthropic-hdo/`` survives the collapse on its own because the
+        # Bedrock chokepoint passes unknown provider prefixes through).
+        if is_anthropic_platform_model(normalized):
+            return to_anthropic_platform_model_id(normalized) or normalized
         normalized = _to_bedrock_model_id_if_known(normalized)
         if looks_like_bedrock_model_id(normalized):
             return normalized
@@ -1762,6 +1832,25 @@ class Settings(BaseSettings):
         keys.update(self.model_concurrency_overrides.keys())
         return keys
 
+    def get_openai_route_for_model(self, model: str | None) -> str:
+        """Transport route for one OpenAI-family model id.
+
+        Explicit prefixes always win: ``openai/<slug>`` runs on the public
+        OpenAI platform and ``azure/<slug>`` (or ``azure_openai/``) on Azure
+        OpenAI, regardless of ODDISH_OPENAI_PROVIDER. Bare ids (``gpt-x``,
+        ``o3``) keep the configured default so unprefixed traffic never
+        changes transport when this per-model routing evolves.
+        """
+        normalized = normalize_model_id(model)
+        if normalized:
+            provider_prefix, _ = split_provider_model_name(normalized)
+            head = (provider_prefix or "").strip().lower()
+            if head == "openai":
+                return OPENAI_PROVIDER_OPENAI
+            if head in ("azure", "azure_openai"):
+                return OPENAI_PROVIDER_AZURE
+        return self.get_openai_provider()
+
     def get_openai_provider(self) -> str:
         provider = self.openai_provider.strip().lower()
         if provider not in _OPENAI_PROVIDERS:
@@ -1810,13 +1899,22 @@ class Settings(BaseSettings):
                 "ODDISH_AZURE_OPENAI_DEPLOYMENTS."
             )
 
+        # Map keys are conventionally ``openai/<slug>`` (that is how the
+        # deployed ODDISH_AZURE_OPENAI_DEPLOYMENTS is keyed), so an explicit
+        # ``azure/<slug>`` or ``azure_openai/<slug>`` transport id resolves
+        # through the same bare and ``openai/``-keyed entries.
         lookup_keys = [normalized]
-        if normalized.startswith("openai/"):
-            lookup_keys.append(normalized.split("/", 1)[1])
+        head, _, tail = normalized.partition("/")
+        if head in ("openai", "azure", "azure_openai") and tail:
+            lookup_keys.extend([tail, f"openai/{tail}"])
         elif "/" not in normalized:
             lookup_keys.append(f"openai/{normalized}")
 
+        seen: set[str] = set()
         for key in lookup_keys:
+            if key in seen:
+                continue
+            seen.add(key)
             deployment = self.azure_openai_deployments.get(key)
             if deployment:
                 return deployment
@@ -1857,9 +1955,11 @@ class Settings(BaseSettings):
         key = api_key or self.openai_api_key
         if not key:
             raise RuntimeError(
-                "OPENAI_API_KEY is required when "
-                "ODDISH_OPENAI_PROVIDER=openai. Azure OpenAI is the default; "
-                "set AZURE_OPENAI_* values to use Azure instead."
+                "OPENAI_API_KEY is required to run OpenAI-family jobs on the "
+                "public OpenAI platform (an explicit 'openai/<model>' id, or "
+                "ODDISH_OPENAI_PROVIDER=openai as the bare-id default). Use "
+                "an 'azure/<model>' id with AZURE_OPENAI_* values to run on "
+                "Azure OpenAI instead."
             )
         return {"api_key": key}
 
@@ -1868,11 +1968,15 @@ class Settings(BaseSettings):
     ) -> dict[str, str]:
         """Return process env vars for OpenAI-family provider clients.
 
-        In Azure mode this intentionally does not set ``OPENAI_API_KEY``.
+        Routed per model: an explicit ``openai/`` id gets the public OpenAI
+        platform env, an explicit ``azure/`` id the Azure env, and bare ids
+        follow ODDISH_OPENAI_PROVIDER (``get_openai_route_for_model``).
+
+        On the Azure route this intentionally does not set ``OPENAI_API_KEY``.
         If a downstream tool ignores Azure endpoint variables, failing closed is
         safer than sending task data to the public OpenAI API with an Azure key.
         """
-        if self.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+        if self.get_openai_route_for_model(model) == OPENAI_PROVIDER_OPENAI:
             public = self.require_public_openai_config(api_key=api_key)
             return {"OPENAI_API_KEY": public["api_key"]}
 
@@ -1892,9 +1996,14 @@ class Settings(BaseSettings):
     def get_openai_agent_env(
         self, *, model: str | None = None, api_key: str | None = None
     ) -> dict[str, str]:
-        """Return env vars for OpenAI-family Harbor agents."""
-        if self.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
-            return self.get_openai_runtime_env(api_key=api_key)
+        """Return env vars for OpenAI-family Harbor agents.
+
+        Routed per model like ``get_openai_runtime_env``: ``openai/`` ids get
+        the public platform key, ``azure/`` ids the Azure env, bare ids the
+        ODDISH_OPENAI_PROVIDER default.
+        """
+        if self.get_openai_route_for_model(model) == OPENAI_PROVIDER_OPENAI:
+            return self.get_openai_runtime_env(model=model, api_key=api_key)
 
         azure = self.require_azure_openai_config()
         deployment = self.resolve_azure_openai_deployment(model)

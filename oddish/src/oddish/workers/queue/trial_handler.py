@@ -688,7 +688,7 @@ def _settle_trial_metering(
         if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
             trial.cost_usd = prev_cost_usd
     # Attribute spend to the BYOK overlay or platform key that funded the run.
-    trial.llm_key_hash = trial_llm_key_hash(provider, byok_env)
+    trial.llm_key_hash = trial_llm_key_hash(provider, byok_env, model=trial.model)
     return prev_cost_usd, provider, native_cost_trusted
 
 
@@ -1513,6 +1513,7 @@ async def run_trial_job(
             prepared_trial.trial_agent, prepared_trial.trial_model
         ),
         byok_env,
+        model=prepared_trial.trial_model,
     )
     stamp = update(TrialModel).where(
         TrialModel.id == trial_id,

@@ -99,7 +99,11 @@ def test_claude_trial_model_is_persisted_as_bedrock_id(monkeypatch):
         settings.normalize_trial_model("claude-code", "claude-sonnet-4-6") == expected
     )
     assert (
-        settings.normalize_trial_model("claude-code", "anthropic/claude-sonnet-4-6")
+        settings.normalize_trial_model("claude-code", "bedrock/claude-sonnet-4-6")
+        == expected
+    )
+    assert (
+        settings.normalize_trial_model("claude-code", "claude/claude-sonnet-4-6")
         == expected
     )
     assert (
@@ -139,6 +143,66 @@ def test_anthropic_hdo_prefix_stays_off_bedrock_queue(monkeypatch):
     )
 
 
+def test_anthropic_prefix_stays_off_bedrock_queue(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    expected = "anthropic/claude-sonnet-4-6"
+
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-sonnet-4-6")
+        == expected
+    )
+    assert (
+        settings.get_provider_for_trial("claude-code", "anthropic/claude-sonnet-4-6")
+        == "anthropic"
+    )
+    assert (
+        settings.get_queue_key_for_trial("claude-code", "anthropic/claude-sonnet-4-6")
+        == expected
+    )
+    # Bare Claude ids still take the Bedrock path — the direct Anthropic API
+    # is prefix-opt-in only, exactly like anthropic-hdo/.
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6")
+        == "global.anthropic.claude-sonnet-4-6"
+    )
+
+
+def test_explicit_openai_family_prefixes_win_over_global_default(monkeypatch):
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "az-key")
+    monkeypatch.setenv(
+        "AZURE_OPENAI_ENDPOINT",
+        "https://example.openai.azure.com/openai/v1",
+    )
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+    monkeypatch.setenv(
+        "ODDISH_AZURE_OPENAI_DEPLOYMENTS",
+        '{"openai/gpt-5.2":"oddish-gpt"}',
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-public")
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Azure default: bare ids route to Azure, openai/ ids to the platform.
+    assert settings.get_openai_route_for_model("gpt-5.2") == "azure"
+    assert settings.get_openai_agent_env(model="openai/gpt-5.2") == {
+        "OPENAI_API_KEY": "sk-public"
+    }
+    assert (
+        settings.get_openai_agent_env(model="azure/gpt-5.2")["AZURE_OPENAI_DEPLOYMENT"]
+        == "oddish-gpt"
+    )
+
+    # Flipping the global default moves bare ids only; azure/ stays Azure.
+    monkeypatch.setenv("ODDISH_OPENAI_PROVIDER", "openai")
+    flipped = _settings(monkeypatch, clear_openai_env=False)
+    assert flipped.get_openai_route_for_model("gpt-5.2") == "openai"
+    assert flipped.get_openai_route_for_model("azure/gpt-5.2") == "azure"
+    assert (
+        flipped.get_openai_agent_env(model="azure/gpt-5.2")["AZURE_OPENAI_DEPLOYMENT"]
+        == "oddish-gpt"
+    )
+
+
 def test_opus_4_8_maps_to_global_inference_profile(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
@@ -149,11 +213,11 @@ def test_opus_4_8_maps_to_global_inference_profile(monkeypatch):
 
     assert settings.normalize_trial_model("claude-code", "claude-opus-4-8") == expected
     assert (
-        settings.normalize_trial_model("claude-code", "anthropic/claude-opus-4-8")
+        settings.normalize_trial_model("claude-code", "bedrock/claude-opus-4-8")
         == expected
     )
     assert settings.normalize_queue_key("claude-opus-4-8") == expected
-    assert settings.normalize_queue_key("anthropic/claude-opus-4-8") == expected
+    assert settings.normalize_queue_key("claude/claude-opus-4-8") == expected
 
 
 def test_dotted_marketing_spelling_maps_to_global_inference_profile(monkeypatch):
@@ -168,8 +232,14 @@ def test_dotted_marketing_spelling_maps_to_global_inference_profile(monkeypatch)
         == "global.anthropic.claude-opus-4-8"
     )
     assert (
-        settings.normalize_trial_model("claude-code", "anthropic/claude-opus-4.8")
+        settings.normalize_trial_model("claude-code", "bedrock/claude-opus-4.8")
         == "global.anthropic.claude-opus-4-8"
+    )
+    # The direct-API route applies the same dotted-alias tolerance: the
+    # canonical dashed id is what reaches the Anthropic API.
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-opus-4.8")
+        == "anthropic/claude-opus-4-8"
     )
     assert (
         settings.normalize_trial_model("claude-code", "claude-sonnet-4.6")
@@ -188,11 +258,30 @@ def test_fable_5_maps_to_global_inference_profile(monkeypatch):
 
     assert settings.normalize_trial_model("claude-code", "claude-fable-5") == expected
     assert (
-        settings.normalize_trial_model("claude-code", "anthropic/claude-fable-5")
+        settings.normalize_trial_model("claude-code", "bedrock/claude-fable-5")
         == expected
     )
     assert settings.normalize_queue_key("claude-fable-5") == expected
-    assert settings.normalize_queue_key("anthropic/claude-fable-5") == expected
+    assert settings.normalize_queue_key(f"bedrock/{expected}") == expected
+
+
+def test_sonnet_5_maps_to_global_inference_profile(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Sonnet 5's invokable Bedrock id follows the dateless "global." shape of
+    # the other 4.6+-generation models (same registration as Opus 5).
+    expected = "global.anthropic.claude-sonnet-5"
+
+    assert settings.normalize_trial_model("claude-code", "claude-sonnet-5") == expected
+    assert (
+        settings.normalize_trial_model("claude-code", "bedrock/claude-sonnet-5")
+        == expected
+    )
+    # The direct-API opt-in needs no Bedrock table entry.
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-sonnet-5")
+        == "anthropic/claude-sonnet-5"
+    )
 
 
 def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
@@ -201,8 +290,13 @@ def test_bedrock_queue_key_normalization_collapses_aliases(monkeypatch):
     expected = "global.anthropic.claude-sonnet-4-6"
 
     assert settings.normalize_queue_key("claude-sonnet-4-6") == expected
-    assert settings.normalize_queue_key("anthropic/claude-sonnet-4-6") == expected
+    assert settings.normalize_queue_key("claude/claude-sonnet-4-6") == expected
     assert settings.normalize_queue_key(f"bedrock/{expected}") == expected
+    # ``anthropic/`` names the direct Anthropic API and keeps its own bucket.
+    assert (
+        settings.normalize_queue_key("anthropic/claude-sonnet-4-6")
+        == "anthropic/claude-sonnet-4-6"
+    )
 
 
 def test_openrouter_claude_model_routes_through_openrouter(monkeypatch):
@@ -419,24 +513,42 @@ def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
     legacy_key = "anthropic/claude-sonnet-4-6-20250514"
 
     assert settings.normalize_queue_key(legacy_key) == legacy_key
+    # ``anthropic/`` now names the direct Anthropic API, where dated ids are
+    # valid — the id no longer needs a Bedrock mapping to execute.
+    assert settings.normalize_trial_model("claude-code", legacy_key) == legacy_key
+    # A bare unmapped Claude id still fails loudly on the Bedrock chokepoint.
     with pytest.raises(ValueError):
-        settings.normalize_trial_model("claude-code", legacy_key)
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4-6-20250514")
 
 
-def test_openai_provider_defaults_to_azure(monkeypatch):
+def test_openai_provider_defaults_to_azure_for_bare_ids(monkeypatch):
     settings = _settings(monkeypatch)
 
     assert settings.get_openai_provider() == "azure"
+    assert settings.get_openai_route_for_model("gpt-5.2") == "azure"
     with pytest.raises(RuntimeError, match="Azure OpenAI is the default"):
+        settings.get_openai_runtime_env(model="gpt-5.2")
+    # An explicit ``openai/`` id names the public platform; without a key it
+    # fails loudly on the platform requirement, never silently onto Azure.
+    assert settings.get_openai_route_for_model("openai/gpt-5.2") == "openai"
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY is required"):
         settings.get_openai_runtime_env(model="openai/gpt-5.2")
 
 
-def test_openai_api_key_alone_does_not_enable_public_openai(monkeypatch):
-    settings = _settings(monkeypatch, openai_api_key="sk-test")
+def test_openai_api_key_alone_does_not_reroute_bare_ids(monkeypatch):
+    settings = _settings(monkeypatch, OPENAI_API_KEY="sk-test")
 
     assert settings.get_openai_provider() == "azure"
+    # A configured platform key must not flip bare-id routing off Azure...
     with pytest.raises(RuntimeError, match="Azure OpenAI is the default"):
-        settings.get_openai_runtime_env(model="openai/gpt-5.2")
+        settings.get_openai_runtime_env(model="gpt-5.2")
+    # ...but an explicit ``openai/`` id runs on the public platform with it.
+    assert settings.get_openai_runtime_env(model="openai/gpt-5.2") == {
+        "OPENAI_API_KEY": "sk-test"
+    }
+    assert settings.get_openai_agent_env(model="openai/gpt-5.2") == {
+        "OPENAI_API_KEY": "sk-test"
+    }
 
 
 def test_azure_openai_deployment_mapping_accepts_prefixed_and_bare_models(
@@ -509,7 +621,9 @@ def test_azure_openai_runtime_env_excludes_public_openai_key(monkeypatch):
     )
     settings = _settings(monkeypatch, clear_openai_env=False)
 
-    env = settings.get_openai_runtime_env(model="openai/gpt-5.2")
+    # An explicit ``azure/`` id names the Azure route; the deployment map
+    # stays keyed by the conventional ``openai/`` form.
+    env = settings.get_openai_runtime_env(model="azure/gpt-5.2")
 
     assert env["AZURE_OPENAI_API_KEY"] == "az-key"
     assert env["AZURE_OPENAI_ENDPOINT"] == "https://example.openai.azure.com/openai/v1"
@@ -532,7 +646,7 @@ def test_azure_openai_agent_env_uses_compatible_base_url(monkeypatch):
     )
     settings = _settings(monkeypatch, clear_openai_env=False)
 
-    env = settings.get_openai_agent_env(model="openai/gpt-5.2")
+    env = settings.get_openai_agent_env(model="azure/gpt-5.2")
 
     assert env["OPENAI_API_KEY"] == "az-key"
     assert env["OPENAI_BASE_URL"] == "https://example.openai.azure.com/openai/v1"
@@ -574,7 +688,7 @@ def test_azure_openai_agent_env_rejects_foundry_project_endpoint(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
     with pytest.raises(RuntimeError, match="Do not use the Foundry project endpoint"):
-        settings.get_openai_agent_env(model="openai/gpt-5.2")
+        settings.get_openai_agent_env(model="azure/gpt-5.2")
 
 
 def test_public_openai_requires_explicit_provider(monkeypatch):

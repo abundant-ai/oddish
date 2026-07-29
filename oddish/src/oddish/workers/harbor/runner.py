@@ -34,9 +34,10 @@ from harbor.utils.env import resolve_env_vars
 
 from oddish.config import (
     BEDROCK_ENV_VARS,
-    OPENAI_PROVIDER_OPENAI,
+    OPENAI_PROVIDER_AZURE,
     infer_model_provider_prefix,
     is_anthropic_hdo_model,
+    is_anthropic_platform_model,
     settings,
 )
 from oddish.costs.modal_cost import (
@@ -54,6 +55,7 @@ from .agent_config import (
     _apply_gemini_cli_oddish_wrapper,
     _apply_cursor_cli_oddish_wrapper,
     _resolve_anthropic_hdo_api_key,
+    _resolve_anthropic_platform_api_key,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
@@ -178,7 +180,11 @@ _AZURE_RUNTIME_SECRET_KEYS = (
 # future supported Claude profile were named without "claude_code". Folding a key
 # absent from os.environ is a no-op, so this never over-redacts.
 _PROVIDER_RUNTIME_SECRET_KEYS: dict[str, tuple[str, ...]] = {
-    "openai": ("OPENAI_API_KEY",),
+    # ``openai`` covers both transports the provider can resolve to (an
+    # explicit ``openai/`` id runs on the public platform; a bare id follows
+    # the Azure default), so fold the Azure credentials too — folding a key
+    # absent from os.environ is a no-op.
+    "openai": _AZURE_RUNTIME_SECRET_KEYS,
     # Oddish routes OpenAI-family jobs through Azure OpenAI by default, and an
     # explicit ``azure/`` id is a first-class restricted provider (it resolves
     # real transport keys and a real host), so its ambient credentials need the
@@ -1393,9 +1399,16 @@ async def run_harbor_trial_async(
         # ANTHROPIC_HDO_API_KEY: overwrite ambient ANTHROPIC_API_KEY so routing
         # and auth both use the HDO credential instead of Bedrock / the default
         # Anthropic key. HDO wins over BYOK when the model prefix opts in.
+        # ``anthropic/<model>`` does the same with the platform
+        # ANTHROPIC_API_KEY so an explicit platform trial routes direct even on
+        # a Bedrock-equipped worker.
         byok_anthropic_env: dict[str, str] = {}
         if is_anthropic_hdo_model(model):
             byok_anthropic_env["ANTHROPIC_API_KEY"] = _resolve_anthropic_hdo_api_key()
+        elif is_anthropic_platform_model(model):
+            byok_anthropic_env["ANTHROPIC_API_KEY"] = (
+                _resolve_anthropic_platform_api_key()
+            )
         elif "claude-code" in (agent or "").strip().lower():
             _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
             if _byok_key:
@@ -1418,7 +1431,8 @@ async def run_harbor_trial_async(
                 restricted_compose_kind == "dynamic"
                 and uses_openai_provider
                 and not agent_keeps_public_model_identity(agent_config)
-                and settings.get_openai_provider() != OPENAI_PROVIDER_OPENAI
+                and settings.get_openai_route_for_model(openai_model)
+                == OPENAI_PROVIDER_AZURE
                 and agent_config.model_name
                 and openai_model
             ):

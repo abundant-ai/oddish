@@ -142,9 +142,13 @@ def _build_openai_client(
     *, model: str, api_key: str | None = None
 ) -> tuple[AsyncOpenAI, str]:
     """Resolve public-OpenAI vs Azure and return (client, runtime model id).
+
+    Routed per model id (``get_openai_route_for_model``): an explicit
+    ``openai/`` id runs on the public platform, ``azure/`` on Azure, and the
+    bare analyzer/verdict defaults follow ODDISH_OPENAI_PROVIDER as before.
     A module-level seam: tests patch this instead of the class, so construction
     never needs live credentials."""
-    provider = settings.get_openai_provider()
+    provider = settings.get_openai_route_for_model(model)
     if provider == OPENAI_PROVIDER_OPENAI:
         warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
         public = settings.require_public_openai_config(api_key=api_key)

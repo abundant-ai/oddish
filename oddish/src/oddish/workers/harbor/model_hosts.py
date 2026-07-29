@@ -19,7 +19,6 @@ from oddish.config import (
     META_DEFAULT_BASE_URL,
     MINIMAX_DEFAULT_BASE_URL,
     MOONSHOT_DEFAULT_BASE_URL,
-    OPENAI_PROVIDER_AZURE,
     ZAI_DEFAULT_BASE_URL,
     infer_model_provider_prefix,
     is_anthropic_hdo_model,
@@ -326,11 +325,12 @@ def outbound_hosts_for_model(
         elif head in ("anthropic",):
             hosts.extend(_ANTHROPIC_HOSTS)
         elif head == "openai":
+            # An explicit ``openai/`` id names the public OpenAI platform
+            # transport (get_openai_route_for_model), so grant only the public
+            # hosts — the Azure endpoint would widen egress to a service this
+            # trial never calls. Bare ids following the Azure default never
+            # reach this arm (no ``/`` -> empty head).
             hosts.extend(_OPENAI_HOSTS)
-            if settings.get_openai_provider() == OPENAI_PROVIDER_AZURE:
-                azure_host = _host_from_url(settings.azure_openai_endpoint)
-                if azure_host:
-                    hosts.append(azure_host)
         elif head in ("azure", "azure_openai"):
             # An explicit ``azure/`` id names the Azure OpenAI transport, so
             # resolve the configured Azure endpoint rather than the public
