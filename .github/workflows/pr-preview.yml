@@ -525,6 +525,7 @@ jobs:
               --environment-kwarg launcher=k3s \
               --experiment harbor-pr11-preview-canary \
               --api "$PREVIEW_API_URL" \
+              --force \
               --json
           )"
           [ -n "$submission" ] || {
