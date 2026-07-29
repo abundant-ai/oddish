@@ -90,8 +90,10 @@ def allowed_api_key_scopes(auth: AuthContext) -> list[APIKeyScope]:
 def can_manage_quotas(auth: AuthContext) -> bool:
     """Return whether this user may view/set org member quotas.
 
-    Any org ADMIN qualifies (self-service for every org). API keys never qualify
-    -- quota management is user-auth-only, enforced by require_can_manage_quotas.
+    Any org ADMIN qualifies (self-service for every org). API key auth never
+    qualifies -- quota management is user-auth-only.
     """
+    if auth.method != AuthMethod.CLERK_JWT:
+        return False
     role = auth.user.role if auth.user else auth.user_role
     return role == UserRole.ADMIN

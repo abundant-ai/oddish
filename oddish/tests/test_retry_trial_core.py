@@ -29,6 +29,9 @@ class _Result:
     def scalar_one_or_none(self):
         return self._scalar
 
+    def all(self):
+        return list(self._rows)
+
     def __iter__(self):
         return iter(self._rows)
 

@@ -16,6 +16,8 @@ from oddish.core.quotas import (
     start_of_month_utc,
     sum_cost_usd,
     sum_org_cost_usd,
+    unattributed_cost_usd,
+    unattributed_inflight_reserved_usd,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,27 @@ class OrgQuotaExceeded(HTTPException):
                     f"reserved of ${float(limit_usd):.2f} (monthly). The budget "
                     "resets on the 1st (UTC). Ask an org admin to raise the "
                     "org quota."
+                ),
+                "used_usd": float(used_usd),
+                "reserved_usd": float(reserved_usd),
+                "limit_usd": float(limit_usd),
+            },
+        )
+
+
+class UnattributedPoolExceeded(HTTPException):
+    def __init__(self, used_usd, reserved_usd, limit_usd) -> None:
+        super().__init__(
+            status_code=402,
+            detail={
+                "message": (
+                    f"This organization is over its unattributed-spend ceiling: "
+                    f"used ${float(used_usd):.2f} + ${float(reserved_usd):.2f} "
+                    f"reserved of ${float(limit_usd):.2f} over the last 24h. This "
+                    "pool covers runs whose payer could not be resolved, so it "
+                    "clears by linking GitHub accounts at oddish.app (or by an "
+                    "admin raising ODDISH_UNATTRIBUTED_POOL_LIMIT_USD), not by "
+                    "raising an individual quota."
                 ),
                 "used_usd": float(used_usd),
                 "reserved_usd": float(reserved_usd),
@@ -158,6 +181,51 @@ async def _check_org_quota(
     )
 
 
+async def _check_unattributed_quota(
+    session: AsyncSession,
+    org_id: str,
+    count: int,
+    *,
+    enforce: bool,
+) -> None:
+    # A trial with no resolvable payer has no per-user cap to charge, and the org
+    # monthly cap ships unset, so the retry path would otherwise spend freely.
+    # The pool drains only by 24h aging (a retry copies billed_user_id=None, so
+    # it re-enters the pool), and no per-user override can raise it -- so it
+    # stays off until an operator sets a ceiling they actually want enforced.
+    limit = settings.unattributed_pool_limit_usd
+    used = await unattributed_cost_usd(session, org_id, quota_window_start())
+    reserved = (
+        await unattributed_inflight_reserved_usd(session, org_id)
+        + count * settings.pending_trial_reservation_usd
+    )
+    if limit is not None:
+        _raise_or_log_over_budget(
+            org_id,
+            None,
+            used,
+            reserved,
+            limit,
+            enforce=enforce,
+            exc_type=UnattributedPoolExceeded,
+            reason="unattributed_over_budget",
+        )
+    # Past the check, so this really was admitted -- spend nobody can be billed
+    # for is worth surfacing even under a ceiling that allowed it, because the fix
+    # is to repair attribution rather than raise a cap. In SHADOW an over-pool
+    # admission emits would_block AND this; that pair is precisely the signal that
+    # enforcement would have stopped it.
+    logger.warning(
+        "metric=quota.admitted reason=unattributed_admitted org_id=%s count=%s "
+        "used=%s reserved=%s limit=%s",
+        org_id,
+        count,
+        used,
+        reserved,
+        limit,
+    )
+
+
 async def admit_trials(
     session: AsyncSession,
     org_id: str | None,
@@ -177,8 +245,14 @@ async def admit_trials(
     if billed_user_id is None:
         if enforce and not allow_unattributed:
             raise Unattributed()
+        # Unconditional in SHADOW, including on the retry path: the rollout
+        # relies on scraping this to enumerate submissions with an unresolved
+        # payer (see backend/README.md), and a retry has one just as a fresh
+        # submit does.
         if mode == QuotaMode.SHADOW:
             _log_would_block(org_id, None, None, None, None, reason="unattributed")
+        if allow_unattributed:
+            await _check_unattributed_quota(session, org_id, count, enforce=enforce)
     else:
         await _check_user_quota(session, org_id, billed_user_id, count, enforce=enforce)
 

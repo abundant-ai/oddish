@@ -387,29 +387,45 @@ curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq
 ## User quotas — enforcement rollout (`ODDISH_QUOTA_MODE`)
 
 Per-user dollar budgets use a rolling 24-hour window. Spend counts until 24h
-after the trial finished. The operator toggle is `shadow` (default) → `enforce`
-via the `ODDISH_QUOTA_MODE` env var; each stage is a config flip, no redeploy of
-code (`off` stays available as a full no-op opt-out, and is also the
-schema-guard fail-safe below):
+after the trial finished. Caps count trial inference spend only unless
+`ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE=1`, which additionally folds
+analyzer/QA (`analysis_costs`) and sandbox compute (`modal_costs`) into both
+windows; it is off by default because turning it on lowers every payer's
+headroom at once. The operator toggle is `ODDISH_QUOTA_MODE` (`enforce` by
+default; `shadow` observes without blocking). Each stage is a config flip, no
+redeploy of code (`off` stays available as a full no-op opt-out):
 
-1. **`shadow`** (default) — compute the check and emit a structured
+1. **`shadow`** — compute the check and emit a structured
    `quota.would_block` event (`metric=quota.would_block reason=… org_id=…
    billed_user_id=… used=… limit=…`) but never raise. Scrape those logs to
    enumerate who *would* be blocked and which submissions have an unresolved
    payer (`billed_user_id` None — an unlinked GitHub author); notify those users
    to link at oddish.app. `billed_user_id` is stamped at trial creation, so the
    usage data accrues before any enforcement.
-2. **`enforce`** — over-budget submissions get HTTP **402** with
+2. **`enforce`** (default) — over-budget submissions get HTTP **402** with
    `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
    unattributable run gets **403**.
+
+An unattributable run is *retried* rather than submitted fresh (`POST
+/trials/{id}/retry`) it cannot 403 — there is no payer to bill and refusing
+would strand the run. That spend instead pools per org, logged as
+`metric=quota.admitted reason=unattributed_admitted`. Set
+`ODDISH_UNATTRIBUTED_POOL_LIMIT_USD` to cap that pool over the rolling 24h
+(unset = uncapped). Cap it deliberately: the pool drains only by aging, since a
+retry copies the NULL payer and re-enters it, and **no per-user override can
+raise it** — the fix for a full pool is repairing attribution.
 
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
 API startup verifies `trials.billed_user_id` and the `quotas` + `quota_bumps` +
-`org_quotas`
-tables exist and otherwise forces `off` (fail-safe, never a silent SUM
-fail-open). Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
+`org_quotas` tables exist. Under `enforce` a missing object **fails startup**,
+naming what is absent: `oddish/` and `backend/` migrate on separate alembic
+trees, so deploy-before-migrate is a real window, and serving every request
+uncapped is worse than being down. Set
+`ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE=1` to opt into the older behaviour (log and
+force `off`) instead. Under `shadow` it always degrades rather than failing —
+nothing is relying on enforcement. Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
 `ODDISH_PENDING_TRIAL_RESERVATION_USD` without a code change.
 
 **Temporary quota bumps.** `POST /quotas/{user_id}/bumps` grants `+amount_usd`
@@ -435,5 +451,5 @@ HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
 snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
-org → payer → row locks (ENFORCE-only, and the org lock is taken only when a cap
-is actually configured).
+org → payer → row locks (ENFORCE-only on admission; the org lock is always
+taken first, even when no org cap is configured).
