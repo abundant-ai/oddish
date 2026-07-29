@@ -16,6 +16,8 @@ from oddish.core.quotas import (
     start_of_month_utc,
     sum_cost_usd,
     sum_org_cost_usd,
+    unattributed_cost_usd,
+    unattributed_inflight_reserved_usd,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,6 +160,47 @@ async def _check_org_quota(
     )
 
 
+async def _check_unattributed_quota(
+    session: AsyncSession,
+    org_id: str,
+    count: int,
+    *,
+    enforce: bool,
+) -> None:
+    # A trial with no resolvable payer has no per-user cap to charge, and the org
+    # monthly cap ships unset (``default_org_monthly_quota_usd`` is None), so
+    # without this the retry path spends freely. Pool the org's unattributed 24h
+    # spend against the ordinary daily ceiling instead.
+    limit = settings.default_daily_quota_usd
+    used = await unattributed_cost_usd(session, org_id, quota_window_start())
+    reserved = (
+        await unattributed_inflight_reserved_usd(session, org_id)
+        + count * settings.pending_trial_reservation_usd
+    )
+    _raise_or_log_over_budget(
+        org_id,
+        None,
+        used,
+        reserved,
+        limit,
+        enforce=enforce,
+        exc_type=QuotaExceeded,
+        reason="unattributed_over_budget",
+    )
+    # Reached only when the pool let this through. Spend nobody can be billed for
+    # is worth surfacing even when it is under the ceiling, because the fix is to
+    # repair attribution, not to raise the cap.
+    logger.warning(
+        "metric=quota.admitted reason=unattributed_admitted org_id=%s count=%s "
+        "used=%s reserved=%s limit=%s",
+        org_id,
+        count,
+        used,
+        reserved,
+        limit,
+    )
+
+
 async def admit_trials(
     session: AsyncSession,
     org_id: str | None,
@@ -177,7 +220,9 @@ async def admit_trials(
     if billed_user_id is None:
         if enforce and not allow_unattributed:
             raise Unattributed()
-        if mode == QuotaMode.SHADOW:
+        if allow_unattributed:
+            await _check_unattributed_quota(session, org_id, count, enforce=enforce)
+        elif mode == QuotaMode.SHADOW:
             _log_would_block(org_id, None, None, None, None, reason="unattributed")
     else:
         await _check_user_quota(session, org_id, billed_user_id, count, enforce=enforce)

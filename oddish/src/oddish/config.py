@@ -1113,6 +1113,14 @@ class Settings(BaseSettings):
     # stops a start-then-cancel loop from bypassing the cap. A genuinely-$0 row
     # (cost_usd = 0) is always left untouched.
     unpriced_trial_cost_usd: Decimal = Decimal("0.00")
+    # Count analyzer/QA spend (``analysis_costs``) and sandbox compute
+    # (``modal_cost_spans``) toward the quota caps, not just trial inference. Both
+    # tables already carry ``org_id``/``billed_user_id`` and are charged per user
+    # on the cost dashboards, so the caps otherwise sit below real spend. Ships
+    # inert (like ``default_org_monthly_quota_usd``): turning it on lowers every
+    # payer's effective headroom at once, so it is a deliberate operator flip via
+    # ``ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE``.
+    quota_counts_analysis_and_compute: bool = False
     quota_mode: QuotaMode = QuotaMode.ENFORCE
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim

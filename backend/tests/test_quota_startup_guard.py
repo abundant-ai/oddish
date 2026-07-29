@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 import pytest
@@ -16,7 +17,9 @@ class _FakeSession:
 
     async def scalar(self, statement, *args, **kwargs):
         self.scalar_calls += 1
-        self.sql = str(statement)
+        # The guard probes one object per call, so accumulate rather than
+        # overwrite -- assertions look for every object it should have asked for.
+        self.sql += str(statement)
         if self._schema_ready is _RAISE:
             raise RuntimeError("DB unavailable at startup")
         return self._schema_ready
@@ -36,6 +39,7 @@ def _patch_session(monkeypatch, session):
 @pytest.mark.asyncio
 async def test_guard_forces_off_when_schema_incomplete(monkeypatch):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    monkeypatch.setenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", "1")
     _patch_session(monkeypatch, _FakeSession(schema_ready=False))
 
     await _assert_quota_schema_or_force_off()
@@ -54,11 +58,13 @@ async def test_guard_leaves_enforce_when_schema_ready_and_probes_all_objects(
     await _assert_quota_schema_or_force_off()
 
     assert settings.quota_mode == QuotaMode.ENFORCE
-    assert session.scalar_calls == 1
+    # One probe per object, so an incomplete schema can name what is absent.
+    assert session.scalar_calls == 4
     assert "table_name = 'trials'" in session.sql
     assert "column_name = 'billed_user_id'" in session.sql
     assert "table_name = 'quotas'" in session.sql
     assert "table_name = 'quota_bumps'" in session.sql
+    assert "table_name = 'org_quotas'" in session.sql
 
 
 @pytest.mark.asyncio
@@ -81,3 +87,61 @@ async def test_guard_is_a_noop_when_already_off(monkeypatch):
 
     assert settings.quota_mode == QuotaMode.OFF
     assert session.scalar_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_guard_raises_when_enforce_incomplete_without_opt_in(monkeypatch):
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    monkeypatch.delenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", raising=False)
+    _patch_session(monkeypatch, _FakeSession(schema_ready=False))
+
+    with pytest.raises(RuntimeError, match="trials.billed_user_id") as exc_info:
+        await _assert_quota_schema_or_force_off()
+
+    message = str(exc_info.value)
+    assert "quotas" in message
+    assert "quota_bumps" in message
+    assert "org_quotas" in message
+    assert "ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE" in message
+    assert settings.quota_mode == QuotaMode.ENFORCE
+
+
+@pytest.mark.asyncio
+async def test_guard_forces_off_and_logs_when_enforce_incomplete_with_opt_in(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    monkeypatch.setenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", "true")
+    _patch_session(monkeypatch, _FakeSession(schema_ready=False))
+
+    with caplog.at_level(logging.ERROR, logger="api.app"):
+        await _assert_quota_schema_or_force_off()
+
+    assert settings.quota_mode == QuotaMode.OFF
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("metric=quota.schema_incomplete" in message for message in messages)
+    assert any("trials.billed_user_id" in message for message in messages)
+    assert any("quotas" in message for message in messages)
+    assert any("quota_bumps" in message for message in messages)
+    assert any("org_quotas" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_guard_does_not_raise_when_shadow_and_schema_incomplete(monkeypatch):
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
+    monkeypatch.delenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", raising=False)
+    _patch_session(monkeypatch, _FakeSession(schema_ready=False))
+
+    await _assert_quota_schema_or_force_off()
+
+    assert settings.quota_mode == QuotaMode.OFF
+
+
+@pytest.mark.asyncio
+async def test_guard_leaves_shadow_when_schema_ready(monkeypatch):
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
+    _patch_session(monkeypatch, _FakeSession(schema_ready=True))
+
+    await _assert_quota_schema_or_force_off()
+
+    assert settings.quota_mode == QuotaMode.SHADOW

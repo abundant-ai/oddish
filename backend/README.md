@@ -387,19 +387,21 @@ curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq
 ## User quotas — enforcement rollout (`ODDISH_QUOTA_MODE`)
 
 Per-user dollar budgets use a rolling 24-hour window. Spend counts until 24h
-after the trial finished. The operator toggle is `shadow` (default) → `enforce`
-via the `ODDISH_QUOTA_MODE` env var; each stage is a config flip, no redeploy of
-code (`off` stays available as a full no-op opt-out, and is also the
-schema-guard fail-safe below):
+after the trial finished. Caps currently count trial inference spend only;
+analyzer/QA and sandbox compute do not count toward them. The operator toggle
+is `ODDISH_QUOTA_MODE` (`enforce` by default; `shadow` observes without
+blocking). Each stage is a config flip, no redeploy of code (`off` stays
+available as a full no-op opt-out, and is also the schema-guard fail-safe
+below):
 
-1. **`shadow`** (default) — compute the check and emit a structured
+1. **`shadow`** — compute the check and emit a structured
    `quota.would_block` event (`metric=quota.would_block reason=… org_id=…
    billed_user_id=… used=… limit=…`) but never raise. Scrape those logs to
    enumerate who *would* be blocked and which submissions have an unresolved
    payer (`billed_user_id` None — an unlinked GitHub author); notify those users
    to link at oddish.app. `billed_user_id` is stamped at trial creation, so the
    usage data accrues before any enforcement.
-2. **`enforce`** — over-budget submissions get HTTP **402** with
+2. **`enforce`** (default) — over-budget submissions get HTTP **402** with
    `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
    unattributable run gets **403**.
 
@@ -435,5 +437,5 @@ HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
 snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
-org → payer → row locks (ENFORCE-only, and the org lock is taken only when a cap
-is actually configured).
+org → payer → row locks (ENFORCE-only on admission; the org lock is always
+taken first, even when no org cap is configured).

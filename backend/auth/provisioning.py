@@ -312,7 +312,7 @@ async def fetch_clerk_org_ids_for_user(clerk_user_id: str) -> list[str]:
     if not CLERK_SECRET_KEY:
         return []
 
-    url = "https://api.clerk.com/v1/users/" f"{clerk_user_id}/organization_memberships"
+    url = f"https://api.clerk.com/v1/users/{clerk_user_id}/organization_memberships"
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
 
     try:
@@ -463,7 +463,9 @@ async def get_or_create_user_from_clerk(
         )
         return user, org
 
-    # User doesn't exist - try to resolve org when JWT is missing org_id
+    # JWT is missing org_id (classic CLERK_JWT_TEMPLATE misconfig). Adopt a
+    # unique existing membership; refuse to invent/pick a tenant when several
+    # match. A genuine zero-org user still gets a personal org below.
     if not clerk_org_id and email:
         existing_email = await session.execute(
             select(UserModel)
@@ -483,6 +485,15 @@ async def get_or_create_user_from_clerk(
                 user.clerk_user_id = clerk_user_id
                 await _refresh_user_github_identity(user, session)
                 return user, org
+        elif len(email_users) > 1:
+            logger.error(
+                "Ambiguous org for clerk_user_id=%s: session token is missing "
+                "org_id claim and %d provisioned orgs match this email; "
+                "CLERK_JWT_TEMPLATE is likely misconfigured",
+                clerk_user_id,
+                len(email_users),
+            )
+            return None
 
     if not clerk_org_id:
         org_ids = await fetch_clerk_org_ids_for_user(clerk_user_id)
@@ -495,6 +506,15 @@ async def get_or_create_user_from_clerk(
             orgs = list(org_result.scalars().all())
             if len(orgs) == 1:
                 clerk_org_id = orgs[0].clerk_org_id
+            elif len(orgs) > 1:
+                logger.error(
+                    "Ambiguous org for clerk_user_id=%s: session token is missing "
+                    "org_id claim and %d provisioned orgs match; "
+                    "CLERK_JWT_TEMPLATE is likely misconfigured",
+                    clerk_user_id,
+                    len(orgs),
+                )
+                return None
 
     # If still no org, provision a personal org for the user
     if not clerk_org_id:
