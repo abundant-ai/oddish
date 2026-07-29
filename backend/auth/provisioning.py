@@ -467,31 +467,30 @@ async def get_or_create_user_from_clerk(
     # unique existing membership; refuse to invent/pick a tenant when several
     # match. A genuine zero-org user still gets a personal org below.
     if not clerk_org_id and email:
+        # Joined to the org and filtered on ``is_active`` so a membership in a
+        # DEACTIVATED org neither gets adopted nor counts toward ambiguity --
+        # otherwise a user with a live row in a dead org plus one real org looks
+        # ambiguous here and is refused, even though their tenant is unique.
         existing_email = await session.execute(
-            select(UserModel)
+            select(UserModel, OrganizationModel)
+            .join(OrganizationModel, OrganizationModel.id == UserModel.org_id)
             .where(UserModel.email == email)
             .where(UserModel.is_active == True)  # noqa: E712
+            .where(OrganizationModel.is_active == True)  # noqa: E712
         )
-        email_users = list(existing_email.scalars().all())
-        if len(email_users) == 1:
-            user = email_users[0]
-            org_result = await session.execute(
-                select(OrganizationModel)
-                .where(OrganizationModel.id == user.org_id)
-                .where(OrganizationModel.is_active == True)  # noqa: E712
-            )
-            org = org_result.scalar_one_or_none()
-            if org:
-                user.clerk_user_id = clerk_user_id
-                await _refresh_user_github_identity(user, session)
-                return user, org
-        elif len(email_users) > 1:
+        email_matches = list(existing_email.all())
+        if len(email_matches) == 1:
+            user, org = email_matches[0]
+            user.clerk_user_id = clerk_user_id
+            await _refresh_user_github_identity(user, session)
+            return user, org
+        if len(email_matches) > 1:
             logger.error(
                 "Ambiguous org for clerk_user_id=%s: session token is missing "
-                "org_id claim and %d provisioned orgs match this email; "
+                "org_id claim and %d active orgs match this email; "
                 "CLERK_JWT_TEMPLATE is likely misconfigured",
                 clerk_user_id,
-                len(email_users),
+                len(email_matches),
             )
             return None
 

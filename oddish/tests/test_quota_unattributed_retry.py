@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import QuotaMode, settings  # noqa: E402
 from oddish.core.quota_admission import (  # noqa: E402
-    QuotaExceeded,
     Unattributed,
+    UnattributedPoolExceeded,
     admit_trials,
 )
 from oddish.db import (  # noqa: E402
@@ -60,6 +60,8 @@ def _enforce_mode(monkeypatch):
     monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0"))
     monkeypatch.setattr(settings, "default_daily_quota_usd", Decimal("0.3000"))
     monkeypatch.setattr(settings, "default_org_monthly_quota_usd", None)
+    # The pool ceiling is its own knob and ships unset; these tests opt in.
+    monkeypatch.setattr(settings, "unattributed_pool_limit_usd", Decimal("0.3000"))
 
 
 async def _make_billed_task(cleanup_task_ids, *, n_trials, billed_user, org_id):
@@ -119,11 +121,29 @@ async def test_unattributed_retry_blocked_over_pooled_ceiling(cleanup_task_ids):
     await _settle(task_id, 0, 0.30)
 
     async with get_session() as session:
-        with pytest.raises(QuotaExceeded) as raised:
+        with pytest.raises(UnattributedPoolExceeded) as raised:
             await admit_trials(session, org_id, None, count=1, allow_unattributed=True)
     assert raised.value.status_code == 402
     assert raised.value.detail["used_usd"] == pytest.approx(0.30)
     assert raised.value.detail["limit_usd"] == pytest.approx(0.30)
+    # Must not tell the caller to get "your quota" raised: no per-user override
+    # can lift a pool, so that advice would send them somewhere with no lever.
+    assert "raising an individual quota" in raised.value.detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_unattributed_pool_uncapped_by_default(cleanup_task_ids, monkeypatch):
+    # The shipped default (None) must admit regardless of pooled spend, so this
+    # change cannot start blocking retries until an operator sets a ceiling.
+    monkeypatch.setattr(settings, "unattributed_pool_limit_usd", None)
+    org_id = f"org-unattrib-{_RUN}-uncapped"
+    task_id = await _make_billed_task(
+        cleanup_task_ids, n_trials=1, billed_user=None, org_id=org_id
+    )
+    await _settle(task_id, 0, 9_999.0)
+
+    async with get_session() as session:
+        await admit_trials(session, org_id, None, count=1, allow_unattributed=True)
 
 
 @pytest.mark.asyncio

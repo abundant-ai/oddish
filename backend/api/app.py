@@ -140,13 +140,12 @@ async def _assert_quota_schema_or_force_off() -> None:
         return
 
     missing_csv = ", ".join(missing)
-    allow_degrade = os.environ.get(
-        "ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", ""
-    ).strip().lower() in {"1", "true", "yes"}
 
     # Unmetered ENFORCE is worse than a down API. Fail closed unless the
     # operator opts into the old force-off degrade.
-    if settings.quota_mode == QuotaMode.ENFORCE and not allow_degrade:
+    if settings.quota_mode == QuotaMode.ENFORCE and not (
+        settings.allow_quota_schema_degrade
+    ):
         raise RuntimeError(
             "quota schema is incomplete "
             f"(missing: {missing_csv}); run the oddish and backend alembic "

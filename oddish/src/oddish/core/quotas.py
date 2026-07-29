@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
@@ -15,6 +17,8 @@ from oddish.core.cost_basis import (
     sum_settled_cost,
 )
 from oddish.db import AnalysisCostModel, ModalCostSpanModel, TrialModel, TrialStatus
+
+logger = logging.getLogger(__name__)
 
 MONEY_QUANTUM = Decimal("0.0001")
 
@@ -95,8 +99,7 @@ def _timestamp_in_period(column, period_start: datetime, *, inclusive_start: boo
 
 
 def _quota_counts_analysis_and_compute() -> bool:
-    # Defensive: the setting ships inert until config.py grows the field.
-    return bool(getattr(settings, "quota_counts_analysis_and_compute", False))
+    return settings.quota_counts_analysis_and_compute
 
 
 async def _sum_analysis_and_compute_cost_usd(
@@ -349,10 +352,43 @@ async def sum_cost_usd_by_org_user_all_orgs(
     return {key: to_money_decimal(total) for key, total in totals.items()}
 
 
+async def _base_limits_by_org_user_all_orgs(
+    session: AsyncSession,
+) -> dict[tuple[str | None, str], Decimal]:
+    rows = await session.execute(
+        text("SELECT org_id, user_id, limit_usd FROM quotas WHERE deleted_at IS NULL")
+    )
+    return {
+        (org_id, user_id): to_money_decimal(limit_usd)
+        for org_id, user_id, limit_usd in rows.all()
+    }
+
+
 async def effective_limits_by_org_user_all_orgs(
     session: AsyncSession,
 ) -> dict[tuple[str | None, str], Decimal]:
-    """Live quota limits (base + live bumps) keyed the same way admission checks limits."""
+    """Live quota limits (base + live bumps), keyed as admission checks limits.
+
+    Degrades to base-only if ``quota_bumps`` is absent: it is the last of the
+    three quota migrations, so "quotas exists, quota_bumps does not" is the
+    realistic deploy-before-migrate window, and this read sits behind the whole
+    admin cost dashboard. The savepoint keeps the caller's transaction usable.
+    """
+    try:
+        async with session.begin_nested():
+            return await _bump_aware_limits_by_org_user_all_orgs(session)
+    except ProgrammingError:
+        logger.warning(
+            "quota bumps unavailable (schema not migrated yet); reporting "
+            "base-only limits",
+            exc_info=True,
+        )
+        return await _base_limits_by_org_user_all_orgs(session)
+
+
+async def _bump_aware_limits_by_org_user_all_orgs(
+    session: AsyncSession,
+) -> dict[tuple[str | None, str], Decimal]:
     rows = await session.execute(
         text(
             "SELECT keys.org_id, keys.user_id, "

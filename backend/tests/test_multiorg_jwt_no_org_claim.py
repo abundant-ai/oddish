@@ -272,3 +272,70 @@ async def test_no_org_claim_two_email_users_returns_none(monkeypatch, caplog) ->
             user_ids=[user_a.id, user_b.id],
             clerk_user_ids=[clerk_user_id],
         )
+
+
+@pytest.mark.asyncio
+async def test_no_org_claim_email_in_dead_and_live_org_adopts_the_live_one(
+    monkeypatch,
+) -> None:
+    """A membership in a DEACTIVATED org must not make the tenant look ambiguous.
+
+    Both downstream resolvers filter ``OrganizationModel.is_active``, so a user
+    with a live row in a dead org plus one real org has an unambiguous tenant.
+    Counting the dead one would refuse a login that baseline allowed.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    clerk_user_id = f"clerk_dead_{suffix}"
+    email = f"revived_{suffix}@example.com"
+    dead_org = OrganizationModel(
+        id=f"org_dead_{suffix}",
+        name=f"org_dead_{suffix}",
+        slug=f"org-dead-{suffix}",
+        clerk_org_id=f"org_clerk_dead_{suffix}",
+        is_active=False,
+    )
+    live_org = OrganizationModel(
+        id=f"org_live_{suffix}",
+        name=f"org_live_{suffix}",
+        slug=f"org-live-{suffix}",
+        clerk_org_id=f"org_clerk_live_{suffix}",
+    )
+    dead_user = UserModel(
+        id=f"user_dead_{suffix}",
+        org_id=dead_org.id,
+        email=email,
+        clerk_user_id=f"clerk_dead_other_{suffix}",
+        role=UserRole.MEMBER,
+        is_active=True,
+    )
+    live_user = UserModel(
+        id=f"user_live_{suffix}",
+        org_id=live_org.id,
+        email=email,
+        clerk_user_id=None,
+        role=UserRole.MEMBER,
+        is_active=True,
+    )
+    _mock_refresh(monkeypatch)
+
+    async with get_session() as session:
+        session.add_all([dead_org, live_org])
+        await session.flush()
+        session.add_all([dead_user, live_user])
+
+    try:
+        async with get_session() as session:
+            result = await get_or_create_user_from_clerk(
+                session, clerk_user_id, None, email, None
+            )
+            assert result is not None
+            user, org = result
+            assert org.id == live_org.id
+            assert user.id == live_user.id
+            assert user.clerk_user_id == clerk_user_id
+    finally:
+        await _purge(
+            org_ids=[dead_org.id, live_org.id],
+            user_ids=[dead_user.id, live_user.id],
+            clerk_user_ids=[clerk_user_id],
+        )

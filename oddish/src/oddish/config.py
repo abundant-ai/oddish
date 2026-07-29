@@ -1121,6 +1121,20 @@ class Settings(BaseSettings):
     # payer's effective headroom at once, so it is a deliberate operator flip via
     # ``ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE``.
     quota_counts_analysis_and_compute: bool = False
+    # Rolling-24h ceiling on an org's POOLED unattributed spend (trials whose
+    # payer could not be resolved). Such a trial has no per-user cap to charge --
+    # ``quotas`` rows are keyed (org_id, user_id) and a pool has no user -- so
+    # this is the only lever that exists for it, and it is deliberately its own
+    # knob rather than reusing ``default_daily_quota_usd`` (which would move
+    # every user in every org). ``None`` means no pooled ceiling (ships inert):
+    # the pool only ever drains by 24h aging, so a too-low value blocks retries
+    # until attribution is repaired.
+    unattributed_pool_limit_usd: Decimal | None = None
+    # Opt in to the old degrade-to-off behaviour when the quota schema is
+    # incomplete at startup. Off by default: under ENFORCE an unmetered billing
+    # system is worse than a down one, so a deploy-before-migrate should fail
+    # loudly rather than serve every request uncapped.
+    allow_quota_schema_degrade: bool = False
     quota_mode: QuotaMode = QuotaMode.ENFORCE
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim

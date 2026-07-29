@@ -39,7 +39,7 @@ def _patch_session(monkeypatch, session):
 @pytest.mark.asyncio
 async def test_guard_forces_off_when_schema_incomplete(monkeypatch):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
-    monkeypatch.setenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", "1")
+    monkeypatch.setattr(settings, "allow_quota_schema_degrade", True)
     _patch_session(monkeypatch, _FakeSession(schema_ready=False))
 
     await _assert_quota_schema_or_force_off()
@@ -92,7 +92,7 @@ async def test_guard_is_a_noop_when_already_off(monkeypatch):
 @pytest.mark.asyncio
 async def test_guard_raises_when_enforce_incomplete_without_opt_in(monkeypatch):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
-    monkeypatch.delenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", raising=False)
+    monkeypatch.setattr(settings, "allow_quota_schema_degrade", False)
     _patch_session(monkeypatch, _FakeSession(schema_ready=False))
 
     with pytest.raises(RuntimeError, match="trials.billed_user_id") as exc_info:
@@ -111,7 +111,7 @@ async def test_guard_forces_off_and_logs_when_enforce_incomplete_with_opt_in(
     monkeypatch, caplog
 ):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
-    monkeypatch.setenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", "true")
+    monkeypatch.setattr(settings, "allow_quota_schema_degrade", True)
     _patch_session(monkeypatch, _FakeSession(schema_ready=False))
 
     with caplog.at_level(logging.ERROR, logger="api.app"):
@@ -129,7 +129,7 @@ async def test_guard_forces_off_and_logs_when_enforce_incomplete_with_opt_in(
 @pytest.mark.asyncio
 async def test_guard_does_not_raise_when_shadow_and_schema_incomplete(monkeypatch):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
-    monkeypatch.delenv("ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE", raising=False)
+    monkeypatch.setattr(settings, "allow_quota_schema_degrade", False)
     _patch_session(monkeypatch, _FakeSession(schema_ready=False))
 
     await _assert_quota_schema_or_force_off()
