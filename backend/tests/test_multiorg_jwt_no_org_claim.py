@@ -274,6 +274,7 @@ async def test_no_org_claim_two_email_users_returns_none(monkeypatch, caplog) ->
         )
 
 
+@requires_db
 @pytest.mark.asyncio
 async def test_no_org_claim_email_in_dead_and_live_org_adopts_the_live_one(
     monkeypatch,

@@ -199,8 +199,22 @@ async def _check_unattributed_quota(
         await unattributed_inflight_reserved_usd(session, org_id)
         + count * settings.pending_trial_reservation_usd
     )
-    # Spend nobody can be billed for is worth surfacing whether or not a ceiling
-    # is configured: the fix is to repair attribution, not to raise a cap.
+    if limit is not None:
+        _raise_or_log_over_budget(
+            org_id,
+            None,
+            used,
+            reserved,
+            limit,
+            enforce=enforce,
+            exc_type=UnattributedPoolExceeded,
+            reason="unattributed_over_budget",
+        )
+    # Past the check, so this really was admitted -- spend nobody can be billed
+    # for is worth surfacing even under a ceiling that allowed it, because the fix
+    # is to repair attribution rather than raise a cap. In SHADOW an over-pool
+    # admission emits would_block AND this; that pair is precisely the signal that
+    # enforcement would have stopped it.
     logger.warning(
         "metric=quota.admitted reason=unattributed_admitted org_id=%s count=%s "
         "used=%s reserved=%s limit=%s",
@@ -209,18 +223,6 @@ async def _check_unattributed_quota(
         used,
         reserved,
         limit,
-    )
-    if limit is None:
-        return
-    _raise_or_log_over_budget(
-        org_id,
-        None,
-        used,
-        reserved,
-        limit,
-        enforce=enforce,
-        exc_type=UnattributedPoolExceeded,
-        reason="unattributed_over_budget",
     )
 
 

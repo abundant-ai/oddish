@@ -113,16 +113,21 @@ async def test_unattributed_retry_admitted_under_pooled_ceiling(
 
 
 @pytest.mark.asyncio
-async def test_unattributed_retry_blocked_over_pooled_ceiling(cleanup_task_ids):
+async def test_unattributed_retry_blocked_over_pooled_ceiling(cleanup_task_ids, caplog):
     org_id = f"org-unattrib-{_RUN}-over"
     task_id = await _make_billed_task(
         cleanup_task_ids, n_trials=1, billed_user=None, org_id=org_id
     )
     await _settle(task_id, 0, 0.30)
 
-    async with get_session() as session:
-        with pytest.raises(UnattributedPoolExceeded) as raised:
-            await admit_trials(session, org_id, None, count=1, allow_unattributed=True)
+    with caplog.at_level(logging.WARNING):
+        async with get_session() as session:
+            with pytest.raises(UnattributedPoolExceeded) as raised:
+                await admit_trials(
+                    session, org_id, None, count=1, allow_unattributed=True
+                )
+    # A blocked admission must not also claim it was admitted.
+    assert "reason=unattributed_admitted" not in caplog.text
     assert raised.value.status_code == 402
     assert raised.value.detail["used_usd"] == pytest.approx(0.30)
     assert raised.value.detail["limit_usd"] == pytest.approx(0.30)
