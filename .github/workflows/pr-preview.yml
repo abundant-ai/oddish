@@ -628,8 +628,14 @@ jobs:
                       "trial_id": trial.get("id"),
                       "trial_status": trial.get("status"),
                       "harbor_stage": trial.get("harbor_stage"),
+                      "harbor_sha": trial.get("harbor_sha"),
+                      "harbor_source": trial.get("harbor_source"),
+                      "harbor_variant_id": (
+                          (trial.get("harbor_config") or {}).get("variant_id")
+                      ),
+                      "harbor_config": trial.get("harbor_config"),
                       "reward": trial.get("reward"),
-                      "error": trial.get("error"),
+                      "error": trial.get("error_message") or trial.get("error"),
                   }
                   if concise != last_snapshot:
                       print(json.dumps(concise, default=str), flush=True)
@@ -653,6 +659,23 @@ jobs:
                                   flush=True,
                               )
                               print(diagnostic_response.text[-20_000:], flush=True)
+                          for diagnostic_file in (
+                              "payload.json",
+                              "config.json",
+                              "result.json",
+                              "exception",
+                              "job.log",
+                          ):
+                              file_response = client.get(
+                                  f"{api_url}/trials/{trial['id']}/files/"
+                                  f"{diagnostic_file}"
+                              )
+                              print(
+                                  f"--- trial file: {diagnostic_file} "
+                                  f"(HTTP {file_response.status_code}) ---",
+                                  flush=True,
+                              )
+                              print(file_response.text[-20_000:], flush=True)
                           raise SystemExit(
                               "hosted Harbor canary did not execute successfully: "
                               + json.dumps(concise, default=str)
