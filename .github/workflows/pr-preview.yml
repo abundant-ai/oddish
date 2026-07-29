@@ -515,8 +515,16 @@ jobs:
           export ODDISH_API_URL="$PREVIEW_API_URL"
           export ODDISH_DASHBOARD_URL="$PREVIEW_DASHBOARD_URL"
 
+          canary_parent="$(mktemp -d)"
+          canary_task_path="$canary_parent/13-P1-distractor-volume-shell-pr966-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cp -a "$TASK_PATH" "$canary_task_path"
+          [ -d "$canary_task_path" ] || {
+            echo "::error::Failed to create run-unique canary task copy"
+            exit 1
+          }
+
           submission="$(
-            uv run oddish run "$TASK_PATH" \
+            uv run oddish run "$canary_task_path" \
               --agent oracle \
               --env daytona \
               --n-trials 1 \

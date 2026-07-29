@@ -799,6 +799,41 @@ def test_standalone_entry_preserves_patch_package_context(monkeypatch):
     assert calls == ["patched"]
 
 
+def test_standalone_entry_exposes_oddish_without_parent_environment(tmp_path):
+    entry_path = Path(harbor_entry.__file__).resolve()
+    source_root = entry_path.parents[3]
+    script = f"""
+import runpy
+import sys
+from pathlib import Path
+
+entry_path = Path({str(entry_path)!r})
+source_root = entry_path.parents[3]
+sys.path = [
+    path
+    for path in sys.path
+    if not path or Path(path).resolve() != source_root
+]
+for name in list(sys.modules):
+    if name == "oddish" or name.startswith("oddish."):
+        del sys.modules[name]
+
+namespace = runpy.run_path(
+    entry_path,
+    run_name="_oddish_isolated_entry_test",
+)
+assert str(source_root) in sys.path
+namespace["_apply_sibling_harbor_patches"]()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize(
     "event_name, expected",
     [
