@@ -175,6 +175,9 @@ async def _qa_queue_position(
         select(func.count(WorkerJobModel.id)).where(
             WorkerJobModel.queue_key == queue_key,
             WorkerJobModel.status.in_(waiting),
+            # Mirror the worker's claim query: a job in retry backoff is not
+            # claimable yet and must not inflate the position.
+            WorkerJobModel.available_after <= func.now(),
             or_(
                 WorkerJobModel.priority > priority,
                 and_(

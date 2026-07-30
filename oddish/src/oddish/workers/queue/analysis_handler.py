@@ -237,6 +237,10 @@ async def classify_trial_and_store(
         claim_stamp = utcnow()
         trial.analysis_status = AnalysisStatus.RUNNING
         trial.analysis_started_at = claim_stamp
+        # This claim owns the log now. Clear the previous run's lines, so a
+        # reclaim after an expired claim never shows the old run's log while
+        # setup runs.
+        trial.analysis_log = None
 
         # Get task info for downloads
         task = await session.get(TaskModel, trial.task_id)

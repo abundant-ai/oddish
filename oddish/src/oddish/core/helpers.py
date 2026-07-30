@@ -1176,6 +1176,8 @@ def build_slim_trial_response(
         is_billed=trial.billed_user_id is not None,
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
+        analysis_started_at=trial.analysis_started_at,
+        analysis_finished_at=trial.analysis_finished_at,
         superseded_by_trial_id=trial.superseded_by_trial_id,
         created_at=trial.created_at,
         started_at=trial.started_at,
