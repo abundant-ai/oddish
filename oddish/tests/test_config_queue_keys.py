@@ -701,3 +701,19 @@ def test_public_openai_requires_explicit_provider(monkeypatch):
 
     assert settings.get_openai_provider() == "openai"
     assert settings.get_openai_runtime_env() == {"OPENAI_API_KEY": "sk-test"}
+
+
+def test_bare_openai_ids_queue_under_their_resolved_transport(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Azure default: a bare id runs on Azure, so it shares the azure/<slug>
+    # bucket with explicit azure/ ids (same deployment quota) — never the
+    # public-platform openai/<slug> bucket.
+    monkeypatch.setattr(settings, "openai_provider", "azure")
+    assert settings.normalize_queue_key("gpt-5.4") == "azure/gpt-5.4"
+    assert settings.normalize_queue_key("azure/gpt-5.4") == "azure/gpt-5.4"
+    assert settings.normalize_queue_key("openai/gpt-5.4") == "openai/gpt-5.4"
+
+    # Public default: bare ids genuinely run on the platform bucket.
+    monkeypatch.setattr(settings, "openai_provider", "openai")
+    assert settings.normalize_queue_key("gpt-5.4") == "openai/gpt-5.4"

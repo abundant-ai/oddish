@@ -234,6 +234,20 @@ OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
 
+
+def is_openai_platform_prefixed(model: str | None) -> bool:
+    """True when *model* explicitly carries the ``openai/`` transport prefix.
+
+    Distinguishes an intentional public-platform choice from a bare id that
+    only reaches the platform because ODDISH_OPENAI_PROVIDER=openai drives it
+    there — the governance warning fires for the latter only.
+    """
+    normalized = normalize_model_id(model)
+    if not normalized:
+        return False
+    provider_prefix, _ = split_provider_model_name(normalized)
+    return (provider_prefix or "").strip().lower() == OPENAI_PROVIDER_OPENAI
+
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "global.anthropic.claude-haiku-4-5-20251001-v1:0".
 _BEDROCK_REGION_PREFIXES: tuple[str, ...] = ("us.", "eu.", "apac.", "apn.", "global.")
@@ -1765,6 +1779,14 @@ class Settings(BaseSettings):
         inferred_prefix = _infer_provider_prefix(normalized)
         if not inferred_prefix:
             return normalized
+        # A bare OpenAI-family id runs on whatever transport the global
+        # default names (get_openai_route_for_model), so its concurrency
+        # bucket must follow that transport: bare-on-Azure shares the
+        # azure/<slug> bucket with explicit azure/ ids (same deployment
+        # quota) rather than the public-platform openai/<slug> bucket.
+        if inferred_prefix == "openai":
+            if self.get_openai_route_for_model(normalized) == OPENAI_PROVIDER_AZURE:
+                return f"azure/{normalized}"
         return f"{inferred_prefix}/{normalized}"
 
     def get_queue_key_for_trial(self, agent: str, model: str | None) -> str:

@@ -25,6 +25,7 @@ from oddish.config import (
     is_meta_model,
     is_minimax_model,
     is_moonshot_model,
+    is_openai_platform_prefixed,
     is_xai_model,
     is_zai_model,
     to_meta_model_id,
@@ -688,10 +689,13 @@ def _build_agent_config(
                 agent_config.model_name
             )
             _apply_codex_azure_compat(agent_config)
-        elif settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+        elif settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI and (
+            not is_openai_platform_prefixed(agent_config.model_name)
+        ):
             # Public platform as the *global default* is the governance
             # exception worth flagging; an explicit openai/ prefix is an
-            # intentional per-model choice and stays quiet.
+            # intentional per-model choice and stays quiet even when the
+            # default also happens to be public.
             warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
 
     _apply_codex_oddish_wrapper(agent_config)

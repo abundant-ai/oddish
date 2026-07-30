@@ -164,3 +164,40 @@ async def test_usage_recorded_even_when_finalization_raises(monkeypatch):
     assert client.last_usage.input_tokens == 1000
     assert client.last_usage.output_tokens == 200
     assert client.last_usage.cost_usd > 0
+
+
+def test_explicit_openai_prefix_strips_wire_model_and_stays_quiet(monkeypatch):
+    import warnings as _warnings
+
+    from oddish.blocks.analyzer import analyzer_llm_client as mod
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "openai_provider", "azure")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-public")
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")  # any warning fails the test
+        _, wire = mod._build_openai_client(model="openai/gpt-5.2")
+    assert wire == "gpt-5.2"
+
+
+def test_bare_id_on_public_default_still_warns(monkeypatch):
+    import pytest as _pytest
+
+    from oddish.blocks.analyzer import analyzer_llm_client as mod
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "openai_provider", "openai")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-public")
+
+    with _pytest.warns(UserWarning, match="public OpenAI"):
+        _, wire = mod._build_openai_client(model="gpt-5.2")
+    assert wire == "gpt-5.2"
+
+    # An explicit prefix stays quiet even when the default is also public.
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        _, wire = mod._build_openai_client(model="openai/gpt-5.2")
+    assert wire == "gpt-5.2"

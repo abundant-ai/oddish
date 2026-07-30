@@ -14,7 +14,12 @@ from oddish.analyze.analysis_cost import (
     usage_from_openai_completion,
 )
 from oddish.blocks.analyzer.claude_cli_client import ClaudeCliClient, CliConfig
-from oddish.config import OPENAI_PROVIDER_OPENAI, _infer_provider_prefix, settings
+from oddish.config import (
+    OPENAI_PROVIDER_OPENAI,
+    _infer_provider_prefix,
+    is_openai_platform_prefixed,
+    settings,
+)
 
 _DEFAULT_MODEL = "claude-opus-4-8"
 
@@ -150,13 +155,19 @@ def _build_openai_client(
     never needs live credentials."""
     provider = settings.get_openai_route_for_model(model)
     if provider == OPENAI_PROVIDER_OPENAI:
-        # Warn only when the GLOBAL default drives the public route; an
-        # explicit ``openai/`` id is an intentional per-model choice and stays
-        # quiet (same gate as the Harbor agent path).
-        if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+        # Warn only when the GLOBAL default drives a bare id to the public
+        # route; an explicit ``openai/`` id is an intentional per-model choice
+        # and stays quiet (same gate as the Harbor agent path).
+        if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI and (
+            not is_openai_platform_prefixed(model)
+        ):
             warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
         public = settings.require_public_openai_config(api_key=api_key)
-        return AsyncOpenAI(api_key=public["api_key"]), model
+        # The platform API only knows bare slugs -- strip the transport
+        # prefix from the wire model (Harbor agents do their own stripping;
+        # the Azure branch resolves a deployment instead).
+        wire_model = model.split("/", 1)[1] if is_openai_platform_prefixed(model) else model
+        return AsyncOpenAI(api_key=public["api_key"]), wire_model
 
     azure = settings.require_azure_openai_config()
     deployment = settings.resolve_azure_openai_deployment(model)
