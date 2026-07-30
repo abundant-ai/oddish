@@ -331,9 +331,13 @@ function TrialAnalysisCard({
   // no explanation is impossible to debug from the UI. The trigger is
   // trial-level: only this trial's own active analysis blocks it.
   const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
+  // Mirror the backend guards, so the button is disabled with the reason
+  // instead of failing the request.
   const queueBlockedReason = inProgress
     ? "Analysis is already running for this trial"
-    : null;
+    : trial.status !== "success" && trial.status !== "failed"
+      ? "The trial must finish before analysis can run"
+      : null;
 
   if (!hasAnalysis && !showQueueButton) return null;
 
