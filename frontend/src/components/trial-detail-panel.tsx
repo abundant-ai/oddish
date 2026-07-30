@@ -1112,12 +1112,6 @@ export function TrialDetailPanel({
                               </span>
                             )}
                         </div>
-                        {trial.analysis?.evidence && (
-                          <AnalysisProse
-                            text={trial.analysis.evidence}
-                            className="text-muted-foreground/90 mt-2"
-                          />
-                        )}
                         {trial.analysis?.root_cause &&
                           trial.analysis.root_cause !==
                             trial.analysis.evidence && (
@@ -1156,6 +1150,25 @@ export function TrialDetailPanel({
                             </div>
                           </div>
                         )}
+                        {trial.analysis?.evidence &&
+                          (trial.analysis.root_cause &&
+                          trial.analysis.root_cause !==
+                            trial.analysis.evidence ? (
+                            <details className="mt-2">
+                              <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
+                                Evidence
+                              </summary>
+                              <AnalysisProse
+                                text={trial.analysis.evidence}
+                                className="text-muted-foreground/90 mt-1"
+                              />
+                            </details>
+                          ) : (
+                            <AnalysisProse
+                              text={trial.analysis.evidence}
+                              className="text-muted-foreground/90 mt-2"
+                            />
+                          ))}
                       </div>
                     </div>
                   </CardContent>
