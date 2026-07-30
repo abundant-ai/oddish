@@ -239,8 +239,6 @@ class ClaudeCliClient:
                     f"Claude CLI exited with code {process.returncode}: {error_text}"
                 )
         finally:
-            # The consumer can abandon the generator mid-stream. Do not leave
-            # the subprocess or the stderr reader behind.
             if process.returncode is None:
                 process.kill()
                 await process.wait()

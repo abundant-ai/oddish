@@ -368,9 +368,8 @@ async def classify_trial_and_store(
         else:
             # Live analysis log: collect streamed analyzer events and write
             # the log onto the trial row every 2 seconds, so the UI can show
-            # what the analyzer is doing while it runs. Only the sandbox
-            # path streams during the run; the local CLI path returns one blob
-            # at the end.
+            # what the analyzer is doing while it runs. Both backends stream
+            # one event per line during the run.
             from oddish.analyze.analysis_log import render_event_line
             from oddish.db import get_session as _log_session
 
@@ -387,7 +386,11 @@ async def classify_trial_and_store(
             async def _flush_analysis_log() -> None:
                 async with _log_session() as log_sess:
                     row = await log_sess.get(TrialModel, trial_id)
-                    if row is not None:
+                    if (
+                        row is not None
+                        and row.analysis_status == AnalysisStatus.RUNNING
+                        and row.analysis_started_at == claim_stamp
+                    ):
                         row.analysis_log = "\n".join(log_lines)
 
             async def _log_flusher(stop: asyncio.Event) -> None:

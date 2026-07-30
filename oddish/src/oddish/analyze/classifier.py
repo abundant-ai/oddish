@@ -513,7 +513,6 @@ class TrialClassifier:
             task_id=context.get("task_id"),
             block_metadata=metadata,
             model=block_model,
-            # Both backends emit stream-json events, so one parser serves both.
             output_transform=parse_stream_json_result,
             sandbox_config=sandbox_config,
             cli_config=cli_config,
