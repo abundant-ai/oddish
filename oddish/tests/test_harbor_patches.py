@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import base64
 import importlib
-import importlib.machinery
 import json
 import logging
 import os
+import runpy
 import shlex
 import subprocess
 import sys
@@ -14,14 +14,12 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
-from harbor.trial.hooks import TrialEvent
 from harbor.agents.factory import AgentFactory
 from harbor.models.task.config import TaskConfig as HarborTaskConfig
-from harbor.models.trial.config import AgentConfig
+from harbor.models.trial.config import AgentConfig, TrialConfig
 from harbor.models.trial.config import TaskConfig as TrialTaskConfig
-from harbor.models.trial.config import TrialConfig
 from harbor.trial import network_policy as network_policy_module
+from harbor.trial.hooks import TrialEvent
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -776,25 +774,63 @@ def test_wrappers_set_marker_to_prevent_double_wrap(make_wrapped, attr):
 def test_entry_applies_sibling_harbor_patches(monkeypatch):
     calls: list[str] = []
 
-    class Loader:
-        def create_module(self, spec):
-            return ModuleType(spec.name)
+    def _fake_import(name):
+        assert name == "oddish.workers.harbor.patches"
+        return SimpleNamespace(apply_harbor_patches=lambda: calls.append("patched"))
 
-        def exec_module(self, module):
-            module.apply_harbor_patches = lambda: calls.append("patched")
-
-    def _fake_spec(name, path):
-        assert name == "_oddish_harbor_patches"
-        assert path == Path(harbor_entry._THIS_DIR) / "patches.py"
-        return importlib.machinery.ModuleSpec(name, Loader())
-
-    monkeypatch.setattr(
-        harbor_entry.importlib.util, "spec_from_file_location", _fake_spec
-    )
+    monkeypatch.setattr(harbor_entry.importlib, "import_module", _fake_import)
 
     harbor_entry._apply_sibling_harbor_patches()
 
     assert calls == ["patched"]
+
+
+def test_standalone_entry_preserves_patch_package_context(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        harbor_patches, "apply_harbor_patches", lambda: calls.append("patched")
+    )
+
+    namespace = runpy.run_path(
+        harbor_entry.__file__, run_name="_oddish_standalone_entry_test"
+    )
+    namespace["_apply_sibling_harbor_patches"]()
+
+    assert calls == ["patched"]
+
+
+def test_standalone_entry_exposes_oddish_without_parent_environment(tmp_path):
+    entry_path = Path(harbor_entry.__file__).resolve()
+    script = f"""
+import runpy
+import sys
+from pathlib import Path
+
+entry_path = Path({str(entry_path)!r})
+source_root = entry_path.parents[3]
+sys.path = [
+    path
+    for path in sys.path
+    if not path or Path(path).resolve() != source_root
+]
+for name in list(sys.modules):
+    if name == "oddish" or name.startswith("oddish."):
+        del sys.modules[name]
+
+namespace = runpy.run_path(
+    entry_path,
+    run_name="_oddish_isolated_entry_test",
+)
+assert str(source_root) in sys.path
+namespace["_apply_sibling_harbor_patches"]()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

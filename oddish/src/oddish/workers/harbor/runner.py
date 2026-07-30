@@ -52,6 +52,7 @@ from .agent_config import (
     _build_agent_config,
     _claude_code_forces_direct_api,
     _apply_gemini_cli_oddish_wrapper,
+    _apply_cursor_cli_oddish_wrapper,
     _resolve_anthropic_hdo_api_key,
     _temporary_env,
     _trial_requested_model,
@@ -999,10 +1000,10 @@ def _apply_daytona_compose_restricted_network_profile(
     ):
         return None
 
-    # The Gemini wrapper exists solely to remove provider-side web tools in
-    # this restricted Compose phase. Public and non-Compose trials retain the
-    # stock Harbor agent class.
+    # These wrappers exist solely to enforce restricted-Compose capabilities.
+    # Public and non-Compose trials retain the stock Harbor agent classes.
     _apply_gemini_cli_oddish_wrapper(agent_config)
+    _apply_cursor_cli_oddish_wrapper(agent_config)
     # Drop non-consumed routes only once the EFFECTIVE class is final. The
     # wrapper above swaps stock ``GeminiCli`` -- which is absent from the
     # compatibility registry, so consumption resolves to ``None`` and the drop
