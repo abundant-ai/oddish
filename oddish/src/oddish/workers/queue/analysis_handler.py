@@ -398,11 +398,13 @@ async def classify_trial_and_store(
                     except (TimeoutError, asyncio.TimeoutError):
                         pass
                     if log_version != flushed:
-                        flushed = log_version
+                        pending = log_version
                         try:
                             await _flush_analysis_log()
                         except Exception:  # noqa: BLE001
                             pass  # best-effort; the next tick retries
+                        else:
+                            flushed = pending
                     if stop.is_set():
                         return
 

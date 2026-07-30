@@ -371,7 +371,7 @@ function TrialAnalysisCard({
   return (
     <Card
       className={
-        analysisActive
+        inProgress
           ? "border-blue-500/30 bg-blue-500/5"
           : trial.analysis?.classification?.startsWith("GOOD")
             ? "border-emerald-500/30 bg-emerald-500/5"
@@ -424,7 +424,7 @@ function TrialAnalysisCard({
           <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
         )}
         <div className="flex items-start gap-3">
-          {analysisActive ? (
+          {inProgress ? (
             <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
           ) : trial.analysis?.classification?.startsWith("GOOD") ? (
             <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
@@ -436,7 +436,7 @@ function TrialAnalysisCard({
             <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
           )}
           <div className="min-w-0 flex-1">
-            {analysisActive ? (
+            {inProgress ? (
               <div className="flex flex-col gap-1">
                 <span className="font-mono text-sm font-bold">
                   {trial.analysis_status === "running"
