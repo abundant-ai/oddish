@@ -312,8 +312,16 @@ PRE_TRIAL_LEASE_MARGIN_SECONDS = 900
 PRE_TRIAL_LEASE_JITTER_SECONDS = 60
 
 
-async def _claim_pre_trial_version(task_id: str) -> str | None:
-    """Resolve the task's current version and claim it for the pre-trial audit.
+async def _claim_pre_trial_version(
+    task_id: str, task_version_id: str | None = None
+) -> str | None:
+    """Claim a task version for the pre-trial audit.
+
+    An audit-only job pins the version the rerun request marked QUEUED and
+    passes it here; a full QA run passes None and the claim resolves the
+    task's current version. Without the pin, a re-upload between enqueue
+    and run would leave the requested version QUEUED forever and audit the
+    wrong one.
 
     Pre-trial runs once per task *version* (each version is a distinct source
     snapshot), so a sweep-append QA re-run must not re-audit unchanged source:
@@ -327,7 +335,7 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
     audited, or an audit in flight.
     """
     async with get_session() as session:
-        version_id = await session.scalar(
+        version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
         )
         if version_id is None:
@@ -356,6 +364,7 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
 async def _fail_queued_pre_trial_request(
     task_id: str,
     error: str = "Pre-trial audit is not enabled for this org",
+    task_version_id: str | None = None,
 ) -> None:
     """Terminate an explicit audit request that will not be served.
 
@@ -366,7 +375,7 @@ async def _fail_queued_pre_trial_request(
     an explicit request, so a normal never-audited version stays untouched.
     """
     async with get_session() as session:
-        version_id = await session.scalar(
+        version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
         )
         if version_id is None:
@@ -378,14 +387,20 @@ async def _fail_queued_pre_trial_request(
             version.pre_trial_finished_at = utcnow()
 
 
-async def run_pre_trial_only_job(task_id: str, worker_job_id: str | None) -> None:
-    """Run only the pre-trial audit for a task's current version.
+async def run_pre_trial_only_job(
+    task_id: str,
+    worker_job_id: str | None,
+    task_version_id: str | None = None,
+) -> None:
+    """Run only the pre-trial audit for one task version.
 
     Serves the independent audit trigger (``enqueue_pre_trial_worker_job``).
     Trial classifications and the task verdict are not touched. The audit
     writes its result to the version row. If the run raises, a QUEUED
     request is marked FAILED so the card does not show a running audit
-    with no job behind it.
+    with no job behind it. The version id pins the whole run to the
+    version the request marked QUEUED; without it (a job from before the
+    field existed) the run falls back to the task's current version.
     """
     console.print(f"[cyan]Processing pre-trial audit[/cyan] {task_id}")
     heartbeat_stop = asyncio.Event()
@@ -400,13 +415,18 @@ async def run_pre_trial_only_job(task_id: str, worker_job_id: str | None) -> Non
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
         await _run_pre_trial_audit(
-            task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
+            task_id,
+            worker_job_id,
+            [trial_id for trial_id, _ in live_trials],
+            task_version_id=task_version_id,
         )
-        await _finalize_pre_trial_request(task_id)
+        await _finalize_pre_trial_request(task_id, task_version_id=task_version_id)
     except BaseException as exc:
         try:
             await _fail_queued_pre_trial_request(
-                task_id, error=f"{type(exc).__name__}: {exc}"
+                task_id,
+                error=f"{type(exc).__name__}: {exc}",
+                task_version_id=task_version_id,
             )
         except Exception:  # noqa: BLE001
             pass  # best-effort; do not mask the original error
@@ -417,7 +437,9 @@ async def run_pre_trial_only_job(task_id: str, worker_job_id: str | None) -> Non
             await asyncio.gather(heartbeat_task, return_exceptions=True)
 
 
-async def _finalize_pre_trial_request(task_id: str) -> None:
+async def _finalize_pre_trial_request(
+    task_id: str, task_version_id: str | None = None
+) -> None:
     """After an audit-only run, the version must hold a terminal result.
 
     ``_run_pre_trial_audit`` swallows synth failures, and a vetoed store
@@ -428,7 +450,7 @@ async def _finalize_pre_trial_request(task_id: str) -> None:
     A RUNNING claim is left alone: another worker owns it.
     """
     async with get_session() as session:
-        version_id = await session.scalar(
+        version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
         )
         if version_id is None:
@@ -477,7 +499,10 @@ async def _pre_trial_store_allowed(session, worker_job_id: str | None) -> bool:
 
 
 async def _run_pre_trial_audit(
-    task_id: str, worker_job_id: str | None, live_trial_ids: list[str]
+    task_id: str,
+    worker_job_id: str | None,
+    live_trial_ids: list[str],
+    task_version_id: str | None = None,
 ) -> None:
     """Claim, run, and persist the per-version pre-trial audit.
 
@@ -506,13 +531,17 @@ async def _run_pre_trial_audit(
             else settings.pre_trial_enabled
         )
         if audit_enabled:
-            pre_trial_version_id = await _claim_pre_trial_version(task_id)
+            pre_trial_version_id = await _claim_pre_trial_version(
+                task_id, task_version_id
+            )
         else:
             # An explicit re-run request (status QUEUED) can only be served
             # here. If the audit is disabled for this org, fail the request
             # with the reason -- leaving it QUEUED would show as running
             # forever with no job behind it.
-            await _fail_queued_pre_trial_request(task_id)
+            await _fail_queued_pre_trial_request(
+                task_id, task_version_id=task_version_id
+            )
         if pre_trial_version_id is not None:
             pre_trial_items = await _pre_trial_synth_fn(
                 task_id,

@@ -504,6 +504,11 @@ async def rerun_pre_trial_audit_core(
 
     from oddish.queue import enqueue_pre_trial_worker_job
 
-    await enqueue_pre_trial_worker_job(session, task_id=task.id, org_id=task.org_id)
+    await enqueue_pre_trial_worker_job(
+        session,
+        task_id=task.id,
+        task_version_id=str(version.id),
+        org_id=task.org_id,
+    )
     await session.commit()
     return {"status": "queued", "task_id": task_id}

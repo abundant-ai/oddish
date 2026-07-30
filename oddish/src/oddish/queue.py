@@ -551,20 +551,27 @@ async def enqueue_pre_trial_worker_job(
     session: AsyncSession,
     *,
     task_id: str,
+    task_version_id: str,
     org_id: str | None,
 ) -> WorkerJobModel:
-    """Enqueue the pre-trial audit for a task's current version.
+    """Enqueue the pre-trial audit for one task version.
 
     The job runs the audit only. It does not classify trials and it does
     not synthesize the verdict. The ``mode`` field tells ``QaJobHandler``
-    to take the audit-only path.
+    to take the audit-only path. The version id pins the job to the
+    version the request marked QUEUED: resolving the current version at
+    run time would audit the wrong version after a re-upload.
     """
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.QA,
             queue_key=settings.get_qa_queue_key(),
-            payload={"task_id": task_id, "mode": "pre_trial"},
+            payload={
+                "task_id": task_id,
+                "task_version_id": task_version_id,
+                "mode": "pre_trial",
+            },
             subject_table="tasks",
             subject_id=task_id,
             org_id=org_id,

@@ -216,7 +216,11 @@ class QaJobHandler:
         if (job.payload or {}).get("mode") == "pre_trial":
             from oddish.workers.queue.qa_handler import run_pre_trial_only_job
 
-            await run_pre_trial_only_job(task_id, worker_job_id=job.id)
+            await run_pre_trial_only_job(
+                task_id,
+                worker_job_id=job.id,
+                task_version_id=(job.payload or {}).get("task_version_id"),
+            )
             return JobOutcome.ok()
 
         async with get_session() as session:

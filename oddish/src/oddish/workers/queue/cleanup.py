@@ -408,15 +408,20 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         return None
 
     if kind == "QA":
-        if ((row.get("payload") or {}) or {}).get("mode") == "pre_trial":
+        payload = (row.get("payload") or {}) or {}
+        if payload.get("mode") == "pre_trial":
             # Audit-only job: it never touches the verdict or trial
             # classifications, so mirror the failure onto the version's
-            # audit state instead.
+            # audit state instead. The job pins the version it audits;
+            # jobs from before the field existed fall back to current.
             task = await _locked_or_missing(session, TaskModel, str(subject_id))
-            if task is None or not task.current_version_id:
+            if task is None:
+                return None
+            version_id = payload.get("task_version_id") or task.current_version_id
+            if not version_id:
                 return None
             version = await session.get(
-                TaskVersionModel, task.current_version_id, with_for_update=True
+                TaskVersionModel, version_id, with_for_update=True
             )
             if version is not None and version.pre_trial_status in (
                 VerdictStatus.PENDING,
