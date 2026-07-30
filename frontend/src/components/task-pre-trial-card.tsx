@@ -174,9 +174,11 @@ export function TaskPreTrialCard({
 
   // Always render the button; disable it with the reason in the tooltip. A
   // hidden button with no explanation is impossible to debug from the UI.
-  // The reasons mirror the audit endpoint's guards.
+  // The reasons mirror the audit endpoint's guards. A QUEUED status does
+  // not block: the endpoint refuses a live queued job itself, and a stale
+  // QUEUED with no job behind it is recovered by a re-queue.
   const blockedReason =
-    state === "running"
+    (status ?? "").toLowerCase() === "running"
       ? "An audit is already running"
       : !isCurrentVersion
         ? "Audits run on the current version only. Select the current version to run one."
