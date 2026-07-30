@@ -16,6 +16,7 @@ from oddish.db import (
     AnalysisStatus,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -167,6 +168,9 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_error = None
     trial.analysis_started_at = None
     trial.analysis_finished_at = None
+    # Also drop the previous run's log, so the card never shows the old
+    # run's output while the new run waits for a worker.
+    trial.analysis_log = None
 
 
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
@@ -217,6 +221,7 @@ async def backfill_task_analysis_core(
     trial_ids: list[str] | None = None,
     force: bool = False,
     enable_analysis: bool = False,
+    pre_trial: bool = False,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA to backfill trial analysis.
 
@@ -291,6 +296,18 @@ async def backfill_task_analysis_core(
         for trial in to_reset:
             _reset_trial_analysis(trial)
             reset_count += 1
+
+    if pre_trial and task.current_version_id:
+        # Pre-trial audits run once per task version; a terminal status blocks
+        # any repeat. Set the current version back to QUEUED so the QA job
+        # audits the source again. QUEUED (not None) keeps the card showing
+        # progress instead of "not audited" while the job waits for a worker.
+        version = await session.get(
+            TaskVersionModel, task.current_version_id, with_for_update=True
+        )
+        if version is not None:
+            version.pre_trial_status = VerdictStatus.QUEUED
+            version.pre_trial_started_at = None
 
     _reset_task_verdict(task)
     if enable_analysis:

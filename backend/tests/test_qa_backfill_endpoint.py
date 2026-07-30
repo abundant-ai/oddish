@@ -18,13 +18,16 @@ from oddish.schemas import BackfillQARequest
 async def test_backfill_route_passes_body_to_core(monkeypatch):
     captured = {}
 
-    async def fake_core(session, *, task_id, org_id, trial_ids, force, enable_analysis):
+    async def fake_core(
+        session, *, task_id, org_id, trial_ids, force, enable_analysis, pre_trial
+    ):
         captured.update(
             task_id=task_id,
             org_id=org_id,
             trial_ids=trial_ids,
             force=force,
             enable_analysis=enable_analysis,
+            pre_trial=pre_trial,
         )
         return {
             "status": "queued",
@@ -43,7 +46,9 @@ async def test_backfill_route_passes_body_to_core(monkeypatch):
     auth = type(
         "Auth", (), {"org_id": "org-1", "require_scope": lambda self, s: None}
     )()
-    body = BackfillQARequest(force=True, enable_analysis=False, trial_ids=["tsk-1"])
+    body = BackfillQARequest(
+        force=True, enable_analysis=False, trial_ids=["tsk-1"], pre_trial=True
+    )
 
     result = await tasks_router.backfill_task_qa("tsk", body, auth)  # type: ignore[arg-type]
 
@@ -54,4 +59,5 @@ async def test_backfill_route_passes_body_to_core(monkeypatch):
         "trial_ids": ["tsk-1"],
         "force": True,
         "enable_analysis": False,
+        "pre_trial": True,
     }

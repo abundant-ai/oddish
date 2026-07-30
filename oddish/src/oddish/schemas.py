@@ -1107,6 +1107,14 @@ class TrialResponse(BaseModel):
         None,
         description="Error message if analysis failed",
     )
+    analysis_started_at: datetime | None = Field(
+        None,
+        description="When the current analysis run started; None until a worker picks it up",
+    )
+    analysis_finished_at: datetime | None = Field(
+        None,
+        description="When the analysis reached a terminal state",
+    )
     superseded_by_trial_id: str | None = Field(
         None,
         description=(
@@ -1182,6 +1190,10 @@ class BackfillQARequest(BaseModel):
     force: bool = False
     enable_analysis: bool = False
     trial_ids: list[str] | None = None
+    # Reset the current task version's pre-trial audit so the queued QA job
+    # re-runs it with the latest prompt. Without this, pre-trial runs once
+    # per version and can never be repeated.
+    pre_trial: bool = False
 
 
 def _reject_gpu_tpu_conflict(harbor: HarborConfig) -> None:

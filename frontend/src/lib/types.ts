@@ -138,6 +138,9 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  analysis_error?: string | null;
+  analysis_started_at?: string | null;
+  analysis_finished_at?: string | null;
   superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;

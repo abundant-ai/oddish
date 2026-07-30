@@ -10,7 +10,14 @@ from oddish.analyze.models import compute_action_item_id
 from oddish.analyze.trajectory_files import parse_trajectory_file_access
 from oddish.config import settings
 from oddish.core.prompts import resolve_prompt_core
-from oddish.db import AnalysisStatus, PromptKind, TaskModel, TaskVersionModel, utcnow
+from oddish.db import (
+    AnalysisStatus,
+    PromptKind,
+    TaskModel,
+    TaskVersionModel,
+    TrialModel,
+    utcnow,
+)
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -359,12 +366,53 @@ async def classify_trial_and_store(
                 f"[green]Probe analysis complete:[/green] {classification_result.get('headline', '')}"
             )
         else:
+            # Live analysis log: collect streamed analyzer events and write a
+            # rolling tail onto the trial row every 2 seconds, so the UI can
+            # show what the analyzer is doing while it runs. Only the sandbox
+            # path streams during the run; the local CLI path returns one blob
+            # at the end.
+            from oddish.analyze.analysis_log import clip_log_tail, render_event_line
+            from oddish.db import get_session as _log_session
+
+            log_lines: list[str] = []
+            log_version = 0
+
+            def _on_analyzer_chunk(chunk: str) -> None:
+                nonlocal log_version
+                line = render_event_line(chunk)
+                if line:
+                    log_lines.append(line)
+                    log_version += 1
+
+            async def _flush_analysis_log() -> None:
+                async with _log_session() as log_sess:
+                    row = await log_sess.get(TrialModel, trial_id)
+                    if row is not None:
+                        row.analysis_log = clip_log_tail("\n".join(log_lines))
+
+            async def _log_flusher(stop: asyncio.Event) -> None:
+                flushed = -1
+                while True:
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=2.0)
+                    except (TimeoutError, asyncio.TimeoutError):
+                        pass
+                    if log_version != flushed:
+                        flushed = log_version
+                        try:
+                            await _flush_analysis_log()
+                        except Exception:  # noqa: BLE001
+                            pass  # best-effort; the next tick retries
+                    if stop.is_set():
+                        return
+
             # Run classification
             classifier = TrialClassifier(
                 model=settings.analysis_model,
                 verbose=True,
                 timeout=ANALYSIS_TIMEOUT,  # 5 minutes
                 prompt_template=post_trial_prompt,
+                on_chunk=_on_analyzer_chunk,
             )
 
             file_access = [
@@ -377,24 +425,32 @@ async def classify_trial_and_store(
             trajectory_components = await _resolve_trajectory_components(trial_id)
 
             console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
-            classification = await classifier.classify_trial(
-                trial_dir=trial_dir_to_use,
-                task_dir=task_dir_to_use,
-                trial_agent=trial_agent,
-                pre_trial_items=pre_trial_items,
-                file_access=file_access,
-                trajectory_components=trajectory_components,
-                analyzer_block_context={
-                    "trial_id": trial_id,
-                    "task_id": task_id,
-                    "prompt_key": (
-                        PromptKind.QA_POST_TRIAL.value
-                        if post_trial_prompt_version is not None
-                        else None
-                    ),
-                    "prompt_version": post_trial_prompt_version,
-                },
-            )
+            log_lines.append("[worker] classification started")
+            log_version += 1
+            flusher_stop = asyncio.Event()
+            flusher = asyncio.create_task(_log_flusher(flusher_stop))
+            try:
+                classification = await classifier.classify_trial(
+                    trial_dir=trial_dir_to_use,
+                    task_dir=task_dir_to_use,
+                    trial_agent=trial_agent,
+                    pre_trial_items=pre_trial_items,
+                    file_access=file_access,
+                    trajectory_components=trajectory_components,
+                    analyzer_block_context={
+                        "trial_id": trial_id,
+                        "task_id": task_id,
+                        "prompt_key": (
+                            PromptKind.QA_POST_TRIAL.value
+                            if post_trial_prompt_version is not None
+                            else None
+                        ),
+                        "prompt_version": post_trial_prompt_version,
+                    },
+                )
+            finally:
+                flusher_stop.set()
+                await asyncio.gather(flusher, return_exceptions=True)
             classification_result = classification_to_result_dict(classification)
             if post_trial_prompt_version is not None:
                 classification_result["prompt_kind"] = PromptKind.QA_POST_TRIAL.value

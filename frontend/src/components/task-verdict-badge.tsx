@@ -213,7 +213,9 @@ export function TaskVerdictBadge({
               ) : null}
             </div>
             {p.detail ? (
-              <p className="text-muted-foreground mt-1 text-xs">{p.detail}</p>
+              <p className="text-muted-foreground mt-1 text-xs whitespace-pre-wrap">
+                {p.detail}
+              </p>
             ) : null}
             {verdict?.recommendations && verdict.recommendations.length > 0 ? (
               <div className="mt-2 space-y-1">

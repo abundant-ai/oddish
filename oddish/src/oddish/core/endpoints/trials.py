@@ -97,6 +97,31 @@ async def get_trial_by_index_core(
     return await _attach_pre_trial_audit(session, response, trial.task_version_id)
 
 
+async def get_trial_analysis_log_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """The rolling log tail of the trial's current/most recent analysis run.
+
+    Served on its own endpoint (not on TrialResponse) so the 64 KB tail never
+    rides along with trial lists.
+    """
+    result = await session.execute(
+        select(TrialModel.analysis_log, TaskModel.org_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(TrialModel.id == trial_id)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    analysis_log, task_org_id = row
+    if org_id is not None and task_org_id != org_id:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    return {"log": analysis_log}
+
+
 async def get_trial_response_for_org_core(
     session: AsyncSession,
     *,

@@ -905,6 +905,36 @@ export function TaskDetailClient({
   const [isRunningJudge, setIsRunningJudge] = useState(false);
   const [isCancellingJudge, setIsCancellingJudge] = useState(false);
   const [judgeError, setJudgeError] = useState<string | null>(null);
+  const [rerunningPreTrial, setRerunningPreTrial] = useState(false);
+  // Queue a fresh pre-trial audit of the task's CURRENT version. Uses the
+  // qa/backfill endpoint with pre_trial=true. Each version is normally
+  // audited only once; this resets that state so the QA job audits the
+  // source again.
+  const handleRerunPreTrial = useCallback(async () => {
+    if (!task?.id || rerunningPreTrial) return;
+    setRerunningPreTrial(true);
+    setJudgeError(null);
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/qa/backfill`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pre_trial: true }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue pre-trial audit"
+        );
+      }
+      void mutate();
+    } catch (err) {
+      setJudgeError(
+        err instanceof Error ? err.message : "Failed to queue pre-trial audit"
+      );
+    } finally {
+      setRerunningPreTrial(false);
+    }
+  }, [task?.id, rerunningPreTrial, mutate]);
   const handleRunJudge = useCallback(async () => {
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
@@ -1193,6 +1223,8 @@ export function TaskDetailClient({
           status={selectedVersion?.pre_trial_status}
           error={selectedVersion?.pre_trial_error}
           costUsd={selectedVersion?.pre_trial_cost_usd}
+          onRerun={handleRerunPreTrial}
+          rerunning={rerunningPreTrial}
         />
 
         <div className="space-y-3">

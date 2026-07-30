@@ -137,23 +137,64 @@ export function PreTrialFindingList({ items }: { items: PreTrialFinding[] }) {
  *
  * Renders nothing until a version has actually been audited.
  */
+// Hardcoded feature flag: shows the run/re-run pre-trial audit button.
+// Testing-only for now — flip to false to hide it without deleting code.
+const ENABLE_PRETRIAL_RERUN_BUTTON = true;
+
 export function TaskPreTrialCard({
   findings,
   status,
   error,
   costUsd,
+  onRerun,
+  rerunning,
 }: {
   findings?: PreTrialFinding[];
   status?: string | null;
   error?: string | null;
   costUsd?: number | null;
+  /** Queue a fresh pre-trial audit of the task's current version. */
+  onRerun?: () => void;
+  rerunning?: boolean;
 }) {
   const items = [...(findings ?? [])].sort(
     (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
   );
   const state = preTrialAuditState(status, items.length);
 
-  if (state === "unaudited") return null;
+  const rerunButton =
+    ENABLE_PRETRIAL_RERUN_BUTTON && onRerun && state !== "running" ? (
+      <button
+        type="button"
+        disabled={rerunning}
+        onClick={onRerun}
+        className="rounded border border-[color:var(--paper-line)] px-1.5 py-0.5 font-mono text-[10px] text-[color:var(--paper-ink-3)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
+        title="Audit the task's current version again with the latest prompt"
+      >
+        {rerunning
+          ? "Queuing…"
+          : state === "unaudited"
+            ? "Run audit"
+            : "Re-run audit"}
+      </button>
+    ) : null;
+
+  if (state === "unaudited") {
+    if (!rerunButton) return null;
+    return (
+      <div className="space-y-3">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
+            Pre-trial audit
+          </h2>
+          {rerunButton}
+        </div>
+        <p className="text-[12px] text-[color:var(--paper-ink-3)]">
+          The task source has not been audited.
+        </p>
+      </div>
+    );
+  }
 
   const summary =
     state === "running"
@@ -166,10 +207,11 @@ export function TaskPreTrialCard({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-2">
         <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
           Pre-trial audit
         </h2>
+        {rerunButton}
         <span
           className={`font-mono text-[10.5px] ${
             state === "failed"

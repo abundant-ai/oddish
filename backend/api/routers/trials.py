@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
     delete_trial_core,
+    get_trial_analysis_log_core,
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
@@ -99,6 +100,20 @@ async def get_trial_full(
 
     async with get_session() as session:
         return await get_trial_response_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+
+
+@router.get("/trials/{trial_id}/analysis-log")
+async def get_trial_analysis_log(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Rolling log tail of the trial's current/most recent analysis run."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_trial_analysis_log_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
 

@@ -159,6 +159,11 @@ interface TrialDetailPanelProps {
   paneAction?: React.ReactNode;
 }
 
+// Hardcoded feature flag: shows the per-trial "Re-run analysis" button on the
+// QA card. Testing-only for now — flip to false to hide it without deleting
+// the code (handleRerunAnalysis and /api/tasks/[task_id]/qa/backfill stay).
+const ENABLE_RERUN_ANALYSIS_BUTTON = true;
+
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   pass: "border-emerald-500/30 bg-emerald-500/10",
   partial: "border-amber-500/30 bg-amber-500/10",
@@ -170,6 +175,343 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
 };
+
+// The QA assessment card. It renders before any analysis exists, so the
+// run button is reachable. It shows queued/running state with elapsed
+// time. While analysis is active it polls the trial, so the result
+// appears without reopening the drawer.
+function TrialAnalysisCard({
+  trial: trialProp,
+  task,
+  apiBaseUrl,
+  onQueued,
+}: {
+  trial: Trial;
+  task: Task | null;
+  apiBaseUrl: string;
+  onQueued?: () => void;
+}) {
+  const [live, setLive] = useState<Trial | null>(null);
+  const [queuing, setQueuing] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  // Set when WE queued a run. The backfill endpoint clears the trial's
+  // analysis fields to null until a worker claims the job, so status alone
+  // cannot tell "reset and waiting" from "never analyzed". This keeps the
+  // card in its progress state (and polling) across that gap.
+  const [queuedAt, setQueuedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [logText, setLogText] = useState<string | null>(null);
+  const logRef = useRef<HTMLPreElement | null>(null);
+
+  // A different trial means the polled data no longer applies.
+  useEffect(() => {
+    setLive(null);
+    setQueuedAt(null);
+    setLogText(null);
+  }, [trialProp.id]);
+
+  const trial = live ?? trialProp;
+  const analysisActive =
+    trial.analysis_status === "running" ||
+    trial.analysis_status === "pending" ||
+    trial.analysis_status === "queued";
+  const waitingForWorker = queuedAt !== null && !analysisActive;
+  const inProgress = analysisActive || waitingForWorker;
+
+  // Poll while analysis is in progress so the card updates itself.
+  useEffect(() => {
+    if (!inProgress) return;
+    const id = window.setInterval(async () => {
+      try {
+        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const fresh = (await res.json()) as Trial;
+        setLive(fresh);
+        // Terminal state ends the waiting phase.
+        if (
+          fresh.analysis_status === "success" ||
+          fresh.analysis_status === "failed"
+        ) {
+          setQueuedAt(null);
+        }
+      } catch {
+        // Transient fetch error; the next tick retries.
+      }
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, [inProgress, apiBaseUrl, trialProp.id]);
+
+  // Fallback: if no worker picks the job up within 15 minutes, stop
+  // showing progress and fall back to what the server says.
+  useEffect(() => {
+    if (queuedAt === null) return;
+    const id = window.setTimeout(
+      () => setQueuedAt(null),
+      Math.max(0, queuedAt + 15 * 60_000 - Date.now()),
+    );
+    return () => window.clearTimeout(id);
+  }, [queuedAt]);
+
+  // Tick the elapsed timer once a second while in progress.
+  useEffect(() => {
+    if (!inProgress) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [inProgress]);
+
+  // Load the analysis log: once on open, and on every poll tick while the
+  // analysis runs. The log shows what the analyzer is doing, line by line.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchLog = async () => {
+      try {
+        const res = await fetch(
+          `${apiBaseUrl}/trials/${trialProp.id}/analysis-log`,
+          { cache: "no-store" },
+        );
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { log?: string | null };
+        if (!cancelled && data.log) setLogText(data.log);
+      } catch {
+        // Transient fetch error; the next tick retries.
+      }
+    };
+    void fetchLog();
+    if (!inProgress) return;
+    const id = window.setInterval(fetchLog, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [apiBaseUrl, trialProp.id, inProgress]);
+
+  // Keep the newest log lines in view while the analysis runs.
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logText]);
+
+  const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
+  const taskQaBusy =
+    task?.verdict_status === "running" ||
+    task?.verdict_status === "pending" ||
+    task?.verdict_status === "queued";
+  // Always SHOW the button when the feature is on and we know the task.
+  // Disable it (with the reason) when a run cannot be queued right now —
+  // a hidden button with no explanation is impossible to debug from the UI.
+  const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON && Boolean(task);
+  const queueBlockedReason = inProgress
+    ? "Analysis is already running for this trial"
+    : taskQaBusy
+      ? "Task-level QA is running; wait for it to finish"
+      : null;
+
+  if (!hasAnalysis && !showQueueButton) return null;
+
+  const queueRun = async () => {
+    if (!task || queuing) return;
+    setQueuing(true);
+    setQueueError(null);
+    try {
+      const res = await fetch(`${apiBaseUrl}/tasks/${task.id}/qa/backfill`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trial_ids: [trial.id], force: true }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue analysis",
+        );
+      }
+      // Show progress immediately; polling takes over from here.
+      setQueuedAt(Date.now());
+      setLive({
+        ...trial,
+        analysis_status: "queued",
+        analysis: null,
+        analysis_error: null,
+        analysis_started_at: null,
+      });
+      onQueued?.();
+    } catch (err) {
+      setQueueError(
+        err instanceof Error ? err.message : "Failed to queue analysis",
+      );
+    } finally {
+      setQueuing(false);
+    }
+  };
+
+  // Progress line: which stage, and for how long.
+  let progressLine: string | null = null;
+  if (inProgress) {
+    if (trial.analysis_status === "running") {
+      let elapsed = "";
+      if (trial.analysis_started_at) {
+        const secs = Math.max(
+          0,
+          Math.floor(
+            (now - new Date(trial.analysis_started_at).getTime()) / 1000,
+          ),
+        );
+        elapsed = ` for ${Math.floor(secs / 60)}m ${secs % 60}s`;
+      }
+      progressLine = `Running${elapsed} — the analyzer is reading the task source, trajectory, and verifier output in a sandbox. This card updates itself.`;
+    } else {
+      progressLine =
+        "Queued — waiting for a QA worker to pick this up. This card updates itself.";
+    }
+  }
+
+  return (
+    <Card
+      className={
+        analysisActive
+          ? "border-blue-500/30 bg-blue-500/5"
+          : trial.analysis?.classification?.startsWith("GOOD")
+            ? "border-emerald-500/30 bg-emerald-500/5"
+            : trial.analysis?.classification?.startsWith("BAD")
+              ? "border-amber-500/30 bg-amber-500/5"
+              : "border-slate-500/30 bg-slate-500/5"
+      }
+    >
+      <CardContent className="px-4 py-3">
+        <div className="text-muted-foreground mb-2 flex items-center justify-between text-[11px] font-semibold tracking-wider uppercase">
+          <div>
+            <span>QA Assessment</span>
+            {trial.analysis?.prompt_version != null && (
+              <span
+                className="ml-2 normal-case font-normal tracking-normal"
+                title={
+                  trial.analysis.prompt_scope_id
+                    ? `${trial.analysis.prompt_scope} override: ${trial.analysis.prompt_scope_id}`
+                    : `${trial.analysis.prompt_scope ?? "global"} prompt`
+                }
+              >
+                {trial.analysis.prompt_kind ?? "QA_POST_TRIAL"} v
+                {trial.analysis.prompt_version} ·{" "}
+                {trial.analysis.prompt_scope ?? "global"}
+              </span>
+            )}
+          </div>
+          {showQueueButton && (
+            <button
+              type="button"
+              disabled={queuing || queueBlockedReason !== null}
+              onClick={queueRun}
+              className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                queueBlockedReason ??
+                (hasAnalysis
+                  ? "Reset this trial's analysis and re-run it with the latest prompt"
+                  : "Analyze this trial with the latest prompt")
+              }
+            >
+              {queuing
+                ? "Queuing…"
+                : hasAnalysis
+                  ? "Re-run analysis"
+                  : "Run analysis"}
+            </button>
+          )}
+        </div>
+        {queueError && (
+          <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
+        )}
+        <div className="flex items-start gap-3">
+          {analysisActive ? (
+            <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
+          ) : trial.analysis?.classification?.startsWith("GOOD") ? (
+            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
+          ) : trial.analysis?.classification?.startsWith("BAD") ? (
+            <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
+          ) : hasAnalysis ? (
+            <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
+          ) : (
+            <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
+          )}
+          <div className="min-w-0 flex-1">
+            {analysisActive ? (
+              <div className="flex flex-col gap-1">
+                <span className="font-mono text-sm font-bold">
+                  {trial.analysis_status === "running"
+                    ? "Analyzing"
+                    : "Analysis queued"}
+                </span>
+                <span className="text-muted-foreground text-xs">
+                  {progressLine}
+                </span>
+              </div>
+            ) : !hasAnalysis ? (
+              <div className="flex flex-col gap-1">
+                <span className="font-mono text-sm font-bold">
+                  No analysis yet
+                </span>
+                <span className="text-muted-foreground text-xs">
+                  This trial has not been analyzed.
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    {trial.analysis?.classification?.replace("_", " ") ||
+                      "Analysis"}
+                  </span>
+                  {trial.analysis?.subtype &&
+                    !/^n\/a/i.test(trial.analysis.subtype) && (
+                      <span className="text-muted-foreground text-xs">
+                        Reason: {trial.analysis.subtype.replace(/_/g, " ")}
+                      </span>
+                    )}
+                </div>
+                {trial.analysis_status === "failed" &&
+                  trial.analysis_error && (
+                    <p className="mt-1 text-xs text-red-500">
+                      Analysis failed: {trial.analysis_error}
+                    </p>
+                  )}
+                {trial.analysis?.evidence && (
+                  <p className="text-muted-foreground/90 mt-2 text-xs leading-relaxed whitespace-pre-wrap">
+                    {trial.analysis.evidence}
+                  </p>
+                )}
+                {trial.analysis?.root_cause &&
+                  trial.analysis.root_cause !== trial.analysis.evidence && (
+                    <p className="text-muted-foreground mt-1 text-xs">
+                      {trial.analysis.root_cause}
+                    </p>
+                  )}
+                {trial.analysis?.recommendation &&
+                  !/^n\/a/i.test(trial.analysis.recommendation) && (
+                    <p className="text-muted-foreground/80 mt-1 text-xs italic">
+                      💡 {trial.analysis.recommendation}
+                    </p>
+                  )}
+              </>
+            )}
+          </div>
+        </div>
+        {logText && (
+          <details className="mt-3" open={inProgress}>
+            <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
+              Analysis log
+            </summary>
+            <pre
+              ref={logRef}
+              className="bg-muted/40 mt-1 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap"
+            >
+              {logText}
+            </pre>
+          </details>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function buildOddishRunCommand(trial: Trial, task: Task): string {
   const parts: string[] = ["oddish run"];
@@ -1034,91 +1376,15 @@ export function TrialDetailPanel({
                   tests passed
                 </div>
               )}
-              {/* Analysis Card - only show if analysis is enabled/running/complete */}
-              {showAnalysis && (trial.analysis_status || trial.analysis) && (
-                <Card
-                  className={
-                    trial.analysis_status === "running" ||
-                    trial.analysis_status === "pending" ||
-                    trial.analysis_status === "queued"
-                      ? "border-blue-500/30 bg-blue-500/5"
-                      : trial.analysis?.classification?.startsWith("GOOD")
-                        ? "border-emerald-500/30 bg-emerald-500/5"
-                        : trial.analysis?.classification?.startsWith("BAD")
-                          ? "border-amber-500/30 bg-amber-500/5"
-                          : "border-slate-500/30 bg-slate-500/5"
-                  }
-                >
-                  <CardContent className="px-4 py-3">
-                    <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
-                      <span>QA Assessment</span>
-                      {trial.analysis?.prompt_version != null && (
-                        <span
-                          className="ml-2 normal-case font-normal tracking-normal"
-                          title={
-                            trial.analysis.prompt_scope_id
-                              ? `${trial.analysis.prompt_scope} override: ${trial.analysis.prompt_scope_id}`
-                              : `${trial.analysis.prompt_scope ?? "global"} prompt`
-                          }
-                        >
-                          {trial.analysis.prompt_kind ?? "QA_POST_TRIAL"} v
-                          {trial.analysis.prompt_version} ·{" "}
-                          {trial.analysis.prompt_scope ?? "global"}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-start gap-3">
-                      {trial.analysis_status === "running" ||
-                      trial.analysis_status === "pending" ||
-                      trial.analysis_status === "queued" ? (
-                        <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
-                      ) : trial.analysis?.classification?.startsWith("GOOD") ? (
-                        <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
-                      ) : trial.analysis?.classification?.startsWith("BAD") ? (
-                        <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
-                      ) : (
-                        <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-col gap-1">
-                          <span className="font-mono text-sm font-bold">
-                            {trial.analysis_status === "running" ||
-                            trial.analysis_status === "pending" ||
-                            trial.analysis_status === "queued"
-                              ? "Analyzing..."
-                              : trial.analysis?.classification?.replace(
-                                  "_",
-                                  " ",
-                                ) || "Analysis"}
-                          </span>
-                          {trial.analysis?.subtype && (
-                            <span className="text-muted-foreground text-xs">
-                              Reason: {trial.analysis.subtype}
-                            </span>
-                          )}
-                        </div>
-                        {trial.analysis?.evidence && (
-                          <p className="text-muted-foreground/90 mt-2 text-xs leading-relaxed">
-                            {trial.analysis.evidence}
-                          </p>
-                        )}
-                        {trial.analysis?.root_cause &&
-                          trial.analysis.root_cause !==
-                            trial.analysis.evidence && (
-                            <p className="text-muted-foreground mt-1 text-xs">
-                              {trial.analysis.root_cause}
-                            </p>
-                          )}
-                        {trial.analysis?.recommendation &&
-                          trial.analysis.recommendation !== "N/A" && (
-                            <p className="text-muted-foreground/80 mt-1 text-xs italic">
-                              💡 {trial.analysis.recommendation}
-                            </p>
-                          )}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+              {/* Analysis card: self-updating; also hosts the run/re-run
+                  button so analysis can be started even when it never ran. */}
+              {showAnalysis && (
+                <TrialAnalysisCard
+                  trial={trial}
+                  task={task}
+                  apiBaseUrl={apiBaseUrl}
+                  onQueued={() => onRetry?.(task ? [task.id] : undefined)}
+                />
               )}
 
               {/* Pre-trial audit of the version THIS trial ran on. Sits below

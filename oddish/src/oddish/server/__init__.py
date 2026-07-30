@@ -713,6 +713,7 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
             trial_ids=body.trial_ids,
             force=body.force,
             enable_analysis=body.enable_analysis,
+            pre_trial=body.pre_trial,
         )
 
 

@@ -1475,6 +1475,7 @@ async def backfill_task_qa(
             trial_ids=body.trial_ids,
             force=body.force,
             enable_analysis=body.enable_analysis,
+            pre_trial=body.pre_trial,
         )
 
 

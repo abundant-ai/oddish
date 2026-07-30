@@ -204,6 +204,8 @@ async def list_tasks_core(
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
                 TrialModel.analysis,
+                TrialModel.analysis_started_at,
+                TrialModel.analysis_finished_at,
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
                 TrialModel.cache_write_tokens,
