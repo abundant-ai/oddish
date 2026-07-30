@@ -50,7 +50,7 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { QaAssessmentReport } from "@/components/qa-assessment-report";
+import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
