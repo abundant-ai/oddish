@@ -365,11 +365,13 @@ function TrialAnalysisCard({
   // trial-level: only this trial's own active analysis blocks it.
   const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
   // Mirrors _ANALYSIS_CLAIM_TTL_MINUTES: past the lease the backend treats
-  // the worker as dead and allows a re-run, so the button must too.
+  // the worker as dead and allows a re-run, so the button must too. A
+  // running row with no start time has no live lease, and the backend
+  // allows a re-run there as well.
   const runStale =
     trial.analysis_status === "running" &&
-    trial.analysis_started_at != null &&
-    now - new Date(trial.analysis_started_at).getTime() > 35 * 60_000;
+    (trial.analysis_started_at == null ||
+      now - new Date(trial.analysis_started_at).getTime() > 35 * 60_000);
   // Mirror the backend guards, so the button is disabled with the reason
   // instead of failing the request. The backend refuses only while a full
   // QA job RUNS — a queued one classifies this trial itself when it
