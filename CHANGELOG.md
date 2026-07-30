@@ -6,7 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [2026-07-27]
+## [2026-07-30]
+
+### Added
+
+- `oddish collect --into <experiment_id>` switches the CLI from create-only to edit mode: it can append trials/tasks (including `@version` pins) to an existing collection and/or rename it via `--name`, driving the already-deployed append/rename API routes. Append runs before rename so a TASKS-scoped key still lands its trials even if a rename would 403; `--into` never triggers `--publish` (#945).
+- Pre-trial audit spend and its raw-output block id are now captured at write time and stored on the task version alongside its findings, since `analysis_costs` rows carry no version reference to recover them afterward. Task and trial detail pages show the audit's cost next to its findings count (e.g. "3 findings · $0.15"); audits from before this capture show no cost rather than a misleading $0.00 (#961).
+- A new cost-integrity signal (`trial_cost_missing_metering`) fires for Claude Code trials on Bedrock that show execution evidence (a trajectory or steps) but settle with no tokens and no positive cost — a blind spot the existing unpriced-model warning couldn't catch because it requires token usage. No cost is fabricated; this only measures the gap (#968).
+- Optional quota knobs for operators to close spend-accounting and tenancy gaps: `ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE` (default off) folds analyzer and sandbox compute spend into the same 24h/monthly quota sums as trials; `ODDISH_UNATTRIBUTED_POOL_LIMIT_USD` caps pooled per-org spend from unattributed retries (unset = uncapped); `ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE=1` opts into the old log-and-force-`off` behavior instead of failing startup on an incomplete quota schema under `enforce` (#973).
+
+### Changed
+
+- The Slack channel-escalation alert for expensive users now compares each user's own last-24h spend against their own trailing 7-day daily average, pinging `<!channel>` when the gap exceeds a configurable margin — instead of comparing their 7-day spend to the workspace-wide per-user average. The admin knob is renamed `user_weekly_escalation_delta_usd` → `user_daily_overage_delta_usd` and its default drops from $5000 to $1000 (#962).
+- The dashboard experiments-list reward aggregates (`reward_success`, `reward_sum`, `reward_total`, `avg_score`) are now scoped to each task's effective version and exclude probe trials, matching the per-task grid and detail views; previously they summed across every version and included probes, so a dashboard row could report different numbers than that same experiment's detail page. Status counters like `active_trials` deliberately stay unscoped by version so a still-running trial isn't dropped the moment its task gets a new version. Numbers may shift lower for experiments with multi-version tasks or probes (#960).
+- Pre-trial QA audits: the prompt (v4) now teaches the finding taxonomy using the exact JSON field names and enum values instead of prose headings, with a full worked example, so models stop emitting mismatched keys like `severity` instead of `tier`; a compatibility shim still accepts the old heading-driven spellings. A single malformed finding no longer discards an entire audit — items are validated individually and bad ones are dropped (with a warning), though an audit where every item fails still raises rather than silently persisting an empty "no defects found" result. The pre-trial timeout raises from 600s to 1200s to clear the observed max runtime after a prior parsing fix unblocked audits (#969).
+- Pre- and post-trial QA no longer run on deterministic `nop`/`oracle` baseline trials, which have no agent trajectory to critique — cutting roughly 31% of trial QA spend (~$5,755 over 7 days). Baseline trials themselves are unaffected and still run, and the reward-based baseline gate is unchanged. As a tradeoff, verdict synthesis no longer gets a baseline classification signal from these trials (#967).
+- Consolidated historical Gemini 3.5 Flash experiment-display aliases (`gemini-cli` / `gemini-cli-api-key-no-search` combined with `gemini/gemini-3.5-flash` / `google/gemini-3.5-flash`) into one experiment column, so equivalent runs that previously used different equivalent harness/model labels no longer appear as separate agents. Stored trial metadata and execution routing are unchanged (#972).
+
+### Fixed
+
+- Closed several quota tenancy and accounting bugs: a payer resolved from another org no longer silently falls back to the default quota instead of being treated as unattributed; `can_manage_quotas` no longer returns true for API-key auth; a Clerk JWT missing its `org_id` claim for a user in 2+ active orgs now refuses ambiguous provisioning (403) instead of silently creating a new personal org as admin; and `effective_limits_by_org_user_all_orgs` now accounts for active quota bumps instead of showing a just-bumped user pinned at their old limit. Under `enforce` mode, an incomplete quota schema now fails API startup by name instead of silently degrading to `quota_mode=off` (#973).
+
+
 
 ### Changed
 
