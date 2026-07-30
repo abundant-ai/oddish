@@ -173,14 +173,17 @@ export function TaskPreTrialCard({
 
   // Always render the button; disable it with the reason in the tooltip. A
   // hidden button with no explanation is impossible to debug from the UI.
-  const blockedReason =
-    state === "running"
+  // The audit only runs inside a QA job, so a queued/running audit is only
+  // credible while task-level QA is active. Without an active job that
+  // state is stale (cancelled or crashed job) and re-running is the fix,
+  // so the button stays enabled.
+  const blockedReason = taskQaBusy
+    ? state === "running"
       ? "An audit is already running"
-      : taskQaBusy
-        ? "Task-level QA is running; wait for it to finish"
-        : !isCurrentVersion
-          ? "Audits run on the current version only. Select the current version to run one."
-          : null;
+      : "Task-level QA is running; wait for it to finish"
+    : !isCurrentVersion
+      ? "Audits run on the current version only. Select the current version to run one."
+      : null;
   const rerunButton =
     ENABLE_PRETRIAL_RERUN_BUTTON && onRerun ? (
       <button

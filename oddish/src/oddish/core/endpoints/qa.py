@@ -151,6 +151,21 @@ async def cancel_task_qa_core(
         if task.status == TaskStatus.VERDICT_PENDING:
             task.status = TaskStatus.FAILED
             task.finished_at = now_value
+        # A pre-trial audit runs inside the QA job being cancelled here. A
+        # request left QUEUED (or a claim left RUNNING) would keep the card
+        # in a running state forever with no job behind it.
+        if task.current_version_id:
+            version = await session.get(
+                TaskVersionModel, task.current_version_id, with_for_update=True
+            )
+            if version is not None and version.pre_trial_status in (
+                VerdictStatus.PENDING,
+                VerdictStatus.QUEUED,
+                VerdictStatus.RUNNING,
+            ):
+                version.pre_trial_status = VerdictStatus.FAILED
+                version.pre_trial_error = USER_CANCELLED_MESSAGE
+                version.pre_trial_finished_at = now_value
 
     await session.commit()
     return {

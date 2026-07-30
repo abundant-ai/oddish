@@ -353,6 +353,28 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
     return str(version_id)
 
 
+async def _fail_queued_pre_trial_request(task_id: str) -> None:
+    """Terminate an explicit audit request the QA job is about to skip.
+
+    The pre-trial audit only runs inside a QA job. When the org has it
+    disabled (or no synth is registered), a re-run request left QUEUED
+    would never be picked up by anything -- the card would show a running
+    audit forever. Only QUEUED is touched: it can only be set by an
+    explicit request, so a normal never-audited version stays untouched.
+    """
+    async with get_session() as session:
+        version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        if version_id is None:
+            return
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if version is not None and version.pre_trial_status == VerdictStatus.QUEUED:
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = "Pre-trial audit is not enabled for this org"
+            version.pre_trial_finished_at = utcnow()
+
+
 async def _release_pre_trial_claim(task_version_id: str) -> None:
     """Roll a claimed-but-unpersisted audit back to unclaimed so a later QA
     run redoes it promptly (cancelled job, or the task's current version moved
@@ -407,12 +429,19 @@ async def _run_pre_trial_audit(
         # opt-in unable to enable anything, which is how prod (default off) ran
         # the audit exactly zero times while the orgs API happily accepted the
         # opt-in. Standalone oddish stays a no-op via _pre_trial_synth_fn.
-        if _pre_trial_synth_fn is not None and (
+        audit_enabled = _pre_trial_synth_fn is not None and (
             await _pre_trial_enabled_fn(task_id)
             if _pre_trial_enabled_fn is not None
             else settings.pre_trial_enabled
-        ):
+        )
+        if audit_enabled:
             pre_trial_version_id = await _claim_pre_trial_version(task_id)
+        else:
+            # An explicit re-run request (status QUEUED) can only be served
+            # here. If the audit is disabled for this org, fail the request
+            # with the reason -- leaving it QUEUED would show as running
+            # forever with no job behind it.
+            await _fail_queued_pre_trial_request(task_id)
         if pre_trial_version_id is not None:
             pre_trial_items = await _pre_trial_synth_fn(
                 task_id,
