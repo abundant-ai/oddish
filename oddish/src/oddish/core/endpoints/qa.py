@@ -336,6 +336,34 @@ async def backfill_task_analysis_core(
             detail="QA is already in progress for this task",
         )
 
+    # The full QA job also runs the pre-trial audit. Starting it while an
+    # audit-only job is live would race that job on the version's audit
+    # state, and the classifications could read mixed findings.
+    from oddish.db import WorkerJobKind, WorkerJobModel, WorkerJobStatus
+
+    active_audit_job = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            WorkerJobModel.kind == WorkerJobKind.QA,
+            WorkerJobModel.subject_table == "tasks",
+            WorkerJobModel.subject_id == task_id,
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                ]
+            ),
+            WorkerJobModel.payload["mode"].astext == "pre_trial",
+        )
+        .limit(1)
+    )
+    if active_audit_job is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="A pre-trial audit is queued or running; wait for it to finish",
+        )
+
     reset_count = 0
     if force:
         if trial_ids is not None:
