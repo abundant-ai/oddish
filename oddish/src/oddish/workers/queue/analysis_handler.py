@@ -413,6 +413,18 @@ async def classify_trial_and_store(
                         else:
                             flushed = pending
                     if stop.is_set():
+                        # The run is over; there is no next tick. Retry the
+                        # final write briefly, so the log keeps its last lines.
+                        for _ in range(3):
+                            if log_version == flushed:
+                                break
+                            pending = log_version
+                            try:
+                                await _flush_analysis_log()
+                            except Exception:  # noqa: BLE001
+                                await asyncio.sleep(1.0)
+                            else:
+                                flushed = pending
                         return
 
             # Run classification
