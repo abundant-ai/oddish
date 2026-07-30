@@ -200,6 +200,7 @@ function TrialAnalysisCard({
   const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [logText, setLogText] = useState<string | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
   // Guards async completions: a response that lands after a trial switch
@@ -219,6 +220,7 @@ function TrialAnalysisCard({
     setQueuing(false);
     setQueuedAt(null);
     setLogText(null);
+    setLogOpen(false);
     setQueuePosition(null);
     setQueueError(null);
   }, [trialProp.id]);
@@ -325,19 +327,32 @@ function TrialAnalysisCard({
     if (el) el.scrollTop = el.scrollHeight;
   }, [logText]);
 
+  // Open the log panel when a run starts. The user can close and reopen it
+  // at any time; renders never force it shut.
+  useEffect(() => {
+    if (inProgress) setLogOpen(true);
+  }, [inProgress]);
+
   const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
   // Always SHOW the button when the feature is on. Disable it (with the
   // reason) when a run cannot be queued right now — a hidden button with
   // no explanation is impossible to debug from the UI. The trigger is
   // trial-level: only this trial's own active analysis blocks it.
   const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
+  // Mirrors _ANALYSIS_CLAIM_TTL_MINUTES: past the lease the backend treats
+  // the worker as dead and allows a re-run, so the button must too.
+  const runStale =
+    trial.analysis_status === "running" &&
+    trial.analysis_started_at != null &&
+    now - new Date(trial.analysis_started_at).getTime() > 35 * 60_000;
   // Mirror the backend guards, so the button is disabled with the reason
   // instead of failing the request.
-  const queueBlockedReason = inProgress
-    ? "Analysis is already running for this trial"
-    : trial.status !== "success" && trial.status !== "failed"
-      ? "The trial must finish before analysis can run"
-      : null;
+  const queueBlockedReason =
+    inProgress && !runStale
+      ? "Analysis is already running for this trial"
+      : trial.status !== "success" && trial.status !== "failed"
+        ? "The trial must finish before analysis can run"
+        : null;
 
   if (!hasAnalysis && !showQueueButton) return null;
 
@@ -570,7 +585,13 @@ function TrialAnalysisCard({
           </div>
         </div>
         {logText && (
-          <details className="mt-3" open={inProgress}>
+          <details
+            className="mt-3"
+            open={logOpen}
+            onToggle={(event) =>
+              setLogOpen((event.target as HTMLDetailsElement).open)
+            }
+          >
             <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
               Analysis log
             </summary>
