@@ -139,6 +139,28 @@ async def cancel_task_qa_core(
         subject_ids=[task_id],
         reason=USER_CANCELLED_MESSAGE,
     )
+    # Also cancel per-trial ANALYSIS jobs (the trial re-run button enqueues
+    # these). Left alive, one would flip the cancelled analysis back to
+    # QUEUED on claim and overwrite the cancelled state.
+    live_trial_ids = [
+        trial.id
+        for trial in task.trials or []
+        if trial.superseded_by_trial_id is None
+    ]
+    analysis_rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="ANALYSIS",
+        subject_table="trials",
+        subject_ids=live_trial_ids,
+        reason=USER_CANCELLED_MESSAGE,
+    )
+    if analysis_rows:
+        cancelled_trial_ids = {str(row.get("subject_id")) for row in analysis_rows}
+        for trial in task.trials or []:
+            if trial.id in cancelled_trial_ids and _has_active_analysis(trial):
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = USER_CANCELLED_MESSAGE
+                trial.analysis_finished_at = now_value
     # An audit-only job (payload mode "pre_trial") never touches the verdict
     # or trial classifications. Cancelling one must not wipe them.
     full_qa_cancelled = any(
@@ -182,8 +204,8 @@ async def cancel_task_qa_core(
     return {
         "status": "cancelled",
         "task_id": task_id,
-        "qa_jobs_cancelled": len(rows),
-        **_collect_cancel_metadata(rows),
+        "qa_jobs_cancelled": len(rows) + len(analysis_rows),
+        **_collect_cancel_metadata([*rows, *analysis_rows]),
     }
 
 
@@ -383,6 +405,34 @@ async def rerun_pre_trial_audit_core(
         raise HTTPException(
             status_code=400,
             detail="An audit is already running for this version",
+        )
+
+    # A queued request with a live job behind it must not be queued again.
+    # A stale QUEUED status with no job (cancelled or crashed job) may be:
+    # re-queuing is the remedy there.
+    from oddish.db import WorkerJobKind, WorkerJobModel, WorkerJobStatus
+
+    active_audit_job = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            WorkerJobModel.kind == WorkerJobKind.QA,
+            WorkerJobModel.subject_table == "tasks",
+            WorkerJobModel.subject_id == task_id,
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                ]
+            ),
+            WorkerJobModel.payload["mode"].astext == "pre_trial",
+        )
+        .limit(1)
+    )
+    if active_audit_job is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="An audit job is already queued or running for this task",
         )
 
     # Reset the previous audit and queue a new one. QUEUED (not None) keeps
