@@ -1160,6 +1160,10 @@ class TrialModel(TimestampedMixin, Base):
     analysis_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The analyzer's live event log for the current/most recent analysis
+    # run. Written by the QA worker every few seconds so the UI can show
+    # what the analyzer is doing. One short line per event, so it stays small.
+    analysis_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Immutable-trial rerun pointer. When a user retries a trial we
     # don't reset this row; instead we insert a fresh trial that copies

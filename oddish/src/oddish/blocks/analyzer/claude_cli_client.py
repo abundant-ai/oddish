@@ -5,8 +5,8 @@ one runs it as a subprocess over directories the worker already has on disk.
 Both are ordinary ``AnalyzerLLMClient``s built from declarative config, so an
 ``AnalyzerBlock`` provisions either one the same way.
 
-Output parsing is shared: ``--output-format json`` (here) and stream-json (the
-sandbox) differ only in how the final envelope is framed, not in what it holds.
+Both backends emit stream-json events and share ``parse_stream_json_result``,
+so the analysis log can render live progress from either one.
 """
 
 from __future__ import annotations
@@ -29,6 +29,11 @@ from oddish.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# stream-json puts a whole event on one line, and a result event carries the
+# full report -- far past asyncio's 64 KiB default readline limit, which
+# raises instead of truncating.
+_STREAM_LIMIT_BYTES = 32 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -100,15 +105,6 @@ def extract_claude_result(payload: dict) -> Any:
     raise RuntimeError("claude-code envelope carried no structured result")
 
 
-def parse_cli_envelope(raw: str) -> Any:
-    """``output_transform`` for ``--output-format json``: one object."""
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Claude CLI returned invalid JSON: {exc}") from exc
-    return extract_claude_result(payload)
-
-
 def parse_stream_json_result(raw: str) -> Any:
     """``output_transform`` for stream-json: the last ``result`` event wins."""
     decoder = json.JSONDecoder()
@@ -128,16 +124,17 @@ def parse_stream_json_result(raw: str) -> Any:
                 # A stream may end with an empty result envelope after an
                 # earlier result event already supplied the usable output.
                 continue
-    raise RuntimeError("sandbox run emitted no structured result event")
+    raise RuntimeError("analyzer run emitted no structured result event")
 
 
 class ClaudeCliClient:
     """claude-code in print mode, bound to the directories in ``CliConfig``.
 
-    Yields the raw stdout envelope as a single chunk; the block's
-    ``output_transform`` (``parse_cli_envelope``) turns it into the object.
-    Usage is read off the same envelope, matching how the sandbox client reads
-    it off the stream's ``result`` event.
+    Runs with ``--output-format stream-json`` and yields one event per line
+    while the run is live, so callers (the analysis log) can stream progress.
+    This is the same shape the sandbox client yields; both are parsed by
+    ``parse_stream_json_result``. Usage is read off the stream's ``result``
+    event.
     """
 
     def __init__(self, *, model: str | None = None, config: CliConfig) -> None:
@@ -160,8 +157,11 @@ class ClaudeCliClient:
             prompt,
             "--model",
             model_id,
+            # stream-json emits one event per line while the run is live.
+            # Print mode requires --verbose with stream-json.
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             "--tools",
             ",".join(config.allowed_tools),
             "--allowedTools",
@@ -190,38 +190,60 @@ class ClaudeCliClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=_STREAM_LIMIT_BYTES,
         )
+        # Drain stderr in the background so a full pipe cannot block the run.
+        stderr_task = asyncio.create_task(process.stderr.read())
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + config.timeout if config.timeout else None
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=config.timeout
-            )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
-            raise TimeoutError from None
+            try:
+                while True:
+                    if deadline is not None:
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError
+                        line = await asyncio.wait_for(
+                            process.stdout.readline(), timeout=remaining
+                        )
+                    else:
+                        line = await process.stdout.readline()
+                    if not line:
+                        break
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if not text:
+                        continue
+                    try:
+                        event = json.loads(text)
+                    except json.JSONDecodeError:
+                        event = None
+                    if isinstance(event, dict) and event.get("type") == "result":
+                        usage = parse_cli_usage(event, model_id)
+                        if usage is not None:
+                            self.last_usage = usage
+                    yield text
+                await process.wait()
+            except (asyncio.TimeoutError, TimeoutError):
+                process.kill()
+                await process.wait()
+                raise TimeoutError from None
 
-        stdout_text = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        if config.verbose:
-            print_process_stream("Claude stderr", stderr_text, Colors.MAGENTA)
-
-        if process.returncode != 0:
-            error_text = (
-                stderr_text.strip() or stdout_text.strip() or "Unknown Claude CLI error"
-            )
-            raise RuntimeError(
-                f"Claude CLI exited with code {process.returncode}: {error_text}"
-            )
-
-        try:
-            self.last_usage = parse_cli_usage(json.loads(stdout_text), model_id)
-        except json.JSONDecodeError:
-            # Leave the envelope to parse_cli_envelope, which owns the error
-            # message the caller sees. Usage is simply unavailable.
+            stderr_text = await stderr_task
+            stderr_decoded = stderr_text.decode("utf-8", errors="replace")
             if config.verbose:
-                print_process_stream("Claude stdout", stdout_text, Colors.BLUE)
+                print_process_stream("Claude stderr", stderr_decoded, Colors.MAGENTA)
 
-        yield stdout_text
+            if process.returncode != 0:
+                error_text = stderr_decoded.strip() or "Unknown Claude CLI error"
+                raise RuntimeError(
+                    f"Claude CLI exited with code {process.returncode}: {error_text}"
+                )
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            if not stderr_task.done():
+                stderr_task.cancel()
 
     async def aclose(self) -> None:
         """No-op: the subprocess is reaped before ``stream`` returns."""

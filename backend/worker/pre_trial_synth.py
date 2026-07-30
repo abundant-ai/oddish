@@ -130,8 +130,8 @@ async def synthesize_task_pre_trial(
             task_id=task_id,
             prompt=block_obj.build_prompt(),
             model=settings.pre_trial_model,
-            # The CLI yields a --output-format json envelope, not the model's
-            # bare answer; this unwraps it before schema validation.
+            # The CLI yields stream-json events, not the model's bare answer;
+            # this pulls the result payload out before schema validation.
             output_transform=block_obj.to_action_items_from_cli,
             cli_config=CliConfig(
                 cwd=task_dir,

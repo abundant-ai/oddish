@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.endpoints._common import (
@@ -95,6 +95,96 @@ async def get_trial_by_index_core(
         qa_cost_usd=qa_costs.get(trial.id),
     )
     return await _attach_pre_trial_audit(session, response, trial.task_version_id)
+
+
+async def get_trial_analysis_log_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """The log of the trial's current/most recent analysis run.
+
+    Served on its own endpoint (not on TrialResponse) so trial lists never
+    carry it. ``queue_position`` is the 1-based position of the waiting
+    analysis job in the QA queue, else None.
+    """
+    result = await session.execute(
+        select(
+            TrialModel.analysis_log,
+            TrialModel.task_id,
+            TaskModel.org_id,
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(TrialModel.id == trial_id)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    analysis_log, task_id, task_org_id = row
+    if org_id is not None and task_org_id != org_id:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    return {
+        "log": analysis_log,
+        "queue_position": await _qa_queue_position(
+            session, task_id=task_id, trial_id=trial_id
+        ),
+    }
+
+
+async def _qa_queue_position(
+    session: AsyncSession, *, task_id: str, trial_id: str
+) -> int | None:
+    """1-based position of the waiting analysis job in the QA queue.
+
+    Two job shapes can carry this trial's analysis: a trial-level ANALYSIS
+    job (subject: the trial), or the task-level QA job (subject: the task).
+    The trial-level job wins when both wait. Ordering matches the worker's
+    claim query for non-trial kinds: ``priority DESC, created_at ASC``
+    within the job's queue_key. None when no job is waiting (already
+    running, finished, or never enqueued).
+    """
+    waiting = [WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING]
+
+    async def _waiting_job(kind: WorkerJobKind, subject_table: str, subject_id: str):
+        return (
+            await session.execute(
+                select(
+                    WorkerJobModel.queue_key,
+                    WorkerJobModel.priority,
+                    WorkerJobModel.created_at,
+                )
+                .where(
+                    WorkerJobModel.kind == kind,
+                    WorkerJobModel.subject_table == subject_table,
+                    WorkerJobModel.subject_id == subject_id,
+                    WorkerJobModel.status.in_(waiting),
+                )
+                .order_by(WorkerJobModel.created_at.asc())
+                .limit(1)
+            )
+        ).first()
+
+    job = await _waiting_job(WorkerJobKind.ANALYSIS, "trials", trial_id)
+    if job is None:
+        job = await _waiting_job(WorkerJobKind.QA, "tasks", task_id)
+    if job is None:
+        return None
+    queue_key, priority, created_at = job
+    ahead = await session.scalar(
+        select(func.count(WorkerJobModel.id)).where(
+            WorkerJobModel.queue_key == queue_key,
+            WorkerJobModel.status.in_(waiting),
+            or_(
+                WorkerJobModel.priority > priority,
+                and_(
+                    WorkerJobModel.priority == priority,
+                    WorkerJobModel.created_at < created_at,
+                ),
+            ),
+        )
+    )
+    return int(ahead or 0) + 1
 
 
 async def get_trial_response_for_org_core(
