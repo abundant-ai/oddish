@@ -151,9 +151,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PRs #12
-# and #13 (the tbh agent) merged as this commit.
-HARBOR_DEFAULT_SHA = "12e1e055d5b5865a0c366e6b5acb62f548dc8775"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #14
+# (tbh build-name selection) merged as this commit.
+HARBOR_DEFAULT_SHA = "2a43740376b8edeca214fd11cafe7ef89d919ead"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
