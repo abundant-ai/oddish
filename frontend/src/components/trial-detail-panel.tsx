@@ -246,13 +246,15 @@ function TrialAnalysisCard({
   }, [inProgress, apiBaseUrl, trialProp.id]);
 
   // Fallback: if no worker picks the job up within 15 minutes, stop
-  // showing progress and fall back to what the server says.
+  // showing progress and fall back to what the server says. Also drop the
+  // optimistic `live` state — it holds the post-reset empty analysis, and
+  // keeping it would shadow every later refresh from the parent.
   useEffect(() => {
     if (queuedAt === null) return;
-    const id = window.setTimeout(
-      () => setQueuedAt(null),
-      Math.max(0, queuedAt + 15 * 60_000 - Date.now()),
-    );
+    const id = window.setTimeout(() => {
+      setQueuedAt(null);
+      setLive(null);
+    }, Math.max(0, queuedAt + 15 * 60_000 - Date.now()));
     return () => window.clearTimeout(id);
   }, [queuedAt]);
 

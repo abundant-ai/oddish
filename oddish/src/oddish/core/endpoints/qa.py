@@ -302,12 +302,17 @@ async def backfill_task_analysis_core(
         # any repeat. Set the current version back to QUEUED so the QA job
         # audits the source again. QUEUED (not None) keeps the card showing
         # progress instead of "not audited" while the job waits for a worker.
+        # Clear the previous audit's findings, error, and timestamps too, so
+        # the card never shows the old results as if they were fresh.
         version = await session.get(
             TaskVersionModel, task.current_version_id, with_for_update=True
         )
         if version is not None:
             version.pre_trial_status = VerdictStatus.QUEUED
+            version.pre_trial = None
+            version.pre_trial_error = None
             version.pre_trial_started_at = None
+            version.pre_trial_finished_at = None
 
     _reset_task_verdict(task)
     if enable_analysis:
