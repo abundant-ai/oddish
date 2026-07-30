@@ -150,6 +150,7 @@ export function TaskPreTrialCard({
   rerunning,
   queueError,
   isCurrentVersion = true,
+  taskQaBusy = false,
 }: {
   findings?: PreTrialFinding[];
   status?: string | null;
@@ -162,6 +163,8 @@ export function TaskPreTrialCard({
   queueError?: string | null;
   /** Audits run on the current version only; false disables the button. */
   isCurrentVersion?: boolean;
+  /** Task-level QA is queued or running; the backend rejects audits then. */
+  taskQaBusy?: boolean;
 }) {
   const items = [...(findings ?? [])].sort(
     (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
@@ -173,9 +176,11 @@ export function TaskPreTrialCard({
   const blockedReason =
     state === "running"
       ? "An audit is already running"
-      : !isCurrentVersion
-        ? "Audits run on the current version only. Select the current version to run one."
-        : null;
+      : taskQaBusy
+        ? "Task-level QA is running; wait for it to finish"
+        : !isCurrentVersion
+          ? "Audits run on the current version only. Select the current version to run one."
+          : null;
   const rerunButton =
     ENABLE_PRETRIAL_RERUN_BUTTON && onRerun ? (
       <button
@@ -233,19 +238,21 @@ export function TaskPreTrialCard({
         <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
           Pre-trial audit
         </h2>
-        {rerunButton}
-        <span
-          className={`font-mono text-[10.5px] ${
-            state === "failed"
-              ? "text-[color:var(--paper-fail)]"
-              : "text-[color:var(--paper-ink-3)]"
-          }`}
-        >
-          {summary}
-          {hasDisplayableCostUsd(costUsd)
-            ? ` · ${formatCostUsd(costUsd)}`
-            : ""}
-        </span>
+        <div className="flex items-baseline gap-2">
+          {rerunButton}
+          <span
+            className={`font-mono text-[10.5px] ${
+              state === "failed"
+                ? "text-[color:var(--paper-fail)]"
+                : "text-[color:var(--paper-ink-3)]"
+            }`}
+          >
+            {summary}
+            {hasDisplayableCostUsd(costUsd)
+              ? ` · ${formatCostUsd(costUsd)}`
+              : ""}
+          </span>
+        </div>
       </div>
 
       {queueErrorLine}

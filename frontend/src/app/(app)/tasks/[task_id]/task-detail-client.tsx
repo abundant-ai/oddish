@@ -1228,6 +1228,11 @@ export function TaskDetailClient({
           rerunning={rerunningPreTrial}
           queueError={preTrialError}
           isCurrentVersion={selectedVersion ? selectedVersion.is_current : true}
+          taskQaBusy={
+            task.verdict_status === "running" ||
+            task.verdict_status === "pending" ||
+            task.verdict_status === "queued"
+          }
         />
 
         <div className="space-y-3">
