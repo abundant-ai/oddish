@@ -372,6 +372,10 @@ function TrialAnalysisCard({
           data.detail || data.error || "Failed to queue analysis",
         );
       }
+      // The server queued the run, so the parent list must refresh even
+      // when the user has switched trials; only the local card state below
+      // is scoped to the trial this request was for.
+      onQueued?.();
       if (trialIdRef.current !== requestTrialId) return;
       // Show progress immediately; polling takes over from here. The old
       // run's log is cleared server-side; clear it here too. Open the log
@@ -388,7 +392,6 @@ function TrialAnalysisCard({
         analysis_error: null,
         analysis_started_at: null,
       });
-      onQueued?.();
     } catch (err) {
       if (trialIdRef.current === requestTrialId) {
         setQueueError(
