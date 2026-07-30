@@ -559,6 +559,7 @@ function TrialAnalysisCard({
                   : null
               }
               actionItems={trial.analysis?.action_items}
+              log={logText}
               duration={analysisDuration}
               raw={trial.analysis}
             />
@@ -613,7 +614,7 @@ function TrialAnalysisCard({
             </div>
           </div>
         )}
-        {logText && (
+        {logText && !showReport && (
           <details
             className="mt-3"
             open={logOpen}

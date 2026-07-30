@@ -16,6 +16,7 @@ export function QaAssessmentReport({
   recommendation,
   evidence,
   actionItems,
+  log,
   duration,
   raw,
   onFeedback,
@@ -27,6 +28,8 @@ export function QaAssessmentReport({
   recommendation?: string | null;
   evidence?: string | null;
   actionItems?: PreTrialFinding[] | null;
+  /** the analyzer's run log, shown as a collapsed fold under Evidence */
+  log?: string | null;
   duration?: string | null;
   /** the raw analysis object, for the copy button */
   raw?: unknown;
@@ -156,6 +159,23 @@ export function QaAssessmentReport({
                 className="text-muted-foreground/90"
               />
             </div>
+          </details>
+        ) : null}
+
+        {log ? (
+          <details className="group mt-3">
+            <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center gap-2 text-[11px] font-medium transition-colors select-none">
+              <span
+                aria-hidden="true"
+                className="text-[9px] transition-transform group-open:rotate-90"
+              >
+                &#9654;
+              </span>
+              Analysis log
+            </summary>
+            <pre className="bg-muted/40 mt-2 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap">
+              {log}
+            </pre>
           </details>
         ) : null}
       </div>
