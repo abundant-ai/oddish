@@ -12,6 +12,7 @@ from oddish.analyze.models import TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
+from oddish.core.result_focus_schema import normalize_findings_schema
 from oddish.core.verdict_sync import (
     aggregate_exploited_into_pre_trial,
     build_pre_trial_payload,
@@ -36,6 +37,7 @@ from oddish.workers.queue.analysis_handler import (
     ANALYSIS_CLAIM_TTL_MINUTES,
     classify_trial_and_store,
 )
+from oddish.workers.queue.provider_failures import is_permanent_provider_failure
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
@@ -47,6 +49,15 @@ QA_CLAIM_WAIT_POLL_SECONDS = 15
 # retakes it and the poll resolves on its own -- so this only fires if a peer
 # keeps renewing a claim forever, and exists purely so the wait can't hang.
 QA_CLAIM_WAIT_TIMEOUT_SECONDS = (ANALYSIS_CLAIM_TTL_MINUTES + 5) * 60
+
+# The verdict fallback's structured output. Anthropic accepts only a subset of
+# JSON Schema and requires ``additionalProperties: false`` on every object,
+# which ``model_json_schema()`` never emits -- the raw Pydantic schema 400s,
+# and a 400 is not a permanent provider failure, so the job would retry back
+# onto the blocked primary this fallback exists to route around.
+VERDICT_FALLBACK_SCHEMA = normalize_findings_schema(
+    TaskVerdictModel.model_json_schema()
+)
 
 
 async def synthesize_task_verdict(
@@ -64,33 +75,75 @@ async def synthesize_task_verdict(
     and closes it on every exit path. ``timeout`` bounds the whole block run --
     the client has no per-request timeout knob -- falling back to
     VERDICT_TIMEOUT, and the block persists itself to ``analyzer_blocks`` + S3.
+
+    A *permanent* provider failure (see ``provider_failures``) retries once on
+    ``settings.verdict_fallback_model``, which is a Claude model and therefore
+    a different provider: on 2026-07-26 Azure content-policy blocked the whole
+    resource behind ``verdict_model`` and every verdict in prod died for 58
+    hours while the Claude-backed blocks in the same worker kept succeeding.
+    Transient failures are re-raised untouched -- those are what the worker
+    job's own retries are for, and burning the fallback on a timeout would
+    silently move verdicts to a different model. If the fallback *also* fails,
+    the raised error names both, so the job is classified on the primary's
+    permanent failure rather than retried back onto the blocked endpoint.
     """
+    import oddish.blocks.analyzer.analyzer_block as ab
     from oddish.analyze.classifier import VERDICT_MAX_TOKENS, VERDICT_TIMEOUT
-    from oddish.blocks.analyzer.analyzer_block import (
-        AnalyzerBlock,
-        AnalyzerInput,
-        AnalyzerType,
-    )
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerInput, AnalyzerType
     from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
     from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
 
     vb = VerdictBlock(
         classifications, baseline=baseline, quality_check_passed=quality_check_passed
     )
-    block = AnalyzerBlock(
-        analyzer_type=AnalyzerType.TASK_VERDICT,
-        llm_client_type=LLMClientType.API,
-        input=AnalyzerInput(input={"num_trials": len(classifications)}),
-        task_id=task_id,
-        # build_prompt() raises rather than sending the degraded placeholder
-        # (see VerdictBlock.build_prompt).
-        prompt=vb.build_prompt(),
-        model=settings.verdict_model,
-        max_tokens=VERDICT_MAX_TOKENS,
-        response_format=TaskVerdictModel,
-        output_transform=vb.to_verdict,
-    )
-    out = await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+    prompt = vb.build_prompt()
+
+    async def _run(model: str, *, fallback: bool):
+        block = ab.AnalyzerBlock(
+            analyzer_type=AnalyzerType.TASK_VERDICT,
+            llm_client_type=LLMClientType.API,
+            input=AnalyzerInput(input={"num_trials": len(classifications)}),
+            task_id=task_id,
+            # build_prompt() raises rather than sending the degraded placeholder
+            # (see VerdictBlock.build_prompt).
+            prompt=prompt,
+            model=model,
+            max_tokens=VERDICT_MAX_TOKENS,
+            # Structured output is provider-specific: response_format on the
+            # OpenAI path, a JSON schema on the Anthropic one. Only the arm
+            # that matches this model's provider is honored.
+            response_format=None if fallback else TaskVerdictModel,
+            output_schema=VERDICT_FALLBACK_SCHEMA if fallback else None,
+            block_metadata={"verdict_fallback": True} if fallback else None,
+            output_transform=vb.to_verdict,
+        )
+        return await asyncio.wait_for(block.run(), timeout=timeout or VERDICT_TIMEOUT)
+
+    try:
+        out = await _run(settings.verdict_model, fallback=False)
+    except Exception as exc:
+        primary_error = f"{type(exc).__name__}: {exc}"
+        if not is_permanent_provider_failure(primary_error):
+            raise
+        console.print(
+            f"[yellow]Verdict model {settings.verdict_model} is permanently "
+            f"unavailable ({type(exc).__name__}); retrying on "
+            f"{settings.verdict_fallback_model}[/yellow]"
+        )
+        try:
+            out = await _run(settings.verdict_fallback_model, fallback=True)
+        except Exception as fallback_exc:
+            # Carry the primary's permanent failure into the raised message.
+            # It becomes ``task.verdict_error``, which is the only thing
+            # QaJobHandler classifies -- and a bare (retryable-looking)
+            # fallback error there sends every one of the job's 6 attempts
+            # back through the blocked primary first, which is the retry storm
+            # this whole path exists to stop.
+            raise RuntimeError(
+                f"{type(fallback_exc).__name__}: {fallback_exc} "
+                f"[verdict fallback {settings.verdict_fallback_model} failed "
+                f"after permanent primary failure -- {primary_error}]"
+            ) from fallback_exc
     return TaskVerdictModel(**out.output)
 
 

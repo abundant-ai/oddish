@@ -143,6 +143,7 @@ class AnalyzerBlock(Block):
         model: str | None = None,
         max_tokens: int | None = None,
         response_format: Any | None = None,
+        output_schema: dict | None = None,
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
         triggered_by_user_id: str | None = None,
@@ -177,11 +178,14 @@ class AnalyzerBlock(Block):
         self.block_metadata = block_metadata
         self._output_transform = output_transform
         # Only used when self-provisioning (client is None). api_key: None -> the
-        # analyzer key / provider default. response_format is OpenAI-only; the
-        # other backends ignore it.
+        # analyzer key / provider default. response_format is OpenAI-only and
+        # output_schema is Anthropic-only -- the same structured-output intent
+        # expressed per provider, so a caller that may run on either passes
+        # both. The other backends ignore both.
         self._api_key = api_key
         self._max_tokens = max_tokens
         self._response_format = response_format
+        self._output_schema = output_schema
         self._sandbox_config = sandbox_config
         self._client_creation_timeout = client_creation_timeout
         self._active_client: AnalyzerLLMClient | None = None
@@ -428,6 +432,7 @@ class AnalyzerBlock(Block):
             api_key=self._api_key,
             max_tokens=self._max_tokens,
             response_format=self._response_format,
+            output_schema=self._output_schema,
             sandbox_config=self._sandbox_config,
             cli_config=self._cli_config,
         )
