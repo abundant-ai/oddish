@@ -547,7 +547,7 @@ function TrialAnalysisCard({
             <QaAssessmentReport
               classification={trial.analysis!.classification!}
               subtype={trial.analysis?.subtype}
-              rootCause={trial.analysis?.root_cause ?? trial.analysis?.evidence}
+              rootCause={trial.analysis?.root_cause || trial.analysis?.evidence}
               recommendation={trial.analysis?.recommendation}
               evidence={
                 // Without a root cause the evidence IS the lead text above;
