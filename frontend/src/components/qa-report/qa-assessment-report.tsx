@@ -17,6 +17,8 @@ export function QaAssessmentReport({
   evidence,
   actionItems,
   log,
+  logOpen,
+  onLogToggle,
   duration,
   raw,
   onFeedback,
@@ -28,8 +30,11 @@ export function QaAssessmentReport({
   recommendation?: string | null;
   evidence?: string | null;
   actionItems?: PreTrialFinding[] | null;
-  /** the analyzer's run log, shown as a collapsed fold under Evidence */
+  /** the analyzer's run log, shown as a fold under Evidence */
   log?: string | null;
+  /** carries the fold's open state across the live-log -> report handoff */
+  logOpen?: boolean;
+  onLogToggle?: (open: boolean) => void;
   duration?: string | null;
   /** the raw analysis object, for the copy button */
   raw?: unknown;
@@ -163,7 +168,13 @@ export function QaAssessmentReport({
         ) : null}
 
         {log ? (
-          <details className="group mt-3">
+          <details
+            className="group mt-3"
+            open={logOpen}
+            onToggle={(e) =>
+              onLogToggle?.((e.target as HTMLDetailsElement).open)
+            }
+          >
             <summary className="text-muted-foreground hover:text-foreground flex cursor-pointer list-none items-center gap-2 text-[11px] font-medium transition-colors select-none">
               <span
                 aria-hidden="true"

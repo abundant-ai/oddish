@@ -560,6 +560,8 @@ function TrialAnalysisCard({
               }
               actionItems={trial.analysis?.action_items}
               log={logText}
+              logOpen={logOpen}
+              onLogToggle={setLogOpen}
               duration={analysisDuration}
               raw={trial.analysis}
             />
