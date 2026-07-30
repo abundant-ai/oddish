@@ -907,19 +907,16 @@ export function TaskDetailClient({
   const [judgeError, setJudgeError] = useState<string | null>(null);
   const [rerunningPreTrial, setRerunningPreTrial] = useState(false);
   const [preTrialError, setPreTrialError] = useState<string | null>(null);
-  // Queue a fresh pre-trial audit of the task's CURRENT version. Uses the
-  // qa/backfill endpoint with pre_trial=true. Each version is normally
-  // audited only once; this resets that state so the QA job audits the
-  // source again.
+  // Queue a fresh pre-trial audit of the task's CURRENT version. This is
+  // the independent audit trigger: it does not classify trials and it
+  // does not synthesize the verdict.
   const handleRerunPreTrial = useCallback(async () => {
     if (!task?.id || rerunningPreTrial) return;
     setRerunningPreTrial(true);
     setPreTrialError(null);
     try {
-      const res = await fetch(`/api/tasks/${task.id}/qa/backfill`, {
+      const res = await fetch(`/api/tasks/${task.id}/qa/pre-trial`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pre_trial: true }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -1228,11 +1225,6 @@ export function TaskDetailClient({
           rerunning={rerunningPreTrial}
           queueError={preTrialError}
           isCurrentVersion={selectedVersion ? selectedVersion.is_current : true}
-          taskQaBusy={
-            task.verdict_status === "running" ||
-            task.verdict_status === "pending" ||
-            task.verdict_status === "queued"
-          }
         />
 
         <div className="space-y-3">

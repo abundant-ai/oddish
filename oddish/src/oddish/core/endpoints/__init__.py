@@ -34,6 +34,7 @@ from oddish.core.endpoints.deletion import (
 from oddish.core.endpoints.qa import (
     backfill_task_analysis_core,
     cancel_task_qa_core,
+    rerun_pre_trial_audit_core,
     rerun_task_qa_core,
 )
 from oddish.core.endpoints.sweep import (
@@ -75,6 +76,7 @@ from oddish.core.endpoints.trials import (
     get_trial_response_for_org_core,
     get_trial_result_core,
     get_trial_trajectory_core,
+    rerun_trial_analysis_core,
     retry_trial_core,
 )
 
@@ -119,7 +121,9 @@ __all__ = [
     "list_experiment_task_shells_core",
     "list_task_versions_core",
     "list_tasks_core",
+    "rerun_pre_trial_audit_core",
     "rerun_task_qa_core",
+    "rerun_trial_analysis_core",
     "replay_has_retryable_failed_trials",
     "retry_trial_core",
     "set_task_default_version_core",

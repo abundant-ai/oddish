@@ -31,6 +31,7 @@ from oddish.core.endpoints import (
     backfill_task_analysis_core,
     browse_task_facets_core,
     browse_tasks_core,
+    rerun_pre_trial_audit_core,
     build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
@@ -1475,7 +1476,24 @@ async def backfill_task_qa(
             trial_ids=body.trial_ids,
             force=body.force,
             enable_analysis=body.enable_analysis,
-            pre_trial=body.pre_trial,
+        )
+
+
+@router.post("/tasks/{task_id}/qa/pre-trial")
+async def rerun_pre_trial_audit(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue the pre-trial audit for the task's current version.
+
+    Runs only the audit. Does not classify trials and does not synthesize
+    the verdict.
+    """
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+    async with get_session() as session:
+        return await rerun_pre_trial_audit_core(
+            session, task_id=task_id, org_id=auth.org_id
         )
 
 

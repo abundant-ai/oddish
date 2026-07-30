@@ -236,7 +236,6 @@ async def backfill_task_analysis_core(
     trial_ids: list[str] | None = None,
     force: bool = False,
     enable_analysis: bool = False,
-    pre_trial: bool = False,
 ) -> dict[str, str | int]:
     """(Re)run task-level QA to backfill trial analysis.
 
@@ -312,23 +311,6 @@ async def backfill_task_analysis_core(
             _reset_trial_analysis(trial)
             reset_count += 1
 
-    if pre_trial and task.current_version_id:
-        # Pre-trial audits run once per task version; a terminal status blocks
-        # any repeat. Set the current version back to QUEUED so the QA job
-        # audits the source again. QUEUED (not None) keeps the card showing
-        # progress instead of "not audited" while the job waits for a worker.
-        # Clear the previous audit's findings, error, and timestamps too, so
-        # the card never shows the old results as if they were fresh.
-        version = await session.get(
-            TaskVersionModel, task.current_version_id, with_for_update=True
-        )
-        if version is not None:
-            version.pre_trial_status = VerdictStatus.QUEUED
-            version.pre_trial = None
-            version.pre_trial_error = None
-            version.pre_trial_started_at = None
-            version.pre_trial_finished_at = None
-
     _reset_task_verdict(task)
     if enable_analysis:
         task.run_analysis = True
@@ -347,3 +329,61 @@ async def backfill_task_analysis_core(
         "trial_count": len(live_trials),
         "reset_count": reset_count,
     }
+
+
+async def rerun_pre_trial_audit_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict[str, str]:
+    """Queue the pre-trial audit for the task's current version.
+
+    This is the independent audit trigger. It does not classify trials and
+    it does not synthesize the verdict. It is blocked only while an audit
+    of this version is running inside its lease.
+    """
+    from datetime import timedelta
+
+    from oddish.config import settings
+
+    task = await session.get(TaskModel, task_id)
+    if not task or (org_id is not None and task.org_id != org_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    if not task.current_version_id:
+        raise HTTPException(status_code=400, detail="Task has no version to audit")
+
+    version = await session.get(
+        TaskVersionModel, task.current_version_id, with_for_update=True
+    )
+    if version is None:
+        raise HTTPException(status_code=400, detail="Task has no version to audit")
+
+    # Mirrors the worker's claim lease in workers/queue/qa_handler.py
+    # (pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS +
+    # PRE_TRIAL_LEASE_JITTER_SECONDS). Copied, not imported: importing the
+    # worker module would pull the analyzer stack into the API process.
+    lease = timedelta(seconds=settings.pre_trial_timeout + 900 + 60)
+    if (
+        version.pre_trial_status == VerdictStatus.RUNNING
+        and version.pre_trial_started_at is not None
+        and utcnow() - version.pre_trial_started_at < lease
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="An audit is already running for this version",
+        )
+
+    # Reset the previous audit and queue a new one. QUEUED (not None) keeps
+    # the card showing progress while the job waits for a worker.
+    version.pre_trial_status = VerdictStatus.QUEUED
+    version.pre_trial = None
+    version.pre_trial_error = None
+    version.pre_trial_started_at = None
+    version.pre_trial_finished_at = None
+
+    from oddish.queue import enqueue_pre_trial_worker_job
+
+    await enqueue_pre_trial_worker_job(session, task_id=task.id, org_id=task.org_id)
+    await session.commit()
+    return {"status": "queued", "task_id": task_id}

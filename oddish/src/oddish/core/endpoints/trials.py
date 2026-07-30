@@ -23,15 +23,16 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.db import (
+    AnalysisStatus,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
     TrialModel,
     TrialStatus,
-    VerdictStatus,
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
+    utcnow,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
@@ -98,6 +99,74 @@ async def get_trial_by_index_core(
     return await _attach_pre_trial_audit(session, response, trial.task_version_id)
 
 
+# Mirrors ANALYSIS_CLAIM_TTL_MINUTES in workers/queue/analysis_handler.py.
+# Copied, not imported: importing the worker module here would pull the
+# whole analyzer stack into the API process.
+_ANALYSIS_CLAIM_TTL_MINUTES = 35
+
+
+async def rerun_trial_analysis_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """Queue analysis for one trial.
+
+    This is the independent trial-level trigger. It resets and re-runs
+    only this trial's analysis. It does not touch other trials, the task
+    verdict, or the pre-trial audit. It is blocked only while this
+    trial's own analysis is active.
+    """
+    from datetime import timedelta
+
+    result = await session.execute(
+        select(TrialModel, TaskModel.org_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(TrialModel.id == trial_id)
+        .with_for_update(of=TrialModel)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    trial, task_org_id = row
+    if org_id is not None and task_org_id != org_id:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
+        raise HTTPException(
+            status_code=400,
+            detail="The trial must finish before analysis can run",
+        )
+    if trial.analysis_status in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED):
+        raise HTTPException(
+            status_code=400,
+            detail="Analysis is already queued for this trial",
+        )
+    if trial.analysis_status == AnalysisStatus.RUNNING:
+        started = trial.analysis_started_at
+        # A RUNNING claim inside its TTL belongs to a live worker. Past the
+        # TTL the worker is presumed dead and a re-run is the remedy.
+        if started is not None and utcnow() - started < timedelta(
+            minutes=_ANALYSIS_CLAIM_TTL_MINUTES
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Analysis is already running for this trial",
+            )
+
+    from oddish.core.endpoints.qa import _reset_trial_analysis
+    from oddish.queue import enqueue_trial_analysis_worker_job
+
+    _reset_trial_analysis(trial)
+    trial.analysis_status = AnalysisStatus.QUEUED
+    await enqueue_trial_analysis_worker_job(
+        session, trial_id=trial.id, org_id=task_org_id
+    )
+    await session.commit()
+    return {"status": "queued", "trial_id": trial_id}
+
+
 async def get_trial_analysis_log_core(
     session: AsyncSession,
     *,
@@ -107,18 +176,14 @@ async def get_trial_analysis_log_core(
     """The log of the trial's current/most recent analysis run.
 
     Served on its own endpoint (not on TrialResponse) so trial lists never
-    carry it. ``queue_position`` is the 1-based position of the task's QA
-    job in the QA queue while it waits for a worker, else None.
-    ``task_qa_active`` mirrors the state that makes the backfill endpoint
-    reject a new run, so the UI can keep its buttons truthful without a
-    page reload.
+    carry it. ``queue_position`` is the 1-based position of the waiting
+    analysis job in the QA queue, else None.
     """
     result = await session.execute(
         select(
             TrialModel.analysis_log,
             TrialModel.task_id,
             TaskModel.org_id,
-            TaskModel.verdict_status,
         )
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(TrialModel.id == trial_id)
@@ -126,25 +191,28 @@ async def get_trial_analysis_log_core(
     row = result.first()
     if not row:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-    analysis_log, task_id, task_org_id, verdict_status = row
+    analysis_log, task_id, task_org_id = row
     if org_id is not None and task_org_id != org_id:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
     return {
         "log": analysis_log,
-        "queue_position": await _qa_queue_position(session, task_id=task_id),
-        "task_qa_active": verdict_status
-        in (VerdictStatus.PENDING, VerdictStatus.QUEUED, VerdictStatus.RUNNING),
+        "queue_position": await _qa_queue_position(
+            session, task_id=task_id, trial_id=trial_id
+        ),
     }
 
 
-async def _qa_queue_position(session: AsyncSession, *, task_id: str) -> int | None:
-    """1-based position of the task's waiting QA job in the QA queue.
+async def _qa_queue_position(
+    session: AsyncSession, *, task_id: str, trial_id: str
+) -> int | None:
+    """1-based position of the waiting analysis job in the QA queue.
 
-    Trial analysis runs inside the task-level QA job, so while that job is
-    QUEUED/RETRYING its place in line is the trial's place in line. Ordering
-    matches the worker's claim query for non-trial kinds: ``priority DESC,
-    created_at ASC`` within the job's queue_key. None when no QA job is
-    waiting (already running, finished, or never enqueued).
+    Two job shapes can carry this trial's analysis: a trial-level ANALYSIS
+    job (subject: the trial), or the task-level QA job (subject: the task).
+    The trial-level job wins when both wait. Ordering matches the worker's
+    claim query for non-trial kinds: ``priority DESC, created_at ASC``
+    within the job's queue_key. None when no job is waiting (already
+    running, finished, or never enqueued).
     """
     waiting = [WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING]
     job = (
@@ -155,10 +223,17 @@ async def _qa_queue_position(session: AsyncSession, *, task_id: str) -> int | No
                 WorkerJobModel.created_at,
             )
             .where(
-                WorkerJobModel.kind == WorkerJobKind.QA,
-                WorkerJobModel.subject_table == "tasks",
-                WorkerJobModel.subject_id == task_id,
                 WorkerJobModel.status.in_(waiting),
+                (
+                    (WorkerJobModel.kind == WorkerJobKind.ANALYSIS)
+                    & (WorkerJobModel.subject_table == "trials")
+                    & (WorkerJobModel.subject_id == trial_id)
+                )
+                | (
+                    (WorkerJobModel.kind == WorkerJobKind.QA)
+                    & (WorkerJobModel.subject_table == "tasks")
+                    & (WorkerJobModel.subject_id == task_id)
+                ),
             )
             .order_by(WorkerJobModel.created_at.asc())
             .limit(1)

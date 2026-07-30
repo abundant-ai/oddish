@@ -194,18 +194,12 @@ function TrialAnalysisCard({
   const [live, setLive] = useState<Trial | null>(null);
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
-  // Set when WE queued a run. The backfill endpoint clears the trial's
-  // analysis fields to null until a worker claims the job, so status alone
-  // cannot tell "reset and waiting" from "never analyzed". This keeps the
-  // card in its progress state (and polling) across that gap.
+  // Set when WE queued a run. This keeps the card in its progress state
+  // (and polling) across the gap before a worker claims the job.
   const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [logText, setLogText] = useState<string | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
-  // Live task-level QA state from the server. The `task` prop is a snapshot
-  // and can say QA is running long after it finished, which would leave the
-  // run button disabled forever. null until the first fetch answers.
-  const [taskQaActive, setTaskQaActive] = useState<boolean | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
 
   // A different trial means the polled data no longer applies.
@@ -214,7 +208,6 @@ function TrialAnalysisCard({
     setQueuedAt(null);
     setLogText(null);
     setQueuePosition(null);
-    setTaskQaActive(null);
     setQueueError(null);
   }, [trialProp.id]);
 
@@ -276,15 +269,6 @@ function TrialAnalysisCard({
   // Load the analysis log and queue position: once on open, and on every
   // poll tick while the analysis is in progress. The cleanup always runs so
   // a response that lands after a trial switch cannot write stale state.
-  // The live server answer wins over the snapshot in the `task` prop.
-  const taskQaBusy =
-    taskQaActive ??
-    (task?.verdict_status === "running" ||
-      task?.verdict_status === "pending" ||
-      task?.verdict_status === "queued");
-
-  // Poll while this trial is in progress, and also while task-level QA
-  // blocks the run button — so the button re-enables when QA finishes.
   useEffect(() => {
     let cancelled = false;
     const fetchLog = async () => {
@@ -297,25 +281,22 @@ function TrialAnalysisCard({
         const data = (await res.json()) as {
           log?: string | null;
           queue_position?: number | null;
-          task_qa_active?: boolean;
         };
         if (!cancelled) {
           setLogText(data.log ?? null);
           setQueuePosition(data.queue_position ?? null);
-          setTaskQaActive(data.task_qa_active ?? null);
         }
       } catch {
         // Transient fetch error; the next tick retries.
       }
     };
     void fetchLog();
-    const id =
-      inProgress || taskQaBusy ? window.setInterval(fetchLog, 5000) : null;
+    const id = inProgress ? window.setInterval(fetchLog, 5000) : null;
     return () => {
       cancelled = true;
       if (id !== null) window.clearInterval(id);
     };
-  }, [apiBaseUrl, trialProp.id, inProgress, taskQaBusy]);
+  }, [apiBaseUrl, trialProp.id, inProgress]);
 
   // Keep the newest log lines in view while the analysis runs.
   useEffect(() => {
@@ -324,28 +305,26 @@ function TrialAnalysisCard({
   }, [logText]);
 
   const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
-  // Always SHOW the button when the feature is on and we know the task.
-  // Disable it (with the reason) when a run cannot be queued right now —
-  // a hidden button with no explanation is impossible to debug from the UI.
-  const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON && Boolean(task);
+  // Always SHOW the button when the feature is on. Disable it (with the
+  // reason) when a run cannot be queued right now — a hidden button with
+  // no explanation is impossible to debug from the UI. The trigger is
+  // trial-level: only this trial's own active analysis blocks it.
+  const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
   const queueBlockedReason = inProgress
     ? "Analysis is already running for this trial"
-    : taskQaBusy
-      ? "Task-level QA is running; wait for it to finish"
-      : null;
+    : null;
 
   if (!hasAnalysis && !showQueueButton) return null;
 
   const queueRun = async () => {
-    if (!task || queuing) return;
+    if (queuing) return;
     setQueuing(true);
     setQueueError(null);
     try {
-      const res = await fetch(`${apiBaseUrl}/tasks/${task.id}/qa/backfill`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trial_ids: [trial.id], force: true }),
-      });
+      const res = await fetch(
+        `${apiBaseUrl}/trials/${trial.id}/analysis/rerun`,
+        { method: "POST" },
+      );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
@@ -450,11 +429,6 @@ function TrialAnalysisCard({
         </div>
         {queueError && (
           <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
-        )}
-        {showQueueButton && !inProgress && queueBlockedReason && (
-          <p className="text-muted-foreground mb-2 text-[11px]">
-            {queueBlockedReason}
-          </p>
         )}
         <div className="flex items-start gap-3">
           {inProgress ? (

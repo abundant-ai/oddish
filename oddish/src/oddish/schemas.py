@@ -1190,10 +1190,6 @@ class BackfillQARequest(BaseModel):
     force: bool = False
     enable_analysis: bool = False
     trial_ids: list[str] | None = None
-    # Reset the current task version's pre-trial audit so the queued QA job
-    # re-runs it with the latest prompt. Without this, pre-trial runs once
-    # per version and can never be repeated.
-    pre_trial: bool = False
 
 
 def _reject_gpu_tpu_conflict(harbor: HarborConfig) -> None:
