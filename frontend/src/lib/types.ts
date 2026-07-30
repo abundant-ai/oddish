@@ -100,6 +100,8 @@ interface TrialAnalysis {
   evidence?: string;
   root_cause?: string;
   recommendation?: string;
+  /** Task weaknesses this trial revealed; same shape as pre-trial findings. */
+  action_items?: PreTrialFinding[];
   reward?: number | null;
   prompt_kind?: string;
   prompt_version?: number;

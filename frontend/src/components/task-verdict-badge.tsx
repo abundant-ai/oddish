@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { AnalysisProse } from "@/components/analysis-prose";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { isActivePipelineStatus } from "@/lib/job-status";
@@ -213,20 +214,22 @@ export function TaskVerdictBadge({
               ) : null}
             </div>
             {p.detail ? (
-              <p className="text-muted-foreground mt-1 text-xs whitespace-pre-wrap">
-                {p.detail}
-              </p>
+              <AnalysisProse text={p.detail} className="text-muted-foreground mt-1" />
             ) : null}
             {verdict?.recommendations && verdict.recommendations.length > 0 ? (
-              <div className="mt-2 space-y-1">
-                {verdict.recommendations.map((rec, idx) => (
-                  <p
-                    key={idx}
-                    className="text-muted-foreground/80 text-xs italic"
-                  >
-                    💡 {rec}
-                  </p>
-                ))}
+              <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">
+                <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
+                  Fixes ({verdict.recommendations.length})
+                </span>
+                <div className="mt-1 space-y-1">
+                  {verdict.recommendations.map((rec, idx) => (
+                    <AnalysisProse
+                      key={idx}
+                      text={rec}
+                      className="text-muted-foreground"
+                    />
+                  ))}
+                </div>
               </div>
             ) : null}
           </div>
