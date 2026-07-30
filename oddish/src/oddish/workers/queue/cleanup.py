@@ -41,6 +41,7 @@ from oddish.db import (
     JobStatus,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -407,6 +408,28 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         return None
 
     if kind == "QA":
+        if ((row.get("payload") or {}) or {}).get("mode") == "pre_trial":
+            # Audit-only job: it never touches the verdict or trial
+            # classifications, so mirror the failure onto the version's
+            # audit state instead.
+            task = await _locked_or_missing(session, TaskModel, str(subject_id))
+            if task is None or not task.current_version_id:
+                return None
+            version = await session.get(
+                TaskVersionModel, task.current_version_id, with_for_update=True
+            )
+            if version is not None and version.pre_trial_status in (
+                VerdictStatus.PENDING,
+                VerdictStatus.QUEUED,
+                VerdictStatus.RUNNING,
+            ):
+                version.pre_trial_status = (
+                    VerdictStatus.FAILED
+                    if row["new_status"] == "FAILED"
+                    else VerdictStatus.QUEUED
+                )
+                version.pre_trial_error = row["error_message"]
+            return None
         task = await _locked_or_missing(session, TaskModel, str(subject_id))
         if task is None:
             return None
@@ -748,6 +771,7 @@ async def _reap_stale_worker_jobs(
                               status::text AS new_status,
                               subject_table,
                               subject_id,
+                              payload,
                               attempts,
                               max_attempts,
                               error_message,

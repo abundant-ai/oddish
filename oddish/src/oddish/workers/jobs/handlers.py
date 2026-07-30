@@ -12,6 +12,8 @@ the queue execution code.
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from oddish.db import (
     AnalysisStatus,
     AnalyzerRunModel,
@@ -20,6 +22,8 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
     WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
     get_session,
 )
 from oddish.db.models import JobStatus, AnalyzerModel
@@ -148,6 +152,14 @@ class AnalysisJobHandler:
             )
 
         async with get_session() as session:
+            # A cancel can land between the claim and this point. It marks
+            # the job CANCELLED and the trial FAILED; reviving the trial
+            # here would undo the cancel and classify anyway.
+            current_job_status = await session.scalar(
+                select(WorkerJobModel.status).where(WorkerJobModel.id == job.id)
+            )
+            if current_job_status == WorkerJobStatus.CANCELLED:
+                return JobOutcome.ok()
             trial = await session.get(TrialModel, trial_id)
             if trial is None:
                 return _fail_permanent(f"Trial {trial_id} vanished before analysis")

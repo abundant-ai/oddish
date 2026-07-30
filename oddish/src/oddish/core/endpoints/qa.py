@@ -162,7 +162,10 @@ async def cancel_task_qa_core(
                 trial.analysis_error = USER_CANCELLED_MESSAGE
                 trial.analysis_finished_at = now_value
     # An audit-only job (payload mode "pre_trial") never touches the verdict
-    # or trial classifications. Cancelling one must not wipe them.
+    # or trial classifications, so cancelling one must not wipe them. The two
+    # extra conditions cover orphaned state: a verdict left active with no
+    # live full QA job behind it (a live one would be in ``rows``, since the
+    # cancel above takes every QA-kind job). Cancel is the recovery for that.
     full_qa_cancelled = any(
         ((row.get("payload") or {}) or {}).get("mode") != "pre_trial" for row in rows
     )
