@@ -155,6 +155,29 @@ async def rerun_trial_analysis_core(
                 detail="Analysis is already running for this trial",
             )
 
+    # A failed analysis can leave its job in RETRYING. Enqueuing another job
+    # then would run the analysis twice. The existing job serves the re-run.
+    active_job = await session.scalar(
+        select(WorkerJobModel.id).where(
+            WorkerJobModel.kind == WorkerJobKind.ANALYSIS,
+            WorkerJobModel.subject_table == "trials",
+            WorkerJobModel.subject_id == trial_id,
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                ]
+            ),
+        )
+        .limit(1)
+    )
+    if active_job is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="An analysis job is already queued or running for this trial",
+        )
+
     from oddish.core.endpoints.qa import _reset_trial_analysis
     from oddish.queue import enqueue_trial_analysis_worker_job
 

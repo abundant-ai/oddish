@@ -53,7 +53,8 @@ async def _cancel_worker_jobs_for_kind(
                     SELECT id,
                            modal_function_call_id,
                            provider,
-                           external_id
+                           external_id,
+                           payload
                     FROM   worker_jobs
                     WHERE  kind::text = :kind
                       AND  subject_table = :subject_table
@@ -74,7 +75,8 @@ async def _cancel_worker_jobs_for_kind(
                           w.subject_id,
                           to_cancel.modal_function_call_id,
                           to_cancel.provider,
-                          to_cancel.external_id
+                          to_cancel.external_id,
+                          to_cancel.payload
                 """
                 ),
                 {
@@ -137,7 +139,16 @@ async def cancel_task_qa_core(
         subject_ids=[task_id],
         reason=USER_CANCELLED_MESSAGE,
     )
-    if rows or _has_active_verdict(task) or task.status == TaskStatus.VERDICT_PENDING:
+    # An audit-only job (payload mode "pre_trial") never touches the verdict
+    # or trial classifications. Cancelling one must not wipe them.
+    full_qa_cancelled = any(
+        ((row.get("payload") or {}) or {}).get("mode") != "pre_trial" for row in rows
+    )
+    if (
+        full_qa_cancelled
+        or _has_active_verdict(task)
+        or task.status == TaskStatus.VERDICT_PENDING
+    ):
         task.verdict_status = VerdictStatus.FAILED
         task.verdict_error = USER_CANCELLED_MESSAGE
         task.verdict_finished_at = now_value
@@ -151,21 +162,21 @@ async def cancel_task_qa_core(
         if task.status == TaskStatus.VERDICT_PENDING:
             task.status = TaskStatus.FAILED
             task.finished_at = now_value
-        # A pre-trial audit runs inside the QA job being cancelled here. A
-        # request left QUEUED (or a claim left RUNNING) would keep the card
-        # in a running state forever with no job behind it.
-        if task.current_version_id:
-            version = await session.get(
-                TaskVersionModel, task.current_version_id, with_for_update=True
-            )
-            if version is not None and version.pre_trial_status in (
-                VerdictStatus.PENDING,
-                VerdictStatus.QUEUED,
-                VerdictStatus.RUNNING,
-            ):
-                version.pre_trial_status = VerdictStatus.FAILED
-                version.pre_trial_error = USER_CANCELLED_MESSAGE
-                version.pre_trial_finished_at = now_value
+    # The pre-trial audit runs inside a QA job (full or audit-only). A request
+    # left QUEUED (or a claim left RUNNING) with no job behind it would keep
+    # the card in a running state forever, so cancel always clears it.
+    if task.current_version_id:
+        version = await session.get(
+            TaskVersionModel, task.current_version_id, with_for_update=True
+        )
+        if version is not None and version.pre_trial_status in (
+            VerdictStatus.PENDING,
+            VerdictStatus.QUEUED,
+            VerdictStatus.RUNNING,
+        ):
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = USER_CANCELLED_MESSAGE
+            version.pre_trial_finished_at = now_value
 
     await session.commit()
     return {
