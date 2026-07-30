@@ -189,10 +189,19 @@ async def cancel_task_qa_core(
             task.finished_at = now_value
     # The pre-trial audit runs inside a QA job (full or audit-only). A request
     # left QUEUED (or a claim left RUNNING) with no job behind it would keep
-    # the card in a running state forever, so cancel always clears it.
+    # the card in a running state forever, so cancel always clears it. An
+    # audit-only job pins the version it audits, and that version can be
+    # older than the current one after a re-upload — clear it as well.
+    version_ids: set[str] = set()
     if task.current_version_id:
+        version_ids.add(str(task.current_version_id))
+    for row in rows:
+        pinned = ((row.get("payload") or {}) or {}).get("task_version_id")
+        if pinned:
+            version_ids.add(str(pinned))
+    for version_id in version_ids:
         version = await session.get(
-            TaskVersionModel, task.current_version_id, with_for_update=True
+            TaskVersionModel, version_id, with_for_update=True
         )
         if version is not None and version.pre_trial_status in (
             VerdictStatus.PENDING,
