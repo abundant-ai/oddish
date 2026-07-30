@@ -1329,20 +1329,22 @@ export function ExperimentDetailView({
            * Show-graph + Publish actions parked top-right.
            */}
           <div className="space-y-2">
+            {/* Title gets its own full-width row so long experiment names
+             * aren't squeezed by the action cluster below. */}
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {headerLeft}
+              {experimentId && (
+                <TagEditor
+                  scope="EXPERIMENT"
+                  targetId={experimentId}
+                  initialTags={experimentTags ?? []}
+                  experimentMode="living"
+                  onMutate={() => void mutateExperimentTags()}
+                />
+              )}
+            </div>
             <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  {headerLeft}
-                  {experimentId && (
-                    <TagEditor
-                      scope="EXPERIMENT"
-                      targetId={experimentId}
-                      initialTags={experimentTags ?? []}
-                      experimentMode="living"
-                      onMutate={() => void mutateExperimentTags()}
-                    />
-                  )}
-                </div>
+              <div className="min-w-0 flex-1">
                 <ExperimentMetaStrip
                   tasks={tasksForExperiment}
                   isInitialLoading={isInitialLoading}
