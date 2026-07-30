@@ -43,7 +43,6 @@ import {
   Microscope,
   CheckCircle2,
   XCircle,
-  AlertTriangle,
   ExternalLink,
   Route,
   Package,
@@ -51,7 +50,7 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { AnalysisProse } from "@/components/analysis-prose";
+import { QaAssessmentReport } from "@/components/qa-assessment-report";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -461,16 +460,31 @@ function TrialAnalysisCard({
     }
   }
 
+  // Analysis wall-clock, shown in the report header.
+  let analysisDuration: string | null = null;
+  if (trial.analysis_started_at && trial.analysis_finished_at) {
+    const secs = Math.round(
+      (new Date(trial.analysis_finished_at).getTime() -
+        new Date(trial.analysis_started_at).getTime()) /
+        1000,
+    );
+    if (Number.isFinite(secs) && secs >= 0) {
+      analysisDuration =
+        secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    }
+  }
+
+  const showReport = hasAnalysis && !inProgress && !!trial.analysis?.classification;
+
   return (
     <Card
       className={
         inProgress
           ? "border-blue-500/30 bg-blue-500/5"
-          : trial.analysis?.classification?.startsWith("GOOD")
-            ? "border-emerald-500/30 bg-emerald-500/5"
-            : trial.analysis?.classification?.startsWith("BAD")
-              ? "border-amber-500/30 bg-amber-500/5"
-              : "border-slate-500/30 bg-slate-500/5"
+          : showReport
+            ? // The report card carries the verdict tint itself.
+              "border-border/60"
+            : "border-slate-500/30 bg-slate-500/5"
       }
     >
       <CardContent className="px-4 py-3">
@@ -523,126 +537,79 @@ function TrialAnalysisCard({
             {queueBlockedReason}
           </p>
         )}
-        <div className="flex items-start gap-3">
-          {inProgress ? (
-            <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
-          ) : trial.analysis?.classification?.startsWith("GOOD") ? (
-            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
-          ) : trial.analysis?.classification?.startsWith("BAD") ? (
-            <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
-          ) : hasAnalysis ? (
-            <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
-          ) : (
-            <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
-          )}
-          <div className="min-w-0 flex-1">
-            {inProgress ? (
-              <div className="flex flex-col gap-1">
-                <span className="font-mono text-sm font-bold">
-                  {trial.analysis_status === "running"
-                    ? "Analyzing"
-                    : "Analysis queued"}
-                </span>
-                <span className="text-muted-foreground text-xs">
-                  {progressLine}
-                </span>
-              </div>
-            ) : !hasAnalysis ? (
-              <div className="flex flex-col gap-1">
-                <span className="font-mono text-sm font-bold">
-                  No analysis yet
-                </span>
-                <span className="text-muted-foreground text-xs">
-                  This trial has not been analyzed.
-                </span>
-              </div>
-            ) : (
-              <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-sm font-bold">
-                    {trial.analysis?.classification?.replace("_", " ") ||
-                      "Analysis"}
-                  </span>
-                  {trial.analysis?.subtype &&
-                    !/^n\/a/i.test(trial.analysis.subtype) && (
-                      <span
-                        className={cn(
-                          "rounded border px-1.5 py-0.5 font-mono text-[10px]",
-                          trial.analysis?.classification?.startsWith("BAD")
-                            ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
-                            : trial.analysis?.classification?.startsWith("GOOD")
-                              ? "border-emerald-500/50 text-emerald-600 dark:text-emerald-400"
-                              : "border-border text-muted-foreground",
-                        )}
-                      >
-                        {trial.analysis.subtype.replace(/_/g, " ")}
-                      </span>
-                    )}
-                </div>
-                {trial.analysis_status === "failed" &&
-                  trial.analysis_error && (
-                    <p className="mt-1 text-xs text-red-500">
-                      Analysis failed: {trial.analysis_error}
-                    </p>
-                  )}
-                {trial.analysis?.root_cause &&
-                  trial.analysis.root_cause !== trial.analysis.evidence && (
-                    <div className="border-border/60 bg-muted/30 mt-3 rounded-md border p-2.5">
-                      <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
-                        Root cause
-                      </span>
-                      <AnalysisProse
-                        text={trial.analysis.root_cause}
-                        className="text-muted-foreground mt-1"
-                      />
-                    </div>
-                  )}
-                {trial.analysis?.recommendation &&
-                  !/^n\/a/i.test(trial.analysis.recommendation) && (
-                    <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">
-                      <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
-                        Fix
-                      </span>
-                      <AnalysisProse
-                        text={trial.analysis.recommendation}
-                        className="text-muted-foreground mt-1"
-                      />
-                    </div>
-                  )}
-                {(trial.analysis?.action_items?.length ?? 0) > 0 && (
-                  <div className="mt-3">
-                    <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
-                      Action items ({trial.analysis!.action_items!.length})
-                    </span>
-                    <div className="mt-1">
-                      <PreTrialFindingList
-                        items={trial.analysis!.action_items!}
-                      />
-                    </div>
-                  </div>
-                )}
-                {trial.analysis?.evidence &&
-                  (trial.analysis.root_cause &&
-                  trial.analysis.root_cause !== trial.analysis.evidence ? (
-                    <details className="mt-2">
-                      <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
-                        Evidence
-                      </summary>
-                      <AnalysisProse
-                        text={trial.analysis.evidence}
-                        className="text-muted-foreground/90 mt-1"
-                      />
-                    </details>
-                  ) : (
-                    <AnalysisProse
-                      text={trial.analysis.evidence}
-                      className="text-muted-foreground/90 mt-2"
-                    />
-                  ))}
-              </>
+        {showReport ? (
+          <>
+            {trial.analysis_status === "failed" && trial.analysis_error && (
+              <p className="mb-2 text-xs text-red-500">
+                Analysis failed: {trial.analysis_error}
+              </p>
             )}
+            <QaAssessmentReport
+              classification={trial.analysis!.classification!}
+              subtype={trial.analysis?.subtype}
+              rootCause={trial.analysis?.root_cause ?? trial.analysis?.evidence}
+              recommendation={trial.analysis?.recommendation}
+              evidence={
+                trial.analysis?.evidence &&
+                trial.analysis.evidence !== trial.analysis.root_cause
+                  ? trial.analysis.evidence
+                  : null
+              }
+              actionItems={trial.analysis?.action_items}
+              duration={analysisDuration}
+              raw={trial.analysis}
+            />
+          </>
+        ) : (
+          <div className="flex items-start gap-3">
+            {inProgress ? (
+              <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
+            ) : hasAnalysis ? (
+              <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
+            ) : (
+              <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
+            )}
+            <div className="min-w-0 flex-1">
+              {inProgress ? (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    {trial.analysis_status === "running"
+                      ? "Analyzing"
+                      : "Analysis queued"}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    {progressLine}
+                  </span>
+                </div>
+              ) : hasAnalysis ? (
+                // Analysis state exists but produced no report (e.g. failed
+                // before the classifier returned).
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">Analysis</span>
+                  {trial.analysis_status === "failed" &&
+                  trial.analysis_error ? (
+                    <span className="text-xs text-red-500">
+                      Analysis failed: {trial.analysis_error}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">
+                      No report was produced.
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    No analysis yet
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    This trial has not been analyzed.
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
         {logText && (
           <details
             className="mt-3"
