@@ -924,7 +924,9 @@ export function TaskDetailClient({
           data.detail || data.error || "Failed to queue pre-trial audit"
         );
       }
-      void mutate();
+      // Await the refresh: the button must stay disabled until the card
+      // shows the queued run, or a second click can queue another audit.
+      await mutate();
     } catch (err) {
       setPreTrialError(
         err instanceof Error ? err.message : "Failed to queue pre-trial audit"

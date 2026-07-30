@@ -374,9 +374,12 @@ function TrialAnalysisCard({
       }
       if (trialIdRef.current !== requestTrialId) return;
       // Show progress immediately; polling takes over from here. The old
-      // run's log is cleared server-side; clear it here too.
+      // run's log is cleared server-side; clear it here too. Open the log
+      // directly: a re-run over a stale RUNNING analysis keeps inProgress
+      // true, so the open-on-start effect does not fire again.
       setQueuedAt(Date.now());
       setLogText(null);
+      setLogOpen(true);
       setQueuePosition(null);
       setLive({
         ...trial,
