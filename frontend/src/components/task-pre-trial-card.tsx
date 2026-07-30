@@ -148,6 +148,8 @@ export function TaskPreTrialCard({
   costUsd,
   onRerun,
   rerunning,
+  queueError,
+  isCurrentVersion = true,
 }: {
   findings?: PreTrialFinding[];
   status?: string | null;
@@ -156,20 +158,35 @@ export function TaskPreTrialCard({
   /** Queue a fresh pre-trial audit of the task's current version. */
   onRerun?: () => void;
   rerunning?: boolean;
+  /** Error from the last attempt to queue an audit, shown on this card. */
+  queueError?: string | null;
+  /** Audits run on the current version only; false disables the button. */
+  isCurrentVersion?: boolean;
 }) {
   const items = [...(findings ?? [])].sort(
     (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
   );
   const state = preTrialAuditState(status, items.length);
 
+  // Always render the button; disable it with the reason in the tooltip. A
+  // hidden button with no explanation is impossible to debug from the UI.
+  const blockedReason =
+    state === "running"
+      ? "An audit is already running"
+      : !isCurrentVersion
+        ? "Audits run on the current version only. Select the current version to run one."
+        : null;
   const rerunButton =
-    ENABLE_PRETRIAL_RERUN_BUTTON && onRerun && state !== "running" ? (
+    ENABLE_PRETRIAL_RERUN_BUTTON && onRerun ? (
       <button
         type="button"
-        disabled={rerunning}
+        disabled={rerunning || blockedReason !== null}
         onClick={onRerun}
-        className="rounded border border-[color:var(--paper-line)] px-1.5 py-0.5 font-mono text-[10px] text-[color:var(--paper-ink-3)] hover:text-[color:var(--paper-ink)] disabled:opacity-50"
-        title="Audit the task's current version again with the latest prompt"
+        className="rounded border border-[color:var(--paper-line)] px-1.5 py-0.5 font-mono text-[10px] text-[color:var(--paper-ink-3)] hover:text-[color:var(--paper-ink)] disabled:cursor-not-allowed disabled:opacity-50"
+        title={
+          blockedReason ??
+          "Audit the task's current version again with the latest prompt"
+        }
       >
         {rerunning
           ? "Queuing…"
@@ -178,6 +195,10 @@ export function TaskPreTrialCard({
             : "Re-run audit"}
       </button>
     ) : null;
+
+  const queueErrorLine = queueError ? (
+    <p className="text-[11px] text-[color:var(--paper-fail)]">{queueError}</p>
+  ) : null;
 
   if (state === "unaudited") {
     if (!rerunButton) return null;
@@ -189,6 +210,7 @@ export function TaskPreTrialCard({
           </h2>
           {rerunButton}
         </div>
+        {queueErrorLine}
         <p className="text-[12px] text-[color:var(--paper-ink-3)]">
           The task source has not been audited.
         </p>
@@ -225,6 +247,8 @@ export function TaskPreTrialCard({
             : ""}
         </span>
       </div>
+
+      {queueErrorLine}
 
       {state === "failed" && error ? (
         <div className="rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 font-mono text-[11px] break-all text-[color:var(--paper-ink-3)]">

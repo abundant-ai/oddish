@@ -109,7 +109,8 @@ async def get_trial_analysis_log(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Rolling log tail of the trial's current/most recent analysis run."""
+    """Whole log of the trial's current/most recent analysis run, plus the
+    QA queue position while the job waits for a worker."""
     auth.require_scope(APIKeyScope.READ)
 
     async with get_session() as session:

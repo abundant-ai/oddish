@@ -201,6 +201,7 @@ function TrialAnalysisCard({
   const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [logText, setLogText] = useState<string | null>(null);
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
 
   // A different trial means the polled data no longer applies.
@@ -208,6 +209,7 @@ function TrialAnalysisCard({
     setLive(null);
     setQueuedAt(null);
     setLogText(null);
+    setQueuePosition(null);
   }, [trialProp.id]);
 
   const trial = live ?? trialProp;
@@ -261,8 +263,9 @@ function TrialAnalysisCard({
     return () => window.clearInterval(id);
   }, [inProgress]);
 
-  // Load the analysis log: once on open, and on every poll tick while the
-  // analysis runs. The log shows what the analyzer is doing, line by line.
+  // Load the analysis log and queue position: once on open, and on every
+  // poll tick while the analysis is in progress. The cleanup always runs so
+  // a response that lands after a trial switch cannot write stale state.
   useEffect(() => {
     let cancelled = false;
     const fetchLog = async () => {
@@ -272,18 +275,23 @@ function TrialAnalysisCard({
           { cache: "no-store" },
         );
         if (!res.ok || cancelled) return;
-        const data = (await res.json()) as { log?: string | null };
-        if (!cancelled) setLogText(data.log ?? null);
+        const data = (await res.json()) as {
+          log?: string | null;
+          queue_position?: number | null;
+        };
+        if (!cancelled) {
+          setLogText(data.log ?? null);
+          setQueuePosition(data.queue_position ?? null);
+        }
       } catch {
         // Transient fetch error; the next tick retries.
       }
     };
     void fetchLog();
-    if (!inProgress) return;
-    const id = window.setInterval(fetchLog, 5000);
+    const id = inProgress ? window.setInterval(fetchLog, 5000) : null;
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      if (id !== null) window.clearInterval(id);
     };
   }, [apiBaseUrl, trialProp.id, inProgress]);
 
@@ -330,6 +338,7 @@ function TrialAnalysisCard({
       // run's log is cleared server-side; clear it here too.
       setQueuedAt(Date.now());
       setLogText(null);
+      setQueuePosition(null);
       setLive({
         ...trial,
         analysis_status: "queued",
@@ -347,11 +356,11 @@ function TrialAnalysisCard({
     }
   };
 
-  // Progress line: which stage, and for how long.
+  // Progress line: elapsed time while running, queue position while queued.
+  // No narration — the log below shows what the analyzer is doing.
   let progressLine: string | null = null;
   if (inProgress) {
     if (trial.analysis_status === "running") {
-      let elapsed = "";
       if (trial.analysis_started_at) {
         const secs = Math.max(
           0,
@@ -359,11 +368,13 @@ function TrialAnalysisCard({
             (now - new Date(trial.analysis_started_at).getTime()) / 1000,
           ),
         );
-        elapsed = ` for ${Math.floor(secs / 60)}m ${secs % 60}s`;
+        progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
       }
-      progressLine = `Running${elapsed} — the analyzer is reading the task source, trajectory, and verifier output in a sandbox.`;
     } else {
-      progressLine = "Queued — waiting for a QA worker to pick this up.";
+      progressLine =
+        queuePosition !== null
+          ? `Position ${queuePosition} in the QA queue.`
+          : "Waiting for a QA worker.";
     }
   }
 
