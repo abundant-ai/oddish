@@ -488,30 +488,13 @@ function TrialAnalysisCard({
       }
     >
       <CardContent className="px-4 py-3">
-        <div className="text-muted-foreground mb-2 flex items-center justify-between text-[11px] font-semibold tracking-wider uppercase">
-          <div>
-            <span>QA Assessment</span>
-            {trial.analysis?.prompt_version != null && (
-              <span
-                className="ml-2 normal-case font-normal tracking-normal"
-                title={
-                  trial.analysis.prompt_scope_id
-                    ? `${trial.analysis.prompt_scope} override: ${trial.analysis.prompt_scope_id}`
-                    : `${trial.analysis.prompt_scope ?? "global"} prompt`
-                }
-              >
-                {trial.analysis.prompt_kind ?? "QA_POST_TRIAL"} v
-                {trial.analysis.prompt_version} ·{" "}
-                {trial.analysis.prompt_scope ?? "global"}
-              </span>
-            )}
-          </div>
-          {showQueueButton && (
+        {showQueueButton && (
+          <div className="mb-2 flex justify-end">
             <button
               type="button"
               disabled={queuing || queueBlockedReason !== null}
               onClick={queueRun}
-              className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal disabled:cursor-not-allowed disabled:opacity-50"
+              className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 queueBlockedReason ??
                 (hasAnalysis
@@ -525,8 +508,8 @@ function TrialAnalysisCard({
                   ? "Re-run analysis"
                   : "Run analysis"}
             </button>
-          )}
-        </div>
+          </div>
+        )}
         {queueError && (
           <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
         )}
