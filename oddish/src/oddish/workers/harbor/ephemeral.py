@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import signal
+import site
 import time
 import uuid
 from pathlib import Path
@@ -39,6 +40,7 @@ from .runner import (
 
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 _CHILD_PYTHON = "3.13"
+_PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
 _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.DAYTONA: "daytona",
     EnvironmentType.MODAL: "modal",
@@ -55,6 +57,22 @@ _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
 
 class HarborOverrideImportError(Exception):
     """The override Harbor env could not start."""
+
+
+def _child_process_env() -> dict[str, str]:
+    """Expose parent dependencies after the child imports its override Harbor."""
+    parent_site_packages = [
+        str(Path(path).resolve())
+        for path in site.getsitepackages()
+        if Path(path).is_dir()
+    ]
+    if not parent_site_packages:
+        raise HarborOverrideImportError(
+            "Ephemeral Harbor child cannot locate parent site-packages."
+        )
+    env = os.environ.copy()
+    env[_PARENT_SITE_PACKAGES_ENV] = os.pathsep.join(parent_site_packages)
+    return env
 
 
 def _runtime_env_overrides(
@@ -331,6 +349,7 @@ async def run_ephemeral_harbor_trial(
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=_child_process_env(),
             start_new_session=True,
         )
         assert process.stdout is not None and process.stderr is not None
