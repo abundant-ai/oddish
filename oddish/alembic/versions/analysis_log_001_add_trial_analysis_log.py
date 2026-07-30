@@ -12,7 +12,6 @@ Create Date: 2026-07-30 08:10:00.000000
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "analysis_log_001"
@@ -22,8 +21,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("trials", sa.Column("analysis_log", sa.Text(), nullable=True))
+    # IF NOT EXISTS: 000_initial_schema creates this column on fresh DBs
+    # via create_all() against the live models.
+    op.execute("ALTER TABLE trials ADD COLUMN IF NOT EXISTS analysis_log TEXT")
 
 
 def downgrade() -> None:
-    op.drop_column("trials", "analysis_log")
+    op.execute("ALTER TABLE trials DROP COLUMN IF EXISTS analysis_log")

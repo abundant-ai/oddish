@@ -196,6 +196,9 @@ class ClaudeCliClient:
         stderr_task = asyncio.create_task(process.stderr.read())
         loop = asyncio.get_running_loop()
         deadline = loop.time() + config.timeout if config.timeout else None
+        # On a nonzero exit with empty stderr, the last stdout event usually
+        # carries the real failure text.
+        last_line = ""
         try:
             try:
                 while True:
@@ -221,6 +224,7 @@ class ClaudeCliClient:
                         usage = parse_cli_usage(event, model_id)
                         if usage is not None:
                             self.last_usage = usage
+                    last_line = text
                     yield text
                 await process.wait()
             except (asyncio.TimeoutError, TimeoutError):
@@ -234,7 +238,9 @@ class ClaudeCliClient:
                 print_process_stream("Claude stderr", stderr_decoded, Colors.MAGENTA)
 
             if process.returncode != 0:
-                error_text = stderr_decoded.strip() or "Unknown Claude CLI error"
+                error_text = (
+                    stderr_decoded.strip() or last_line or "Unknown Claude CLI error"
+                )
                 raise RuntimeError(
                     f"Claude CLI exited with code {process.returncode}: {error_text}"
                 )
