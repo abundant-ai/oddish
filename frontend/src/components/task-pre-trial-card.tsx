@@ -205,6 +205,16 @@ export function TaskPreTrialCard({
     <p className="text-[11px] text-[color:var(--paper-fail)]">{queueError}</p>
   ) : null;
 
+  // Tooltips are unreliable on disabled buttons, so show the reason as
+  // plain text too. "An audit is already running" is skipped — the card's
+  // own running state already says that.
+  const blockedReasonLine =
+    rerunButton && blockedReason && state !== "running" ? (
+      <p className="text-[11px] text-[color:var(--paper-ink-3)]">
+        {blockedReason}
+      </p>
+    ) : null;
+
   if (state === "unaudited") {
     if (!rerunButton) return null;
     return (
@@ -216,6 +226,7 @@ export function TaskPreTrialCard({
           {rerunButton}
         </div>
         {queueErrorLine}
+        {blockedReasonLine}
         <p className="text-[12px] text-[color:var(--paper-ink-3)]">
           The task source has not been audited.
         </p>
@@ -256,6 +267,7 @@ export function TaskPreTrialCard({
       </div>
 
       {queueErrorLine}
+      {blockedReasonLine}
 
       {state === "failed" && error ? (
         <div className="rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 font-mono text-[11px] break-all text-[color:var(--paper-ink-3)]">

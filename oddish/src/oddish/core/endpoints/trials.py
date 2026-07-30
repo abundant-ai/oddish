@@ -28,6 +28,7 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     TrialStatus,
+    VerdictStatus,
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
@@ -108,21 +109,31 @@ async def get_trial_analysis_log_core(
     Served on its own endpoint (not on TrialResponse) so trial lists never
     carry it. ``queue_position`` is the 1-based position of the task's QA
     job in the QA queue while it waits for a worker, else None.
+    ``task_qa_active`` mirrors the state that makes the backfill endpoint
+    reject a new run, so the UI can keep its buttons truthful without a
+    page reload.
     """
     result = await session.execute(
-        select(TrialModel.analysis_log, TrialModel.task_id, TaskModel.org_id)
+        select(
+            TrialModel.analysis_log,
+            TrialModel.task_id,
+            TaskModel.org_id,
+            TaskModel.verdict_status,
+        )
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(TrialModel.id == trial_id)
     )
     row = result.first()
     if not row:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-    analysis_log, task_id, task_org_id = row
+    analysis_log, task_id, task_org_id, verdict_status = row
     if org_id is not None and task_org_id != org_id:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
     return {
         "log": analysis_log,
         "queue_position": await _qa_queue_position(session, task_id=task_id),
+        "task_qa_active": verdict_status
+        in (VerdictStatus.PENDING, VerdictStatus.QUEUED, VerdictStatus.RUNNING),
     }
 
 

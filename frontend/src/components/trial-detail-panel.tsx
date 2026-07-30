@@ -202,6 +202,10 @@ function TrialAnalysisCard({
   const [now, setNow] = useState(() => Date.now());
   const [logText, setLogText] = useState<string | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  // Live task-level QA state from the server. The `task` prop is a snapshot
+  // and can say QA is running long after it finished, which would leave the
+  // run button disabled forever. null until the first fetch answers.
+  const [taskQaActive, setTaskQaActive] = useState<boolean | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
 
   // A different trial means the polled data no longer applies.
@@ -210,6 +214,8 @@ function TrialAnalysisCard({
     setQueuedAt(null);
     setLogText(null);
     setQueuePosition(null);
+    setTaskQaActive(null);
+    setQueueError(null);
   }, [trialProp.id]);
 
   const trial = live ?? trialProp;
@@ -231,19 +237,21 @@ function TrialAnalysisCard({
         if (!res.ok) return;
         const fresh = (await res.json()) as Trial;
         setLive(fresh);
-        // Terminal state ends the waiting phase.
+        // Terminal state ends the waiting phase. Refresh the parent too,
+        // so the result survives closing the drawer or switching trials.
         if (
           fresh.analysis_status === "success" ||
           fresh.analysis_status === "failed"
         ) {
           setQueuedAt(null);
+          onQueued?.();
         }
       } catch {
         // Transient fetch error; the next tick retries.
       }
     }, 5000);
     return () => window.clearInterval(id);
-  }, [inProgress, apiBaseUrl, trialProp.id]);
+  }, [inProgress, apiBaseUrl, trialProp.id, onQueued]);
 
   // Fallback: if no worker picks the job up within 15 minutes, stop
   // showing progress and fall back to what the server says. Also drop the
@@ -268,6 +276,15 @@ function TrialAnalysisCard({
   // Load the analysis log and queue position: once on open, and on every
   // poll tick while the analysis is in progress. The cleanup always runs so
   // a response that lands after a trial switch cannot write stale state.
+  // The live server answer wins over the snapshot in the `task` prop.
+  const taskQaBusy =
+    taskQaActive ??
+    (task?.verdict_status === "running" ||
+      task?.verdict_status === "pending" ||
+      task?.verdict_status === "queued");
+
+  // Poll while this trial is in progress, and also while task-level QA
+  // blocks the run button — so the button re-enables when QA finishes.
   useEffect(() => {
     let cancelled = false;
     const fetchLog = async () => {
@@ -280,22 +297,25 @@ function TrialAnalysisCard({
         const data = (await res.json()) as {
           log?: string | null;
           queue_position?: number | null;
+          task_qa_active?: boolean;
         };
         if (!cancelled) {
           setLogText(data.log ?? null);
           setQueuePosition(data.queue_position ?? null);
+          setTaskQaActive(data.task_qa_active ?? null);
         }
       } catch {
         // Transient fetch error; the next tick retries.
       }
     };
     void fetchLog();
-    const id = inProgress ? window.setInterval(fetchLog, 5000) : null;
+    const id =
+      inProgress || taskQaBusy ? window.setInterval(fetchLog, 5000) : null;
     return () => {
       cancelled = true;
       if (id !== null) window.clearInterval(id);
     };
-  }, [apiBaseUrl, trialProp.id, inProgress]);
+  }, [apiBaseUrl, trialProp.id, inProgress, taskQaBusy]);
 
   // Keep the newest log lines in view while the analysis runs.
   useEffect(() => {
@@ -304,10 +324,6 @@ function TrialAnalysisCard({
   }, [logText]);
 
   const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
-  const taskQaBusy =
-    task?.verdict_status === "running" ||
-    task?.verdict_status === "pending" ||
-    task?.verdict_status === "queued";
   // Always SHOW the button when the feature is on and we know the task.
   // Disable it (with the reason) when a run cannot be queued right now —
   // a hidden button with no explanation is impossible to debug from the UI.
@@ -434,6 +450,11 @@ function TrialAnalysisCard({
         </div>
         {queueError && (
           <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
+        )}
+        {showQueueButton && !inProgress && queueBlockedReason && (
+          <p className="text-muted-foreground mb-2 text-[11px]">
+            {queueBlockedReason}
+          </p>
         )}
         <div className="flex items-start gap-3">
           {inProgress ? (
