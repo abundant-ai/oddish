@@ -120,17 +120,25 @@ async def rerun_trial_analysis_core(
     """
     from datetime import timedelta
 
-    result = await session.execute(
-        select(TrialModel, TaskModel.org_id)
-        .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(TrialModel.id == trial_id)
-        .with_for_update(of=TrialModel)
+    task_id = await session.scalar(
+        select(TrialModel.task_id).where(TrialModel.id == trial_id)
     )
-    row = result.first()
-    if not row:
+    if task_id is None:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-    trial, task_org_id = row
-    if org_id is not None and task_org_id != org_id:
+    # Lock the task first, in the same order as the QA backfill and the
+    # audit rerun. Without the shared lock, this rerun and a task-level
+    # enqueue can each pass the other's guards and queue conflicting jobs.
+    task = await session.get(TaskModel, task_id, with_for_update=True)
+    if task is None or (org_id is not None and task.org_id != org_id):
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    trial = (
+        await session.execute(
+            select(TrialModel)
+            .where(TrialModel.id == trial_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if trial is None:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
