@@ -218,7 +218,7 @@ function TrialAnalysisCard({
   const waitingForWorker = queuedAt !== null && !analysisActive;
   const inProgress = analysisActive || waitingForWorker;
 
-  // Poll while analysis is in progress so the card updates itself.
+  // Poll for fresh trial state while analysis is in progress.
   useEffect(() => {
     if (!inProgress) return;
     const id = window.setInterval(async () => {
@@ -361,10 +361,9 @@ function TrialAnalysisCard({
         );
         elapsed = ` for ${Math.floor(secs / 60)}m ${secs % 60}s`;
       }
-      progressLine = `Running${elapsed} — the analyzer is reading the task source, trajectory, and verifier output in a sandbox. This card updates itself.`;
+      progressLine = `Running${elapsed} — the analyzer is reading the task source, trajectory, and verifier output in a sandbox.`;
     } else {
-      progressLine =
-        "Queued — waiting for a QA worker to pick this up. This card updates itself.";
+      progressLine = "Queued — waiting for a QA worker to pick this up.";
     }
   }
 
