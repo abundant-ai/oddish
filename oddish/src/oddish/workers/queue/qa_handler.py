@@ -402,6 +402,7 @@ async def run_pre_trial_only_job(task_id: str, worker_job_id: str | None) -> Non
         await _run_pre_trial_audit(
             task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
         )
+        await _finalize_pre_trial_request(task_id)
     except BaseException as exc:
         try:
             await _fail_queued_pre_trial_request(
@@ -414,6 +415,35 @@ async def run_pre_trial_only_job(task_id: str, worker_job_id: str | None) -> Non
         heartbeat_stop.set()
         if heartbeat_task is not None:
             await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
+async def _finalize_pre_trial_request(task_id: str) -> None:
+    """After an audit-only run, the version must hold a terminal result.
+
+    ``_run_pre_trial_audit`` swallows synth failures, and a vetoed store
+    releases the claim back to None. In a full QA run that is fine: the
+    next QA run redoes the audit. An explicit re-run has no next run, so
+    an unrecorded result would leave the card saying "not audited" with
+    no error while the job reports success. Record the failure instead.
+    A RUNNING claim is left alone: another worker owns it.
+    """
+    async with get_session() as session:
+        version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        if version_id is None:
+            return
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if version is not None and version.pre_trial_status in (
+            None,
+            VerdictStatus.PENDING,
+            VerdictStatus.QUEUED,
+        ):
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = (
+                "The audit did not record a result. Run it again."
+            )
+            version.pre_trial_finished_at = utcnow()
 
 
 async def _release_pre_trial_claim(task_version_id: str) -> None:
