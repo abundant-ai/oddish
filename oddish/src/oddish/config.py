@@ -1774,6 +1774,11 @@ class Settings(BaseSettings):
                 and canonical in _PROVIDER_ONLY_QUEUE_ALIASES
             ):
                 return "default"
+            # ``azure_openai/`` names the same transport as ``azure/``
+            # (get_openai_route_for_model treats them identically), so both
+            # spellings share one concurrency bucket.
+            if provider_prefix == "azure_openai":
+                return f"azure/{canonical}"
             return normalized
 
         inferred_prefix = _infer_provider_prefix(normalized)

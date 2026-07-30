@@ -25,6 +25,7 @@ from ._entry import EVENT_SENTINEL
 from oddish.workers.agents.claude_code import _pinned_harbor_requirement
 from .agent_config import (
     _claude_code_forces_direct_api,
+    _direct_anthropic_child_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
@@ -82,12 +83,15 @@ def _runtime_env_overrides(
     uses_openai = _trial_uses_openai_provider(
         agent=agent, model=model, raw_harbor_config=raw_harbor_config
     )
-    _, openai_model = _trial_requested_model(
+    requested_agent, requested_model = _trial_requested_model(
         agent=agent, model=model, raw_harbor_config=raw_harbor_config
     )
     env: dict[str, str] = {}
     if uses_openai:
-        env.update(settings.get_openai_agent_env(model=openai_model))
+        env.update(settings.get_openai_agent_env(model=requested_model))
+    # anthropic/ and anthropic-hdo/ trials must route direct even though the
+    # child never runs _build_agent_config's injectors.
+    env.update(_direct_anthropic_child_env(requested_agent, requested_model))
     if "claude-code" in (
         agent or ""
     ).strip().lower() and _claude_code_forces_direct_api(is_probe):

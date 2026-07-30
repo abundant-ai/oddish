@@ -712,6 +712,8 @@ def test_bare_openai_ids_queue_under_their_resolved_transport(monkeypatch):
     monkeypatch.setattr(settings, "openai_provider", "azure")
     assert settings.normalize_queue_key("gpt-5.4") == "azure/gpt-5.4"
     assert settings.normalize_queue_key("azure/gpt-5.4") == "azure/gpt-5.4"
+    # azure_openai/ names the same transport — one bucket, one spelling.
+    assert settings.normalize_queue_key("azure_openai/gpt-5.4") == "azure/gpt-5.4"
     assert settings.normalize_queue_key("openai/gpt-5.4") == "openai/gpt-5.4"
 
     # Public default: bare ids genuinely run on the platform bucket.

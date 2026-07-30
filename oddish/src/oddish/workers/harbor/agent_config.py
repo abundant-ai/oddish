@@ -373,6 +373,36 @@ def _inject_anthropic_platform_api_key(
     )
 
 
+def _direct_anthropic_child_env(agent: str, model_name: str | None) -> dict[str, str]:
+    """Ambient env pinning the direct Anthropic API for the override-Harbor child.
+
+    The ephemeral child builds a plain ``AgentConfig`` and never runs
+    ``_build_agent_config``'s injectors, so ``anthropic/`` and
+    ``anthropic-hdo/`` routing must arrive as ambient env: the direct-API key,
+    both Bedrock toggles blanked, and (for claude-code) the model pins
+    ``_inject_direct_anthropic_env`` would have set. Empty for other models.
+    """
+    if is_anthropic_hdo_model(model_name):
+        bare_model = anthropic_hdo_bare_model_id(model_name or "")
+        api_key = _resolve_anthropic_hdo_api_key()
+    elif is_anthropic_platform_model(model_name):
+        bare_model = anthropic_platform_bare_model_id(model_name or "")
+        api_key = _resolve_anthropic_platform_api_key()
+    else:
+        return {}
+    api_model = to_anthropic_api_model_id(bare_model) or bare_model
+    env = {
+        "ANTHROPIC_API_KEY": api_key,
+        "CLAUDE_CODE_USE_BEDROCK": "",
+        "AWS_BEARER_TOKEN_BEDROCK": "",
+    }
+    if "claude-code" in (agent or "").strip().lower() and api_model:
+        env["ANTHROPIC_MODEL"] = api_model
+        for alias in _ANTHROPIC_MODEL_ALIAS_KEYS:
+            env[alias] = api_model
+    return env
+
+
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
     """Route Azure Codex trials through Oddish's transport-compatible wrapper.
 
