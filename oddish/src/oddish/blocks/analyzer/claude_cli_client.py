@@ -111,7 +111,15 @@ def parse_stream_json_result(raw: str) -> Any:
     offset = 0
     events: list[dict] = []
     while offset < len(raw):
-        event, offset = decoder.raw_decode(raw, offset)
+        try:
+            event, offset = decoder.raw_decode(raw, offset)
+        except json.JSONDecodeError:
+            # Non-JSON noise between events (a stray CLI banner line, ANSI
+            # codes) must not discard the result events around it.
+            offset = raw.find("{", offset + 1)
+            if offset == -1:
+                break
+            continue
         if isinstance(event, dict):
             events.append(event)
         while offset < len(raw) and raw[offset].isspace():
@@ -219,7 +227,10 @@ class ClaudeCliClient:
                     try:
                         event = json.loads(text)
                     except json.JSONDecodeError:
-                        event = None
+                        # Keep the line for error context, but do not yield it:
+                        # the chunks are joined and parsed as adjacent JSON.
+                        last_line = text
+                        continue
                     if isinstance(event, dict) and event.get("type") == "result":
                         usage = parse_cli_usage(event, model_id)
                         if usage is not None:

@@ -188,6 +188,34 @@ async def test_cli_client_yields_one_chunk_per_event_line(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_cli_client_does_not_yield_non_json_lines(monkeypatch, tmp_path):
+    """Chunks are joined and parsed as adjacent JSON downstream, so one noise
+    line on stdout must not reach the yielded stream."""
+    stdout = (b"claude-code starting up\n" + _ENVELOPE.encode() + b"\n")
+    _fake_exec(monkeypatch, _FakeProcess(stdout=stdout))
+
+    client = ClaudeCliClient(model="anthropic/test", config=CliConfig(cwd=tmp_path))
+    chunks = [chunk async for chunk in client.stream("classify")]
+
+    assert chunks == [_ENVELOPE]
+
+
+@pytest.mark.asyncio
+async def test_cli_client_keeps_a_non_json_line_for_error_context(
+    monkeypatch, tmp_path
+):
+    _fake_exec(
+        monkeypatch,
+        _FakeProcess(stdout=b"segfault in tool host\n", returncode=1),
+    )
+
+    client = ClaudeCliClient(model="anthropic/test", config=CliConfig(cwd=tmp_path))
+
+    with pytest.raises(RuntimeError, match="segfault in tool host"):
+        await _drain(client)
+
+
+@pytest.mark.asyncio
 async def test_cli_client_kills_the_process_on_timeout(monkeypatch, tmp_path):
     process = _FakeProcess(stdout=_ENVELOPE.encode())
     process.hangs = True
@@ -248,6 +276,16 @@ def test_parse_stream_json_result_skips_a_trailing_empty_result_event():
     raw = (
         '{"type": "result", "structured_output": {"classification": "GOOD_SUCCESS"}}'
         '{"type": "result", "structured_output": null, "result": null}'
+    )
+    assert parse_stream_json_result(raw) == {"classification": "GOOD_SUCCESS"}
+
+
+def test_parse_stream_json_result_skips_non_json_noise_between_events():
+    raw = (
+        "claude-code starting up"
+        '{"type": "assistant", "message": "thinking"}'
+        "\x1b[32msome ansi banner\x1b[0m"
+        '{"type": "result", "structured_output": {"classification": "GOOD_SUCCESS"}}'
     )
     assert parse_stream_json_result(raw) == {"classification": "GOOD_SUCCESS"}
 
