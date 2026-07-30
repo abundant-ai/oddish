@@ -30,13 +30,15 @@ export function CopyJsonButton({
     // toggles the disclosure the button lives in.
     event.preventDefault();
     event.stopPropagation();
-    const json = JSON.stringify(value, null, 2);
+    // Prose copies as-is; JSON.stringify would quote it and escape newlines.
+    const text =
+      typeof value === "string" ? value : JSON.stringify(value, null, 2);
     try {
-      await navigator.clipboard.writeText(json);
+      await navigator.clipboard.writeText(text);
     } catch {
       // Clipboard API is unavailable in some embedded/insecure contexts.
       const ta = document.createElement("textarea");
-      ta.value = json;
+      ta.value = text;
       ta.setAttribute("readonly", "");
       ta.style.position = "fixed";
       ta.style.opacity = "0";
