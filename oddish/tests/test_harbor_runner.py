@@ -22,6 +22,7 @@ from harbor.models.trial.config import (  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.agents.cursor_cli import OddishCursorCli  # noqa: E402
 from oddish.workers.agents.grok_build import OddishGrokBuild  # noqa: E402
 from oddish.workers.agents.grok_build_trajectory import (  # noqa: E402
     convert_grok_build_json_text_to_trajectory,
@@ -216,7 +217,10 @@ def test_compose_transport_drops_unconsumed_openai_route_for_cursor(tmp_path):
         match="does not consume",
     ):
         restricted_network_profile_for_config(
-            HarborAgentConfig(name="cursor-cli", model_name="openai/gpt-5"),
+            HarborAgentConfig(
+                import_path="oddish.workers.agents.cursor_cli:OddishCursorCli",
+                model_name="openai/gpt-5",
+            ),
             resolved_env={"OPENAI_BASE_URL": "https://azure-openai.test/v1"},
         )
 
@@ -702,10 +706,57 @@ def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
 
     assert agent_config.extra_allowed_hosts == []
     assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("*.cursor.sh",)
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS"] == "1"
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_ALLOW_WEB_TOOLS"] == "0"
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_NETWORK_DEFAULT"] == "allow"
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_WRITABLE_PATHS"] == "/"
+    assert agent_config.import_path == (
+        "oddish.workers.agents.cursor_cli:OddishCursorCli"
+    )
+    assert agent_config.kwargs["disable_web_tools"] is True
+    assert not {
+        key for key in agent_config.env if key.startswith("CURSOR_FORCED_SHELL_EGRESS")
+    }
+    agent = OddishCursorCli(
+        logs_dir=tmp_path,
+        model_name="cursor/composer",
+        **agent_config.kwargs,
+    )
+    assert agent.build_cli_flags() == (
+        "--exclude-tools web_search_tool_call "
+        "--exclude-tools web_fetch_tool_call"
+    )
+
+
+@pytest.mark.parametrize("shape", ["public-compose", "restricted-kube"])
+def test_cursor_wrapper_does_not_touch_public_or_kube_trials(tmp_path, shape):
+    if shape == "public-compose":
+        task_path = _write_network_policy_task(
+            tmp_path,
+            environment_mode="public",
+            agent_mode="public",
+            compose=True,
+        )
+    else:
+        task_path = _write_network_policy_task(tmp_path, compose=True)
+        chart = task_path / "environment" / "chart"
+        chart.mkdir()
+        (chart / "Chart.yaml").write_text(
+            "apiVersion: v2\nname: test\nversion: 0.1.0\n",
+            encoding="utf-8",
+        )
+
+    agent_config = HarborAgentConfig(
+        name="cursor-cli",
+        model_name="cursor/composer",
+    )
+    profile = harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=HarborEnvironmentConfig(type=EnvironmentType.DAYTONA),
+        agent_config=agent_config,
+    )
+
+    assert profile is None
+    assert agent_config.name == "cursor-cli"
+    assert agent_config.import_path is None
+    assert agent_config.kwargs == {}
+    assert agent_config.env == {}
 
 
 def test_restricted_cursor_does_not_allow_underlying_model_provider(tmp_path):

@@ -121,16 +121,6 @@ _SAFE_PROFILE_ENV_KEYS = _KNOWN_TRANSPORT_BASE_URL_KEYS | frozenset(
     _GEMINI_OAUTH_ENV_KEYS
 )
 
-_CURSOR_ENV_OVERRIDES: dict[str, str] = {
-    "CURSOR_FORCED_SHELL_EGRESS": "1",
-    "CURSOR_FORCED_SHELL_EGRESS_ALLOW_WEB_TOOLS": "0",
-    # Harbor owns the outer process/network boundary.  Preserve normal task
-    # filesystem and inner-network semantics in Cursor's nested shell sandbox.
-    "CURSOR_FORCED_SHELL_EGRESS_NETWORK_DEFAULT": "allow",
-    "CURSOR_FORCED_SHELL_EGRESS_WRITABLE_PATHS": "/",
-}
-
-
 def _class_path(agent_class: type[Any]) -> str:
     return f"{agent_class.__module__}:{agent_class.__qualname__}"
 
@@ -609,7 +599,7 @@ def _cursor_profile(
     hosts = tuple(dict.fromkeys([*_CURSOR_RUNTIME_HOSTS, *selected]))
     return RestrictedNetworkProfile(
         outbound_hosts=tuple(hosts),
-        env_overrides=_CURSOR_ENV_OVERRIDES,
+        kwarg_overrides={"disable_web_tools": True},
         server_web_disabled=True,
     )
 
@@ -720,7 +710,7 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
         _codex_profile, _openai_base_url_keys
     ),
     "harbor.agents.installed.cursor_cli:CursorCli": _RestrictedAgentSpec(
-        _cursor_profile,
+        _unattested_stock_harness_profile,
         _cursor_base_url_keys,
         fronts_own_model_service=True,
         pins_own_transport=True,
@@ -752,6 +742,12 @@ _COMPATIBILITY_PROFILES: dict[str, _RestrictedAgentSpec] = {
     ),
     "oddish.workers.agents.gemini_cli:OddishGeminiCli": _RestrictedAgentSpec(
         _gemini_profile, _gemini_base_url_keys, pins_own_transport=True
+    ),
+    "oddish.workers.agents.cursor_cli:OddishCursorCli": _RestrictedAgentSpec(
+        _cursor_profile,
+        _cursor_base_url_keys,
+        fronts_own_model_service=True,
+        pins_own_transport=True,
     ),
     "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent": _RestrictedAgentSpec(
         _mini_swe_profile, _mini_swe_base_url_keys

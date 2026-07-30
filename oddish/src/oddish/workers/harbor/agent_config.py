@@ -49,6 +49,7 @@ _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaud
 _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH = (
     "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
 )
+_ODDISH_CURSOR_CLI_IMPORT_PATH = "oddish.workers.agents.cursor_cli:OddishCursorCli"
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
 _ODDISH_GEMINI_CLI_IMPORT_PATH = "oddish.workers.agents.gemini_cli:OddishGeminiCli"
 _ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
@@ -379,6 +380,17 @@ def _apply_gemini_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
 
     agent_config.name = None
     agent_config.import_path = _ODDISH_GEMINI_CLI_IMPORT_PATH
+
+
+def _apply_cursor_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Cursor through the restricted-Compose compatibility wrapper."""
+    if agent_config.import_path is not None:
+        return
+    if (agent_config.name or "").strip().lower() != "cursor-cli":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CURSOR_CLI_IMPORT_PATH
 
 
 def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
