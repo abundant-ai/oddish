@@ -124,11 +124,12 @@ class TrialJobHandler:
 
 
 class AnalysisJobHandler:
-    """Transitional handler for legacy per-trial ANALYSIS rows.
+    """Per-trial analysis: classify one trial, touch nothing else.
 
-    Nothing enqueues ANALYSIS jobs anymore -- trajectory analysis is the
-    single task-level ``QA`` job (:class:`QaJobHandler`). This handler is kept
-    only so any ANALYSIS rows still in flight across a deploy can drain.
+    The task-level ``QA`` job (:class:`QaJobHandler`) classifies every trial
+    and synthesizes the verdict. This handler serves the independent
+    trial-level trigger (``enqueue_trial_analysis_worker_job``, used by the
+    trial card's run/re-run button) and drains any legacy ANALYSIS rows.
     """
 
     kind = WorkerJobKind.ANALYSIS
@@ -179,8 +180,13 @@ class AnalysisJobHandler:
 
 
 class QaJobHandler:
-    """The single task-level QA job: classify every trial, then synthesize
-    the task verdict. Backed by ``run_task_qa_job``."""
+    """The task-level QA job: classify every trial, then synthesize the
+    task verdict. Backed by ``run_task_qa_job``.
+
+    ``payload.mode == "pre_trial"`` selects the audit-only path: run the
+    pre-trial audit for the current version and stop. No classification,
+    no verdict, no change to task state.
+    """
 
     kind = WorkerJobKind.QA
 
@@ -194,6 +200,12 @@ class QaJobHandler:
         task_id = job.subject_id or (job.payload or {}).get("task_id")
         if not task_id:
             raise ValueError("QA worker_job missing subject_id / payload.task_id")
+
+        if (job.payload or {}).get("mode") == "pre_trial":
+            from oddish.workers.queue.qa_handler import run_pre_trial_only_job
+
+            await run_pre_trial_only_job(task_id, worker_job_id=job.id)
+            return JobOutcome.ok()
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)

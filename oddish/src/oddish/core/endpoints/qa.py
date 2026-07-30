@@ -16,6 +16,7 @@ from oddish.db import (
     AnalysisStatus,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -52,7 +53,8 @@ async def _cancel_worker_jobs_for_kind(
                     SELECT id,
                            modal_function_call_id,
                            provider,
-                           external_id
+                           external_id,
+                           payload
                     FROM   worker_jobs
                     WHERE  kind::text = :kind
                       AND  subject_table = :subject_table
@@ -73,7 +75,8 @@ async def _cancel_worker_jobs_for_kind(
                           w.subject_id,
                           to_cancel.modal_function_call_id,
                           to_cancel.provider,
-                          to_cancel.external_id
+                          to_cancel.external_id,
+                          to_cancel.payload
                 """
                 ),
                 {
@@ -136,7 +139,38 @@ async def cancel_task_qa_core(
         subject_ids=[task_id],
         reason=USER_CANCELLED_MESSAGE,
     )
-    if rows or _has_active_verdict(task) or task.status == TaskStatus.VERDICT_PENDING:
+    # Also cancel per-trial ANALYSIS jobs (the trial re-run button enqueues
+    # these). Left alive, one would flip the cancelled analysis back to
+    # QUEUED on claim and overwrite the cancelled state.
+    live_trial_ids = [
+        trial.id
+        for trial in task.trials or []
+        if trial.superseded_by_trial_id is None
+    ]
+    analysis_rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="ANALYSIS",
+        subject_table="trials",
+        subject_ids=live_trial_ids,
+        reason=USER_CANCELLED_MESSAGE,
+    )
+    if analysis_rows:
+        cancelled_trial_ids = {str(row.get("subject_id")) for row in analysis_rows}
+        for trial in task.trials or []:
+            if trial.id in cancelled_trial_ids and _has_active_analysis(trial):
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = USER_CANCELLED_MESSAGE
+                trial.analysis_finished_at = now_value
+    # An audit-only job (payload mode "pre_trial") never touches the verdict
+    # or trial classifications. Cancelling one must not wipe them.
+    full_qa_cancelled = any(
+        ((row.get("payload") or {}) or {}).get("mode") != "pre_trial" for row in rows
+    )
+    if (
+        full_qa_cancelled
+        or _has_active_verdict(task)
+        or task.status == TaskStatus.VERDICT_PENDING
+    ):
         task.verdict_status = VerdictStatus.FAILED
         task.verdict_error = USER_CANCELLED_MESSAGE
         task.verdict_finished_at = now_value
@@ -150,13 +184,28 @@ async def cancel_task_qa_core(
         if task.status == TaskStatus.VERDICT_PENDING:
             task.status = TaskStatus.FAILED
             task.finished_at = now_value
+    # The pre-trial audit runs inside a QA job (full or audit-only). A request
+    # left QUEUED (or a claim left RUNNING) with no job behind it would keep
+    # the card in a running state forever, so cancel always clears it.
+    if task.current_version_id:
+        version = await session.get(
+            TaskVersionModel, task.current_version_id, with_for_update=True
+        )
+        if version is not None and version.pre_trial_status in (
+            VerdictStatus.PENDING,
+            VerdictStatus.QUEUED,
+            VerdictStatus.RUNNING,
+        ):
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = USER_CANCELLED_MESSAGE
+            version.pre_trial_finished_at = now_value
 
     await session.commit()
     return {
         "status": "cancelled",
         "task_id": task_id,
-        "qa_jobs_cancelled": len(rows),
-        **_collect_cancel_metadata(rows),
+        "qa_jobs_cancelled": len(rows) + len(analysis_rows),
+        **_collect_cancel_metadata([*rows, *analysis_rows]),
     }
 
 
@@ -313,3 +362,110 @@ async def backfill_task_analysis_core(
         "trial_count": len(live_trials),
         "reset_count": reset_count,
     }
+
+
+async def rerun_pre_trial_audit_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict[str, str]:
+    """Queue the pre-trial audit for the task's current version.
+
+    This is the independent audit trigger. It does not classify trials and
+    it does not synthesize the verdict. It is blocked only while an audit
+    of this version is running inside its lease.
+    """
+    from datetime import timedelta
+
+    from oddish.config import settings
+
+    task = await session.get(TaskModel, task_id)
+    if not task or (org_id is not None and task.org_id != org_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    if not task.current_version_id:
+        raise HTTPException(status_code=400, detail="Task has no version to audit")
+
+    version = await session.get(
+        TaskVersionModel, task.current_version_id, with_for_update=True
+    )
+    if version is None:
+        raise HTTPException(status_code=400, detail="Task has no version to audit")
+
+    # Mirrors the worker's claim lease in workers/queue/qa_handler.py
+    # (pre_trial_timeout + PRE_TRIAL_LEASE_MARGIN_SECONDS +
+    # PRE_TRIAL_LEASE_JITTER_SECONDS). Copied, not imported: importing the
+    # worker module would pull the analyzer stack into the API process.
+    lease = timedelta(seconds=settings.pre_trial_timeout + 900 + 60)
+    if (
+        version.pre_trial_status == VerdictStatus.RUNNING
+        and version.pre_trial_started_at is not None
+        and utcnow() - version.pre_trial_started_at < lease
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="An audit is already running for this version",
+        )
+
+    # A queued request with a live job behind it must not be queued again.
+    # A stale QUEUED status with no job (cancelled or crashed job) may be:
+    # re-queuing is the remedy there.
+    from oddish.db import WorkerJobKind, WorkerJobModel, WorkerJobStatus
+
+    active_audit_job = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            WorkerJobModel.kind == WorkerJobKind.QA,
+            WorkerJobModel.subject_table == "tasks",
+            WorkerJobModel.subject_id == task_id,
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                ]
+            ),
+            WorkerJobModel.payload["mode"].astext == "pre_trial",
+        )
+        .limit(1)
+    )
+    if active_audit_job is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="An audit job is already queued or running for this task",
+        )
+
+    # A RUNNING full QA job also runs the audit, and its trial
+    # classifications read the stored findings as context. Clearing the
+    # findings mid-run would feed that job mixed or empty pre-trial data.
+    running_task_qa = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            WorkerJobModel.kind == WorkerJobKind.QA,
+            WorkerJobModel.subject_table == "tasks",
+            WorkerJobModel.subject_id == task_id,
+            WorkerJobModel.status == WorkerJobStatus.RUNNING,
+            func.coalesce(WorkerJobModel.payload["mode"].astext, "full")
+            != "pre_trial",
+        )
+        .limit(1)
+    )
+    if running_task_qa is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Task-level QA is running; wait for it to finish",
+        )
+
+    # Reset the previous audit and queue a new one. QUEUED (not None) keeps
+    # the card showing progress while the job waits for a worker.
+    version.pre_trial_status = VerdictStatus.QUEUED
+    version.pre_trial = None
+    version.pre_trial_error = None
+    version.pre_trial_started_at = None
+    version.pre_trial_finished_at = None
+
+    from oddish.queue import enqueue_pre_trial_worker_job
+
+    await enqueue_pre_trial_worker_job(session, task_id=task.id, org_id=task.org_id)
+    await session.commit()
+    return {"status": "queued", "task_id": task_id}

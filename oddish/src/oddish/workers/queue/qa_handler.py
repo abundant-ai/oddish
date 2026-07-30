@@ -353,6 +353,99 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
     return str(version_id)
 
 
+async def _fail_queued_pre_trial_request(
+    task_id: str,
+    error: str = "Pre-trial audit is not enabled for this org",
+) -> None:
+    """Terminate an explicit audit request that will not be served.
+
+    The pre-trial audit only runs inside a worker job. When the job skips
+    the audit (org has it disabled, no synth registered) or dies, a request
+    left QUEUED would never be picked up by anything -- the card would show
+    a running audit forever. Only QUEUED is touched: it can only be set by
+    an explicit request, so a normal never-audited version stays untouched.
+    """
+    async with get_session() as session:
+        version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        if version_id is None:
+            return
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if version is not None and version.pre_trial_status == VerdictStatus.QUEUED:
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = error
+            version.pre_trial_finished_at = utcnow()
+
+
+async def run_pre_trial_only_job(task_id: str, worker_job_id: str | None) -> None:
+    """Run only the pre-trial audit for a task's current version.
+
+    Serves the independent audit trigger (``enqueue_pre_trial_worker_job``).
+    Trial classifications and the task verdict are not touched. The audit
+    writes its result to the version row. If the run raises, a QUEUED
+    request is marked FAILED so the card does not show a running audit
+    with no job behind it.
+    """
+    console.print(f"[cyan]Processing pre-trial audit[/cyan] {task_id}")
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task: asyncio.Task | None = None
+    if worker_job_id:
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_qa_worker_job(
+                worker_job_id=worker_job_id,
+                stop_event=heartbeat_stop,
+            )
+        )
+    try:
+        live_trials = await _load_live_trials_for_classification(task_id)
+        await _run_pre_trial_audit(
+            task_id, worker_job_id, [trial_id for trial_id, _ in live_trials]
+        )
+        await _finalize_pre_trial_request(task_id)
+    except BaseException as exc:
+        try:
+            await _fail_queued_pre_trial_request(
+                task_id, error=f"{type(exc).__name__}: {exc}"
+            )
+        except Exception:  # noqa: BLE001
+            pass  # best-effort; do not mask the original error
+        raise
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_task is not None:
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
+async def _finalize_pre_trial_request(task_id: str) -> None:
+    """After an audit-only run, the version must hold a terminal result.
+
+    ``_run_pre_trial_audit`` swallows synth failures, and a vetoed store
+    releases the claim back to None. In a full QA run that is fine: the
+    next QA run redoes the audit. An explicit re-run has no next run, so
+    an unrecorded result would leave the card saying "not audited" with
+    no error while the job reports success. Record the failure instead.
+    A RUNNING claim is left alone: another worker owns it.
+    """
+    async with get_session() as session:
+        version_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        if version_id is None:
+            return
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if version is not None and version.pre_trial_status in (
+            None,
+            VerdictStatus.PENDING,
+            VerdictStatus.QUEUED,
+        ):
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = (
+                "The audit did not record a result. Run it again."
+            )
+            version.pre_trial_finished_at = utcnow()
+
+
 async def _release_pre_trial_claim(task_version_id: str) -> None:
     """Roll a claimed-but-unpersisted audit back to unclaimed so a later QA
     run redoes it promptly (cancelled job, or the task's current version moved
@@ -407,12 +500,19 @@ async def _run_pre_trial_audit(
         # opt-in unable to enable anything, which is how prod (default off) ran
         # the audit exactly zero times while the orgs API happily accepted the
         # opt-in. Standalone oddish stays a no-op via _pre_trial_synth_fn.
-        if _pre_trial_synth_fn is not None and (
+        audit_enabled = _pre_trial_synth_fn is not None and (
             await _pre_trial_enabled_fn(task_id)
             if _pre_trial_enabled_fn is not None
             else settings.pre_trial_enabled
-        ):
+        )
+        if audit_enabled:
             pre_trial_version_id = await _claim_pre_trial_version(task_id)
+        else:
+            # An explicit re-run request (status QUEUED) can only be served
+            # here. If the audit is disabled for this org, fail the request
+            # with the reason -- leaving it QUEUED would show as running
+            # forever with no job behind it.
+            await _fail_queued_pre_trial_request(task_id)
         if pre_trial_version_id is not None:
             pre_trial_items = await _pre_trial_synth_fn(
                 task_id,
