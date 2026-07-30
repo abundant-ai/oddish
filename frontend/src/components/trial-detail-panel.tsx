@@ -225,6 +225,29 @@ function TrialAnalysisCard({
     setQueueError(null);
   }, [trialProp.id]);
 
+  // Fetch fresh state once per shown trial. The parent's trial object is a
+  // snapshot from when the drawer opened; without this, a run that finished
+  // while the user viewed another trial stays hidden until the drawer is
+  // closed and reopened.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
+          cache: "no-store",
+        });
+        if (!res.ok || cancelled) return;
+        const fresh = (await res.json()) as Trial;
+        if (!cancelled && trialIdRef.current === trialProp.id) setLive(fresh);
+      } catch {
+        // The card falls back to the parent's snapshot.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, trialProp.id]);
+
   // The id check covers the first render after a trial switch, before the
   // reset effect above has cleared the previous trial's polled state.
   const trial = live && live.id === trialProp.id ? live : trialProp;
@@ -272,15 +295,17 @@ function TrialAnalysisCard({
   // Fallback: if no worker picks the job up within 15 minutes, stop
   // showing progress and fall back to what the server says. Also drop the
   // optimistic `live` state — it holds the post-reset empty analysis, and
-  // keeping it would shadow every later refresh from the parent.
+  // keeping it would shadow every later refresh from the parent. The timer
+  // is disarmed while the analysis is active: a claimed run can honestly
+  // take longer, and clearing then would stop the polling mid-run.
   useEffect(() => {
-    if (queuedAt === null) return;
+    if (queuedAt === null || analysisActive) return;
     const id = window.setTimeout(() => {
       setQueuedAt(null);
       setLive(null);
     }, Math.max(0, queuedAt + 15 * 60_000 - Date.now()));
     return () => window.clearTimeout(id);
-  }, [queuedAt]);
+  }, [queuedAt, analysisActive]);
 
   // Tick the elapsed timer once a second while in progress.
   useEffect(() => {
