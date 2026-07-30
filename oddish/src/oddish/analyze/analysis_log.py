@@ -38,6 +38,10 @@ def render_event_line(chunk: str) -> str | None:
         sid = event.get("sandbox_id")
         return f"[sandbox] running in Daytona sandbox {sid}"
     if kind == "system":
+        # claude-code emits system frames throughout the run (for example
+        # thinking_tokens); only the init frame marks the session start.
+        if event.get("subtype", "init") != "init":
+            return None
         model = event.get("model") or ""
         return f"[start] session started{f' (model {model})' if model else ''}"
     if kind == "assistant":

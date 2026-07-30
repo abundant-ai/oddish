@@ -237,7 +237,15 @@ class ClaudeCliClient:
                             self.last_usage = usage
                     last_line = text
                     yield text
-                await process.wait()
+                # The child can close stdout and still not exit; the wait
+                # needs the same deadline as the reads.
+                if deadline is not None:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    await asyncio.wait_for(process.wait(), timeout=remaining)
+                else:
+                    await process.wait()
             except (asyncio.TimeoutError, TimeoutError):
                 process.kill()
                 await process.wait()
