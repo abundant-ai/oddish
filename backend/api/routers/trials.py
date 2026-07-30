@@ -130,7 +130,7 @@ async def rerun_trial_analysis(
     Classifies only this trial. Does not touch other trials, the task
     verdict, or the pre-trial audit.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         return await rerun_trial_analysis_core(
