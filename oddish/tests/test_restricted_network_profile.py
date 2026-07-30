@@ -522,7 +522,10 @@ async def test_gemini_installs_authoritative_system_web_tool_policy(
             import_path="oddish.workers.agents.gemini_cli:OddishGeminiCli",
             model_name="google/model",
         ),
-        AgentConfig(name="cursor-cli", model_name="cursor/model"),
+        AgentConfig(
+            import_path="oddish.workers.agents.cursor_cli:OddishCursorCli",
+            model_name="cursor/model",
+        ),
     ],
 )
 def test_every_operational_effective_class_has_a_safe_profile(config) -> None:
@@ -1180,6 +1183,7 @@ def test_stock_harnesses_are_identity_only_and_still_fail_closed():
     for import_path in (
         "harbor.agents.installed.gemini_cli:GeminiCli",
         "harbor.agents.installed.grok_build:GrokBuild",
+        "harbor.agents.installed.cursor_cli:CursorCli",
     ):
         config = AgentConfig(import_path=import_path, model_name="gemini/pro")
         assert agent_keeps_public_model_identity(config)
@@ -1195,6 +1199,15 @@ def test_stock_harnesses_are_identity_only_and_still_fail_closed():
         resolved_env={},
     )
     assert gemini.outbound_hosts == ("generativelanguage.googleapis.com",)
+    cursor = restricted_network_profile_for_config(
+        AgentConfig(
+            import_path="oddish.workers.agents.cursor_cli:OddishCursorCli",
+            model_name="cursor/composer",
+        ),
+        resolved_env={},
+    )
+    assert cursor.outbound_hosts == ("*.cursor.sh",)
+    assert cursor.kwarg_overrides == {"disable_web_tools": True}
     grok = restricted_network_profile_for_config(
         AgentConfig(
             import_path="oddish.workers.agents.grok_build:OddishGrokBuild",
