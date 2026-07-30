@@ -366,12 +366,12 @@ async def classify_trial_and_store(
                 f"[green]Probe analysis complete:[/green] {classification_result.get('headline', '')}"
             )
         else:
-            # Live analysis log: collect streamed analyzer events and write a
-            # rolling tail onto the trial row every 2 seconds, so the UI can
-            # show what the analyzer is doing while it runs. Only the sandbox
+            # Live analysis log: collect streamed analyzer events and write
+            # the log onto the trial row every 2 seconds, so the UI can show
+            # what the analyzer is doing while it runs. Only the sandbox
             # path streams during the run; the local CLI path returns one blob
             # at the end.
-            from oddish.analyze.analysis_log import clip_log_tail, render_event_line
+            from oddish.analyze.analysis_log import render_event_line
             from oddish.db import get_session as _log_session
 
             log_lines: list[str] = []
@@ -388,7 +388,7 @@ async def classify_trial_and_store(
                 async with _log_session() as log_sess:
                     row = await log_sess.get(TrialModel, trial_id)
                     if row is not None:
-                        row.analysis_log = clip_log_tail("\n".join(log_lines))
+                        row.analysis_log = "\n".join(log_lines)
 
             async def _log_flusher(stop: asyncio.Event) -> None:
                 flushed = -1

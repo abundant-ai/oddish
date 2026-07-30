@@ -103,10 +103,10 @@ async def get_trial_analysis_log_core(
     trial_id: str,
     org_id: str | None = None,
 ) -> dict:
-    """The rolling log tail of the trial's current/most recent analysis run.
+    """The log of the trial's current/most recent analysis run.
 
-    Served on its own endpoint (not on TrialResponse) so the 64 KB tail never
-    rides along with trial lists.
+    Served on its own endpoint (not on TrialResponse) so trial lists never
+    carry it.
     """
     result = await session.execute(
         select(TrialModel.analysis_log, TaskModel.org_id)

@@ -273,7 +273,7 @@ function TrialAnalysisCard({
         );
         if (!res.ok || cancelled) return;
         const data = (await res.json()) as { log?: string | null };
-        if (!cancelled && data.log) setLogText(data.log);
+        if (!cancelled) setLogText(data.log ?? null);
       } catch {
         // Transient fetch error; the next tick retries.
       }
@@ -326,8 +326,10 @@ function TrialAnalysisCard({
           data.detail || data.error || "Failed to queue analysis",
         );
       }
-      // Show progress immediately; polling takes over from here.
+      // Show progress immediately; polling takes over from here. The old
+      // run's log is cleared server-side; clear it here too.
       setQueuedAt(Date.now());
+      setLogText(null);
       setLive({
         ...trial,
         analysis_status: "queued",

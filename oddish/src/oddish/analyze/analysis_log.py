@@ -3,17 +3,13 @@
 The sandbox analyzer streams one JSON event per chunk (claude-code
 stream-json format). The local CLI path returns a single blob at the end,
 so it produces no live lines. Each event becomes at most one short line;
-events with nothing useful for a reader return None.
+events with nothing useful for a reader return None. Because each event
+becomes one short line, a full run's log stays small and is stored whole.
 """
 
 from __future__ import annotations
 
 import json
-
-# Keep only the newest part of the log. 64 KB holds several hundred lines,
-# which is enough to see what the analyzer is doing without growing the
-# trials table without bound.
-ANALYSIS_LOG_TAIL_BYTES = 64 * 1024
 
 _SNIPPET_CHARS = 200
 
@@ -71,12 +67,3 @@ def render_event_line(chunk: str) -> str | None:
     # Tool results and other event types are noise at this zoom level.
     return None
 
-
-def clip_log_tail(text: str) -> str:
-    """Keep the newest ANALYSIS_LOG_TAIL_BYTES of the log, on a line edge."""
-    raw = text.encode("utf-8")
-    if len(raw) <= ANALYSIS_LOG_TAIL_BYTES:
-        return text
-    clipped = raw[-ANALYSIS_LOG_TAIL_BYTES:].decode("utf-8", errors="ignore")
-    cut = clipped.find("\n")
-    return clipped[cut + 1 :] if cut != -1 else clipped

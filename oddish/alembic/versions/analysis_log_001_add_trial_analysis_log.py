@@ -1,9 +1,9 @@
 """add trials.analysis_log
 
-A rolling tail of the analyzer's live event log for the trial's
-current/most recent analysis run. The QA worker updates it every few
-seconds so the UI can show what the analyzer is doing instead of a bare
-"Analyzing" state. Capped at 64 KB by the writer.
+The analyzer's live event log for the trial's current/most recent
+analysis run. The QA worker updates it every few seconds so the UI can
+show what the analyzer is doing instead of a bare "Analyzing" state.
+One short line per event, so it stays small.
 
 Revision ID: analysis_log_001
 Revises: qa_assignments_001
