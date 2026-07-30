@@ -213,7 +213,7 @@ async def rerun_trial_analysis_core(
     _reset_trial_analysis(trial)
     trial.analysis_status = AnalysisStatus.QUEUED
     await enqueue_trial_analysis_worker_job(
-        session, trial_id=trial.id, org_id=task_org_id
+        session, trial_id=trial.id, org_id=task.org_id
     )
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
