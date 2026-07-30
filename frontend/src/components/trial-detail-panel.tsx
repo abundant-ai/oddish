@@ -550,6 +550,9 @@ function TrialAnalysisCard({
               rootCause={trial.analysis?.root_cause ?? trial.analysis?.evidence}
               recommendation={trial.analysis?.recommendation}
               evidence={
+                // Without a root cause the evidence IS the lead text above;
+                // passing it again would render the same prose twice.
+                trial.analysis?.root_cause &&
                 trial.analysis?.evidence &&
                 trial.analysis.evidence !== trial.analysis.root_cause
                   ? trial.analysis.evidence

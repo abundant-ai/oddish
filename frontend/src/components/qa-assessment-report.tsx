@@ -176,7 +176,11 @@ function CopyJsonButton({
     };
   }, []);
 
-  async function copy() {
+  async function copy(event: React.MouseEvent) {
+    // The compact variant sits inside a <summary>; a plain click there also
+    // toggles the disclosure the button lives in.
+    event.preventDefault();
+    event.stopPropagation();
     const json = JSON.stringify(value, null, 2);
     try {
       await navigator.clipboard.writeText(json);
