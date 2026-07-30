@@ -61,6 +61,7 @@ from .agent_config import (
 from .model_hosts import (
     GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS,
+    agent_runtime_hosts,
     outbound_hosts_for_model,
 )
 from .redaction import redact_exact_text, redact_exact_value
@@ -974,11 +975,22 @@ def _inject_restricted_agent_model_hosts(
     if resolved_env:
         agent_kwargs["extra_env"] = resolved_env
     inferred_hosts = normalize_allowed_hosts(
-        outbound_hosts_for_model(
-            agent_config.model_name,
-            agent_env=resolved_env,
-            agent_kwargs=agent_kwargs,
-        )
+        [
+            *outbound_hosts_for_model(
+                agent_config.model_name,
+                agent_env=resolved_env,
+                agent_kwargs=agent_kwargs,
+            ),
+            # An agent that fronts its own service dials a host the model id
+            # does not name; without this the allowlist holds only the model
+            # API and the harness cannot reach its own endpoint.
+            *agent_runtime_hosts(
+                agent_name=agent_config.name,
+                import_path=agent_config.import_path,
+                agent_kwargs=agent_kwargs,
+                agent_env=resolved_env,
+            ),
+        ]
     )
     agent_config.extra_allowed_hosts = list(
         dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts])
