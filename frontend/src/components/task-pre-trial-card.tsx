@@ -150,6 +150,7 @@ export function TaskPreTrialCard({
   rerunning,
   queueError,
   isCurrentVersion = true,
+  taskQaActive = false,
 }: {
   findings?: PreTrialFinding[];
   status?: string | null;
@@ -162,6 +163,9 @@ export function TaskPreTrialCard({
   queueError?: string | null;
   /** Audits run on the current version only; false disables the button. */
   isCurrentVersion?: boolean;
+  /** True while task-level QA is queued or running; the audit endpoint
+   * refuses in that window, so the button is disabled with the reason. */
+  taskQaActive?: boolean;
 }) {
   const items = [...(findings ?? [])].sort(
     (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
@@ -170,14 +174,15 @@ export function TaskPreTrialCard({
 
   // Always render the button; disable it with the reason in the tooltip. A
   // hidden button with no explanation is impossible to debug from the UI.
-  // The audit trigger is independent of task-level QA, so only an audit of
-  // this version blocks it.
+  // The reasons mirror the audit endpoint's guards.
   const blockedReason =
     state === "running"
       ? "An audit is already running"
       : !isCurrentVersion
         ? "Audits run on the current version only. Select the current version to run one."
-        : null;
+        : taskQaActive
+          ? "Task-level QA is queued or running; wait for it to finish"
+          : null;
   const rerunButton =
     ENABLE_PRETRIAL_RERUN_BUTTON && onRerun ? (
       <button

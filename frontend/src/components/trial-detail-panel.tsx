@@ -371,11 +371,11 @@ function TrialAnalysisCard({
     trial.analysis_started_at != null &&
     now - new Date(trial.analysis_started_at).getTime() > 35 * 60_000;
   // Mirror the backend guards, so the button is disabled with the reason
-  // instead of failing the request. The backend also refuses while a full
-  // QA job runs; the task's verdict status is the view this card has of
-  // that job.
-  const taskQaActive =
-    task?.verdict_status === "running" || task?.verdict_status === "queued";
+  // instead of failing the request. The backend refuses only while a full
+  // QA job RUNS — a queued one classifies this trial itself when it
+  // starts. The task's verdict status is the view this card has of that
+  // job.
+  const taskQaActive = task?.verdict_status === "running";
   const queueBlockedReason =
     inProgress && !runStale
       ? "Analysis is already running for this trial"
