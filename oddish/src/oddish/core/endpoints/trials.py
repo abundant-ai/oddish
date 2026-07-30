@@ -215,30 +215,29 @@ async def _qa_queue_position(
     running, finished, or never enqueued).
     """
     waiting = [WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING]
-    job = (
-        await session.execute(
-            select(
-                WorkerJobModel.queue_key,
-                WorkerJobModel.priority,
-                WorkerJobModel.created_at,
-            )
-            .where(
-                WorkerJobModel.status.in_(waiting),
-                (
-                    (WorkerJobModel.kind == WorkerJobKind.ANALYSIS)
-                    & (WorkerJobModel.subject_table == "trials")
-                    & (WorkerJobModel.subject_id == trial_id)
+
+    async def _waiting_job(kind: WorkerJobKind, subject_table: str, subject_id: str):
+        return (
+            await session.execute(
+                select(
+                    WorkerJobModel.queue_key,
+                    WorkerJobModel.priority,
+                    WorkerJobModel.created_at,
                 )
-                | (
-                    (WorkerJobModel.kind == WorkerJobKind.QA)
-                    & (WorkerJobModel.subject_table == "tasks")
-                    & (WorkerJobModel.subject_id == task_id)
-                ),
+                .where(
+                    WorkerJobModel.kind == kind,
+                    WorkerJobModel.subject_table == subject_table,
+                    WorkerJobModel.subject_id == subject_id,
+                    WorkerJobModel.status.in_(waiting),
+                )
+                .order_by(WorkerJobModel.created_at.asc())
+                .limit(1)
             )
-            .order_by(WorkerJobModel.created_at.asc())
-            .limit(1)
-        )
-    ).first()
+        ).first()
+
+    job = await _waiting_job(WorkerJobKind.ANALYSIS, "trials", trial_id)
+    if job is None:
+        job = await _waiting_job(WorkerJobKind.QA, "tasks", task_id)
     if job is None:
         return None
     queue_key, priority, created_at = job

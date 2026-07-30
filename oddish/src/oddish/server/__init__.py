@@ -27,6 +27,7 @@ from oddish.core.endpoints import (
     get_task_detail_core,
     get_task_status_core,
     get_task_version_core,
+    get_trial_analysis_log_core,
     get_trial_by_index_core,
     get_trial_for_org_core,
     list_task_versions_core,
@@ -738,6 +739,14 @@ async def rerun_trial_analysis(trial_id: str) -> dict:
     """
     async with get_session() as session:
         return await rerun_trial_analysis_core(session, trial_id=trial_id)
+
+
+@api.get("/trials/{trial_id}/analysis-log")
+async def get_trial_analysis_log(trial_id: str) -> dict:
+    """Whole log of the trial's current/most recent analysis run, plus the
+    QA queue position while the job waits for a worker."""
+    async with get_session() as session:
+        return await get_trial_analysis_log_core(session, trial_id=trial_id)
 
 
 @api.post("/trials/{trial_id}/retry")
