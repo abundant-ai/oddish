@@ -298,10 +298,14 @@ async def backfill_task_analysis_core(
     trials auto-analyze. Directly enqueuing the QA job is the gate override:
     the worker does not recheck ``run_analysis``.
     """
+    # The task row lock serializes this check-and-enqueue against the audit
+    # rerun (which takes the same lock): without it, two concurrent requests
+    # can each pass the job guards below and enqueue conflicting jobs.
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
         .where(TaskModel.id == task_id)
+        .with_for_update(of=TaskModel)
     )
     task = result.scalar_one_or_none()
     if not task:
@@ -420,7 +424,11 @@ async def rerun_pre_trial_audit_core(
 
     from oddish.config import settings
 
-    task = await session.get(TaskModel, task_id)
+    # The task row lock serializes this check-and-enqueue against the QA
+    # backfill (which takes the same lock): without it, two concurrent
+    # requests can each pass the job guards below and enqueue conflicting
+    # jobs.
+    task = await session.get(TaskModel, task_id, with_for_update=True)
     if not task or (org_id is not None and task.org_id != org_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     if not task.current_version_id:

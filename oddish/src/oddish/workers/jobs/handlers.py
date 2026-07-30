@@ -216,6 +216,17 @@ class QaJobHandler:
         if (job.payload or {}).get("mode") == "pre_trial":
             from oddish.workers.queue.qa_handler import run_pre_trial_only_job
 
+            async with get_session() as session:
+                # A cancel can land between the claim and this point. It
+                # marks the job CANCELLED and clears the audit state;
+                # running the audit here would undo the cancel and spend a
+                # sandbox on it.
+                current_job_status = await session.scalar(
+                    select(WorkerJobModel.status).where(WorkerJobModel.id == job.id)
+                )
+            if current_job_status == WorkerJobStatus.CANCELLED:
+                return JobOutcome.ok()
+
             await run_pre_trial_only_job(
                 task_id,
                 worker_job_id=job.id,
