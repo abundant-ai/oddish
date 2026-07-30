@@ -423,11 +423,11 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
                 VerdictStatus.QUEUED,
                 VerdictStatus.RUNNING,
             ):
-                version.pre_trial_status = (
-                    VerdictStatus.FAILED
-                    if row["new_status"] == "FAILED"
-                    else VerdictStatus.QUEUED
-                )
+                if row["new_status"] == "FAILED":
+                    version.pre_trial_status = VerdictStatus.FAILED
+                    version.pre_trial_finished_at = utcnow()
+                else:
+                    version.pre_trial_status = VerdictStatus.QUEUED
                 version.pre_trial_error = row["error_message"]
             return None
         task = await _locked_or_missing(session, TaskModel, str(subject_id))
