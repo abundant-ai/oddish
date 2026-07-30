@@ -939,7 +939,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.20.0"
-source = { git = "https://github.com/abundant-ai/harbor?branch=main#2a43740376b8edeca214fd11cafe7ef89d919ead" }
+source = { git = "https://github.com/abundant-ai/harbor?branch=main#f6b86c4edb57d2993510aae0d10832790ee6ba0a" }
 dependencies = [
     { name = "dirhash" },
     { name = "dockerfile-parse" },
