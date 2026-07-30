@@ -205,6 +205,12 @@ function TrialAnalysisCard({
   // Guards async completions: a response that lands after a trial switch
   // must not write another trial's state onto the open card.
   const trialIdRef = useRef(trialProp.id);
+  // The parent passes a new onQueued function on every render. Reading it
+  // through a ref keeps the poll interval alive across parent re-renders.
+  const onQueuedRef = useRef(onQueued);
+  useEffect(() => {
+    onQueuedRef.current = onQueued;
+  }, [onQueued]);
 
   // A different trial means the polled data no longer applies.
   useEffect(() => {
@@ -249,7 +255,7 @@ function TrialAnalysisCard({
           fresh.analysis_status === "failed"
         ) {
           setQueuedAt(null);
-          onQueued?.();
+          onQueuedRef.current?.();
         }
       } catch {
         // Transient fetch error; the next tick retries.
@@ -259,7 +265,7 @@ function TrialAnalysisCard({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [inProgress, apiBaseUrl, trialProp.id, onQueued]);
+  }, [inProgress, apiBaseUrl, trialProp.id]);
 
   // Fallback: if no worker picks the job up within 15 minutes, stop
   // showing progress and fall back to what the server says. Also drop the
@@ -368,7 +374,9 @@ function TrialAnalysisCard({
         );
       }
     } finally {
-      setQueuing(false);
+      if (trialIdRef.current === requestTrialId) {
+        setQueuing(false);
+      }
     }
   };
 
