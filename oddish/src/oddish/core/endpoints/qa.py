@@ -438,25 +438,32 @@ async def rerun_pre_trial_audit_core(
             detail="An audit job is already queued or running for this task",
         )
 
-    # A RUNNING full QA job also runs the audit, and its trial
-    # classifications read the stored findings as context. Clearing the
-    # findings mid-run would feed that job mixed or empty pre-trial data.
-    running_task_qa = await session.scalar(
+    # A full QA job also runs the audit, and its trial classifications read
+    # the stored findings as context. Clearing the findings while such a job
+    # is live -- queued and about to start counts too -- would feed that job
+    # mixed or empty pre-trial data.
+    active_task_qa = await session.scalar(
         select(WorkerJobModel.id)
         .where(
             WorkerJobModel.kind == WorkerJobKind.QA,
             WorkerJobModel.subject_table == "tasks",
             WorkerJobModel.subject_id == task_id,
-            WorkerJobModel.status == WorkerJobStatus.RUNNING,
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                ]
+            ),
             func.coalesce(WorkerJobModel.payload["mode"].astext, "full")
             != "pre_trial",
         )
         .limit(1)
     )
-    if running_task_qa is not None:
+    if active_task_qa is not None:
         raise HTTPException(
             status_code=400,
-            detail="Task-level QA is running; wait for it to finish",
+            detail="Task-level QA is queued or running; wait for it to finish",
         )
 
     # Reset the previous audit and queue a new one. QUEUED (not None) keeps
