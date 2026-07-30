@@ -202,9 +202,13 @@ function TrialAnalysisCard({
   const [logText, setLogText] = useState<string | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
+  // Guards async completions: a response that lands after a trial switch
+  // must not write another trial's state onto the open card.
+  const trialIdRef = useRef(trialProp.id);
 
   // A different trial means the polled data no longer applies.
   useEffect(() => {
+    trialIdRef.current = trialProp.id;
     setLive(null);
     setQueuedAt(null);
     setLogText(null);
@@ -220,16 +224,20 @@ function TrialAnalysisCard({
   const waitingForWorker = queuedAt !== null && !analysisActive;
   const inProgress = analysisActive || waitingForWorker;
 
-  // Poll for fresh trial state while analysis is in progress.
+  // Poll for fresh trial state while analysis is in progress. The
+  // cancelled flag drops in-flight responses on cleanup, so a late poll
+  // cannot overlay another trial's analysis after navigation.
   useEffect(() => {
     if (!inProgress) return;
+    let cancelled = false;
     const id = window.setInterval(async () => {
       try {
         const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
           cache: "no-store",
         });
-        if (!res.ok) return;
+        if (!res.ok || cancelled) return;
         const fresh = (await res.json()) as Trial;
+        if (cancelled) return;
         setLive(fresh);
         // Terminal state ends the waiting phase. Refresh the parent too,
         // so the result survives closing the drawer or switching trials.
@@ -244,7 +252,10 @@ function TrialAnalysisCard({
         // Transient fetch error; the next tick retries.
       }
     }, 5000);
-    return () => window.clearInterval(id);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, [inProgress, apiBaseUrl, trialProp.id, onQueued]);
 
   // Fallback: if no worker picks the job up within 15 minutes, stop
@@ -319,11 +330,12 @@ function TrialAnalysisCard({
 
   const queueRun = async () => {
     if (queuing) return;
+    const requestTrialId = trial.id;
     setQueuing(true);
     setQueueError(null);
     try {
       const res = await fetch(
-        `${apiBaseUrl}/trials/${trial.id}/analysis/rerun`,
+        `${apiBaseUrl}/trials/${requestTrialId}/analysis/rerun`,
         { method: "POST" },
       );
       if (!res.ok) {
@@ -332,6 +344,7 @@ function TrialAnalysisCard({
           data.detail || data.error || "Failed to queue analysis",
         );
       }
+      if (trialIdRef.current !== requestTrialId) return;
       // Show progress immediately; polling takes over from here. The old
       // run's log is cleared server-side; clear it here too.
       setQueuedAt(Date.now());
@@ -346,9 +359,11 @@ function TrialAnalysisCard({
       });
       onQueued?.();
     } catch (err) {
-      setQueueError(
-        err instanceof Error ? err.message : "Failed to queue analysis",
-      );
+      if (trialIdRef.current === requestTrialId) {
+        setQueueError(
+          err instanceof Error ? err.message : "Failed to queue analysis",
+        );
+      }
     } finally {
       setQueuing(false);
     }
