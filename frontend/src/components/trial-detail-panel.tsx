@@ -538,12 +538,6 @@ function TrialAnalysisCard({
                       Analysis failed: {trial.analysis_error}
                     </p>
                   )}
-                {trial.analysis?.evidence && (
-                  <AnalysisProse
-                    text={trial.analysis.evidence}
-                    className="text-muted-foreground/90 mt-2"
-                  />
-                )}
                 {trial.analysis?.root_cause &&
                   trial.analysis.root_cause !== trial.analysis.evidence && (
                     <div className="border-border/60 bg-muted/30 mt-3 rounded-md border p-2.5">
@@ -580,6 +574,24 @@ function TrialAnalysisCard({
                     </div>
                   </div>
                 )}
+                {trial.analysis?.evidence &&
+                  (trial.analysis.root_cause &&
+                  trial.analysis.root_cause !== trial.analysis.evidence ? (
+                    <details className="mt-2">
+                      <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
+                        Evidence
+                      </summary>
+                      <AnalysisProse
+                        text={trial.analysis.evidence}
+                        className="text-muted-foreground/90 mt-1"
+                      />
+                    </details>
+                  ) : (
+                    <AnalysisProse
+                      text={trial.analysis.evidence}
+                      className="text-muted-foreground/90 mt-2"
+                    />
+                  ))}
               </>
             )}
           </div>
