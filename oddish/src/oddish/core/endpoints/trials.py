@@ -178,6 +178,27 @@ async def rerun_trial_analysis_core(
             detail="An analysis job is already queued or running for this trial",
         )
 
+    # A RUNNING full QA job reads every trial's stored analysis to build the
+    # verdict. Resetting one mid-run would drop it from the verdict inputs.
+    # A QUEUED full QA job is fine: it classifies this trial itself when it
+    # starts, and the per-trial claim keeps the two jobs from colliding.
+    running_task_qa = await session.scalar(
+        select(WorkerJobModel.id).where(
+            WorkerJobModel.kind == WorkerJobKind.QA,
+            WorkerJobModel.subject_table == "tasks",
+            WorkerJobModel.subject_id == trial.task_id,
+            WorkerJobModel.status == WorkerJobStatus.RUNNING,
+            func.coalesce(WorkerJobModel.payload["mode"].astext, "full")
+            != "pre_trial",
+        )
+        .limit(1)
+    )
+    if running_task_qa is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Task-level QA is running; wait for it to finish",
+        )
+
     from oddish.core.endpoints.qa import _reset_trial_analysis
     from oddish.queue import enqueue_trial_analysis_worker_job
 
