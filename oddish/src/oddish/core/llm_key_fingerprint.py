@@ -109,7 +109,14 @@ def trial_llm_key_hash(
     spend and a pasted BYOK key matches. With no overlay the platform key
     funded the run (:func:`platform_key_hash_for_provider`).
     """
-    if byok_env and provider:
+    from oddish.config import is_anthropic_platform_model
+
+    # An explicit ``anthropic/`` id pins the platform ANTHROPIC_API_KEY in the
+    # runner (the prefix wins over BYOK, exactly like anthropic-hdo/), so a
+    # resolved BYOK overlay never funds the run — stamp the platform key.
+    # anthropic-hdo/ needs no guard: its var is ANTHROPIC_HDO_API_KEY, which a
+    # BYOK overlay never carries.
+    if byok_env and provider and not is_anthropic_platform_model(model):
         var = _provider_key_var(provider)
         raw = byok_env.get(var) if var else None
         # HDO wins over BYOK in the runner when its model prefix opts in.
