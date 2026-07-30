@@ -1,10 +1,10 @@
 """Turn analyzer stream events into short, readable log lines.
 
-The sandbox analyzer streams one JSON event per chunk (claude-code
-stream-json format). The local CLI path returns a single blob at the end,
-so it produces no live lines. Each event becomes at most one short line;
-events with nothing useful for a reader return None. Because each event
-becomes one short line, a full run's log stays small and is stored whole.
+Both analyzer backends (sandbox and local CLI) stream one JSON event per
+chunk (claude-code stream-json format). Each event becomes at most one
+short line; events with nothing useful for a reader return None. Because
+each event becomes one short line, a full run's log stays small and is
+stored whole.
 """
 
 from __future__ import annotations

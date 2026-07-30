@@ -4,7 +4,7 @@ import logging
 
 from pydantic import BaseModel, ValidationError
 
-from oddish.blocks.analyzer.claude_cli_client import parse_cli_envelope
+from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
 from oddish.blocks.block import Block, BlockParseError
 from oddish.analyze.models import ActionItem, PreTrialActionItems
 
@@ -112,11 +112,11 @@ class PreTrialBlock(Block):
     def to_action_items_from_cli(self, raw: str) -> dict:
         """``output_transform`` for the CLAUDE_CLI backend.
 
-        The worker-local claude-code run yields a single ``--output-format json``
-        envelope, not the model's bare answer, so unwrap it before validating.
-        Feeding the envelope straight to ``to_action_items`` would validate
-        against ``PreTrialActionItems`` (extra keys ignored, ``items`` defaults
-        to empty) and silently produce zero findings on every run.
+        The worker-local claude-code run yields stream-json events, not the
+        model's bare answer, so pull the result envelope's payload out before
+        validating. Feeding raw events straight to ``to_action_items`` would
+        validate against ``PreTrialActionItems`` (extra keys ignored, ``items``
+        defaults to empty) and silently produce zero findings on every run.
         """
-        obj = self._normalize(parse_cli_envelope(raw))
+        obj = self._normalize(parse_stream_json_result(raw))
         return self.filter_output(self.output_schema(**obj)).model_dump()

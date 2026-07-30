@@ -158,8 +158,8 @@ async def _build_pre_trial_cli_block(
             task_id=task_id,
             model=model,
             triggered_by_user_id=triggered_by_user_id,
-            # The CLI yields a --output-format json envelope, not the model's
-            # bare answer; this unwraps it before schema validation.
+            # The CLI yields stream-json events, not the model's bare answer;
+            # this pulls the result payload out before schema validation.
             output_transform=block_obj.to_action_items_from_cli,
             cli_config=CliConfig(cwd=task_dir, timeout=settings.pre_trial_timeout),
             block_metadata=block_metadata,
