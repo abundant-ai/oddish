@@ -15,11 +15,12 @@ the caller's version claim.
 
 from __future__ import annotations
 
+import json
 import shutil
 
 from sqlalchemy import select
 
-from oddish.analyze.models import ActionItem
+from oddish.analyze.models import ActionItem, PreTrialActionItems
 from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerBlock,
     AnalyzerInput,
@@ -134,6 +135,13 @@ async def synthesize_task_pre_trial(
             output_transform=block_obj.to_action_items_from_cli,
             cli_config=CliConfig(
                 cwd=task_dir,
+                # Validate the answer inside Claude Code. Otherwise it arrives
+                # as free text in ``result`` and one unescaped quote can make
+                # the entire audit fail during json.loads.
+                json_schema=json.dumps(
+                    PreTrialActionItems.model_json_schema(),
+                    separators=(",", ":"),
+                ),
                 timeout=timeout or settings.pre_trial_timeout,
             ),
             block_metadata={

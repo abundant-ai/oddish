@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -160,6 +161,11 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     assert (
         str(_FakeAnalyzerBlock.last_kwargs["cli_config"].cwd) == "/fake/task_xyz/path"
     )
+    output_schema = json.loads(
+        _FakeAnalyzerBlock.last_kwargs["cli_config"].json_schema
+    )
+    assert output_schema["type"] == "object"
+    assert "items" in output_schema["properties"]
 
     assert len(result.items) == 1
     assert result.items[0].file == "verifier.py"
