@@ -153,6 +153,9 @@ async def _qa_queue_position(
                     WorkerJobModel.queue_key,
                     WorkerJobModel.priority,
                     WorkerJobModel.created_at,
+                    (WorkerJobModel.available_after > func.now()).label(
+                        "in_backoff"
+                    ),
                 )
                 .where(
                     WorkerJobModel.kind == kind,
@@ -170,22 +173,28 @@ async def _qa_queue_position(
         job = await _waiting_job(WorkerJobKind.QA, "tasks", task_id)
     if job is None:
         return None
-    queue_key, priority, created_at = job
-    ahead = await session.scalar(
-        select(func.count(WorkerJobModel.id)).where(
-            WorkerJobModel.queue_key == queue_key,
-            WorkerJobModel.status.in_(waiting),
-            # Mirror the worker's claim query: a job in retry backoff is not
-            # claimable yet and must not inflate the position.
-            WorkerJobModel.available_after <= func.now(),
+    queue_key, priority, created_at, in_backoff = job
+    # Mirror the worker's claim query: a job in retry backoff is not claimable
+    # yet, so it must not inflate the position of a claimable job. When the
+    # subject job itself is in backoff, every claimable job runs first
+    # regardless of order, so the position condition drops the ordering.
+    conditions = [
+        WorkerJobModel.queue_key == queue_key,
+        WorkerJobModel.status.in_(waiting),
+        WorkerJobModel.available_after <= func.now(),
+    ]
+    if not in_backoff:
+        conditions.append(
             or_(
                 WorkerJobModel.priority > priority,
                 and_(
                     WorkerJobModel.priority == priority,
                     WorkerJobModel.created_at < created_at,
                 ),
-            ),
+            )
         )
+    ahead = await session.scalar(
+        select(func.count(WorkerJobModel.id)).where(*conditions)
     )
     return int(ahead or 0) + 1
 
