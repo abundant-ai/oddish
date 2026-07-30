@@ -210,13 +210,16 @@ function TrialAnalysisCard({
   useEffect(() => {
     trialIdRef.current = trialProp.id;
     setLive(null);
+    setQueuing(false);
     setQueuedAt(null);
     setLogText(null);
     setQueuePosition(null);
     setQueueError(null);
   }, [trialProp.id]);
 
-  const trial = live ?? trialProp;
+  // The id check covers the first render after a trial switch, before the
+  // reset effect above has cleared the previous trial's polled state.
+  const trial = live && live.id === trialProp.id ? live : trialProp;
   const analysisActive =
     trial.analysis_status === "running" ||
     trial.analysis_status === "pending" ||
