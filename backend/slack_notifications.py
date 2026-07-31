@@ -1285,19 +1285,6 @@ async def _mark_alert_sent(*alert_keys: str) -> None:
         )
 
 
-async def _rearm_user_spend_alerts(active_keys: set[str]) -> None:
-    statement = SlackExpenseAlertModel.__table__.delete().where(
-        SlackExpenseAlertModel.alert_key.like("user-daily-overage:%"),
-        SlackExpenseAlertModel.notified_at.isnot(None),
-    )
-    if active_keys:
-        statement = statement.where(
-            SlackExpenseAlertModel.alert_key.not_in(active_keys)
-        )
-    async with get_session() as session:
-        await session.execute(statement)
-
-
 async def record_alerts(
     alerts: list[SlackAlert],
     *,
@@ -1434,14 +1421,6 @@ async def send_slack_expense_notifications() -> None:
         return
     try:
         alerts = await load_alerts()
-        if webhook_url:
-            await _rearm_user_spend_alerts(
-                {
-                    alert.key
-                    for alert in alerts
-                    if alert.key.startswith("user-daily-overage:")
-                }
-            )
         await record_alerts(alerts, channel=bool(webhook_url), dms=bool(bot_token))
         await deliver_pending_alerts(webhook_url, bot_token)
     finally:
