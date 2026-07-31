@@ -134,13 +134,20 @@ function getNodeName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-/** The version whose static checks the pane shows: current, else newest.
- *  /detail orders versions newest-first, so the fallback is versions[0]. */
+/** The version whose static checks the pane shows: the pinned version when
+ *  the pane is scoped to one (the experiment drawer), else current, else
+ *  newest. /detail orders versions newest-first, so the fallback is
+ *  versions[0]. */
 function pickChecksVersion(
   detail: TaskDetailResponse | undefined,
+  pinnedVersion?: number | null,
 ): TaskVersionSummary | null {
   const versions = detail?.versions;
   if (!versions || versions.length === 0) return null;
+  if (pinnedVersion != null) {
+    const pinned = versions.find((v) => v.version === pinnedVersion);
+    if (pinned) return pinned;
+  }
   return versions.find((v) => v.is_current) ?? versions[0];
 }
 
@@ -324,15 +331,23 @@ export function TaskFilesPanel({
       // must keep tracking until QA is terminal or the guard goes stale.
       refreshInterval: (data) => {
         const checksLive =
-          pickChecksVersion(data)?.pre_trial_status === "running" ||
-          pickChecksVersion(data)?.pre_trial_status === "queued";
+          pickChecksVersion(data, taskVersion)?.pre_trial_status ===
+            "running" ||
+          pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
         const qaLive =
           data?.task?.verdict_status === "queued" ||
           data?.task?.verdict_status === "running";
         return checksLive || qaLive ? 5000 : 0;
       },
     });
-  const checksVersion = pickChecksVersion(checksDetail);
+  // Scoped panes (the experiment drawer) pin the version whose files are on
+  // screen; the checks must describe that same source.
+  const checksVersion = pickChecksVersion(checksDetail, taskVersion);
+  // The re-run endpoint audits the current version. Offering it while an
+  // older pinned version is on screen would audit source the user is not
+  // looking at.
+  const checksPinnedOld =
+    taskVersion != null && checksVersion != null && !checksVersion.is_current;
   const checksAvailable = showAnalysis !== false && effectiveChecksTaskId !== null;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
@@ -1380,6 +1395,7 @@ export function TaskFilesPanel({
                   queueError={checksQueueError}
                   loading={checksLoading}
                   loadError={checksLoadFailure}
+                  pinnedOld={checksPinnedOld}
                 />
               ) : (
                 renderFileContent()

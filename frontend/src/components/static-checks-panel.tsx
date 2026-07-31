@@ -60,6 +60,7 @@ export function StaticChecksPanel({
   queueError,
   loading,
   loadError,
+  pinnedOld,
   className,
 }: {
   findings?: PreTrialFinding[] | null;
@@ -75,6 +76,10 @@ export function StaticChecksPanel({
    * read as "unaudited" — a Run click on that misread wipes real findings. */
   loading?: boolean;
   loadError?: string | null;
+  /** The pane shows a pinned, non-current version; the re-run endpoint
+   * audits the current version, so running it here would audit other
+   * source than the one on screen. */
+  pinnedOld?: boolean;
   className?: string;
 }) {
   const items = findings ?? [];
@@ -103,13 +108,17 @@ export function StaticChecksPanel({
         </span>
         <button
           type="button"
-          disabled={rerunning || auditRunning || qaActive || stateUnknown}
+          disabled={
+            rerunning || auditRunning || qaActive || stateUnknown || pinnedOld
+          }
           onClick={onRerun}
           className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
           title={
-            qaActive
-              ? "Task QA is running and includes these checks — wait for it to finish"
-              : "Audit this task's source with the latest prompt"
+            pinnedOld
+              ? "The checks run on the current version — open the task page to re-run"
+              : qaActive
+                ? "Task QA is running and includes these checks — wait for it to finish"
+                : "Audit this task's source with the latest prompt"
           }
         >
           {rerunning
