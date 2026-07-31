@@ -65,9 +65,9 @@ function formatDateTime(date?: string): string {
 
 /** Structured summary view for Harbor `result.json` files. */
 export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
-  let data: ResultData;
+  let parsed: unknown;
   try {
-    data = JSON.parse(content) as ResultData;
+    parsed = JSON.parse(content);
   } catch (error) {
     return (
       <div className="text-destructive p-4">
@@ -76,6 +76,19 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
       </div>
     );
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return (
+      <div className="text-destructive p-4">
+        Failed to parse result.json: expected an object, got{" "}
+        {parsed === null
+          ? "null"
+          : Array.isArray(parsed)
+            ? "an array"
+            : typeof parsed}
+      </div>
+    );
+  }
+  const data = parsed as ResultData;
 
   const reward = extractReward(data.verifier_result?.rewards);
   const passed = reward === 1.0;
