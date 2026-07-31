@@ -122,7 +122,7 @@ The output-mismatch case is the most common one. Ask one question: did the instr
 * `premature_kill` — killed in the middle of productive work, with budget left
 * `artifact_lost` — trajectory shows real edits; graded work is empty or damaged
 * `tool_infrastructure_failure` — tool calls failing for infrastructure reasons; corrupted or truncated content served to the agent
-* `hidden_file_leak` — hidden files were readable and that alone invalidated the trial, but the agent did NOT use them (if it used them, that is cheating — procedure step 3)
+* `hidden_file_leak` — the task exposed hidden files, and the label is HARNESS_ERROR: the infrastructure broke the run, or the exposure alone voided the grade. The override in the procedure sets this subtype whether the agent used the files or not. When the infrastructure worked, step 3 gives the label instead.
 * `misgrade` — a grading, parsing, or config error; the result possibly does not show what happened
 
 ### GOOD_FAILURE — agent's fault, task is fair
