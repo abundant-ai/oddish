@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, not_, select
 
 from oddish.analyze import BaselineValidation, TrialClassification
-from oddish.analyze.models import TaskVerdictModel
+from oddish.analyze.models import ActionItem, TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
@@ -60,12 +60,61 @@ VERDICT_FALLBACK_SCHEMA = normalize_findings_schema(
 )
 
 
+async def _load_pre_trial_items(task_id: str) -> list[ActionItem] | None:
+    """The audit findings the verdict must see: the current version's, else
+    the newest audited version's. Returns ``None`` when the state is unknown.
+    Parsed leniently — one malformed item must not hide the rest."""
+    async with get_session() as session:
+        current_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        version = (
+            await session.get(TaskVersionModel, current_id)
+            if current_id is not None
+            else None
+        )
+        if version is not None and version.pre_trial_status is not None:
+            # The current version has its own audit history, and it is
+            # authoritative. A failed or in-flight audit clears the payload,
+            # and that means "unknown" — never another version's findings,
+            # which could mark a fixed task bad from stale leaks.
+            if version.pre_trial is None:
+                return None
+            raw_items = version.pre_trial.get("items", [])
+        else:
+            # Never audited: the newest audited version is the best signal.
+            version = (
+                await session.execute(
+                    select(TaskVersionModel)
+                    .where(TaskVersionModel.task_id == task_id)
+                    .where(TaskVersionModel.pre_trial.isnot(None))
+                    .order_by(TaskVersionModel.version.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            raw_items = ((version.pre_trial if version else None) or {}).get(
+                "items", []
+            )
+
+    items: list[ActionItem] = []
+    for raw in raw_items:
+        try:
+            items.append(ActionItem.model_validate(raw))
+        except Exception:  # noqa: BLE001
+            console.print(
+                f"[yellow]Skipping a malformed pre_trial item for {task_id}[/yellow]"
+            )
+    return items
+
+
 async def synthesize_task_verdict(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None,
     quality_check_passed: bool,
     timeout: float,
     task_id: str | None = None,
+    pre_trial_items: list[ActionItem] | None = None,
+    pre_trial_load_failed: bool = False,
 ) -> TaskVerdictModel:
     """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
@@ -94,7 +143,11 @@ async def synthesize_task_verdict(
     from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
 
     vb = VerdictBlock(
-        classifications, baseline=baseline, quality_check_passed=quality_check_passed
+        classifications,
+        baseline=baseline,
+        quality_check_passed=quality_check_passed,
+        pre_trial_items=pre_trial_items,
+        pre_trial_load_failed=pre_trial_load_failed,
     )
     prompt = vb.build_prompt()
 
@@ -840,6 +893,26 @@ async def run_task_qa_job(
                 f"{type(exc).__name__}: {exc}[/red]"
             )
 
+        # The classify prompt tells trials not to repeat pre-trial findings
+        # in their action items, so an audit hole no trial exploited reaches
+        # the verdict only through this list. Loaded after the aggregation so
+        # the items carry their exploited stamps. Best-effort like above —
+        # but a load failure must render as "unknown", never as a clean pass.
+        pre_trial_items: list[ActionItem] = []
+        pre_trial_load_failed = False
+        try:
+            loaded = await _load_pre_trial_items(task_id)
+            if loaded is None:
+                pre_trial_load_failed = True
+            else:
+                pre_trial_items = loaded
+        except Exception as exc:  # noqa: BLE001
+            pre_trial_load_failed = True
+            console.print(
+                f"[red]Pre-trial item load failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+
         console.print(
             f"[cyan]Computing verdict from {len(classifications)} "
             "classifications...[/cyan]"
@@ -862,6 +935,8 @@ async def run_task_qa_job(
             quality_check_passed,
             timeout,
             task_id=task_id,
+            pre_trial_items=pre_trial_items,
+            pre_trial_load_failed=pre_trial_load_failed,
         )
 
         verdict_result = build_verdict_payload(verdict, classifications)
