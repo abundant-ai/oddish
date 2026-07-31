@@ -164,22 +164,29 @@ def _build_job_config(payload: dict[str, Any]):
     if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
         env_config.kwargs = {**payload["daytona_kwargs"], **(env_config.kwargs or {})}
 
-    agent_kwargs: dict[str, Any] = {}
+    agent_kwargs: dict[str, Any] = dict(payload.get("agent_config") or {})
+    if agent_kwargs.get("import_path") is None:
+        agent_kwargs["name"] = payload["agent"]
+    else:
+        agent_kwargs["name"] = None
     if payload.get("model"):
         agent_kwargs["model_name"] = payload["model"]
-    if payload.get("extra_agent_env"):
-        agent_kwargs["env"] = dict(payload["extra_agent_env"])
+    if payload.get("runtime_env") or payload.get("extra_agent_env"):
+        agent_kwargs["env"] = {
+            **dict(agent_kwargs.get("env") or {}),
+            **dict(payload.get("runtime_env") or {}),
+            **dict(payload.get("extra_agent_env") or {}),
+        }
 
     agent_harbor_requirement = payload.get("agent_harbor_requirement")
     if agent_harbor_requirement:
-        agent_config = AgentConfig(
-            name=None,
-            import_path=f"{__name__}:_ProbeClaudeCode",
-            kwargs={"harbor_requirement": agent_harbor_requirement},
-            **agent_kwargs,
-        )
-    else:
-        agent_config = AgentConfig(name=payload["agent"], **agent_kwargs)
+        agent_kwargs["name"] = None
+        agent_kwargs["import_path"] = f"{__name__}:_ProbeClaudeCode"
+        agent_kwargs["kwargs"] = {
+            **dict(agent_kwargs.get("kwargs") or {}),
+            "harbor_requirement": agent_harbor_requirement,
+        }
+    agent_config = AgentConfig.model_validate(agent_kwargs)
 
     kwargs: dict[str, Any] = {
         "tasks": [TaskConfig(path=Path(payload["task_path"]))],
