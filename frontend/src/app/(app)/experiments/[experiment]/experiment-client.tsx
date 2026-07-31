@@ -264,9 +264,12 @@ function ExperimentContent({
   );
 
   const isLoading = isLoadingTasks;
+  // hasMoreTrials covers the frame between one batch settling and the
+  // auto-load effect requesting the next; without it, pending rows flash
+  // from skeleton to "—" at every batch boundary.
   const isLoadingTrials =
     (lightweightTasks?.length ?? 0) > 0 &&
-    (isLoadingTrialPages || isValidatingTrials);
+    (isLoadingTrialPages || isValidatingTrials || hasMoreTrials);
   const trialsLoadedCount = useMemo(() => {
     if (!trialPages) return 0;
     return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
