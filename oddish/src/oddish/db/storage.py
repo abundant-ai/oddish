@@ -136,12 +136,15 @@ def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, obj
     return [files[path] for path in sorted(files)]
 
 
-# Inline-content limits for archive-backed listings: members at or below the
+# Inline-content limits for recursive task listings: files at or below the
 # per-file cap come back with ``content`` attached so the file tree and the
 # file bodies arrive in a single round trip; the total cap bounds the response
 # size for tasks with many small files.
 _INLINE_CONTENT_MAX_FILE_BYTES = 100 * 1024
 _INLINE_CONTENT_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+# Fan-out width for fetching per-file objects when inlining from the
+# expanded / plain S3 layouts (the archive layout reads from memory).
+_INLINE_CONTENT_MAX_CONCURRENCY = 16
 
 
 def _inline_task_archive_contents(
@@ -334,6 +337,50 @@ class StorageClient:
         cls._archive_etag_hints.move_to_end(archive_key)
         while len(cls._archive_etag_hints) > cls._ARCHIVE_ETAG_HINTS_MAX:
             cls._archive_etag_hints.popitem(last=False)
+
+    async def _inline_object_contents(
+        self, files: list[dict[str, object]]
+    ) -> list[dict[str, object]]:
+        """Concurrently fetch small text objects and attach ``content``.
+
+        Mirrors ``_inline_task_archive_contents`` for the per-file S3
+        layouts: the backend sits next to S3, so fanning out the small GETs
+        server-side is far cheaper than the client fetching files one round
+        trip at a time. Best-effort — binary (non-UTF-8) objects and fetch
+        failures simply come back without ``content``; the per-file
+        endpoint / presigned URL still serves those.
+        """
+        budget = _INLINE_CONTENT_MAX_TOTAL_BYTES
+        eligible: list[dict[str, object]] = []
+        for meta in files:
+            size = int(meta.get("size") or 0)
+            if size > _INLINE_CONTENT_MAX_FILE_BYTES or size > budget:
+                continue
+            budget -= size
+            eligible.append(meta)
+        if not eligible:
+            return files
+
+        semaphore = asyncio.Semaphore(_INLINE_CONTENT_MAX_CONCURRENCY)
+
+        async def fetch_one(meta: dict[str, object]) -> tuple[str, str] | None:
+            async with semaphore:
+                try:
+                    raw = await self.download_bytes(str(meta["key"]))
+                    return str(meta["path"]), raw.decode("utf-8")
+                except Exception:
+                    return None
+
+        fetched = await asyncio.gather(*(fetch_one(meta) for meta in eligible))
+        contents = dict(result for result in fetched if result is not None)
+        if not contents:
+            return files
+        return [
+            {**meta, "content": contents[str(meta["path"])]}
+            if str(meta["path"]) in contents
+            else meta
+            for meta in files
+        ]
 
     async def _load_task_archive(
         self, archive_key: str
@@ -896,7 +943,7 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": files,
+                "files": await self._inline_object_contents(files),
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,
@@ -1006,7 +1053,7 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": files,
+                "files": await self._inline_object_contents(files),
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,

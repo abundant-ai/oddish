@@ -721,6 +721,63 @@ async def test_list_task_files_uses_expanded_layout_when_available(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_task_files_expanded_layout_inlines_small_contents(monkeypatch):
+    """Recursive expanded-layout listings fetch small text objects
+    server-side and attach their contents; binary objects are left to the
+    per-file URL."""
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    expanded_prefix = "tasks/task-123/v2-files/"
+    bodies = {
+        f"{expanded_prefix}task.toml": b"name = 'demo'\n",
+        f"{expanded_prefix}environment/blob.bin": b"\x00\xff\xfe\x01",
+    }
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+
+    async def fake_list_objects_all(prefix: str) -> list[dict]:
+        return _expanded_objects(
+            expanded_prefix,
+            {
+                "task.toml": 14,
+                "environment/blob.bin": 4,
+                ".oddish-manifest.json": 99,
+            },
+        )
+
+    async def fake_get_presigned_urls_batch(s3_keys, expiration):
+        return {key: f"https://example.com/{key}" for key in s3_keys}
+
+    async def fake_download_bytes(s3_key: str) -> bytes:
+        return bodies[s3_key]
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "list_objects_all", fake_list_objects_all)
+    monkeypatch.setattr(
+        storage, "get_presigned_urls_batch", fake_get_presigned_urls_batch
+    )
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=True,
+        limit=1000,
+        cursor=None,
+        presign=True,
+        version=2,
+    )
+
+    by_path = {entry["path"]: entry for entry in listing["files"]}
+    assert by_path["task.toml"]["content"] == "name = 'demo'\n"
+    # Binary body doesn't decode as UTF-8 — no inlined content, URL only.
+    assert "content" not in by_path["environment/blob.bin"]
+    assert by_path["environment/blob.bin"]["url"].startswith("https://")
+
+
+@pytest.mark.asyncio
 async def test_list_task_files_falls_back_to_archive_without_manifest(monkeypatch):
     """Without a manifest sentinel, the archive path is used and the
     behavior is byte-identical to today's reader."""

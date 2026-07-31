@@ -65,13 +65,8 @@ interface TaskFile {
   url?: string; // Presigned S3 URL for direct access
 }
 
-interface TaskDirectory {
-  path: string;
-}
-
 interface FilesListingResponse {
   files?: TaskFile[];
-  dirs?: TaskDirectory[];
 }
 
 interface TreeNode {
@@ -82,7 +77,6 @@ interface TreeNode {
   content?: string;
   url?: string; // Presigned S3 URL for direct access
   size?: number; // File size in bytes
-  isLoaded?: boolean;
   isTruncated?: boolean; // True if content was truncated due to size
 }
 
@@ -162,41 +156,28 @@ function formatFileSize(bytes: number): string {
 
 /**
  * Build the full nested tree from a recursive listing in one pass.
- * Directories implied by nested file paths are created pre-loaded so
- * expanding them is instant (no per-directory round trip). Explicit `dirs`
- * entries (only returned by non-recursive responses) stay lazy so the
- * per-prefix fallback keeps working.
+ * Directories are implied by nested file paths, so expanding them is
+ * pure UI state — no per-directory round trips.
  */
-function buildTreeFromListing(
-  files: TaskFile[] = [],
-  dirs: TaskDirectory[] = []
-): TreeNode[] {
+function buildTreeFromListing(files: TaskFile[] = []): TreeNode[] {
   const root: TreeNode[] = [];
   const dirNodes = new Map<string, TreeNode>();
 
-  const ensureDir = (path: string, isLoaded: boolean): TreeNode => {
+  const ensureDir = (path: string): TreeNode => {
     const existing = dirNodes.get(path);
-    if (existing) {
-      if (isLoaded) existing.isLoaded = true;
-      return existing;
-    }
+    if (existing) return existing;
     const node: TreeNode = {
       name: getNodeName(path),
       path,
       type: "dir",
       children: [],
-      isLoaded,
     };
     dirNodes.set(path, node);
     const parentPath = path.split("/").slice(0, -1).join("/");
-    (parentPath ? ensureDir(parentPath, isLoaded).children! : root).push(node);
+    (parentPath ? ensureDir(parentPath).children! : root).push(node);
     return node;
   };
 
-  for (const dir of dirs) {
-    const path = dir.path.replace(/\/+$/, "");
-    if (path) ensureDir(path, false);
-  }
   for (const file of files) {
     const node: TreeNode = {
       name: getNodeName(file.path),
@@ -207,7 +188,7 @@ function buildTreeFromListing(
       size: file.size,
     };
     const parentPath = file.path.split("/").slice(0, -1).join("/");
-    (parentPath ? ensureDir(parentPath, true).children! : root).push(node);
+    (parentPath ? ensureDir(parentPath).children! : root).push(node);
   }
 
   const sortLevel = (nodes: TreeNode[]) => {
@@ -224,49 +205,6 @@ function buildTreeFromListing(
   };
   sortLevel(root);
   return root;
-}
-
-function buildNodesFromListing(
-  files: TaskFile[] = [],
-  dirs: TaskDirectory[] = []
-): TreeNode[] {
-  const dirNodes = dirs.map((dir) => ({
-    name: getNodeName(dir.path),
-    path: dir.path,
-    type: "dir" as const,
-    children: [],
-    isLoaded: false,
-  }));
-  const fileNodes = files.map((file) => ({
-    name: getNodeName(file.path),
-    path: file.path,
-    type: "file" as const,
-    content: file.content,
-    url: file.url,
-    size: file.size,
-  }));
-  const sortedDirs = dirNodes.sort((a, b) => a.name.localeCompare(b.name));
-  const sortedFiles = fileNodes.sort((a, b) => a.name.localeCompare(b.name));
-  return [...sortedDirs, ...sortedFiles];
-}
-
-function updateTree(
-  nodes: TreeNode[],
-  targetPath: string,
-  updater: (node: TreeNode) => TreeNode
-): TreeNode[] {
-  return nodes.map((node) => {
-    if (node.path === targetPath) {
-      return updater(node);
-    }
-    if (node.type === "dir" && node.children) {
-      return {
-        ...node,
-        children: updateTree(node.children, targetPath, updater),
-      };
-    }
-    return node;
-  });
 }
 
 function findNodeByPath(nodes: TreeNode[], path: string): TreeNode | null {
@@ -448,7 +386,6 @@ export function TaskFilesPanel({
   const checksShowing = checksSelected && checksAvailable;
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
-  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [isTruncated, setIsTruncated] = useState(false);
   const [fullFileSize, setFullFileSize] = useState<number | null>(null);
   const [loadingFullFile, setLoadingFullFile] = useState(false);
@@ -475,31 +412,17 @@ export function TaskFilesPanel({
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
 
   const verdictSource = verdictTask ?? task;
-  const buildListingUrl = useCallback(
-    ({
-      recursive = false,
-      prefix,
-      cursor,
-    }: {
-      recursive?: boolean;
-      prefix?: string;
-      cursor?: string;
-    } = {}) => {
-      const params = new URLSearchParams();
-      params.set("recursive", recursive ? "1" : "0");
-      if (prefix) {
-        params.set("prefix", prefix);
-      }
-      if (cursor) {
-        params.set("cursor", cursor);
-      }
-      if (shouldScopeFilesToVersion && currentVersion != null) {
-        params.set("version", String(currentVersion));
-      }
-      return `${resolvedFilesUrl}?${params.toString()}`;
-    },
-    [resolvedFilesUrl, shouldScopeFilesToVersion, currentVersion]
-  );
+  // The whole tree (and inlined contents where available) comes back from
+  // one recursive request — task trees are shallow, there's nothing to
+  // page or lazy-load.
+  const buildListingUrl = useCallback(() => {
+    const params = new URLSearchParams();
+    params.set("recursive", "1");
+    if (shouldScopeFilesToVersion && currentVersion != null) {
+      params.set("version", String(currentVersion));
+    }
+    return `${resolvedFilesUrl}?${params.toString()}`;
+  }, [resolvedFilesUrl, shouldScopeFilesToVersion, currentVersion]);
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
   const resolvedIndex =
@@ -721,13 +644,12 @@ export function TaskFilesPanel({
       setChecksSelected(true);
       setFileContent(null);
       setExpandedDirs(new Set());
-      setLoadingDirs(new Set());
 
       try {
-        // One recursive request loads the entire tree (and, for
-        // archive-backed tasks, inlined file contents) so folder expands
-        // and most file clicks need no further round trips.
-        const res = await fetch(buildListingUrl({ recursive: true }));
+        // One recursive request loads the entire tree and any inlined
+        // file contents, so folder expands and most file clicks need no
+        // further round trips.
+        const res = await fetch(buildListingUrl());
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
@@ -738,9 +660,7 @@ export function TaskFilesPanel({
 
         if (cancelled) return;
 
-        const files: TaskFile[] = data.files || [];
-        const dirs: TaskDirectory[] = data.dirs || [];
-        const tree = buildTreeFromListing(files, dirs);
+        const tree = buildTreeFromListing(data.files || []);
         setFileTree(tree);
         // The checks pane is the default view, so nothing pre-selects
         // behind it: a hidden auto-selected file prefetches content that
@@ -776,41 +696,6 @@ export function TaskFilesPanel({
       cancelled = true;
     };
   }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, checksAvailable]);
-
-  const loadDirectory = useCallback(
-    async (path: string) => {
-      if (!taskId && !filesUrl) return;
-      setLoadingDirs((prev) => new Set(prev).add(path));
-      try {
-        const res = await fetch(buildListingUrl({ prefix: path }));
-        if (!res.ok) {
-          throw new Error("Failed to fetch directory");
-        }
-        const data: FilesListingResponse = await res.json();
-        const files: TaskFile[] = data.files || [];
-        const dirs: TaskDirectory[] = data.dirs || [];
-        const children = buildNodesFromListing(files, dirs);
-        setFileTree((prev) =>
-          updateTree(prev, path, (node) => ({
-            ...node,
-            children,
-            isLoaded: true,
-          }))
-        );
-      } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to fetch directory"
-        );
-      } finally {
-        setLoadingDirs((prev) => {
-          const next = new Set(prev);
-          next.delete(path);
-          return next;
-        });
-      }
-    },
-    [taskId, filesUrl, buildListingUrl]
-  );
 
   // Fetch file content when a file is selected
   useEffect(() => {
@@ -1003,7 +888,6 @@ export function TaskFilesPanel({
       setFileContent(null);
       setError(null);
       setExpandedDirs(new Set());
-      setLoadingDirs(new Set());
       setIsTruncated(false);
       setFullFileSize(null);
       setLoadingFullFile(false);
@@ -1031,24 +915,13 @@ export function TaskFilesPanel({
       });
     }
 
-    if (!node || node.type !== "file") {
-      const nextDirToLoad = ancestorPaths.find((ancestorPath) => {
-        const ancestorNode = findNodeByPath(fileTree, ancestorPath);
-        return (
-          ancestorNode?.type === "dir" &&
-          !ancestorNode.isLoaded &&
-          !loadingDirs.has(ancestorPath)
-        );
-      });
-      if (nextDirToLoad) {
-        void loadDirectory(nextDirToLoad);
-      }
-      return;
-    }
+    // The tree is fully loaded up front; a miss means the path simply
+    // doesn't exist in this listing.
+    if (!node || node.type !== "file") return;
 
     setSelectedFile(node);
     setChecksSelected(false);
-  }, [initialFilePath, fileTree, loadingDirs, loadDirectory]);
+  }, [initialFilePath, fileTree]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -1103,7 +976,6 @@ export function TaskFilesPanel({
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
       const isSelected = !checksShowing && selectedFile?.path === node.path;
-      const isLoadingDir = loadingDirs.has(node.path);
       const Icon =
         node.type === "dir"
           ? isExpanded
@@ -1119,11 +991,7 @@ export function TaskFilesPanel({
             size="sm"
             onClick={() => {
               if (node.type === "dir") {
-                const willExpand = !isExpanded;
                 toggleDir(node.path);
-                if (willExpand && !node.isLoaded && !isLoadingDir) {
-                  void loadDirectory(node.path);
-                }
               } else {
                 setSelectedFile(node);
                 setChecksSelected(false);
@@ -1153,9 +1021,6 @@ export function TaskFilesPanel({
                   : "text-muted-foreground"
               }`}
             />
-            {node.type === "dir" && isLoadingDir && (
-              <Loader2 className="text-muted-foreground h-3 w-3 animate-spin" />
-            )}
             <span className="truncate">{node.name}</span>
           </Button>
           {node.type === "dir" && isExpanded && node.children && (
@@ -1313,15 +1178,43 @@ export function TaskFilesPanel({
   const isListingLoading = loading;
   const listingError = error;
 
+  // Whole-pane skeleton mirroring the sidebar + content layout while the
+  // single listing request is in flight.
+  const listingSkeleton = (
+    <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
+      <div className="border-border bg-muted/30 max-h-[30vh] w-full border-b p-2 md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
+        <div className="space-y-2 px-2 py-2">
+          {checksAvailable && (
+            <>
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-6 w-full" />
+              <div className="pt-2" />
+            </>
+          )}
+          <Skeleton className="h-3 w-12" />
+          <Skeleton className="h-6 w-full" />
+          <Skeleton className="h-6 w-5/6" />
+          <Skeleton className="h-6 w-3/4" />
+          <Skeleton className="h-6 w-5/6" />
+          <Skeleton className="h-6 w-2/3" />
+        </div>
+      </div>
+      <div className="flex-1 space-y-3 overflow-hidden p-4 sm:p-6">
+        <Skeleton className="h-5 w-1/3" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-5/6" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+        <Skeleton className="h-4 w-3/4" />
+        <Skeleton className="h-4 w-5/6" />
+      </div>
+    </div>
+  );
+
   const fileTreeContent = (
     <>
-      {isListingLoading && !checksAvailable ? (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="text-muted-foreground flex items-center gap-2">
-            <Loader2 className="h-5 w-5 animate-spin" />
-            <span className="text-sm">Loading files...</span>
-          </div>
-        </div>
+      {isListingLoading ? (
+        listingSkeleton
       ) : listingError && !checksAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
@@ -1379,12 +1272,7 @@ export function TaskFilesPanel({
               <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                 Files
               </div>
-              {isListingLoading ? (
-                <div className="text-muted-foreground flex items-center gap-2 px-2 py-2 text-xs">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Loading files...
-                </div>
-              ) : listingError ? (
+              {listingError ? (
                 <p className="text-muted-foreground px-2 py-2 text-xs">
                   Unable to load files: {listingError}
                 </p>
