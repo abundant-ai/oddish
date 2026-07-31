@@ -1,7 +1,7 @@
 """drop_trajectory_graph_column
 
 Revision ID: trajgraph_002
-Revises: qa_assignments_001
+Revises: analysis_log_001
 Create Date: 2026-07-31 12:00:00.000000
 
 The Agent Graph feature (PR #645) is removed; nothing reads or writes
@@ -16,7 +16,7 @@ from alembic import op
 
 
 revision: str = "trajgraph_002"
-down_revision: Union[str, Sequence[str], None] = "qa_assignments_001"
+down_revision: Union[str, Sequence[str], None] = "analysis_log_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
