@@ -265,9 +265,7 @@ function ExperimentContent({
   );
 
   const isLoading = isLoadingTasks;
-  // hasMoreTrials covers the frame between one batch settling and the
-  // auto-load effect requesting the next; without it, pending rows flash
-  // from skeleton to "—" at every batch boundary.
+  // hasMoreTrials keeps pending rows in skeleton state between batches.
   const isLoadingTrials =
     (lightweightTasks?.length ?? 0) > 0 &&
     (isLoadingTrialPages || isValidatingTrials || hasMoreTrials);
@@ -278,11 +276,8 @@ function ExperimentContent({
   const totalTaskCount = lightweightTasks?.length ?? 0;
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
-  // A failed batch stalls the auto-load chain: hasMoreTrials keys off the
-  // last *successful* page, so once SWR's error retries give up, nothing
-  // re-requests the hole. Surfaced below as a Retry alert; mutateTrials()
-  // revalidates every held page, which refills the hole and lets the
-  // auto-load effect resume.
+  // hasMoreTrials only tracks successful pages, so a failed batch stalls
+  // the chain here until the Retry alert's mutateTrials() refills it.
   const trialsStalled = Boolean(trialsError) && trialsLoadedCount < totalTaskCount;
 
   const refreshIntervalMs = useMemo(() => {
@@ -297,8 +292,7 @@ function ExperimentContent({
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
-    // Null = no polling. Page-local mutations refresh via refreshTaskPages,
-    // which recomputes this, so polling resumes when work restarts.
+    // null disables the interval; refreshTaskPages restarts it when work resumes.
     return hasActiveTasks ? 30000 : null;
   }, [tasksForExperiment]);
 
@@ -326,9 +320,7 @@ function ExperimentContent({
     [mutateLightweight, mutateTrials, mutateCostTotals]
   );
 
-  // Load remaining batches sequentially: canLoadMoreTrials is false while a
-  // fetch is in flight, so this fires once per settled page. Un-enriched rows
-  // render skeleton chips (the table treats ``trials == null`` as pending).
+  // Sequential: canLoadMoreTrials is false while a fetch is in flight.
   useEffect(() => {
     if (!canLoadMoreTrials) return;
     void setTrialsSize((size) => size + 1);
