@@ -8,7 +8,6 @@ import { VideoRenderer } from "./video-renderer";
 import { AudioRenderer } from "./audio-renderer";
 import { PdfRenderer } from "./pdf-renderer";
 import { BinaryRenderer } from "./binary-renderer";
-import { JsonRenderer } from "./json-renderer";
 import { LogRenderer } from "./log-renderer";
 import { CsvRenderer } from "./csv-renderer";
 import { TextRenderer } from "./text-renderer";
@@ -36,11 +35,6 @@ const DocxRenderer = dynamic(
   { ssr: false, loading: () => <LoadingStub label="Converting document..." /> }
 );
 
-const CastRenderer = dynamic(
-  () => import("./cast-renderer").then((m) => m.CastRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Loading recording..." /> }
-);
-
 const ResultJsonRenderer = dynamic(
   () => import("./result-json-renderer").then((m) => m.ResultJsonRenderer),
   { ssr: false, loading: () => <LoadingStub label="Rendering result..." /> }
@@ -55,6 +49,11 @@ const CodeRenderer = dynamic(
 const DiffRenderer = dynamic(
   () => import("./diff-renderer").then((m) => m.DiffRenderer),
   { ssr: false, loading: () => <LoadingStub label="Rendering diff..." /> }
+);
+
+const JsonRenderer = dynamic(
+  () => import("./json-renderer").then((m) => m.JsonRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Rendering JSON..." /> }
 );
 
 function LoadingStub({ label }: { label: string }) {
@@ -78,7 +77,6 @@ type FileRendererKind =
   | "json"
   | "config-json"
   | "result-json"
-  | "cast"
   | "diff"
   | "csv"
   | "log"
@@ -160,7 +158,6 @@ function getFileRendererKind(fileName: string): FileRendererKind {
     return "result-json";
   }
   if (ext === "json") return "json";
-  if (ext === "cast") return "cast";
   if (ext === "diff" || ext === "patch") return "diff";
 
   if (ext === "csv" || ext === "tsv") return "csv";
@@ -250,8 +247,6 @@ export function FileRenderer({
       return <ConfigJsonRenderer content={content ?? ""} />;
     case "result-json":
       return <ResultJsonRenderer content={content ?? ""} />;
-    case "cast":
-      return <CastRenderer content={content ?? ""} />;
     case "diff":
       return <DiffRenderer content={content ?? ""} fileName={fileName} />;
     case "csv": {
