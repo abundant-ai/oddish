@@ -338,9 +338,13 @@ export function TaskFilesPanel({
   // an enabled Run button on the misread queues an audit that wipes findings.
   const checksLoading =
     checksAvailable && checksDetail === undefined && !checksLoadError;
-  const checksLoadFailure = checksLoadError
-    ? "Unable to load the static checks state."
-    : null;
+  // A failed revalidation with data already in hand is not "unavailable":
+  // SWR keeps the stale data, and hiding live findings behind an error flash
+  // on one bad poll is worse than showing them.
+  const checksLoadFailure =
+    checksLoadError && checksDetail === undefined
+      ? "Unable to load the static checks state."
+      : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
   const checksState = staticCheckState(
     checksVersion?.pre_trial_status,
@@ -601,6 +605,11 @@ export function TaskFilesPanel({
 
   const [checksRerunning, setChecksRerunning] = useState(false);
   const [checksQueueError, setChecksQueueError] = useState<string | null>(null);
+  // Another task's failed queue attempt is not this task's error.
+  useEffect(() => {
+    setChecksQueueError(null);
+    setChecksRerunning(false);
+  }, [effectiveChecksTaskId]);
   const handleRerunChecks = useCallback(async () => {
     if (!effectiveChecksTaskId || checksRerunning) return;
     setChecksRerunning(true);
