@@ -122,10 +122,14 @@ async def cancel_task_qa_core(
     trial whose classification was mid-flight (left RUNNING by a killed
     worker).
     """
+    # The same task row lock the backfill and the reruns take: without it, a
+    # cancel can interleave with their check-and-enqueue and either kill a
+    # just-committed job's state or write verdict resets over a fresh enqueue.
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
         .where(TaskModel.id == task_id)
+        .with_for_update(of=TaskModel)
     )
     task = result.scalar_one_or_none()
     if not task or (org_id is not None and task.org_id != org_id):
