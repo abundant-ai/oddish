@@ -17,8 +17,11 @@ dashboard at oddish.app.
 
 ## Git workflow
 
-Never directly commit or push to `main`. Check out a feature branch, commit
-there, push that branch, and open a PR for review.
+Never directly commit or push to `main` or `staging`. Check out a feature
+branch, commit there, push that branch, and open a PR for review — PRs target
+`staging` (the default branch). `main` is release-only: it advances solely via
+fast-forward promotion by the release managers (`promote.yml`); never merge,
+squash, or push to `main` directly.
 
 ## Useful pointers
 
