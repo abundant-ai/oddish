@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SeverityGroups } from "@/components/qa-report/action-items";
+import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
 import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
 import type { PreTrialFinding } from "@/lib/types";
 
@@ -98,19 +99,24 @@ export function StaticChecksPanel({
             ? ` · ${formatCostUsd(costUsd)}`
             : ""}
         </span>
-        <button
-          type="button"
-          disabled={rerunning || auditRunning || stateUnknown}
-          onClick={onRerun}
-          className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          title="Runs on the task's current version"
-        >
-          {rerunning
-            ? "Queuing…"
-            : state === "unaudited"
-              ? "Run checks"
-              : "Re-run checks"}
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          {items.length > 0 ? (
+            <CopyJsonButton value={items} label="the static check findings" />
+          ) : null}
+          <button
+            type="button"
+            disabled={rerunning || auditRunning || stateUnknown}
+            onClick={onRerun}
+            className="text-muted-foreground hover:text-foreground border-border rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+            title="Runs on the task's current version"
+          >
+            {rerunning
+              ? "Queuing…"
+              : state === "unaudited"
+                ? "Run checks"
+                : "Re-run checks"}
+          </button>
+        </div>
       </div>
 
       {queueError ? (
