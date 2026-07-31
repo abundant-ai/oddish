@@ -56,11 +56,9 @@ export function StaticChecksPanel({
   costUsd,
   onRerun,
   rerunning,
-  qaActive,
   queueError,
   loading,
   loadError,
-  pinnedOld,
   className,
 }: {
   findings?: PreTrialFinding[] | null;
@@ -69,29 +67,16 @@ export function StaticChecksPanel({
   costUsd?: number | null;
   onRerun: () => void;
   rerunning: boolean;
-  /** Task-level QA runs the checks itself; a manual run would collide. */
-  qaActive?: boolean;
   queueError?: string | null;
   /** The checks state is still being fetched: an absent status must not
    * read as "unaudited" — a Run click on that misread wipes real findings. */
   loading?: boolean;
   loadError?: string | null;
-  /** The pane shows a pinned, non-current version; the re-run endpoint
-   * audits the current version, so running it here would audit other
-   * source than the one on screen. */
-  pinnedOld?: boolean;
   className?: string;
 }) {
   const items = findings ?? [];
   const state = staticCheckState(status, items.length);
   const stateUnknown = Boolean(loading || loadError);
-  // Disabled buttons swallow hover, so a reason in the title alone never
-  // shows; it renders as a text line below the header too.
-  const blockedReason = pinnedOld
-    ? "The checks run on the current version — select the current version to re-run."
-    : qaActive
-      ? "Task QA is running and includes these checks — wait for it to finish."
-      : null;
   // Only a live run blocks the button. A stale "queued" row must stay
   // re-queueable: re-queue is the backend's recovery path for queued jobs
   // that never got picked up.
@@ -115,12 +100,10 @@ export function StaticChecksPanel({
         </span>
         <button
           type="button"
-          disabled={
-            rerunning || auditRunning || qaActive || stateUnknown || pinnedOld
-          }
+          disabled={rerunning || auditRunning || stateUnknown}
           onClick={onRerun}
           className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          title={blockedReason ?? "Audit this task's source with the latest prompt"}
+          title="Runs on the task's current version"
         >
           {rerunning
             ? "Queuing…"
@@ -132,9 +115,6 @@ export function StaticChecksPanel({
 
       {queueError ? (
         <p className="text-[11px] text-red-500">{queueError}</p>
-      ) : null}
-      {blockedReason ? (
-        <p className="text-muted-foreground text-[11px]">{blockedReason}</p>
       ) : null}
 
       {loading ? (
@@ -149,9 +129,7 @@ export function StaticChecksPanel({
         </p>
       ) : state === "unaudited" ? (
         <p className="text-muted-foreground text-sm leading-relaxed">
-          No static checks have run for this task. The checks audit the task
-          source — verifier completeness, oracle correctness, and information
-          leaks — before any agent attempts it.
+          The checks have not run yet.
         </p>
       ) : state === "running" ? (
         <div className="flex flex-col gap-2">

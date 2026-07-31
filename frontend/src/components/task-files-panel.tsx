@@ -326,9 +326,9 @@ export function TaskFilesPanel({
     error: checksLoadError,
     mutate: mutateChecks,
   } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
-      // Poll while the checks run, and while task QA runs: the QA-active
-      // guard on the Run button reads verdict_status from this cache, so it
-      // must keep tracking until QA is terminal or the guard goes stale.
+      // Poll while the checks run, and while task QA runs: the full QA job
+      // writes fresh findings when it lands, so the pane keeps tracking
+      // until both are terminal.
       refreshInterval: (data) => {
         const checksLive =
           pickChecksVersion(data, taskVersion)?.pre_trial_status ===
@@ -343,11 +343,6 @@ export function TaskFilesPanel({
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
-  // The re-run endpoint audits the current version. Offering it while an
-  // older pinned version is on screen would audit source the user is not
-  // looking at.
-  const checksPinnedOld =
-    taskVersion != null && checksVersion != null && !checksVersion.is_current;
   const checksAvailable = showAnalysis !== false && effectiveChecksTaskId !== null;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
@@ -365,10 +360,6 @@ export function TaskFilesPanel({
     checksVersion?.pre_trial_status,
     checksFindings.length,
   );
-  // Task-level QA runs the checks itself; a manual run would collide.
-  const checksQaActive =
-    checksDetail?.task?.verdict_status === "queued" ||
-    checksDetail?.task?.verdict_status === "running";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1391,11 +1382,9 @@ export function TaskFilesPanel({
                   costUsd={checksVersion?.pre_trial_cost_usd}
                   onRerun={handleRerunChecks}
                   rerunning={checksRerunning}
-                  qaActive={checksQaActive}
                   queueError={checksQueueError}
                   loading={checksLoading}
                   loadError={checksLoadFailure}
-                  pinnedOld={checksPinnedOld}
                 />
               ) : (
                 renderFileContent()
