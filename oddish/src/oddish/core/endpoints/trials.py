@@ -23,6 +23,7 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.db import (
+    AnalysisStatus,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -31,6 +32,7 @@ from oddish.db import (
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
+    utcnow,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
@@ -95,6 +97,126 @@ async def get_trial_by_index_core(
         qa_cost_usd=qa_costs.get(trial.id),
     )
     return await _attach_pre_trial_audit(session, response, trial.task_version_id)
+
+
+# Mirrors ANALYSIS_CLAIM_TTL_MINUTES in workers/queue/analysis_handler.py.
+# Copied, not imported: importing the worker module here would pull the
+# whole analyzer stack into the API process.
+_ANALYSIS_CLAIM_TTL_MINUTES = 35
+
+
+async def rerun_trial_analysis_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """Queue analysis for one trial.
+
+    This is the independent trial-level trigger. It resets and re-runs
+    only this trial's analysis. It does not touch other trials, the task
+    verdict, or the pre-trial audit. It is blocked only while this
+    trial's own analysis is active.
+    """
+    from datetime import timedelta
+
+    task_id = await session.scalar(
+        select(TrialModel.task_id).where(TrialModel.id == trial_id)
+    )
+    if task_id is None:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    # Lock the task first, in the same order as the QA backfill and the
+    # audit rerun. Without the shared lock, this rerun and a task-level
+    # enqueue can each pass the other's guards and queue conflicting jobs.
+    task = await session.get(TaskModel, task_id, with_for_update=True)
+    if task is None or (org_id is not None and task.org_id != org_id):
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    trial = (
+        await session.execute(
+            select(TrialModel)
+            .where(TrialModel.id == trial_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if trial is None:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
+        raise HTTPException(
+            status_code=400,
+            detail="The trial must finish before analysis can run",
+        )
+    if trial.analysis_status in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED):
+        raise HTTPException(
+            status_code=400,
+            detail="Analysis is already queued for this trial",
+        )
+    if trial.analysis_status == AnalysisStatus.RUNNING:
+        started = trial.analysis_started_at
+        # A RUNNING claim inside its TTL belongs to a live worker. Past the
+        # TTL the worker is presumed dead and a re-run is the remedy.
+        if started is not None and utcnow() - started < timedelta(
+            minutes=_ANALYSIS_CLAIM_TTL_MINUTES
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Analysis is already running for this trial",
+            )
+
+    # A failed analysis can leave its job in RETRYING. Enqueuing another job
+    # then would run the analysis twice. The existing job serves the re-run.
+    active_job = await session.scalar(
+        select(WorkerJobModel.id).where(
+            WorkerJobModel.kind == WorkerJobKind.ANALYSIS,
+            WorkerJobModel.subject_table == "trials",
+            WorkerJobModel.subject_id == trial_id,
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                ]
+            ),
+        )
+        .limit(1)
+    )
+    if active_job is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="An analysis job is already queued or running for this trial",
+        )
+
+    # A RUNNING full QA job reads every trial's stored analysis to build the
+    # verdict. Resetting one mid-run would drop it from the verdict inputs.
+    # A QUEUED full QA job is fine: it classifies this trial itself when it
+    # starts, and the per-trial claim keeps the two jobs from colliding.
+    running_task_qa = await session.scalar(
+        select(WorkerJobModel.id).where(
+            WorkerJobModel.kind == WorkerJobKind.QA,
+            WorkerJobModel.subject_table == "tasks",
+            WorkerJobModel.subject_id == trial.task_id,
+            WorkerJobModel.status == WorkerJobStatus.RUNNING,
+            func.coalesce(WorkerJobModel.payload["mode"].astext, "full")
+            != "pre_trial",
+        )
+        .limit(1)
+    )
+    if running_task_qa is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Task-level QA is running; wait for it to finish",
+        )
+
+    from oddish.core.endpoints.qa import _reset_trial_analysis
+    from oddish.queue import enqueue_trial_analysis_worker_job
+
+    _reset_trial_analysis(trial)
+    trial.analysis_status = AnalysisStatus.QUEUED
+    await enqueue_trial_analysis_worker_job(
+        session, trial_id=trial.id, org_id=task.org_id
+    )
+    await session.commit()
+    return {"status": "queued", "trial_id": trial_id}
 
 
 async def get_trial_analysis_log_core(

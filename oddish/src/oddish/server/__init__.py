@@ -19,6 +19,8 @@ from oddish.core.endpoints import (
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
+    rerun_pre_trial_audit_core,
+    rerun_trial_analysis_core,
     combine_experiments_core,
     create_task_sweep_batch_core,
     create_task_sweep_core,
@@ -715,6 +717,28 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
             force=body.force,
             enable_analysis=body.enable_analysis,
         )
+
+
+@api.post("/tasks/{task_id}/qa/pre-trial")
+async def rerun_pre_trial_audit(task_id: str) -> dict:
+    """Queue the pre-trial audit for the task's current version.
+
+    Runs only the audit. Does not classify trials and does not synthesize
+    the verdict.
+    """
+    async with get_session() as session:
+        return await rerun_pre_trial_audit_core(session, task_id=task_id)
+
+
+@api.post("/trials/{trial_id}/analysis/rerun")
+async def rerun_trial_analysis(trial_id: str) -> dict:
+    """Queue analysis for one trial.
+
+    Classifies only this trial. Does not touch other trials, the task
+    verdict, or the pre-trial audit.
+    """
+    async with get_session() as session:
+        return await rerun_trial_analysis_core(session, trial_id=trial_id)
 
 
 @api.get("/trials/{trial_id}/analysis-log")

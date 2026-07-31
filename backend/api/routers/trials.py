@@ -11,6 +11,7 @@ from oddish.core.endpoints import (
     get_task_for_org_core,
     get_trial_for_org_core,
     get_trial_response_for_org_core,
+    rerun_trial_analysis_core,
     retry_trial_core,
 )
 from oddish.core.trial_io import (
@@ -115,6 +116,24 @@ async def get_trial_analysis_log(
 
     async with get_session() as session:
         return await get_trial_analysis_log_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+
+
+@router.post("/trials/{trial_id}/analysis/rerun")
+async def rerun_trial_analysis(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue analysis for one trial.
+
+    Classifies only this trial. Does not touch other trials, the task
+    verdict, or the pre-trial audit.
+    """
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+    async with get_session() as session:
+        return await rerun_trial_analysis_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
 
