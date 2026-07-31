@@ -2,6 +2,7 @@ import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
 import type { PreTrialFinding } from "@/lib/types";
 import { TIER_BADGE, TIER_META, TIER_ORDER } from "./tokens";
+import { CopyJsonButton } from "./copy-json-button";
 import { FeedbackControl } from "./feedback-control";
 import type { FeedbackRecord } from "./types";
 
@@ -24,11 +25,24 @@ function ActionItemDetail({
   const where = findingLocation(item);
   return (
     <div className="flex flex-col gap-1.5">
-      {(item.dimension || item.problem_type) && (
-        <span className="text-muted-foreground font-mono text-[10px]">
-          {[item.dimension, item.problem_type].filter(Boolean).join(" / ")}
-        </span>
-      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {(item.dimension || item.problem_type) && (
+          <span className="text-muted-foreground font-mono text-[10px]">
+            {[item.dimension, item.problem_type].filter(Boolean).join(" / ")}
+          </span>
+        )}
+        {item.exploited ? (
+          <span className="rounded border border-red-500/60 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider text-red-500">
+            EXPLOITED
+          </span>
+        ) : null}
+        <CopyJsonButton
+          value={item}
+          label={`action item: ${item.title ?? itemKey}`}
+          compact
+          className="ml-auto"
+        />
+      </div>
 
       {item.title ? (
         <h4 className="text-foreground text-sm leading-snug font-medium text-pretty">
@@ -86,10 +100,13 @@ export function SeverityGroups({
   items,
   onFeedback,
   className,
+  tierEffects,
 }: {
   items: PreTrialFinding[];
   onFeedback?: (r: FeedbackRecord) => void;
   className?: string;
+  /** Per-tier effect line; the default narrates trial classification. */
+  tierEffects?: Partial<Record<string, string>>;
 }) {
   const groups = TIER_ORDER.map((tier) => ({
     tier,
@@ -125,7 +142,7 @@ export function SeverityGroups({
               {group.items.length} item{group.items.length === 1 ? "" : "s"}
             </span>
             <span className="text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed text-pretty">
-              {group.meta.labelEffect}
+              {tierEffects?.[group.tier] ?? group.meta.labelEffect}
             </span>
           </summary>
 
