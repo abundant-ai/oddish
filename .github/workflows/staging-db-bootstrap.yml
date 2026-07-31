@@ -1,0 +1,219 @@
+name: Staging DB Bootstrap
+# One-shot: runs when this file lands on staging. Re-mirror on demand by
+# re-running a completed run of this workflow, or by pushing an edit to it.
+on:
+  push:
+    branches: [staging]
+    paths:
+      - ".github/workflows/staging-db-bootstrap.yml"
+      - ".github/scripts/staging/refresh_staging_db.py"
+
+concurrency:
+  group: staging-db-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    if: vars.STAGING_DB_BOOTSTRAP_DONE != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      # Prod is read-only source for the schema snapshot and the data copy.
+      PREVIEW_SAMPLE_SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+      SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Create persistent branch if absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+            | jq -r '.[] | select(.name=="staging") | .id')
+          if [ -n "$existing" ]; then
+            echo "staging branch already exists: $existing"
+          else
+            supabase branches create staging --persistent --project-ref "$SUPABASE_PROJECT_REF"
+          fi
+
+      - name: Wait for branch health and resolve its database URL
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # NOTE (adapted from the guessed field names): `supabase branches
+          # get -o json` has no db_host/db_pass/db_port/db_user fields. Per
+          # the only other consumer in this repo
+          # (.github/scripts/preview/wait_for_supabase_branch.sh), the real
+          # shape is: `.status` + `.preview_project_status` (two separate
+          # fields, both required for readiness) and a single `.POSTGRES_URL`
+          # connection string whose password comes back redacted -- it must
+          # be reset via the Management API before the URL is usable. This
+          # step mirrors that proven recipe instead of the guessed fields.
+          is_failed_status() {
+            case "$1" in
+              MIGRATIONS_FAILED|FUNCTIONS_FAILED) return 0 ;;
+            esac
+            return 1
+          }
+          is_failed_preview() {
+            case "$1" in
+              RESTORE_FAILED|INIT_FAILED|PAUSE_FAILED) return 0 ;;
+            esac
+            return 1
+          }
+
+          branch_id=""
+          for _ in $(seq 1 6); do
+            branch_id=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+              | jq -r '.[] | select(.name=="staging") | .id')
+            [ -n "$branch_id" ] && break
+            sleep 5
+          done
+          if [ -z "$branch_id" ]; then
+            echo "::error::no Supabase branch named staging found"
+            exit 1
+          fi
+
+          ready=0
+          status="" preview="" branch_json="{}"
+          deadline=$(($(date +%s) + 600))
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            branch_json=$(supabase branches get "$branch_id" --project-ref "$SUPABASE_PROJECT_REF" -o json || true)
+            status=$(printf '%s' "$branch_json" | jq -r '.status // empty' 2>/dev/null || true)
+            preview=$(printf '%s' "$branch_json" | jq -r '.preview_project_status // empty' 2>/dev/null || true)
+            if is_failed_status "$status" || is_failed_preview "$preview"; then
+              echo "::error::staging branch $branch_id failed: status=$status preview=$preview"
+              exit 1
+            fi
+            case "$status" in
+              MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+                [ "$preview" = "ACTIVE_HEALTHY" ] && ready=1
+                ;;
+            esac
+            [ "$ready" -eq 1 ] && break
+            echo "waiting for staging branch (status=${status:-none}, preview=${preview:-none})"
+            sleep 10
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::staging branch never became ready (status=$status preview=$preview)"
+            exit 1
+          fi
+
+          branch_ref=$(printf '%s' "$branch_json" | jq -r '.project_ref // empty')
+          postgres_url=$(printf '%s' "$branch_json" | jq -r '.POSTGRES_URL // empty')
+          if [ -z "$branch_ref" ] || [ -z "$postgres_url" ]; then
+            echo "::error::branches get response missing project_ref or POSTGRES_URL"
+            exit 1
+          fi
+
+          # `branches get` redacts the password; reset it via the Management
+          # API and splice the fresh value into POSTGRES_URL ourselves (same
+          # recipe as wait_for_supabase_branch.sh).
+          DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+          http_code=$(curl -sS -o /tmp/pwreset.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$DB_PASSWORD\"}" \
+            "https://api.supabase.com/v1/projects/${branch_ref}/database/password" \
+            || echo "curl_failed")
+          if [ "$http_code" != "200" ] && [ "$http_code" != "204" ]; then
+            echo "::error::password reset failed (HTTP $http_code)"
+            cat /tmp/pwreset.json >&2 || true
+            exit 1
+          fi
+
+          # POSTGRES_URL looks like postgresql://user:REDACTED@host:port/dbname.
+          # Pull user/host/port and splice in the password we just set (it's
+          # already URL-safe: token_urlsafe emits only [A-Za-z0-9_-]).
+          if [[ "$postgres_url" =~ ^postgres(ql)?://([^:@/]+):[^@]*@([^:/@]+)(:([0-9]+))?(/.*)?$ ]]; then
+            db_user="${BASH_REMATCH[2]}"
+            db_host="${BASH_REMATCH[3]}"
+            db_port="${BASH_REMATCH[5]:-5432}"
+          else
+            echo "::error::could not parse POSTGRES_URL"
+            exit 1
+          fi
+          db_url="postgresql+asyncpg://${db_user}:${DB_PASSWORD}@${db_host}:${db_port}/postgres"
+
+          # Smoke-test with libpq's psql before handing the URL off -- this is
+          # what catches a stale/mismatched credential before Alembic does.
+          psql_url="postgresql://${db_user}:${DB_PASSWORD}@${db_host}:${db_port}/postgres"
+          smoke_deadline=$(($(date +%s) + 300))
+          while true; do
+            if PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$smoke_deadline" ]; then
+              echo "::error::psql smoke test against staging branch failed"
+              cat /tmp/psql.err >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "::add-mask::$DB_PASSWORD"
+          echo "::add-mask::$db_url"
+          echo "db_url=$db_url" >> "$GITHUB_OUTPUT"
+          echo "branch ready: ref=$branch_ref host=$db_host status=$status"
+
+      - name: Bootstrap schema (prod snapshot + Alembic pointers + upgrade head)
+        env:
+          ODDISH_DATABASE_URL: ${{ steps.branch.outputs.db_url }}
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
+
+      - name: Mirror complete prod data (with quiesce)
+        env:
+          TARGET_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/staging/refresh_staging_db.py"
+
+      - name: Publish oddish-staging-db Modal secret
+        env:
+          MODAL_ENVIRONMENT: staging
+          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db \
+            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
+            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
+            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
+            "LOGFIRE_ENVIRONMENT=staging"
+
+      - name: Mark bootstrap done
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: gh variable set STAGING_DB_BOOTSTRAP_DONE --body "true" --repo "$GITHUB_REPOSITORY"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Staging DB bootstrap"
+            echo "- Persistent branch: staging (project $SUPABASE_PROJECT_REF)"
+            echo "- Schema: prod snapshot + upgrade head (both chains)"
+            echo "- Data: complete prod copy with quiesce (counts in the Mirror step log)"
+            echo "- Modal secret oddish-staging-db published to env staging"
+          } >> "$GITHUB_STEP_SUMMARY"
