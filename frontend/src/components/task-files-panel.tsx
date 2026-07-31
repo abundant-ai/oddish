@@ -717,11 +717,15 @@ export function TaskFilesPanel({
       return;
     }
 
-    // If we already have content cached in the node, use it
+    // If we already have content cached in the node, use it. Clear the
+    // loading flag too: a cancelled in-flight fetch for the previously
+    // selected file skips its own reset, and inlined contents make this
+    // the common next branch.
     if (selectedFile.content !== undefined) {
       setFileContent(selectedFile.content);
       setIsTruncated(selectedFile.isTruncated || false);
       setFullFileSize(selectedFile.size || null);
+      setFileContentLoading(false);
       return;
     }
 
