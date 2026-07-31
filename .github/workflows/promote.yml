@@ -1,0 +1,71 @@
+name: Promote
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Staging commit to promote (default: staging tip)"
+        required: false
+
+concurrency:
+  group: promote-main
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: production-promotion
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: bot
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ steps.bot.outputs.token }}
+          fetch-depth: 0
+
+      - name: Verify preconditions
+        id: target
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REQUESTED: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin main staging
+          target="${REQUESTED:-$(git rev-parse origin/staging)}"
+          # (1) target must be on staging
+          git merge-base --is-ancestor "$target" origin/staging \
+            || { echo "::error::$target is not on staging"; exit 1; }
+          # (2) FF must be possible: main is an ancestor of target
+          git merge-base --is-ancestor origin/main "$target" \
+            || { echo "::error::main is not an ancestor of $target — invariant broken; see recovery runbook"; exit 1; }
+          # (3) an open, approved staging->main promotion PR exists
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head staging --state open --json number -q '.[0].number')
+          [ -n "$pr" ] || { echo "::error::no open staging->main promotion PR"; exit 1; }
+          [ "$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json reviewDecision -q .reviewDecision)" = "APPROVED" ] \
+            || { echo "::error::promotion PR #$pr is not APPROVED"; exit 1; }
+          # (4) Staging Deploy green on the target commit (bootstrap-tolerant:
+          #     the workflow ships in Plan 02; skip with a warning until it exists)
+          if gh workflow view "Staging Deploy" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow "Staging Deploy" \
+                --branch staging --commit "$target" --json conclusion -q '.[0].conclusion' \
+              | grep -qx success \
+              || { echo "::error::Staging Deploy is not green on $target"; exit 1; }
+          else
+            echo "::warning::Staging Deploy workflow not found — skipping deploy-green precondition (bootstrap)"
+          fi
+          echo "sha=$target" >> "$GITHUB_OUTPUT"
+
+      - name: Fast-forward main and assert identity
+        run: |
+          set -euo pipefail
+          git push origin "${{ steps.target.outputs.sha }}:refs/heads/main"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "${{ steps.target.outputs.sha }}"
+          echo "origin/main == ${{ steps.target.outputs.sha }} — promotion complete"
