@@ -1220,6 +1220,7 @@ export function TaskDetailClient({
                 taskId={null}
                 staticChecksTaskId={task.id}
                 filesUrl={`/api/tasks/${task.id}/files`}
+                taskVersion={selectedVersion?.version}
                 apiBaseUrl="/api"
                 contentOnly={true}
               />
@@ -1230,6 +1231,7 @@ export function TaskDetailClient({
                 onClose={() => setDrawer(null)}
                 taskId={task.id}
                 task={task}
+                taskVersion={selectedVersion?.version}
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={
