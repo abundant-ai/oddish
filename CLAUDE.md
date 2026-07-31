@@ -23,6 +23,15 @@ branch, commit there, push that branch, and open a PR for review — PRs target
 fast-forward promotion by the release managers (`promote.yml`); never merge,
 squash, or push to `main` directly.
 
+## Releases
+
+PyPI stable releases: publish the auto-drafted GitHub Release (created on
+promotion when `oddish/pyproject.toml` changes). Immediately after publishing
+a release, bump the version in `oddish/pyproject.toml` on `staging` — the
+nightly build refuses to run until the version is ahead of PyPI's latest.
+Nightlies (`X.Y.Z.devYYYYMMDD`) publish from `staging` at midnight PT and are
+installed with `pip install --pre oddish`.
+
 ## Useful pointers
 
 - **Run backend locally:** `cd backend && uv run modal serve deploy.py`. See `backend/README.md` for required env vars.
