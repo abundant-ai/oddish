@@ -47,7 +47,7 @@ async def test_seed_is_idempotent_and_populates_content():
         from oddish.analyze.classifier import _CLASSIFY_PROMPT
 
         assert post_trial == _CLASSIFY_PROMPT
-        assert "exactly\none entry per item" in post_trial
+        assert "exactly one entry per pre-trial action item" in post_trial
         assert '"action_items": [' in post_trial
         assert '"exploitation": [' in post_trial
 
@@ -116,15 +116,7 @@ async def test_seed_upgrades_known_pre_trial_v1_but_not_operator_edits():
     # content hash, not a loose prefix that could overwrite an operator edit.
     from pathlib import Path
 
-    v1 = (
-        Path(__file__).parents[2]
-        / "oddish"
-        / "src"
-        / "oddish"
-        / "analyze"
-        / "prompts"
-        / "pre_trial_qa.v1.txt"
-    ).read_text()
+    v1 = (Path(__file__).parent / "fixtures" / "pre_trial_qa_v1.txt").read_text()
 
     async with get_session() as session:
         await session.execute(

@@ -1466,7 +1466,7 @@ export function ExperimentDetailView({
               isOpen={true}
               onClose={() => {}}
               taskId={null}
-              probeTaskId={drawerState.task.id}
+              staticChecksTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               apiBaseUrl={apiBaseUrl}

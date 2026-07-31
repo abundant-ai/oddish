@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -154,6 +155,7 @@ class AnalyzerBlock(Block):
         subject_id: str | None = None,
         cli_config: CliConfig | None = None,
         client_close_timeout: float | None = _CLIENT_CLOSE_TIMEOUT,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -198,6 +200,10 @@ class AnalyzerBlock(Block):
         self.subject_id = subject_id
         self._cli_config = cli_config
         self._client_close_timeout = client_close_timeout
+        # Called with each streamed chunk as it arrives, so callers can show
+        # live progress (for example the trial analysis log). Failures in the
+        # hook are logged and never fail the block.
+        self._on_chunk = on_chunk
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -448,6 +454,11 @@ class AnalyzerBlock(Block):
         async for chunk in client.stream(self.prompt, system_prompt=self.system_prompt):
             self._chunks.append(chunk)
             self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
+            if self._on_chunk is not None:
+                try:
+                    self._on_chunk(chunk)
+                except Exception:  # noqa: BLE001
+                    self.log.exception("on_chunk hook failed")
             yield chunk
 
     async def _download_requested_files(self) -> dict[str, str]:
@@ -474,6 +485,18 @@ class AnalyzerBlock(Block):
         self.log.info("block starting (llm_client_type=%s)", self.llm_client_type.value)
         try:
             self._active_client = await self._create_client()
+            sandbox_id = getattr(self._active_client, "sandbox_id", None)
+            if sandbox_id and self._on_chunk is not None:
+                # Tell the progress hook which sandbox this block runs in,
+                # in the same shape as the streamed events.
+                try:
+                    self._on_chunk(
+                        json.dumps(
+                            {"type": "sandbox_info", "sandbox_id": sandbox_id}
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    self.log.exception("on_chunk hook failed")
             async for _ in self.stream_output():
                 pass
             if self.input.files_to_download:

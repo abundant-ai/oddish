@@ -1107,6 +1107,14 @@ class TrialResponse(BaseModel):
         None,
         description="Error message if analysis failed",
     )
+    analysis_started_at: datetime | None = Field(
+        None,
+        description="When the current analysis run started; None until a worker picks it up",
+    )
+    analysis_finished_at: datetime | None = Field(
+        None,
+        description="When the analysis reached a terminal state",
+    )
     superseded_by_trial_id: str | None = Field(
         None,
         description=(
