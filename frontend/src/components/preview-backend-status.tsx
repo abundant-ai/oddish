@@ -31,12 +31,14 @@ function reloadOnce() {
 
 /**
  * Polls the same-origin /api/preview-backend-health route and, while the
- * preview backend is unreachable, shows a "still deploying" chip in the
- * preview banner. The Vercel preview deploys in parallel with the Modal
- * backend, so the frontend can go live minutes before its backend exists;
- * this is the user-facing cover for that window. Once the backend turns
- * ready after having been down, the page reloads so server-rendered data
- * that failed during the outage is refetched.
+ * preview backend is unreachable, shows a prominent full-width banner
+ * under the preview strip. The Vercel preview deploys in parallel with
+ * the Modal backend, so the frontend can go live minutes before its
+ * backend exists; this is the user-facing cover for that window. The
+ * banner deliberately does not suppress the page's normal API error
+ * states (production needs those untouched) -- it explains them instead.
+ * Once the backend turns ready after having been down, the page reloads
+ * so server-rendered data that failed during the outage is refetched.
  *
  * The probe deliberately goes through a Next.js route handler instead of
  * fetching the backend directly: the hosted backend has no unauthenticated
@@ -102,20 +104,23 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <>
-      <span
-        aria-hidden="true"
-        className="text-amber-950/40 dark:text-amber-100/40"
-      >
-        ·
-      </span>
-      <span className="inline-flex items-center gap-1.5 font-medium">
+    <div
+      role="status"
+      className="sticky top-[var(--preview-banner-h)] z-40 border-b border-amber-500/50 bg-amber-200 text-amber-950 dark:border-amber-300/30 dark:bg-amber-500/25 dark:text-amber-50"
+    >
+      <div className="mx-auto flex max-w-(--breakpoint-2xl) items-center gap-3 px-4 py-3 text-sm">
         <span
           aria-hidden="true"
-          className="h-1.5 w-1.5 animate-pulse rounded-full bg-current"
+          className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
         />
-        backend still deploying — reloads when ready
-      </span>
-    </>
+        <span>
+          <span className="font-semibold">
+            The preview backend is still deploying.
+          </span>{" "}
+          Data will fail to load until it&apos;s ready — any API errors below
+          are expected. This page will reload automatically.
+        </span>
+      </div>
+    </div>
   );
 }
