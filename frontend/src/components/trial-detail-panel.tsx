@@ -516,6 +516,13 @@ function TrialAnalysisCard({
         {queueError && (
           <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
         )}
+        {/* Disabled buttons swallow hover, so the title alone never shows.
+            While a run is in progress the card body already says so. */}
+        {queueBlockedReason && !inProgress && (
+          <p className="text-muted-foreground mb-2 text-[11px]">
+            {queueBlockedReason}
+          </p>
+        )}
         <div className="flex items-start gap-3">
           {inProgress ? (
             <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
