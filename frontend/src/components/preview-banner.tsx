@@ -1,3 +1,4 @@
+import { PreviewBackendStatus } from "@/components/preview-backend-status";
 import { prNumberFromUrl } from "@/lib/utils";
 
 const linkClass = "underline underline-offset-2 hover:no-underline";
@@ -84,6 +85,10 @@ export function PreviewBanner() {
           label="Database"
           value={databaseLabel}
           url={databaseUrl}
+        />
+        <PreviewBackendStatus
+          backendUrl={backendUrl}
+          enabled={backendLabel !== "production"}
         />
       </div>
     </div>

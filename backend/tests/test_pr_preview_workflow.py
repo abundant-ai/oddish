@@ -389,6 +389,24 @@ def test_no_migrations_no_backend_implication():
     assert outputs["any_change"] == "false"
 
 
+def test_backend_status_probe_covers_parallel_deploy_window():
+    # The Vercel preview deploys in parallel with the Modal backend, so the
+    # frontend can go live before its backend exists. The banner must carry
+    # the client-side probe that surfaces that window to viewers. (The
+    # frontend has no test suite, so guard the wiring here.)
+    components = REPO / "frontend/src/components"
+    banner = (components / "preview-banner.tsx").read_text()
+    status = (components / "preview-backend-status.tsx").read_text()
+    assert "PreviewBackendStatus" in banner
+    assert 'backendLabel !== "production"' in banner
+    assert '"use client"' in status
+    assert "/health" in status
+    # The probe timeout must outlast a Modal cold start (~30s), same
+    # constraint as wait_for_modal_ready.py.
+    m = re.search(r"PROBE_TIMEOUT_MS = ([\d_]+)", status)
+    assert m and int(m.group(1).replace("_", "")) >= 60_000
+
+
 def _load_script(name):
     import importlib.util
 
