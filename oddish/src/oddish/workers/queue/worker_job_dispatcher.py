@@ -36,7 +36,7 @@ __all__ = [
     "discover_active_worker_job_queue_keys",
     "fetch_running_worker_handles",
     "get_worker_job_org_queue_counts",
-    "get_queued_oracle_job_counts",
+    "get_queued_job_claim_lanes",
     "select_job_function",
     "stamp_dispatch_stage",
 ]
@@ -226,41 +226,64 @@ async def get_worker_job_org_queue_counts(
     return queued_by_org_queue, running_by_queue
 
 
-async def get_queued_oracle_job_counts(
+async def get_queued_job_claim_lanes(
     units: list[tuple[str, str]],
-) -> dict[tuple[str, str], int]:
-    """Count queued oracle trials by their existing dispatch unit."""
-    oracle_units = list(
-        dict.fromkeys(unit for unit in units if unit[0] == NOP_ORACLE_QUEUE_KEY)
-    )
+) -> dict[tuple[str, str], list[str]]:
+    """Return the next claim lanes for each requested ``nop_oracle`` unit.
+
+    Oracle jobs need a non-preemptible Modal worker, while NOP jobs must remain
+    preemptible.  The lanes therefore need to follow the queue's normal
+    priority/age order rather than sending every available slot to oracle work:
+    otherwise an oracle backlog could indefinitely starve NOP work sharing the
+    same queue key.
+    """
+    oracle_units = [unit for unit in units if unit[0] == NOP_ORACLE_QUEUE_KEY]
     if not oracle_units:
         return {}
     pool = await get_pool()
     rows = await pool.fetch(
         """
-        SELECT wj.queue_key, wj.harbor_variant_id, COUNT(*) AS queued
-        FROM worker_jobs wj
-        JOIN unnest($1::text[], $2::text[]) units(queue_key, harbor_variant_id)
-          ON wj.queue_key = units.queue_key
-         AND wj.harbor_variant_id = units.harbor_variant_id
-        JOIN trials tr ON wj.subject_table = 'trials' AND wj.subject_id = tr.id
-        WHERE wj.kind::text = 'TRIAL'
-          AND wj.status::text IN ('QUEUED', 'RETRYING')
-          AND wj.available_after <= NOW()
-          AND (
-              LOWER(COALESCE(tr.agent, '')) = 'oracle'
-              OR LOWER(COALESCE(tr.agent, '')) LIKE 'oracle-%'
-              OR LOWER(COALESCE(tr.agent, '')) LIKE 'agent-oracle%'
-          )
-        GROUP BY wj.queue_key, wj.harbor_variant_id
+        WITH requested AS (
+            SELECT queue_key, harbor_variant_id, COUNT(*)::integer AS worker_count
+            FROM unnest($1::text[], $2::text[]) units(queue_key, harbor_variant_id)
+            GROUP BY queue_key, harbor_variant_id
+        ), ranked AS (
+            SELECT wj.queue_key,
+                   wj.harbor_variant_id,
+                   CASE WHEN wj.kind::text = 'TRIAL' AND (
+                       LOWER(COALESCE(tr.agent, '')) = 'oracle'
+                       OR LOWER(COALESCE(tr.agent, '')) LIKE 'oracle-%'
+                       OR LOWER(COALESCE(tr.agent, '')) LIKE 'agent-oracle%'
+                   ) THEN 'oracle' ELSE 'default' END AS claim_lane,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY wj.queue_key, wj.harbor_variant_id
+                       ORDER BY wj.priority DESC, wj.created_at ASC
+                   ) AS position,
+                   requested.worker_count
+            FROM worker_jobs wj
+            JOIN requested
+              ON wj.queue_key = requested.queue_key
+             AND wj.harbor_variant_id = requested.harbor_variant_id
+            LEFT JOIN trials tr
+              ON wj.kind::text = 'TRIAL'
+             AND wj.subject_table = 'trials'
+             AND wj.subject_id = tr.id
+            WHERE wj.status::text IN ('QUEUED', 'RETRYING')
+              AND wj.available_after <= NOW()
+        )
+        SELECT queue_key, harbor_variant_id, claim_lane
+        FROM ranked
+        WHERE position <= worker_count
+        ORDER BY queue_key, harbor_variant_id, position
         """,
         [queue_key for queue_key, _variant in oracle_units],
         [variant for _queue_key, variant in oracle_units],
     )
-    return {
-        (str(row["queue_key"]), str(row["harbor_variant_id"])): int(row["queued"])
-        for row in rows
-    }
+    lanes: dict[tuple[str, str], list[str]] = {}
+    for row in rows:
+        unit = (str(row["queue_key"]), str(row["harbor_variant_id"]))
+        lanes.setdefault(unit, []).append(str(row["claim_lane"]))
+    return lanes
 
 
 def select_job_function(

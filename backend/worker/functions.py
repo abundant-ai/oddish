@@ -83,7 +83,7 @@ from oddish.workers.queue.runtime_status import (
     record_queue_runtime_status,
 )
 from oddish.workers.queue.worker_job_dispatcher import (
-    get_queued_oracle_job_counts,
+    get_queued_job_claim_lanes,
     select_job_function,
     stamp_dispatch_stage,
 )
@@ -825,11 +825,11 @@ async def poll_queue():
         # base image; blessed ids -> their own image), then spawn. Use Modal's
         # async spawn interface inside this async function to avoid blocking the
         # event loop and spurious AsyncUsageWarning noise.
-        oracle_counts = await get_queued_oracle_job_counts(spawn_plan)
+        claim_lanes = await get_queued_job_claim_lanes(spawn_plan)
         spawn_calls = []
         for unit in spawn_plan:
-            claim_lane = "oracle" if oracle_counts.get(unit, 0) > 0 else "default"
-            oracle_counts[unit] = oracle_counts.get(unit, 0) - 1
+            unit_lanes = claim_lanes.get(unit, [])
+            claim_lane = unit_lanes.pop(0) if unit_lanes else "default"
             fn, spawn_kwargs = select_job_function(
                 unit,
                 default_fn=process_single_job,

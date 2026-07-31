@@ -24,10 +24,14 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import oddish.workers.queue.worker_job_dispatcher as worker_job_dispatcher  # noqa: E402
 from oddish.workers.queue.worker_job_dispatcher import (  # noqa: E402
     build_spawn_plan,
+    get_queued_job_claim_lanes,
     select_job_function,
 )
 
@@ -251,6 +255,38 @@ def test_zero_or_negative_queued_entries_ignored():
         max_workers=24,
     )
     assert plan == [("m1", _D)] * 5
+
+
+@pytest.mark.asyncio
+async def test_queued_job_claim_lanes_follow_queue_priority(monkeypatch):
+    """Mixed NOP/Oracle slots keep the shared queue's priority ordering."""
+
+    class Pool:
+        async def fetch(self, query, queue_keys, variants):
+            assert "ORDER BY wj.priority DESC, wj.created_at ASC" in query
+            assert queue_keys == ["nop_oracle", "nop_oracle"]
+            assert variants == ["default", "default"]
+            return [
+                {
+                    "queue_key": "nop_oracle",
+                    "harbor_variant_id": "default",
+                    "claim_lane": "default",
+                },
+                {
+                    "queue_key": "nop_oracle",
+                    "harbor_variant_id": "default",
+                    "claim_lane": "oracle",
+                },
+            ]
+
+    async def get_pool():
+        return Pool()
+
+    monkeypatch.setattr(worker_job_dispatcher, "get_pool", get_pool)
+
+    lanes = await get_queued_job_claim_lanes([("nop_oracle", _D), ("nop_oracle", _D)])
+
+    assert lanes == {("nop_oracle", _D): ["default", "oracle"]}
 
 
 # ---------------------------------------------------------------------------
