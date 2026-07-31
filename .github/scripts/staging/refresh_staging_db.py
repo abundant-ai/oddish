@@ -8,8 +8,10 @@ Self-enforcing: unclassified tables or unexpected FK cycles abort the run.
 
 import asyncio
 import os
+import re
 import sys
 import tempfile
+import time
 
 import asyncpg
 
@@ -71,59 +73,107 @@ async def _topo_order(conn, include: set[str]) -> list[str]:
     return order
 
 
+async def _src_connect(url: str):
+    return await asyncpg.connect(url, statement_cache_size=0)
+
+
 async def main() -> None:
-    src = await asyncpg.connect(_plain(os.environ["SOURCE_DB_URL"]),
-                                statement_cache_size=0)
+    src_url = _plain(os.environ["SOURCE_DB_URL"])
+    holder = await _src_connect(src_url)
     dst = await asyncpg.connect(_plain(os.environ["TARGET_DB_URL"]),
                                 statement_cache_size=0)
-    src_tables, dst_tables = await _tables(src), await _tables(dst)
+    src_tables, dst_tables = await _tables(holder), await _tables(dst)
     include = (src_tables & dst_tables) - EXCLUDE
     unclassified = (src_tables - dst_tables - EXCLUDE)
     if unclassified:
         sys.exit(f"Tables on prod but not staging (run migrations first?): {sorted(unclassified)}")
-    order = await _topo_order(src, include)
-
+    order = await _topo_order(holder, include)
     backedge_cols = {t: [c for (bt, c) in BACKEDGES if bt == t] for t in include}
-    # One repeatable-read snapshot for every source read: cross-table FK
-    # consistency against a live prod, and SET LOCAL (transaction-scoped,
-    # therefore Supavisor-safe — only session-level SET poisons the shared
-    # pooler backend) lifts prod's statement timeout for the big COPYs.
-    async with src.transaction(isolation="repeatable_read", readonly=True):
-        await src.execute("SET LOCAL statement_timeout = 0")
-        await src.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
-        async with dst.transaction():
-            await dst.execute("SET LOCAL statement_timeout = 0")
-            for t in reversed(order):
-                await dst.execute(f'TRUNCATE TABLE "{t}" CASCADE')
-            for t in order:
-                cols = [r["column_name"] for r in await src.fetch(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", t)]
-                select_cols = ", ".join(
-                    f'NULL AS "{c}"' if c in backedge_cols.get(t, []) else f'"{c}"' for c in cols)
-                with tempfile.TemporaryFile() as spool:
-                    await src.copy_from_query(
-                        f'SELECT {select_cols} FROM "{t}"', output=spool)
-                    spool.seek(0)
-                    await dst.copy_to_table(t, source=spool, columns=cols)
-                n = await dst.fetchval(f'SELECT count(*) FROM "{t}"')
-                print(f"mirrored {t}: {n} rows", flush=True)
-            for (t, col) in sorted(BACKEDGES):
-                if t not in include:
-                    continue
-                pk = "id"
-                rows = await src.fetch(f'SELECT "{pk}", "{col}" FROM "{t}" WHERE "{col}" IS NOT NULL')
-                for r in rows:
-                    await dst.execute(
-                        f'UPDATE "{t}" SET "{col}"=$1 WHERE "{pk}"=$2', r[col], r[pk])
-                print(f"patched {t}.{col}: {len(rows)} rows", flush=True)
-            for stmt in QUIESCE:
-                tag = await dst.execute(stmt)
-                print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}", flush=True)
+
+    # The holder pins ONE repeatable-read snapshot for the whole run and is kept
+    # warm by a keepalive ping; every table then reads through its own
+    # short-lived connection importing that snapshot, so no source connection
+    # ever idles longer than its own active COPY (the observed kill mode:
+    # the single source socket sat idle through 30+ minute destination uploads).
+    async with holder.transaction(isolation="repeatable_read", readonly=True):
+        await holder.execute("SET LOCAL statement_timeout = 0")
+        await holder.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+        snapshot_id = await holder.fetchval("SELECT pg_export_snapshot()")
+        assert re.fullmatch(r"[0-9A-Fa-f\-]+", snapshot_id)
+        holder_lock = asyncio.Lock()
+        stop_ping = asyncio.Event()
+
+        async def _keepalive() -> None:
+            while not stop_ping.is_set():
+                try:
+                    await asyncio.wait_for(stop_ping.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    async with holder_lock:
+                        await holder.execute("SELECT 1")
+
+        ping_task = asyncio.create_task(_keepalive())
+
+        async def _copy_table_from_src(t: str, select_cols: str, cols: list[str]) -> None:
+            conn = await _src_connect(src_url)
+            try:
+                async with conn.transaction(isolation="repeatable_read", readonly=True):
+                    await conn.execute("SET LOCAL statement_timeout = 0")
+                    await conn.execute(f"SET TRANSACTION SNAPSHOT '{snapshot_id}'")
+                    with tempfile.TemporaryFile() as spool:
+                        await conn.copy_from_query(
+                            f'SELECT {select_cols} FROM "{t}"', output=spool)
+                        spool.seek(0)
+                        await dst.copy_to_table(t, source=spool, columns=cols)
+            finally:
+                await conn.close()
+
+        try:
+            async with dst.transaction():
+                await dst.execute("SET LOCAL statement_timeout = 0")
+                await dst.execute("SET LOCAL synchronous_commit = off")
+                for t in reversed(order):
+                    await dst.execute(f'TRUNCATE TABLE "{t}" CASCADE')
+                for t in order:
+                    started = time.monotonic()
+                    async with holder_lock:
+                        cols = [r["column_name"] for r in await holder.fetch(
+                            "SELECT column_name FROM information_schema.columns "
+                            "WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", t)]
+                    select_cols = ", ".join(
+                        f'NULL AS "{c}"' if c in backedge_cols.get(t, []) else f'"{c}"' for c in cols)
+                    await _copy_table_from_src(t, select_cols, cols)
+                    n = await dst.fetchval(f'SELECT count(*) FROM "{t}"')
+                    print(f"mirrored {t}: {n} rows in {time.monotonic() - started:.0f}s", flush=True)
+                for (t, col) in sorted(BACKEDGES):
+                    if t not in include:
+                        continue
+                    pk = "id"
+                    conn = await _src_connect(src_url)
+                    try:
+                        async with conn.transaction(isolation="repeatable_read", readonly=True):
+                            await conn.execute(f"SET TRANSACTION SNAPSHOT '{snapshot_id}'")
+                            rows = await conn.fetch(
+                                f'SELECT "{pk}", "{col}" FROM "{t}" WHERE "{col}" IS NOT NULL')
+                    finally:
+                        await conn.close()
+                    for r in rows:
+                        await dst.execute(
+                            f'UPDATE "{t}" SET "{col}"=$1 WHERE "{pk}"=$2', r[col], r[pk])
+                    print(f"patched {t}.{col}: {len(rows)} rows", flush=True)
+                for stmt in QUIESCE:
+                    tag = await dst.execute(stmt)
+                    print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}", flush=True)
+        finally:
+            stop_ping.set()
+            ping_task.cancel()
+            try:
+                await ping_task
+            except (asyncio.CancelledError, Exception):
+                pass
     live = await dst.fetchval(
         "SELECT count(*) FROM worker_jobs WHERE status::text NOT IN ('SUCCESS','FAILED','CANCELLED')")
     assert live == 0, f"{live} non-terminal worker_jobs after quiesce"
-    await src.close(); await dst.close()
+    await holder.close(); await dst.close()
     print("mirror complete")
 
 
