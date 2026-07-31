@@ -161,8 +161,7 @@ interface TrialDetailPanelProps {
 }
 
 // Hardcoded feature flag: shows the per-trial "Re-run analysis" button on the
-// QA card. Testing-only for now — flip to false to hide it without deleting
-// the code (handleRerunAnalysis and /api/tasks/[task_id]/qa/backfill stay).
+// QA card. Testing-only for now — flip to false to hide it.
 const ENABLE_RERUN_ANALYSIS_BUTTON = true;
 
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
@@ -380,7 +379,9 @@ function TrialAnalysisCard({
   const taskQaActive = task?.verdict_status === "running";
   const queueBlockedReason =
     inProgress && !runStale
-      ? "Analysis is already running for this trial"
+      ? trial.analysis_status === "running"
+        ? "Analysis is already running for this trial"
+        : "Analysis is already queued for this trial"
       : trial.status !== "success" && trial.status !== "failed"
         ? "The trial must finish before analysis can run"
         : taskQaActive
