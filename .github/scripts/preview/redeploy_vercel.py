@@ -32,7 +32,7 @@ LOOKUP_POLL_INTERVAL_S = 10
 
 # Deployments in these states can't serve the preview; reusing one would pin
 # the alias to a dead build, so fall back to a forced rebuild.
-FAILED_STATES = {"ERROR", "CANCELED", "DELETED"}
+FAILED_STATES = {"ERROR", "CANCELED", "DELETED", "BLOCKED"}
 
 
 def deployment_state(deployment):

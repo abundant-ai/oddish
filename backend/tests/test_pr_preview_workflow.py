@@ -540,6 +540,12 @@ def test_failed_auto_deployment_still_forces_redeploy(_github_output, monkeypatc
     assert _run_redeploy_decision("false", "ERROR", monkeypatch) is True
 
 
+def test_blocked_auto_deployment_still_forces_redeploy(_github_output, monkeypatch):
+    # BLOCKED deployments never serve traffic; adopting one would pin the
+    # alias to a build that cannot come up.
+    assert _run_redeploy_decision("false", "BLOCKED", monkeypatch) is True
+
+
 def test_building_auto_deployment_is_reusable(_github_output, monkeypatch):
     # QUEUED/BUILDING is fine to adopt -- update_vercel_preview.sh blocks on
     # `vercel inspect --wait` before aliasing or probing the deployment.
