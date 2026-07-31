@@ -73,7 +73,10 @@ async def _load_pre_trial_items(task_id: str) -> list[ActionItem]:
             if current_id is not None
             else None
         )
-        if version is None or not (version.pre_trial or {}).get("items"):
+        # Fall back only when the current version was never audited. A clean
+        # audit stores an empty items list, and falling back past it would
+        # resurrect another version's findings against a fixed task.
+        if version is None or not version.pre_trial:
             version = (
                 await session.execute(
                     select(TaskVersionModel)
