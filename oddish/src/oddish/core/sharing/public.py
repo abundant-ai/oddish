@@ -427,7 +427,7 @@ async def list_public_task_files(
             version = task.current_version.version
 
     if stream:
-        return make_task_files_ndjson_response(
+        return await make_task_files_ndjson_response(
             stream_task_files_s3(
                 task_id=task_id,
                 prefix=prefix,

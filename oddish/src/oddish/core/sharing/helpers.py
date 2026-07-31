@@ -351,14 +351,33 @@ async def stream_task_files_s3(
             raise HTTPException(status_code=500, detail="Failed to list files")
 
 
-def make_task_files_ndjson_response(
+def _ndjson_line(chunk: dict) -> str:
+    return json.dumps(jsonable_encoder(chunk), separators=(",", ":")) + "\n"
+
+
+async def make_task_files_ndjson_response(
     stream: AsyncIterator[dict],
 ) -> StreamingResponse:
-    """Wrap a task-files chunk stream as an NDJSON streaming response."""
+    """Wrap a task-files chunk stream as an NDJSON streaming response.
+
+    The first chunk (the listing) is awaited eagerly, before the response
+    starts, so failures during listing — task not found, storage errors —
+    propagate as real HTTP error responses. Once the body iterator is
+    running Starlette has already sent a 200, so only mid-stream failures
+    end up truncating the stream (the client keeps the tree and falls back
+    to per-file fetches for missing bodies).
+    """
+    try:
+        first = await anext(stream)
+    except StopAsyncIteration:
+        first = None
 
     async def ndjson() -> AsyncIterator[str]:
+        if first is None:
+            return
+        yield _ndjson_line(first)
         async for chunk in stream:
-            yield json.dumps(jsonable_encoder(chunk), separators=(",", ":")) + "\n"
+            yield _ndjson_line(chunk)
 
     return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 

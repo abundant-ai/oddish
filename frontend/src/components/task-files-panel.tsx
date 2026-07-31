@@ -695,6 +695,11 @@ export function TaskFilesPanel({
       setFileContent(null);
       setExpandedDirs(new Set());
 
+      // Once the tree is painted, later stream failures must not replace
+      // a usable tree with an error state — missing bodies just fall back
+      // to per-file fetches on click.
+      let paintedTree = false;
+
       // The checks pane is the default view, so nothing pre-selects
       // behind it: a hidden auto-selected file prefetches content that
       // later flashes under whichever file the user actually picks. Only
@@ -702,6 +707,7 @@ export function TaskFilesPanel({
       // Prefer instruction.md — the tree is fully nested, so a plain
       // first-file walk would land inside environment/ instead.
       const applyListing = (tree: TreeNode[]) => {
+        paintedTree = true;
         setFileTree(tree);
         if (!checksAvailable) {
           const defaultFile =
@@ -762,7 +768,7 @@ export function TaskFilesPanel({
           applyListing(buildTreeFromListing(data.files || []));
         }
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled && !paintedTree) {
           setError(
             err instanceof Error ? err.message : "Failed to fetch files"
           );
@@ -888,7 +894,15 @@ export function TaskFilesPanel({
         }
       } catch {
         if (!cancelled) {
-          setFileContent("Error loading file content");
+          // The listing stream may have delivered this file's body while
+          // the dedicated fetch was failing — never overwrite real
+          // content with an error message.
+          if (fileNode.content !== undefined) {
+            setFileContent(fileNode.content);
+            setIsTruncated(fileNode.isTruncated || false);
+          } else {
+            setFileContent("Error loading file content");
+          }
         }
       } finally {
         if (!cancelled) {
