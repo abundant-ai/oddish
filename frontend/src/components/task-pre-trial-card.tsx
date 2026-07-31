@@ -137,23 +137,100 @@ export function PreTrialFindingList({ items }: { items: PreTrialFinding[] }) {
  *
  * Renders nothing until a version has actually been audited.
  */
+// Hardcoded feature flag: shows the run/re-run pre-trial audit button.
+// Testing-only for now — flip to false to hide it without deleting code.
+const ENABLE_PRETRIAL_RERUN_BUTTON = true;
+
 export function TaskPreTrialCard({
   findings,
   status,
   error,
   costUsd,
+  onRerun,
+  rerunning,
+  queueError,
+  isCurrentVersion = true,
 }: {
   findings?: PreTrialFinding[];
   status?: string | null;
   error?: string | null;
   costUsd?: number | null;
+  /** Queue a fresh pre-trial audit of the task's current version. */
+  onRerun?: () => void;
+  rerunning?: boolean;
+  /** Error from the last attempt to queue an audit, shown on this card. */
+  queueError?: string | null;
+  /** Audits run on the current version only; false disables the button. */
+  isCurrentVersion?: boolean;
 }) {
   const items = [...(findings ?? [])].sort(
     (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
   );
   const state = preTrialAuditState(status, items.length);
 
-  if (state === "unaudited") return null;
+  // Always render the button; disable it with the reason in the tooltip. A
+  // hidden button with no explanation is impossible to debug from the UI.
+  // The reasons mirror the audit endpoint's guards. A QUEUED status does
+  // not block: the endpoint refuses a live queued job itself, and a stale
+  // QUEUED with no job behind it is recovered by a re-queue.
+  const blockedReason =
+    (status ?? "").toLowerCase() === "running"
+      ? "An audit is already running"
+      : !isCurrentVersion
+        ? "Audits run on the current version only. Select the current version to run one."
+        : null;
+  const rerunButton =
+    ENABLE_PRETRIAL_RERUN_BUTTON && onRerun ? (
+      <button
+        type="button"
+        disabled={rerunning || blockedReason !== null}
+        onClick={onRerun}
+        className="rounded border border-[color:var(--paper-line)] px-1.5 py-0.5 font-mono text-[10px] text-[color:var(--paper-ink-3)] hover:text-[color:var(--paper-ink)] disabled:cursor-not-allowed disabled:opacity-50"
+        title={
+          blockedReason ??
+          "Audit the task's current version again with the latest prompt"
+        }
+      >
+        {rerunning
+          ? "Queuing…"
+          : state === "unaudited"
+            ? "Run audit"
+            : "Re-run audit"}
+      </button>
+    ) : null;
+
+  const queueErrorLine = queueError ? (
+    <p className="text-[11px] text-[color:var(--paper-fail)]">{queueError}</p>
+  ) : null;
+
+  // Tooltips are unreliable on disabled buttons, so show the reason as
+  // plain text too. "An audit is already running" is skipped — the card's
+  // own running state already says that.
+  const blockedReasonLine =
+    rerunButton && blockedReason && state !== "running" ? (
+      <p className="text-[11px] text-[color:var(--paper-ink-3)]">
+        {blockedReason}
+      </p>
+    ) : null;
+
+  if (state === "unaudited") {
+    if (!rerunButton) return null;
+    return (
+      <div className="space-y-3">
+        <div className="flex items-baseline justify-between">
+          <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
+            Pre-trial audit
+          </h2>
+          {rerunButton}
+        </div>
+        {queueErrorLine}
+        {blockedReasonLine}
+        <p className="text-[12px] text-[color:var(--paper-ink-3)]">
+          The task source has not been audited.
+        </p>
+      </div>
+    );
+  }
 
   const summary =
     state === "running"
@@ -166,23 +243,29 @@ export function TaskPreTrialCard({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-baseline justify-between gap-2">
         <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
           Pre-trial audit
         </h2>
-        <span
-          className={`font-mono text-[10.5px] ${
-            state === "failed"
-              ? "text-[color:var(--paper-fail)]"
-              : "text-[color:var(--paper-ink-3)]"
-          }`}
-        >
-          {summary}
-          {hasDisplayableCostUsd(costUsd)
-            ? ` · ${formatCostUsd(costUsd)}`
-            : ""}
-        </span>
+        <div className="flex items-baseline gap-2">
+          {rerunButton}
+          <span
+            className={`font-mono text-[10.5px] ${
+              state === "failed"
+                ? "text-[color:var(--paper-fail)]"
+                : "text-[color:var(--paper-ink-3)]"
+            }`}
+          >
+            {summary}
+            {hasDisplayableCostUsd(costUsd)
+              ? ` · ${formatCostUsd(costUsd)}`
+              : ""}
+          </span>
+        </div>
       </div>
+
+      {queueErrorLine}
+      {blockedReasonLine}
 
       {state === "failed" && error ? (
         <div className="rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3 font-mono text-[11px] break-all text-[color:var(--paper-ink-3)]">

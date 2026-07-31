@@ -905,6 +905,36 @@ export function TaskDetailClient({
   const [isRunningJudge, setIsRunningJudge] = useState(false);
   const [isCancellingJudge, setIsCancellingJudge] = useState(false);
   const [judgeError, setJudgeError] = useState<string | null>(null);
+  const [rerunningPreTrial, setRerunningPreTrial] = useState(false);
+  const [preTrialError, setPreTrialError] = useState<string | null>(null);
+  // Queue a fresh pre-trial audit of the task's CURRENT version. This is
+  // the independent audit trigger: it does not classify trials and it
+  // does not synthesize the verdict.
+  const handleRerunPreTrial = useCallback(async () => {
+    if (!task?.id || rerunningPreTrial) return;
+    setRerunningPreTrial(true);
+    setPreTrialError(null);
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/qa/pre-trial`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue pre-trial audit"
+        );
+      }
+      // Await the refresh: the button must stay disabled until the card
+      // shows the queued run, or a second click can queue another audit.
+      await mutate();
+    } catch (err) {
+      setPreTrialError(
+        err instanceof Error ? err.message : "Failed to queue pre-trial audit"
+      );
+    } finally {
+      setRerunningPreTrial(false);
+    }
+  }, [task?.id, rerunningPreTrial, mutate]);
   const handleRunJudge = useCallback(async () => {
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
@@ -1193,6 +1223,10 @@ export function TaskDetailClient({
           status={selectedVersion?.pre_trial_status}
           error={selectedVersion?.pre_trial_error}
           costUsd={selectedVersion?.pre_trial_cost_usd}
+          onRerun={handleRerunPreTrial}
+          rerunning={rerunningPreTrial}
+          queueError={preTrialError}
+          isCurrentVersion={selectedVersion ? selectedVersion.is_current : true}
         />
 
         <div className="space-y-3">
