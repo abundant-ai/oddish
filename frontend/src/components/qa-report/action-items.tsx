@@ -24,10 +24,19 @@ function ActionItemDetail({
   const where = findingLocation(item);
   return (
     <div className="flex flex-col gap-1.5">
-      {(item.dimension || item.problem_type) && (
-        <span className="text-muted-foreground font-mono text-[10px]">
-          {[item.dimension, item.problem_type].filter(Boolean).join(" / ")}
-        </span>
+      {(item.dimension || item.problem_type || item.exploited) && (
+        <div className="flex flex-wrap items-center gap-2">
+          {(item.dimension || item.problem_type) && (
+            <span className="text-muted-foreground font-mono text-[10px]">
+              {[item.dimension, item.problem_type].filter(Boolean).join(" / ")}
+            </span>
+          )}
+          {item.exploited ? (
+            <span className="rounded border border-red-500/60 px-1.5 py-0.5 font-mono text-[9px] font-semibold tracking-wider text-red-500">
+              EXPLOITED
+            </span>
+          ) : null}
+        </div>
       )}
 
       {item.title ? (

@@ -319,13 +319,17 @@ export function TaskFilesPanel({
     error: checksLoadError,
     mutate: mutateChecks,
   } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
-      // Poll while the checks run; stop once terminal.
+      // Poll while the checks run, and while task QA runs: the QA-active
+      // guard on the Run button reads verdict_status from this cache, so it
+      // must keep tracking until QA is terminal or the guard goes stale.
       refreshInterval: (data) => {
-        const v = pickChecksVersion(data);
-        return v?.pre_trial_status === "running" ||
-          v?.pre_trial_status === "queued"
-          ? 5000
-          : 0;
+        const checksLive =
+          pickChecksVersion(data)?.pre_trial_status === "running" ||
+          pickChecksVersion(data)?.pre_trial_status === "queued";
+        const qaLive =
+          data?.task?.verdict_status === "queued" ||
+          data?.task?.verdict_status === "running";
+        return checksLive || qaLive ? 5000 : 0;
       },
     });
   const checksVersion = pickChecksVersion(checksDetail);
@@ -565,6 +569,9 @@ export function TaskFilesPanel({
         throw new Error(data.detail || data.error || "Failed to queue task QA");
       }
       onRetryComplete?.([task.id]);
+      // The QA-active guard reads this cache; refresh it so the guard flips
+      // on now instead of after the next unrelated revalidation.
+      void mutateChecks();
     } catch (err) {
       setQAActionError(
         err instanceof Error ? err.message : "Failed to queue task QA"
