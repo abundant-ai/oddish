@@ -811,6 +811,117 @@ class MiniSweUsageFold:
         return self._totals
 
 
+@dataclass
+class TbhFold:
+    """Reads tbh's headless ``exec --json`` stdout.
+
+    Each line is one durable record: a flat envelope carrying ``payload_type``
+    and ``payload``. Assistant text arrives as ``run.output.delta`` chunks and
+    is coalesced the same way grok's is, so a long turn does not burn the
+    ``MAX_TRIAL_EVENTS`` budget one fragment at a time. Tool dispatch is a task
+    lifecycle: ``proposed`` names the tool, ``started`` runs it, and the
+    terminal record carries the outcome. The model turn is scheduled as a task
+    too, named ``model.*``; it is represented by its streamed text rather than
+    as a tool call. Tool ARGUMENTS are not on the lifecycle records, so the
+    panel shows the tool name with an empty input; the post-run trajectory is
+    the place to read what a call actually ran.
+
+    tbh reports token usage only in the post-run session export, not on
+    stdout, so this fold never reports usage and the trial's token/cost
+    columns stay untouched while it is live -- the same situation as
+    grok-build. The post-run trajectory still carries the real counts.
+    """
+
+    model: str | None = None
+    _parts: list[str] = field(default_factory=list)
+    _buffered: int = 0
+    _tools: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def has_usage(self) -> bool:
+        return False
+
+    def on_truncate(self) -> None:
+        self._reset()
+        self._tools.clear()
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        event = _parse_json_line(line)
+        if event is None:
+            return []
+        payload_type = str(event.get("payload_type") or "")
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+
+        if payload_type == "run.output.delta":
+            return self._buffer(str(payload.get("text") or ""))
+        if payload_type.startswith("run.terminal."):
+            # The terminal record repeats the whole turn's text, which the
+            # deltas already carried; give up the buffer instead of doubling it.
+            return self.flush()
+        if payload_type.startswith("task.lifecycle."):
+            return self._feed_task(payload_type, payload)
+        return []
+
+    def _feed_task(
+        self, payload_type: str, payload: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        record = payload.get("event")
+        record = record if isinstance(record, dict) else {}
+        task_id = str(record.get("task_id") or payload.get("task_id") or "")
+        if not task_id:
+            return []
+
+        stage = payload_type.rsplit(".", 1)[-1]
+        if stage == "proposed":
+            name = str(record.get("task_kind") or "")
+            if name and not name.startswith("model."):
+                self._tools[task_id] = name
+            return []
+        name = self._tools.get(task_id)
+        if name is None:
+            return []
+        if stage == "started":
+            return [*self.flush(), _event("tool_use", "input", {}, name=name)]
+        if stage in ("completed", "failed", "cancelled", "timed_out"):
+            self._tools.pop(task_id, None)
+            content = _tool_result_text(
+                record.get("output") or record.get("result") or record.get("reason")
+            )
+            if stage != "completed":
+                content = f"{stage}: {content}" if content else stage
+            return [_event("tool_result", "content", content)]
+        return []
+
+    def _buffer(self, text: str) -> list[dict[str, Any]]:
+        if not text:
+            return []
+        rendered: list[dict[str, Any]] = []
+        if self._buffered and self._buffered + len(text) > PAYLOAD_CLIP_CHARS:
+            rendered.extend(self.flush())
+        while len(text) > PAYLOAD_CLIP_CHARS:
+            self._parts.append(text[:PAYLOAD_CLIP_CHARS])
+            self._buffered = PAYLOAD_CLIP_CHARS
+            rendered.extend(self.flush())
+            text = text[PAYLOAD_CLIP_CHARS:]
+        if text:
+            self._parts.append(text)
+            self._buffered += len(text)
+        return rendered
+
+    def flush(self) -> list[dict[str, Any]]:
+        text = "".join(self._parts)
+        self._reset()
+        return [_event("message", "text", text)] if text else []
+
+    def _reset(self) -> None:
+        self._parts = []
+        self._buffered = 0
+
+    def totals(self) -> UsageTotals:
+        return UsageTotals(model=self.model)
+
+
 @dataclass(frozen=True)
 class Adapter:
     agent_fragment: str
@@ -830,6 +941,7 @@ ADAPTERS: tuple[Adapter, ...] = (
     Adapter("codex", "/logs/agent/codex.txt", CodexUsageFold),
     Adapter("cursor-cli", "/logs/agent/cursor-cli.txt", CursorUsageFold),
     Adapter("grok-build", "/logs/agent/grok-build.json", GrokBuildFold),
+    Adapter("tbh", "/logs/agent/tbh.txt", TbhFold),
     Adapter(
         "mini-swe-agent",
         "/logs/agent/mini-swe-agent.trajectory.json",

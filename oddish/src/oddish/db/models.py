@@ -1143,11 +1143,6 @@ class TrialModel(TimestampedMixin, Base):
     # S3-cached `agent/trajectory_summary.json` sibling file.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Condensed agent step-graph of the trajectory (general phases + terminal
-    # outcome node), populated on explicit request to
-    # POST /trials/{id}/trajectory/graph. Reuses trajectory_summary's components.
-    trajectory_graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
     # Analysis data (LLM analysis of this trial)
     analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     analysis_status: Mapped[AnalysisStatus | None] = mapped_column(
@@ -1160,6 +1155,10 @@ class TrialModel(TimestampedMixin, Base):
     analysis_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The analyzer's live event log for the current/most recent analysis
+    # run. Written by the QA worker every few seconds so the UI can show
+    # what the analyzer is doing. One short line per event, so it stays small.
+    analysis_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Immutable-trial rerun pointer. When a user retries a trial we
     # don't reset this row; instead we insert a fresh trial that copies

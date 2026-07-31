@@ -21,6 +21,7 @@ from oddish.workers.harbor.live_tail import (
     CursorUsageFold,
     GrokBuildFold,
     MiniSweUsageFold,
+    TbhFold,
     UsageTotals,
     price_totals,
     split_lines,
@@ -1571,3 +1572,148 @@ async def test_replaced_tailer_skips_checkpoint(monkeypatch):
     tailer.replaced = True
     await tailer._tick()
     assert session.stmts == []
+
+
+def tbh_line(payload_type: str, payload: dict) -> bytes:
+    """One line of tbh's ``exec --json`` stdout: a flat record envelope."""
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "stream": {"kind": "session", "id": "sess-1"},
+            "sequence": 1,
+            "recorded_at": 1785448022061337,
+            "record_type": "event",
+            "durability": "durable",
+            "payload_type": payload_type,
+            "payload": payload,
+        }
+    ).encode()
+
+
+def test_tbh_adapter_is_registered():
+    adapter = live_tail._adapter_for("tbh")
+    assert adapter.log_path == "/logs/agent/tbh.txt"
+    assert adapter.snapshot is False
+    assert isinstance(adapter.make_fold("striking_tomcat172"), TbhFold)
+
+
+def test_tbh_fold_coalesces_output_deltas():
+    fold = TbhFold(model="striking_tomcat172")
+    assert fold.feed_line(tbh_line("run.output.delta", {"text": "Look"})) == []
+    assert fold.feed_line(tbh_line("run.output.delta", {"text": "ing..."})) == []
+    # The terminal record repeats the whole turn; the buffer is given up rather
+    # than emitted twice.
+    events = fold.feed_line(
+        tbh_line(
+            "run.terminal.completed", {"text": "Looking...", "terminal": "completed"}
+        )
+    )
+    assert events == [{"kind": "message", "payload": {"text": "Looking..."}}]
+
+
+def test_tbh_fold_renders_a_tool_call_and_its_result():
+    fold = TbhFold()
+    assert (
+        fold.feed_line(
+            tbh_line(
+                "task.lifecycle.proposed",
+                {"event": {"kind": "proposed", "task_id": "t1", "task_kind": "bash"}},
+            )
+        )
+        == []
+    )
+    started = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.started", {"event": {"kind": "started", "task_id": "t1"}}
+        )
+    )
+    assert started == [{"kind": "tool_use", "payload": {"input": "{}", "name": "bash"}}]
+    done = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.completed",
+            {"event": {"kind": "completed", "task_id": "t1", "output": "1 passed"}},
+        )
+    )
+    assert done == [{"kind": "tool_result", "payload": {"content": "1 passed"}}]
+
+
+def test_tbh_fold_marks_a_failed_tool():
+    fold = TbhFold()
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.proposed",
+            {"event": {"kind": "proposed", "task_id": "t1", "task_kind": "bash"}},
+        )
+    )
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.started", {"event": {"kind": "started", "task_id": "t1"}}
+        )
+    )
+    events = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.failed",
+            {"event": {"kind": "failed", "task_id": "t1", "reason": "exit 1"}},
+        )
+    )
+    assert events == [{"kind": "tool_result", "payload": {"content": "failed: exit 1"}}]
+
+
+def test_tbh_fold_ignores_the_model_turn_scheduled_as_a_task():
+    # The model turn is a task too; it is represented by its streamed text, not
+    # as a tool call.
+    fold = TbhFold()
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.proposed",
+            {
+                "event": {
+                    "kind": "proposed",
+                    "task_id": "t1",
+                    "task_kind": "model.unknown.response",
+                }
+            },
+        )
+    )
+    assert (
+        fold.feed_line(
+            tbh_line(
+                "task.lifecycle.started",
+                {"event": {"kind": "started", "task_id": "t1"}},
+            )
+        )
+        == []
+    )
+
+
+def test_tbh_fold_flushes_buffered_text_before_a_tool_call():
+    fold = TbhFold()
+    fold.feed_line(tbh_line("run.output.delta", {"text": "Running tests"}))
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.proposed",
+            {"event": {"kind": "proposed", "task_id": "t1", "task_kind": "bash"}},
+        )
+    )
+    events = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.started", {"event": {"kind": "started", "task_id": "t1"}}
+        )
+    )
+    assert events[0] == {"kind": "message", "payload": {"text": "Running tests"}}
+    assert events[1]["kind"] == "tool_use"
+
+
+def test_tbh_fold_reports_no_usage():
+    # Usage is only in the post-run session export, so the live panel must not
+    # touch the trial's token/cost columns.
+    fold = TbhFold(model="striking_tomcat172")
+    assert fold.has_usage is False
+    assert fold.totals() == UsageTotals(model="striking_tomcat172")
+
+
+def test_tbh_fold_drops_its_buffer_when_the_log_is_re_teed():
+    fold = TbhFold()
+    fold.feed_line(tbh_line("run.output.delta", {"text": "partial"}))
+    fold.on_truncate()
+    assert fold.flush() == []

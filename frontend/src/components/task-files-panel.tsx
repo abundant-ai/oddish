@@ -21,6 +21,7 @@ import {
   ChevronUp,
   RefreshCw,
   AlertCircle,
+  ListChecks,
   Microscope,
   Loader2,
   OctagonX,
@@ -35,10 +36,17 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
-import type { Task, Trial } from "@/lib/types";
-import { TaskProbeSummary } from "@/components/task-probe-summary";
-import type { ProbeTrial } from "@/lib/probe-summary";
-import { isTerminalProbeStatus } from "@/lib/probe-summary";
+import type {
+  Task,
+  TaskDetailResponse,
+  TaskVersionSummary,
+  Trial,
+} from "@/lib/types";
+import {
+  StaticChecksPanel,
+  staticCheckState,
+  staticCheckSummary,
+} from "@/components/static-checks-panel";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -114,16 +122,33 @@ interface TaskFilesPanelProps {
    */
   initialFilePath?: string | null;
   /**
-   * Task id to source the PROBE entry from, for panes that drive file listing
-   * via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side "Task
-   * definition" pane). Falls back to `taskId` when not set.
+   * Task id to source the STATIC CHECKS entry from, for panes that drive file
+   * listing via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side
+   * "Task definition" pane). Falls back to `taskId` when not set.
    */
-  probeTaskId?: string | null;
+  staticChecksTaskId?: string | null;
 }
 
 function getNodeName(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
+}
+
+/** The version whose static checks the pane shows: the pinned version when
+ *  the pane is scoped to one (the experiment drawer), else current, else
+ *  newest. /detail orders versions newest-first, so the fallback is
+ *  versions[0]. */
+function pickChecksVersion(
+  detail: TaskDetailResponse | undefined,
+  pinnedVersion?: number | null,
+): TaskVersionSummary | null {
+  const versions = detail?.versions;
+  if (!versions || versions.length === 0) return null;
+  if (pinnedVersion != null) {
+    const pinned = versions.find((v) => v.version === pinnedVersion);
+    if (pinned) return pinned;
+  }
+  return versions.find((v) => v.is_current) ?? versions[0];
 }
 
 // Truncate files larger than 100KB initially
@@ -283,29 +308,58 @@ export function TaskFilesPanel({
   filesUrl,
   taskVersion,
   initialFilePath,
-  probeTaskId,
+  staticChecksTaskId,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
-  // The PROBE entry is keyed off the task even in filesUrl-driven panes (which
-  // pass taskId={null}); probeTaskId supplies the id there.
-  const effectiveProbeTaskId = taskId ?? probeTaskId ?? null;
-  const probeKey =
-    effectiveProbeTaskId && showAnalysis !== false
-      ? `${baseUrl}/tasks/${effectiveProbeTaskId}/trials?probe=true`
+  // The STATIC CHECKS entry is keyed off the task even in filesUrl-driven
+  // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
+  const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
+  // The pre_trial_* fields live on the version summaries of /detail, not on
+  // the plain task endpoint. The task page uses the same key, so SWR shares
+  // the cache there.
+  const checksKey =
+    effectiveChecksTaskId && showAnalysis !== false
+      ? `${baseUrl}/tasks/${effectiveChecksTaskId}/detail`
       : null;
-  const { data: probeTrials } = useSWR<ProbeTrial[]>(probeKey, fetcher, {
-    // Poll while the newest probe is still running; stop once terminal.
-    refreshInterval: (data) => {
-      const latest = data && data.length > 0 ? data[data.length - 1] : null;
-      return latest && !isTerminalProbeStatus(latest.status) ? 5000 : 0;
-    },
-  });
-  // Backend returns probe trials ordered created_at ASC → last is the newest.
-  const latestProbe =
-    probeTrials && probeTrials.length > 0
-      ? probeTrials[probeTrials.length - 1]
+  const {
+    data: checksDetail,
+    error: checksLoadError,
+    mutate: mutateChecks,
+  } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
+      // Poll while the checks run, and while task QA runs: the full QA job
+      // writes fresh findings when it lands, so the pane keeps tracking
+      // until both are terminal.
+      refreshInterval: (data) => {
+        const checksLive =
+          pickChecksVersion(data, taskVersion)?.pre_trial_status ===
+            "running" ||
+          pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
+        const qaLive =
+          data?.task?.verdict_status === "queued" ||
+          data?.task?.verdict_status === "running";
+        return checksLive || qaLive ? 5000 : 0;
+      },
+    });
+  // Scoped panes (the experiment drawer) pin the version whose files are on
+  // screen; the checks must describe that same source.
+  const checksVersion = pickChecksVersion(checksDetail, taskVersion);
+  const checksAvailable = showAnalysis !== false && effectiveChecksTaskId !== null;
+  // Until /detail answers, the checks state is unknown, not "unaudited":
+  // an enabled Run button on the misread queues an audit that wipes findings.
+  const checksLoading =
+    checksAvailable && checksDetail === undefined && !checksLoadError;
+  // A failed revalidation with data already in hand is not "unavailable":
+  // SWR keeps the stale data, and hiding live findings behind an error flash
+  // on one bad poll is worse than showing them.
+  const checksLoadFailure =
+    checksLoadError && checksDetail === undefined
+      ? "Unable to load the static checks state."
       : null;
-  const probeAvailable = showAnalysis !== false && latestProbe !== null;
+  const checksFindings = checksVersion?.pre_trial_findings ?? [];
+  const checksState = staticCheckState(
+    checksVersion?.pre_trial_status,
+    checksFindings.length,
+  );
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -320,7 +374,12 @@ export function TaskFilesPanel({
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
-  const [probeSelected, setProbeSelected] = useState(false);
+  // Static checks are the default view; picking a file switches away.
+  const [checksSelected, setChecksSelected] = useState(true);
+  // The one gate for "the checks pane is on screen". The tree highlight and
+  // the main pane must both use it: with checks hidden (public share),
+  // checksSelected stays true but the pane shows a file.
+  const checksShowing = checksSelected && checksAvailable;
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
@@ -520,6 +579,9 @@ export function TaskFilesPanel({
         throw new Error(data.detail || data.error || "Failed to queue task QA");
       }
       onRetryComplete?.([task.id]);
+      // The QA-active guard reads this cache; refresh it so the guard flips
+      // on now instead of after the next unrelated revalidation.
+      void mutateChecks();
     } catch (err) {
       setQAActionError(
         err instanceof Error ? err.message : "Failed to queue task QA"
@@ -547,6 +609,36 @@ export function TaskFilesPanel({
     );
   };
 
+  const [checksRerunning, setChecksRerunning] = useState(false);
+  const [checksQueueError, setChecksQueueError] = useState<string | null>(null);
+  // Another task's failed queue attempt is not this task's error.
+  useEffect(() => {
+    setChecksQueueError(null);
+    setChecksRerunning(false);
+  }, [effectiveChecksTaskId]);
+  const handleRerunChecks = useCallback(async () => {
+    if (!effectiveChecksTaskId || checksRerunning) return;
+    setChecksRerunning(true);
+    setChecksQueueError(null);
+    try {
+      const res = await fetch(
+        `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue static checks",
+        );
+      }
+      await mutateChecks();
+    } catch (e) {
+      setChecksQueueError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setChecksRerunning(false);
+    }
+  }, [baseUrl, effectiveChecksTaskId, checksRerunning, mutateChecks]);
+
   // Fetch root file list when panel opens
   useEffect(() => {
     if (!isOpen || (!taskId && !filesUrl)) {
@@ -560,7 +652,7 @@ export function TaskFilesPanel({
       setError(null);
       setFileTree([]);
       setSelectedFile(null);
-      setProbeSelected(false);
+      setChecksSelected(true);
       setFileContent(null);
       setExpandedDirs(new Set());
       setLoadingDirs(new Set());
@@ -581,8 +673,12 @@ export function TaskFilesPanel({
         const dirs: TaskDirectory[] = data.dirs || [];
         const tree = buildNodesFromListing(files, dirs);
         setFileTree(tree);
+        // The checks pane is the default view, so nothing pre-selects
+        // behind it: a hidden auto-selected file prefetches content that
+        // later flashes under whichever file the user actually picks. Only
+        // the file-only view (public share) paints a file immediately.
         const firstFile = findFirstFile(tree);
-        if (firstFile) {
+        if (firstFile && !checksAvailable) {
           setSelectedFile(firstFile);
         }
       } catch (err) {
@@ -603,7 +699,7 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl]);
+  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, checksAvailable]);
 
   const loadDirectory = useCallback(
     async (path: string) => {
@@ -875,7 +971,7 @@ export function TaskFilesPanel({
     }
 
     setSelectedFile(node);
-    setProbeSelected(false);
+    setChecksSelected(false);
   }, [initialFilePath, fileTree, loadingDirs, loadDirectory]);
 
   useEffect(() => {
@@ -930,7 +1026,7 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = !probeSelected && selectedFile?.path === node.path;
+      const isSelected = !checksShowing && selectedFile?.path === node.path;
       const isLoadingDir = loadingDirs.has(node.path);
       const Icon =
         node.type === "dir"
@@ -954,7 +1050,7 @@ export function TaskFilesPanel({
                 }
               } else {
                 setSelectedFile(node);
-                setProbeSelected(false);
+                setChecksSelected(false);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -1003,20 +1099,14 @@ export function TaskFilesPanel({
       );
     }
 
-    if (fileContentLoading) {
+    // A null fileContent only means "not loaded yet" — the load effect
+    // hasn't run for this selection. Failed loads store an error string.
+    if (fileContentLoading || fileContent === null) {
       return (
         <div className="space-y-2 p-4">
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-3/4" />
           <Skeleton className="h-4 w-5/6" />
-        </div>
-      );
-    }
-
-    if (fileContent === null) {
-      return (
-        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          Unable to load file content
         </div>
       );
     }
@@ -1149,14 +1239,14 @@ export function TaskFilesPanel({
 
   const fileTreeContent = (
     <>
-      {isListingLoading ? (
+      {isListingLoading && !checksAvailable ? (
         <div className="flex flex-1 items-center justify-center">
           <div className="text-muted-foreground flex items-center gap-2">
             <Loader2 className="h-5 w-5 animate-spin" />
             <span className="text-sm">Loading files...</span>
           </div>
         </div>
-      ) : listingError ? (
+      ) : listingError && !checksAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
@@ -1166,7 +1256,7 @@ export function TaskFilesPanel({
             <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
-      ) : fileTree.length === 0 ? (
+      ) : fileTree.length === 0 && !checksAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <p className="text-muted-foreground text-sm">No files found</p>
@@ -1181,46 +1271,58 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                Files
-              </div>
-              {renderFileTree(fileTree)}
-              {showAnalysis !== false && effectiveProbeTaskId && (
-                <div className="border-border mt-2 border-t pt-2">
+              {checksAvailable && (
+                <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                    Probe
+                    Static checks
                   </div>
                   <button
                     type="button"
-                    disabled={!probeAvailable}
-                    onClick={() => probeAvailable && setProbeSelected(true)}
+                    onClick={() => setChecksSelected(true)}
                     className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                      probeSelected
+                      checksSelected
                         ? "bg-primary/20 text-primary"
-                        : probeAvailable
-                          ? "hover:bg-muted/50 cursor-pointer"
-                          : "text-muted-foreground cursor-not-allowed opacity-60"
+                        : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title={
-                      probeAvailable
-                        ? "View latest probe run"
-                        : "No probe run yet"
-                    }
+                    title="View the task's static checks"
                   >
-                    <Microscope
+                    <ListChecks
                       className="h-3.5 w-3.5 shrink-0"
                       aria-hidden="true"
                     />
                     <span className="truncate">
-                      {probeAvailable ? "Latest probe run" : "No probe run yet"}
+                      {checksLoading
+                        ? "Loading…"
+                        : checksLoadFailure
+                          ? "Unavailable"
+                          : staticCheckSummary(checksState, checksFindings.length)}
                     </span>
                   </button>
                 </div>
               )}
+              <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                Files
+              </div>
+              {isListingLoading ? (
+                <div className="text-muted-foreground flex items-center gap-2 px-2 py-2 text-xs">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading files...
+                </div>
+              ) : listingError ? (
+                <p className="text-muted-foreground px-2 py-2 text-xs">
+                  Unable to load files: {listingError}
+                </p>
+              ) : fileTree.length === 0 ? (
+                <p className="text-muted-foreground px-2 py-2 text-xs">
+                  No files found
+                </p>
+              ) : (
+                renderFileTree(fileTree)
+              )}
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {!probeSelected && selectedFile && (
+            {!checksShowing && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1270,10 +1372,17 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {probeSelected && latestProbe ? (
-                <TaskProbeSummary
-                  trial={latestProbe}
-                  taskId={effectiveProbeTaskId ?? ""}
+              {checksShowing ? (
+                <StaticChecksPanel
+                  findings={checksFindings}
+                  status={checksVersion?.pre_trial_status}
+                  error={checksVersion?.pre_trial_error}
+                  costUsd={checksVersion?.pre_trial_cost_usd}
+                  onRerun={handleRerunChecks}
+                  rerunning={checksRerunning}
+                  queueError={checksQueueError}
+                  loading={checksLoading}
+                  loadError={checksLoadFailure}
                 />
               ) : (
                 renderFileContent()

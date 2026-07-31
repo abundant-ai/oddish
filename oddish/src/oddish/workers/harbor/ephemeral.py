@@ -123,6 +123,7 @@ def _build_payload(
         "model": model,
         "environment": environment.value,
         "environment_config": raw_harbor_config.get("environment") or {},
+        "agent_config": raw_harbor_config.get("agent_config") or {},
         "daytona_kwargs": daytona_kwargs,
         "verifier": raw_harbor_config.get("verifier") or {},
         "artifacts": raw_harbor_config.get("artifacts") or [],

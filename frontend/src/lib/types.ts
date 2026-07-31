@@ -100,6 +100,8 @@ interface TrialAnalysis {
   evidence?: string;
   root_cause?: string;
   recommendation?: string;
+  /** Task weaknesses this trial revealed; same shape as pre-trial findings. */
+  action_items?: PreTrialFinding[];
   reward?: number | null;
   prompt_kind?: string;
   prompt_version?: number;
@@ -138,6 +140,9 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  analysis_error?: string | null;
+  analysis_started_at?: string | null;
+  analysis_finished_at?: string | null;
   superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
@@ -661,45 +666,6 @@ export interface TrajectoryHighlight {
   step_id: number;
   title: string;
   why: string;
-}
-
-// Condensed agent-graph summary of a trajectory (GET /trials/{id}/trajectory/graph).
-export type TrajectoryGraphStepStatus = "ok" | "warn" | "error";
-
-export type TrajectoryGraphOutcome =
-  | "success"
-  | "partial"
-  | "failure"
-  | "timeout"
-  | "error"
-  | "scoreless"
-  | "skipped"
-  | "running"
-  | "queued"
-  | "pending";
-
-export interface TrajectoryGraphStep {
-  id: string;
-  title: string;
-  detail: string;
-  status: TrajectoryGraphStepStatus;
-}
-
-export interface TrajectoryGraphTerminal {
-  outcome: TrajectoryGraphOutcome;
-  last_action: string;
-  reason: string;
-}
-
-export interface TrajectoryGraph {
-  headline: string;
-  steps: TrajectoryGraphStep[];
-  terminal: TrajectoryGraphTerminal;
-  source: "summary" | "llm" | "heuristic";
-  model: string | null;
-  num_steps: number | null;
-  schema_version?: string;
-  generated_at?: string;
 }
 
 /** Pre-v4 segmentation. Still present on summaries generated before #790. */

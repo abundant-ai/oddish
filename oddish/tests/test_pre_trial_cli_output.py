@@ -1,7 +1,7 @@
-"""Pre-trial on the CLAUDE_CLI backend receives claude-code's
-``--output-format json`` *envelope*, not the model's bare answer. The unwrap
-has to happen before schema validation, or every audit silently returns zero
-findings (extra envelope keys are ignored and ``items`` defaults to empty).
+"""Pre-trial on the CLAUDE_CLI backend receives claude-code's stream-json
+*result envelope*, not the model's bare answer. The unwrap has to happen
+before schema validation, or every audit silently returns zero findings
+(extra envelope keys are ignored and ``items`` defaults to empty).
 """
 
 import json
@@ -23,8 +23,8 @@ _ITEM = {
 
 
 def _envelope(model_answer: str) -> str:
-    """What ClaudeCliClient.stream yields: claude-code's single json envelope,
-    the model's text answer under ``result`` and no schema-structured output."""
+    """The result event ClaudeCliClient.stream ends with: the model's text
+    answer under ``result`` and no schema-structured output."""
     return json.dumps(
         {
             "type": "result",

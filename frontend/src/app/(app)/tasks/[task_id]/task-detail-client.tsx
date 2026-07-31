@@ -22,9 +22,6 @@ import {
 } from "@/components/ui/tooltip";
 import { TagEditor } from "@/components/tag-editor";
 import { ChatButton } from "@/components/cc-chat/chat-button";
-import { ProbeLaunchButton } from "@/components/probe-launch-button";
-import { TaskPreTrialCard } from "@/components/task-pre-trial-card";
-import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
@@ -278,13 +275,6 @@ function TaskDetailHeader({
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <ChatButton scopeKind="task" scopeId={task.name} />
-        <ProbeLaunchButton
-          taskId={task.id}
-          taskName={task.name}
-          variant="labeled"
-          label="Launch probe"
-          className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px]"
-        />
         {(() => {
           const meta = task.github_meta;
           const prUrl = taskPrUrl(task.link, meta);
@@ -1172,27 +1162,14 @@ export function TaskDetailClient({
           ) : null}
         </div>
 
-        <TaskProbeRunCard
-          taskId={task.id}
-          versionId={selectedVersionId}
-          headerSlot={
-            <TaskVerdictBadge
-              task={task}
-              variant="inline"
-              onRunJudge={handleRunJudge}
-              onCancelJudge={handleCancelJudge}
-              isRunning={isRunningJudge}
-              isCancelling={isCancellingJudge}
-              error={judgeError}
-            />
-          }
-        />
-
-        <TaskPreTrialCard
-          findings={selectedVersion?.pre_trial_findings}
-          status={selectedVersion?.pre_trial_status}
-          error={selectedVersion?.pre_trial_error}
-          costUsd={selectedVersion?.pre_trial_cost_usd}
+        <TaskVerdictBadge
+          task={task}
+          variant="inline"
+          onRunJudge={handleRunJudge}
+          onCancelJudge={handleCancelJudge}
+          isRunning={isRunningJudge}
+          isCancelling={isCancellingJudge}
+          error={judgeError}
         />
 
         <div className="space-y-3">
@@ -1241,8 +1218,9 @@ export function TaskDetailClient({
                 isOpen={true}
                 onClose={() => {}}
                 taskId={null}
-                probeTaskId={task.id}
+                staticChecksTaskId={task.id}
                 filesUrl={`/api/tasks/${task.id}/files`}
+                taskVersion={selectedVersion?.version}
                 apiBaseUrl="/api"
                 contentOnly={true}
               />
@@ -1253,6 +1231,7 @@ export function TaskDetailClient({
                 onClose={() => setDrawer(null)}
                 taskId={task.id}
                 task={task}
+                taskVersion={selectedVersion?.version}
                 onRetryComplete={handleRerun}
                 allowRetry={true}
                 onNavigateToFirstTrial={

@@ -19,12 +19,15 @@ from oddish.core.endpoints import (
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
+    rerun_pre_trial_audit_core,
+    rerun_trial_analysis_core,
     combine_experiments_core,
     create_task_sweep_batch_core,
     create_task_sweep_core,
     get_task_detail_core,
     get_task_status_core,
     get_task_version_core,
+    get_trial_analysis_log_core,
     get_trial_by_index_core,
     get_trial_for_org_core,
     list_task_versions_core,
@@ -51,8 +54,6 @@ from oddish.core.trial_io import (
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
-    read_persisted_trajectory_graph,
-    generate_and_store_trajectory_graph,
 )
 from oddish.core.trial_live import read_trial_live_for_id
 from oddish.schemas import TrialRetryRequest
@@ -716,6 +717,36 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
         )
 
 
+@api.post("/tasks/{task_id}/qa/pre-trial")
+async def rerun_pre_trial_audit(task_id: str) -> dict:
+    """Queue the pre-trial audit for the task's current version.
+
+    Runs only the audit. Does not classify trials and does not synthesize
+    the verdict.
+    """
+    async with get_session() as session:
+        return await rerun_pre_trial_audit_core(session, task_id=task_id)
+
+
+@api.post("/trials/{trial_id}/analysis/rerun")
+async def rerun_trial_analysis(trial_id: str) -> dict:
+    """Queue analysis for one trial.
+
+    Classifies only this trial. Does not touch other trials, the task
+    verdict, or the pre-trial audit.
+    """
+    async with get_session() as session:
+        return await rerun_trial_analysis_core(session, trial_id=trial_id)
+
+
+@api.get("/trials/{trial_id}/analysis-log")
+async def get_trial_analysis_log(trial_id: str) -> dict:
+    """Whole log of the trial's current/most recent analysis run, plus the
+    QA queue position while the job waits for a worker."""
+    async with get_session() as session:
+        return await get_trial_analysis_log_core(session, trial_id=trial_id)
+
+
 @api.post("/trials/{trial_id}/retry")
 async def retry_trial(
     trial_id: str,
@@ -771,34 +802,6 @@ async def get_trial_trajectory(trial_id: str):
     """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
     trial = await _get_detached_trial(trial_id)
     return await read_trial_trajectory(trial)
-
-
-@api.get("/trials/{trial_id}/trajectory/graph")
-async def get_trial_trajectory_graph(trial_id: str):
-    """Return the STORED agent graph for a trial (never generates)."""
-    trial = await _get_detached_trial(trial_id)
-    graph = read_persisted_trajectory_graph(trial)
-    if graph is None:
-        return {"status": "not_generated"}
-    return graph
-
-
-@api.post("/trials/{trial_id}/trajectory/graph")
-async def generate_trial_trajectory_graph(trial_id: str, refresh: bool = False):
-    """Generate (and persist) the condensed agent step-graph for a trial."""
-    from oddish.core.helpers import _has_fetchable_trajectory
-
-    async with get_session() as session:
-        trial = await session.get(TrialModel, trial_id)
-        if trial is None:
-            raise HTTPException(status_code=404, detail="Trial not found")
-        if not _has_fetchable_trajectory(trial):
-            raise HTTPException(
-                status_code=404, detail="No trajectory available for this trial"
-            )
-        return await generate_and_store_trajectory_graph(
-            session, trial, refresh=refresh
-        )
 
 
 @api.get("/trials/{trial_id}/result")

@@ -1,4 +1,7 @@
-from oddish.workers.harbor.model_hosts import outbound_hosts_for_model
+from oddish.workers.harbor.model_hosts import (
+    agent_runtime_hosts,
+    outbound_hosts_for_model,
+)
 
 
 def test_outbound_hosts_follow_model_not_agent_env_shape():
@@ -98,3 +101,42 @@ def test_bare_classifier_only_provider_infers_host_opt_in_only():
     # path leaves it empty (no widening).
     assert outbound_hosts_for_model("grok-4", infer_bare_provider=True) == ["api.x.ai"]
     assert outbound_hosts_for_model("grok-4") == []
+
+
+def test_tbh_gets_its_own_service_host_which_the_model_id_never_names():
+    # Regression: a meta/ model resolves the OpenAI-compatible model API
+    # (api.ai.meta.com) while the tbh harness dials api.meta.ai for its model
+    # catalog and inference. A trial allowlisted from the model id alone failed
+    # with "failed to fetch model catalog: transport error".
+    assert outbound_hosts_for_model("meta/striking_tomcat172") == ["api.ai.meta.com"]
+    assert agent_runtime_hosts(agent_name="tbh") == ["api.meta.ai"]
+
+
+def test_agent_runtime_hosts_are_empty_for_provider_talking_agents():
+    # Every other agent reaches the endpoint its model id names, so it must not
+    # gain a host here.
+    assert agent_runtime_hosts(agent_name="claude-code") == []
+    assert agent_runtime_hosts(agent_name="codex") == []
+    assert agent_runtime_hosts(agent_name=None) == []
+
+
+def test_a_custom_endpoint_is_added_alongside_the_default():
+    # Added rather than substituted: a fallback to the production endpoint
+    # must not be silently un-allowlisted by pointing at staging.
+    assert agent_runtime_hosts(
+        agent_name="tbh", agent_kwargs={"base_url": "https://staging.meta.ai/v1"}
+    ) == ["api.meta.ai", "staging.meta.ai"]
+    assert agent_runtime_hosts(
+        agent_name="tbh", agent_env={"TBH_BASE_URL": "https://staging.meta.ai"}
+    ) == ["api.meta.ai", "staging.meta.ai"]
+    assert agent_runtime_hosts(
+        agent_name="tbh",
+        agent_kwargs={"extra_env": {"TBH_BASE_URL": "https://staging.meta.ai"}},
+    ) == ["api.meta.ai", "staging.meta.ai"]
+
+
+def test_an_oddish_wrapper_import_path_still_resolves_its_agent():
+    # Wrappers null the name and set an import path instead.
+    assert agent_runtime_hosts(
+        agent_name=None, import_path="oddish.workers.agents.tbh:Tbh"
+    ) == ["api.meta.ai"]
