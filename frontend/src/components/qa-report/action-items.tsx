@@ -95,10 +95,13 @@ export function SeverityGroups({
   items,
   onFeedback,
   className,
+  tierEffects,
 }: {
   items: PreTrialFinding[];
   onFeedback?: (r: FeedbackRecord) => void;
   className?: string;
+  /** Per-tier effect line; the default narrates trial classification. */
+  tierEffects?: Partial<Record<string, string>>;
 }) {
   const groups = TIER_ORDER.map((tier) => ({
     tier,
@@ -134,7 +137,7 @@ export function SeverityGroups({
               {group.items.length} item{group.items.length === 1 ? "" : "s"}
             </span>
             <span className="text-muted-foreground min-w-0 flex-1 text-[11px] leading-relaxed text-pretty">
-              {group.meta.labelEffect}
+              {tierEffects?.[group.tier] ?? group.meta.labelEffect}
             </span>
           </summary>
 

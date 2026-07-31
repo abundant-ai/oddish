@@ -85,6 +85,13 @@ export function StaticChecksPanel({
   const items = findings ?? [];
   const state = staticCheckState(status, items.length);
   const stateUnknown = Boolean(loading || loadError);
+  // Disabled buttons swallow hover, so a reason in the title alone never
+  // shows; it renders as a text line below the header too.
+  const blockedReason = pinnedOld
+    ? "The checks run on the current version — select the current version to re-run."
+    : qaActive
+      ? "Task QA is running and includes these checks — wait for it to finish."
+      : null;
   // Only a live run blocks the button. A stale "queued" row must stay
   // re-queueable: re-queue is the backend's recovery path for queued jobs
   // that never got picked up.
@@ -113,13 +120,7 @@ export function StaticChecksPanel({
           }
           onClick={onRerun}
           className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          title={
-            pinnedOld
-              ? "The checks run on the current version — select the current version to re-run"
-              : qaActive
-                ? "Task QA is running and includes these checks — wait for it to finish"
-                : "Audit this task's source with the latest prompt"
-          }
+          title={blockedReason ?? "Audit this task's source with the latest prompt"}
         >
           {rerunning
             ? "Queuing…"
@@ -131,6 +132,9 @@ export function StaticChecksPanel({
 
       {queueError ? (
         <p className="text-[11px] text-red-500">{queueError}</p>
+      ) : null}
+      {blockedReason ? (
+        <p className="text-muted-foreground text-[11px]">{blockedReason}</p>
       ) : null}
 
       {loading ? (
@@ -164,7 +168,17 @@ export function StaticChecksPanel({
           The checks found no defects in this task&apos;s source.
         </p>
       ) : (
-        <SeverityGroups items={items} />
+        // The default tier copy narrates trial classification; these findings
+        // come from the source audit, so the effect line speaks to the task.
+        <SeverityGroups
+          items={items}
+          tierEffects={{
+            must_fix:
+              "The defect can decide trials — QA marks the task bad until it is fixed.",
+            should_fix: "Does not change the verdict.",
+            optional: "Does not change the verdict.",
+          }}
+        />
       )}
     </div>
   );
