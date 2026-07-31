@@ -434,6 +434,14 @@ def test_backend_status_probe_covers_parallel_deploy_window():
     # right after a fresh frontend deploy.
     assert "probeMs" in route
     assert "probeMs" in status
+    # The banner must appear while the first probe is still pending (the
+    # route can hold through a ~110s cold start), not only after a failure.
+    grace = int(
+        re.search(r"FIRST_PROBE_GRACE_MS = ([\d_]+)", status)
+        .group(1)
+        .replace("_", "")
+    )
+    assert grace < 10_000
 
 
 def _load_script(name):

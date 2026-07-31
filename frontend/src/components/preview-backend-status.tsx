@@ -15,6 +15,12 @@ const PROBE_TIMEOUT_MS = 125_000;
 // also count the health route's own function cold start and network time,
 // reloading needlessly right after a fresh frontend deploy.
 const SLOW_FIRST_PROBE_MS = 5_000;
+// If the first probe hasn't answered within this window, show the banner
+// while it's pending: the health route holds its backend fetch through a
+// Modal cold start (up to 110s), and that wait is exactly the window the
+// banner exists to explain. The probe's eventual result then either hides
+// the banner or keeps it up.
+const FIRST_PROBE_GRACE_MS = 2_500;
 const RELOAD_GUARD_KEY = "oddish-preview-health-reloaded-at";
 // A slow-but-healthy backend must not reload the page on every visit, so
 // recovery reloads are rate-limited per tab.
@@ -60,6 +66,13 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let firstProbe = true;
+    // Deliberately does not mark wasDown: a pending probe justifies showing
+    // the banner, but only a failed probe or a slow backend fetch justifies
+    // reloading the page.
+    const graceTimer = setTimeout(
+      () => setReady((current) => (current === null ? false : current)),
+      FIRST_PROBE_GRACE_MS,
+    );
 
     const probe = async () => {
       let healthy = false;
@@ -102,6 +115,7 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
     probe();
     return () => {
       cancelled = true;
+      clearTimeout(graceTimer);
       if (timer) {
         clearTimeout(timer);
       }
