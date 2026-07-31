@@ -38,6 +38,14 @@ def _plain(url: str) -> str:
     return url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
+def _session_pooler(url: str) -> str:
+    # Prod's app URL rides the transaction pooler (6543), which reaps
+    # long-lived transactions — the multi-minute snapshot COPYs must use
+    # the session pooler (5432) on the same host. No-op for URLs already
+    # on 5432 or direct connections.
+    return url.replace(":6543/", ":5432/", 1)
+
+
 async def _tables(conn) -> set[str]:
     rows = await conn.fetch(
         "SELECT tablename FROM pg_tables WHERE schemaname='public'"
@@ -78,7 +86,7 @@ async def _src_connect(url: str):
 
 
 async def main() -> None:
-    src_url = _plain(os.environ["SOURCE_DB_URL"])
+    src_url = _session_pooler(_plain(os.environ["SOURCE_DB_URL"]))
     holder = await _src_connect(src_url)
     dst = await asyncpg.connect(_plain(os.environ["TARGET_DB_URL"]),
                                 statement_cache_size=0)
@@ -141,7 +149,20 @@ async def main() -> None:
                             "WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", t)]
                     select_cols = ", ".join(
                         f'NULL AS "{c}"' if c in backedge_cols.get(t, []) else f'"{c}"' for c in cols)
-                    await _copy_table_from_src(t, select_cols, cols)
+                    attempts = 0
+                    while True:
+                        attempts += 1
+                        try:
+                            async with dst.transaction():   # savepoint
+                                await _copy_table_from_src(t, select_cols, cols)
+                            break
+                        except (asyncpg.PostgresConnectionError,
+                                asyncpg.InterfaceError,
+                                ConnectionError, OSError) as exc:
+                            if attempts >= 2:
+                                raise
+                            print(f"retrying {t} after transient failure: {exc!r}", flush=True)
+                            await asyncio.sleep(5)
                     n = await dst.fetchval(f'SELECT count(*) FROM "{t}"')
                     print(f"mirrored {t}: {n} rows in {time.monotonic() - started:.0f}s", flush=True)
                 for (t, col) in sorted(BACKEDGES):
