@@ -51,6 +51,7 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AnalysisProse } from "@/components/analysis-prose";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -1080,7 +1081,7 @@ export function TrialDetailPanel({
                         <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
                       )}
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-col gap-1">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-sm font-bold">
                             {trial.analysis_status === "running" ||
                             trial.analysis_status === "pending" ||
@@ -1091,30 +1092,83 @@ export function TrialDetailPanel({
                                   " ",
                                 ) || "Analysis"}
                           </span>
-                          {trial.analysis?.subtype && (
-                            <span className="text-muted-foreground text-xs">
-                              Reason: {trial.analysis.subtype}
-                            </span>
-                          )}
+                          {trial.analysis?.subtype &&
+                            !/^n\/a/i.test(trial.analysis.subtype) && (
+                              <span
+                                className={cn(
+                                  "rounded border px-1.5 py-0.5 font-mono text-[10px]",
+                                  trial.analysis?.classification?.startsWith(
+                                    "BAD",
+                                  )
+                                    ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
+                                    : trial.analysis?.classification?.startsWith(
+                                          "GOOD",
+                                        )
+                                      ? "border-emerald-500/50 text-emerald-600 dark:text-emerald-400"
+                                      : "border-border text-muted-foreground",
+                                )}
+                              >
+                                {trial.analysis.subtype.replace(/_/g, " ")}
+                              </span>
+                            )}
                         </div>
-                        {trial.analysis?.evidence && (
-                          <p className="text-muted-foreground/90 mt-2 text-xs leading-relaxed">
-                            {trial.analysis.evidence}
-                          </p>
-                        )}
                         {trial.analysis?.root_cause &&
                           trial.analysis.root_cause !==
                             trial.analysis.evidence && (
-                            <p className="text-muted-foreground mt-1 text-xs">
-                              {trial.analysis.root_cause}
-                            </p>
+                            <div className="border-border/60 bg-muted/30 mt-3 rounded-md border p-2.5">
+                              <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
+                                Root cause
+                              </span>
+                              <AnalysisProse
+                                text={trial.analysis.root_cause}
+                                className="text-muted-foreground mt-1"
+                              />
+                            </div>
                           )}
                         {trial.analysis?.recommendation &&
-                          trial.analysis.recommendation !== "N/A" && (
-                            <p className="text-muted-foreground/80 mt-1 text-xs italic">
-                              💡 {trial.analysis.recommendation}
-                            </p>
+                          !/^n\/a/i.test(trial.analysis.recommendation) && (
+                            <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">
+                              <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
+                                Fix
+                              </span>
+                              <AnalysisProse
+                                text={trial.analysis.recommendation}
+                                className="text-muted-foreground mt-1"
+                              />
+                            </div>
                           )}
+                        {(trial.analysis?.action_items?.length ?? 0) > 0 && (
+                          <div className="mt-3">
+                            <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
+                              Action items (
+                              {trial.analysis!.action_items!.length})
+                            </span>
+                            <div className="mt-1">
+                              <PreTrialFindingList
+                                items={trial.analysis!.action_items!}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {trial.analysis?.evidence &&
+                          (trial.analysis.root_cause &&
+                          trial.analysis.root_cause !==
+                            trial.analysis.evidence ? (
+                            <details className="mt-2">
+                              <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
+                                Evidence
+                              </summary>
+                              <AnalysisProse
+                                text={trial.analysis.evidence}
+                                className="text-muted-foreground/90 mt-1"
+                              />
+                            </details>
+                          ) : (
+                            <AnalysisProse
+                              text={trial.analysis.evidence}
+                              className="text-muted-foreground/90 mt-2"
+                            />
+                          ))}
                       </div>
                     </div>
                   </CardContent>
