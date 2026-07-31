@@ -415,6 +415,19 @@ def test_backend_status_probe_covers_parallel_deploy_window():
     # previews before login), or the banner never clears for them.
     middleware = (REPO / "frontend/src/middleware.ts").read_text()
     assert '"/api/preview-backend-health"' in middleware
+    # The route's probe hold must outlast a Modal cold start (same constraint
+    # as wait_for_modal_ready.py), and the client must not abort before the
+    # route can answer.
+    route_hold = int(
+        re.search(r"PROBE_TIMEOUT_MS = ([\d_]+)", route).group(1).replace("_", "")
+    )
+    client_timeout = int(
+        re.search(r"PROBE_TIMEOUT_MS = ([\d_]+)", status).group(1).replace("_", "")
+    )
+    max_duration = int(re.search(r"maxDuration = (\d+)", route).group(1))
+    assert route_hold >= 60_000
+    assert max_duration * 1_000 > route_hold
+    assert client_timeout > route_hold
 
 
 def _load_script(name):

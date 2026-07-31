@@ -6,14 +6,15 @@ import { NextResponse } from "next/server";
 // allowlist does not include preview origins, so a cross-origin fetch
 // always fails. This same-origin route probes /openapi.json instead --
 // the same readiness signal the PR Preview workflow's gates use.
-export const maxDuration = 30;
+export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
-// Long enough that the first probe after a Modal scale-to-zero cold start
-// (~30s measured) usually returns ready in one round trip; when it doesn't,
-// the aborted request still triggered the container boot, so a following
-// poll succeeds.
-const PROBE_TIMEOUT_MS = 25_000;
+// Must outlast a Modal cold start (~30s measured, with headroom): a probe
+// aborted mid-boot has repeatedly failed to converge on later polls too --
+// the same failure mode wait_for_modal_ready.py documents (four PRs failed
+// this way on 2026-07-20 with short per-request timeouts), which is why it
+// uses a 120s per-request timeout.
+const PROBE_TIMEOUT_MS = 110_000;
 
 export async function GET() {
   if (process.env.NEXT_PUBLIC_ODDISH_PREVIEW !== "true") {

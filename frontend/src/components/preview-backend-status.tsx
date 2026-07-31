@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 
 const POLL_INTERVAL_MS = 5_000;
-// The same-origin health route holds its backend probe open for up to 25s
-// (covering a Modal cold start), so give it a little headroom.
-const PROBE_TIMEOUT_MS = 30_000;
+// The same-origin health route holds its backend probe open for up to 110s
+// (outlasting a Modal cold start), so the client must not abort before the
+// route can answer.
+const PROBE_TIMEOUT_MS = 125_000;
 // A warm backend answers the health route well under a second. A first
 // probe that only succeeds after this long means the backend was cold or
 // down while the page server-rendered, so its data likely failed -- treat
