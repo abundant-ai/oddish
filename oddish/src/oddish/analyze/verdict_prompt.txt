@@ -33,7 +33,7 @@ Individual trial classifications:
 ## VERDICT
 
 * A baseline failure (rule 4) -> is_good=false, high confidence.
-* Any trial proves a leak or an access hole (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`) -> is_good=false, even when only one trial shows it (rule 3). A `must_fix` finding with the dimension `info_leakage` in the static quality check -> is_good=false in the same way.
+* Any trial proves a leak or an access hole (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`) -> is_good=false, even when only one trial shows it (rule 3). A `must_fix` item with the dimension `info_leakage` proves the hole in the same way, whether it sits in a trial's action items or in the static quality check -> is_good=false.
 * Most trials show the SAME task problem, with clear evidence -> is_good=false. Medium confidence; high when all trials agree.
 * Everything else -> is_good=true. A run with only GOOD_FAILURE results, a mixed run, and one isolated BAD classification are all normal for a hard task.
 
