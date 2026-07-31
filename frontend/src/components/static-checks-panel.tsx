@@ -58,6 +58,8 @@ export function StaticChecksPanel({
   rerunning,
   qaActive,
   queueError,
+  loading,
+  loadError,
   className,
 }: {
   findings?: PreTrialFinding[] | null;
@@ -69,10 +71,15 @@ export function StaticChecksPanel({
   /** Task-level QA runs the checks itself; a manual run would collide. */
   qaActive?: boolean;
   queueError?: string | null;
+  /** The checks state is still being fetched: an absent status must not
+   * read as "unaudited" — a Run click on that misread wipes real findings. */
+  loading?: boolean;
+  loadError?: string | null;
   className?: string;
 }) {
   const items = findings ?? [];
   const state = staticCheckState(status, items.length);
+  const stateUnknown = Boolean(loading || loadError);
   // Only a live run blocks the button. A stale "queued" row must stay
   // re-queueable: re-queue is the backend's recovery path for queued jobs
   // that never got picked up.
@@ -85,14 +92,18 @@ export function StaticChecksPanel({
           Static checks
         </h2>
         <span className="text-muted-foreground font-mono text-[11px]">
-          {staticCheckSummary(state, items.length)}
-          {hasDisplayableCostUsd(costUsd)
+          {loading
+            ? "Loading…"
+            : loadError
+              ? "Unavailable"
+              : staticCheckSummary(state, items.length)}
+          {!stateUnknown && hasDisplayableCostUsd(costUsd)
             ? ` · ${formatCostUsd(costUsd)}`
             : ""}
         </span>
         <button
           type="button"
-          disabled={rerunning || auditRunning || qaActive}
+          disabled={rerunning || auditRunning || qaActive || stateUnknown}
           onClick={onRerun}
           className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
           title={
@@ -113,7 +124,17 @@ export function StaticChecksPanel({
         <p className="text-[11px] text-red-500">{queueError}</p>
       ) : null}
 
-      {state === "unaudited" ? (
+      {loading ? (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-8 w-full rounded-lg" />
+          <Skeleton className="h-8 w-full rounded-lg" />
+          <Skeleton className="h-3 w-2/5" />
+        </div>
+      ) : loadError ? (
+        <p className="font-mono text-[11px] break-all text-red-500">
+          {loadError}
+        </p>
+      ) : state === "unaudited" ? (
         <p className="text-muted-foreground text-sm leading-relaxed">
           No static checks have run for this task. The checks audit the task
           source — verifier completeness, oracle correctness, and information

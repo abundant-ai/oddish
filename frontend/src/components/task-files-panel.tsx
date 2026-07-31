@@ -314,8 +314,11 @@ export function TaskFilesPanel({
     effectiveChecksTaskId && showAnalysis !== false
       ? `${baseUrl}/tasks/${effectiveChecksTaskId}/detail`
       : null;
-  const { data: checksDetail, mutate: mutateChecks } =
-    useSWR<TaskDetailResponse>(checksKey, fetcher, {
+  const {
+    data: checksDetail,
+    error: checksLoadError,
+    mutate: mutateChecks,
+  } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
       // Poll while the checks run; stop once terminal.
       refreshInterval: (data) => {
         const v = pickChecksVersion(data);
@@ -327,6 +330,13 @@ export function TaskFilesPanel({
     });
   const checksVersion = pickChecksVersion(checksDetail);
   const checksAvailable = showAnalysis !== false && effectiveChecksTaskId !== null;
+  // Until /detail answers, the checks state is unknown, not "unaudited":
+  // an enabled Run button on the misread queues an audit that wipes findings.
+  const checksLoading =
+    checksAvailable && checksDetail === undefined && !checksLoadError;
+  const checksLoadFailure = checksLoadError
+    ? "Unable to load the static checks state."
+    : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
   const checksState = staticCheckState(
     checksVersion?.pre_trial_status,
@@ -352,6 +362,10 @@ export function TaskFilesPanel({
   const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
   // Static checks are the default view; picking a file switches away.
   const [checksSelected, setChecksSelected] = useState(true);
+  // The one gate for "the checks pane is on screen". The tree highlight and
+  // the main pane must both use it: with checks hidden (public share),
+  // checksSelected stays true but the pane shows a file.
+  const checksShowing = checksSelected && checksAvailable;
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
@@ -986,7 +1000,7 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = !checksSelected && selectedFile?.path === node.path;
+      const isSelected = !checksShowing && selectedFile?.path === node.path;
       const isLoadingDir = loadingDirs.has(node.path);
       const Icon =
         node.type === "dir"
@@ -1257,7 +1271,11 @@ export function TaskFilesPanel({
                       aria-hidden="true"
                     />
                     <span className="truncate">
-                      {staticCheckSummary(checksState, checksFindings.length)}
+                      {checksLoading
+                        ? "Loading…"
+                        : checksLoadFailure
+                          ? "Unavailable"
+                          : staticCheckSummary(checksState, checksFindings.length)}
                     </span>
                   </button>
                 </div>
@@ -1284,7 +1302,7 @@ export function TaskFilesPanel({
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {!(checksSelected && checksAvailable) && selectedFile && (
+            {!checksShowing && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1334,7 +1352,7 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {checksSelected && checksAvailable ? (
+              {checksShowing ? (
                 <StaticChecksPanel
                   findings={checksFindings}
                   status={checksVersion?.pre_trial_status}
@@ -1344,6 +1362,8 @@ export function TaskFilesPanel({
                   rerunning={checksRerunning}
                   qaActive={checksQaActive}
                   queueError={checksQueueError}
+                  loading={checksLoading}
+                  loadError={checksLoadFailure}
                 />
               ) : (
                 renderFileContent()
