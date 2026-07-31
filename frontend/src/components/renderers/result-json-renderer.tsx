@@ -27,9 +27,7 @@ interface ResultData {
     cost_usd?: number | null;
   };
   verifier_result?: {
-    rewards?: {
-      reward: number;
-    };
+    rewards?: Record<string, unknown>;
   };
   exception_info?: unknown;
   started_at?: string;
@@ -37,6 +35,20 @@ interface ResultData {
   environment_setup?: Interval;
   agent_execution?: Interval;
   verifier?: Interval;
+}
+
+/**
+ * Mirrors `_extract_reward` in oddish/core/harbor_artifacts.py: prefer the
+ * `reward` key, but fall back to the sole value when a task uses a single
+ * custom reward key.
+ */
+function extractReward(rewards?: Record<string, unknown>): number | null {
+  if (!rewards || typeof rewards !== "object") return null;
+  let value: unknown = rewards.reward;
+  const values = Object.values(rewards);
+  if (value == null && values.length === 1) value = values[0];
+  const num = typeof value === "string" ? Number(value) : value;
+  return typeof num === "number" && Number.isFinite(num) ? num : null;
 }
 
 function formatDuration(start?: string, end?: string): string {
@@ -64,7 +76,7 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
     );
   }
 
-  const reward = data.verifier_result?.rewards?.reward;
+  const reward = extractReward(data.verifier_result?.rewards);
   const passed = reward === 1.0;
   const failed = reward === 0.0;
   const partial = reward != null && reward > 0 && reward < 1;
@@ -121,7 +133,7 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
               Unknown
             </Badge>
           )}
-          {reward !== undefined && reward !== null && (
+          {reward !== null && (
             <Badge variant="secondary" className="font-mono text-sm">
               Reward: {Number(reward.toFixed(3))}
             </Badge>
