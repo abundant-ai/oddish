@@ -134,13 +134,14 @@ function getNodeName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-/** The version whose static checks the pane shows: current, else newest. */
+/** The version whose static checks the pane shows: current, else newest.
+ *  /detail orders versions newest-first, so the fallback is versions[0]. */
 function pickChecksVersion(
   detail: TaskDetailResponse | undefined,
 ): TaskVersionSummary | null {
   const versions = detail?.versions;
   if (!versions || versions.length === 0) return null;
-  return versions.find((v) => v.is_current) ?? versions[versions.length - 1];
+  return versions.find((v) => v.is_current) ?? versions[0];
 }
 
 // Truncate files larger than 100KB initially
@@ -1204,14 +1205,14 @@ export function TaskFilesPanel({
 
   const fileTreeContent = (
     <>
-      {isListingLoading ? (
+      {isListingLoading && !checksAvailable ? (
         <div className="flex flex-1 items-center justify-center">
           <div className="text-muted-foreground flex items-center gap-2">
             <Loader2 className="h-5 w-5 animate-spin" />
             <span className="text-sm">Loading files...</span>
           </div>
         </div>
-      ) : listingError ? (
+      ) : listingError && !checksAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
@@ -1221,7 +1222,7 @@ export function TaskFilesPanel({
             <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
-      ) : fileTree.length === 0 ? (
+      ) : fileTree.length === 0 && !checksAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <p className="text-muted-foreground text-sm">No files found</p>
@@ -1264,7 +1265,22 @@ export function TaskFilesPanel({
               <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                 Files
               </div>
-              {renderFileTree(fileTree)}
+              {isListingLoading ? (
+                <div className="text-muted-foreground flex items-center gap-2 px-2 py-2 text-xs">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading files...
+                </div>
+              ) : listingError ? (
+                <p className="text-muted-foreground px-2 py-2 text-xs">
+                  Unable to load files: {listingError}
+                </p>
+              ) : fileTree.length === 0 ? (
+                <p className="text-muted-foreground px-2 py-2 text-xs">
+                  No files found
+                </p>
+              ) : (
+                renderFileTree(fileTree)
+              )}
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">

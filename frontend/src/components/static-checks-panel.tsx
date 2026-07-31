@@ -73,7 +73,10 @@ export function StaticChecksPanel({
 }) {
   const items = findings ?? [];
   const state = staticCheckState(status, items.length);
-  const running = state === "running";
+  // Only a live run blocks the button. A stale "queued" row must stay
+  // re-queueable: re-queue is the backend's recovery path for queued jobs
+  // that never got picked up.
+  const auditRunning = (status ?? "").toLowerCase() === "running";
 
   return (
     <div className={cn("flex flex-col gap-3 p-4", className)}>
@@ -89,7 +92,7 @@ export function StaticChecksPanel({
         </span>
         <button
           type="button"
-          disabled={rerunning || running || qaActive}
+          disabled={rerunning || auditRunning || qaActive}
           onClick={onRerun}
           className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
           title={
@@ -116,7 +119,7 @@ export function StaticChecksPanel({
           source — verifier completeness, oracle correctness, and information
           leaks — before any agent attempts it.
         </p>
-      ) : running ? (
+      ) : state === "running" ? (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-full rounded-lg" />
           <Skeleton className="h-8 w-full rounded-lg" />
