@@ -1,0 +1,28 @@
+name: Draft Release
+on:
+  push:
+    branches: [main]
+    paths:
+      - "oddish/pyproject.toml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Draft release if the version is new
+        run: |
+          set -euo pipefail
+          v=$(python3 -c 'import tomllib; print(tomllib.load(open("oddish/pyproject.toml","rb"))["project"]["version"])')
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release v$v already exists — nothing to draft"; exit 0
+          fi
+          gh release create "v$v" --repo "$GITHUB_REPOSITORY" \
+            --target main --draft --generate-notes --title "v$v"
+          echo "drafted v$v"
