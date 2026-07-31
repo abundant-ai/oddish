@@ -150,7 +150,6 @@ export function TaskPreTrialCard({
   rerunning,
   queueError,
   isCurrentVersion = true,
-  taskQaActive = false,
 }: {
   findings?: PreTrialFinding[];
   status?: string | null;
@@ -163,9 +162,6 @@ export function TaskPreTrialCard({
   queueError?: string | null;
   /** Audits run on the current version only; false disables the button. */
   isCurrentVersion?: boolean;
-  /** True while task-level QA is queued or running; the audit endpoint
-   * refuses in that window, so the button is disabled with the reason. */
-  taskQaActive?: boolean;
 }) {
   const items = [...(findings ?? [])].sort(
     (a, b) => (TIER_ORDER[a.tier ?? ""] ?? 3) - (TIER_ORDER[b.tier ?? ""] ?? 3)
@@ -182,9 +178,7 @@ export function TaskPreTrialCard({
       ? "An audit is already running"
       : !isCurrentVersion
         ? "Audits run on the current version only. Select the current version to run one."
-        : taskQaActive
-          ? "Task-level QA is queued or running; wait for it to finish"
-          : null;
+        : null;
   const rerunButton =
     ENABLE_PRETRIAL_RERUN_BUTTON && onRerun ? (
       <button
