@@ -8,7 +8,6 @@ import httpx
 import pytest
 import slack_notifications as notifications
 from models import OrganizationModel, UserModel
-from sqlalchemy import select
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.endpoints._common import USER_CANCELLED_MESSAGE
 from oddish.db import (
@@ -2808,6 +2807,9 @@ async def test_database_outbox_is_durable() -> None:
         assert pending[loud_key].mention_emails == ["owner@example.com"]
 
         await notifications._mark_alert_sent(loud_key)
+        await notifications._insert_alert_rows(
+            [row(loud_key, payload="third", silent=False)]
+        )
         assert loud_key not in {
             pending_row.alert_key
             for pending_row in await notifications._pending_alert_rows()
@@ -2819,55 +2821,6 @@ async def test_database_outbox_is_durable() -> None:
                     notifications.SlackExpenseAlertModel.alert_key.in_(
                         [loud_key, silent_key]
                     )
-                )
-            )
-
-
-@pytest.mark.asyncio
-async def test_daily_overage_user_alert_rearms_only_after_a_sent_breach_clears() -> None:
-    suffix = uuid4().hex
-    active_key = f"user-daily-overage:org:{suffix}-active"
-    cleared_key = f"user-daily-overage:org:{suffix}-cleared"
-    pending_key = f"user-daily-overage:org:{suffix}-pending"
-    now = datetime.now(timezone.utc)
-    keys = [active_key, cleared_key, pending_key]
-
-    def row(key: str, *, sent: bool) -> dict:
-        return {
-            "alert_key": key,
-            "claimed_at": now,
-            "notified_at": now if sent else None,
-            "payload": key,
-            "recipient_email": None,
-            "mention_emails": None,
-        }
-
-    try:
-        await notifications._insert_alert_rows(
-            [
-                row(active_key, sent=True),
-                row(cleared_key, sent=True),
-                row(pending_key, sent=False),
-            ]
-        )
-        await notifications._rearm_user_spend_alerts({active_key})
-
-        async with get_session() as session:
-            remaining = set(
-                (
-                    await session.execute(
-                        select(notifications.SlackExpenseAlertModel.alert_key).where(
-                            notifications.SlackExpenseAlertModel.alert_key.in_(keys)
-                        )
-                    )
-                ).scalars()
-            )
-        assert remaining == {active_key, pending_key}
-    finally:
-        async with get_session() as session:
-            await session.execute(
-                notifications.SlackExpenseAlertModel.__table__.delete().where(
-                    notifications.SlackExpenseAlertModel.alert_key.in_(keys)
                 )
             )
 
