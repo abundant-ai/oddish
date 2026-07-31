@@ -56,6 +56,7 @@ export function StaticChecksPanel({
   costUsd,
   onRerun,
   rerunning,
+  qaActive,
   queueError,
   className,
 }: {
@@ -65,6 +66,8 @@ export function StaticChecksPanel({
   costUsd?: number | null;
   onRerun: () => void;
   rerunning: boolean;
+  /** Task-level QA runs the checks itself; a manual run would collide. */
+  qaActive?: boolean;
   queueError?: string | null;
   className?: string;
 }) {
@@ -86,10 +89,14 @@ export function StaticChecksPanel({
         </span>
         <button
           type="button"
-          disabled={rerunning || running}
+          disabled={rerunning || running || qaActive}
           onClick={onRerun}
           className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-          title="Audit this task's source with the latest prompt"
+          title={
+            qaActive
+              ? "Task QA is running and includes these checks — wait for it to finish"
+              : "Audit this task's source with the latest prompt"
+          }
         >
           {rerunning
             ? "Queuing…"

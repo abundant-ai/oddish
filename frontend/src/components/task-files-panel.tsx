@@ -36,7 +36,12 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
-import type { PreTrialFinding, Task, Trial } from "@/lib/types";
+import type {
+  Task,
+  TaskDetailResponse,
+  TaskVersionSummary,
+  Trial,
+} from "@/lib/types";
 import {
   StaticChecksPanel,
   staticCheckState,
@@ -127,6 +132,15 @@ interface TaskFilesPanelProps {
 function getNodeName(path: string): string {
   const parts = path.split("/").filter(Boolean);
   return parts[parts.length - 1] || path;
+}
+
+/** The version whose static checks the pane shows: current, else newest. */
+function pickChecksVersion(
+  detail: TaskDetailResponse | undefined,
+): TaskVersionSummary | null {
+  const versions = detail?.versions;
+  if (!versions || versions.length === 0) return null;
+  return versions.find((v) => v.is_current) ?? versions[versions.length - 1];
 }
 
 // Truncate files larger than 100KB initially
@@ -292,29 +306,35 @@ export function TaskFilesPanel({
   // The STATIC CHECKS entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
+  // The pre_trial_* fields live on the version summaries of /detail, not on
+  // the plain task endpoint. The task page uses the same key, so SWR shares
+  // the cache there.
   const checksKey =
     effectiveChecksTaskId && showAnalysis !== false
-      ? `${baseUrl}/tasks/${effectiveChecksTaskId}`
+      ? `${baseUrl}/tasks/${effectiveChecksTaskId}/detail`
       : null;
-  const { data: checksTask, mutate: mutateChecks } = useSWR<{
-    pre_trial_findings?: PreTrialFinding[];
-    pre_trial_status?: string | null;
-    pre_trial_error?: string | null;
-    pre_trial_cost_usd?: number | null;
-  }>(checksKey, fetcher, {
-    // Poll while the checks run; stop once terminal.
-    refreshInterval: (data) =>
-      data?.pre_trial_status === "running" ||
-      data?.pre_trial_status === "queued"
-        ? 5000
-        : 0,
-  });
+  const { data: checksDetail, mutate: mutateChecks } =
+    useSWR<TaskDetailResponse>(checksKey, fetcher, {
+      // Poll while the checks run; stop once terminal.
+      refreshInterval: (data) => {
+        const v = pickChecksVersion(data);
+        return v?.pre_trial_status === "running" ||
+          v?.pre_trial_status === "queued"
+          ? 5000
+          : 0;
+      },
+    });
+  const checksVersion = pickChecksVersion(checksDetail);
   const checksAvailable = showAnalysis !== false && effectiveChecksTaskId !== null;
-  const checksFindings = checksTask?.pre_trial_findings ?? [];
+  const checksFindings = checksVersion?.pre_trial_findings ?? [];
   const checksState = staticCheckState(
-    checksTask?.pre_trial_status,
+    checksVersion?.pre_trial_status,
     checksFindings.length,
   );
+  // Task-level QA runs the checks itself; a manual run would collide.
+  const checksQaActive =
+    checksDetail?.task?.verdict_status === "queued" ||
+    checksDetail?.task?.verdict_status === "running";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1301,11 +1321,12 @@ export function TaskFilesPanel({
               {checksSelected && checksAvailable ? (
                 <StaticChecksPanel
                   findings={checksFindings}
-                  status={checksTask?.pre_trial_status}
-                  error={checksTask?.pre_trial_error}
-                  costUsd={checksTask?.pre_trial_cost_usd}
+                  status={checksVersion?.pre_trial_status}
+                  error={checksVersion?.pre_trial_error}
+                  costUsd={checksVersion?.pre_trial_cost_usd}
                   onRerun={handleRerunChecks}
                   rerunning={checksRerunning}
+                  qaActive={checksQaActive}
                   queueError={checksQueueError}
                 />
               ) : (
