@@ -242,8 +242,11 @@ function TrialAnalysisCard({
     let cancelled = false;
     (async () => {
       try {
+        // The timeout bounds the synced gate: a hung fetch must fall back
+        // to the parent snapshot, not pin the report skeleton forever.
         const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
           cache: "no-store",
+          signal: AbortSignal.timeout(15000),
         });
         if (!res.ok || cancelled) return;
         const fresh = (await res.json()) as Trial;
