@@ -15,7 +15,7 @@ on:
 
 concurrency:
   group: staging-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -61,11 +61,11 @@ jobs:
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
       # Low caps: staging carries no production traffic.
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
-      API_BUFFER: "0"
-      API_MAX: "2"
-      WORKER_MIN: "0"
-      WORKER_BUFFER: "0"
-      WORKER_MAX: "8"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "8"
       ODDISH_MODAL_MAX_WORKERS_PER_POLL: "16"
       # Explicit documentation of the default (MODAL_APP_NAME != "oddish").
       ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS: "false"
@@ -98,17 +98,15 @@ jobs:
             esac
             return 1
           }
-          # At bootstrap time the branch holds no data — a branch left terminal-failed
-          # by a prior run is recreated once instead of failing loudly forever.
+          # Deliberate divergence from the bootstrap workflow: only bootstrap may recreate the branch, because only bootstrap re-mirrors the data afterward.
           existing=$(find_branch_json)
           if [ -n "$existing" ] && [ "$existing" != "null" ]; then
             st=$(jq -r '.status // empty' <<<"$existing")
             pv=$(jq -r '.preview_project_status // empty' <<<"$existing")
             if is_failed "$st" || is_failed "$pv"; then
               bid=$(jq -r '.id' <<<"$existing")
-              echo "existing staging branch $bid is terminal-failed (status=$st preview=$pv); recreating"
-              supabase branches delete "$bid" --project-ref "$SUPABASE_PROJECT_REF"
-              supabase branches create staging --persistent --project-ref "$SUPABASE_PROJECT_REF"
+              echo "::error::staging branch $bid is terminal-failed (status=$st preview=$pv). Deploys never recreate the persistent branch — reset the guard (gh variable set STAGING_DB_BOOTSTRAP_DONE --body false) and re-run the Staging DB Bootstrap workflow to rebuild and re-mirror it."
+              exit 1
             fi
           fi
           ready=0
