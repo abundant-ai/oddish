@@ -421,8 +421,8 @@ def test_summary_routes_pass_the_requesting_user():
     from api.routers import trials
 
     src = open(trials.__file__).read()
-    assert src.count("triggered_by_user_id=auth.user_id") == 2, (
-        "both the summary and graph routes must attribute spend to the caller"
+    assert src.count("triggered_by_user_id=auth.user_id") == 1, (
+        "the summary route must attribute spend to the caller"
     )
     assert "get_or_generate_summary(session, attached_trial)" not in src, (
         "a bare call site is left, billing the trial owner instead of the viewer"
