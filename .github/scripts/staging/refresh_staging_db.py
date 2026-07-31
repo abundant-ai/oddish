@@ -15,7 +15,7 @@ import asyncpg
 
 EXCLUDE = {
     # Alembic pointers: staging runs AHEAD of prod — never overwrite.
-    "alembic_version_oddish", "alembic_version_backend",
+    "alembic_version_oddish", "alembic_version_backend", "alembic_version",
     # Runtime/queue state: rebuilds itself.
     "queue_slots", "trial_events", "_preview_seed_state",
     # Prod idempotency claims must not dedupe staging submissions.
@@ -84,36 +84,42 @@ async def main() -> None:
     order = await _topo_order(src, include)
 
     backedge_cols = {t: [c for (bt, c) in BACKEDGES if bt == t] for t in include}
-    async with dst.transaction():
-        await dst.execute("SET LOCAL statement_timeout = 0")
-        for t in reversed(order):
-            await dst.execute(f'TRUNCATE TABLE "{t}" CASCADE')
-        for t in order:
-            cols = [r["column_name"] for r in await src.fetch(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", t)]
-            select_cols = ", ".join(
-                f'NULL AS "{c}"' if c in backedge_cols.get(t, []) else f'"{c}"' for c in cols)
-            with tempfile.TemporaryFile() as spool:
-                await src.copy_from_query(
-                    f'SELECT {select_cols} FROM "{t}"', output=spool)
-                spool.seek(0)
-                await dst.copy_to_table(t, source=spool, columns=cols)
-            n = await dst.fetchval(f'SELECT count(*) FROM "{t}"')
-            print(f"mirrored {t}: {n} rows")
-        # patch back-edges from prod values
-        for (t, col) in sorted(BACKEDGES):
-            if t not in include:
-                continue
-            pk = "id"
-            rows = await src.fetch(f'SELECT "{pk}", "{col}" FROM "{t}" WHERE "{col}" IS NOT NULL')
-            for r in rows:
-                await dst.execute(
-                    f'UPDATE "{t}" SET "{col}"=$1 WHERE "{pk}"=$2', r[col], r[pk])
-            print(f"patched {t}.{col}: {len(rows)} rows")
-        for stmt in QUIESCE:
-            tag = await dst.execute(stmt)
-            print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}")
+    # One repeatable-read snapshot for every source read: cross-table FK
+    # consistency against a live prod, and SET LOCAL (transaction-scoped,
+    # therefore Supavisor-safe — only session-level SET poisons the shared
+    # pooler backend) lifts prod's statement timeout for the big COPYs.
+    async with src.transaction(isolation="repeatable_read", readonly=True):
+        await src.execute("SET LOCAL statement_timeout = 0")
+        await src.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+        async with dst.transaction():
+            await dst.execute("SET LOCAL statement_timeout = 0")
+            for t in reversed(order):
+                await dst.execute(f'TRUNCATE TABLE "{t}" CASCADE')
+            for t in order:
+                cols = [r["column_name"] for r in await src.fetch(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", t)]
+                select_cols = ", ".join(
+                    f'NULL AS "{c}"' if c in backedge_cols.get(t, []) else f'"{c}"' for c in cols)
+                with tempfile.TemporaryFile() as spool:
+                    await src.copy_from_query(
+                        f'SELECT {select_cols} FROM "{t}"', output=spool)
+                    spool.seek(0)
+                    await dst.copy_to_table(t, source=spool, columns=cols)
+                n = await dst.fetchval(f'SELECT count(*) FROM "{t}"')
+                print(f"mirrored {t}: {n} rows", flush=True)
+            for (t, col) in sorted(BACKEDGES):
+                if t not in include:
+                    continue
+                pk = "id"
+                rows = await src.fetch(f'SELECT "{pk}", "{col}" FROM "{t}" WHERE "{col}" IS NOT NULL')
+                for r in rows:
+                    await dst.execute(
+                        f'UPDATE "{t}" SET "{col}"=$1 WHERE "{pk}"=$2', r[col], r[pk])
+                print(f"patched {t}.{col}: {len(rows)} rows", flush=True)
+            for stmt in QUIESCE:
+                tag = await dst.execute(stmt)
+                print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}", flush=True)
     live = await dst.fetchval(
         "SELECT count(*) FROM worker_jobs WHERE status::text NOT IN ('SUCCESS','FAILED','CANCELLED')")
     assert live == 0, f"{live} non-terminal worker_jobs after quiesce"
