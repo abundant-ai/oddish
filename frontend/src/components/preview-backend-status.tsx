@@ -106,7 +106,7 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
   return (
     <div
       role="status"
-      className="sticky top-[var(--preview-banner-h)] z-40 border-b border-amber-500/50 bg-amber-200 text-amber-950 dark:border-amber-300/30 dark:bg-amber-500/25 dark:text-amber-50"
+      className="border-b border-amber-500/50 bg-amber-200 text-amber-950 dark:border-amber-300/30 dark:bg-amber-500/25 dark:text-amber-50"
     >
       <div className="mx-auto flex max-w-(--breakpoint-2xl) items-center gap-3 px-4 py-3 text-sm">
         <span
