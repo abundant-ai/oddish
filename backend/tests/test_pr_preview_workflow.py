@@ -411,6 +411,10 @@ def test_backend_status_probe_covers_parallel_deploy_window():
     assert "backendUrl" not in status
     assert "openapi.json" in route
     assert "NEXT_PUBLIC_ODDISH_PREVIEW" in route
+    # The probe must stay reachable for signed-out viewers (share pages,
+    # previews before login), or the banner never clears for them.
+    middleware = (REPO / "frontend/src/middleware.ts").read_text()
+    assert '"/api/preview-backend-health"' in middleware
 
 
 def _load_script(name):

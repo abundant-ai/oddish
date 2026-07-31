@@ -14,6 +14,10 @@ const isPublicRoute = createRouteMatcher([
   "/experiments(.*)",
   "/api/public(.*)",
   "/api/client-traces(.*)",
+  // Public so the preview banner's readiness probe works for signed-out
+  // viewers (share pages, previews before login). Reveals only a ready
+  // boolean and 404s outside preview deployments.
+  "/api/preview-backend-health",
 ]);
 
 function attachTraceparent(response: NextResponse): NextResponse {
