@@ -122,7 +122,10 @@ def test_local_task_discovery_fallback_uses_task_model(
     assert task_paths == [tmp_path / "valid-task"]
 
 
-def test_task_content_hash_ignores_task_metadata_changes(tmp_path: Path) -> None:
+def test_task_content_hash_reflects_task_metadata_changes(tmp_path: Path) -> None:
+    # Metadata is part of version identity: editing only the [metadata] stanza
+    # (runtime fields byte-identical to _write_minimal_task) must cut a new
+    # version, so the hash has to change.
     task_path = tmp_path / "task"
     _write_minimal_task(task_path)
 
@@ -148,7 +151,7 @@ memory_mb = 2048
         encoding="utf-8",
     )
 
-    assert cli_api.compute_task_content_hash(task_path) == before
+    assert cli_api.compute_task_content_hash(task_path) != before
 
 
 def test_task_content_hash_changes_for_runtime_inputs(tmp_path: Path) -> None:

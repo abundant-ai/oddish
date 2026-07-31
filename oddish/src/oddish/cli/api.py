@@ -337,18 +337,6 @@ def resolve_local_task_paths(
     return validate_tasks(task_paths)
 
 
-_TASK_TOML_RUNTIME_FIELDS = (
-    "schema_version",
-    "verifier",
-    "agent",
-    "environment",
-    "solution",
-    "multi_step_reward_strategy",
-    "steps",
-    "artifacts",
-)
-
-
 def _parse_task_config(config_path: Path) -> dict:
     """Parse task.toml once; used for both hashing and metadata projection."""
     config = TaskConfig.model_validate_toml(config_path.read_text())
@@ -356,10 +344,16 @@ def _parse_task_config(config_path: Path) -> dict:
 
 
 def _canonical_task_config_bytes(config_path: Path) -> bytes:
-    """Serialize only the task config fields that affect Harbor execution."""
+    """Serialize the full parsed task config for hashing.
+
+    Every semantic field participates in version identity -- including the
+    ``[metadata]`` stanza -- so any change to task.toml's contents cuts a new
+    task version. Hashing the *parsed* config (rather than raw bytes) keeps
+    formatting/comment-only edits and legacy-field normalization (e.g.
+    ``allow_internet`` -> ``network_mode``) from churning versions.
+    """
     data = _parse_task_config(config_path)
-    runtime_data = {key: data[key] for key in _TASK_TOML_RUNTIME_FIELDS if key in data}
-    return json.dumps(runtime_data, sort_keys=True, separators=(",", ":")).encode()
+    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
 
 
 def load_task_metadata(task_path: Path) -> TaskMetadata | None:
@@ -384,11 +378,12 @@ def load_task_metadata(task_path: Path) -> TaskMetadata | None:
 
 
 def compute_task_content_hash(task_path: Path) -> str:
-    """Deterministic SHA-256 of a task's execution-relevant contents.
+    """Deterministic SHA-256 of a task's contents.
 
-    Uses Harbor's publishable-file selection (including .gitignore handling),
-    but hashes task.toml semantically so descriptive metadata edits do not
-    create new Oddish task versions.
+    Uses Harbor's publishable-file selection (including .gitignore handling)
+    and hashes task.toml semantically (every parsed field, metadata included),
+    so any semantic change to task.toml -- descriptive metadata as well as
+    runtime config -- cuts a new Oddish task version.
     """
     hasher = hashlib.sha256()
     task_path = task_path.resolve()

@@ -149,13 +149,17 @@ def test_hook_leaves_runtime_fields_untouched(tmp_path):
     assert parsed["metadata"]["description"] == "cafe -- x"
 
 
-def test_hook_does_not_change_content_hash(tmp_path):
+def test_hook_changes_content_hash_via_metadata(tmp_path):
+    # Metadata is part of version identity, so a typography fix to the
+    # description changes the hash. This does not churn versions in practice:
+    # upload_task runs normalize_task_config_typography *before* hashing
+    # (cli/api.py), so identical sources normalize deterministically to the
+    # same text and therefore the same hash on every re-upload.
     from oddish.cli.api import (
         compute_task_content_hash,
         normalize_task_config_typography,
     )
 
-    # A runnable-enough task dir: content hash reads only runtime fields.
     _write(
         tmp_path,
         "[metadata]\n"
@@ -175,7 +179,7 @@ def test_hook_does_not_change_content_hash(tmp_path):
     after = compute_task_content_hash(tmp_path)
 
     assert changes  # metadata really did change
-    assert before == after
+    assert before != after
 
 
 def test_hook_noop_when_clean(tmp_path):
