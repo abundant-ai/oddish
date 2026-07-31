@@ -160,6 +160,72 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * Build the full nested tree from a recursive listing in one pass.
+ * Directories implied by nested file paths are created pre-loaded so
+ * expanding them is instant (no per-directory round trip). Explicit `dirs`
+ * entries (only returned by non-recursive responses) stay lazy so the
+ * per-prefix fallback keeps working.
+ */
+function buildTreeFromListing(
+  files: TaskFile[] = [],
+  dirs: TaskDirectory[] = []
+): TreeNode[] {
+  const root: TreeNode[] = [];
+  const dirNodes = new Map<string, TreeNode>();
+
+  const ensureDir = (path: string, isLoaded: boolean): TreeNode => {
+    const existing = dirNodes.get(path);
+    if (existing) {
+      if (isLoaded) existing.isLoaded = true;
+      return existing;
+    }
+    const node: TreeNode = {
+      name: getNodeName(path),
+      path,
+      type: "dir",
+      children: [],
+      isLoaded,
+    };
+    dirNodes.set(path, node);
+    const parentPath = path.split("/").slice(0, -1).join("/");
+    (parentPath ? ensureDir(parentPath, isLoaded).children! : root).push(node);
+    return node;
+  };
+
+  for (const dir of dirs) {
+    const path = dir.path.replace(/\/+$/, "");
+    if (path) ensureDir(path, false);
+  }
+  for (const file of files) {
+    const node: TreeNode = {
+      name: getNodeName(file.path),
+      path: file.path,
+      type: "file",
+      content: file.content,
+      url: file.url,
+      size: file.size,
+    };
+    const parentPath = file.path.split("/").slice(0, -1).join("/");
+    (parentPath ? ensureDir(parentPath, true).children! : root).push(node);
+  }
+
+  const sortLevel = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) =>
+      a.type === b.type
+        ? a.name.localeCompare(b.name)
+        : a.type === "dir"
+          ? -1
+          : 1
+    );
+    for (const node of nodes) {
+      if (node.children && node.children.length > 0) sortLevel(node.children);
+    }
+  };
+  sortLevel(root);
+  return root;
+}
+
 function buildNodesFromListing(
   files: TaskFile[] = [],
   dirs: TaskDirectory[] = []
@@ -658,7 +724,10 @@ export function TaskFilesPanel({
       setLoadingDirs(new Set());
 
       try {
-        const res = await fetch(buildListingUrl());
+        // One recursive request loads the entire tree (and, for
+        // archive-backed tasks, inlined file contents) so folder expands
+        // and most file clicks need no further round trips.
+        const res = await fetch(buildListingUrl({ recursive: true }));
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(
@@ -671,15 +740,22 @@ export function TaskFilesPanel({
 
         const files: TaskFile[] = data.files || [];
         const dirs: TaskDirectory[] = data.dirs || [];
-        const tree = buildNodesFromListing(files, dirs);
+        const tree = buildTreeFromListing(files, dirs);
         setFileTree(tree);
         // The checks pane is the default view, so nothing pre-selects
         // behind it: a hidden auto-selected file prefetches content that
         // later flashes under whichever file the user actually picks. Only
         // the file-only view (public share) paints a file immediately.
-        const firstFile = findFirstFile(tree);
-        if (firstFile && !checksAvailable) {
-          setSelectedFile(firstFile);
+        // Prefer instruction.md — the tree is fully nested now, so a plain
+        // first-file walk would land inside environment/ instead.
+        if (!checksAvailable) {
+          const defaultFile =
+            findNodeBySuffix(tree, "instruction.md") ??
+            tree.find((node) => node.type === "file") ??
+            findFirstFile(tree);
+          if (defaultFile) {
+            setSelectedFile(defaultFile);
+          }
         }
       } catch (err) {
         if (!cancelled) {

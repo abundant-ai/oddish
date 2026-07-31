@@ -455,6 +455,69 @@ async def test_list_task_files_reads_archive_members(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_list_task_files_inlines_small_text_contents(monkeypatch):
+    """Recursive archive listings carry file bodies so one round trip serves
+    both the tree and the contents."""
+    archive_bytes = _make_task_archive(
+        {
+            "task.toml": "name = 'demo'\n",
+            "environment/run.sh": "#!/bin/sh\necho hi\n",
+        }
+    )
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == "tasks/task-123/.oddish-task.tar.gz"
+
+    async def fake_download_bytes(s3_key: str) -> bytes:
+        return archive_bytes
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=True,
+        limit=1000,
+        cursor=None,
+        presign=False,
+    )
+
+    by_path = {entry["path"]: entry for entry in listing["files"]}
+    assert by_path["task.toml"]["content"] == "name = 'demo'\n"
+    assert by_path["environment/run.sh"]["content"] == "#!/bin/sh\necho hi\n"
+
+
+def test_inline_task_archive_contents_skips_binary_and_oversize():
+    big_text = "x" * (storage_mod._INLINE_CONTENT_MAX_FILE_BYTES + 1)
+    members = {
+        "small.txt": b"hello\n",
+        "image.png": b"\x00\xff\xfe\x01",
+        "big.txt": big_text.encode("utf-8"),
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    archive_bytes = buffer.getvalue()
+
+    files = storage_mod._task_archive_members_from_bytes(archive_bytes)
+    result = storage_mod._inline_task_archive_contents(archive_bytes, files)
+
+    by_path = {entry["path"]: entry for entry in result}
+    assert by_path["small.txt"]["content"] == "hello\n"
+    assert "content" not in by_path["image.png"]
+    assert "content" not in by_path["big.txt"]
+    # Source member dicts stay pristine — they may be shared via the
+    # per-process archive cache across requests.
+    assert all("content" not in meta for meta in files)
+
+
+@pytest.mark.asyncio
 async def test_list_task_files_presign_returns_archive_url(monkeypatch):
     archive_bytes = _make_task_archive({"task.toml": "name = 'demo'\n"})
     storage = storage_mod.StorageClient()

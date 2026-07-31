@@ -136,6 +136,63 @@ def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, obj
     return [files[path] for path in sorted(files)]
 
 
+# Inline-content limits for archive-backed listings: members at or below the
+# per-file cap come back with ``content`` attached so the file tree and the
+# file bodies arrive in a single round trip; the total cap bounds the response
+# size for tasks with many small files.
+_INLINE_CONTENT_MAX_FILE_BYTES = 100 * 1024
+_INLINE_CONTENT_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+
+
+def _inline_task_archive_contents(
+    archive_bytes: bytes, files: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Return copies of *files* with ``content`` attached for small text members.
+
+    Members that are binary (not valid UTF-8), larger than the per-file cap,
+    or past the total budget are returned unchanged; the per-file content
+    endpoint still serves those. Copies keep the archive cache's member
+    dicts pristine.
+    """
+    wanted = {
+        str(meta["path"])
+        for meta in files
+        if int(meta.get("size") or 0) <= _INLINE_CONTENT_MAX_FILE_BYTES
+    }
+    if not wanted:
+        return files
+
+    budget = _INLINE_CONTENT_MAX_TOTAL_BYTES
+    contents: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile() or member.size > _INLINE_CONTENT_MAX_FILE_BYTES:
+                continue
+            if member.size > budget:
+                continue
+            path = normalize_s3_relative_path(member.name)
+            if not path or path not in wanted or path in contents:
+                continue
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                continue
+            raw = extracted.read()
+            try:
+                contents[path] = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            budget -= len(raw)
+
+    if not contents:
+        return files
+    return [
+        {**meta, "content": contents[str(meta["path"])]}
+        if str(meta["path"]) in contents
+        else meta
+        for meta in files
+    ]
+
+
 def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
     normalized_path = normalize_s3_relative_path(file_path)
     if not normalized_path:
@@ -753,7 +810,9 @@ class StorageClient:
             if recursive:
                 return {
                     "task_id": task_id,
-                    "files": filtered_files,
+                    "files": _inline_task_archive_contents(
+                        archive_bytes, filtered_files
+                    ),
                     "dirs": [],
                     "prefix": full_prefix,
                     "recursive": True,
