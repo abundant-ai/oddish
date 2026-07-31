@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, not_, select
 
 from oddish.analyze import BaselineValidation, TrialClassification
-from oddish.analyze.models import TaskVerdictModel
+from oddish.analyze.models import ActionItem, TaskVerdictModel
 from oddish.config import settings
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX, baseline_agent_clause
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
@@ -60,12 +60,61 @@ VERDICT_FALLBACK_SCHEMA = normalize_findings_schema(
 )
 
 
+async def _load_pre_trial_items(task_id: str) -> list[ActionItem] | None:
+    """The audit findings the verdict must see: the current version's, else
+    the newest audited version's. Returns ``None`` when the state is unknown.
+    Parsed leniently — one malformed item must not hide the rest."""
+    async with get_session() as session:
+        current_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        version = (
+            await session.get(TaskVersionModel, current_id)
+            if current_id is not None
+            else None
+        )
+        if version is not None and version.pre_trial_status is not None:
+            # The current version has its own audit history, and it is
+            # authoritative. A failed or in-flight audit clears the payload,
+            # and that means "unknown" — never another version's findings,
+            # which could mark a fixed task bad from stale leaks.
+            if version.pre_trial is None:
+                return None
+            raw_items = version.pre_trial.get("items", [])
+        else:
+            # Never audited: the newest audited version is the best signal.
+            version = (
+                await session.execute(
+                    select(TaskVersionModel)
+                    .where(TaskVersionModel.task_id == task_id)
+                    .where(TaskVersionModel.pre_trial.isnot(None))
+                    .order_by(TaskVersionModel.version.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            raw_items = ((version.pre_trial if version else None) or {}).get(
+                "items", []
+            )
+
+    items: list[ActionItem] = []
+    for raw in raw_items:
+        try:
+            items.append(ActionItem.model_validate(raw))
+        except Exception:  # noqa: BLE001
+            console.print(
+                f"[yellow]Skipping a malformed pre_trial item for {task_id}[/yellow]"
+            )
+    return items
+
+
 async def synthesize_task_verdict(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None,
     quality_check_passed: bool,
     timeout: float,
     task_id: str | None = None,
+    pre_trial_items: list[ActionItem] | None = None,
+    pre_trial_load_failed: bool = False,
 ) -> TaskVerdictModel:
     """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
@@ -94,7 +143,11 @@ async def synthesize_task_verdict(
     from oddish.blocks.analyzer.verdict.verdict_block import VerdictBlock
 
     vb = VerdictBlock(
-        classifications, baseline=baseline, quality_check_passed=quality_check_passed
+        classifications,
+        baseline=baseline,
+        quality_check_passed=quality_check_passed,
+        pre_trial_items=pre_trial_items,
+        pre_trial_load_failed=pre_trial_load_failed,
     )
     prompt = vb.build_prompt()
 
@@ -312,8 +365,16 @@ PRE_TRIAL_LEASE_MARGIN_SECONDS = 900
 PRE_TRIAL_LEASE_JITTER_SECONDS = 60
 
 
-async def _claim_pre_trial_version(task_id: str) -> str | None:
-    """Resolve the task's current version and claim it for the pre-trial audit.
+async def _claim_pre_trial_version(
+    task_id: str, task_version_id: str | None = None
+) -> str | None:
+    """Claim a task version for the pre-trial audit.
+
+    An audit-only job pins the version the rerun request marked QUEUED and
+    passes it here; a full QA run passes None and the claim resolves the
+    task's current version. Without the pin, a re-upload between enqueue
+    and run would leave the requested version QUEUED forever and audit the
+    wrong one.
 
     Pre-trial runs once per task *version* (each version is a distinct source
     snapshot), so a sweep-append QA re-run must not re-audit unchanged source:
@@ -327,7 +388,7 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
     audited, or an audit in flight.
     """
     async with get_session() as session:
-        version_id = await session.scalar(
+        version_id = task_version_id or await session.scalar(
             select(TaskModel.current_version_id).where(TaskModel.id == task_id)
         )
         if version_id is None:
@@ -351,6 +412,113 @@ async def _claim_pre_trial_version(task_id: str) -> str | None:
         version.pre_trial_status = VerdictStatus.RUNNING
         version.pre_trial_started_at = utcnow()
     return str(version_id)
+
+
+async def _fail_queued_pre_trial_request(
+    task_id: str,
+    error: str = "Pre-trial audit is not enabled for this org",
+    task_version_id: str | None = None,
+) -> None:
+    """Terminate an explicit audit request that will not be served.
+
+    The pre-trial audit only runs inside a worker job. When the job skips
+    the audit (org has it disabled, no synth registered) or dies, a request
+    left QUEUED would never be picked up by anything -- the card would show
+    a running audit forever. Only QUEUED is touched: it can only be set by
+    an explicit request, so a normal never-audited version stays untouched.
+    """
+    async with get_session() as session:
+        version_id = task_version_id or await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        if version_id is None:
+            return
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if version is not None and version.pre_trial_status == VerdictStatus.QUEUED:
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = error
+            version.pre_trial_finished_at = utcnow()
+
+
+async def run_pre_trial_only_job(
+    task_id: str,
+    worker_job_id: str | None,
+    task_version_id: str | None = None,
+) -> None:
+    """Run only the pre-trial audit for one task version.
+
+    Serves the independent audit trigger (``enqueue_pre_trial_worker_job``).
+    Trial classifications and the task verdict are not touched. The audit
+    writes its result to the version row. If the run raises, a QUEUED
+    request is marked FAILED so the card does not show a running audit
+    with no job behind it. The version id pins the whole run to the
+    version the request marked QUEUED; without it (a job from before the
+    field existed) the run falls back to the task's current version.
+    """
+    console.print(f"[cyan]Processing pre-trial audit[/cyan] {task_id}")
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task: asyncio.Task | None = None
+    if worker_job_id:
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_qa_worker_job(
+                worker_job_id=worker_job_id,
+                stop_event=heartbeat_stop,
+            )
+        )
+    try:
+        live_trials = await _load_live_trials_for_classification(task_id)
+        await _run_pre_trial_audit(
+            task_id,
+            worker_job_id,
+            [trial_id for trial_id, _ in live_trials],
+            task_version_id=task_version_id,
+        )
+        await _finalize_pre_trial_request(task_id, task_version_id=task_version_id)
+    except BaseException as exc:
+        try:
+            await _fail_queued_pre_trial_request(
+                task_id,
+                error=f"{type(exc).__name__}: {exc}",
+                task_version_id=task_version_id,
+            )
+        except Exception:  # noqa: BLE001
+            pass  # best-effort; do not mask the original error
+        raise
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_task is not None:
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
+async def _finalize_pre_trial_request(
+    task_id: str, task_version_id: str | None = None
+) -> None:
+    """After an audit-only run, the version must hold a terminal result.
+
+    ``_run_pre_trial_audit`` swallows synth failures, and a vetoed store
+    releases the claim back to None. In a full QA run that is fine: the
+    next QA run redoes the audit. An explicit re-run has no next run, so
+    an unrecorded result would leave the card saying "not audited" with
+    no error while the job reports success. Record the failure instead.
+    A RUNNING claim is left alone: another worker owns it.
+    """
+    async with get_session() as session:
+        version_id = task_version_id or await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        if version_id is None:
+            return
+        version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+        if version is not None and version.pre_trial_status in (
+            None,
+            VerdictStatus.PENDING,
+            VerdictStatus.QUEUED,
+        ):
+            version.pre_trial_status = VerdictStatus.FAILED
+            version.pre_trial_error = (
+                "The audit did not record a result. Run it again."
+            )
+            version.pre_trial_finished_at = utcnow()
 
 
 async def _release_pre_trial_claim(task_version_id: str) -> None:
@@ -384,7 +552,10 @@ async def _pre_trial_store_allowed(session, worker_job_id: str | None) -> bool:
 
 
 async def _run_pre_trial_audit(
-    task_id: str, worker_job_id: str | None, live_trial_ids: list[str]
+    task_id: str,
+    worker_job_id: str | None,
+    live_trial_ids: list[str],
+    task_version_id: str | None = None,
 ) -> None:
     """Claim, run, and persist the per-version pre-trial audit.
 
@@ -407,12 +578,23 @@ async def _run_pre_trial_audit(
         # opt-in unable to enable anything, which is how prod (default off) ran
         # the audit exactly zero times while the orgs API happily accepted the
         # opt-in. Standalone oddish stays a no-op via _pre_trial_synth_fn.
-        if _pre_trial_synth_fn is not None and (
+        audit_enabled = _pre_trial_synth_fn is not None and (
             await _pre_trial_enabled_fn(task_id)
             if _pre_trial_enabled_fn is not None
             else settings.pre_trial_enabled
-        ):
-            pre_trial_version_id = await _claim_pre_trial_version(task_id)
+        )
+        if audit_enabled:
+            pre_trial_version_id = await _claim_pre_trial_version(
+                task_id, task_version_id
+            )
+        else:
+            # An explicit re-run request (status QUEUED) can only be served
+            # here. If the audit is disabled for this org, fail the request
+            # with the reason -- leaving it QUEUED would show as running
+            # forever with no job behind it.
+            await _fail_queued_pre_trial_request(
+                task_id, task_version_id=task_version_id
+            )
         if pre_trial_version_id is not None:
             pre_trial_items = await _pre_trial_synth_fn(
                 task_id,
@@ -711,6 +893,26 @@ async def run_task_qa_job(
                 f"{type(exc).__name__}: {exc}[/red]"
             )
 
+        # The classify prompt tells trials not to repeat pre-trial findings
+        # in their action items, so an audit hole no trial exploited reaches
+        # the verdict only through this list. Loaded after the aggregation so
+        # the items carry their exploited stamps. Best-effort like above —
+        # but a load failure must render as "unknown", never as a clean pass.
+        pre_trial_items: list[ActionItem] = []
+        pre_trial_load_failed = False
+        try:
+            loaded = await _load_pre_trial_items(task_id)
+            if loaded is None:
+                pre_trial_load_failed = True
+            else:
+                pre_trial_items = loaded
+        except Exception as exc:  # noqa: BLE001
+            pre_trial_load_failed = True
+            console.print(
+                f"[red]Pre-trial item load failed for {task_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
+            )
+
         console.print(
             f"[cyan]Computing verdict from {len(classifications)} "
             "classifications...[/cyan]"
@@ -733,6 +935,8 @@ async def run_task_qa_job(
             quality_check_passed,
             timeout,
             task_id=task_id,
+            pre_trial_items=pre_trial_items,
+            pre_trial_load_failed=pre_trial_load_failed,
         )
 
         verdict_result = build_verdict_payload(verdict, classifications)

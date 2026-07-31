@@ -24,7 +24,8 @@ class AnalysisUsage:
 
 
 def parse_cli_usage(payload: dict, model_id: str | None) -> AnalysisUsage | None:
-    """Extract usage from a Claude Code ``--output-format json`` envelope.
+    """Extract usage from a Claude Code ``result`` envelope (stream-json's
+    final event and ``--output-format json``'s single object share the shape).
 
     Returns ``None`` when the envelope carries no ``total_cost_usd`` — there is
     no cost signal to record, and we never fabricate one.

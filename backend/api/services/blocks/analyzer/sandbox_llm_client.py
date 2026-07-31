@@ -76,6 +76,9 @@ class SandboxAnalyzerLLMClient:
         internal_api_key_id: str | None = None,
     ) -> None:
         self._sandbox = sandbox
+        # Public: lets callers (for example the analysis log) report which
+        # Daytona sandbox a run executes in.
+        self.sandbox_id = sandbox.id
         self._client = daytona_client
         self._runtime = runtime
         self._model = model

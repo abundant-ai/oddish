@@ -6,10 +6,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
     delete_trial_core,
+    get_trial_analysis_log_core,
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
     get_trial_response_for_org_core,
+    rerun_trial_analysis_core,
     retry_trial_core,
 )
 from oddish.core.trial_io import (
@@ -99,6 +101,39 @@ async def get_trial_full(
 
     async with get_session() as session:
         return await get_trial_response_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+
+
+@router.get("/trials/{trial_id}/analysis-log")
+async def get_trial_analysis_log(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Whole log of the trial's current/most recent analysis run, plus the
+    QA queue position while the job waits for a worker."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_trial_analysis_log_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+
+
+@router.post("/trials/{trial_id}/analysis/rerun")
+async def rerun_trial_analysis(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue analysis for one trial.
+
+    Classifies only this trial. Does not touch other trials, the task
+    verdict, or the pre-trial audit.
+    """
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+    async with get_session() as session:
+        return await rerun_trial_analysis_core(
             session, trial_id=trial_id, org_id=auth.org_id
         )
 

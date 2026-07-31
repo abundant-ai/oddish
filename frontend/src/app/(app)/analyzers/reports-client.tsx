@@ -121,7 +121,7 @@ export function AnalyzerCostsPanel() {
         <div className="flex items-start justify-between gap-6 rounded-md border p-4">
           <div>
             <Label htmlFor="pre-trial-analysis" className="text-sm font-medium">
-              Pre-trial analysis
+              Static checks
             </Label>
             <p className="text-muted-foreground mt-1 text-xs">
               Audit task source before trial classification for every analyzed
@@ -133,7 +133,7 @@ export function AnalyzerCostsPanel() {
             checked={setting?.enabled ?? false}
             disabled={!setting?.can_manage || saving}
             onCheckedChange={(checked) => void setPreTrial(checked === true)}
-            aria-label="Enable pre-trial analysis for this organization"
+            aria-label="Enable static checks for this organization"
           />
         </div>
         {error ? (
