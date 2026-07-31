@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle, XCircle, Clock } from "lucide-react";
+import { CheckCircle, CircleDashed, XCircle, Clock } from "lucide-react";
+import { getRewardStyle } from "@/lib/status-config";
 
 interface ResultJsonRendererProps {
   content: string;
@@ -66,6 +67,7 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
   const reward = data.verifier_result?.rewards?.reward;
   const passed = reward === 1.0;
   const failed = reward === 0.0;
+  const partial = reward != null && reward > 0 && reward < 1;
   const hasException =
     data.exception_info !== null && data.exception_info !== undefined;
 
@@ -105,6 +107,15 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
               <XCircle className="mr-1 h-4 w-4" />
               FAIL
             </Badge>
+          ) : partial ? (
+            <Badge
+              variant="outline"
+              className="px-3 py-1 text-sm"
+              style={getRewardStyle(reward, "badge")}
+            >
+              <CircleDashed className="mr-1 h-4 w-4" />
+              PARTIAL
+            </Badge>
           ) : (
             <Badge variant="outline" className="px-3 py-1 text-sm">
               Unknown
@@ -112,7 +123,7 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
           )}
           {reward !== undefined && reward !== null && (
             <Badge variant="secondary" className="font-mono text-sm">
-              Reward: {reward.toFixed(1)}
+              Reward: {Number(reward.toFixed(3))}
             </Badge>
           )}
         </div>
