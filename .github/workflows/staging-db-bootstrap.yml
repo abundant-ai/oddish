@@ -63,68 +63,57 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          # NOTE (adapted from the guessed field names): `supabase branches
-          # get -o json` has no db_host/db_pass/db_port/db_user fields. Per
-          # the only other consumer in this repo
-          # (.github/scripts/preview/wait_for_supabase_branch.sh), the real
-          # shape is: `.status` + `.preview_project_status` (two separate
-          # fields, both required for readiness) and a single `.POSTGRES_URL`
-          # connection string whose password comes back redacted -- it must
-          # be reset via the Management API before the URL is usable. This
-          # step mirrors that proven recipe instead of the guessed fields.
-          is_failed_status() {
+          # Readiness fields (.status, .preview_project_status) exist only on
+          # `branches list` entries — the same source wait_for_supabase_branch.sh
+          # polls. `branches get` (by ID, below) is only for the connection document.
+          find_branch_json() {
+            supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+              | jq -c 'first(.[] | select(.persistent == true) | select(.name == "staging"))'
+          }
+          is_failed() {
             case "$1" in
-              MIGRATIONS_FAILED|FUNCTIONS_FAILED) return 0 ;;
+              MIGRATIONS_FAILED|FUNCTIONS_FAILED|RESTORE_FAILED|INIT_FAILED|PAUSE_FAILED) return 0 ;;
             esac
             return 1
           }
-          is_failed_preview() {
-            case "$1" in
-              RESTORE_FAILED|INIT_FAILED|PAUSE_FAILED) return 0 ;;
-            esac
-            return 1
-          }
-
-          branch_id=""
-          for _ in $(seq 1 6); do
-            branch_id=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
-              | jq -r '.[] | select(.name=="staging") | .id')
-            [ -n "$branch_id" ] && break
-            sleep 5
-          done
-          if [ -z "$branch_id" ]; then
-            echo "::error::no Supabase branch named staging found"
-            exit 1
-          fi
-
-          ready=0
-          status="" preview="" branch_json="{}"
-          deadline=$(($(date +%s) + 600))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            branch_json=$(supabase branches get "$branch_id" --project-ref "$SUPABASE_PROJECT_REF" -o json || true)
-            status=$(printf '%s' "$branch_json" | jq -r '.status // empty' 2>/dev/null || true)
-            preview=$(printf '%s' "$branch_json" | jq -r '.preview_project_status // empty' 2>/dev/null || true)
-            if is_failed_status "$status" || is_failed_preview "$preview"; then
-              echo "::error::staging branch $branch_id failed: status=$status preview=$preview"
-              exit 1
+          # At bootstrap time the branch holds no data — a branch left terminal-failed
+          # by a prior run is recreated once instead of failing loudly forever.
+          existing=$(find_branch_json)
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            st=$(jq -r '.status // empty' <<<"$existing")
+            pv=$(jq -r '.preview_project_status // empty' <<<"$existing")
+            if is_failed "$st" || is_failed "$pv"; then
+              bid=$(jq -r '.id' <<<"$existing")
+              echo "existing staging branch $bid is terminal-failed (status=$st preview=$pv); recreating"
+              supabase branches delete "$bid" --project-ref "$SUPABASE_PROJECT_REF"
+              supabase branches create staging --persistent --project-ref "$SUPABASE_PROJECT_REF"
             fi
-            case "$status" in
-              MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
-                [ "$preview" = "ACTIVE_HEALTHY" ] && ready=1
-                ;;
-            esac
-            [ "$ready" -eq 1 ] && break
-            echo "waiting for staging branch (status=${status:-none}, preview=${preview:-none})"
+          fi
+          ready=0
+          branch_id="" branch_ref="" status="" preview=""
+          for i in $(seq 1 60); do
+            bj=$(find_branch_json)
+            if [ -n "$bj" ] && [ "$bj" != "null" ]; then
+              read -r branch_id branch_ref status preview < <(
+                jq -r '[.id, .project_ref, .status, .preview_project_status] | @tsv' <<<"$bj")
+              if is_failed "$status" || is_failed "$preview"; then
+                echo "::error::staging branch $branch_id failed (status=$status preview=$preview)"
+                exit 1
+              fi
+              case "$status" in
+                MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+                  if [ "$preview" = "ACTIVE_HEALTHY" ]; then ready=1; break; fi ;;
+              esac
+            fi
+            echo "waiting for staging branch (attempt $i/60, status=${status:-none} preview=${preview:-none})"
             sleep 10
           done
-
           if [ "$ready" -ne 1 ]; then
-            echo "::error::staging branch never became ready (status=$status preview=$preview)"
+            echo "::error::staging branch never became ready (status=${status:-none} preview=${preview:-none})"
             exit 1
           fi
 
-          branch_ref=$(printf '%s' "$branch_json" | jq -r '.project_ref // empty')
+          branch_json=$(supabase branches get "$branch_id" --project-ref "$SUPABASE_PROJECT_REF" -o json)
           postgres_url=$(printf '%s' "$branch_json" | jq -r '.POSTGRES_URL // empty')
           if [ -z "$branch_ref" ] || [ -z "$postgres_url" ]; then
             echo "::error::branches get response missing project_ref or POSTGRES_URL"
