@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { Loader2 } from "lucide-react";
-import { getLanguageFromFilename } from "@/components/code-block";
 import { ImageRenderer } from "./image-renderer";
 import { VideoRenderer } from "./video-renderer";
 import { AudioRenderer } from "./audio-renderer";
@@ -12,7 +11,6 @@ import { BinaryRenderer } from "./binary-renderer";
 import { JsonRenderer } from "./json-renderer";
 import { LogRenderer } from "./log-renderer";
 import { CsvRenderer } from "./csv-renderer";
-import { CodeRenderer } from "./code-renderer";
 import { TextRenderer } from "./text-renderer";
 import { ConfigJsonRenderer } from "./config-json-renderer";
 import { RawRenderer } from "./raw-renderer";
@@ -48,6 +46,17 @@ const ResultJsonRenderer = dynamic(
   { ssr: false, loading: () => <LoadingStub label="Rendering result..." /> }
 );
 
+// Pierre (@pierre/diffs) bundles shiki, so both stay code-split.
+const CodeRenderer = dynamic(
+  () => import("./code-renderer").then((m) => m.CodeRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Highlighting code..." /> }
+);
+
+const DiffRenderer = dynamic(
+  () => import("./diff-renderer").then((m) => m.DiffRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Rendering diff..." /> }
+);
+
 function LoadingStub({ label }: { label: string }) {
   return (
     <div className="text-muted-foreground flex h-full items-center justify-center gap-2 p-8">
@@ -70,6 +79,7 @@ type FileRendererKind =
   | "config-json"
   | "result-json"
   | "cast"
+  | "diff"
   | "csv"
   | "log"
   | "code"
@@ -151,6 +161,7 @@ function getFileRendererKind(fileName: string): FileRendererKind {
   }
   if (ext === "json") return "json";
   if (ext === "cast") return "cast";
+  if (ext === "diff" || ext === "patch") return "diff";
 
   if (ext === "csv" || ext === "tsv") return "csv";
   if (ext === "log") return "log";
@@ -241,6 +252,8 @@ export function FileRenderer({
       return <ResultJsonRenderer content={content ?? ""} />;
     case "cast":
       return <CastRenderer content={content ?? ""} />;
+    case "diff":
+      return <DiffRenderer content={content ?? ""} fileName={fileName} />;
     case "csv": {
       const delimiter = fileName.toLowerCase().endsWith(".tsv") ? "\t" : ",";
       return <CsvRenderer content={content ?? ""} delimiter={delimiter} />;
@@ -251,12 +264,7 @@ export function FileRenderer({
       return <TextRenderer content={content ?? ""} />;
     case "code":
     default:
-      return (
-        <CodeRenderer
-          content={content ?? ""}
-          language={getLanguageFromFilename(fileName)}
-        />
-      );
+      return <CodeRenderer content={content ?? ""} fileName={fileName} />;
   }
 }
 
