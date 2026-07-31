@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-31]
+
+### Added
+
+- Live tab now streams a running `tbh` trial's headless output in real time: assistant text deltas are coalesced into messages, tool dispatch is rendered from the task lifecycle (proposed/started/completed), and the model's own turn is shown as streamed text rather than a tool call; token/cost columns stay untouched since tbh only reports usage in its post-run session export (#991).
+
+### Changed
+
+- Default Harbor pin bumped in two steps to bring up the `tbh` agent: first past its initial registration as an installed agent (#985), then to the commit carrying the fbcode loader fix and the real `muse exec` invocation that makes `-a tbh` actually runnable on the default worker image (#986).
+- Restricted-network Cursor CLI trials in Daytona Compose no longer set the undocumented `CURSOR_FORCED_SHELL_EGRESS*` env vars; Cursor's own web-search/web-fetch tools are disabled via `--exclude-tools` on the stock CLI instead, since the forced shell-egress overrides made the current Cursor CLI try to start a nested sandbox and fail shell execution inside Docker-in-Docker (#977).
+
+### Fixed
+
+- Ephemeral (custom-`--harbor`) trials now forward the trial's stored `agent_config` (extra allowed hosts, setup timeouts, agent env) into the out-of-process child instead of dropping it, fixing `mini-swe-agent` setup failing DNS resolution for `astral.sh` even when the correct network policy had been supplied (#992).
+- Restricted-network trials now allowlist an agent's own service host in addition to the model-derived host: `tbh` fronts Meta's model API through `api.meta.ai` rather than the `api.ai.meta.com` host its `meta/` model id implies, so a trial with `network_mode = "allowlist"` could reach the model catalog but not the harness's own inference endpoint; a caller-supplied `base_url`/`TBH_BASE_URL` override is added alongside the default rather than replacing it (#989).
+- Pre-trial QA audits now pass a JSON schema for `PreTrialActionItems` into Claude Code's CLI config and consume the validated `structured_output` instead of parsing free text, fixing intermittent audit failures such as `expecting ',' delimiter` from malformed JSON in the CLI envelope (#976).
+- Task verdict synthesis no longer retries a permanently blocked provider to exhaustion: a 403/`PermissionDeniedError` (as seen when Azure content-policy blocked the verdict resource for 58 hours) is now classified as a permanent failure so the QA job fails immediately instead of burning all 6 retry attempts against the blocked endpoint; verdicts retry once on a cross-provider fallback model (Claude) using a normalized JSON-schema structured output, tagging fallback runs with `verdict_fallback` in block metadata (#970).
+- Override-Harbor (`--harbor`) child processes now load `oddish.workers.harbor.patches` as a properly package-qualified import instead of via `spec_from_file_location`, fixing `ImportError: attempted relative import with no known parent package` after the patches module started using relative imports; the parent worker's site-packages are now passed to the isolated child as fallback import paths (#966).
+
+---
+
 ## [2026-07-27]
 
 ### Changed
