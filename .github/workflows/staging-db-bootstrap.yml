@@ -1,6 +1,7 @@
 name: Staging DB Bootstrap
-# One-shot: runs when this file lands on staging. Re-mirror on demand by
-# re-running a completed run of this workflow, or by pushing an edit to it.
+# One-shot: runs when this file lands on staging. To re-mirror on demand:
+# first reset the guard (gh variable set STAGING_DB_BOOTSTRAP_DONE --body false),
+# then re-run a completed run of this workflow or push an edit to it.
 on:
   push:
     branches: [staging]
@@ -134,6 +135,7 @@ jobs:
           # API and splice the fresh value into POSTGRES_URL ourselves (same
           # recipe as wait_for_supabase_branch.sh).
           DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+          echo "::add-mask::$DB_PASSWORD"
           http_code=$(curl -sS -o /tmp/pwreset.json -w '%{http_code}' \
             -X PATCH \
             -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
@@ -147,18 +149,19 @@ jobs:
             exit 1
           fi
 
-          # POSTGRES_URL looks like postgresql://user:REDACTED@host:port/dbname.
-          # Pull user/host/port and splice in the password we just set (it's
-          # already URL-safe: token_urlsafe emits only [A-Za-z0-9_-]).
+          # Session pooler ONLY (5432). The branch POSTGRES_URL defaults to the
+          # transaction pooler (6543), which poisons session state under
+          # migrations/DDL (SET lock_timeout sticks to the shared backend).
           if [[ "$postgres_url" =~ ^postgres(ql)?://([^:@/]+):[^@]*@([^:/@]+)(:([0-9]+))?(/.*)?$ ]]; then
             db_user="${BASH_REMATCH[2]}"
             db_host="${BASH_REMATCH[3]}"
-            db_port="${BASH_REMATCH[5]:-5432}"
+            db_port="5432"
           else
             echo "::error::could not parse POSTGRES_URL"
             exit 1
           fi
           db_url="postgresql+asyncpg://${db_user}:${DB_PASSWORD}@${db_host}:${db_port}/postgres"
+          echo "::add-mask::$db_url"
 
           # Smoke-test with libpq's psql before handing the URL off -- this is
           # what catches a stale/mismatched credential before Alembic does.
@@ -176,8 +179,6 @@ jobs:
             sleep 10
           done
 
-          echo "::add-mask::$DB_PASSWORD"
-          echo "::add-mask::$db_url"
           echo "db_url=$db_url" >> "$GITHUB_OUTPUT"
           echo "branch ready: ref=$branch_ref host=$db_host status=$status"
 
