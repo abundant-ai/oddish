@@ -14,7 +14,8 @@ from sqlalchemy.exc import ProgrammingError
 from auth import AuthContext, require_admin
 from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, UserModel
-from pg_errors import is_undefined_table_error
+from auth.permissions import is_operator_org, require_operator_org
+from pg_errors import is_undefined_column_or_table_error
 from slack_alert_settings import (
     AlertSettings,
     clear_alert_settings,
@@ -23,6 +24,8 @@ from slack_alert_settings import (
 )
 from oddish.core.admin import (
     CostBreakdownResponse,
+    ModelConcurrencySetting,
+    ModelConcurrencyUpdateRequest,
     QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
@@ -36,6 +39,7 @@ from oddish.core.admin import (
     get_orphaned_state_core,
     get_user_cost_breakdown_core,
     get_worker_jobs_admin_core,
+    update_model_concurrency_core,
 )
 from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
@@ -50,6 +54,7 @@ async def get_queue_slots(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> QueueSlotsResponse:
     """Get current state of queue-key slot leases."""
+    require_operator_org(auth)
     async with get_session() as session:
         return await get_queue_slots_core(session)
 
@@ -60,7 +65,10 @@ async def get_queue_status(
 ) -> QueueStatusResponse:
     """Get queue status from the trials/tasks tables (the source of truth)."""
     async with get_session() as session:
-        return await get_queue_status_core(session)
+        return await get_queue_status_core(
+            session,
+            org_id=None if is_operator_org(auth) else auth.org_id,
+        )
 
 
 @router.get("/orphaned-state", response_model=OrphanedStateResponse)
@@ -71,7 +79,9 @@ async def get_orphaned_state(
     """Summarize stale queue/pipeline state."""
     async with get_session() as session:
         return await get_orphaned_state_core(
-            session, stale_after_minutes=stale_after_minutes
+            session,
+            stale_after_minutes=stale_after_minutes,
+            org_id=auth.org_id,
         )
 
 
@@ -85,8 +95,23 @@ async def get_queue_health(
     Answers "is the queue keeping up?" at a glance -- the panel that lets an
     operator self-diagnose "queued but not running" without psql + Modal logs.
     """
+    is_operator = is_operator_org(auth)
     async with get_session() as session:
-        return await get_queue_health_core(session)
+        return await get_queue_health_core(
+            session,
+            org_id=None if is_operator else auth.org_id,
+            include_global_details=is_operator,
+        )
+
+
+@router.put("/concurrency", response_model=ModelConcurrencySetting)
+async def update_model_concurrency(
+    request: ModelConcurrencyUpdateRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelConcurrencySetting:
+    require_operator_org(auth)
+    async with get_session() as session:
+        return await update_model_concurrency_core(session, request)
 
 
 @router.get("/worker-jobs", response_model=WorkerJobsResponse)
@@ -105,26 +130,24 @@ async def get_worker_jobs(
             session,
             stale_after_minutes=stale_after_minutes,
             sample_limit=sample_limit,
+            org_id=auth.org_id,
         )
 
 
-async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None:
+async def _enrich_cost_breakdown(
+    session, result: CostBreakdownResponse, *, org_id: str
+) -> None:
     """Fill in user and org display names on a cost breakdown."""
     user_ids: set[str] = set()
-    org_ids: set[str] = set()
     for entry in result.by_user:
         # A None label means ``key`` is a real user id (the billed user, or the
         # submitting credential's user) whose name/email we resolve; a set label
         # is a self-describing fallback row (GitHub handle / Unattributed).
         if entry.label is None:
             user_ids.add(entry.key)
-        if entry.org_id:
-            org_ids.add(entry.org_id)
     for experiment in result.experiments:
         if experiment.owner_user_id:
             user_ids.add(experiment.owner_user_id)
-        if experiment.org_id:
-            org_ids.add(experiment.org_id)
     for series_key in result.series_by_user.keys:
         if series_key.key == series_key.label:
             user_ids.add(series_key.key)
@@ -134,22 +157,16 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
         rows = await session.execute(
             select(UserModel)
             .where(UserModel.id.in_(user_ids))
+            .where(UserModel.org_id == org_id)
             .execution_options(include_deleted=True)
         )
-        for user in rows.scalars():
-            users[user.id] = user
-            if user.org_id:
-                org_ids.add(user.org_id)
+        users = {user.id: user for user in rows.scalars()}
 
-    orgs: dict[str, str] = {}
-    if org_ids:
-        rows = await session.execute(
-            select(OrganizationModel.id, OrganizationModel.name)
-            .where(OrganizationModel.id.in_(org_ids))
-            .execution_options(include_deleted=True)
-        )
-        for org_id, org_name in rows.all():
-            orgs[org_id] = org_name
+    org_name = await session.scalar(
+        select(OrganizationModel.name)
+        .where(OrganizationModel.id == org_id)
+        .execution_options(include_deleted=True)
+    )
 
     for entry in result.by_user:
         user = users.get(entry.key) if entry.label is None else None
@@ -158,7 +175,7 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             entry.email = user.email
             if not entry.org_id and user.org_id:
                 entry.org_id = user.org_id
-        entry.org_name = orgs.get(entry.org_id) if entry.org_id else None
+        entry.org_name = org_name if entry.org_id == org_id else None
 
     for experiment in result.experiments:
         owner_id = experiment.owner_user_id
@@ -166,7 +183,7 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
         if user is not None:
             experiment.owner_name = user.name
             experiment.owner_email = user.email
-        experiment.org_name = orgs.get(experiment.org_id) if experiment.org_id else None
+        experiment.org_name = org_name if experiment.org_id == org_id else None
 
     for series_key in result.series_by_user.keys:
         user = users.get(series_key.key)
@@ -183,17 +200,18 @@ async def get_costs(
     experiment_limit: int = Query(100, ge=1, le=500),
     user_limit: int = Query(100, ge=1, le=500),
 ) -> CostBreakdownResponse:
-    """Return the global billable-spend breakdown for the admin dashboard."""
+    """Return the active organization's billable-spend breakdown."""
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
         result = await get_cost_breakdown_core(
             session,
+            org_id=auth.org_id,
             window_days=effective_window,
             experiment_limit=experiment_limit,
             user_limit=user_limit,
             resolve_github_users=resolve_github_users,
         )
-        await _enrich_cost_breakdown(session, result)
+        await _enrich_cost_breakdown(session, result, org_id=auth.org_id)
     return result
 
 
@@ -205,9 +223,6 @@ async def get_user_costs(
         7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
     ),
     task_limit: int = Query(100, ge=1, le=500),
-    org_id: str | None = Query(
-        None, description="Org slice to bill against; defaults to the user's home org"
-    ),
 ) -> UserCostBreakdownResponse:
     """Per-user billed spend over settled trials (finished_at axis, estimate-priced)."""
     effective_window = None if window_days == 0 else window_days
@@ -215,11 +230,11 @@ async def get_user_costs(
         user = await session.get(
             UserModel, user_id, execution_options={"include_deleted": True}
         )
-        if user is None:
+        if user is None or user.org_id != auth.org_id:
             raise HTTPException(status_code=404, detail="User not found")
         result = await get_user_cost_breakdown_core(
             session,
-            org_id=org_id if org_id is not None else user.org_id,
+            org_id=auth.org_id,
             billed_user_id=user_id,
             window_days=effective_window,
             task_limit=task_limit,
@@ -235,9 +250,9 @@ class ExpandBackfillResponse(BaseModel):
 
     - ``enqueued`` is the number of ``TASK_EXPAND`` jobs scheduled by
       this call.
-    - ``pending_total`` is the full-table count of versions matching
+    - ``pending_total`` is the organization-scoped count of versions matching
       the current filters (``expanded_at IS NULL AND task_s3_key IS
-      NOT NULL``, plus any ``task_id`` / ``org_id`` filter), measured
+      NOT NULL``, plus any ``task_id`` filter), measured
       before this call's inserts.  ``pending_total - enqueued`` tells
       the operator how many more calls are needed to drain the
       backlog; re-run once the workers have chewed through the
@@ -252,7 +267,6 @@ class ExpandBackfillResponse(BaseModel):
 async def backfill_task_expansions(
     auth: Annotated[AuthContext, Depends(require_admin)],
     task_id: str | None = Query(None, description="Restrict to one task_id"),
-    org_id: str | None = Query(None, description="Restrict to one org_id"),
     limit: int = Query(500, ge=1, le=5000),
 ) -> ExpandBackfillResponse:
     """Enqueue ``TASK_EXPAND`` jobs for task versions that haven't been expanded.
@@ -261,18 +275,15 @@ async def backfill_task_expansions(
     ``.oddish-manifest.json``) so callers can re-run the backfill
     without duplicating work.
 
-    When ``org_id`` is supplied, the filter is pushed into SQL (joined
-    on ``task.org_id``) rather than applied after the fetch, so a
-    single-org backfill doesn't drag unrelated versions into memory.
+    Only task versions belonging to the active organization are considered.
     """
     filters = [
         TaskVersionModel.expanded_at.is_(None),
         TaskVersionModel.task_s3_key.isnot(None),
+        TaskModel.org_id == auth.org_id,
     ]
     if task_id:
         filters.append(TaskVersionModel.task_id == task_id)
-    if org_id:
-        filters.append(TaskModel.org_id == org_id)
 
     # Always join to ``tasks`` so the session-level soft-delete filter
     # excludes versions whose parent task has been tombstoned. The join
@@ -302,14 +313,11 @@ async def backfill_task_expansions(
 
         enqueued = 0
         for version_row in rows:
-            row_org_id = None
-            if version_row.task is not None:
-                row_org_id = version_row.task.org_id
             await enqueue_task_expand_worker_job(
                 session,
                 task_id=version_row.task_id,
                 version=version_row.version,
-                org_id=row_org_id,
+                org_id=auth.org_id,
             )
             enqueued += 1
 
@@ -323,14 +331,27 @@ async def backfill_task_expansions(
 
 class SlackAlertSettingsResponse(BaseModel):
     trial_escalation_usd: float
+    user_daily_overage_delta_usd: float
     always_ping_emails: list[str]
     # False means nobody has overridden anything and these are the values baked
     # into the deploy, which the UI labels rather than presenting as a choice.
     is_override: bool
 
 
+class OperatorAccessResponse(BaseModel):
+    allowed: bool
+
+
+@router.get("/operator-access", response_model=OperatorAccessResponse)
+async def get_operator_access(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> OperatorAccessResponse:
+    return OperatorAccessResponse(allowed=is_operator_org(auth))
+
+
 class SlackAlertSettingsRequest(BaseModel):
     trial_escalation_usd: float = Field(gt=0)
+    user_daily_overage_delta_usd: float = Field(gt=0)
     always_ping_emails: list[str] = Field(max_length=50)
 
     @field_validator("always_ping_emails")
@@ -350,7 +371,7 @@ def _settings_response(settings: AlertSettings) -> SlackAlertSettingsResponse:
 
 
 def _unavailable(exc: ProgrammingError) -> HTTPException:
-    if not is_undefined_table_error(exc):
+    if not is_undefined_column_or_table_error(exc):
         raise exc
     return HTTPException(
         status_code=503,
@@ -366,6 +387,7 @@ async def get_slack_alert_settings(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> SlackAlertSettingsResponse:
     """Effective Slack cost-alert thresholds and escalation list."""
+    require_operator_org(auth)
     try:
         async with get_session() as session:
             return _settings_response(await get_alert_settings(session))
@@ -379,6 +401,7 @@ async def update_slack_alert_settings(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> SlackAlertSettingsResponse:
     """Override the thresholds and escalation list for every org."""
+    require_operator_org(auth)
     try:
         async with get_session() as session:
             settings = await set_alert_settings(
@@ -394,6 +417,7 @@ async def reset_slack_alert_settings(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> SlackAlertSettingsResponse:
     """Drop the override; the deploy-time defaults take over again."""
+    require_operator_org(auth)
     try:
         async with get_session() as session:
             return _settings_response(await clear_alert_settings(session))

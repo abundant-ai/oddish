@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -14,13 +15,23 @@ from api.app import create_app
 from auth import require_admin, require_auth
 from auth.types import AuthContext, AuthMethod
 from models import OrganizationModel, UserModel, UserRole
-from oddish.db import ExperimentModel, TaskModel, TrialModel, TrialOrigin, get_session
+from oddish.db import (
+    AnalysisCostModel,
+    ExperimentModel,
+    ModalCostSpanModel,
+    TaskModel,
+    TrialModel,
+    TrialOrigin,
+    get_session,
+)
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set")
 
 _EST_MODEL = "claude-haiku-4"
 _EST_EXPECTED = 0.0035
+_QA_TARGET_COST = 0.40
+_COMPUTE_TARGET_COST = 0.60
 
 
 def _admin_auth(org_id: str, user_id: str) -> AuthContext:
@@ -184,6 +195,27 @@ async def costs_fixture():
                     finished_at=recent, cost_usd=222.0,
                     idempotency_key=f"combine:exp_{task_b}:{task_a}-1",
                 ),
+                AnalysisCostModel(
+                    org_id=org_id, billed_user_id=target.id, model="claude-haiku-4-5",
+                    job_kind="trial_classifier", cost_source="native",
+                    cost_usd=_QA_TARGET_COST, created_at=recent,
+                ),
+                AnalysisCostModel(
+                    org_id=org_id, billed_user_id=other.id, model="claude-haiku-4-5",
+                    job_kind="analyzer", cost_source="native",
+                    cost_usd=99.0, created_at=recent,
+                ),
+                ModalCostSpanModel(
+                    org_id=org_id, billed_user_id=target.id, provider="daytona",
+                    component_role="agent_sandbox", basis="hooks", spec_source="pinned",
+                    started_at=recent, finished_at=recent,
+                    cost_usd=Decimal(str(_COMPUTE_TARGET_COST)),
+                ),
+                ModalCostSpanModel(
+                    org_id=org_id, billed_user_id=other.id, provider="modal",
+                    component_role="agent_sandbox", basis="hooks", spec_source="pinned",
+                    started_at=recent, finished_at=recent, cost_usd=Decimal("88"),
+                ),
             ]
         )
 
@@ -205,6 +237,10 @@ async def costs_fixture():
                     ExperimentModel.__table__.delete().where(
                         ExperimentModel.id == f"exp_{tid}"
                     )
+                )
+            for cost_model in (AnalysisCostModel, ModalCostSpanModel):
+                await session.execute(
+                    cost_model.__table__.delete().where(cost_model.org_id == org_id)
                 )
             await session.execute(
                 UserModel.__table__.delete().where(
@@ -321,6 +357,37 @@ async def test_series_by_model_shape(costs_fixture):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_stack_by_series_are_scoped_to_the_billed_user(costs_fixture):
+    """The other member's larger QA ($99) and compute ($88) rows must not leak."""
+    f = costs_fixture
+    resp = await _get(f.org_id, f.admin.id, f.target.id, params={"window_days": 7})
+    body = resp.json()
+    qa = body["series_qa_by_model"]
+    compute = body["series_compute_by_provider"]
+    by_type = body["series_by_type"]
+
+    assert {k["key"] for k in body["series_by_agent"]["keys"]} == {"nop"}
+    assert {k["key"] for k in body["series_by_analysis_type"]["keys"]} == {
+        "trial_classifier"
+    }
+    assert {k["key"] for k in compute["keys"]} == {"daytona"}
+    assert sum(b["cost_usd"] for b in qa["buckets"]) == pytest.approx(_QA_TARGET_COST)
+    assert sum(b["cost_usd"] for b in compute["buckets"]) == pytest.approx(
+        _COMPUTE_TARGET_COST
+    )
+
+    assert {k["key"] for k in by_type["keys"]} == {"inference", "qa", "compute"}
+    totals = {
+        key: sum(b["costs"].get(key, 0.0) for b in by_type["buckets"])
+        for key in ("inference", "qa", "compute")
+    }
+    assert totals["inference"] == pytest.approx(body["totals"]["cost_usd"])
+    assert totals["qa"] == pytest.approx(_QA_TARGET_COST)
+    assert totals["compute"] == pytest.approx(_COMPUTE_TARGET_COST)
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_all_time_still_excludes_unsettled(costs_fixture):
     f = costs_fixture
     resp = await _get(f.org_id, f.admin.id, f.target.id, params={"window_days": 0})
@@ -431,6 +498,36 @@ async def test_unknown_user_returns_404(costs_fixture):
     f = costs_fixture
     resp = await _get(f.org_id, f.admin.id, "user_does_not_exist_zzz")
     assert resp.status_code == 404
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_user_from_another_org_returns_404(costs_fixture):
+    f = costs_fixture
+    foreign_org_id = f"org_foreign_{uuid.uuid4().hex[:8]}"
+    foreign_user = _member(foreign_org_id, "foreign")
+    try:
+        async with get_session() as session:
+            session.add(
+                OrganizationModel(
+                    id=foreign_org_id, name=foreign_org_id, slug=foreign_org_id
+                )
+            )
+            await session.flush()
+            session.add(foreign_user)
+
+        resp = await _get(f.org_id, f.admin.id, foreign_user.id)
+        assert resp.status_code == 404
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == foreign_user.id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == foreign_org_id
+                )
+            )
 
 
 @requires_db

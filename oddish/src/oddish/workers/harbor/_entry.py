@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import asyncio
 import importlib
-import importlib.util
 import json
 import logging
+import os
 import shlex
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -23,6 +22,27 @@ ClaudeCode: Any = importlib.import_module(
     "harbor.agents.installed.claude_code"
 ).ClaudeCode
 
+# ``uv run --no-project --with <harbor pin>`` deliberately creates an isolated
+# Harbor overlay, so the parent worker's installed ``oddish`` distribution and
+# its dependencies are not importable there. Import the override Harbor
+# above *before* exposing any parent paths, then append the package root
+# containing this entrypoint and the parent worker's site-packages as fallback
+# paths.  The already-loaded override Harbor owns ``harbor.__path__``, so the
+# baked Harbor in the fallback site-packages cannot replace or extend it.
+_ODDISH_IMPORT_ROOT = str(Path(_THIS_DIR).parents[2])
+_PARENT_SITE_PACKAGES_ENV = "ODDISH_PARENT_SITE_PACKAGES"
+_fallback_paths = [_ODDISH_IMPORT_ROOT]
+_fallback_paths.extend(
+    path
+    for path in os.environ.get(_PARENT_SITE_PACKAGES_ENV, "").split(os.pathsep)
+    if path
+)
+for _fallback_path in _fallback_paths:
+    if not os.path.isdir(_fallback_path):
+        raise RuntimeError(f"Oddish child fallback path is missing: {_fallback_path!r}")
+    if _fallback_path not in sys.path:
+        sys.path.append(_fallback_path)
+
 logger = logging.getLogger("oddish.harbor_entry")
 
 EVENT_SENTINEL = "_oddish_harbor_event"
@@ -34,13 +54,7 @@ def _event_name(event: Any) -> str:
 
 
 def _apply_sibling_harbor_patches() -> None:
-    spec = importlib.util.spec_from_file_location(
-        "_oddish_harbor_patches", Path(_THIS_DIR) / "patches.py"
-    )
-    if spec is None or spec.loader is None:
-        return
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module("oddish.workers.harbor.patches")
     module.apply_harbor_patches()
 
 
@@ -150,22 +164,29 @@ def _build_job_config(payload: dict[str, Any]):
     if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
         env_config.kwargs = {**payload["daytona_kwargs"], **(env_config.kwargs or {})}
 
-    agent_kwargs: dict[str, Any] = {}
+    agent_kwargs: dict[str, Any] = dict(payload.get("agent_config") or {})
+    if agent_kwargs.get("import_path") is None:
+        agent_kwargs["name"] = payload["agent"]
+    else:
+        agent_kwargs["name"] = None
     if payload.get("model"):
         agent_kwargs["model_name"] = payload["model"]
-    if payload.get("extra_agent_env"):
-        agent_kwargs["env"] = dict(payload["extra_agent_env"])
+    if payload.get("runtime_env") or payload.get("extra_agent_env"):
+        agent_kwargs["env"] = {
+            **dict(agent_kwargs.get("env") or {}),
+            **dict(payload.get("runtime_env") or {}),
+            **dict(payload.get("extra_agent_env") or {}),
+        }
 
     agent_harbor_requirement = payload.get("agent_harbor_requirement")
     if agent_harbor_requirement:
-        agent_config = AgentConfig(
-            name=None,
-            import_path=f"{__name__}:_ProbeClaudeCode",
-            kwargs={"harbor_requirement": agent_harbor_requirement},
-            **agent_kwargs,
-        )
-    else:
-        agent_config = AgentConfig(name=payload["agent"], **agent_kwargs)
+        agent_kwargs["name"] = None
+        agent_kwargs["import_path"] = f"{__name__}:_ProbeClaudeCode"
+        agent_kwargs["kwargs"] = {
+            **dict(agent_kwargs.get("kwargs") or {}),
+            "harbor_requirement": agent_harbor_requirement,
+        }
+    agent_config = AgentConfig.model_validate(agent_kwargs)
 
     kwargs: dict[str, Any] = {
         "tasks": [TaskConfig(path=Path(payload["task_path"]))],

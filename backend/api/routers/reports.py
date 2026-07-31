@@ -10,9 +10,13 @@ every response goes through ``_to_response`` to populate it.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
+
+from api.schemas import AnalyzerCostItem, AnalyzerCostsResponse
 
 from auth import APIKeyScope, AuthContext, require_auth
 from oddish.core.analyzers import (
@@ -23,11 +27,60 @@ from oddish.core.analyzers import (
     list_experiment_options_core,
     list_analyzers_core,
 )
-from oddish.db import JobStatus, get_session
+from oddish.db import AnalysisCostModel, JobStatus, get_session, utcnow
 from oddish.evals.analyzer.rollup import build_rollup
 from oddish.schemas import ExperimentOption, ReportCreate, ReportResponse
 
 router = APIRouter(tags=["Reports"])
+
+
+@router.get("/analyzers/costs", response_model=AnalyzerCostsResponse)
+async def get_analyzer_costs(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    window_days: int = Query(
+        30, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+) -> AnalyzerCostsResponse:
+    """Org-scoped AnalyzerBlock spend, grouped by its analyzer type."""
+    stmt = (
+        select(
+            AnalysisCostModel.job_kind,
+            func.coalesce(func.sum(AnalysisCostModel.cost_usd), 0.0),
+            func.count(AnalysisCostModel.id),
+            func.coalesce(func.sum(AnalysisCostModel.input_tokens), 0),
+            func.coalesce(func.sum(AnalysisCostModel.output_tokens), 0),
+        )
+        .where(
+            AnalysisCostModel.org_id == auth.org_id,
+            AnalysisCostModel.deleted_at.is_(None),
+        )
+        .group_by(AnalysisCostModel.job_kind)
+        .order_by(func.sum(AnalysisCostModel.cost_usd).desc())
+    )
+    if window_days:
+        stmt = stmt.where(
+            AnalysisCostModel.created_at >= utcnow() - timedelta(days=window_days)
+        )
+    async with get_session() as session:
+        rows = (await session.execute(stmt)).all()
+    items = [
+        AnalyzerCostItem(
+            analyzer_type=kind,
+            cost_usd=float(cost),
+            job_count=count,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        for kind, cost, count, input_tokens, output_tokens in rows
+    ]
+    return AnalyzerCostsResponse(
+        window_days=window_days,
+        total_cost_usd=sum(item.cost_usd for item in items),
+        total_job_count=sum(item.job_count for item in items),
+        total_input_tokens=sum(item.input_tokens for item in items),
+        total_output_tokens=sum(item.output_tokens for item in items),
+        by_type=items,
+    )
 
 
 async def _to_response(session, report) -> ReportResponse:

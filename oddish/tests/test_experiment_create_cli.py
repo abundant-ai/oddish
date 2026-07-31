@@ -1,8 +1,9 @@
-from oddish.cli.experiment import _format_collection_summary, _normalize_trial_ids
+from oddish.cli._collection_refs import _dedupe
+from oddish.cli.experiment import _format_collection_summary
 
 
 def test_normalize_dedupes_and_strips():
-    assert _normalize_trial_ids([" a ", "b", "a", "", "  "]) == ["a", "b"]
+    assert _dedupe([" a ", "b", "a", "", "  "]) == ["a", "b"]
 
 
 def test_format_summary_lines():

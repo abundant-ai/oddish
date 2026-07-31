@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -642,6 +642,66 @@ class TrialCollectionRequest(BaseModel):
         return self
 
 
+class CollectionAddRequest(BaseModel):
+    """Request to link more trials into an existing collection."""
+
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+    from_experiment_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "CollectionAddRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        self.from_experiment_ids = list(
+            dict.fromkeys(
+                s.strip() for s in self.from_experiment_ids if s and s.strip()
+            )
+        )
+        if not self.trial_ids and not self.task_ids and not self.from_experiment_ids:
+            raise ValueError(
+                "provide at least one trial id, task id, or source experiment id"
+            )
+        return self
+
+
+class CollectionRemoveRequest(BaseModel):
+    """Request to drop trials from an existing collection."""
+
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "CollectionRemoveRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        if not self.trial_ids and not self.task_ids:
+            raise ValueError("provide at least one trial id or task id")
+        return self
+
+
+class CollectionRenameRequest(BaseModel):
+    """Request to rename an existing collection."""
+
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be empty")
+        return stripped
+
+
 # =============================================================================
 # Response Schemas
 # =============================================================================
@@ -817,6 +877,12 @@ class TaskVersionResponse(BaseModel):
     message: str | None = None
     created_by_user_id: str | None = None
     created_at: datetime
+    # The pre-trial source audit for this exact snapshot: ``{"items": [...]}``
+    # once one has succeeded. Status is carried separately so a version that was
+    # audited and came back clean is distinguishable from one never audited.
+    pre_trial: dict | None = None
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -848,6 +914,15 @@ class TaskVersionSummary(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     last_run_at: datetime | None = None
+    # Pre-trial source audit for this version, flattened to the items the task
+    # page renders. Empty list + null status means never audited; empty list +
+    # SUCCESS means audited and clean.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
+    # What this audit cost. Captured at write time; absent on audits that
+    # predate that (analysis_costs has no version reference to recover it from).
+    pre_trial_cost_usd: float | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
@@ -869,6 +944,9 @@ class TaskCostTotals(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     total_trials: int = 0
+    # QA/analysis spend for this task's trials, joined through ``trials``
+    # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
+    qa_cost_usd: float = 0.0
 
 
 class ExperimentCostTotals(BaseModel):
@@ -912,6 +990,14 @@ class ExperimentCostTotals(BaseModel):
     billed_token_trial_count: int = 0
     total_trials: int = 0
 
+    # QA/analysis spend (``analysis_costs``), scoped exactly like the agent
+    # figures above: ``qa_cost_usd`` over every member trial, ``owned_*`` over
+    # homed trials only. Never folded into ``cost_usd`` -- the UI renders it as
+    # a separate muted figure so the headline number keeps its meaning.
+    qa_cost_usd: float = 0.0
+    owned_qa_cost_usd: float = 0.0
+    qa_has_estimated: bool = False
+
 
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
@@ -947,6 +1033,13 @@ class TrialResponse(BaseModel):
     task_path: str
     task_version: int | None = None
     task_version_id: str | None = None
+    # Pre-trial source audit of the exact version THIS trial ran against.
+    # Populated only on the single-trial detail fetch: the grid's slim payload
+    # carries hundreds of trials and must not haul findings for each one.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
+    pre_trial_cost_usd: float | None = None
     experiment_id: str | None = None
     agent: str
     provider: str
@@ -1014,6 +1107,15 @@ class TrialResponse(BaseModel):
     total_steps: int | None = Field(
         None, description="Total agent trajectory steps, when available"
     )
+    trajectory_duration_seconds: float | None = Field(
+        None, description="Elapsed seconds between the first and last trajectory step"
+    )
+    total_tool_calls: int | None = Field(
+        None, description="Total tool calls in the agent trajectory"
+    )
+    tool_counts: dict[str, int] | None = Field(
+        None, description="Tool-call counts keyed by trajectory function name"
+    )
     cost_usd: float | None = Field(
         None,
         description=(
@@ -1039,6 +1141,10 @@ class TrialResponse(BaseModel):
             "billed spend and quota usage."
         ),
     )
+    # QA/analysis spend for this trial. None when no QA ran -- distinct from
+    # 0.0, so the UI can render nothing rather than "+$0.00 QA". None also
+    # means "not resolved by this caller": most builders never populate it.
+    qa_cost_usd: float | None = None
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(
@@ -1059,6 +1165,14 @@ class TrialResponse(BaseModel):
     analysis_error: str | None = Field(
         None,
         description="Error message if analysis failed",
+    )
+    analysis_started_at: datetime | None = Field(
+        None,
+        description="When the current analysis run started; None until a worker picks it up",
+    )
+    analysis_finished_at: datetime | None = Field(
+        None,
+        description="When the analysis reached a terminal state",
     )
     superseded_by_trial_id: str | None = Field(
         None,
@@ -1267,6 +1381,20 @@ class TrialCollectionResponse(BaseModel):
     tasks_skipped_empty: int = 0
 
 
+class CollectionMutationResponse(BaseModel):
+    """Result of editing an existing read-only collection in place."""
+
+    id: str
+    name: str
+    trials_added: int = 0
+    trials_removed: int = 0
+    trials_total: int = 0
+    tasks_linked: int = 0
+    tasks_unlinked: int = 0
+    # Ids the caller named that were not members; ignored, not an error.
+    trials_skipped: int = 0
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
@@ -1283,6 +1411,8 @@ class TaskBrowseTrial(BaseModel):
     status: TrialStatus
     reward: float | None = None
     error_message: str | None = None
+    agent: str = ""
+    model: str | None = None
 
 
 class TaskBrowseItem(BaseModel):
@@ -1310,6 +1440,9 @@ class TaskBrowseItem(BaseModel):
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    # QA/analysis spend for this task's trials, joined through ``trials``
+    # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
+    qa_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
@@ -1459,6 +1592,9 @@ class ImportedTrialSpec(BaseModel):
     cache_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
+    trajectory_duration_seconds: float | None = None
+    total_tool_calls: int | None = None
+    tool_counts: dict[str, int] | None = None
     cost_usd: float | None = None
     phase_timing: dict | None = Field(
         None,
@@ -1910,6 +2046,91 @@ class ReportResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class QAPromptVariant(BaseModel):
+    kind: str = Field(min_length=1, max_length=128)
+    version: int | None = Field(default=None, ge=1)
+
+
+class CustomQARunRequest(BaseModel):
+    scope_type: Literal["experiment", "task", "trial"]
+    scope_id: str = Field(min_length=1, max_length=64)
+    variants: list[QAPromptVariant] = Field(min_length=1)
+    model: str = "claude-sonnet-4-6"
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    backend: Literal["api", "sandbox"] = "sandbox"
+    allow_oddish_cli: bool = False
+
+
+class CustomQARunResponse(BaseModel):
+    id: str
+    prompt_kind: str
+    prompt_version: int
+    prompt_version_id: str
+    analyzer_block_id: str
+    scope_type: str
+    scope_id: str
+    model: str
+    reasoning_effort: str | None
+    backend: str
+    status: str
+    output: Any | None = None
+    error: str | None = None
+    run_config: dict
+
+
+class QAJobAssignRequest(BaseModel):
+    """Create or update one QA job assignment at a scope.
+
+    ``model`` and ``backend`` are optional because they have per-stage
+    deployment defaults (``settings.pre_trial_model`` / ``analysis_model``),
+    which is also what makes a bare ``qa-jobs disable`` possible -- a
+    suppression row still has to satisfy the NOT NULL columns.
+    """
+
+    prompt: str = Field(min_length=1, description="Prompt kind, or prompt id.")
+    stage: Literal["pre_trial", "post_trial"]
+    prompt_version: int | None = Field(default=None, ge=1)
+    model: str | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    backend: Literal["api", "sandbox"] | None = None
+    # None (field omitted) means "don't touch runner config" on an update, as a
+    # bare `qa-jobs disable` does; a create still lands False.
+    allow_oddish_cli: bool | None = None
+    enabled: bool = True
+
+
+class QAJobResponse(BaseModel):
+    id: str
+    stage: str
+    prompt_id: str
+    prompt_kind: str
+    prompt_version: int | None = None  # pinned version, NULL = latest-wins
+    effective_version: int | None = None  # what would actually run
+    scope_type: str
+    scope_id: str
+    org_id: str | None = None
+    model: str
+    reasoning_effort: str | None = None
+    backend: str
+    allow_oddish_cli: bool
+    enabled: bool
+    inherited_from: str
+
+
+class QAJobStatusRow(BaseModel):
+    assignment_id: str
+    stage: str
+    prompt_kind: str
+    inherited_from: str
+    total: int
+    counts: dict[str, int] = {}
+
+
+class QAJobStatusResponse(BaseModel):
+    scope: str
+    jobs: list[QAJobStatusRow] = []
+
+
 # ---------------------------------------------------------------------------
 # Documents — agent doc-store.
 # ---------------------------------------------------------------------------
@@ -1973,3 +2194,44 @@ class DocumentResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PromptVersionResponse(BaseModel):
+    version: int
+    content: str
+    created_at: datetime
+    created_by: str | None = None
+    model_config = {"from_attributes": True}
+
+
+class PromptUsageVersion(BaseModel):
+    version: int | None = None
+    count: int
+    last_used_at: datetime
+
+
+class PromptUsage(BaseModel):
+    total: int
+    last_used_at: datetime | None = None
+    by_version: list[PromptUsageVersion] = []
+
+
+class PromptResponse(BaseModel):
+    id: str
+    kind: str
+    description: str
+    scope_type: str | None = None
+    scope_id: str | None = None
+    org_id: str | None = None
+    latest_version: int | None = None  # populated by the router, not the ORM
+    version: int | None = None  # the resolved version content belongs to
+    created_at: datetime
+    updated_at: datetime
+    content: str | None = None  # resolved latest/selected version content
+    usage: PromptUsage | None = None  # populated on single-get only
+    model_config = {"from_attributes": True}
+
+
+class PromptSetRequest(BaseModel):
+    content: str
+    description: str | None = None

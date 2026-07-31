@@ -6,12 +6,13 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import (
     and_,
     case,
+    exists,
     false,
     func,
     not_,
@@ -23,7 +24,13 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from oddish.core.baseline_gate import baseline_agent_clause
 from oddish.core.cost_basis import settled_cost_columns, settled_cost_parts
+from oddish.filters.trial_metrics import TrialMetricFilter
+from oddish.filters.trial_predicates import (
+    EligibleTrialScope,
+    build_trial_metric_predicate,
+)
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     escape_like,
@@ -44,6 +51,7 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -288,17 +296,8 @@ _STATUS_FILTER_OVERFETCH_CEILING = 200
 
 
 def _baseline_agent_clause():
-    """Match nop/oracle baseline agents, mirroring the frontend's
-    ``isBaselineAgentName`` so pass@1 excludes deterministic baselines."""
-    agent_lower = func.lower(func.coalesce(TrialModel.agent, ""))
-    return or_(
-        agent_lower == "nop",
-        agent_lower == "oracle",
-        agent_lower.like("nop-%"),
-        agent_lower.like("oracle-%"),
-        agent_lower.like("agent-nop%"),
-        agent_lower.like("agent-oracle%"),
-    )
+    """Match nop/oracle baseline agents so pass@1 excludes them."""
+    return baseline_agent_clause(TrialModel.agent)
 
 
 def _build_aggregates_for_experiment_ids(
@@ -415,6 +414,61 @@ def _build_aggregates_for_experiment_ids(
         .subquery()
     )
 
+    # Each task's effective version *within each experiment* -- the SQL twin of
+    # ``resolve_effective_version_id``: the task's explicit default wins when a
+    # visible trial represents it, else the latest represented version. Kept in
+    # SQL rather than reusing ``fetch_experiment_effective_version_ids`` because
+    # this builder is synchronous and returns subqueries. Ordered by the integer
+    # ``version``; lexicographic ordering on task_version_id gets v9 vs v10
+    # wrong.
+    effective_version = (
+        select(
+            member.c.experiment_id.label("experiment_id"),
+            TrialModel.task_id.label("task_id"),
+            TrialModel.task_version_id.label("task_version_id"),
+        )
+        .select_from(member)
+        .join(TrialModel, TrialModel.id == member.c.trial_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(
+            TrialModel.task_version_id.is_not(None),
+            TrialModel.is_probe.isnot(True),
+            TrialModel.superseded_by_trial_id.is_(None),
+        )
+        .order_by(
+            member.c.experiment_id.asc(),
+            TrialModel.task_id.asc(),
+            case(
+                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
+                else_=1,
+            ).asc(),
+            TaskVersionModel.version.desc(),
+        )
+        .distinct(member.c.experiment_id, TrialModel.task_id)
+        .subquery()
+    )
+
+    def _join_effective_version(query):
+        """LEFT JOIN ``effective_version`` onto a member-joined trial query."""
+        return query.join(
+            effective_version,
+            and_(
+                effective_version.c.experiment_id == member.c.experiment_id,
+                effective_version.c.task_id == TrialModel.task_id,
+            ),
+            isouter=True,
+        )
+
+    # A task with no effective version -- none of its trials carry a
+    # ``task_version_id`` -- keeps all of its trials, matching the fallback in
+    # ``build_task_status_responses_from_counts``. The LEFT JOIN is what makes
+    # the NULL branch reachable.
+    at_effective_version = or_(
+        effective_version.c.task_version_id.is_(None),
+        effective_version.c.task_version_id == TrialModel.task_version_id,
+    )
+
     trial_agg_query = (
         select(
             member.c.experiment_id.label("experiment_id"),
@@ -448,14 +502,29 @@ def _build_aggregates_for_experiment_ids(
                     )
                 )
             ).label("active_trials"),
-            func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-            func.sum(TrialModel.reward).label("reward_sum"),
-            func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
+            # Reward is scoped to each task's effective version so these agree
+            # with the per-task grid, which compares like with like. The status
+            # counters above stay unscoped on purpose: narrowing them would drop
+            # a still-RUNNING trial from ``active_trials`` the moment its task
+            # got a new version, reporting a live experiment as finished.
+            func.count(
+                case((and_(TrialModel.reward == 1, at_effective_version), 1))
+            ).label("reward_success"),
+            func.sum(case((at_effective_version, TrialModel.reward))).label(
+                "reward_sum"
+            ),
+            func.count(
+                case((and_(TrialModel.reward.isnot(None), at_effective_version), 1))
+            ).label("reward_total"),
         )
         .select_from(member)
         .join(TrialModel, TrialModel.id == member.c.trial_id)
-        .where(TrialModel.superseded_by_trial_id.is_(None))
+        .where(
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
+        )
     )
+    trial_agg_query = _join_effective_version(trial_agg_query)
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_agg = trial_agg_query.group_by(member.c.experiment_id).subquery()
@@ -473,10 +542,14 @@ def _build_aggregates_for_experiment_ids(
         .join(TrialModel, TrialModel.id == member.c.trial_id)
         .where(
             TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.isnot(True),
             TrialModel.reward.isnot(None),
             not_(_baseline_agent_clause()),
         )
         .group_by(member.c.experiment_id, TrialModel.task_id)
+    )
+    per_task_score_query = _join_effective_version(per_task_score_query).where(
+        at_effective_version
     )
     if org_id is not None:
         per_task_score_query = per_task_score_query.where(TrialModel.org_id == org_id)
@@ -1062,6 +1135,16 @@ async def load_dashboard_experiments(
     experiments_tags: str | None = None,
     experiments_tags_any: str | None = None,
     experiments_tags_none: str | None = None,
+    experiments_models: Sequence[str] | None = None,
+    experiments_min_steps: int | None = None,
+    experiments_max_steps: int | None = None,
+    experiments_min_duration_seconds: float | None = None,
+    experiments_max_duration_seconds: float | None = None,
+    experiments_min_tool_calls: int | None = None,
+    experiments_max_tool_calls: int | None = None,
+    experiments_tool_names: Sequence[str] | None = None,
+    experiments_tool_count_mins: Mapping[str, int] | None = None,
+    experiments_trial_metric_match: str = "any",
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
@@ -1184,6 +1267,37 @@ async def load_dashboard_experiments(
             return [], False
         for clause in _experiment_tag_predicates(resolved):
             page_query = page_query.where(clause)
+    metric_filter = TrialMetricFilter.from_query(
+        models=experiments_models,
+        min_steps=experiments_min_steps,
+        max_steps=experiments_max_steps,
+        min_duration_seconds=experiments_min_duration_seconds,
+        max_duration_seconds=experiments_max_duration_seconds,
+        min_tool_calls=experiments_min_tool_calls,
+        max_tool_calls=experiments_max_tool_calls,
+        tool_names=experiments_tool_names,
+        tool_count_mins=experiments_tool_count_mins,
+        match=experiments_trial_metric_match,
+    )
+    # Gate on is_empty, not has_metric_constraints: a model-only filter still
+    # needs the predicate (models are folded into the eligible-trial scope).
+    if not metric_filter.is_empty:
+        membership = or_(
+            TrialModel.experiment_id == ExperimentModel.id,
+            exists(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == ExperimentModel.id,
+                    experiment_trials.c.trial_id == TrialModel.id,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
+            ),
+        )
+        metric_predicate = build_trial_metric_predicate(
+            metric_filter,
+            scope=EligibleTrialScope(membership=(membership,)),
+        )
+        if metric_predicate is not None:
+            page_query = page_query.where(metric_predicate)
     page_query = (
         page_query.order_by(
             nulls_last(ExperimentModel.last_activity_at.desc()),
@@ -1664,9 +1778,7 @@ async def get_model_usage_core(
         agg["total_steps"] = int(agg["total_steps"]) + int(row.total_steps or 0)
         native_cost, estimated_cost = settled_cost_parts(row)
         agg["cost_usd"] = float(agg["cost_usd"]) + native_cost + estimated_cost
-        agg["cost_estimated_usd"] = (
-            float(agg["cost_estimated_usd"]) + estimated_cost
-        )
+        agg["cost_estimated_usd"] = float(agg["cost_estimated_usd"]) + estimated_cost
         agg["running"] = int(agg["running"]) + int(row.running or 0)
         agg["retrying"] = int(agg["retrying"]) + int(row.retrying or 0)
         agg["queued"] = int(agg["queued"]) + int(row.queued or 0)
@@ -1802,6 +1914,16 @@ async def get_dashboard_core(
     experiments_tags: str | None = None,
     experiments_tags_any: str | None = None,
     experiments_tags_none: str | None = None,
+    experiments_models: Sequence[str] | None = None,
+    experiments_min_steps: int | None = None,
+    experiments_max_steps: int | None = None,
+    experiments_min_duration_seconds: float | None = None,
+    experiments_max_duration_seconds: float | None = None,
+    experiments_min_tool_calls: int | None = None,
+    experiments_max_tool_calls: int | None = None,
+    experiments_tool_names: Sequence[str] | None = None,
+    experiments_tool_count_mins: Mapping[str, int] | None = None,
+    experiments_trial_metric_match: str = "any",
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
@@ -1850,6 +1972,10 @@ async def get_dashboard_core(
         f"{','.join(experiments_search_author_github_usernames or ())}:"
         f"{','.join(experiments_search_author_emails or ())}:"
         f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
+        f":{','.join(experiments_models or ())}:{experiments_min_steps}:{experiments_max_steps}"
+        f":{experiments_min_duration_seconds}:{experiments_max_duration_seconds}"
+        f":{experiments_min_tool_calls}:{experiments_max_tool_calls}:{experiments_trial_metric_match}"
+        f":{','.join(experiments_tool_names or ())}:{sorted((experiments_tool_count_mins or {}).items())}"
     )
 
     async def _fetch_primary():
@@ -1980,6 +2106,16 @@ async def get_dashboard_core(
                 experiments_tags=experiments_tags,
                 experiments_tags_any=experiments_tags_any,
                 experiments_tags_none=experiments_tags_none,
+                experiments_models=experiments_models,
+                experiments_min_steps=experiments_min_steps,
+                experiments_max_steps=experiments_max_steps,
+                experiments_min_duration_seconds=experiments_min_duration_seconds,
+                experiments_max_duration_seconds=experiments_max_duration_seconds,
+                experiments_min_tool_calls=experiments_min_tool_calls,
+                experiments_max_tool_calls=experiments_max_tool_calls,
+                experiments_tool_names=experiments_tool_names,
+                experiments_tool_count_mins=experiments_tool_count_mins,
+                experiments_trial_metric_match=experiments_trial_metric_match,
                 experiments_author_user_id=experiments_author_user_id,
                 experiments_author_github_usernames=experiments_author_github_usernames,
                 experiments_author_emails=experiments_author_emails,

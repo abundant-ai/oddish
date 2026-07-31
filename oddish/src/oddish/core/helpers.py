@@ -421,6 +421,9 @@ def build_trial_response(
     *,
     queue_info: TrialQueueInfo | None = None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
+    # None = "not resolved by this caller", which the UI renders as nothing.
+    # Distinct from 0.0, which would mean "resolved, and there was no QA".
+    qa_cost_usd: float | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
     normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
@@ -455,6 +458,9 @@ def build_trial_response(
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
         total_steps=trial.total_steps,
+        trajectory_duration_seconds=trial.trajectory_duration_seconds,
+        total_tool_calls=trial.total_tool_calls,
+        tool_counts=trial.tool_counts,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
@@ -463,12 +469,15 @@ def build_trial_response(
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
+        analysis_started_at=trial.analysis_started_at,
+        analysis_finished_at=trial.analysis_finished_at,
         superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
         created_at=trial.created_at,
         started_at=trial.started_at,
         finished_at=trial.finished_at,
+        qa_cost_usd=qa_cost_usd,
     )
 
 
@@ -529,6 +538,9 @@ def build_compact_trial_response(
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
         total_steps=trial.total_steps,
+        trajectory_duration_seconds=trial.trajectory_duration_seconds,
+        total_tool_calls=trial.total_tool_calls,
+        tool_counts=trial.tool_counts,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
@@ -537,6 +549,8 @@ def build_compact_trial_response(
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
+        analysis_started_at=trial.analysis_started_at,
+        analysis_finished_at=trial.analysis_finished_at,
         superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
@@ -1100,6 +1114,8 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.is_probe,
     TrialModel.analysis,
     TrialModel.analysis_status,
+    TrialModel.analysis_started_at,
+    TrialModel.analysis_finished_at,
     TrialModel.input_tokens,
     TrialModel.cache_tokens,
     TrialModel.cache_write_tokens,
@@ -1113,7 +1129,14 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
 )
 
 
-def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+def build_slim_trial_response(
+    trial: TrialModel,
+    task_path: str,
+    *,
+    # None = "not resolved by this caller", which the UI renders as nothing.
+    # Distinct from 0.0, which would mean "resolved, and there was no QA".
+    qa_cost_usd: float | None = None,
+) -> TrialResponse:
     """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
     if isinstance(trial.analysis, dict):
@@ -1153,10 +1176,13 @@ def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialRespons
         is_billed=trial.billed_user_id is not None,
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
+        analysis_started_at=trial.analysis_started_at,
+        analysis_finished_at=trial.analysis_finished_at,
         superseded_by_trial_id=trial.superseded_by_trial_id,
         created_at=trial.created_at,
         started_at=trial.started_at,
         finished_at=trial.finished_at,
+        qa_cost_usd=qa_cost_usd,
     )
 
 
@@ -1167,8 +1193,14 @@ def build_slim_task_status_response(
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
+    qa_costs_by_trial_id: dict[str, float] | None = None,
 ) -> TaskStatusResponse:
-    """Build a task status response with slim per-trial payloads."""
+    """Build a task status response with slim per-trial payloads.
+
+    ``qa_costs_by_trial_id`` is the caller's already-resolved page of QA
+    costs (see :func:`oddish.core.endpoints.qa_cost.get_trial_qa_costs`);
+    None -> every trial's ``qa_cost_usd`` stays unresolved (None), not 0.0.
+    """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
             task,
@@ -1183,7 +1215,18 @@ def build_slim_task_status_response(
     reward_success = sum(1 for t in task_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
-    trials = [build_slim_trial_response(t, task.task_path) for t in task_trials]
+    trials = [
+        build_slim_trial_response(
+            t,
+            task.task_path,
+            qa_cost_usd=(
+                qa_costs_by_trial_id.get(t.id)
+                if qa_costs_by_trial_id is not None
+                else None
+            ),
+        )
+        for t in task_trials
+    ]
 
     return _build_task_status_response(
         task,
@@ -1417,7 +1460,18 @@ async def cancel_job_by_worker(
     return await backend.teardown(external_id)
 
 
-async def terminate_run_harvest(result: dict) -> int:
+class HarvestTerminationError(RuntimeError):
+    def __init__(
+        self,
+        modal_function_call_ids: list[str],
+        worker_targets: list[tuple[str, str]],
+    ) -> None:
+        super().__init__("Remote teardown failed")
+        self.modal_function_call_ids = modal_function_call_ids
+        self.worker_targets = worker_targets
+
+
+async def terminate_run_harvest(result: dict, *, strict: bool = False) -> int:
     """Terminate the remote handles a cancel/delete core harvested.
 
     Cores that cancel or tombstone runs RETURN ``modal_function_call_ids`` and
@@ -1437,16 +1491,34 @@ async def terminate_run_harvest(result: dict) -> int:
         for fc_id in result.pop("modal_function_call_ids", [])
         if fc_id
     ]
-    modal_cancelled = await ModalDispatcher().cancel(handles) if handles else 0
-
     targets = result.pop("worker_targets", [])
-    if targets:
-        await asyncio.gather(
-            *(
-                cancel_job_by_worker(provider, external_id)
-                for provider, external_id in targets
-            )
+    if strict:
+        dispatcher = ModalDispatcher()
+        modal_results = await asyncio.gather(
+            *(dispatcher.cancel([handle]) for handle in handles),
+            return_exceptions=True,
         )
+        target_results = await asyncio.gather(
+            *(cancel_job_by_worker(*target) for target in targets),
+            return_exceptions=True,
+        )
+        failed_modal_ids = [
+            handle.id
+            for handle, outcome in zip(handles, modal_results, strict=True)
+            if outcome != 1
+        ]
+        failed_targets = [
+            target
+            for target, outcome in zip(targets, target_results, strict=True)
+            if outcome is not True
+        ]
+        if failed_modal_ids or failed_targets:
+            raise HarvestTerminationError(failed_modal_ids, failed_targets)
+        return len(handles)
+
+    modal_cancelled = await ModalDispatcher().cancel(handles) if handles else 0
+    if targets:
+        await asyncio.gather(*(cancel_job_by_worker(*target) for target in targets))
     return modal_cancelled
 
 

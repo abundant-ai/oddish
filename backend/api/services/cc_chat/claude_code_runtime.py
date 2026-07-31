@@ -121,6 +121,52 @@ class ClaudeCodeRuntime:
                 output[-500:],
             )
 
+    async def install_oddish_cli(
+        self,
+        client: DaytonaClient,
+        sandbox: CreatedSandbox,
+        *,
+        api_key: str,
+        api_base_url: str,
+    ) -> None:
+        """Install the oddish Python CLI so the agent can run `oddish pull`.
+
+        Mirrors ``_install_harbor``'s pinned pip install, but is load-bearing
+        here (the pre-trial agent's whole job is pulling task data via the
+        CLI), so unlike harbor a failure is raised rather than swallowed --
+        after one unpinned retry, which covers the window where the pinned
+        version exists in the repo but is not on PyPI yet.
+        ``api_key``/``api_base_url`` are accepted for interface symmetry with
+        the runtime's other install hooks; the caller injects them into the
+        sandbox env separately via ``Provisioner.create(env_vars=...)``.
+        """
+        from oddish.workers.agents.claude_code import _pinned_oddish_requirement
+
+        async def _pip_install(requirement: str) -> tuple[int, str]:
+            return await client.exec_sync(
+                sandbox,
+                command=f"pip install --user --quiet {shlex.quote(requirement)} 2>&1",
+            )
+
+        requirement = _pinned_oddish_requirement() or "oddish"
+        exit_code, output = await _pip_install(requirement)
+        if exit_code != 0 and requirement != "oddish":
+            # The pin is the orchestrator's *installed* version, which leads
+            # PyPI whenever a release lands in the repo before it is published:
+            # every sandbox then dies on `oddish==<unpublished>`. Schema skew
+            # against a slightly older published CLI is survivable; having no
+            # CLI at all is not, since pulling task data is the agent's job.
+            log.warning(
+                "oddish CLI pin %s did not resolve; retrying unpinned: %s",
+                requirement,
+                output[-300:],
+            )
+            exit_code, output = await _pip_install("oddish")
+        if exit_code != 0:
+            raise RuntimeError(
+                f"oddish CLI install failed (exit={exit_code}): {output[-500:]}"
+            )
+
     async def run_once(
         self,
         client: DaytonaClient,
@@ -215,6 +261,8 @@ class ClaudeCodeRuntime:
         claude_session_id: str | None,
         daytona_session_id: str = "cc",
         system_prompt: str | None = None,
+        json_schema: str | None = None,
+        add_dirs: tuple[str, ...] = (),
     ) -> AsyncIterator[dict]:
         parts = [
             _CLAUDE_BIN,
@@ -223,11 +271,18 @@ class ClaudeCodeRuntime:
             "--verbose",
             *_PERMISSION_FLAGS,
         ]
+        # Constrains generation and puts the object on the final `result` event
+        # as `structured_output`. Unlike the prompt this stays in argv: a schema
+        # is orders of magnitude under MAX_ARG_STRLEN.
+        if json_schema:
+            parts += ["--json-schema", shlex.quote(json_schema)]
         # Appended rather than replacing: Claude Code's own system prompt is what
         # makes its tools work, so --system-prompt would break Bash and the agent
         # could not run the CLI at all.
         if system_prompt:
             parts += ["--append-system-prompt", shlex.quote(system_prompt)]
+        for add_dir in add_dirs:
+            parts += ["--add-dir", shlex.quote(add_dir)]
         if claude_session_id:
             parts += ["--resume", shlex.quote(claude_session_id)]
 

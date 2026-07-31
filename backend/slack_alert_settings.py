@@ -1,8 +1,9 @@
-"""Threshold and ping list for the shared-channel Slack cost escalation.
+"""Thresholds and ping list for shared-channel Slack cost escalations.
 
-These govern only the in-channel ping a very expensive trial raises: the floor
-it must clear and who gets @-mentioned. The per-user DM alerts and their cutoffs
-live in ``user_alert_prefs`` and are not set here.
+These govern the in-channel pings raised by a very expensive live trial or by a
+user whose last-24h spend runs above their own trailing seven-day daily average
+by more than the margin. The per-user DM alerts and their cutoffs live in
+``user_alert_prefs`` and are not set here.
 
 The ``AlertSettings`` field defaults are the deploy-time defaults. A single
 ``slack_alert_settings`` row overrides them so an admin can retune the channel
@@ -23,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import SlackAlertSettingsModel
 from oddish.db import get_session, utcnow
-from pg_errors import is_undefined_table_error
+from pg_errors import is_undefined_column_or_table_error
 
 log = logging.getLogger("oddish.slack_alert_settings")
 
@@ -43,6 +44,7 @@ DEFAULT_ALWAYS_PING_EMAILS: tuple[str, ...] = (
 @dataclass(frozen=True)
 class AlertSettings:
     trial_escalation_usd: float = 1000.0
+    user_daily_overage_delta_usd: float = 1000.0
     always_ping_emails: tuple[str, ...] = DEFAULT_ALWAYS_PING_EMAILS
     is_override: bool = False
 
@@ -67,6 +69,7 @@ async def get_alert_settings(session: AsyncSession) -> AlertSettings:
         return DEFAULT_ALERT_SETTINGS
     return AlertSettings(
         trial_escalation_usd=float(row.trial_escalation_usd),
+        user_daily_overage_delta_usd=float(row.user_daily_overage_delta_usd),
         always_ping_emails=tuple(row.always_ping_emails),
         is_override=True,
     )
@@ -83,9 +86,11 @@ async def read_alert_settings() -> AlertSettings:
         async with get_session() as session:
             return await get_alert_settings(session)
     except ProgrammingError as exc:
-        if not is_undefined_table_error(exc):
+        if not is_undefined_column_or_table_error(exc):
             raise
-        log.warning("slack_alert_settings missing; alerting on default thresholds")
+        log.warning(
+            "slack_alert_settings schema incomplete; alerting on default thresholds"
+        )
         return DEFAULT_ALERT_SETTINGS
 
 
@@ -93,11 +98,15 @@ async def set_alert_settings(
     session: AsyncSession,
     *,
     trial_escalation_usd: float,
+    user_daily_overage_delta_usd: float,
     always_ping_emails: list[str],
     updated_by_user_id: str | None,
 ) -> AlertSettings:
     values = {
         "trial_escalation_usd": Decimal(str(trial_escalation_usd)),
+        "user_daily_overage_delta_usd": Decimal(
+            str(user_daily_overage_delta_usd)
+        ),
         "always_ping_emails": always_ping_emails,
         "updated_at": utcnow(),
         "updated_by_user_id": updated_by_user_id,

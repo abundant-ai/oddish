@@ -71,6 +71,7 @@
   --color-paper-fail: var(--paper-fail);
   --color-paper-partial: var(--paper-partial);
   --color-paper-error: var(--paper-error);
+  --color-paper-minor: var(--paper-minor);
   --color-paper-queued: var(--paper-queued);
   --color-paper-running: var(--paper-running);
 
@@ -148,6 +149,9 @@
     --paper-partial-bg: oklch(95% 0.04 75);
     --paper-error: oklch(55% 0.03 70);
     --paper-error-bg: oklch(92% 0.006 70);
+    /* Third severity step below fail/partial; dark enough to carry white text
+       as a solid fill in both modes, so it needs no dark override. */
+    --paper-minor: oklch(48% 0.07 55);
     --paper-queued: oklch(62% 0.11 280);
     --paper-queued-bg: oklch(94% 0.03 280);
     --paper-running: oklch(65% 0.13 230);
@@ -199,7 +203,25 @@
     --phase-6: #e34948;
     --phase-7: #e87ba4;
     --phase-8: #eb6834;
-    --phase-other: #868c96;
+    --phase-other: #5e78a8;
+
+    /*
+     * Trajectory component taxonomy: cool hues = thinking/analysis, warm hues
+     * = building/testing. Both modes validated (lightness band, chroma, CVD
+     * separation) against the app card surfaces; consumed via phaseColorVars
+     * in trajectory-metrics.ts.
+     */
+    --tc-reading-files: #008300;
+    --tc-thinking-recall: #1baf7a;
+    --tc-thinking-understand: #2a78d6;
+    --tc-thinking-hypothesize: #a184ea;
+    --tc-thinking-diagnose: #4a3aa7;
+    --tc-implementing: #eb6834;
+    --tc-writing-tests: #eda100;
+    --tc-testing-public: #e87ba4;
+    --tc-testing-custom: #c94592;
+    --tc-testing-edge: #852c5e;
+    --tc-debugging: #a87400;
   }
 
   .dark {
@@ -253,7 +275,65 @@
     --phase-6: #e66767;
     --phase-7: #d55181;
     --phase-8: #d95926;
-    --phase-other: #6f757f;
+    --phase-other: #8ea3c9;
+
+    --tc-reading-files: #008300;
+    --tc-thinking-recall: #199e70;
+    --tc-thinking-understand: #3987e5;
+    --tc-thinking-hypothesize: #9085e9;
+    --tc-thinking-diagnose: #7a68d8;
+    --tc-implementing: #d95926;
+    --tc-writing-tests: #c98500;
+    --tc-testing-public: #ce6b98;
+    --tc-testing-custom: #d55181;
+    --tc-testing-edge: #9d3973;
+    --tc-debugging: #b5820a;
+  }
+
+  /*
+   * "Midnight" theme — flat neutral near-black surfaces modeled on sauron's
+   * dark CRT palette (bg #0a0a0a, card #191919, border #383838, neutral
+   * grays throughout; zero chroma, no warm cast). Applied as `.midnight`
+   * alongside `.dark` on <html>, so every dark-mode behavior (dark:
+   * variants, shiki, Clerk overrides, useIsDark) keeps working and this
+   * block only re-skins the surface tokens. Chromatic tokens (status,
+   * chart, phase, trajectory colors) are inherited from `.dark` — they
+   * were validated against dark surfaces and read the same on neutral
+   * black. Must stay after the `.dark` block: same specificity, later
+   * rule wins.
+   */
+  .midnight {
+    --paper-bg: oklch(13.5% 0 0);
+    --paper-bg-2: oklch(16% 0 0);
+    --paper-surface: oklch(20% 0 0);
+    --paper-surface-2: oklch(23.5% 0 0);
+    --paper-line: oklch(31% 0 0);
+    --paper-line-2: oklch(26.5% 0 0);
+    --paper-ink: oklch(97.5% 0 0);
+    --paper-ink-2: oklch(80% 0 0);
+    --paper-ink-3: oklch(62% 0 0);
+    --paper-ink-4: oklch(45% 0 0);
+    --paper-error-bg: oklch(26% 0 0);
+
+    --background: 0 0% 4%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 10%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 15%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 10%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 63%;
+    --accent: 0 0% 25%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 359 100% 70%;
+    --destructive-foreground: 0 0% 15%;
+    --border: 0 0% 22%;
+    --input: 0 0% 32%;
+    --ring: 0 0% 45%;
   }
 }
 
@@ -285,6 +365,21 @@
         transparent 34rem
       ),
       linear-gradient(180deg, hsl(30 8% 16%), hsl(var(--background)) 18rem);
+  }
+  /*
+   * Midnight drops the warm radial glow for a flat near-black surface with
+   * sauron's subtle CRT scanlines. Same 0-1-1 specificity as `.dark body`,
+   * so it must come after that rule to win when both classes are present.
+   */
+  .midnight body {
+    background-color: hsl(var(--background));
+    background-image: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.05) 2px,
+      rgba(0, 0, 0, 0.05) 4px
+    );
   }
   /*
    * react-remove-scroll-bar injects a \3c style> tag with

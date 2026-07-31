@@ -18,21 +18,35 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, MutableMapping
 
+from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.prompt_seeds import seed_prompts
+from oddish.core.prompts import resolve_prompt_core
 from oddish.core.trial_io import (
     read_trial_instruction,
     read_trial_trajectory,
     read_trial_verifier_output,
 )
-from oddish.db.models import TrialModel
+from oddish.db.models import PromptKind, TrialModel
 
 MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
+SUMMARY_PROMPT_KEY = PromptKind.TRAJECTORY_SUMMARY.value
+
+# Output cap for the summary call. The Anthropic API requires max_tokens, so
+# some value must be set; this one is a ceiling, not a target -- billing is on
+# tokens actually generated. Was 2048 (inherited from the pre-migration cap),
+# which truncated the model mid-JSON on long trajectories: a dump of 30 trials
+# from experiment c02666c5 produced 13 parse failures whose raw output ended
+# mid-token at ~5.3k chars, and those trials silently got no summary at all.
+# Well under the model's own limit, so the binding constraint is the prompt's
+# schema, not this number.
+SUMMARY_MAX_TOKENS = 16384
 
 
 def _truncate(text: str) -> str:
@@ -82,8 +96,7 @@ def _process_tool_calls(tool_calls: list[dict] | None) -> list[dict] | None:
         args = new_call.get("arguments")
         if isinstance(args, dict):
             new_call["arguments"] = {
-                k: _truncate(v) if isinstance(v, str) else v
-                for k, v in args.items()
+                k: _truncate(v) if isinstance(v, str) else v for k, v in args.items()
             }
         out.append(new_call)
     return out
@@ -132,10 +145,57 @@ def resolve_summary_model() -> str:
     """
     from oddish.config import settings, to_anthropic_api_model_id
 
-    return (
-        to_anthropic_api_model_id(settings.analysis_model)
-        or settings.analysis_model
+    return to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
+
+
+async def _load_summary_prompt(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    user_id: str | None = None,
+    experiment_id: str | None = None,
+    task_id: str | None = None,
+    trial_id: str | None = None,
+) -> tuple[str, int, str]:
+    """Load the latest trajectory-summary prompt, seeding built-ins on a miss.
+
+    Resolves the narrowest scoped override for the given context, falling
+    back to the global prompt when none exists. Returns ``(content, version,
+    prompt_id)`` -- the id is required by callers so the block they build can
+    stamp ``prompt_id`` and be attributed to the resolved row, not the global
+    NULL-prompt_id fallback.
+    """
+    scope = dict(
+        org_id=org_id,
+        user_id=user_id,
+        experiment_id=experiment_id,
+        task_id=task_id,
+        trial_id=trial_id,
     )
+    try:
+        prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
+    except HTTPException:
+        try:
+            # Keep a lost concurrent-seed race inside a savepoint. Rolling back
+            # the outer transaction would expire the caller's TrialModel.
+            async with session.begin_nested():
+                await seed_prompts(session)
+            await session.commit()
+            prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
+        except Exception as exc:
+            # An immediate unique constraint is raised inside the savepoint.
+            # Its rollback leaves the outer transaction and loaded ORM state
+            # intact, so the winner's row can be read without a full rollback.
+            try:
+                prompt, version = await resolve_prompt_core(
+                    session, SUMMARY_PROMPT_KEY, **scope
+                )
+            except Exception:
+                raise SummaryGenerationError(
+                    f"prompt '{SUMMARY_PROMPT_KEY}' is not registered and "
+                    f"seeding failed: {exc}"
+                ) from exc
+    return version.content, version.version, prompt.id
 
 
 def build_summary_block(
@@ -144,33 +204,40 @@ def build_summary_block(
     *,
     analyzer_id: str | None,
     model: str,
-    client,
+    triggered_by_user_id: str | None = None,
+    prompt_template: str,
+    prompt_version: int,
+    prompt_id: str,
 ):
     """Build the trajectory-summary ``AnalyzerBlock``.
 
     Single construction site shared by ``generate()`` (the production path)
     and the offline dump harness, so the two cannot drift in prompt, parser,
-    or block metadata.
+    or block metadata. The registry template and version are required so no
+    production or offline caller can silently fall back to baked-in text.
     """
-    from api.services.blocks.analyzer.analyzer_block import (
+    from oddish.blocks.analyzer.analyzer_block import (
         AnalyzerBlock,
         AnalyzerInput,
         AnalyzerType,
     )
-    from api.services.blocks.analyzer.analyzer_llm_client import LLMClientType
+    from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
     from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
         TrajectoryBlock,
         TrajectoryInput,
     )
 
-    tb = TrajectoryBlock(TrajectoryInput(
-        task_name=task_context.task_name,
-        instruction=task_context.instruction,
-        final_reward=task_context.final_reward,
-        model_used=task_context.model_used,
-        verifier_output=task_context.verifier_output,
-        trajectory=trajectory,
-    ))
+    tb = TrajectoryBlock(
+        TrajectoryInput(
+            task_name=task_context.task_name,
+            instruction=task_context.instruction,
+            final_reward=task_context.final_reward,
+            model_used=task_context.model_used,
+            verifier_output=task_context.verifier_output,
+            trajectory=trajectory,
+        ),
+        instructions_template=prompt_template,
+    )
     return AnalyzerBlock(
         analyzer_type=AnalyzerType.TRAJECTORY_SUMMARY,
         llm_client_type=LLMClientType.API,
@@ -179,9 +246,17 @@ def build_summary_block(
         ),
         prompt=tb.build_prompt(),
         analyzer_id=analyzer_id,
-        block_metadata={"schema_version": SCHEMA_VERSION, "model": model},
+        block_metadata={
+            "schema_version": SCHEMA_VERSION,
+            "model": model,
+            "prompt_key": SUMMARY_PROMPT_KEY,
+            "prompt_version": prompt_version,
+            "prompt_id": prompt_id,
+        },
         output_transform=lambda raw: tb.to_summary(raw, model=model),
-        client=client,
+        model=model,
+        max_tokens=SUMMARY_MAX_TOKENS,
+        triggered_by_user_id=triggered_by_user_id,
     )
 
 
@@ -190,33 +265,33 @@ async def generate(
     task_context: "TaskContext",
     *,
     analyzer_id: str | None = None,
-    client=None,
+    triggered_by_user_id: str | None = None,
+    prompt_template: str,
+    prompt_version: int,
+    prompt_id: str,
 ) -> dict:
     """Run the trajectory summary as an ``AnalyzerBlock`` and return the dict.
 
     Builds the block via ``build_summary_block`` (shared with the offline dump
     harness), streams it -- the block self-persists to ``analyzer_blocks`` +
-    S3 -- and returns the parsed ``schema_version=4`` summary. Raises
-    ``SummaryGenerationError`` on any generation/parse failure. ``client`` is
-    injected in tests; otherwise a model-scoped ``ApiAnalyzerLLMClient`` is used.
+    S3 -- and returns the parsed ``schema_version=5`` summary. Raises
+    ``SummaryGenerationError`` on any generation/parse failure.
     """
-    from api.services.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
-
     model = resolve_summary_model()
-    owned = client is None
-    # 2048 is the pre-migration cap, and it only holds because the client pins
-    # thinking off -- thinking shares this ceiling with the JSON body.
-    llm = client or ApiAnalyzerLLMClient(model=model, max_tokens=2048)
     block = build_summary_block(
-        trajectory, task_context, analyzer_id=analyzer_id, model=model, client=llm,
+        trajectory,
+        task_context,
+        analyzer_id=analyzer_id,
+        model=model,
+        triggered_by_user_id=triggered_by_user_id,
+        prompt_template=prompt_template,
+        prompt_version=prompt_version,
+        prompt_id=prompt_id,
     )
     try:
         out = await block.run()
     except Exception as e:
         raise SummaryGenerationError(f"summary block failed: {e}") from e
-    finally:
-        if owned:
-            await llm.aclose()
     return out.output
 
 
@@ -287,7 +362,7 @@ async def _load_fresh_summary_block(
     Source of truth for the summary: an ``analyzer_blocks`` row of type
     ``trajectory_summary`` whose output carries the current ``schema_version``.
     """
-    from api.services.blocks.analyzer.analyzer_block import AnalyzerType
+    from oddish.blocks.analyzer.analyzer_block import AnalyzerType
     from oddish.db.models import AnalyzerBlockModel, JobStatus
 
     return (
@@ -306,7 +381,7 @@ async def _load_fresh_summary_block(
 
 
 async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel
+    session: AsyncSession, trial: TrialModel, triggered_by_user_id: str | None = None
 ) -> dict | None:
     """Return the trajectory summary, generating on miss.
 
@@ -320,10 +395,10 @@ async def get_or_generate_summary(
     if fresh is not None:
         return fresh
 
-    # Use the same "has a trajectory" notion as the trajectory endpoint /
-    # trajectory-graph gate (true for finished Grok Build runs whose
-    # grok-build.json synthesizes to ATIF), not just the raw has_trajectory
-    # column — otherwise those trials get an Agent Graph but no summary.
+    # Use the same "has a trajectory" notion as the trajectory endpoint (true
+    # for finished Grok Build runs whose grok-build.json synthesizes to ATIF),
+    # not just the raw has_trajectory column — otherwise those trials have a
+    # fetchable trajectory but no summary.
     from oddish.core.helpers import _has_fetchable_trajectory
 
     if not _has_fetchable_trajectory(trial):
@@ -335,6 +410,15 @@ async def get_or_generate_summary(
         if fresh is not None:
             return fresh
 
+        prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
+            session,
+            org_id=trial.org_id,
+            user_id=trial.billed_user_id,
+            experiment_id=trial.experiment_id,
+            task_id=trial.task_id,
+            trial_id=trial.id,
+        )
+
         trajectory, task_context = await asyncio.gather(
             read_trial_trajectory(trial),
             build_task_context(trial),
@@ -342,7 +426,15 @@ async def get_or_generate_summary(
         if trajectory is None:
             return None
 
-        summary = await generate(trajectory, task_context, analyzer_id=trial.id)
+        summary = await generate(
+            trajectory,
+            task_context,
+            analyzer_id=trial.id,
+            triggered_by_user_id=triggered_by_user_id,
+            prompt_template=prompt_template,
+            prompt_version=prompt_version,
+            prompt_id=prompt_id,
+        )
 
         # Mirror into the trials column for the graph builder + analyzer-input
         # bundles, which read it synchronously via getattr.

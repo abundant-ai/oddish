@@ -58,6 +58,12 @@ export interface FilterValues {
   maxTokens: number | null;
   minSteps: number | null;
   maxSteps: number | null;
+  minDurationSeconds: number | null;
+  maxDurationSeconds: number | null;
+  minToolCalls: number | null;
+  maxToolCalls: number | null;
+  toolNames: string[];
+  trialMetricMatch: "any" | "all";
   rewardMin: number | null;
   rewardMax: number | null;
   // Task-registry metadata (parsed from task.toml + upload provenance).
@@ -170,7 +176,9 @@ type ControlKind =
   | "sort"
   | "compare"
   | "top"
-  | "matchany";
+  | "matchany"
+  | "metricmatch"
+  | "toolnames";
 
 // Conditions available inside an OR-group ("Match any of…"). Each maps to the
 // backend field key(s) it writes; the union of these is what a group can hold.
@@ -370,6 +378,30 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Trajectory length",
     group: "Trial",
     control: "numrange",
+  },
+  {
+    key: "trajectoryDuration",
+    label: "Trajectory time (s)",
+    group: "Trial",
+    control: "numrange",
+  },
+  {
+    key: "toolCalls",
+    label: "Tool calls",
+    group: "Trial",
+    control: "numrange",
+  },
+  {
+    key: "toolNames",
+    label: "Tool names",
+    group: "Trial",
+    control: "toolnames",
+  },
+  {
+    key: "trialMetricMatch",
+    label: "Match metrics across",
+    group: "Trial",
+    control: "metricmatch",
   },
   {
     key: "reward",
@@ -761,6 +793,14 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.minTokens !== null || f.maxTokens !== null;
     case "steps":
       return f.minSteps !== null || f.maxSteps !== null;
+    case "trajectoryDuration":
+      return f.minDurationSeconds !== null || f.maxDurationSeconds !== null;
+    case "toolCalls":
+      return f.minToolCalls !== null || f.maxToolCalls !== null;
+    case "toolNames":
+      return f.toolNames.length > 0;
+    case "trialMetricMatch":
+      return f.trialMetricMatch === "all";
     case "reward":
       return f.rewardMin !== null || f.rewardMax !== null;
     case "avgScore":
@@ -866,6 +906,12 @@ export function filterParams(f: FilterValues): [string, string][] {
   num("max_tokens", f.maxTokens);
   num("min_steps", f.minSteps);
   num("max_steps", f.maxSteps);
+  num("min_duration_seconds", f.minDurationSeconds);
+  num("max_duration_seconds", f.maxDurationSeconds);
+  num("min_tool_calls", f.minToolCalls);
+  num("max_tool_calls", f.maxToolCalls);
+  csv("tool_names", f.toolNames);
+  if (f.trialMetricMatch === "all") out.push(["trial_metric_match", "all"]);
   num("reward_min", f.rewardMin);
   num("reward_max", f.rewardMax);
   num("avg_score_min", f.avgScoreMin);
@@ -958,6 +1004,12 @@ export const FILTER_PARAM_KEYS = [
   "max_tokens",
   "min_steps",
   "max_steps",
+  "min_duration_seconds",
+  "max_duration_seconds",
+  "min_tool_calls",
+  "max_tool_calls",
+  "tool_names",
+  "trial_metric_match",
   "reward_min",
   "reward_max",
   "avg_score_min",
@@ -1071,6 +1123,12 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     maxTokens: num("max_tokens"),
     minSteps: num("min_steps"),
     maxSteps: num("max_steps"),
+    minDurationSeconds: num("min_duration_seconds"),
+    maxDurationSeconds: num("max_duration_seconds"),
+    minToolCalls: num("min_tool_calls"),
+    maxToolCalls: num("max_tool_calls"),
+    toolNames: csv("tool_names"),
+    trialMetricMatch: sp.get("trial_metric_match") === "all" ? "all" : "any",
     rewardMin: num("reward_min"),
     rewardMax: num("reward_max"),
     avgScoreMin: num("avg_score_min"),
@@ -1108,7 +1166,7 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return null;
         const groups = parsed.filter(
-          (g): g is OrGroup => typeof g === "object" && g !== null,
+          (g): g is OrGroup => typeof g === "object" && g !== null
         );
         return groups.length ? groups : null;
       } catch {

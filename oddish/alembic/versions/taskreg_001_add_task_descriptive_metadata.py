@@ -1,7 +1,7 @@
 """Add descriptive metadata columns to tasks.
 
 Revision ID: taskreg_001
-Revises: analyzers_008
+Revises: trajgraph_002
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "taskreg_001"
-down_revision = "analyzers_008"
+down_revision = "trajgraph_002"
 branch_labels = None
 depends_on = None
 

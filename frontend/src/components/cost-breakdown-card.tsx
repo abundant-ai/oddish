@@ -45,8 +45,10 @@ import {
 import type { TooltipContentProps } from "recharts";
 import type {
   CostBreakdownResponse,
+  CostComputeProviderBreakdown,
   CostExperimentBreakdown,
   CostModelBreakdown,
+  CostQaModelBreakdown,
   CostSeries,
   CostUserBreakdown,
 } from "@/lib/types";
@@ -412,7 +414,7 @@ export function CostChart({
   if (series.buckets.length === 0)
     return (
       <div className="text-muted-foreground flex h-[240px] items-center justify-center rounded-lg border text-sm">
-        No trial spend in this window.
+        No spend in this window.
       </div>
     );
 
@@ -502,8 +504,8 @@ function MethodologyNote() {
             cost that was estimated.
           </li>
           <li>
-            All first-party spend, across every org. Imported runs and
-            experiment-combine copies are excluded so spend counts once.
+            All first-party spend for the active organization. Imported runs
+            and experiment-combine copies are excluded so spend counts once.
           </li>
           <li>
             Deleted trials, tasks, and experiments remain included because
@@ -527,9 +529,64 @@ function MethodologyNote() {
 // Top-level card
 // =============================================================================
 
-type ChartDimension = "agent" | "model" | "user";
+export type ChartDimension =
+  | "agent"
+  | "model"
+  | "user"
+  | "type"
+  | "analysis_type"
+  | "compute";
 
-const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user"];
+const CHART_DIMENSIONS: ChartDimension[] = [
+  "agent",
+  "model",
+  "user",
+  "type",
+  "analysis_type",
+  "compute",
+];
+
+const DIMENSION_LABELS: Record<ChartDimension, string> = {
+  agent: "Agent",
+  model: "Model",
+  user: "User",
+  type: "Cost type",
+  analysis_type: "Analyzer",
+  compute: "Compute",
+};
+
+const EMPTY_COMPUTE_SERIES: CostSeries = {
+  dimension: "provider",
+  keys: [],
+  buckets: [],
+};
+
+export function StackBySelector({
+  dimensions,
+  value,
+  onChange,
+}: {
+  dimensions: ChartDimension[];
+  value: ChartDimension;
+  onChange: (dimension: ChartDimension) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1 text-xs">
+      <span className="text-muted-foreground mr-1">stack by</span>
+      {dimensions.map((dim) => (
+        <Button
+          key={dim}
+          variant={value === dim ? "secondary" : "ghost"}
+          size="sm"
+          className="h-7 px-2 text-xs"
+          onClick={() => onChange(dim)}
+        >
+          {DIMENSION_LABELS[dim]}
+        </Button>
+      ))}
+    </div>
+  );
+}
 
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("1");
@@ -548,7 +605,13 @@ export function CostBreakdownCard() {
       ? data.series_by_agent
       : dimension === "model"
         ? data.series_by_model
-        : data.series_by_user
+        : dimension === "user"
+          ? data.series_by_user
+          : dimension === "type"
+            ? (data.series_by_type ?? data.series_by_agent)
+            : dimension === "analysis_type"
+              ? (data.series_by_analysis_type ?? data.series_by_agent)
+              : (data.series_compute_by_provider ?? EMPTY_COMPUTE_SERIES)
     : null;
 
   return (
@@ -593,7 +656,7 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          All first-party trial spend across all organizations, including
+          All first-party trial spend for the active organization, including
           deleted historical spend and unbilled spend that never resolved to a
           registered user — see the info icon for methodology.
         </p>
@@ -616,20 +679,11 @@ export function CostBreakdownCard() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">Cost over time</h3>
-                <div className="flex items-center gap-1 text-xs">
-                  <span className="text-muted-foreground mr-1">stack by</span>
-                  {CHART_DIMENSIONS.map((dim) => (
-                    <Button
-                      key={dim}
-                      variant={dimension === dim ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-7 px-2 text-xs capitalize"
-                      onClick={() => setDimension(dim)}
-                    >
-                      {dim}
-                    </Button>
-                  ))}
-                </div>
+                <StackBySelector
+                  dimensions={CHART_DIMENSIONS}
+                  value={dimension}
+                  onChange={setDimension}
+                />
               </div>
               <CostChart series={series} bucket={data.bucket} />
             </div>
@@ -646,6 +700,23 @@ export function CostBreakdownCard() {
               <ModelTable models={data.by_model} windowDays={windowDays} />
             </section>
 
+            {data.qa_by_model && data.qa_by_model.length > 0 && (
+              <section className="space-y-2">
+                <h3 className="text-sm font-medium">QA cost by model</h3>
+                <QaModelTable models={data.qa_by_model} />
+              </section>
+            )}
+
+            {data.compute_by_provider &&
+              data.compute_by_provider.length > 0 && (
+                <section className="space-y-2">
+                  <h3 className="text-sm font-medium">
+                    Compute cost by provider
+                  </h3>
+                  <ComputeProviderTable providers={data.compute_by_provider} />
+                </section>
+              )}
+
             <section className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">Top experiments by cost</h3>
@@ -659,6 +730,17 @@ export function CostBreakdownCard() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function ComponentStat({ label, cost }: { label: string; cost: number }) {
+  return (
+    <div className="min-w-0 flex-1 px-1 text-center">
+      <div className="text-sm font-bold tabular-nums">
+        {formatCostUsd(cost)}
+      </div>
+      <div className="text-muted-foreground truncate text-[10px]">{label}</div>
+    </div>
   );
 }
 
@@ -683,13 +765,34 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
       : monthPct != null && monthPct >= 60
         ? "bg-amber-500"
         : "bg-blue-500";
+  const qaCost = totals.qa_cost_usd ?? 0;
+  const computeCost = totals.compute_cost_usd ?? 0;
+  const grandTotal = totals.cost_usd + qaCost + computeCost;
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
-          {formatCostUsd(totals.cost_usd)}
+          {formatCostUsd(grandTotal)}
         </div>
-        <div className="text-muted-foreground text-[10px]">Total cost</div>
+        <div className="text-muted-foreground text-[10px]">
+          Total
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="text-muted-foreground ml-1 inline h-3 w-3 cursor-help align-text-top" />
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[280px]">
+              Model inference plus QA plus compute, each broken out alongside.
+              Compute is a sandbox-runtime estimate, not a provider invoice.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+      <div className="bg-background/70 flex items-center rounded-md border border-[#6f88b4]/18 p-2 lg:col-span-2">
+        <ComponentStat label="Model inference" cost={totals.cost_usd} />
+        <span className="bg-border h-8 w-px shrink-0" />
+        <ComponentStat label="QA" cost={qaCost} />
+        <span className="bg-border h-8 w-px shrink-0" />
+        <ComponentStat label="Compute est." cost={computeCost} />
       </div>
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
@@ -702,7 +805,7 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
           )}
         </div>
         <div className="text-muted-foreground text-[10px]">
-          Monthly quota
+          Inference monthly quota
           {monthPct != null
             ? ` · ${Math.round(monthPct)}%`
             : " · month to date"}
@@ -739,7 +842,7 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
           </div>
         )}
         <div className="text-muted-foreground text-[10px]">
-          Δ vs prior period
+          Inference Δ vs prior period
         </div>
       </div>
     </div>
@@ -841,11 +944,7 @@ function UserTable({
                 {user.owner_user_id ? (
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium">
                     <Link
-                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}${
-                        user.org_id
-                          ? `&org=${encodeURIComponent(user.org_id)}`
-                          : ""
-                      }`}
+                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}`}
                       className="text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
                     >
                       {userLabel(user)}
@@ -968,6 +1067,68 @@ function ModelTable({
             </TableCell>
             <TableCell className="text-right font-mono text-xs">
               {formatTokens(model.output_tokens)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function QaModelTable({ models }: { models: CostQaModelBreakdown[] }) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Model</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {models.map((model) => (
+          <TableRow key={model.model}>
+            <TableCell className="font-mono text-xs">{model.model}</TableCell>
+            <TableCell className="text-right font-mono text-xs">
+              {formatCostUsd(model.cost_usd)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+const COMPUTE_PROVIDER_LABELS: Record<string, string> = {
+  modal: "Modal",
+  daytona: "Daytona",
+  other: "Other",
+};
+
+function ComputeProviderTable({
+  providers,
+}: {
+  providers: CostComputeProviderBreakdown[];
+}) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Provider</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">Spans</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {providers.map((provider) => (
+          <TableRow key={provider.provider}>
+            <TableCell className="text-xs">
+              {COMPUTE_PROVIDER_LABELS[provider.provider] ?? provider.provider}
+            </TableCell>
+            <TableCell className="text-right font-mono text-xs">
+              {formatCostUsd(provider.cost_usd)}
+            </TableCell>
+            <TableCell className="text-right font-mono text-xs">
+              {provider.span_count.toLocaleString()}
             </TableCell>
           </TableRow>
         ))}

@@ -93,6 +93,52 @@ async def test_probe_runs_do_not_pollute_browse():
         await engine.dispose()
 
 
+async def _setup_combine(engine):
+    async with engine.begin() as c:
+        await c.execute(text("drop schema public cascade"))
+        await c.execute(text("create schema public"))
+        await c.run_sync(Base.metadata.create_all)
+        stmts = """
+            insert into organizations (id,name,slug,plan,settings,is_active,created_at,updated_at)
+            values ('org1','O','o','free','{}'::jsonb,true,now(),now());
+            insert into experiments (id,name,org_id,is_public,created_at,updated_at)
+            values ('exp-a','Exp A','org1',false,now(),now()),
+                   ('exp-b','Exp B','org1',false,now(),now());
+            insert into tasks (id,name,org_id,"user",priority,status,task_path,tags,run_analysis,run_probe,created_at,updated_at)
+            values ('t-c','combine-task','org1','u','LOW','COMPLETED','p','{}'::jsonb,false,false,now(),now());
+            insert into task_versions (id,task_id,version,task_path,created_at,updated_at)
+            values ('v-c','t-c',1,'p',now(),now());
+            update tasks set current_version_id='v-c' where id='t-c';
+            insert into trials (id,name,task_id,task_version_id,experiment_id,org_id,agent,model,provider,queue_key,timeout_minutes,environment,harbor_config,status,origin,is_probe,reward,idempotency_key,finished_at,attempts,max_attempts,heartbeat_failure_count,has_trajectory,created_at,updated_at)
+            values ('tr-src','tr-src','t-c','v-c','exp-a','org1','claude','sonnet','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,now(),1,6,0,false,now(),now()),
+                   ('tr-combine','tr-combine','t-c','v-c','exp-b','org1','claude','sonnet','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,'combine:exp-b:tr-src',now(),1,6,0,false,now(),now());
+            insert into task_experiments (task_id,experiment_id,created_at)
+            values ('t-c','exp-a',now()),('t-c','exp-b',now());
+        """
+        for stmt in stmts.split(";"):
+            if stmt.strip():
+                await c.execute(text(stmt))
+
+
+async def test_combine_copies_excluded_from_browse():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup_combine(engine)
+        async with maker() as session:
+            resp = await browse_tasks_core(session, org_id=ORG, limit=10, offset=0)
+        item = {i.name: i for i in resp.items}["combine-task"]
+        # The combine copy re-materializes the same execution under exp-b; it
+        # must not double the trial count, the reward rollup, or the icon list.
+        assert item.total_trials == 1
+        assert item.reward_success == 1
+        assert [t.id for t in item.latest_trials] == ["tr-src"]
+        assert item.latest_trials[0].agent == "claude"
+        assert item.latest_trials[0].model == "sonnet"
+    finally:
+        await engine.dispose()
+
+
 async def test_search_wildcards_are_literals():
     engine = create_async_engine(URL)
     maker = async_sessionmaker(engine, expire_on_commit=False)

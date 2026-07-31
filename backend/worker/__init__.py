@@ -16,9 +16,17 @@ container cold start.
 
 from __future__ import annotations
 
-from observability import configure_logfire, span as _otel_span
+from observability import (
+    configure_logfire,
+    configure_stdlib_log_bridge,
+    span as _otel_span,
+)
 
-configure_logfire(service_name="oddish-worker")
+_logfire_active = configure_logfire(service_name="oddish-worker")
+# Route the oddish stdlib logger to stderr + Logfire so analyzer/verdict block
+# `logger.info` lines actually surface (see configure_stdlib_log_bridge). Without
+# this the worker drops every INFO record.
+configure_stdlib_log_bridge(logfire_active=_logfire_active)
 
 with _otel_span("worker.container_init"):
     from .functions import (  # noqa: E402

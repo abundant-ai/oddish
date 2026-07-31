@@ -508,7 +508,7 @@ class SlackAlertSettingsModel(Base):
     are deployment-wide rather than org-scoped -- the cron scans every org --
     so there is nothing to key this by. A missing row means the defaults in
     ``slack_alert_settings.py`` stand. This covers only the in-channel
-    escalation floor and ping list; the per-user DM cutoffs live in
+    escalation thresholds and ping list; the per-user DM cutoffs live in
     ``user_alert_preferences``.
     """
 
@@ -517,6 +517,9 @@ class SlackAlertSettingsModel(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     trial_escalation_usd: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False
+    )
+    user_daily_overage_delta_usd: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("1000")
     )
     always_ping_emails: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, default=list
@@ -555,6 +558,15 @@ class UserAlertPreferencesModel(Base):
         Boolean, nullable=False, server_default=text("true"), default=True
     )
     qa_failed_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    experiment_finished_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    trial_finished_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True
+    )
+    task_finished_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true"), default=True
     )
     experiment_milestone_usd: Mapped[Decimal | None] = mapped_column(

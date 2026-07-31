@@ -59,7 +59,7 @@ reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results.
-- `oddish ls` / `oddish status` — browse tasks (name/tag filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
+- `oddish ls` / `oddish status` — browse tasks (including model and trajectory-metric filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
 - `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
 - `oddish cancel` — cancel active runs or task-level QA.
@@ -69,6 +69,9 @@ reference. The main commands are:
 - `oddish delete` — delete trials (hosted) or tasks/experiments (self-host only).
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
+- `oddish qa` — A/B test versioned QA prompt variants against an experiment, task, or trial.
+- `oddish qa-jobs` — assign, inspect, disable, and monitor automatic pre-/post-trial AnalyzerBlock jobs.
+- `oddish prompt` — manage the shared prompt registry and its active/immutable versions.
 
 Every command except `oddish logs` supports `--json` for machine-readable output.
 

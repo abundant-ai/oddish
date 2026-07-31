@@ -26,10 +26,12 @@ from cloud_policy import (
 )
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
+from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
     browse_task_facets_core,
     browse_tasks_core,
+    rerun_pre_trial_audit_core,
     build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
@@ -106,9 +108,18 @@ from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, 
 from oddish.queue import (
     cancel_tasks_runs,
 )
-from oddish.core.endpoints.collections import create_trial_collection_core
+from oddish.core.endpoints.collections import (
+    add_to_collection_core,
+    create_trial_collection_core,
+    remove_from_collection_core,
+    rename_collection_core,
+)
 from oddish.schemas import (
     BackfillQARequest,
+    CollectionAddRequest,
+    CollectionMutationResponse,
+    CollectionRemoveRequest,
+    CollectionRenameRequest,
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentCostTotals,
@@ -757,6 +768,15 @@ async def browse_tasks(
     max_tokens: int | None = Query(None, ge=0),
     min_steps: int | None = Query(None, ge=0),
     max_steps: int | None = Query(None, ge=0),
+    min_duration_seconds: float | None = Query(None, ge=0),
+    max_duration_seconds: float | None = Query(None, ge=0),
+    min_tool_calls: int | None = Query(None, ge=0),
+    max_tool_calls: int | None = Query(None, ge=0),
+    tool_names: str | None = Query(None, description="Tool function name CSV"),
+    tool_count_mins: str | None = Query(
+        None, description="JSON object of tool name to minimum count"
+    ),
+    trial_metric_match: str = Query("any", pattern="^(any|all)$"),
     reward_min: float | None = Query(None, ge=0.0, le=1.0),
     reward_max: float | None = Query(None, ge=0.0, le=1.0),
     # --- Task-registry metadata filters (schema-backed) ---
@@ -895,6 +915,21 @@ async def browse_tasks(
                 loaded = None
             if isinstance(loaded, list):
                 parsed_or_groups = [g for g in loaded if isinstance(g, dict)] or None
+        try:
+            metric_filter = TrialMetricFilter.from_query(
+                models=models,
+                min_steps=min_steps,
+                max_steps=max_steps,
+                min_duration_seconds=min_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                min_tool_calls=min_tool_calls,
+                max_tool_calls=max_tool_calls,
+                tool_names=tool_names,
+                tool_count_mins=tool_count_mins,
+                match=trial_metric_match,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return await browse_tasks_core(
             session,
             org_id=auth.org_id,
@@ -919,7 +954,7 @@ async def browse_tasks(
             trial_finished_before=trial_finished_before,
             experiment_ids=_split_tag_csv(experiment_ids),
             agents=_split_tag_csv(agents),
-            models=_split_tag_csv(models),
+            models=metric_filter.models,
             agent_models=_split_tag_csv(agent_models),
             providers=_split_tag_csv(providers),
             environments=_split_tag_csv(environments),
@@ -934,8 +969,15 @@ async def browse_tasks(
             min_attempts=min_attempts,
             min_tokens=min_tokens,
             max_tokens=max_tokens,
-            min_steps=min_steps,
-            max_steps=max_steps,
+            min_steps=metric_filter.min_steps,
+            max_steps=metric_filter.max_steps,
+            min_duration_seconds=metric_filter.min_duration_seconds,
+            max_duration_seconds=metric_filter.max_duration_seconds,
+            min_tool_calls=metric_filter.min_tool_calls,
+            max_tool_calls=metric_filter.max_tool_calls,
+            tool_names=metric_filter.tool_names,
+            tool_count_mins=metric_filter.tool_count_mins,
+            trial_metric_match=metric_filter.match.value,
             reward_min=reward_min,
             reward_max=reward_max,
             allow_internet=allow_internet,
@@ -1039,6 +1081,88 @@ async def create_trial_collection(
             name=payload.name,
             trial_ids=payload.trial_ids,
             task_ids=payload.task_ids,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.post(
+    "/experiments/{experiment_id}/collection/trials",
+    response_model=CollectionMutationResponse,
+)
+async def add_trials_to_collection(
+    experiment_id: str,
+    payload: CollectionAddRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> CollectionMutationResponse:
+    """Link more trials into an existing read-only collection.
+
+    Append-only and idempotent, so ``tasks`` scope suffices -- same reasoning
+    as the create route.
+    """
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+    async with get_session() as session:
+        result = await add_to_collection_core(
+            session,
+            experiment_id=experiment_id,
+            trial_ids=payload.trial_ids,
+            task_ids=payload.task_ids,
+            from_experiment_ids=payload.from_experiment_ids,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.delete(
+    "/experiments/{experiment_id}/collection/trials",
+    response_model=CollectionMutationResponse,
+)
+async def remove_trials_from_collection(
+    experiment_id: str,
+    payload: CollectionRemoveRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> CollectionMutationResponse:
+    """Drop trials from a collection.
+
+    Requires admin: this changes what an already-published share link
+    shows. The trials themselves are untouched.
+    """
+    async with get_session() as session:
+        result = await remove_from_collection_core(
+            session,
+            experiment_id=experiment_id,
+            trial_ids=payload.trial_ids,
+            task_ids=payload.task_ids,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.patch(
+    "/experiments/{experiment_id}/collection",
+    response_model=CollectionMutationResponse,
+)
+async def rename_collection(
+    experiment_id: str,
+    payload: CollectionRenameRequest,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> CollectionMutationResponse:
+    """Rename a collection. The share token is unaffected. Requires admin."""
+    async with get_session() as session:
+        result = await rename_collection_core(
+            session,
+            experiment_id=experiment_id,
+            name=payload.name,
             org_id=auth.org_id,
         )
         await session.commit()
@@ -1395,6 +1519,24 @@ async def backfill_task_qa(
             trial_ids=body.trial_ids,
             force=body.force,
             enable_analysis=body.enable_analysis,
+        )
+
+
+@router.post("/tasks/{task_id}/qa/pre-trial")
+async def rerun_pre_trial_audit(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue the pre-trial audit for the task's current version.
+
+    Runs only the audit. Does not classify trials and does not synthesize
+    the verdict.
+    """
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+    async with get_session() as session:
+        return await rerun_pre_trial_audit_core(
+            session, task_id=task_id, org_id=auth.org_id
         )
 
 

@@ -1,4 +1,4 @@
-"""Hosted sandbox analyzer: one Daytona cohort agent for bad, one for good.
+"""Hosted analyzer: parallel sandbox AnalyzerBlocks plus a reduce block.
 
 Registered over the core ANALYZER handler at worker container load. Only the
 eval strategy is swapped -- run_analyzer_generation_job's heartbeat, liveness
@@ -13,13 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from importlib.resources import files
 from typing import Any
 
-from api.services.cc_chat.analyzer_cohort import run_cohort
-from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
-from api.services.cc_chat.daytona_client import RealDaytonaClient
+from api.services.cc_chat.analyzer_block_runner import run_analyzer_blocks
 from oddish.config import settings
 from oddish.core.analyzer_inputs import (
     models_by_task_from_rows,
@@ -60,20 +57,6 @@ _COMPARISON_HEADING = {"bad": "Reward hacking", "good": "Capability"}
 
 def _read_cli_source() -> bytes:
     return (files("oddish") / "assets" / "oddish-query").read_bytes()
-
-
-def _daytona_client() -> Any:
-    # DAYTONA_API_KEY is env-only; there is no settings field for it (app.py:157).
-    key = os.environ.get("DAYTONA_API_KEY", "")
-    if not key:
-        raise RuntimeError(
-            "analyzer-sandbox: DAYTONA_API_KEY is unset; cannot provision a sandbox"
-        )
-    return RealDaytonaClient(api_key=key, snapshot=settings.analyzer_snapshot or None)
-
-
-def _runtime() -> Any:
-    return ClaudeCodeRuntime()
 
 
 def _gather(
@@ -135,30 +118,37 @@ async def sandbox_eval_rows(
 
     if not bad and not good:
         return AnalyzerEvalOutput(
-            sections=dict(_EMPTY_SECTIONS), findings=[], counts=counts,
-            breakdown=breakdown, subanalyses=subs,
+            sections=dict(_EMPTY_SECTIONS),
+            findings=[],
+            counts=counts,
+            breakdown=breakdown,
+            subanalyses=subs,
         )
 
     roster = build_roster(bad, good)
-    # Checked up front, next to the DAYTONA_API_KEY check in _daytona_client:
-    # without it the agent only fails once it is inside a provisioned sandbox,
-    # after we have already minted a probe key and paid for two sandboxes.
     anthropic_key = settings.anthropic_api_key
     if not anthropic_key:
         raise RuntimeError(
             "analyzer-sandbox: anthropic_api_key is unset; the cohort agents "
             "cannot reach inference"
         )
-    client, runtime, cli_src = _daytona_client(), _runtime(), _read_cli_source()
+    cli_src = _read_cli_source()
     key_id, api_base, api_key = await _resolve_api_creds(rows, analyzer_id)
 
     async def _cohort(bucket: str, cohort: list[SubAnalysis]):
-        return await run_cohort(
-            client, runtime, bucket=bucket, cohort=cohort, roster=roster,
-            counts=counts, oracle_by_trial=oracle_by_trial,
+        return await run_analyzer_blocks(
+            bucket=bucket,
+            cohort=cohort,
+            roster=roster,
+            counts=counts,
+            oracle_by_trial=oracle_by_trial,
             host_by_trial=host_by_trial,
-            analyzer_id=analyzer_id, anthropic_key=anthropic_key,
-            api_base=api_base, api_key=api_key, cli_src=cli_src,
+            analyzer_id=analyzer_id,
+            anthropic_key=anthropic_key,
+            api_base=api_base,
+            api_key=api_key,
+            cli_src=cli_src,
+            parallelism=config.map_concurrency,
             models_by_task=models_by_task_from_rows(rows),
             denominators=build_denominators(trial_model_rewards(rows), []),
         )
@@ -228,8 +218,12 @@ async def sandbox_eval_rows(
 
     logger.info("analyzer-sandbox: complete, %d findings", len(findings))
     return AnalyzerEvalOutput(
-        sections=sections, findings=findings, counts=counts, breakdown=breakdown,
-        subanalyses=subs, by_model=by_model,
+        sections=sections,
+        findings=findings,
+        counts=counts,
+        breakdown=breakdown,
+        subanalyses=subs,
+        by_model=by_model,
     )
 
 

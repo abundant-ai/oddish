@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from oddish import observability
 
 
@@ -94,3 +96,81 @@ def test_unpriced_trial_helper_only_logs_null_cost_with_tokens(monkeypatch) -> N
     assert calls[0][1]["metric"] == "trial_cost_unpriced"
     assert calls[0][1]["model"] == "new-model"
     assert calls[1][1]["cache_tokens"] == 50
+
+
+def test_missing_bedrock_metering_warns_after_agent_execution(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        observability,
+        "log_warning",
+        lambda message, **attributes: calls.append((message, attributes)),
+    )
+
+    warned = observability.log_missing_trial_metering_if_needed(
+        cost_usd=0.0,
+        trial_id="trial-1",
+        model="global.anthropic.claude-sonnet-4-6",
+        agent="claude-code",
+        provider="bedrock",
+        attempt=2,
+        input_tokens=None,
+        cache_tokens=None,
+        cache_write_tokens=None,
+        output_tokens=None,
+        native_cost_usd=0.0,
+        has_execution_evidence=True,
+    )
+
+    assert warned is True
+    assert calls == [
+        (
+            "Bedrock trial produced execution output but no token or cost metering",
+            {
+                "tags": ("cost-integrity", "missing-metering"),
+                "metric": "trial_cost_missing_metering",
+                "trial_id": "trial-1",
+                "model": "global.anthropic.claude-sonnet-4-6",
+                "agent": "claude-code",
+                "provider": "bedrock",
+                "attempt": 2,
+                "native_cost_usd": 0.0,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"has_execution_evidence": False},
+        {"provider": "anthropic"},
+        {"agent": "mini-swe-agent"},
+        {"cost_usd": 0.01},
+        {"input_tokens": 1},
+    ],
+)
+def test_missing_bedrock_metering_ignores_non_gaps(monkeypatch, overrides) -> None:
+    calls = []
+    monkeypatch.setattr(
+        observability,
+        "log_warning",
+        lambda message, **attributes: calls.append((message, attributes)),
+    )
+    kwargs = {
+        "cost_usd": None,
+        "trial_id": "trial-1",
+        "model": "global.anthropic.claude-sonnet-4-6",
+        "agent": "claude-code",
+        "provider": "bedrock",
+        "attempt": 1,
+        "input_tokens": None,
+        "cache_tokens": None,
+        "cache_write_tokens": None,
+        "output_tokens": None,
+        "native_cost_usd": None,
+        "has_execution_evidence": True,
+    }
+    kwargs.update(overrides)
+
+    assert observability.log_missing_trial_metering_if_needed(**kwargs) is False
+    assert calls == []

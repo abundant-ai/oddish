@@ -155,15 +155,12 @@ export function TaskProbeRunCard({
 
       {headerSlot}
 
-      {latest.length === 0 ? (
-        <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-6 text-center text-[12px] text-[color:var(--paper-ink-3)]">
-          No probe run for this version yet.
-        </div>
-      ) : (
-        latest.map((trial) => (
-          <ProbeSection key={trial.id} taskId={taskId} trial={trial} />
-        ))
-      )}
+      {/* No empty-state box: a version with no probe run just shows nothing
+          under the header. The header itself stays, since it carries the
+          verdict badge passed in as headerSlot. */}
+      {latest.map((trial) => (
+        <ProbeSection key={trial.id} taskId={taskId} trial={trial} />
+      ))}
     </div>
   );
 }

@@ -14,11 +14,16 @@ import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
 import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
-import { formatCostUsd, formatTokenCount } from "@/lib/format";
+import {
+  formatCostUsd,
+  formatTokenCount,
+  hasDisplayableCostUsd,
+} from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
@@ -162,6 +167,9 @@ type ExperimentSummary = {
   costTrialCount: number;
   costHasEstimated: boolean;
   costHasNative: boolean;
+  qaCostUsd: number;
+  ownedQaCostUsd: number;
+  qaHasEstimated: boolean;
   ownedCostUsd: number;
   ownedTrialCount: number;
   ownedHasEstimated: boolean;
@@ -250,6 +258,11 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     costTrialCount: acc.costTrialCount,
     costHasEstimated: acc.costHasEstimated,
     costHasNative: acc.costHasNative,
+    // QA has no client-side fold -- it rides in only via the server rollup
+    // (the ``costTotals`` override below), so the base value is always zero.
+    qaCostUsd: 0,
+    ownedQaCostUsd: 0,
+    qaHasEstimated: false,
     ownedCostUsd: acc.ownedCostUsd,
     ownedTrialCount: acc.ownedTrialCount,
     ownedHasEstimated: acc.ownedHasEstimated,
@@ -708,7 +721,8 @@ function ExperimentSummaryBar({
         >
           {costPending ? (
             <span className="text-[color:var(--paper-ink-3)]">—</span>
-          ) : summary.costTrialCount > 0 ? (
+          ) : summary.costTrialCount > 0 &&
+            hasDisplayableCostUsd(summary.costUsd) ? (
             <>
               {summary.costHasEstimated && !summary.costHasNative && (
                 <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
@@ -724,6 +738,17 @@ function ExperimentSummaryBar({
             </>
           ) : (
             <span className="text-[color:var(--paper-ink-3)]">—</span>
+          )}
+          {!costPending && (
+            <QaCostSuffix
+              costUsd={summary.qaCostUsd}
+              size="tile"
+              title={
+                summary.qaHasEstimated
+                  ? "QA/analysis spend across this experiment's trials. Some values estimated from token counts × static model pricing. Not included in the cost figure."
+                  : "QA/analysis spend across this experiment's trials. Not included in the cost figure."
+              }
+            />
           )}
         </span>
         {!costPending && summary.tokenTrialCount > 0 && (
@@ -797,6 +822,13 @@ function ExperimentSummaryBar({
               <>{formatCostUsd(0)}</>
             ) : (
               <span className="text-[color:var(--paper-ink-3)]">—</span>
+            )}
+            {!costPending && (
+              <QaCostSuffix
+                costUsd={summary.ownedQaCostUsd}
+                size="tile"
+                title="QA/analysis spend on this experiment's own trials. Not included in the new spend figure."
+              />
             )}
           </span>
           {!costPending && summary.ownedTokenTrialCount > 0 && (
@@ -1219,6 +1251,9 @@ export function ExperimentDetailView({
       costTrialCount: costTotals.cost_trial_count,
       costHasEstimated: costTotals.cost_has_estimated,
       costHasNative: costTotals.cost_has_native,
+      qaCostUsd: costTotals.qa_cost_usd ?? 0,
+      ownedQaCostUsd: costTotals.owned_qa_cost_usd ?? 0,
+      qaHasEstimated: costTotals.qa_has_estimated ?? false,
       tokenCount: costTotals.token_count,
       tokenTrialCount: costTotals.token_trial_count,
       // ?? base.*: deploy-skew guard — a backend that predates owned_* omits
@@ -1431,7 +1466,7 @@ export function ExperimentDetailView({
               isOpen={true}
               onClose={() => {}}
               taskId={null}
-              probeTaskId={drawerState.task.id}
+              staticChecksTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               apiBaseUrl={apiBaseUrl}

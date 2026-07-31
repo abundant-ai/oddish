@@ -12,6 +12,7 @@ from slack_alert_settings import DEFAULT_ALERT_SETTINGS
 
 VALID = {
     "trial_escalation_usd": 1500,
+    "user_daily_overage_delta_usd": 5000,
     "always_ping_emails": ["ops@example.com", "sre@example.com"],
 }
 
@@ -35,10 +36,17 @@ class _UndefinedTableError(Exception):
     sqlstate = "42P01"
 
 
-class _UndefinedTableSession:
+class _UndefinedColumnError(Exception):
+    sqlstate = "42703"
+
+
+class _IncompleteSchemaSession:
+    def __init__(self, error_type):
+        self.error_type = error_type
+
     async def execute(self, statement):
         raise ProgrammingError(
-            "SELECT 1", {}, _UndefinedTableError("relation does not exist")
+            "SELECT 1", {}, self.error_type("schema object does not exist")
         )
 
 
@@ -51,7 +59,7 @@ def _app(admin: bool = True):
     app = create_app()
     if admin:
         app.dependency_overrides[require_admin] = lambda: SimpleNamespace(
-            user_id="user-1"
+            user_id="user-1", org_id="org-1"
         )
     return app
 
@@ -63,6 +71,11 @@ async def _call(app, method: str, **kwargs):
         return await client.request(method, "/admin/slack-alert-settings", **kwargs)
 
 
+@pytest.fixture(autouse=True)
+def operator_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-1")
+
+
 @pytest.mark.asyncio
 async def test_get_returns_defaults_when_no_override_row(monkeypatch):
     session = _Session(row=None)
@@ -72,8 +85,9 @@ async def test_get_returns_defaults_when_no_override_row(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert (
-        body["trial_escalation_usd"] == DEFAULT_ALERT_SETTINGS.trial_escalation_usd
+    assert body["trial_escalation_usd"] == DEFAULT_ALERT_SETTINGS.trial_escalation_usd
+    assert body["user_daily_overage_delta_usd"] == (
+        DEFAULT_ALERT_SETTINGS.user_daily_overage_delta_usd
     )
     assert body["always_ping_emails"] == list(DEFAULT_ALERT_SETTINGS.always_ping_emails)
     # The pane labels defaults differently from a deliberate override.
@@ -84,6 +98,7 @@ async def test_get_returns_defaults_when_no_override_row(monkeypatch):
 async def test_put_writes_the_override_and_echoes_it_back(monkeypatch):
     row = SimpleNamespace(
         trial_escalation_usd=1500,
+        user_daily_overage_delta_usd=5000,
         always_ping_emails=["ops@example.com", "sre@example.com"],
     )
     session = _Session(row=row)
@@ -115,6 +130,8 @@ async def test_delete_drops_the_override_and_returns_defaults(monkeypatch):
     [
         ("trial_escalation_usd", 0),
         ("trial_escalation_usd", -5),
+        ("user_daily_overage_delta_usd", 0),
+        ("user_daily_overage_delta_usd", -5),
         ("always_ping_emails", ["not-an-email"]),
     ],
 )
@@ -129,10 +146,13 @@ async def test_put_rejects_nonsense(monkeypatch, field, value):
 
 
 @pytest.mark.asyncio
-async def test_reads_survive_the_table_not_existing_yet(monkeypatch):
+@pytest.mark.parametrize("error_type", [_UndefinedTableError, _UndefinedColumnError])
+async def test_reads_survive_an_incomplete_schema(monkeypatch, error_type):
     """Deploy-before-migrate: a 503 beats a 500 while the schema catches up."""
     monkeypatch.setattr(
-        admin_router, "get_session", lambda: _fake_session(_UndefinedTableSession())
+        admin_router,
+        "get_session",
+        lambda: _fake_session(_IncompleteSchemaSession(error_type)),
     )
 
     response = await _call(_app(), "GET")
@@ -146,3 +166,10 @@ async def test_requires_admin():
     response = await _call(_app(admin=False), "GET")
 
     assert response.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_rejects_admin_from_other_org(monkeypatch):
+    monkeypatch.setenv("ODDISH_OPERATOR_ORG_ID", "org-2")
+    response = await _call(_app(), "GET")
+    assert response.status_code == 403

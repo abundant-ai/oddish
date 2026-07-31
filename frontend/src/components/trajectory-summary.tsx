@@ -1,11 +1,12 @@
 "use client";
 
-import useSWR from "swr";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Sparkles, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
-import { fetcher } from "@/lib/api";
-import type { TrajectorySummary as TrajectorySummaryT } from "@/lib/types";
+import { phaseColorVars } from "@/lib/trajectory-metrics";
+import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
+import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
 
 interface TrajectorySummaryProps {
   trialId: string;
@@ -25,11 +26,19 @@ export function TrajectorySummary({
   onStepSelect,
   apiBaseUrl = "/api",
 }: TrajectorySummaryProps) {
-  const { data, error, isLoading, mutate } = useSWR<TrajectorySummaryT | null>(
-    `${apiBaseUrl}/trials/${trialId}/trajectory/summary`,
-    fetcher,
-    { revalidateOnFocus: false },
-  );
+  const { data, error, isLoading, mutate } = useTrajectorySummary(trialId, apiBaseUrl);
+
+  // A stored summary returns in well under a second; only a long in-flight
+  // request means the backend is actually generating one (~30s).
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!isLoading) {
+      setSlow(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlow(true), 4000);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
 
   if (isLoading) {
     return (
@@ -42,7 +51,7 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Generating summary…
+          {slow ? "Generating summary… (first view can take ~30s)" : "Retrieving summary…"}
         </CardContent>
       </Card>
     );
@@ -70,6 +79,12 @@ export function TrajectorySummary({
 
   if (!data) return null;
 
+  // Same segment → color assignment as the Activity card and step groups, so
+  // a highlight's underline matches its component everywhere.
+  const segments = toSegments(data);
+  const colorFor = phaseColorVars(segments.map((s) => s.key));
+  const owner = segmentOwners(segments);
+
   return (
     <Card className="my-3">
       <CardHeader className="pb-2">
@@ -89,6 +104,7 @@ export function TrajectorySummary({
             {data.highlights.map((h) => {
               const index = stepIdToIndex(h.step_id);
               const disabled = index < 0;
+              const componentKey = owner.get(Number(h.step_id))?.key;
               return (
                 <li key={h.step_id}>
                   <button
@@ -99,11 +115,21 @@ export function TrajectorySummary({
                   >
                     <ChevronRight aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
                     <span className="flex-1">
-                      <span className="font-medium">
+                      {/* Unclaimed steps still get an underline, in the same
+                          neutral color the timeline gives them. */}
+                      <span
+                        className="font-medium border-b-2 pb-px"
+                        style={{
+                          borderColor:
+                            (componentKey
+                              ? colorFor.get(componentKey)
+                              : undefined) ?? "var(--phase-other)",
+                        }}
+                      >
                         Step {h.step_id} · {h.title}
                       </span>
                       {h.why && (
-                        <span className="block text-xs text-muted-foreground">
+                        <span className="mt-1 block text-xs text-muted-foreground">
                           {h.why}
                         </span>
                       )}

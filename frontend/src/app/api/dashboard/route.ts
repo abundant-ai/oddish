@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
     const authObj = await timings.measureAsync(
       "next_auth",
       () => auth(),
-      "Clerk auth",
+      "Clerk auth"
     );
 
     if (!authObj || !authObj.userId) {
@@ -30,14 +30,14 @@ export async function GET(request: NextRequest) {
     const token = await timings.measureAsync(
       "next_token",
       () => getClerkToken(authObj.getToken),
-      "Clerk token",
+      "Clerk token"
     );
 
     if (!token) {
       console.error("Failed to get Clerk token for user:", authObj.userId);
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 },
+        { status: 401 }
       );
     }
 
@@ -68,6 +68,16 @@ export async function GET(request: NextRequest) {
       "experiments_tags",
       "experiments_tags_any",
       "experiments_tags_none",
+      "experiments_models",
+      "experiments_min_steps",
+      "experiments_max_steps",
+      "experiments_min_duration_seconds",
+      "experiments_max_duration_seconds",
+      "experiments_min_tool_calls",
+      "experiments_max_tool_calls",
+      "experiments_trial_metric_match",
+      "experiments_tool_names",
+      "experiments_tool_count_mins",
     ]) {
       const value = searchParams.get(name);
       if (value) params[name] = value;
@@ -89,40 +99,40 @@ export async function GET(request: NextRequest) {
           headers: getAuthHeaders(token),
           signal: AbortSignal.timeout(25_000),
         }),
-      "Backend fetch",
+      "Backend fetch"
     );
 
     if (!res.ok) {
       const errorText = await timings.measureAsync(
         "next_error_body",
         () => res.text(),
-        "Read error body",
+        "Read error body"
       );
       console.error(`[dashboard] Backend error: ${res.status} - ${errorText}`);
       return NextResponse.json(
         { error: "Failed to fetch dashboard", details: errorText },
-        { status: res.status },
+        { status: res.status }
       );
     }
 
     const data = await timings.measureAsync(
       "next_json",
       () => res.json(),
-      "Decode JSON",
+      "Decode JSON"
     );
     timings.add(
       "next_total",
       performance.now() - requestStartedAt,
-      "Dashboard proxy total",
+      "Dashboard proxy total"
     );
     const response = NextResponse.json(data);
     response.headers.set(
       "Cache-Control",
-      "private, max-age=5, stale-while-revalidate=30",
+      "private, max-age=5, stale-while-revalidate=30"
     );
     const serverTiming = joinServerTimingHeaders(
       timings.toHeader(),
-      res.headers.get("server-timing"),
+      res.headers.get("server-timing")
     );
     if (serverTiming) {
       response.headers.set("Server-Timing", serverTiming);
@@ -132,7 +142,7 @@ export async function GET(request: NextRequest) {
     console.error("Dashboard API route error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

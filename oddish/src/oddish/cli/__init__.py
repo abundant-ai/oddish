@@ -11,8 +11,12 @@ from oddish.cli.experiment import experiment_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
+from oddish.cli.prompt import prompt_app
+from oddish.cli.qa import qa
+from oddish.cli.qa_jobs import qa_jobs_app
 from oddish.cli.probe import probe_app
 from oddish.cli.pull import pull
+from oddish.cli.preflight import preflight
 from oddish.cli.report import report_app
 from oddish.cli.run import run
 from oddish.cli.status import status
@@ -27,6 +31,7 @@ app.command()(run)
 app.add_typer(probe_app, name="probe")
 app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
+app.command()(preflight)
 app.command(name="ls")(ls)
 app.command()(status)
 app.command(help="Stream a running trial's live transcript and running cost.")(logs)
@@ -34,9 +39,12 @@ app.command()(cancel)
 app.command()(combine)
 app.command()(costs)
 app.command()(collect)
+app.command()(qa)
 app.command()(delete)
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(report_app, name="report")
+app.add_typer(prompt_app, name="prompt")
+app.add_typer(qa_jobs_app, name="qa-jobs")
 app.command()(pull)
 app.command()(publish)
 app.command()(unpublish)

@@ -100,7 +100,14 @@ interface TrialAnalysis {
   evidence?: string;
   root_cause?: string;
   recommendation?: string;
+  /** Task weaknesses this trial revealed; same shape as pre-trial findings. */
+  action_items?: PreTrialFinding[];
   reward?: number | null;
+  prompt_kind?: string;
+  prompt_version?: number;
+  prompt_id?: string;
+  prompt_scope?: "global" | "org" | "user" | "experiment" | "task" | "trial";
+  prompt_scope_id?: string | null;
 }
 
 interface TrialQueueInfo {
@@ -133,17 +140,35 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  analysis_error?: string | null;
+  analysis_started_at?: string | null;
+  analysis_finished_at?: string | null;
   superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;
   task_version_id?: string | null;
+  /** Pre-trial audit of the version this trial ran on. Single-trial fetch only
+   *  (`GET /trials/{id}`); the grid's slim payload omits these. */
+  pre_trial_findings?: PreTrialFinding[];
+  pre_trial_status?: string | null;
+  pre_trial_error?: string | null;
+  /** What the audit cost. Absent on audits predating cost capture — not zero,
+   *  which would claim it was free. */
+  pre_trial_cost_usd?: number | null;
   input_tokens?: number | null;
   cache_tokens?: number | null;
   output_tokens?: number | null;
   total_steps?: number | null;
+  trajectory_duration_seconds?: number | null;
+  total_tool_calls?: number | null;
+  tool_counts?: Record<string, number> | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  // QA/analysis spend for this trial. Null/undefined = not resolved by the
+  // endpoint that served this trial (most do not) -- distinct from 0, which
+  // would mean "resolved, and there was no QA".
+  qa_cost_usd?: number | null;
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
@@ -240,6 +265,8 @@ interface TaskBrowseTrial {
   status: TrialStatus;
   reward: number | null;
   error_message?: string | null;
+  agent: string;
+  model: string | null;
 }
 
 export interface TaskBrowseItem {
@@ -267,6 +294,7 @@ export interface TaskBrowseItem {
   billed_trial_count: number;
   billed_has_estimated: boolean;
   billed_has_native: boolean;
+  qa_cost_usd?: number;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
@@ -315,8 +343,31 @@ export interface TaskVersionSummary {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   last_run_at?: string | null;
+  pre_trial_findings?: PreTrialFinding[];
+  /** null = never audited. Otherwise "running" | "success" | "failed": empty
+   *  findings mean something different for each, so never infer from the list. */
+  pre_trial_status?: string | null;
+  pre_trial_error?: string | null;
+  /** What the audit cost. Absent on audits predating cost capture — not zero,
+   *  which would claim it was free. */
+  pre_trial_cost_usd?: number | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
+}
+
+/** One defect the pre-trial source audit found in a task version. */
+export interface PreTrialFinding {
+  id?: string | null;
+  tier?: string | null;
+  dimension?: string | null;
+  problem_type?: string | null;
+  file?: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  title?: string | null;
+  detail?: string | null;
+  recommendation?: string | null;
+  exploited?: boolean | null;
 }
 
 interface TaskCostTotals {
@@ -329,6 +380,7 @@ interface TaskCostTotals {
   billed_has_estimated: boolean;
   billed_has_native: boolean;
   total_trials: number;
+  qa_cost_usd?: number;
 }
 
 /** `GET /api/experiments/{id}/cost-totals` — the experiment's spend rollup.
@@ -366,6 +418,9 @@ export interface ExperimentCostTotals {
   billed_token_count: number;
   billed_token_trial_count: number;
   total_trials: number;
+  qa_cost_usd?: number;
+  owned_qa_cost_usd?: number;
+  qa_has_estimated?: boolean;
 }
 
 export interface TaskDetailResponse {
@@ -615,49 +670,34 @@ export interface TrajectoryHighlight {
   why: string;
 }
 
-// Condensed agent-graph summary of a trajectory (GET /trials/{id}/trajectory/graph).
-export type TrajectoryGraphStepStatus = "ok" | "warn" | "error";
-
-export type TrajectoryGraphOutcome =
-  | "success"
-  | "partial"
-  | "failure"
-  | "timeout"
-  | "error"
-  | "scoreless"
-  | "skipped"
-  | "running"
-  | "queued"
-  | "pending";
-
-export interface TrajectoryGraphStep {
-  id: string;
-  title: string;
-  detail: string;
-  status: TrajectoryGraphStepStatus;
-}
-
-export interface TrajectoryGraphTerminal {
-  outcome: TrajectoryGraphOutcome;
-  last_action: string;
-  reason: string;
-}
-
-export interface TrajectoryGraph {
-  headline: string;
-  steps: TrajectoryGraphStep[];
-  terminal: TrajectoryGraphTerminal;
-  source: "summary" | "llm" | "heuristic";
-  model: string | null;
-  num_steps: number | null;
-  schema_version?: string;
-  generated_at?: string;
-}
-
+/** Pre-v4 segmentation. Still present on summaries generated before #790. */
 export interface TrajectoryPhase {
   label: string;
   gist: string;
   step_ids: number[];
+}
+
+/** Flat vocabulary of `TrajectoryBlockTaxonomy` (backend trajectory_component_block.py). */
+export type TrajectoryComponentKind =
+  | "reading_files"
+  | "thinking_recall"
+  | "thinking_understand"
+  | "thinking_hypothesize"
+  | "thinking_diagnose"
+  | "implementing"
+  | "writing_tests"
+  | "testing_public"
+  | "testing_custom"
+  | "testing_custom_edge_cases"
+  | "debugging";
+
+export interface TrajectoryComponent {
+  step_ids: number[];
+  trajectory_component: TrajectoryComponentKind;
+  summary: string | null;
+  /** Deterministic metadata added in summary schema v5; optional for older summaries. */
+  tool_count?: number;
+  duration_ms?: number;
 }
 
 export interface TrajectorySummary {
@@ -666,7 +706,8 @@ export interface TrajectorySummary {
   generated_at: string;
   summary: string;
   highlights: TrajectoryHighlight[];
-  phases: TrajectoryPhase[];
+  components?: TrajectoryComponent[];
+  phases?: TrajectoryPhase[];
 }
 
 interface QueueSlot {
@@ -817,6 +858,8 @@ export interface QueueCapacityStat {
   queued_scheduled: number;
   running: number;
   limit: number;
+  deploy_limit: number;
+  override_limit: number | null;
   fill: number | null;
   oldest_queued_age_seconds: number | null;
   wait_p50_seconds: number | null;
@@ -935,9 +978,22 @@ interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
+  qa_cost_usd?: number;
+  compute_cost_usd?: number;
   prev_cost_usd?: number | null;
   month_cost_usd?: number;
   month_budget_usd?: number | null;
+}
+
+export interface CostQaModelBreakdown {
+  model: string;
+  cost_usd: number;
+}
+
+export interface CostComputeProviderBreakdown {
+  provider: string;
+  cost_usd: number;
+  span_count: number;
 }
 
 export interface CostBreakdownResponse {
@@ -946,9 +1002,15 @@ export interface CostBreakdownResponse {
   series_by_agent: CostSeries;
   series_by_model: CostSeries;
   series_by_user: CostSeries;
+  series_by_type?: CostSeries;
+  series_qa_by_model?: CostSeries;
+  series_by_analysis_type?: CostSeries;
+  series_compute_by_provider?: CostSeries;
   totals: CostTotals;
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
+  qa_by_model?: CostQaModelBreakdown[];
+  compute_by_provider?: CostComputeProviderBreakdown[];
   experiments: CostExperimentBreakdown[];
   timestamp: string;
 }
@@ -1008,7 +1070,14 @@ export interface UserCostBreakdownResponse {
   totals: UserCostTotals;
   tasks: UserCostTaskBreakdown[];
   experiments?: UserCostExperimentBreakdown[];
+  // Optional like their CostBreakdownResponse siblings: the frontend and the
+  // Modal backend deploy separately, so a new page can hit an older API.
+  series_by_agent?: CostSeries;
   series_by_model: CostSeries;
+  series_by_type?: CostSeries;
+  series_qa_by_model?: CostSeries;
+  series_by_analysis_type?: CostSeries;
+  series_compute_by_provider?: CostSeries;
   timestamp: string;
 }
 

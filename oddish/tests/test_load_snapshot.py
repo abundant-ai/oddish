@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +65,8 @@ async def test_build_load_snapshot_maps_health(monkeypatch):
                 queued_scheduled=0,
                 running=10,
                 limit=48,
+                deploy_limit=48,
+                override_limit=None,
                 fill=10 / 48,
                 oldest_queued_age_seconds=12.0,
                 wait_p50_seconds=3.0,
@@ -101,6 +104,126 @@ async def test_build_load_snapshot_maps_health(monkeypatch):
     assert q.queued == 600 and q.running == 10 and q.limit == 48
     assert q.wait_p95_seconds == 30.0
     assert q.advisory_limit == 48 and q.limit_source == "static"
+
+
+@pytest.mark.asyncio
+async def test_idle_queue_does_not_pin_pressure(monkeypatch):
+    health = QueueHealthResponse(
+        totals_queued=0,
+        totals_running=0,
+        throughput=[],
+        capacity=[
+            QueueCapacityStat(
+                queue_key="nop_oracle",
+                active=False,
+                queued=0,
+                queued_scheduled=3,
+                running=0,
+                limit=48,
+                deploy_limit=48,
+                override_limit=None,
+                fill=None,
+                oldest_queued_age_seconds=None,
+                wait_p50_seconds=300.0,
+                wait_p95_seconds=600.0,
+            )
+        ],
+        dispatcher=None,
+        reconciler=None,
+        timestamp="2026-06-22T00:00:00",
+    )
+
+    async def fake_health(session):
+        return health
+
+    async def fake_statuses(session):
+        return {
+            admin.SUBMIT_LATENCY_COMPONENT: {"payload": {"sweep_rtt_p95_ewma": 0.0}}
+        }
+
+    monkeypatch.setattr(admin, "get_queue_health_core", fake_health)
+    monkeypatch.setattr(
+        "oddish.workers.queue.runtime_status.get_queue_runtime_statuses", fake_statuses
+    )
+
+    snap = await admin.build_load_snapshot(session=None)
+
+    assert snap.pressure == 0.0, "an idle system must not report pressure"
+    assert snap.submit_ceiling > admin.CLIENT_FLOOR
+
+
+@pytest.mark.asyncio
+async def test_scheduled_only_queue_is_inactive(monkeypatch):
+    queue_key = "openai/gpt-5.2"
+
+    class Session:
+        def __init__(self):
+            self.rows = iter(
+                [
+                    [],
+                    [
+                        SimpleNamespace(
+                            queue_key=queue_key,
+                            queued_ready=0,
+                            queued_scheduled=3,
+                            running=0,
+                            oldest_queued_age_seconds=None,
+                        )
+                    ],
+                    [
+                        SimpleNamespace(
+                            queue_key=queue_key, wait_p50=300.0, wait_p95=600.0
+                        )
+                    ],
+                ]
+            )
+
+        async def execute(self, statement, params=None):
+            return SimpleNamespace(all=lambda: next(self.rows))
+
+    async def no_overrides(session):
+        return {}
+
+    async def no_statuses(session):
+        return {}
+
+    monkeypatch.setattr(admin, "get_model_concurrency_overrides", no_overrides)
+    monkeypatch.setattr(
+        type(admin.settings), "get_known_queue_keys", lambda self: {queue_key}
+    )
+    monkeypatch.setattr(
+        "oddish.workers.queue.runtime_status.get_queue_runtime_statuses", no_statuses
+    )
+
+    health = await admin.get_queue_health_core(Session())
+    capacity = next(c for c in health.capacity if c.queue_key == queue_key)
+
+    assert capacity.queued_scheduled == 3
+    assert not capacity.active
+
+    async def unexpected_global_read(session):
+        raise AssertionError("tenant view read global queue state")
+
+    monkeypatch.setattr(
+        admin, "get_model_concurrency_overrides", unexpected_global_read
+    )
+    monkeypatch.setattr(
+        "oddish.workers.queue.runtime_status.get_queue_runtime_statuses",
+        unexpected_global_read,
+    )
+
+    tenant_health = await admin.get_queue_health_core(
+        Session(), org_id="org-a", include_global_details=False
+    )
+    tenant_capacity = next(
+        c for c in tenant_health.capacity if c.queue_key == queue_key
+    )
+    assert tenant_capacity.limit == 0
+    assert tenant_capacity.deploy_limit == 0
+    assert tenant_capacity.override_limit is None
+    assert tenant_capacity.fill is None
+    assert tenant_health.dispatcher is None
+    assert tenant_health.reconciler is None
 
 
 def _stub_snapshot() -> LoadSnapshot:

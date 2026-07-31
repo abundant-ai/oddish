@@ -56,7 +56,12 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
-import { costEstimateMarks, formatCostUsd, sumTaskTrialCost } from "@/lib/format";
+import {
+  costEstimateMarks,
+  formatCostUsd,
+  hasDisplayableCostUsd,
+  sumTaskTrialCost,
+} from "@/lib/format";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
@@ -2301,7 +2306,15 @@ export function ExperimentTrialsTable({
                               // prices the row being shown, matching the Cost
                               // tile.
                               const c = sumTaskTrialCost(orderedTrials);
-                              if (c.pricedCount === 0) return null;
+                              // Agent cost only. QA spend is deliberately not
+                              // annotated per row -- the row is already dense,
+                              // and QA totals live on the experiment's Cost
+                              // tile and on each task's own page.
+                              if (
+                                c.pricedCount === 0 ||
+                                !hasDisplayableCostUsd(c.costUsd)
+                              )
+                                return null;
                               const marks = costEstimateMarks(
                                 c.hasEstimated,
                                 c.hasNative,
@@ -2316,8 +2329,8 @@ export function ExperimentTrialsTable({
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent>
-                                    Total cost across {c.pricedCount} priced trial
-                                    {c.pricedCount === 1 ? "" : "s"}
+                                    Total cost across {c.pricedCount} priced
+                                    trial{c.pricedCount === 1 ? "" : "s"}
                                     {c.hasEstimated && c.hasNative
                                       ? " · * mixes native + token-estimated pricing"
                                       : c.hasEstimated

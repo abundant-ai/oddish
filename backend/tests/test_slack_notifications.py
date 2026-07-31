@@ -8,6 +8,7 @@ import httpx
 import pytest
 import slack_notifications as notifications
 from models import OrganizationModel, UserModel
+from sqlalchemy import select
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.endpoints._common import USER_CANCELLED_MESSAGE
 from oddish.db import (
@@ -29,10 +30,15 @@ from slack_notifications import (
     ExperimentCandidate,
     FailedExperiment,
     FailedTrial,
+    FinishedExperiment,
+    FinishedTrial,
+    LiveTrialSpend,
     QaFailure,
     SlackAlert,
+    TaskFinished,
     TrialSpend,
     UnpricedModel,
+    UserSpend,
     build_alerts,
     deliver_pending_alerts,
     load_alerts,
@@ -56,6 +62,24 @@ def _trial(
         experiment_id=experiment_id,
         model=model,
         finished_at=finished_at,
+        cost_usd=cost_usd,
+    )
+
+
+def _live_trial(
+    trial_id: str,
+    cost_usd: float,
+    *,
+    experiment_id: str = "experiment-1",
+    task_id: str = "task/1",
+    model: str = "model-1",
+) -> LiveTrialSpend:
+    return LiveTrialSpend(
+        id=trial_id,
+        name=f"{trial_id} title",
+        task_id=task_id,
+        experiment_id=experiment_id,
+        model=model,
         cost_usd=cost_usd,
     )
 
@@ -105,6 +129,7 @@ def test_alert_defaults_apply_when_no_admin_has_overridden() -> None:
     # they are worth pinning even though they are no longer immutable.
     assert DEFAULT_ALERT_SETTINGS == AlertSettings(
         trial_escalation_usd=1000.0,
+        user_daily_overage_delta_usd=1000.0,
         always_ping_emails=(
             "charles@abundant.ai",
             "ke@abundant.ai",
@@ -191,23 +216,23 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
             trials=trials,
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
     assert [alert.key for alert in alerts] == [
-        "experiment:experiment/1:1000",
-        "experiment:experiment/1:2000",
+        "experiment-24h:experiment/1:1000",
+        "experiment-24h:experiment/1:2000",
     ]
     experiment_alert = alerts[1]
     assert experiment_alert.text.splitlines() == [
         ":money_with_wings: *Expensive experiment*",
         "Title: *Exp &lt;One&gt;*",
-        "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
-        "New spend (last 2h): *$2,001.00*",
+        "24-hour spend milestone: *$2,000.00*",
+        "Cost in past 24 hours: *$2,001.00*",
         "Trials still running: 2",
         "Owner: *Pat &amp; Sam*",
-        "Top agent costs:",
+        "Top agent costs in past 24 hours:",
         "• `model-1`: *$2,001.00*",
         "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
     ]
@@ -227,22 +252,23 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
                 _trial("b", 800, model="azure/fable", finished_at=now),
                 _trial("c", 400, model="anthropic/sonnet", finished_at=now),
                 _trial("d", 200, model="openai/gpt", finished_at=now),
+                _trial("old", 5000, model="old", finished_at=now - timedelta(hours=25)),
             ],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
     assert alerts[0].text.splitlines()[6:10] == [
-        "Top agent costs:",
+        "Top agent costs in past 24 hours:",
         "• `openrouter/opus`: *$1,000.00*",
         "• `azure/fable`: *$800.00*",
         "• `anthropic/sonnet`: *$400.00*",
     ]
 
 
-def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> None:
+def test_build_alerts_excludes_spend_before_the_24_hour_window() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
         AlertCandidates(
@@ -252,50 +278,36 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
                 )
             ],
             trials=[
-                _trial("old", 2000, finished_at=now - timedelta(hours=3)),
+                _trial("old", 2000, finished_at=now - timedelta(hours=25)),
                 _trial("recent", 50, finished_at=now),
             ],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
-    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
-    assert [a.key for a in milestone_alerts] == [
-        "experiment:experiment-1:1000",
-        "experiment:experiment-1:2000",
-    ]
-    assert all(a.silent for a in milestone_alerts)
-    assert all(a.text for a in milestone_alerts)
-    assert all(a.recipient_email == "a@e.com" for a in milestone_alerts)
-    assert all(a.dm_only for a in milestone_alerts)
+    assert alerts == []
 
 
-def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
+def test_build_alerts_calculates_milestones_from_24_hour_spend() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
         AlertCandidates(
             experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 1)],
             trials=[
-                _trial("old", 1500, finished_at=now - timedelta(hours=3)),
+                _trial("old", 1500, finished_at=now - timedelta(hours=25)),
                 _trial("recent", 1600, finished_at=now),
             ],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
-    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
-    silent = [a.key for a in milestone_alerts if a.silent]
-    firing = [a for a in milestone_alerts if not a.silent]
-    assert silent == ["experiment:experiment-1:1000"]
-    assert [a.key for a in firing] == [
-        "experiment:experiment-1:2000",
-        "experiment:experiment-1:3000",
-    ]
-    assert "New spend (last 2h): *$1,600.00*" in firing[0].text
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment-24h:")]
+    assert [a.key for a in milestone_alerts] == ["experiment-24h:experiment-1:1000"]
+    assert "Cost in past 24 hours: *$1,600.00*" in milestone_alerts[0].text
 
 
 def test_build_alerts_new_experiment_fires_every_milestone() -> None:
@@ -306,14 +318,14 @@ def test_build_alerts_new_experiment_fires_every_milestone() -> None:
             trials=[_trial("burst", 2400, finished_at=now)],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
-    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment-24h:")]
     assert [a.key for a in milestone_alerts] == [
-        "experiment:experiment-1:1000",
-        "experiment:experiment-1:2000",
+        "experiment-24h:experiment-1:1000",
+        "experiment-24h:experiment-1:2000",
     ]
     assert not any(a.silent for a in milestone_alerts)
 
@@ -334,7 +346,7 @@ def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
             trials=[_trial("lonely", 201, finished_at=now)],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
@@ -344,7 +356,7 @@ def test_build_alerts_pings_any_trial_over_the_floor_without_peers() -> None:
         ":warning: *Expensive trial*",
         "Title: `lonely title`",
         "Experiment: *Experiment*",
-        "Cost: *$201.00*",
+        "Cost in past 24 hours: *$201.00*",
         "Model: `model-1`",
         "Author: *Unknown*",
         "<https://www.oddish.app/tasks/task%2F1|open task>",
@@ -383,9 +395,11 @@ def test_build_alerts_honors_an_admin_override() -> None:
                 )
             ],
             trials=[_trial("t", 250, finished_at=now)],
+            live_trials=[_live_trial("t", 250)],
         ),
         settings=AlertSettings(
             trial_escalation_usd=50.0,
+            user_daily_overage_delta_usd=1000.0,
             always_ping_emails=("oncall@example.com",),
             is_override=True,
         ),
@@ -393,9 +407,8 @@ def test_build_alerts_honors_an_admin_override() -> None:
         dashboard_url="https://www.oddish.app",
     )
 
-    # The admin pane only tunes the channel escalation. A $250 trial would just
-    # DM its owner on the $1,000 default; the lowered floor also pushes it into
-    # the channel, pinging the overridden list rather than ours.
+    # The completed trial generates the owner's DM; its live checkpoint drives
+    # the channel escalation and uses the overridden ping list.
     trial_alerts = [alert for alert in alerts if alert.key.startswith("trial")]
     assert [alert.key for alert in trial_alerts] == ["trial:t", "trial-escalation:t"]
     assert trial_alerts[-1].mention_emails == (
@@ -417,7 +430,7 @@ def test_escalation_alert_keys_do_not_move_when_the_threshold_is_retuned() -> No
         alerts = build_alerts(
             AlertCandidates(
                 experiments=[ExperimentCandidate("experiment-1", "Exp", "Ada", 0)],
-                trials=[_trial("t", 1500, finished_at=now)],
+                live_trials=[_live_trial("t", 1500)],
             ),
             settings=replace(DEFAULT_ALERT_SETTINGS, trial_escalation_usd=floor),
             recent_cutoff=now - timedelta(hours=2),
@@ -442,6 +455,7 @@ def test_build_alerts_escalates_a_very_expensive_trial_to_the_channel() -> None:
                 )
             ],
             trials=[_trial("whale", 1500, finished_at=now)],
+            live_trials=[_live_trial("whale", 1500)],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
@@ -451,16 +465,87 @@ def test_build_alerts_escalates_a_very_expensive_trial_to_the_channel() -> None:
     dm, escalation = [alert for alert in alerts if alert.key.startswith("trial")]
     assert dm.key == "trial:whale"
     assert escalation.key == "trial-escalation:whale"
-    assert dm.text == escalation.text
-    assert dm.text.splitlines()[0] == ":rotating_light: *Very expensive trial*"
+    assert dm.text.splitlines()[0] == ":warning: *Expensive trial*"
     assert dm.dm_only
     assert dm.recipient_email == "Owner@Example.com"
     assert dm.mention_emails == ()
     assert not escalation.dm_only
+    assert escalation.text.splitlines()[0] == (
+        ":rotating_light: *Very expensive running trial*"
+    )
+    assert "Live cost so far: *$1,500.00*" in escalation.text
     assert escalation.mention_emails == (
         "owner@example.com",
         *DEFAULT_ALWAYS_PING_EMAILS,
     )
+
+
+def test_build_alerts_does_not_channel_escalate_a_finished_trial() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+            trials=[_trial("finished", 1500, finished_at=now)],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert not any(alert.key.startswith("trial-escalation:") for alert in alerts)
+
+
+def test_build_alerts_pings_channel_for_user_above_daily_overage_margin() -> None:
+    alerts = build_alerts(
+        AlertCandidates(
+            user_spend=[
+                UserSpend(
+                    org_id="org-1",
+                    user_id="user-1",
+                    label="Pat <Admin>",
+                    spend_24h_usd=2_500,
+                    daily_avg_7d_usd=1_000,
+                    live_trial_count=2,
+                )
+            ]
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=datetime.now(timezone.utc) - timedelta(hours=24),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == ["user-daily-overage:org-1:user-1"]
+    assert alerts[0].text.splitlines() == [
+        "<!channel>",
+        ":moneybag: *User spend above their 7-day daily average*",
+        "User: *Pat &lt;Admin&gt;*",
+        "Spend in past 24 hours: *$2,500.00*",
+        "Seven-day daily average: *$1,000.00*",
+        "Above their daily average by: *$1,500.00* (alert above $1,000.00)",
+        "Running or retrying trials included: 2",
+        "<https://www.oddish.app/admin|open admin costs>",
+    ]
+    assert not alerts[0].dm_only
+
+
+def test_build_alerts_user_daily_overage_is_exclusive_and_configurable() -> None:
+    # 24h spend $6,000 runs $5,000 above the $1,000 daily average.
+    candidate = UserSpend("org-1", "user-1", "Pat", 6_000, 1_000, 0)
+
+    def keys(delta: float) -> list[str]:
+        alerts = build_alerts(
+            AlertCandidates(user_spend=[candidate]),
+            settings=replace(
+                DEFAULT_ALERT_SETTINGS,
+                user_daily_overage_delta_usd=delta,
+            ),
+            recent_cutoff=datetime.now(timezone.utc) - timedelta(hours=24),
+            dashboard_url="https://www.oddish.app",
+        )
+        return [alert.key for alert in alerts]
+
+    assert keys(5_000) == []
+    assert keys(4_999) == ["user-daily-overage:org-1:user-1"]
 
 
 def test_build_alerts_reports_unpriceable_models_once_each() -> None:
@@ -481,7 +566,7 @@ def test_build_alerts_reports_unpriceable_models_once_each() -> None:
     text = alerts[0].text
     assert "*Unpriceable model:*" in text
     assert "`mystery/model-x`" in text
-    assert "3 recent trials recorded" in text
+    assert "3 trials in the past 24 hours recorded" in text
     assert "/tasks/task%2F9|open task>" in text
 
 
@@ -499,19 +584,19 @@ def test_build_alerts_unpriceable_model_uses_singular_for_one_trial() -> None:
         dashboard_url="https://www.oddish.app",
     )
 
-    assert "1 recent trial recorded" in alerts[0].text
+    assert "1 trial in the past 24 hours recorded" in alerts[0].text
 
 
 def test_build_alerts_ignores_old_trials() -> None:
     now = datetime.now(timezone.utc)
-    # Over the $100 trial floor but stale, and under the $500 milestone.
+    # Over the $100 trial floor but outside the cost window.
     alerts = build_alerts(
         AlertCandidates(
             experiments=[ExperimentCandidate("experiment-1", "Experiment", None, 0)],
-            trials=[_trial("old", 150, finished_at=now - timedelta(hours=3))],
+            trials=[_trial("old", 150, finished_at=now - timedelta(hours=25))],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
-        recent_cutoff=now - timedelta(hours=2),
+        recent_cutoff=now - timedelta(hours=24),
         dashboard_url="https://www.oddish.app",
     )
 
@@ -710,6 +795,106 @@ def test_build_alerts_keeps_one_failed_trial_dm_per_owner_of_a_task_version() ->
     ]
 
 
+def test_build_alerts_reports_finished_experiments_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            finished_experiments=[
+                FinishedExperiment(
+                    id="experiment/1",
+                    name="Exp <One>",
+                    owner="Pat & Sam",
+                    total_trials=4,
+                    owner_email="owner@example.com",
+                )
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == ["experiment-finished:experiment/1"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "owner@example.com"
+    assert alert.mention_emails == ()
+    assert alert.text.splitlines() == [
+        ":checkered_flag: *Experiment finished*",
+        "Title: *Exp &lt;One&gt;*",
+        "Trials: *4*",
+        "Owner: *Pat &amp; Sam*",
+        "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
+    ]
+
+
+def test_build_alerts_reports_finished_trials_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            finished_trials=[
+                FinishedTrial(
+                    name="Trial <One>",
+                    task_id="task/1",
+                    task_version_id="task/1@v2",
+                    experiment_name="Exp & Co",
+                    owner="Ada",
+                    owner_email="owner@example.com",
+                )
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == ["trial-finished:task/1@v2"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "owner@example.com"
+    assert alert.text.splitlines() == [
+        ":white_check_mark: *Trial finished*",
+        "Title: `Trial &lt;One&gt;`",
+        "Experiment: *Exp &amp; Co*",
+        "Owner: *Ada*",
+        "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
+    ]
+
+
+def test_build_alerts_collapses_finished_trials_per_task_version() -> None:
+    now = datetime.now(timezone.utc)
+
+    def finished(name: str, task_version_id: str | None) -> FinishedTrial:
+        return FinishedTrial(
+            name=name,
+            task_id="task/1",
+            task_version_id=task_version_id,
+            experiment_name="Exp",
+            owner="Ada",
+            owner_email="owner@example.com",
+        )
+
+    alerts = build_alerts(
+        AlertCandidates(
+            finished_trials=[
+                finished("trial-1", "task/1@v2"),
+                finished("trial-2", "task/1@v2"),
+                finished("trial-3", "task/1@v3"),
+                finished("legacy", None),
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == [
+        "trial-finished:task/1@v2",
+        "trial-finished:task/1@v3",
+        "trial-finished:task/1",
+    ]
+
+
 def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
@@ -745,6 +930,67 @@ def test_build_alerts_reports_qa_failures_as_dm_only() -> None:
         "Task: *Task &lt;One&gt;*",
         "Reason: verdict judged this task not good",
         "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
+    ]
+
+
+def test_build_alerts_reports_finished_tasks_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        AlertCandidates(
+            tasks_finished=[
+                TaskFinished(
+                    task_id="task/1",
+                    task_name="Task <One>",
+                    task_version_id="task/1@v2",
+                    owner_email="author@example.com",
+                )
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == ["task-finished:task/1@v2"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "author@example.com"
+    assert alert.text.splitlines() == [
+        ":tada: *Task finished*",
+        "Task: *Task &lt;One&gt;*",
+        "<https://www.oddish.app/tasks/task%2F1?version=task%2F1%40v2|open task>",
+    ]
+
+
+def test_build_alerts_collapses_finished_tasks_per_task_version() -> None:
+    now = datetime.now(timezone.utc)
+
+    def finished(task_version_id: str | None) -> TaskFinished:
+        return TaskFinished(
+            task_id="task/1",
+            task_name="Task",
+            task_version_id=task_version_id,
+            owner_email="author@example.com",
+        )
+
+    alerts = build_alerts(
+        AlertCandidates(
+            tasks_finished=[
+                finished("task/1@v2"),
+                finished("task/1@v2"),
+                finished("task/1@v3"),
+                finished(None),
+            ],
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == [
+        "task-finished:task/1@v2",
+        "task-finished:task/1@v3",
+        "task-finished:task/1",
     ]
 
 
@@ -795,9 +1041,8 @@ async def test_deliver_retries_a_failed_post_with_its_stored_payload(
     assert _sent_keys(rows) == {"ok-key"}
     assert _pending_keys(rows) == {"flaky-key"}
 
-    # Next run the milestone's spend has aged out of the recent window, so
-    # build_alerts recomputes it as silent with different text. The pending
-    # row keeps its original payload and keeps retrying regardless.
+    # A later run tries to rewrite the alert as silent with different text. The
+    # pending row keeps its original payload and keeps retrying regardless.
     healthy = True
     await _record_and_deliver(
         [SlackAlert("flaky-key", "recomputed", silent=True)],
@@ -1093,6 +1338,7 @@ async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
                 )
             ],
             trials=[_trial("whale", 1500, finished_at=now)],
+            live_trials=[_live_trial("whale", 1500)],
         ),
         settings=DEFAULT_ALERT_SETTINGS,
         recent_cutoff=now - timedelta(hours=2),
@@ -1110,11 +1356,11 @@ async def test_an_escalated_trial_dms_its_owner_and_posts_to_the_channel(
             f"<@U-{email.split('@')[0]}>"
             for email in ("owner@example.com", *DEFAULT_ALWAYS_PING_EMAILS)
         ),
-        ":rotating_light: *Very expensive trial*",
+        ":rotating_light: *Very expensive running trial*",
     ]
     assert [text.splitlines()[0] for _, text in dmed] == [
         ":money_with_wings: *Expensive experiment*",
-        ":rotating_light: *Very expensive trial*",
+        ":warning: *Expensive trial*",
     ]
     assert {user_id for user_id, _ in dmed} == {"U-owner"}
 
@@ -1503,7 +1749,22 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
                     origin=TrialOrigin.ODDISH,
                     is_probe=False,
                     cost_usd=500,
-                    finished_at=now - timedelta(days=1),
+                    finished_at=now - timedelta(hours=23),
+                ),
+                TrialModel(
+                    id=f"{task_id}-before-cost-window",
+                    name="before cost window",
+                    task_id=task_id,
+                    experiment_id=experiment_id,
+                    agent="claude-code",
+                    provider="openai",
+                    model="gpt-5.3",
+                    queue_key="test",
+                    status=TrialStatus.SUCCESS,
+                    origin=TrialOrigin.ODDISH,
+                    is_probe=False,
+                    cost_usd=5000,
+                    finished_at=now - timedelta(hours=25),
                 ),
                 # 40M output tokens of a priced model settles to ~$560 via the
                 # token estimate: over the trial floor, and enough on top of the
@@ -1565,22 +1826,24 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
         # so it produces a token estimate and never appears as unpriceable --
         # the token estimate does not falsely trigger the alert.
         assert [alert.key for alert in alerts] == [
-            f"experiment:{experiment_id}:1000",
+            f"experiment-24h:{experiment_id}:1000",
             f"trial:{task_id}-outlier",
+            f"experiment-finished:{experiment_id}",
+            f"trial-finished:{task_id}",
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
-        assert "New spend (last 2h):" in alerts[0].text
+        assert "Cost in past 24 hours:" in alerts[0].text
         assert alerts[0].recipient_email == "expense-owner@example.com"
         assert alerts[0].dm_only
-        assert "Top agent costs:" in alerts[0].text
+        assert "Top agent costs in past 24 hours:" in alerts[0].text
         assert alerts[1].text.splitlines()[0] == ":warning: *Expensive trial*"
         assert "Title: `outlier`" in alerts[1].text
         assert "Experiment: *Slack expense test*" in alerts[1].text
         assert "Author: *Expense Owner*" in alerts[1].text
         assert alerts[1].recipient_email == "expense-owner@example.com"
         assert alerts[1].dm_only
-        assert "*Unpriceable model:*" in alerts[2].text
+        assert "*Unpriceable model:*" in alerts[-1].text
     finally:
         async with get_session() as session:
             await session.execute(
@@ -1596,6 +1859,161 @@ async def test_load_alerts_uses_settled_trial_costs() -> None:
             )
             await session.execute(
                 UserModel.__table__.delete().where(UserModel.id == user_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_load_alerts_user_daily_overage_includes_live_running_trials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suffix = uuid4().hex[:12]
+    org_id = f"slack-org-{suffix}"
+    alice_id = f"slack-alice-{suffix}"
+    bob_id = f"slack-bob-{suffix}"
+    experiment_id = f"slack-exp-{suffix}"
+    task_id = f"slack-task-{suffix}"
+    now = datetime.now(timezone.utc)
+
+    async def default_settings() -> AlertSettings:
+        return DEFAULT_ALERT_SETTINGS
+
+    async def no_user_overrides() -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(notifications, "read_alert_settings", default_settings)
+    monkeypatch.setattr(notifications, "read_prefs_by_email", no_user_overrides)
+
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="Live spend org", slug=org_id))
+        session.add_all(
+            [
+                UserModel(
+                    id=alice_id,
+                    org_id=org_id,
+                    email=f"alice-{suffix}@example.com",
+                    name="Alice",
+                    github_username=f"alice-{suffix}",
+                ),
+                UserModel(
+                    id=bob_id,
+                    org_id=org_id,
+                    email=f"bob-{suffix}@example.com",
+                    name="Bob",
+                    github_username=f"bob-{suffix}",
+                ),
+            ]
+        )
+        session.add(
+            ExperimentModel(
+                id=experiment_id,
+                name="Live spend experiment",
+                org_id=org_id,
+                owner=f"alice-{suffix}",
+                owner_user_id=alice_id,
+            )
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                org_id=org_id,
+                user="test",
+                task_path="/tmp/test",
+            )
+        )
+
+        def trial(
+            trial_id: str,
+            billed_user_id: str,
+            cost_usd: float,
+            status: TrialStatus,
+            finished_at: datetime | None,
+        ) -> TrialModel:
+            return TrialModel(
+                id=trial_id,
+                name=trial_id,
+                task_id=task_id,
+                experiment_id=experiment_id,
+                org_id=org_id,
+                billed_user_id=billed_user_id,
+                agent="claude-code",
+                provider="openai",
+                model="gpt-5.3",
+                queue_key="test",
+                status=status,
+                origin=TrialOrigin.ODDISH,
+                is_probe=False,
+                cost_usd=cost_usd,
+                finished_at=finished_at,
+            )
+
+        session.add_all(
+            [
+                trial(
+                    f"{task_id}-alice-finished",
+                    alice_id,
+                    1000,
+                    TrialStatus.SUCCESS,
+                    now - timedelta(days=2),
+                ),
+                trial(
+                    f"{task_id}-bob-finished",
+                    bob_id,
+                    1000,
+                    TrialStatus.SUCCESS,
+                    now - timedelta(days=2),
+                ),
+                trial(
+                    f"{task_id}-alice-running",
+                    alice_id,
+                    11000,
+                    TrialStatus.RUNNING,
+                    None,
+                ),
+            ]
+        )
+
+    try:
+        alerts = await load_alerts(now)
+        alert_by_key = {alert.key: alert for alert in alerts}
+        live_key = f"trial-escalation:{task_id}-alice-running"
+        user_key = f"user-daily-overage:{org_id}:{alice_id}"
+
+        assert live_key in alert_by_key
+        assert "Live cost so far: *$11,000.00*" in alert_by_key[live_key].text
+        assert user_key in alert_by_key
+        # Alice's live $11,000 is her whole last-24h spend (the two $1,000
+        # finished trials settled two days ago), and her seven-day daily average
+        # is $12,000 / 7 = $1,714.29.
+        assert "Spend in past 24 hours: *$11,000.00*" in alert_by_key[user_key].text
+        assert (
+            "Seven-day daily average: *$1,714.29*" in alert_by_key[user_key].text
+        )
+        assert "Running or retrying trials included: 1" in alert_by_key[user_key].text
+        # Bob spent nothing in the last 24h, so he never clears his own average.
+        assert not any(
+            alert.key == f"user-daily-overage:{org_id}:{bob_id}" for alert in alerts
+        )
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id == experiment_id
+                )
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id.in_([alice_id, bob_id]))
             )
             await session.execute(
                 OrganizationModel.__table__.delete().where(
@@ -1702,7 +2120,7 @@ async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> N
 
         # Handle resolves to a single connected user -> notify that user.
         assert (
-            by_key[f"experiment:{exp_handle_id}:1000"].recipient_email
+            by_key[f"experiment-24h:{exp_handle_id}:1000"].recipient_email
             == "august@example.com"
         )
         assert (
@@ -1710,16 +2128,18 @@ async def test_load_alerts_notifies_the_owner_handle_not_the_billing_user() -> N
             == "august@example.com"
         )
         # Unmatched label -> named in the text, notified to no one.
-        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_email is None
+        assert by_key[f"experiment-24h:{exp_ots_id}:1000"].recipient_email is None
         assert by_key[f"trial:{exp_ots_id}-recent"].recipient_email is None
 
         # The Clerk id resolves from the same handle, so a Clerk-linked Slack DM
         # reaches the named owner; the unmatched label carries no Clerk id.
         assert (
-            by_key[f"experiment:{exp_handle_id}:1000"].recipient_clerk_user_id
+            by_key[f"experiment-24h:{exp_handle_id}:1000"].recipient_clerk_user_id
             == "clerk_august"
         )
-        assert by_key[f"experiment:{exp_ots_id}:1000"].recipient_clerk_user_id is None
+        assert (
+            by_key[f"experiment-24h:{exp_ots_id}:1000"].recipient_clerk_user_id is None
+        )
 
         # The billing user is never a recipient or a mention on any alert.
         for alert in by_key.values():
@@ -1953,15 +2373,19 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
         alerts = await load_alerts(now)
         assert [alert.key for alert in alerts] == [
             f"experiment-failed:{finished_id}",
+            f"experiment-finished:{finished_id}",
             f"trial-failed:{task_id}",
+            f"trial-finished:{task_id}",
         ]
         alert = alerts[0]
         assert alert.dm_only
         assert alert.recipient_email == "failed-owner@example.com"
         assert "Failed trials: *3/4*" in alert.text
         assert "Title: *Failed experiment*" in alert.text
-        assert alerts[1].dm_only
-        assert alerts[1].recipient_email == "failed-owner@example.com"
+        by_key = {alert.key: alert for alert in alerts}
+        trial_failed = by_key[f"trial-failed:{task_id}"]
+        assert trial_failed.dm_only
+        assert trial_failed.recipient_email == "failed-owner@example.com"
     finally:
         async with get_session() as session:
             await session.execute(
@@ -2395,6 +2819,55 @@ async def test_database_outbox_is_durable() -> None:
                     notifications.SlackExpenseAlertModel.alert_key.in_(
                         [loud_key, silent_key]
                     )
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_daily_overage_user_alert_rearms_only_after_a_sent_breach_clears() -> None:
+    suffix = uuid4().hex
+    active_key = f"user-daily-overage:org:{suffix}-active"
+    cleared_key = f"user-daily-overage:org:{suffix}-cleared"
+    pending_key = f"user-daily-overage:org:{suffix}-pending"
+    now = datetime.now(timezone.utc)
+    keys = [active_key, cleared_key, pending_key]
+
+    def row(key: str, *, sent: bool) -> dict:
+        return {
+            "alert_key": key,
+            "claimed_at": now,
+            "notified_at": now if sent else None,
+            "payload": key,
+            "recipient_email": None,
+            "mention_emails": None,
+        }
+
+    try:
+        await notifications._insert_alert_rows(
+            [
+                row(active_key, sent=True),
+                row(cleared_key, sent=True),
+                row(pending_key, sent=False),
+            ]
+        )
+        await notifications._rearm_user_spend_alerts({active_key})
+
+        async with get_session() as session:
+            remaining = set(
+                (
+                    await session.execute(
+                        select(notifications.SlackExpenseAlertModel.alert_key).where(
+                            notifications.SlackExpenseAlertModel.alert_key.in_(keys)
+                        )
+                    )
+                ).scalars()
+            )
+        assert remaining == {active_key, pending_key}
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                notifications.SlackExpenseAlertModel.__table__.delete().where(
+                    notifications.SlackExpenseAlertModel.alert_key.in_(keys)
                 )
             )
 

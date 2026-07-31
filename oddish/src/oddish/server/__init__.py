@@ -19,12 +19,15 @@ from oddish.core.endpoints import (
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
+    rerun_pre_trial_audit_core,
+    rerun_trial_analysis_core,
     combine_experiments_core,
     create_task_sweep_batch_core,
     create_task_sweep_core,
     get_task_detail_core,
     get_task_status_core,
     get_task_version_core,
+    get_trial_analysis_log_core,
     get_trial_by_index_core,
     get_trial_for_org_core,
     list_task_versions_core,
@@ -51,8 +54,6 @@ from oddish.core.trial_io import (
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
-    read_persisted_trajectory_graph,
-    generate_and_store_trajectory_graph,
 )
 from oddish.core.trial_live import read_trial_live_for_id
 from oddish.schemas import TrialRetryRequest
@@ -487,9 +488,36 @@ async def browse_tasks(
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
     tags_none: str | None = Query(None),
+    models: str | None = Query(None),
+    min_steps: int | None = Query(None, ge=0),
+    max_steps: int | None = Query(None, ge=0),
+    min_duration_seconds: float | None = Query(None, ge=0),
+    max_duration_seconds: float | None = Query(None, ge=0),
+    min_tool_calls: int | None = Query(None, ge=0),
+    max_tool_calls: int | None = Query(None, ge=0),
+    tool_names: str | None = Query(None),
+    tool_count_mins: str | None = Query(None),
+    trial_metric_match: str = Query("any", pattern="^(any|all)$"),
 ) -> TaskBrowseResponse:
     """Browse latest task versions with aggregated trial stats."""
     async with get_session() as session:
+        from oddish.filters.trial_metrics import TrialMetricFilter
+
+        try:
+            metric_filter = TrialMetricFilter.from_query(
+                models=models,
+                min_steps=min_steps,
+                max_steps=max_steps,
+                min_duration_seconds=min_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                min_tool_calls=min_tool_calls,
+                max_tool_calls=max_tool_calls,
+                tool_names=tool_names,
+                tool_count_mins=tool_count_mins,
+                match=trial_metric_match,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return await browse_tasks_core(
             session,
             limit=limit,
@@ -498,6 +526,16 @@ async def browse_tasks(
             tags_all=_split_tag_csv(tags),
             tags_any=_split_tag_csv(tags_any),
             tags_none=_split_tag_csv(tags_none),
+            models=metric_filter.models,
+            min_steps=metric_filter.min_steps,
+            max_steps=metric_filter.max_steps,
+            min_duration_seconds=metric_filter.min_duration_seconds,
+            max_duration_seconds=metric_filter.max_duration_seconds,
+            min_tool_calls=metric_filter.min_tool_calls,
+            max_tool_calls=metric_filter.max_tool_calls,
+            tool_names=metric_filter.tool_names,
+            tool_count_mins=metric_filter.tool_count_mins,
+            trial_metric_match=metric_filter.match.value,
         )
 
 
@@ -684,6 +722,36 @@ async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
         )
 
 
+@api.post("/tasks/{task_id}/qa/pre-trial")
+async def rerun_pre_trial_audit(task_id: str) -> dict:
+    """Queue the pre-trial audit for the task's current version.
+
+    Runs only the audit. Does not classify trials and does not synthesize
+    the verdict.
+    """
+    async with get_session() as session:
+        return await rerun_pre_trial_audit_core(session, task_id=task_id)
+
+
+@api.post("/trials/{trial_id}/analysis/rerun")
+async def rerun_trial_analysis(trial_id: str) -> dict:
+    """Queue analysis for one trial.
+
+    Classifies only this trial. Does not touch other trials, the task
+    verdict, or the pre-trial audit.
+    """
+    async with get_session() as session:
+        return await rerun_trial_analysis_core(session, trial_id=trial_id)
+
+
+@api.get("/trials/{trial_id}/analysis-log")
+async def get_trial_analysis_log(trial_id: str) -> dict:
+    """Whole log of the trial's current/most recent analysis run, plus the
+    QA queue position while the job waits for a worker."""
+    async with get_session() as session:
+        return await get_trial_analysis_log_core(session, trial_id=trial_id)
+
+
 @api.post("/trials/{trial_id}/retry")
 async def retry_trial(
     trial_id: str,
@@ -739,34 +807,6 @@ async def get_trial_trajectory(trial_id: str):
     """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
     trial = await _get_detached_trial(trial_id)
     return await read_trial_trajectory(trial)
-
-
-@api.get("/trials/{trial_id}/trajectory/graph")
-async def get_trial_trajectory_graph(trial_id: str):
-    """Return the STORED agent graph for a trial (never generates)."""
-    trial = await _get_detached_trial(trial_id)
-    graph = read_persisted_trajectory_graph(trial)
-    if graph is None:
-        return {"status": "not_generated"}
-    return graph
-
-
-@api.post("/trials/{trial_id}/trajectory/graph")
-async def generate_trial_trajectory_graph(trial_id: str, refresh: bool = False):
-    """Generate (and persist) the condensed agent step-graph for a trial."""
-    from oddish.core.helpers import _has_fetchable_trajectory
-
-    async with get_session() as session:
-        trial = await session.get(TrialModel, trial_id)
-        if trial is None:
-            raise HTTPException(status_code=404, detail="Trial not found")
-        if not _has_fetchable_trajectory(trial):
-            raise HTTPException(
-                status_code=404, detail="No trajectory available for this trial"
-            )
-        return await generate_and_store_trajectory_graph(
-            session, trial, refresh=refresh
-        )
 
 
 @api.get("/trials/{trial_id}/result")

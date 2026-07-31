@@ -29,6 +29,7 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
 │   ├── analyze/                # QA prompts and analysis helpers
+│   ├── blocks/                 # Block/AnalyzerBlock primitive + LLM backends
 │   ├── cli/                    # oddish run/upload/ls/status/cancel/pull/collect/...
 │   ├── core/                   # shared endpoint/service logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
@@ -59,7 +60,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
 ├── deploy.py                   # Modal app entrypoint
-├── modal_app.py                # Modal image, volumes, shared runtime, env knobs
+├── modal_app.py                # Modal image, volumes, shared runtime, env knobs; default Harbor provider is Daytona
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
@@ -103,6 +104,7 @@ Postgres
   - trials / tasks    # domain state + live UI columns
   - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
+  - model_concurrency_overrides # admin-set limits over deploy configuration
         |
         v
 Workers (auto-started by API, or standalone via python -m oddish.workers.queue.worker)
@@ -125,12 +127,21 @@ High-level flow:
    failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Trajectory analysis is **task-scoped**: when every trial of a
+4. Scoped QA assignments enqueue independent `ANALYZER_BLOCK` jobs through
+   `oddish.core.qa_assignments.enqueue_qa_assignment_runs_core`. `pre_trial`
+   fires once per assignment and task version during sweep submission;
+   `post_trial` fires once per assignment and final terminal trial. The
+   `(qa_assignment_id, stage_event_key)` partial unique index makes lifecycle
+   retries idempotent. These jobs are additive and non-blocking: their failure
+   does not change trial state or the built-in task verdict pipeline. API
+   assignments are prompt-only; sandbox assignments may request an
+   authenticated short-lived Oddish CLI.
+5. Trajectory analysis is **task-scoped**: when every trial of a
    `run_analysis` task is terminal, a single `QA` job is enqueued. That one
    job classifies every live trial's trajectory (written to `trials.analysis`)
    and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
    tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
-5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
+6. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
    codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
@@ -148,7 +159,14 @@ High-level flow:
    identifiers. Claude message payloads also carry a `block_index` and
    `text_mode` (`append` or `replace`) so clients can assemble corrected text
    snapshots without concatenating stale content.
-6. Trial completion persists queryable execution metrics on the trial row:
+   Each persisted cost checkpoint re-evaluates enforced quotas. Reaching a
+   payer's rolling-24h cap cancels every quota-counted nonterminal trial billed
+   to that payer; reaching the org's monthly cap cancels every quota-counted
+   nonterminal trial in the org. Final result settlement performs the same
+   check for agents without live usage. Cancellation retires queued, running,
+   blocked, and retrying worker jobs in the database before terminating remote
+   handles; a task is failed only when no other live trial remains.
+7. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
@@ -156,17 +174,77 @@ High-level flow:
    S3; only counts, the tool name, and the report's trial-relative artifact path
    are stored in `trials.result`. Use the CLI or dashboard to watch progress and
    pull logs/artifacts back locally.
+   It also derives trajectory elapsed time and tool usage directly from ATIF
+   steps into `trials.trajectory_duration_seconds`, `trials.total_tool_calls`,
+   and `trials.tool_counts`. Task and experiment filters combine model and
+   trajectory metric constraints against the same eligible trial. Their
+   `any` mode requires one passing trial; `all` requires at least one eligible
+   trial and rejects the row when any eligible trial fails the constraints.
+   The canonical cross-surface contract is `oddish.filters.TrialMetricFilter`;
+   CLI and API adapters must parse/serialize through it. SQL surfaces must use
+   `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
+   injected `EligibleTrialScope` rather than reimplementing Any/All logic.
+
+Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
+contains its `step_ids`, summary, and deterministic `tool_count` and
+`duration_ms` metadata. Step count is the length of `step_ids`; the other
+analytics are computed from the immutable
+trajectory after LLM parsing (not generated by the model). Component duration is
+the sum of each included step's elapsed time since the preceding trajectory
+step; the first step and steps without two usable timestamps contribute zero.
+The frontend derives the same values for older summaries that lack the fields.
+
+QA analyzer prompts are stored in the versioned `prompts` / `prompt_versions`
+registry. `PromptKind.QA_PRE_TRIAL` drives the source audit,
+`PromptKind.QA_POST_TRIAL` drives the existing per-trial log classifier, and
+`PromptKind.TRAJECTORY_SUMMARY` drives schema-v5 trajectory summaries; its
+template must retain the `{{taxonomy}}` placeholder rendered by the block.
+Prompt updates append immutable versions and the highest version always runs. Workers
+seed missing built-in kinds at startup without overwriting operator edits. A
+trial classification records the post-trial prompt kind and version in
+`trials.analysis`; local/library classification without a registry row falls
+back to the packaged `analyze/classify_prompt.txt`.
+
+Hosted prompt overrides may be scoped to an org, user, experiment, task, or
+trial. Resolution is trial → task → experiment → user → org → global, and every
+domain-scoped read must first verify that the target belongs to the active org.
+Scoped prompt identity includes `org_id`; in particular, the same user may have
+independent overrides for the same kind in multiple organizations.
 
 ### Worker job kinds
 
 `WorkerJobKind` (in `oddish.db.models`):
 
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
-  verdict), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
+  verdict), `ANALYZER` (cross-experiment report orchestration),
+  `ANALYZER_BLOCK` (one declarative `analyzer_runs` execution),
+  `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
   is kept only so in-flight rows survive a deploy) and `VERDICT` (enum value only,
   no handler). Nothing enqueues either anymore.
 - **Reserved**: `QA_REVIEW` (enum value, no handler yet).
+
+### Custom QA runs
+
+`POST /qa/runs` (hosted backend) creates one `analyzer_runs` row and one
+`ANALYZER_BLOCK` worker job per registered prompt variant, then returns the
+queued runs. `GET /qa/runs/{id}` and the `/prompts` endpoints expose durable
+lineage. The shared `prompts` registry is kind-addressed — built-in UPPERCASE
+kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) plus lowercase-slug custom kinds for
+saved QA variants — `prompt_versions` stores immutable numbered content, and
+`analyzer_runs` records the exact version, scope (`experiment` / `task` /
+`trial`), model, reasoning effort, backend, resolved config/command,
+`analyzer_blocks` ID, status, and output. Every prompt edit appends an
+immutable version and the highest version is always the one that runs (no
+activation pointer).
+
+`oddish prompt` manages registry versions. `oddish qa ... --variant KIND` uses
+the latest version and `--variant KIND@N` pins a historical version. Variants in
+one request run concurrently for A/B comparison. The hosted `sandbox` backend
+installs the Oddish CLI only with explicit `--allow-oddish-cli`. At worker
+execution time its client factory mints a short-lived internal TASKS-scoped
+key and revokes it during cleanup; the caller's credential is never forwarded
+or persisted. The `api` backend is prompt-only and rejects CLI access.
 
 ## Package Boundaries
 
@@ -178,12 +256,47 @@ High-level flow:
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
   the shared `classify_trial_and_store`, then synthesize the task verdict
+- post-trial classification runs through `AnalyzerBlock`. It reads two
+  already-downloaded directories and executes nothing, so `resolve_substrate`
+  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
+  `post_trial_sandbox_enabled` is the operator opt-in that lifts it into a
+  Daytona `SANDBOX`, which restores the task/trial snapshot at the worker's own
+  absolute paths so no prompt rewriting is involved. Its costs use the
+  `post_trial` job kind; the legacy `trial_classifier` cost bucket is retired at
+  this cutover, and every block row carries `block_metadata.cost_status`
+  (`recorded` | `no_usage` | `failed`) so lost spend is queryable.
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
+- database-backed admin concurrency overrides; these take precedence over
+  `ODDISH_MODEL_CONCURRENCY_OVERRIDES` and are read by both the dispatcher plan
+  and each worker's slot acquisition. This is the supported way to change a
+  per-model limit at runtime. The self-tuning advisory controller
+  (`ODDISH_DYNAMIC_MODEL_CONCURRENCY` + `concurrency_controller.py`) is
+  **deprecated** in favor of it: leave the flag OFF; enabling it logs a
+  deprecation warning and the path may be removed
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
   stage reconciliation in one cleanup sweep
 - soft-delete semantics on domain rows via the `deleted_at` column and
   a session-level filter (`oddish.db.soft_delete`)
+
+`oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
+building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
+backends, so verdict synthesis runs in a backend-free worker. The Daytona
+sandbox backend needs cc_chat and stays in
+`backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
+itself into core's client factory on import. `AnalyzerBlock` owns a
+self-provisioned client's complete lifecycle, including sandbox file downloads
+before close. Hosted callers request sandbox capabilities declaratively; the
+registered Daytona factory owns runtime/CLI installation, short-lived internal
+key minting, and key/sandbox cleanup. Callers must not provision and inject a
+one-off sandbox client for those capabilities.
+
+Hosted failure analysis uses
+`backend/api/services/cc_chat/analyzer_block_runner.py`: it partitions a bucket
+into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
+up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
+host-side, and supplies those artifacts declaratively to a separate reduce
+block. Map/reduce blocks never share or receive a live runtime/client.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.
@@ -201,6 +314,18 @@ policy, GitHub notification hooks, and public sharing / product endpoints.
 Clerk-based auth and org management, and Next.js route handlers that proxy
 requests to the backend.
 
+The hosted `/admin` dashboard is tenant-scoped even though its core diagnostic
+helpers also serve the global self-hosted/operator view. Ordinary hosted queue
+status, queue health, worker, orphan, cost, per-user cost, and task-expansion
+handlers must pass `auth.org_id`; never accept an organization selector from
+the client. A user cost drilldown returns 404 when the requested user belongs
+to another org. Deployment-wide diagnostics or mutations (global queue
+status/health and slot topology, model concurrency, shared-channel Slack alert
+settings, and the global cost-excluded LLM-key list) additionally require the active org to match
+`ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
+that capability through `GET /admin/operator-access` and hides those controls
+for other orgs.
+
 The authenticated org-scoped cost leaderboard is served by `GET /leaderboard` in
 `backend/api/routers/dashboard.py`. It shares the admin cost dashboard's
 settled first-party spend basis and must stay in sync with its per-user rows:
@@ -215,6 +340,11 @@ must not add org, email, model, experiment, trial, or internal-id fields to
 that contract. Each row also carries its spend rank so the rare row with no
 safe display label (e.g. a payer outside the auth org) drops without
 renumbering everyone else.
+
+The admin `GET /admin/costs` response includes analysis spend time series both
+by model (`series_qa_by_model`) and by analyzer job kind
+(`series_by_analysis_type`). The Cost breakdown chart exposes the latter as the
+`Analyzer` stack; analyzer spend does not belong on the people leaderboard.
 
 ### Task Identity
 
@@ -323,8 +453,9 @@ Behavior:
 | `queue_manager.py` | Per-queue-key concurrency bookkeeping, `run_polling_worker` |
 | `worker.py` | Standalone poll loop (`python -m oddish.workers.queue.worker`) |
 
-Auxiliary modules (`concurrency_controller.py`, `db_helpers.py`, `job_tokens.py`,
-`runtime_status.py`, `shared.py`, `trial_failures.py`) support these.
+Auxiliary modules (`concurrency_controller.py` (deprecated — see admin
+overrides), `db_helpers.py`, `job_tokens.py`, `runtime_status.py`, `shared.py`,
+`trial_failures.py`) support these.
 
 Handler registration lives in `oddish.workers.jobs` (`registry.py`,
 `handlers.py`). Both the standalone worker and the backend call
@@ -408,21 +539,25 @@ Settings are loaded from `oddish/.env`; see `oddish/env.example`,
 Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 `oddish/src/oddish/workers/harbor/runner.py`:
 
-- Claude trials run through AWS Bedrock only. `CLAUDE_CODE_USE_BEDROCK=1` is
+- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
-  `to_bedrock_model_id`. `ANTHROPIC_API_KEY` is not a trial route.
+  `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key
+  via the explicit `anthropic-hdo/<model>` prefix: that route overwrites
+  `ANTHROPIC_API_KEY` with `ANTHROPIC_HDO_API_KEY` and blanks Bedrock routing
+  for the trial.
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
-- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, and Meta each have explicit
-  canonical provider prefixes and queue keys: `zai/`, `minimax/`, `moonshot/`,
-  `fireworks/`, `xai/`, and `meta/`. Add or change provider aliases in
-  `config.py`, then update env injection in the Harbor runner and the network
-  allowlist notes.
+- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, Meta, and Anthropic HDO each
+  have explicit canonical provider prefixes and queue keys: `zai/`, `minimax/`,
+  `moonshot/`, `fireworks/`, `xai/`, `meta/`, and `anthropic-hdo/`. Add or
+  change provider aliases in `config.py`, then update env injection in the
+  Harbor runner and the network allowlist notes.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
-  `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`,
-  `XAI_API_KEY`, `META_API_KEY`) and must not be persisted on trial rows.
+  `ANTHROPIC_HDO_API_KEY`, `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`,
+  `FIREWORKS_API_KEY`, `XAI_API_KEY`, `META_API_KEY`) and must not be persisted
+  on trial rows.
 - `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
   `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
   but not every xAI model is served there — some (e.g. newer/unreleased models)
@@ -442,6 +577,12 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`grok_build_session.py`). If the session store is missing it falls back to
   the text-only stdout trajectory. Do not "fix" trajectories by parsing stdout —
   the tool calls are only in the session store.
+- The grok **live** transcript is the one reader that does parse stdout
+  (`GrokBuildFold` in `live_tail.py` tails `/logs/agent/grok-build.json`): the
+  session store is copied into the trial logs only after the run, so it cannot
+  feed a live view. That panel is therefore text and reasoning only, with no
+  tool calls and no running token/cost counters; it is not the trajectory and
+  must not be used to build one.
 
 Storage defaults:
 
@@ -723,6 +864,11 @@ silently breaks throughput or correctness — read before touching
    "release only if zero jobs RUNNING on the key") — that was the original bug:
    one live job pinned every leaked lease for ~12h and starved the queue. The
    link is always `queue_slots.locked_by == worker_jobs.current_worker_id`.
+   The limit used for both spawn planning and slot acquisition comes from
+   `model_concurrency_overrides` when an admin override exists, otherwise from
+   the deploy-time `ODDISH_MODEL_CONCURRENCY_OVERRIDES` / default settings.
+   Dynamic advice never exceeds an admin override, and an override-read failure
+   fails closed at zero rather than risking reopening a disabled queue.
 
 4. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
    model under two keys gets the *sum* of both buckets against one provider quota

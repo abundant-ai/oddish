@@ -83,6 +83,26 @@ class TrialSpend:
 
 
 @dataclass(frozen=True)
+class LiveTrialSpend:
+    id: str
+    name: str
+    task_id: str
+    experiment_id: str
+    model: str
+    cost_usd: float
+
+
+@dataclass(frozen=True)
+class UserSpend:
+    org_id: str
+    user_id: str
+    label: str
+    spend_24h_usd: float
+    daily_avg_7d_usd: float
+    live_trial_count: int
+
+
+@dataclass(frozen=True)
 class UnpricedModel:
     model: str
     trial_count: int
@@ -112,6 +132,27 @@ class FailedTrial:
 
 
 @dataclass(frozen=True)
+class FinishedExperiment:
+    id: str
+    name: str
+    owner: str | None
+    total_trials: int
+    owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
+
+
+@dataclass(frozen=True)
+class FinishedTrial:
+    name: str
+    task_id: str
+    task_version_id: str | None
+    experiment_name: str
+    owner: str | None
+    owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
+
+
+@dataclass(frozen=True)
 class QaFailure:
     task_id: str
     task_name: str
@@ -122,13 +163,27 @@ class QaFailure:
 
 
 @dataclass(frozen=True)
+class TaskFinished:
+    task_id: str
+    task_name: str
+    task_version_id: str | None
+    owner_email: str | None = None
+    owner_clerk_user_id: str | None = None
+
+
+@dataclass(frozen=True)
 class AlertCandidates:
     experiments: list[ExperimentCandidate] = field(default_factory=list)
     trials: list[TrialSpend] = field(default_factory=list)
+    live_trials: list[LiveTrialSpend] = field(default_factory=list)
+    user_spend: list[UserSpend] = field(default_factory=list)
     unpriced_models: list[UnpricedModel] = field(default_factory=list)
     failed_experiments: list[FailedExperiment] = field(default_factory=list)
     failed_trials: list[FailedTrial] = field(default_factory=list)
+    finished_experiments: list[FinishedExperiment] = field(default_factory=list)
+    finished_trials: list[FinishedTrial] = field(default_factory=list)
     qa_failures: list[QaFailure] = field(default_factory=list)
+    tasks_finished: list[TaskFinished] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -140,9 +195,6 @@ class SlackAlert:
     mention_emails: tuple[str, ...] = ()
     dm_only: bool = False
     silent: bool = False
-
-
-_MILESTONE_EPSILON = 1e-6
 
 
 def _escape(value: str) -> str:
@@ -242,15 +294,13 @@ def build_alerts(
         )
 
     for experiment in candidates.experiments:
-        experiment_trials = trials_by_experiment.get(experiment.id, [])
+        experiment_trials = [
+            trial
+            for trial in trials_by_experiment.get(experiment.id, [])
+            if trial.finished_at >= recent_cutoff
+        ]
         owner_prefs = prefs_for(experiment.owner_email)
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
-        recent_spend = sum(
-            trial.cost_usd
-            for trial in experiment_trials
-            if trial.finished_at >= recent_cutoff
-        )
-        baseline_cost = total_cost - recent_spend
         # A personal milestone cutoff overrides both the first threshold and the
         # repeat interval; unset inherits the deploy-time pair.
         if owner_prefs.experiment_milestone_usd is not None:
@@ -277,30 +327,26 @@ def build_alerts(
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
             for milestone in milestones:
-                key = f"experiment:{experiment.id}:{milestone:g}"
-                # Milestones already covered before the watch window opened are
-                # historical: claim them silently so pre-existing spend never
-                # dumps a backlog of alerts into any delivery channel.
-                silent = milestone <= baseline_cost + _MILESTONE_EPSILON
+                # Legacy keys represented lifetime spend; keep rolling-window
+                # claims separate so those rows cannot suppress this alert.
+                key = f"experiment-24h:{experiment.id}:{milestone:g}"
                 alerts.append(
                     SlackAlert(
                         key=key,
                         text=(
                             ":money_with_wings: *Expensive experiment*\n"
                             f"Title: *{_escape(experiment.name)}*\n"
-                            f"Spend milestone: *${milestone:,.2f}* "
-                            f"(current spend: *${total_cost:,.2f}*)\n"
-                            f"New spend (last 2h): *${recent_spend:,.2f}*\n"
+                            f"24-hour spend milestone: *${milestone:,.2f}*\n"
+                            f"Cost in past 24 hours: *${total_cost:,.2f}*\n"
                             f"Trials still running: {experiment.active_trials}\n"
                             f"Owner: *{_escape(experiment.owner or 'Unknown')}*\n"
-                            "Top agent costs:\n"
+                            "Top agent costs in past 24 hours:\n"
                             f"{top_agent_cost_lines}\n"
                             f"<{experiment_url}|open experiment>"
                         ),
                         recipient_email=experiment.owner_email,
                         recipient_clerk_user_id=experiment.owner_clerk_user_id,
                         dm_only=True,
-                        silent=silent,
                     )
                 )
 
@@ -310,56 +356,81 @@ def build_alerts(
             else DEFAULT_TRIAL_PING_USD
         )
         for trial in experiment_trials:
-            if trial.finished_at < recent_cutoff:
-                continue
-            # The owner's DM answers to their personal floor and toggle. The
-            # escalation is shared oversight on the global threshold and ignores
-            # both -- so a personal floor set above $1k can't silence the
-            # channel, and a personal mute can't either.
-            escalated = trial.cost_usd > settings.trial_escalation_usd
             wants_dm = (
                 owner_prefs.expensive_trial_enabled and trial.cost_usd > trial_floor
             )
-            if not (escalated or wants_dm):
+            if not wants_dm:
                 continue
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
-            heading = (
-                ":rotating_light: *Very expensive trial*"
-                if escalated
-                else ":warning: *Expensive trial*"
-            )
             text = (
-                f"{heading}\n"
+                ":warning: *Expensive trial*\n"
                 f"Title: `{_escape(trial.name)}`\n"
                 f"Experiment: *{_escape(experiment.name)}*\n"
-                f"Cost: *${trial.cost_usd:,.2f}*\n"
+                f"Cost in past 24 hours: *${trial.cost_usd:,.2f}*\n"
                 f"Model: `{_escape(trial.model)}`\n"
                 f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
                 f"<{task_url}|open task>"
             )
-            # Keys carry no threshold: interpolating an editable one would mint
-            # fresh keys on every retune and re-alert the whole window. A trial's
-            # cost is settled here, so one alert per trial is right either way.
-            if wants_dm:
-                alerts.append(
-                    SlackAlert(
-                        key=f"trial:{trial.id}",
-                        text=text,
-                        recipient_email=experiment.owner_email,
-                        recipient_clerk_user_id=experiment.owner_clerk_user_id,
-                        dm_only=True,
-                    )
+            alerts.append(
+                SlackAlert(
+                    key=f"trial:{trial.id}",
+                    text=text,
+                    recipient_email=experiment.owner_email,
+                    recipient_clerk_user_id=experiment.owner_clerk_user_id,
+                    dm_only=True,
                 )
-            if escalated:
-                alerts.append(
-                    SlackAlert(
-                        key=f"trial-escalation:{trial.id}",
-                        text=text,
-                        mention_emails=_mention_targets(
-                            experiment.owner_email, *settings.always_ping_emails
-                        ),
-                    )
-                )
+            )
+
+    experiments_by_id = {
+        experiment.id: experiment for experiment in candidates.experiments
+    }
+    for trial in candidates.live_trials:
+        if trial.cost_usd <= settings.trial_escalation_usd:
+            continue
+        experiment = experiments_by_id.get(trial.experiment_id)
+        owner_email = experiment.owner_email if experiment else None
+        task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
+        alerts.append(
+            SlackAlert(
+                key=f"trial-escalation:{trial.id}",
+                text=(
+                    ":rotating_light: *Very expensive running trial*\n"
+                    f"Title: `{_escape(trial.name)}`\n"
+                    f"Experiment: *{_escape(experiment.name if experiment else trial.experiment_id)}*\n"
+                    f"Live cost so far: *${trial.cost_usd:,.2f}*\n"
+                    f"Model: `{_escape(trial.model)}`\n"
+                    f"Author: *{_escape((experiment.owner if experiment else None) or 'Unknown')}*\n"
+                    f"<{task_url}|open task>"
+                ),
+                mention_emails=_mention_targets(
+                    owner_email, *settings.always_ping_emails
+                ),
+            )
+        )
+
+    for user in candidates.user_spend:
+        # Fire when a user's last-24h spend runs ahead of their own trailing
+        # seven-day daily pace by more than the admin margin -- a "spending
+        # unusually fast today" signal, not a comparison against other users.
+        overage_usd = user.spend_24h_usd - user.daily_avg_7d_usd
+        if overage_usd <= settings.user_daily_overage_delta_usd:
+            continue
+        alerts.append(
+            SlackAlert(
+                key=f"user-daily-overage:{user.org_id}:{user.user_id}",
+                text=(
+                    "<!channel>\n"
+                    ":moneybag: *User spend above their 7-day daily average*\n"
+                    f"User: *{_escape(user.label)}*\n"
+                    f"Spend in past 24 hours: *${user.spend_24h_usd:,.2f}*\n"
+                    f"Seven-day daily average: *${user.daily_avg_7d_usd:,.2f}*\n"
+                    f"Above their daily average by: *${overage_usd:,.2f}* "
+                    f"(alert above ${settings.user_daily_overage_delta_usd:,.2f})\n"
+                    f"Running or retrying trials included: {user.live_trial_count}\n"
+                    f"<{dashboard_url}/admin|open admin costs>"
+                ),
+            )
+        )
 
     for failed in candidates.failed_experiments:
         if (
@@ -381,6 +452,21 @@ def build_alerts(
             failed.owner_clerk_user_id,
         )
 
+    for finished in candidates.finished_experiments:
+        if not prefs_for(finished.owner_email).experiment_finished_enabled:
+            continue
+        add_failure_dm(
+            f"experiment-finished:{finished.id}",
+            finished.owner_email,
+            ":checkered_flag: *Experiment finished*\n"
+            f"Title: *{_escape(finished.name)}*\n"
+            f"Trials: *{finished.total_trials}*\n"
+            f"Owner: *{_escape(finished.owner or 'Unknown')}*\n"
+            f"<{dashboard_url}/experiments/"
+            f"{quote(quote(finished.id, safe=''), safe='')}|open experiment>",
+            finished.owner_clerk_user_id,
+        )
+
     for failed_trial in candidates.failed_trials:
         if not prefs_for(failed_trial.owner_email).trial_failed_enabled:
             continue
@@ -397,6 +483,24 @@ def build_alerts(
             f"Owner: *{_escape(failed_trial.owner or 'Unknown')}*\n"
             f"<{task_url}|open task>",
             failed_trial.owner_clerk_user_id,
+        )
+
+    for finished_trial in candidates.finished_trials:
+        if not prefs_for(finished_trial.owner_email).trial_finished_enabled:
+            continue
+        bucket = _version_bucket(finished_trial.task_id, finished_trial.task_version_id)
+        task_url = _task_url(
+            dashboard_url, finished_trial.task_id, finished_trial.task_version_id
+        )
+        add_failure_dm(
+            f"trial-finished:{bucket}",
+            finished_trial.owner_email,
+            ":white_check_mark: *Trial finished*\n"
+            f"Title: `{_escape(finished_trial.name)}`\n"
+            f"Experiment: *{_escape(finished_trial.experiment_name)}*\n"
+            f"Owner: *{_escape(finished_trial.owner or 'Unknown')}*\n"
+            f"<{task_url}|open task>",
+            finished_trial.owner_clerk_user_id,
         )
 
     for qa_failure in candidates.qa_failures:
@@ -416,6 +520,22 @@ def build_alerts(
             qa_failure.owner_clerk_user_id,
         )
 
+    for task_finished in candidates.tasks_finished:
+        if not prefs_for(task_finished.owner_email).task_finished_enabled:
+            continue
+        bucket = _version_bucket(task_finished.task_id, task_finished.task_version_id)
+        task_url = _task_url(
+            dashboard_url, task_finished.task_id, task_finished.task_version_id
+        )
+        add_failure_dm(
+            f"task-finished:{bucket}",
+            task_finished.owner_email,
+            ":tada: *Task finished*\n"
+            f"Task: *{_escape(task_finished.task_name)}*\n"
+            f"<{task_url}|open task>",
+            task_finished.owner_clerk_user_id,
+        )
+
     for unpriced in candidates.unpriced_models:
         plural = "s" if unpriced.trial_count != 1 else ""
         task_url = f"{dashboard_url}/tasks/{quote(unpriced.task_id, safe='')}"
@@ -425,7 +545,7 @@ def build_alerts(
                 text=(
                     f":grey_question: *Unpriceable model:* "
                     f"`{_escape(unpriced.model)}` has no price — "
-                    f"{unpriced.trial_count} recent trial{plural} recorded "
+                    f"{unpriced.trial_count} trial{plural} in the past 24 hours recorded "
                     f"token usage but settled to *$0* because no rate could be "
                     f"resolved (spend is going uncounted). Add it to the "
                     f"pricing table · <{task_url}|open task>"
@@ -485,7 +605,9 @@ def _owner_clerk_user_id_by_handle():
 
 async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     now = now or datetime.now(timezone.utc)
-    recent_cutoff = now - timedelta(hours=2)
+    cost_cutoff = now - timedelta(hours=24)
+    week_cutoff = now - timedelta(days=7)
+    failure_cutoff = now - timedelta(hours=2)
     # Per run rather than at import: this is a long-lived container, so a
     # module-scope read would pin whatever was set when it first woke up.
     settings = await read_alert_settings()
@@ -499,6 +621,11 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     active_trial = and_(
         TrialModel.deleted_at.is_(None),
         TrialModel.status.in_(active_statuses),
+    )
+    live_trial = and_(
+        TrialModel.deleted_at.is_(None),
+        TrialModel.finished_at.is_(None),
+        TrialModel.status.in_([TrialStatus.RUNNING, TrialStatus.RETRYING]),
     )
 
     async with get_session() as session:
@@ -521,7 +648,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     _real_spend_filter(),
                     or_(
                         active_trial,
-                        TrialModel.finished_at >= recent_cutoff,
+                        TrialModel.finished_at >= cost_cutoff,
                     ),
                 )
                 .group_by(
@@ -551,6 +678,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         # skip the experiment-scoped trial query.
         experiment_ids = [experiment.id for experiment in experiments]
         trial_rows = []
+        live_trial_rows = []
         if experiment_ids:
             trial_rows = (
                 await session.execute(
@@ -565,7 +693,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     )
                     .where(
                         TrialModel.experiment_id.in_(experiment_ids),
-                        TrialModel.finished_at.isnot(None),
+                        TrialModel.finished_at >= cost_cutoff,
                         _real_spend_filter(),
                     )
                     .group_by(
@@ -579,6 +707,78 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     .execution_options(include_deleted=True)
                 )
             ).all()
+            live_trial_rows = (
+                await session.execute(
+                    select(
+                        TrialModel.id,
+                        TrialModel.name,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.model,
+                        *settled_cost_columns(),
+                    )
+                    .where(
+                        TrialModel.experiment_id.in_(experiment_ids),
+                        live_trial,
+                        _real_spend_filter(),
+                    )
+                    .group_by(
+                        TrialModel.id,
+                        TrialModel.name,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.model,
+                    )
+                    .execution_options(include_deleted=True)
+                )
+            ).all()
+
+        within_24h = case(
+            (or_(TrialModel.finished_at >= cost_cutoff, live_trial), True), else_=False
+        )
+        user_spend_rows = (
+            await session.execute(
+                select(
+                    TrialModel.org_id,
+                    TrialModel.billed_user_id,
+                    UserModel.name,
+                    UserModel.github_username,
+                    UserModel.email,
+                    TrialModel.model,
+                    func.count(TrialModel.id)
+                    .filter(live_trial)
+                    .label("live_trial_count"),
+                    # Split each model group into its last-24h slice and the
+                    # rest of the seven-day window, so one query yields both the
+                    # daily average (whole window / 7) and today's spend.
+                    within_24h.label("within_24h"),
+                    *settled_cost_columns(),
+                )
+                .join(
+                    UserModel,
+                    and_(
+                        UserModel.id == TrialModel.billed_user_id,
+                        UserModel.org_id == TrialModel.org_id,
+                    ),
+                )
+                .where(
+                    UserModel.is_active.is_(True),
+                    UserModel.deleted_at.is_(None),
+                    _real_spend_filter(),
+                    or_(TrialModel.finished_at >= week_cutoff, live_trial),
+                )
+                .group_by(
+                    TrialModel.org_id,
+                    TrialModel.billed_user_id,
+                    UserModel.name,
+                    UserModel.github_username,
+                    UserModel.email,
+                    TrialModel.model,
+                    within_24h,
+                )
+                .execution_options(include_deleted=True)
+            )
+        ).all()
 
         # Trials that ran (recorded tokens) but settled to NULL cost: no native
         # cost and no token estimate. Grouping by model lets us alert once per
@@ -595,7 +795,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     func.max(TrialModel.task_id).label("task_id"),
                 )
                 .where(
-                    TrialModel.finished_at >= recent_cutoff,
+                    TrialModel.finished_at >= cost_cutoff,
                     TrialModel.cost_usd.is_(None),
                     func.coalesce(TrialModel.harbor_stage, "")
                     != CANCELLED_HARBOR_STAGE,
@@ -626,7 +826,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             select(TrialModel.experiment_id)
             .where(
                 current_trial,
-                TrialModel.finished_at >= recent_cutoff,
+                TrialModel.finished_at >= failure_cutoff,
                 _real_spend_filter(),
             )
             .distinct()
@@ -695,8 +895,42 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.is_collection.is_(False),
                     ExperimentModel.deleted_at.is_(None),
                     current_trial,
-                    TrialModel.finished_at >= recent_cutoff,
+                    TrialModel.finished_at >= failure_cutoff,
                     broken_trial,
+                    _real_spend_filter(),
+                )
+                .execution_options(include_deleted=True)
+            )
+        ).all()
+
+        # Trial-finished mirrors the failed-trial scan but fires on any terminal
+        # outcome, not just breakages: a trial that reached SUCCESS/FAILED/SKIPPED
+        # within the window. Dedup to one DM per task version happens in
+        # build_alerts, exactly as for failures.
+        terminal_statuses = [
+            TrialStatus.SUCCESS,
+            TrialStatus.FAILED,
+            TrialStatus.SKIPPED,
+        ]
+        finished_trial_rows = (
+            await session.execute(
+                select(
+                    TrialModel.id,
+                    TrialModel.name,
+                    TrialModel.task_id,
+                    TrialModel.task_version_id,
+                    ExperimentModel.name.label("experiment_name"),
+                    ExperimentModel.owner,
+                    _owner_email_by_handle().label("owner_email"),
+                    _owner_clerk_user_id_by_handle().label("owner_clerk_user_id"),
+                )
+                .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+                .where(
+                    ExperimentModel.is_collection.is_(False),
+                    ExperimentModel.deleted_at.is_(None),
+                    current_trial,
+                    TrialModel.finished_at >= failure_cutoff,
+                    TrialModel.status.in_(terminal_statuses),
                     _real_spend_filter(),
                 )
                 .execution_options(include_deleted=True)
@@ -738,8 +972,42 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 )
                 .where(
                     TaskModel.deleted_at.is_(None),
-                    TaskModel.verdict_finished_at >= recent_cutoff,
+                    TaskModel.verdict_finished_at >= failure_cutoff,
                     qa_failed,
+                )
+                .execution_options(include_deleted=True)
+            )
+        ).all()
+
+        # Task-finished is the good-verdict mirror of qa_failed: the QA verdict
+        # reached SUCCESS and judged the task good. Dedup to one DM per task
+        # version happens in build_alerts, exactly as for QA failures.
+        task_finished = and_(
+            TaskModel.verdict_status == VerdictStatus.SUCCESS,
+            TaskModel.verdict["is_good"].astext == "true",
+        )
+        task_finished_rows = (
+            await session.execute(
+                select(
+                    TaskModel.id,
+                    TaskModel.name,
+                    TaskModel.current_version_id,
+                    UserModel.email.label("owner_email"),
+                    UserModel.clerk_user_id.label("owner_clerk_user_id"),
+                )
+                .outerjoin(
+                    UserModel,
+                    and_(
+                        UserModel.id == TaskModel.created_by_user_id,
+                        UserModel.org_id == TaskModel.org_id,
+                        UserModel.is_active.is_(True),
+                        UserModel.deleted_at.is_(None),
+                    ),
+                )
+                .where(
+                    TaskModel.deleted_at.is_(None),
+                    TaskModel.verdict_finished_at >= failure_cutoff,
+                    task_finished,
                 )
                 .execution_options(include_deleted=True)
             )
@@ -756,6 +1024,52 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             cost_usd=settled_cost_from_row(row),
         )
         for row in trial_rows
+    ]
+    live_trials = [
+        LiveTrialSpend(
+            id=str(row.id),
+            name=str(row.name),
+            task_id=str(row.task_id),
+            experiment_id=str(row.experiment_id),
+            model=str(row.model),
+            cost_usd=settled_cost_from_row(row),
+        )
+        for row in live_trial_rows
+    ]
+    user_totals: dict[tuple[str, str], dict[str, object]] = {}
+    for row in user_spend_rows:
+        key = (str(row.org_id), str(row.billed_user_id))
+        current = user_totals.setdefault(
+            key,
+            {
+                "label": row.name
+                or (f"@{row.github_username}" if row.github_username else None)
+                or str(row.email).split("@", 1)[0],
+                "spend_7d_usd": 0.0,
+                "spend_24h_usd": 0.0,
+                "live_trial_count": 0,
+            },
+        )
+        row_cost = settled_cost_from_row(row)
+        current["spend_7d_usd"] = float(current["spend_7d_usd"]) + row_cost
+        if row.within_24h:
+            current["spend_24h_usd"] = float(current["spend_24h_usd"]) + row_cost
+        current["live_trial_count"] = int(current["live_trial_count"]) + int(
+            row.live_trial_count or 0
+        )
+    user_spend = [
+        UserSpend(
+            org_id=org_id,
+            user_id=user_id,
+            label=str(values["label"]),
+            spend_24h_usd=float(values["spend_24h_usd"]),
+            # The daily average is the whole rolling-seven-day spend spread over
+            # seven days; today's 24h slice is compared against it.
+            daily_avg_7d_usd=float(values["spend_7d_usd"]) / 7.0,
+            live_trial_count=int(values["live_trial_count"]),
+        )
+        for (org_id, user_id), values in user_totals.items()
+        if float(values["spend_7d_usd"]) > 0
     ]
     unpriced_models = [
         UnpricedModel(
@@ -778,6 +1092,20 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         )
         for row in failed_rows
     ]
+    # failed_rows is every recently-finished experiment with no active trials
+    # left (the failure-ratio cut is applied in build_alerts, not the query), so
+    # the same rows drive the experiment-finished alert.
+    finished_experiments = [
+        FinishedExperiment(
+            id=str(row.id),
+            name=str(row.name),
+            owner=row.owner,
+            total_trials=int(row.total_trials or 0),
+            owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
+        )
+        for row in failed_rows
+    ]
     failed_trial_records = [
         FailedTrial(
             name=str(row.name),
@@ -790,6 +1118,18 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         )
         for row in failed_trial_rows
     ]
+    finished_trial_records = [
+        FinishedTrial(
+            name=str(row.name),
+            task_id=str(row.task_id),
+            task_version_id=row.task_version_id,
+            experiment_name=str(row.experiment_name),
+            owner=row.owner,
+            owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
+        )
+        for row in finished_trial_rows
+    ]
     qa_failures = [
         QaFailure(
             task_id=str(row.id),
@@ -801,6 +1141,16 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         )
         for row in qa_rows
     ]
+    tasks_finished = [
+        TaskFinished(
+            task_id=str(row.id),
+            task_name=str(row.name),
+            task_version_id=row.current_version_id,
+            owner_email=row.owner_email,
+            owner_clerk_user_id=row.owner_clerk_user_id,
+        )
+        for row in task_finished_rows
+    ]
     dashboard_url = os.environ.get(
         "ODDISH_DASHBOARD_URL", "https://www.oddish.app"
     ).rstrip("/")
@@ -808,13 +1158,18 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         AlertCandidates(
             experiments=experiments,
             trials=trials,
+            live_trials=live_trials,
+            user_spend=user_spend,
             unpriced_models=unpriced_models,
             failed_experiments=failed_experiments,
             failed_trials=failed_trial_records,
+            finished_experiments=finished_experiments,
+            finished_trials=finished_trial_records,
             qa_failures=qa_failures,
+            tasks_finished=tasks_finished,
         ),
         settings=settings,
-        recent_cutoff=recent_cutoff,
+        recent_cutoff=cost_cutoff,
         dashboard_url=dashboard_url,
         user_prefs=user_prefs,
     )
@@ -893,9 +1248,8 @@ async def _insert_alert_rows(rows: list[dict]) -> None:
     if not rows:
         return
     # First write wins: an existing pending or sent row keeps its original
-    # payload and state, so re-recording an alert -- including re-recording it
-    # as silent once its spend ages out of the recent window -- never rewrites
-    # or revives history. A pending row keeps retrying until delivered.
+    # payload and state, so re-recording an alert never rewrites or revives
+    # history. A pending row keeps retrying until delivered.
     async with get_session() as session:
         await session.execute(
             insert(SlackExpenseAlertModel)
@@ -931,6 +1285,19 @@ async def _mark_alert_sent(*alert_keys: str) -> None:
         )
 
 
+async def _rearm_user_spend_alerts(active_keys: set[str]) -> None:
+    statement = SlackExpenseAlertModel.__table__.delete().where(
+        SlackExpenseAlertModel.alert_key.like("user-daily-overage:%"),
+        SlackExpenseAlertModel.notified_at.isnot(None),
+    )
+    if active_keys:
+        statement = statement.where(
+            SlackExpenseAlertModel.alert_key.not_in(active_keys)
+        )
+    async with get_session() as session:
+        await session.execute(statement)
+
+
 async def record_alerts(
     alerts: list[SlackAlert],
     *,
@@ -939,9 +1306,9 @@ async def record_alerts(
 ) -> None:
     """Write each alert into the outbox with its rendered payload.
 
-    Silent alerts are recorded born-sent: they settle the milestone without a
-    post. Storing the payload frees delivery from recomputation, so a failed
-    post keeps retrying even after its spend ages out of the recent window.
+    Silent alerts are recorded born-sent. Storing the payload frees delivery
+    from recomputation, so a failed post keeps retrying even after the source
+    alert no longer qualifies.
     Only alert kinds whose delivery channel is configured are recorded, so
     nothing piles up undeliverable.
     """
@@ -1067,6 +1434,14 @@ async def send_slack_expense_notifications() -> None:
         return
     try:
         alerts = await load_alerts()
+        if webhook_url:
+            await _rearm_user_spend_alerts(
+                {
+                    alert.key
+                    for alert in alerts
+                    if alert.key.startswith("user-daily-overage:")
+                }
+            )
         await record_alerts(alerts, channel=bool(webhook_url), dms=bool(bot_token))
         await deliver_pending_alerts(webhook_url, bot_token)
     finally:

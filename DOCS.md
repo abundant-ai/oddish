@@ -30,11 +30,105 @@ export ODDISH_API_KEY="ok_..."
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
 - `oddish experiment create` - build a collection experiment from explicit trial IDs
+- `oddish experiment add` / `oddish experiment remove` / `oddish experiment rename` - edit a collection in place; its share link keeps working
 - `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
+- `oddish qa` - run and compare versioned QA prompt variants for an experiment, task, or trial
 
 Every command except `oddish logs` accepts `--json` for machine-readable output (CI / scripts / agents).
+
+### Custom QA prompt runs
+
+Run two prompt variants concurrently and retain the exact prompt version,
+model, scope, command/config, AnalyzerBlock ID, and output for each run:
+
+```bash
+oddish qa task <task_id> \
+  --variant oracle-check \
+  --variant degenerate-check@2 \
+  --model claude-opus-4-6 \
+  --reasoning-effort high \
+  --allow-oddish-cli
+```
+
+Variants reference prompts saved in the shared registry, addressed by kind:
+the built-in UPPERCASE kinds (`QA_PRE_TRIAL`, `QA_POST_TRIAL`) or your own
+lowercase-slug custom kinds (like `oracle-check` above), created with
+`oddish prompt set`. With no `@VERSION`, the latest
+version is resolved and pinned into the run; `KIND@2` selects an exact
+historical version. Manage them with `oddish prompt list`,
+`oddish prompt set KIND --file prompt.md`, `oddish prompt versions KIND`,
+and `oddish prompt diff KIND 2 3`. Editing appends a new version, which is
+live immediately (latest always wins; there is no activation step).
+
+Every prompt is also scopeable — org, user, experiment, task, or trial, on
+top of the installation-wide default — via `--org`, `--user`, `--task ID`,
+`--experiment ID`, `--trial ID`, or `--global` on any `prompt` subcommand.
+`set`/`upload` default to `--org` (there's rarely a reason to overwrite the
+global default by accident); `get`, `view`, `versions`, and `diff` default
+to `--global` instead, matching the long-standing unscoped lookup every
+existing caller expects. That means `oddish prompt set KIND -f x.md`
+followed by a bare `oddish prompt view KIND` does **not** round-trip — the
+`set` wrote the org row, the `view` reads the global one. Pass the matching
+flag (`--org` here) to read back what you just wrote. Every read command
+prints the scope it actually resolved (`scope=org:acme`, `scope=global`,
+...) so which row you're looking at is never a guess.
+
+When several scopes could apply, the narrowest wins: **trial → task →
+experiment → user → org → global**. Task outranks experiment deliberately —
+the two aren't nested (a task spans experiments, an experiment spans tasks),
+and a task override usually encodes durable knowledge about that task, which
+a broader experiment override should not silently suppress. Only one prompt
+ever wins; overrides replace rather than combine.
+
+### Automatic QA jobs
+
+`oddish qa` runs a prompt once, by hand. To make one run *automatically*, assign
+it as a QA job with `oddish qa-jobs`. An assignment binds a registry prompt to a
+lifecycle stage — `--pre-trial` (once per task version) or `--post-trial` (once
+per trial) — at any of the same six scopes:
+
+```bash
+# Override this task's post-trial QA, uploading new text in the same step
+oddish qa-jobs assign QA_POST_TRIAL --post-trial --task fvsmith \
+  --file ./post_trial.md --backend api --model claude-opus-4-8
+
+# What will this task actually run?
+oddish qa-jobs list --task fvsmith
+
+# Suppress a broader default here
+oddish qa-jobs disable QA_POST_TRIAL --post-trial --task fvsmith
+```
+
+Unlike prompt content, assignments **union** across scopes rather than picking a
+single winner: adding one extra check to a task must not silently switch off the
+org's default post-trial QA. Within a scope ladder, a narrower row *replaces* a
+broader one for the same `(stage, prompt kind)`, and a row written by `disable`
+suppresses the broader default entirely. `list` defaults to `--global` and shows
+the resolved set with the scope each row came from; `--defined` shows only rows
+set at exactly that scope, which is what you edit.
+
+`--file` is a convenience for the create case — omitting it assigns against
+whatever content already resolves at that scope. Content keeps following
+latest-wins afterwards, so a later `oddish prompt upload` is picked up with no
+change to the assignment; pass `--prompt-version N` to pin instead. Global-scope
+assignments are installation-wide and restricted to the platform operator.
+
+Assignment execution is additive and non-blocking. A pre-trial assignment is
+enqueued once per `(assignment, task version)` when a sweep first submits trials
+for that version; it does not gate those trials. A post-trial assignment is
+enqueued once per `(assignment, trial)` when that trial reaches its final
+`SUCCESS` or `FAILED` state. Retried lifecycle hooks are idempotent. Assignment
+failures are visible through `oddish qa-jobs status`, but do not change the
+trial's status or the task verdict.
+
+The default `sandbox` backend is agentic. `--allow-oddish-cli` requests an
+authenticated Oddish CLI in the ephemeral sandbox, allowing the prompt to run
+oracle/nop and lazy-solution experiments. The worker mints a short-lived
+internal key when the queued block starts and revokes it during cleanup; the
+caller's credential is never forwarded or persisted. Use `--backend api` for
+a prompt-only provider call without shell execution.
 
 ### Lifecycle
 
@@ -47,7 +141,7 @@ A typical run flows through these commands:
 5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
 6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
-`oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. Tasks can be filtered by name and tags with `oddish ls --query` / `--tag`; there is no status or date filtering yet, so other IDs are typically discovered through the dashboard or `oddish status`.
+`oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. `oddish ls` supports the dashboard's task, tag, status, date, model, and trial-metric filters.
 
 ## Submit a Job
 
@@ -108,6 +202,8 @@ Options
 - `--environment-kwarg`, `--harbor-environment-kwarg TEXT` - Pass Harbor environment kwargs as `KEY=VALUE`; can be used multiple times
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
 - `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
+- `--allow-agent-host TEXT` - Extra hostname for a restricted agent phase (maps to Harbor `extra_allowed_hosts`); usually unnecessary because Oddish auto-injects the model API host. Can be used multiple times
+- `--disable-web-tools/--no-disable-web-tools` - Force-disable server-side web tools; usually unnecessary because Oddish does this automatically on closed-internet agent phases (`claude-code`: `disallowed_tools=WebSearch WebFetch`; `codex`: `web_search=disabled`)
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
 - `--registry-login TEXT` - Per-run container-registry login as `username=USER,token=TOKEN[,registry=docker.io]`; repeatable and honored by `--retry`.
   Wrap comma-bearing values like `--registry-login "username=USER,token='a,b'"`.
@@ -172,7 +268,7 @@ max_trial_attempts: 3
 harbor:
   environment:
     kwargs:
-      agent_tools_image: ghcr.io/org/harbor-agent-tools:tag
+      region: us-east
 ```
 
 `max_trial_attempts` is optional. It is the total Oddish worker attempt budget
@@ -219,6 +315,8 @@ counts, reward summary, tags, last run time, and linked experiments.
 oddish ls
 oddish ls --query django
 oddish ls --tag benchmark --not-tag wip
+oddish ls --model openai/gpt-5 --min-steps 100 --min-duration 120
+oddish ls --tool bash --tool-min bash=5 --trial-match all
 oddish ls --json
 ```
 
@@ -533,6 +631,34 @@ from explicit trial IDs only, never publishes, and requires `--name`:
 ```bash
 oddish experiment create --name my-set <trial_id_1> <trial_id_2>
 ```
+
+### Editing a Collection
+
+A collection can be edited after it's created, and its share link keeps
+working — the URL never changes.
+
+```bash
+# merge another experiment's trials in
+oddish experiment add <collection_id> --from <other_experiment_id>
+
+# add specific trials, or a task pinned to one version
+oddish experiment add <collection_id> <trial_id_1> <trial_id_2> --task <task_id>@16
+
+# drop a task from the collection (all versions of it)
+oddish experiment remove <collection_id> --task <task_id>
+
+# rename it
+oddish experiment rename <collection_id> --name "21-task rollup"
+```
+
+`remove` only unlinks — the trials stay in their home experiment with their
+artifacts intact. `add` needs a `TASKS`-scoped key; `remove` and `rename`
+require an admin API key, the same gate `oddish delete` uses. `remove` refuses
+to take out the last of a collection's trials — if you want the collection
+gone, use `oddish delete` to remove it entirely. (This is a guard on the
+`remove` command, not a guarantee about collections in general: deleting the
+underlying trials with `oddish delete --trial` can still leave a collection
+with nothing to show.)
 
 ## Delete Data
 

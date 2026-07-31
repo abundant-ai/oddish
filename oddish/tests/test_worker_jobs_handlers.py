@@ -357,6 +357,59 @@ async def test_qa_handler_resets_terminal_state_on_retry(monkeypatch):
     assert outcome.success is not None
 
 
+def _qa_failure_outcome(monkeypatch, verdict_error: str):
+    task_row = SimpleNamespace(
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(task_row)
+    )
+
+    async def _stub_run(*args, **kwargs):
+        task_row.verdict_status = VerdictStatus.FAILED
+        task_row.verdict_error = verdict_error
+
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
+    return QaJobHandler().run(_verdict_claim())
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_returns_retryable_fail_on_ordinary_error(monkeypatch):
+    outcome = await _qa_failure_outcome(monkeypatch, "ValueError: no classifications")
+
+    assert outcome.failure.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_returns_permanent_fail_on_provider_403(monkeypatch):
+    """Retrying a provider permission block never clears it -- prod burned
+    6/6 attempts on every QA job for 58 hours and re-hit the blocked Azure
+    resource 26x per task."""
+    outcome = await _qa_failure_outcome(
+        monkeypatch,
+        "PermissionDeniedError: Error code: 403 - {'error': {'message': 'Your "
+        "resource has been temporarily blocked because we detected behavior "
+        "that may violate our content policy.'}}",
+    )
+
+    assert outcome.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_qa_handler_permanent_when_fallback_fails_after_403(monkeypatch):
+    """Both verdict models failing is still permanent: a retry would run the
+    blocked primary again before reaching the fallback."""
+    outcome = await _qa_failure_outcome(
+        monkeypatch,
+        "TimeoutError: claude timed out [verdict fallback "
+        "anthropic/claude-sonnet-5 failed after permanent primary failure -- "
+        "PermissionDeniedError: Error code: 403 - resource blocked]",
+    )
+
+    assert outcome.failure.retryable is False
+
+
 # ---------------------------------------------------------------------------
 # Handler registry side effects
 # ---------------------------------------------------------------------------

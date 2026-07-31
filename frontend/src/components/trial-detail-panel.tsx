@@ -39,14 +39,15 @@ import {
   Microscope,
   CheckCircle2,
   XCircle,
-  AlertTriangle,
   ExternalLink,
   Route,
   Package,
   Trash2,
-  GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
+import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
+import { QaReportSkeleton } from "@/components/qa-report/skeleton";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -54,6 +55,7 @@ import {
   costEstimateMarks,
   formatCostUsd,
   formatTokenCount,
+  hasDisplayableCostUsd,
   sumTaskTrialCost,
 } from "@/lib/format";
 import {
@@ -72,6 +74,7 @@ import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -102,23 +105,16 @@ const TrajectoryViewer = dynamic(
   },
 );
 
-const TrajectoryGraphView = dynamic(
-  () =>
-    import("@/components/trajectory-graph").then(
-      (mod) => mod.TrajectoryGraphView,
-    ),
-  {
-    ssr: false,
-    loading: () => <DrawerPanelLoading label="Loading agent graph..." />,
-  },
-);
-
 
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
-    <div className="text-muted-foreground flex h-full min-h-[160px] items-center justify-center gap-2 text-sm">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span>{label}</span>
+    <div className="flex min-h-[160px] flex-col gap-2 p-4">
+      <span className="sr-only">{label}</span>
+      <Skeleton className="h-4 w-1/3" />
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-11/12" />
+      <Skeleton className="h-3 w-4/5" />
+      <Skeleton className="mt-2 h-24 w-full rounded-lg" />
     </div>
   );
 }
@@ -153,6 +149,10 @@ interface TrialDetailPanelProps {
   paneAction?: React.ReactNode;
 }
 
+// Hardcoded feature flag: shows the per-trial "Re-run analysis" button on the
+// QA card. Testing-only for now — flip to false to hide it.
+const ENABLE_RERUN_ANALYSIS_BUTTON = true;
+
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   pass: "border-emerald-500/30 bg-emerald-500/10",
   partial: "border-amber-500/30 bg-amber-500/10",
@@ -164,6 +164,472 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
 };
+
+// The QA assessment card. It renders before any analysis exists, so the
+// run button is reachable. It shows queued/running state with elapsed
+// time. While analysis is active it polls the trial, so the result
+// appears without reopening the drawer.
+function TrialAnalysisCard({
+  trial: trialProp,
+  task,
+  apiBaseUrl,
+  onQueued,
+}: {
+  trial: Trial;
+  task: Task | null;
+  apiBaseUrl: string;
+  onQueued?: () => void;
+}) {
+  const [live, setLive] = useState<Trial | null>(null);
+  // The parent's snapshot can carry a superseded report (e.g. after a
+  // re-run), so the card holds a loading state instead of painting it and
+  // swapping. Holds the id whose per-trial fetch has settled: an id, not a
+  // boolean, so the first render after a trial switch is already unsynced.
+  const [syncedId, setSyncedId] = useState<string | null>(null);
+  const [queuing, setQueuing] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  // Set when WE queued a run. This keeps the card in its progress state
+  // (and polling) across the gap before a worker claims the job.
+  const [queuedAt, setQueuedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [logText, setLogText] = useState<string | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  const logRef = useRef<HTMLPreElement | null>(null);
+  // Guards async completions: a response that lands after a trial switch
+  // must not write another trial's state onto the open card.
+  const trialIdRef = useRef(trialProp.id);
+  // The parent passes a new onQueued function on every render. Reading it
+  // through a ref keeps the poll interval alive across parent re-renders.
+  const onQueuedRef = useRef(onQueued);
+  useEffect(() => {
+    onQueuedRef.current = onQueued;
+  }, [onQueued]);
+
+  // A different trial means the polled data no longer applies.
+  useEffect(() => {
+    trialIdRef.current = trialProp.id;
+    setLive(null);
+    setQueuing(false);
+    setQueuedAt(null);
+    setLogText(null);
+    setLogOpen(false);
+    setQueuePosition(null);
+    setQueueError(null);
+  }, [trialProp.id]);
+
+  // Fetch fresh state once per shown trial. The parent's trial object is a
+  // snapshot from when the drawer opened; without this, a run that finished
+  // while the user viewed another trial stays hidden until the drawer is
+  // closed and reopened.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // The timeout bounds the synced gate: a hung fetch must fall back
+        // to the parent snapshot, not pin the report skeleton forever.
+        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok || cancelled) return;
+        const fresh = (await res.json()) as Trial;
+        if (!cancelled && trialIdRef.current === trialProp.id) setLive(fresh);
+      } catch {
+        // The card falls back to the parent's snapshot.
+      } finally {
+        if (!cancelled && trialIdRef.current === trialProp.id)
+          setSyncedId(trialProp.id);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBaseUrl, trialProp.id]);
+
+  // The id check covers the first render after a trial switch, before the
+  // reset effect above has cleared the previous trial's polled state.
+  const trial = live && live.id === trialProp.id ? live : trialProp;
+  const synced = syncedId === trialProp.id;
+  const analysisActive =
+    trial.analysis_status === "running" ||
+    trial.analysis_status === "pending" ||
+    trial.analysis_status === "queued";
+  const waitingForWorker = queuedAt !== null && !analysisActive;
+  const inProgress = analysisActive || waitingForWorker;
+
+  // Poll for fresh trial state while analysis is in progress. The
+  // cancelled flag drops in-flight responses on cleanup, so a late poll
+  // cannot overlay another trial's analysis after navigation.
+  useEffect(() => {
+    if (!inProgress) return;
+    let cancelled = false;
+    const id = window.setInterval(async () => {
+      try {
+        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
+          cache: "no-store",
+        });
+        if (!res.ok || cancelled) return;
+        const fresh = (await res.json()) as Trial;
+        if (cancelled) return;
+        setLive(fresh);
+        // Terminal state ends the waiting phase. Refresh the parent too,
+        // so the result survives closing the drawer or switching trials.
+        if (
+          fresh.analysis_status === "success" ||
+          fresh.analysis_status === "failed"
+        ) {
+          setQueuedAt(null);
+          onQueuedRef.current?.();
+        }
+      } catch {
+        // Transient fetch error; the next tick retries.
+      }
+    }, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [inProgress, apiBaseUrl, trialProp.id]);
+
+  // Fallback: if no worker picks the job up within 15 minutes, stop
+  // showing progress and fall back to what the server says. Also drop the
+  // optimistic `live` state — it holds the post-reset empty analysis, and
+  // keeping it would shadow every later refresh from the parent. The timer
+  // is disarmed while the analysis is active: a claimed run can honestly
+  // take longer, and clearing then would stop the polling mid-run.
+  useEffect(() => {
+    if (queuedAt === null || analysisActive) return;
+    const id = window.setTimeout(() => {
+      setQueuedAt(null);
+      setLive(null);
+    }, Math.max(0, queuedAt + 15 * 60_000 - Date.now()));
+    return () => window.clearTimeout(id);
+  }, [queuedAt, analysisActive]);
+
+  // Tick the elapsed timer once a second while in progress.
+  useEffect(() => {
+    if (!inProgress) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [inProgress]);
+
+  // Load the analysis log and queue position: once on open, and on every
+  // poll tick while the analysis is in progress. The cleanup always runs so
+  // a response that lands after a trial switch cannot write stale state.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchLog = async () => {
+      try {
+        const res = await fetch(
+          `${apiBaseUrl}/trials/${trialProp.id}/analysis-log`,
+          { cache: "no-store" },
+        );
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          log?: string | null;
+          queue_position?: number | null;
+        };
+        if (!cancelled) {
+          setLogText(data.log ?? null);
+          setQueuePosition(data.queue_position ?? null);
+        }
+      } catch {
+        // Transient fetch error; the next tick retries.
+      }
+    };
+    void fetchLog();
+    const id = inProgress ? window.setInterval(fetchLog, 5000) : null;
+    return () => {
+      cancelled = true;
+      if (id !== null) window.clearInterval(id);
+    };
+  }, [apiBaseUrl, trialProp.id, inProgress]);
+
+  // Keep the newest log lines in view while the analysis runs.
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logText]);
+
+  // Open the log panel when a run starts. The user can close and reopen it
+  // at any time; renders never force it shut.
+  useEffect(() => {
+    if (inProgress) setLogOpen(true);
+  }, [inProgress]);
+
+  const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
+  // Always SHOW the button when the feature is on. Disable it (with the
+  // reason) when a run cannot be queued right now — a hidden button with
+  // no explanation is impossible to debug from the UI. The trigger is
+  // trial-level: only this trial's own active analysis blocks it.
+  const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
+  // Mirrors _ANALYSIS_CLAIM_TTL_MINUTES: past the lease the backend treats
+  // the worker as dead and allows a re-run, so the button must too. A
+  // running row with no start time has no live lease, and the backend
+  // allows a re-run there as well.
+  const runStale =
+    trial.analysis_status === "running" &&
+    (trial.analysis_started_at == null ||
+      now - new Date(trial.analysis_started_at).getTime() > 35 * 60_000);
+  // Mirror the backend guards, so the button is disabled with the reason
+  // instead of failing the request. The backend refuses only while a full
+  // QA job RUNS — a queued one classifies this trial itself when it
+  // starts. The task's verdict status is the view this card has of that
+  // job.
+  const taskQaActive = task?.verdict_status === "running";
+  const queueBlockedReason =
+    inProgress && !runStale
+      ? trial.analysis_status === "running"
+        ? "Analysis is already running for this trial"
+        : "Analysis is already queued for this trial"
+      : trial.status !== "success" && trial.status !== "failed"
+        ? "The trial must finish before analysis can run"
+        : taskQaActive
+          ? "Task-level QA is running; wait for it to finish"
+          : null;
+
+  if (!hasAnalysis && !showQueueButton) return null;
+
+  const queueRun = async () => {
+    if (queuing) return;
+    const requestTrialId = trial.id;
+    setQueuing(true);
+    setQueueError(null);
+    try {
+      const res = await fetch(
+        `${apiBaseUrl}/trials/${requestTrialId}/analysis/rerun`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue analysis",
+        );
+      }
+      // The server queued the run, so the parent list must refresh even
+      // when the user has switched trials; only the local card state below
+      // is scoped to the trial this request was for.
+      onQueued?.();
+      if (trialIdRef.current !== requestTrialId) return;
+      // Show progress immediately; polling takes over from here. The old
+      // run's log is cleared server-side; clear it here too. Open the log
+      // directly: a re-run over a stale RUNNING analysis keeps inProgress
+      // true, so the open-on-start effect does not fire again.
+      setQueuedAt(Date.now());
+      setLogText(null);
+      setLogOpen(true);
+      setQueuePosition(null);
+      setLive({
+        ...trial,
+        analysis_status: "queued",
+        analysis: null,
+        analysis_error: null,
+        analysis_started_at: null,
+      });
+    } catch (err) {
+      if (trialIdRef.current === requestTrialId) {
+        setQueueError(
+          err instanceof Error ? err.message : "Failed to queue analysis",
+        );
+      }
+    } finally {
+      if (trialIdRef.current === requestTrialId) {
+        setQueuing(false);
+      }
+    }
+  };
+
+  // Progress line: elapsed time while running, queue position while queued.
+  // No narration — the log below shows what the analyzer is doing.
+  let progressLine: string | null = null;
+  if (inProgress) {
+    if (trial.analysis_status === "running") {
+      if (trial.analysis_started_at) {
+        const secs = Math.max(
+          0,
+          Math.floor(
+            (now - new Date(trial.analysis_started_at).getTime()) / 1000,
+          ),
+        );
+        progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
+      }
+    } else {
+      progressLine =
+        queuePosition !== null
+          ? `Position ${queuePosition} in the QA queue.`
+          : "Waiting for a QA worker.";
+    }
+  }
+
+  // Analysis wall-clock, shown in the report header.
+  let analysisDuration: string | null = null;
+  if (trial.analysis_started_at && trial.analysis_finished_at) {
+    const secs = Math.round(
+      (new Date(trial.analysis_finished_at).getTime() -
+        new Date(trial.analysis_started_at).getTime()) /
+        1000,
+    );
+    if (Number.isFinite(secs) && secs >= 0) {
+      analysisDuration =
+        secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    }
+  }
+
+  const showReport =
+    synced && hasAnalysis && !inProgress && !!trial.analysis?.classification;
+
+  return (
+    <Card
+      className={
+        inProgress
+          ? "border-blue-500/30 bg-blue-500/5"
+          : showReport
+            ? // The report card carries the verdict tint itself.
+              "border-border/60"
+            : "border-slate-500/30 bg-slate-500/5"
+      }
+    >
+      <CardContent className="px-4 py-3">
+        {showQueueButton && (
+          <div className="mb-2 flex justify-end">
+            <button
+              type="button"
+              disabled={queuing || queueBlockedReason !== null}
+              onClick={queueRun}
+              className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                queueBlockedReason ??
+                (hasAnalysis
+                  ? "Reset this trial's analysis and re-run it with the latest prompt"
+                  : "Analyze this trial with the latest prompt")
+              }
+            >
+              {queuing
+                ? "Queuing…"
+                : hasAnalysis
+                  ? "Re-run analysis"
+                  : "Run analysis"}
+            </button>
+          </div>
+        )}
+        {queueError && (
+          <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
+        )}
+        {/* Disabled buttons swallow hover, so the title alone never shows.
+            While a run is in progress the card body already says so. */}
+        {queueBlockedReason && !inProgress && (
+          <p className="text-muted-foreground mb-2 text-[11px]">
+            {queueBlockedReason}
+          </p>
+        )}
+        {!synced && !inProgress ? (
+          // The snapshot can carry a superseded report; hold the card's
+          // shape until the fresh fetch settles instead of painting it and
+          // swapping.
+          <QaReportSkeleton />
+        ) : showReport ? (
+          <>
+            {trial.analysis_status === "failed" && trial.analysis_error && (
+              <p className="mb-2 text-xs text-red-500">
+                Analysis failed: {trial.analysis_error}
+              </p>
+            )}
+            <QaAssessmentReport
+              classification={trial.analysis!.classification!}
+              subtype={trial.analysis?.subtype}
+              rootCause={trial.analysis?.root_cause || trial.analysis?.evidence}
+              recommendation={trial.analysis?.recommendation}
+              evidence={
+                // Without a root cause the evidence IS the lead text above;
+                // passing it again would render the same prose twice.
+                trial.analysis?.root_cause &&
+                trial.analysis?.evidence &&
+                trial.analysis.evidence !== trial.analysis.root_cause
+                  ? trial.analysis.evidence
+                  : null
+              }
+              actionItems={trial.analysis?.action_items}
+              log={logText}
+              logOpen={logOpen}
+              onLogToggle={setLogOpen}
+              duration={analysisDuration}
+              raw={trial.analysis}
+            />
+          </>
+        ) : (
+          <div className="flex items-start gap-3">
+            {inProgress ? (
+              <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
+            ) : hasAnalysis ? (
+              <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
+            ) : (
+              <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
+            )}
+            <div className="min-w-0 flex-1">
+              {inProgress ? (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    {trial.analysis_status === "running"
+                      ? "Analyzing"
+                      : "Analysis queued"}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    {progressLine}
+                  </span>
+                </div>
+              ) : hasAnalysis ? (
+                // Analysis state exists but produced no report (e.g. failed
+                // before the classifier returned).
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">Analysis</span>
+                  {trial.analysis_status === "failed" &&
+                  trial.analysis_error ? (
+                    <span className="text-xs text-red-500">
+                      Analysis failed: {trial.analysis_error}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">
+                      No report was produced.
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    No analysis yet
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    This trial has not been analyzed.
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {logText && !showReport && (
+          <details
+            className="mt-3"
+            open={logOpen}
+            onToggle={(event) =>
+              setLogOpen((event.target as HTMLDetailsElement).open)
+            }
+          >
+            <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
+              Analysis log
+            </summary>
+            <pre
+              ref={logRef}
+              className="bg-muted/40 mt-1 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap"
+            >
+              {logText}
+            </pre>
+          </details>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function buildOddishRunCommand(trial: Trial, task: Task): string {
   const parts: string[] = ["oddish run"];
@@ -363,19 +829,8 @@ export function TrialDetailPanel({
   const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
-    () =>
-      new Set([
-        "summary",
-        "live",
-        "files",
-        "trajectory",
-        // Only a valid target when the Agent Graph tab is actually rendered;
-        // otherwise a ?tab=agent-graph link (e.g. public share) would select a
-        // panel that doesn't exist and leave the drawer body blank.
-        ...(showAnalysis ? ["agent-graph"] : []),
-        "artifacts",
-      ]),
-    [showAnalysis],
+    () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
+    [],
   );
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -807,7 +1262,10 @@ export function TrialDetailPanel({
             </Card>
             {(trial.cost_usd != null ||
               trial.input_tokens != null ||
-              trial.output_tokens != null) && (
+              trial.output_tokens != null ||
+              // A trial can be QA'd without the agent ever reporting a cost;
+              // keep the card so its QA sidecar isn't hidden.
+              hasDisplayableCostUsd(trial.qa_cost_usd)) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -816,7 +1274,7 @@ export function TrialDetailPanel({
                     </div>
                     <div className="mt-1 flex items-baseline gap-1">
                       <span className="font-mono text-sm leading-none font-bold tabular-nums">
-                        {trial.cost_usd != null ? (
+                        {hasDisplayableCostUsd(trial.cost_usd) ? (
                           <>
                             {trial.cost_is_estimated ? "~" : ""}
                             {formatCostUsd(trial.cost_usd)}
@@ -825,8 +1283,9 @@ export function TrialDetailPanel({
                           "—"
                         )}
                       </span>
-                      {trial.cost_usd != null &&
+                      {hasDisplayableCostUsd(trial.cost_usd) &&
                         taskCost.pricedCount > 1 &&
+                        hasDisplayableCostUsd(taskCost.costUsd) &&
                         (() => {
                           const marks = costEstimateMarks(
                             taskCost.hasEstimated,
@@ -840,6 +1299,10 @@ export function TrialDetailPanel({
                             </span>
                           );
                         })()}
+                      <QaCostSuffix
+                        costUsd={trial.qa_cost_usd}
+                        title="QA/analysis spend for this trial. Not included in the cost figure."
+                      />
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (
@@ -960,15 +1423,6 @@ export function TrialDetailPanel({
               <Route className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Trajectory
             </TabsTrigger>
-            {showAnalysis && (
-              <TabsTrigger
-                value="agent-graph"
-                className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
-              >
-                <GitBranch className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                Agent Graph
-              </TabsTrigger>
-            )}
             <TabsTrigger
               value="artifacts"
               className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
@@ -1020,78 +1474,17 @@ export function TrialDetailPanel({
                   tests passed
                 </div>
               )}
-              {/* Analysis Card - only show if analysis is enabled/running/complete */}
-              {showAnalysis && (trial.analysis_status || trial.analysis) && (
-                <Card
-                  className={
-                    trial.analysis_status === "running" ||
-                    trial.analysis_status === "pending" ||
-                    trial.analysis_status === "queued"
-                      ? "border-blue-500/30 bg-blue-500/5"
-                      : trial.analysis?.classification?.startsWith("GOOD")
-                        ? "border-emerald-500/30 bg-emerald-500/5"
-                        : trial.analysis?.classification?.startsWith("BAD")
-                          ? "border-amber-500/30 bg-amber-500/5"
-                          : "border-slate-500/30 bg-slate-500/5"
-                  }
-                >
-                  <CardContent className="px-4 py-3">
-                    <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
-                      QA Assessment
-                    </div>
-                    <div className="flex items-start gap-3">
-                      {trial.analysis_status === "running" ||
-                      trial.analysis_status === "pending" ||
-                      trial.analysis_status === "queued" ? (
-                        <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
-                      ) : trial.analysis?.classification?.startsWith("GOOD") ? (
-                        <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
-                      ) : trial.analysis?.classification?.startsWith("BAD") ? (
-                        <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
-                      ) : (
-                        <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-col gap-1">
-                          <span className="font-mono text-sm font-bold">
-                            {trial.analysis_status === "running" ||
-                            trial.analysis_status === "pending" ||
-                            trial.analysis_status === "queued"
-                              ? "Analyzing..."
-                              : trial.analysis?.classification?.replace(
-                                  "_",
-                                  " ",
-                                ) || "Analysis"}
-                          </span>
-                          {trial.analysis?.subtype && (
-                            <span className="text-muted-foreground text-xs">
-                              Reason: {trial.analysis.subtype}
-                            </span>
-                          )}
-                        </div>
-                        {trial.analysis?.evidence && (
-                          <p className="text-muted-foreground/90 mt-2 text-xs leading-relaxed">
-                            {trial.analysis.evidence}
-                          </p>
-                        )}
-                        {trial.analysis?.root_cause &&
-                          trial.analysis.root_cause !==
-                            trial.analysis.evidence && (
-                            <p className="text-muted-foreground mt-1 text-xs">
-                              {trial.analysis.root_cause}
-                            </p>
-                          )}
-                        {trial.analysis?.recommendation &&
-                          trial.analysis.recommendation !== "N/A" && (
-                            <p className="text-muted-foreground/80 mt-1 text-xs italic">
-                              💡 {trial.analysis.recommendation}
-                            </p>
-                          )}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+              {/* Analysis card: self-updating; also hosts the run/re-run
+                  button so analysis can be started even when it never ran. */}
+              {showAnalysis && (
+                <TrialAnalysisCard
+                  trial={trial}
+                  task={task}
+                  apiBaseUrl={apiBaseUrl}
+                  onQueued={() => onRetry?.(task ? [task.id] : undefined)}
+                />
               )}
+
 
               {/* Execution Timeline - shows progress during running trials */}
               {trial.harbor_stage && (
@@ -1244,19 +1637,6 @@ export function TrialDetailPanel({
               apiBaseUrl={apiBaseUrl}
             />
           </TabsContent>
-
-          {showAnalysis && (
-            <TabsContent
-              value="agent-graph"
-              className="m-0 h-full overflow-auto p-0"
-            >
-              <TrajectoryGraphView
-                trialId={trial.id}
-                hasTrajectory={trial.has_trajectory}
-                apiBaseUrl={apiBaseUrl}
-              />
-            </TabsContent>
-          )}
         </div>
       </Tabs>
     </>

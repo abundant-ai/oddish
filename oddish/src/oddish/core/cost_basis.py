@@ -24,21 +24,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, or_, select
 
 from oddish.config import settings
-from oddish.db import TrialModel, TrialOrigin
+from oddish.db import CostExcludedLlmKeyModel, TrialModel, TrialOrigin
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
-# a user cancel (``oddish.queue.CANCELLED_HARBOR_STAGE``), the stale-heartbeat /
+# a user cancel (``oddish.queue.cancel_tasks_runs``), the stale-heartbeat /
 # orphan reaper (``workers.queue.cleanup``), and a runtime CANCEL event
-# (``workers.queue.trial_handler``). None reach the settlement block that writes
-# input/output/cache tokens and ``cost_usd`` together, so a cancelled row has no
-# tokens -- its token estimate is already $0. Gating it out therefore changes
-# nothing unless the unpriced floor is re-enabled, where excluding abandoned
-# runs is the intent. Trials have no CANCELLED status, so this stage is the
-# canonical "cancelled" signal on the row.
+# (``workers.queue.trial_handler``). A late result may still settle the cancelled
+# attempt's tokens and cost, but it cannot replace the cancellation outcome.
+# Trials have no CANCELLED status, so this stage remains the canonical
+# "cancelled" signal on the row.
 CANCELLED_HARBOR_STAGE = "cancelled"
 
 # ``combine_experiments_core`` materializes a source trial as a brand-new row
@@ -51,12 +49,55 @@ COMBINE_IDEMPOTENCY_PREFIX = "combine:"
 def is_combine_copy(trial) -> bool:
     """True when this trial row is an experiment-combine materialization.
 
-    Python-side twin of the ``notlike('combine:%')`` clause in
-    ``first_party_spend_filter``, for surfaces that filter an already-loaded
-    relationship instead of issuing a query.
+    Python-side twin of :func:`not_combine_copy_filter`, for surfaces that
+    filter an already-loaded relationship instead of issuing a query.
     """
     key = getattr(trial, "idempotency_key", None)
     return bool(key) and key.startswith(COMBINE_IDEMPOTENCY_PREFIX)
+
+
+def not_combine_copy_filter():
+    """Drop experiment-combine copies (idempotency_key ``combine:%``).
+
+    A combine copy re-materializes an existing trial's result under another
+    experiment, so counting it double-counts the same execution. Shared by
+    :func:`first_party_spend_filter` and the task browser so both count the
+    same execution population the task-detail view shows.
+    """
+    return or_(
+        TrialModel.idempotency_key.is_(None),
+        TrialModel.idempotency_key.notlike(f"{COMBINE_IDEMPOTENCY_PREFIX}%"),
+    )
+
+
+def _cost_excluded_key_spend():
+    """Trials stamped with an LLM key that admins flagged cost-excluded.
+
+    A correlated EXISTS on the live ``cost_excluded_llm_keys`` rows. A NULL
+    ``llm_key_hash`` (pre-rollout / unresolved) never matches, so it is kept.
+    The ``deleted_at`` filter is explicit because every cost surface runs with
+    ``include_deleted=True``, which disables the session-level soft-delete
+    filter -- so removing a key from the list re-includes its spend.
+    """
+    return (
+        select(CostExcludedLlmKeyModel.id)
+        .where(
+            CostExcludedLlmKeyModel.key_hash == TrialModel.llm_key_hash,
+            CostExcludedLlmKeyModel.deleted_at.is_(None),
+        )
+        .correlate(TrialModel)
+        .exists()
+    )
+
+
+def not_excluded_llm_key_filter():
+    """Drop trials stamped with an LLM key on the admin cost-exclusion list.
+
+    Shared by :func:`first_party_spend_filter` (settled spend) and the quota
+    inflight reservation, so excluded-key spend neither counts against a cap
+    once settled nor reserves against it while a stamped attempt is retrying.
+    """
+    return ~_cost_excluded_key_spend()
 
 
 def first_party_spend_filter():
@@ -64,15 +105,15 @@ def first_party_spend_filter():
 
     Imported trials were paid for outside Oddish. Experiment-combine rows copy
     an existing trial's result and cost, so counting them would charge the same
-    execution twice. Keep this eligibility rule shared by quota accounting and
-    cost reporting so both surfaces count the same execution population.
+    execution twice. Spend stamped with an LLM key on the admin cost-exclusion
+    list (sponsored/free keys) is deliberately not counted. Keep this
+    eligibility rule shared by quota accounting and cost reporting so both
+    surfaces count the same execution population.
     """
     return and_(
         TrialModel.origin == TrialOrigin.ODDISH,
-        or_(
-            TrialModel.idempotency_key.is_(None),
-            TrialModel.idempotency_key.notlike(f"{COMBINE_IDEMPOTENCY_PREFIX}%"),
-        ),
+        not_combine_copy_filter(),
+        not_excluded_llm_key_filter(),
     )
 
 

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import and_, func, not_, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,8 +21,10 @@ from oddish.config import (
 from oddish.core.baseline_gate import (
     GATE_SKIP_PREFIX,
     GateOutcome,
+    baseline_agent_clause,
     evaluate_baseline_gate,
 )
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.tags.derived import DERIVED_TAG_ERRORS, rebuild_derived_tags
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
@@ -60,7 +62,6 @@ from oddish.workers.jobs.enqueue import (
 logger = logging.getLogger(__name__)
 
 USER_CANCELLED_MESSAGE = "Cancelled by user"
-CANCELLED_HARBOR_STAGE = "cancelled"
 
 
 class TrialSupersedeConflict(RuntimeError):
@@ -136,19 +137,6 @@ async def cancel_tasks_runs(
         task_id for task_id in requested_task_ids if task_id not in tasks_by_id
     ]
 
-    # Match worker domain-write order before touching worker_jobs:
-    # trial handlers update the trial row, then may lock/update the parent task
-    # as they advance task state. Locking tasks first can deadlock against a
-    # worker that already holds one of the child trials.
-    trial_rows = await session.execute(
-        select(TrialModel)
-        .where(TrialModel.task_id.in_(found_task_ids))
-        .order_by(TrialModel.id)
-        .with_for_update()
-    )
-    trials = list(trial_rows.scalars().all())
-    trial_ids = [trial.id for trial in trials]
-
     locked_task_query = (
         select(TaskModel)
         .where(TaskModel.id.in_(found_task_ids))
@@ -159,6 +147,15 @@ async def cancel_tasks_runs(
         locked_task_query = locked_task_query.where(TaskModel.org_id == org_id)
     locked_task_rows = await session.execute(locked_task_query)
     tasks = list(locked_task_rows.scalars().all())
+
+    trial_rows = await session.execute(
+        select(TrialModel)
+        .where(TrialModel.task_id.in_(found_task_ids))
+        .order_by(TrialModel.id)
+        .with_for_update()
+    )
+    trials = list(trial_rows.scalars().all())
+    trial_ids = [trial.id for trial in trials]
 
     now = utcnow()
 
@@ -531,6 +528,63 @@ async def enqueue_qa_worker_job(
     )
 
 
+async def enqueue_trial_analysis_worker_job(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None,
+) -> WorkerJobModel:
+    """Enqueue analysis for one trial.
+
+    The job classifies this trial only. It does not touch other trials,
+    the task verdict, or the pre-trial audit. It shares the QA queue key,
+    so QA workers pick it up.
+    """
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.ANALYSIS,
+            queue_key=settings.get_qa_queue_key(),
+            payload={"trial_id": trial_id},
+            subject_table="trials",
+            subject_id=trial_id,
+            org_id=org_id,
+        ),
+    )
+
+
+async def enqueue_pre_trial_worker_job(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str,
+    org_id: str | None,
+) -> WorkerJobModel:
+    """Enqueue the pre-trial audit for one task version.
+
+    The job runs the audit only. It does not classify trials and it does
+    not synthesize the verdict. The ``mode`` field tells ``QaJobHandler``
+    to take the audit-only path. The version id pins the job to the
+    version the request marked QUEUED: resolving the current version at
+    run time would audit the wrong version after a re-upload.
+    """
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.QA,
+            queue_key=settings.get_qa_queue_key(),
+            payload={
+                "task_id": task_id,
+                "task_version_id": task_version_id,
+                "mode": "pre_trial",
+            },
+            subject_table="tasks",
+            subject_id=task_id,
+            org_id=org_id,
+        ),
+    )
+
+
 async def enqueue_analyzer_worker_job(
     session: AsyncSession, *, analyzer_id: str, org_id: str | None
 ) -> WorkerJobModel:
@@ -775,6 +829,54 @@ def _initial_trial_job_status(agent: str, *, gating: bool) -> WorkerJobStatus:
     if gating and not is_nop_oracle_agent(agent):
         return WorkerJobStatus.BLOCKED
     return WorkerJobStatus.QUEUED
+
+
+async def _enqueue_pre_trial_assignment_runs(
+    session: AsyncSession,
+    *,
+    submission: TaskSubmission,
+    task_id: str,
+    task_version_id: str,
+    experiment_id: str | None,
+    org_id: str | None,
+    user_id: str | None,
+) -> None:
+    """Best-effort additive pre-trial analyzers for one task version.
+
+    Skipped for a baseline-only submission: nop and oracle exercise the task's
+    own scaffolding, so a run that adds nothing else has no agent behavior for
+    the audit to inform. Appending baselines to an already-audited task would
+    otherwise pay for a fresh audit of a version whose source never changed.
+    """
+    from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
+
+    if all(is_nop_oracle_agent(spec.agent) for spec in submission.trials):
+        return
+
+    try:
+        async with session.begin_nested():
+            await enqueue_qa_assignment_runs_core(
+                session,
+                stage="pre_trial",
+                stage_event_key=f"task_version:{task_version_id}",
+                org_id=org_id,
+                user_id=user_id,
+                experiment_id=experiment_id,
+                task_id=task_id,
+                trial_id=None,
+                task_version_id=task_version_id,
+                run_scope_type="task",
+                run_scope_id=task_id,
+            )
+    except Exception:  # noqa: BLE001
+        # These analyzers are observability/QA sidecars. A bad assignment must
+        # not reject the sweep or roll back its trial jobs.
+        logger.warning(
+            "pre-trial assignment enqueue failed for task=%s version=%s",
+            task_id,
+            task_version_id,
+            exc_info=True,
+        )
 
 
 def _ensure_not_collection_target(experiment: "ExperimentModel | None") -> None:
@@ -1024,6 +1126,16 @@ async def create_task(
     await session.flush()
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+
+    await _enqueue_pre_trial_assignment_runs(
+        session,
+        submission=submission,
+        task_id=task_id,
+        task_version_id=version_id,
+        experiment_id=experiment.id,
+        org_id=org_id,
+        user_id=billed_user_id,
+    )
 
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
@@ -1284,6 +1396,16 @@ async def append_trials_to_task(
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
 
+    await _enqueue_pre_trial_assignment_runs(
+        session,
+        submission=submission,
+        task_id=task.id,
+        task_version_id=current_version_id,
+        experiment_id=trial_experiment_id,
+        org_id=task.org_id,
+        user_id=billed_user_id,
+    )
+
     # The replacement rows must exist before the self-referential FK can point
     # old attempts at them. Only live FAILED rows are eligible: if another
     # retry won a race, fail the transaction instead of overwriting its chain.
@@ -1444,8 +1566,9 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
     # Only enqueue QA when there is actually something to classify. A task can
     # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
-    # trial is a bulk-migrated Sauron import (excluded on cost) or was skipped by
-    # the baseline gate (never ran, no logs). Enqueueing then produces a job that
+    # trial is a bulk-migrated Sauron import (excluded on cost), was skipped by
+    # the baseline gate (never ran, no logs), or is a nop/oracle baseline (fixed
+    # scaffolding, never classified). Enqueueing then produces a job that
     # can only no-op: run_task_qa_job would leave a non-terminal verdict, which
     # QaJobHandler reads back as a retryable failure -> the job burns all its
     # attempts and lands FAILED for what is not an error. Complete the task
@@ -1458,10 +1581,13 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
                     TrialModel.task_id == task_id,
                     TrialModel.superseded_by_trial_id.is_(None),
                     TrialModel.imported_at.is_(None),
+                    func.coalesce(TrialModel.harbor_stage, "")
+                    != CANCELLED_HARBOR_STAGE,
                     TrialModel.status != TrialStatus.SKIPPED,
                     func.coalesce(TrialModel.error_message, "").notlike(
                         f"{GATE_SKIP_PREFIX}%"
                     ),
+                    not_(baseline_agent_clause(TrialModel.agent)),
                 )
             )
         )
@@ -1511,12 +1637,29 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     if not trial or not is_nop_oracle_agent(trial.agent):
         return False
 
-    return await _resolve_baseline_gate_for_scope(
+    released = await _resolve_baseline_gate_for_scope(
         session,
         task_id=trial.task_id,
         task_version_id=trial.task_version_id,
         experiment_id=trial.experiment_id,
     )
+    return released is not None
+
+
+async def release_gate_after_quota_cancel(
+    session: AsyncSession, trial_id: str
+) -> list[str]:
+    trial = await session.get(TrialModel, trial_id)
+    if not trial or not is_nop_oracle_agent(trial.agent):
+        return []
+
+    released = await _resolve_baseline_gate_for_scope(
+        session,
+        task_id=trial.task_id,
+        task_version_id=trial.task_version_id,
+        experiment_id=trial.experiment_id,
+    )
+    return released or []
 
 
 async def _resolve_baseline_gate_for_scope(
@@ -1525,16 +1668,8 @@ async def _resolve_baseline_gate_for_scope(
     task_id: str,
     task_version_id: str | None,
     experiment_id: str | None,
-) -> bool:
-    """Release or cancel a (task version, experiment) scope's BLOCKED LLM trials.
-
-    Locks the task row FOR UPDATE so the decision is serialized against
-    concurrent baseline completions *and* new-trial enqueues on the same task.
-    No-op (returns False) when the scope has no BLOCKED LLM trials or its
-    baselines are still running. When all the scope's baselines are terminal it
-    evaluates them: VALID releases the BLOCKED LLM trials to QUEUED, FAULTY
-    cancels them (mirrored to FAILED).
-    """
+) -> list[str] | None:
+    """Return None until resolved, [] when cancelled, or released trial IDs."""
     # Cheap, lock-free skip: if the task has no BLOCKED trial jobs at all there
     # is nothing to resolve, so don't take the task lock. This keeps the release
     # path off the hot path (every baseline completion, every reconcile pass)
@@ -1554,13 +1689,13 @@ async def _resolve_baseline_gate_for_scope(
         .limit(1)
     )
     if has_blocked is None:
-        return False
+        return None
 
     locked = await session.scalar(
         select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
     )
     if locked is None:
-        return False
+        return None
 
     blocked_trial_ids = (
         (
@@ -1587,7 +1722,7 @@ async def _resolve_baseline_gate_for_scope(
         .all()
     )
     if not blocked_trial_ids:
-        return False
+        return None
 
     pending_baselines = await session.scalar(
         select(func.count(TrialModel.id)).where(
@@ -1602,11 +1737,15 @@ async def _resolve_baseline_gate_for_scope(
         )
     )
     if pending_baselines:
-        return False
+        return None
 
     baseline_rows = (
         await session.execute(
-            select(TrialModel.agent, TrialModel.reward).where(
+            select(
+                TrialModel.agent,
+                TrialModel.reward,
+                TrialModel.harbor_stage,
+            ).where(
                 and_(
                     TrialModel.task_id == task_id,
                     TrialModel.experiment_id == experiment_id,
@@ -1617,17 +1756,29 @@ async def _resolve_baseline_gate_for_scope(
             )
         )
     ).all()
-    outcome, reason = evaluate_baseline_gate(
-        [(agent, reward) for agent, reward in baseline_rows]
-    )
+
+    # Cancelled baselines have no verdict; release if none remain evaluable.
+    evaluable_baselines = [
+        (agent, reward)
+        for agent, reward, harbor_stage in baseline_rows
+        if harbor_stage != CANCELLED_HARBOR_STAGE
+    ]
+    if not evaluable_baselines:
+        await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
+        await session.flush()
+        return list(blocked_trial_ids)
+
+    outcome, reason = evaluate_baseline_gate(evaluable_baselines)
 
     if outcome == GateOutcome.VALID:
         await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
+        released = list(blocked_trial_ids)
     else:
         await _cancel_gated_llm_trials(session, list(blocked_trial_ids), reason)
+        released = []
 
     await session.flush()
-    return True
+    return released
 
 
 async def _unblock_worker_jobs_for_trials(
@@ -1664,24 +1815,12 @@ async def _cancel_gated_llm_trials(
     """
     if not trial_ids:
         return
+    # Match quota cancellation's ordered Trial -> WorkerJob locks.
     await session.execute(
-        text(
-            """
-            UPDATE worker_jobs
-            SET    status = 'CANCELLED',
-                   finished_at = NOW(),
-                   error_message = :reason,
-                   current_worker_id = NULL,
-                   current_queue_slot = NULL,
-                   modal_function_call_id = NULL,
-                   payload = payload - 'registry_auth_enc'
-            WHERE  subject_table = 'trials'
-              AND  kind::text = 'TRIAL'
-              AND  subject_id = ANY(:trial_ids)
-              AND  status::text = 'BLOCKED'
-            """
-        ),
-        {"trial_ids": trial_ids, "reason": reason},
+        select(TrialModel.id)
+        .where(TrialModel.id.in_(trial_ids))
+        .order_by(TrialModel.id)
+        .with_for_update()
     )
     await session.execute(
         update(TrialModel)
@@ -1700,6 +1839,25 @@ async def _cancel_gated_llm_trials(
             current_worker_id=None,
             current_queue_slot=None,
         )
+    )
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL,
+                   payload = payload - 'registry_auth_enc'
+            WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text = 'BLOCKED'
+            """
+        ),
+        {"trial_ids": trial_ids, "reason": reason},
     )
 
 

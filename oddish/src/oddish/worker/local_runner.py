@@ -43,6 +43,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
@@ -326,26 +327,28 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # releases it. ``run_trial_locally`` is the only dispatch entrypoint, so
     # this claim is the single choke point that prevents double-dispatch.
     async with get_session() as session:
-        claimed = await session.scalar(
-            update(TrialModel)
-            .where(
-                TrialModel.id == trial_id,
-                TrialModel.status == TrialStatus.QUEUED,
-                ~exists().where(
-                    and_(
-                        WorkerJobModel.kind == WorkerJobKind.TRIAL,
-                        WorkerJobModel.subject_table == "trials",
-                        WorkerJobModel.subject_id == TrialModel.id,
-                        WorkerJobModel.status == WorkerJobStatus.BLOCKED,
-                    )
-                ),
+        claimed = (
+            await session.execute(
+                update(TrialModel)
+                .where(
+                    TrialModel.id == trial_id,
+                    TrialModel.status == TrialStatus.QUEUED,
+                    ~exists().where(
+                        and_(
+                            WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                            WorkerJobModel.subject_table == "trials",
+                            WorkerJobModel.subject_id == TrialModel.id,
+                            WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+                        )
+                    ),
+                )
+                .values(
+                    status=TrialStatus.RUNNING,
+                    started_at=datetime.now(timezone.utc),
+                )
+                .returning(TrialModel.org_id, TrialModel.billed_user_id)
             )
-            .values(
-                status=TrialStatus.RUNNING,
-                started_at=datetime.now(timezone.utc),
-            )
-            .returning(TrialModel.id)
-        )
+        ).one_or_none()
     if claimed is None:
         logger.info(
             "local_runner: trial %s not claimable (already dispatched, gated, "
@@ -353,6 +356,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             trial_id,
         )
         return
+    org_id, billed_user_id = claimed
     logger.info("local_runner: trial %s -> RUNNING", trial_id)
 
     failure: Exception | None = None
@@ -361,28 +365,50 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             await _run_harbor_trial(trial_id)
     except Exception as exc:
         logger.exception("local_runner: trial %s failed", trial_id)
-        async with get_session() as session:
-            trial = await session.get(TrialModel, trial_id)
-            if trial is not None:
-                trial.status = TrialStatus.FAILED
-                trial.error_message = str(exc)
-                trial.finished_at = datetime.now(timezone.utc)
         failure = exc
-    else:
-        async with get_session() as session:
-            trial = await session.get(TrialModel, trial_id)
-            if trial is None:
+
+    completed = False
+    async with get_session() as session:
+        trial = await session.get(TrialModel, trial_id, with_for_update=True)
+        if trial is None:
+            if failure is None:
                 raise ValueError(
                     f"Trial {trial_id} disappeared mid-run; cannot mark SUCCESS"
                 )
-            trial.status = TrialStatus.SUCCESS
+        elif trial.status == TrialStatus.RUNNING:
+            if failure is not None:
+                trial.status = TrialStatus.FAILED
+                trial.error_message = str(failure)
+            else:
+                trial.status = TrialStatus.SUCCESS
+                logger.info("local_runner: trial %s -> SUCCESS", trial_id)
             trial.finished_at = datetime.now(timezone.utc)
-            logger.info("local_runner: trial %s -> SUCCESS", trial_id)
+            completed = True
+        else:
+            logger.info(
+                "local_runner: trial %s completion ignored; status is %s",
+                trial_id,
+                trial.status.value,
+            )
 
-    # The trial is terminal now. Modal drives the baseline gate + QA stage from
-    # the trial handler/dispatcher; local mode has neither, so run them here and
-    # locally dispatch any LLM trials the gate just released.
-    await _local_post_trial_hooks(trial_id, dry_run=dry_run)
+    from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
+
+    # Enforce settled spend, but run hooks only for the winning completion.
+    async def after_check() -> None:
+        if completed:
+            await _local_post_trial_hooks(trial_id, dry_run=dry_run)
+
+    async def after_gate_release(released_trial_ids: list[str]) -> None:
+        for released_trial_id in released_trial_ids:
+            asyncio.create_task(run_trial_locally(released_trial_id, dry_run=dry_run))
+
+    await enforce_trial_quotas_until_checked(
+        org_id=org_id,
+        billed_user_id=billed_user_id,
+        caller_trial_id=trial_id,
+        after_check=after_check,
+        after_gate_release=after_gate_release,
+    )
 
     if failure is not None:
         raise failure
@@ -724,15 +750,20 @@ async def _run_harbor_trial(trial_id: str) -> None:
     analysis_finished_at = datetime.now(timezone.utc)
 
     async with get_session() as session:
-        trial = await session.get(TrialModel, trial_id)
+        trial = await session.get(TrialModel, trial_id, with_for_update=True)
         if trial is None:
             return
-        trial.harbor_result_path = str(trials_dir)
-        if reward_value is not None:
-            trial.reward = reward_value
-        trial.result = _strip_nul(result_payload)
+        owns_outcome = trial.status == TrialStatus.RUNNING
+        if owns_outcome:
+            trial.harbor_result_path = str(trials_dir)
+            if reward_value is not None:
+                trial.reward = reward_value
+            trial.result = _strip_nul(result_payload)
+
+        # A cancellation owns outcome fields, but the attempt still owns metering.
         agent_result = getattr(result, "agent_result", None) if result else None
         if agent_result is not None and not agent_result.is_empty():
+            prev_cost_usd = trial.cost_usd
             cache_write_tokens = cache_write_tokens_from_trajectory(trajectory)
             trial.input_tokens = agent_result.n_input_tokens
             trial.cache_tokens = agent_result.n_cache_tokens
@@ -754,6 +785,13 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 cache_tokens=agent_result.n_cache_tokens,
                 cache_write_tokens=cache_write_tokens,
             )
+            if not owns_outcome and prev_cost_usd is not None:
+                if trial.cost_usd is None or trial.cost_usd < prev_cost_usd:
+                    trial.cost_usd = prev_cost_usd
+            # Local-mode trials land in the same cost accounting as queue
+            # trials, so stamp the platform key hash here too (see
+            # workers/queue/trial_handler settlement).
+            trial.llm_key_hash = platform_key_hash_for_provider(provider)
             log_unpriced_trial_if_needed(
                 cost_usd=trial.cost_usd,
                 trial_id=trial.id,
@@ -768,11 +806,18 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 native_cost_usd=agent_result.cost_usd,
                 native_cost_trusted=native_cost_trusted,
             )
-        trial.total_steps = _trajectory_total_steps(trajectory)
-        trial.has_trajectory = trajectory is not None
-        if analyzer_summary is not None:
-            trial.analysis = _strip_nul(analyzer_summary)
-        trial.analysis_status = analyzer_status
-        trial.analysis_error = analyzer_error
-        trial.analysis_started_at = analysis_started_at
-        trial.analysis_finished_at = analysis_finished_at
+        if owns_outcome:
+            trial.total_steps = _trajectory_total_steps(trajectory)
+            trial.has_trajectory = trajectory is not None
+            if analyzer_summary is not None:
+                trial.analysis = _strip_nul(analyzer_summary)
+            trial.analysis_status = analyzer_status
+            trial.analysis_error = analyzer_error
+            trial.analysis_started_at = analysis_started_at
+            trial.analysis_finished_at = analysis_finished_at
+        else:
+            logger.info(
+                "local_runner: discarded Harbor outcome for terminal trial %s (%s)",
+                trial_id,
+                trial.status.value,
+            )

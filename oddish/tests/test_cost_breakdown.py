@@ -17,11 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.config import settings  # noqa: E402
 from oddish.core.admin import (  # noqa: E402
     _UNATTRIBUTED_KEY,
+    _primary_task_authors,
     _spend_identity,
     get_cost_breakdown_core,
 )
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER  # noqa: E402
+from oddish.config import normalize_model_id  # noqa: E402
 from oddish.db import (  # noqa: E402
+    AnalysisCostModel,
     ExperimentModel,
     TaskModel,
     TrialModel,
@@ -446,6 +449,32 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
 
 
 @pytest.mark.asyncio
+async def test_primary_task_authors_ignores_other_org_tasks(seeded_cost_data):
+    foreign_task_id = f"{E8}-task-foreign"
+    async with get_session() as session:
+        session.add(
+            TaskModel(
+                id=foreign_task_id,
+                name=foreign_task_id,
+                user="foreign-org-secret",
+                org_id=ORG_1,
+                task_path="some/path",
+                created_at=utcnow() - timedelta(days=365),
+            )
+        )
+        await session.flush()
+        await session.execute(
+            task_experiments.insert().values(
+                task_id=foreign_task_id,
+                experiment_id=E8,
+            )
+        )
+        authors = await _primary_task_authors(session, [E8], org_id=ORG_2)
+
+    assert authors[E8] == "e8-runner"
+
+
+@pytest.mark.asyncio
 async def test_monthly_quota_cost_uses_budgeted_orgs_only(
     seeded_cost_data, monkeypatch
 ):
@@ -834,3 +863,71 @@ async def test_cost_breakdown_merges_resolved_github_identity(seeded_fallback_da
     # One person, one row: merging must not double-count them in "N users".
     assert result.totals.user_count == sum(1 for u in result.by_user if u.label is None)
     assert sum(1 for u in result.by_user if u.key == MERGED) == 1
+
+
+@pytest.mark.asyncio
+async def test_cost_breakdown_includes_qa_analysis_cost():
+    """Analysis-job spend surfaces as qa_cost_usd plus a qa_by_model row."""
+    recent = utcnow() - timedelta(hours=1)
+    qa_model = f"gpt-5.5-qa-{_RUN}"
+    label = normalize_model_id(qa_model)
+
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(session, window_days=7)
+        baseline = result.totals.qa_cost_usd
+
+    async with get_session() as session:
+        session.add_all(
+            [
+                AnalysisCostModel(
+                    id=f"qacost-{_RUN}-{i}",
+                    job_kind="trial_classifier",
+                    model=qa_model,
+                    cost_usd=cost,
+                    cost_source="native",
+                    created_at=recent,
+                )
+                for i, cost in enumerate((0.25, 0.75))
+            ]
+        )
+
+    try:
+        async with get_session() as session:
+            result = await get_cost_breakdown_core(session, window_days=7)
+        # Robust to other analysis rows already in the shared DB: check the delta.
+        assert _approx(result.totals.qa_cost_usd - baseline, 1.0)
+        by_model = {m.model: m.cost_usd for m in result.qa_by_model}
+        assert _approx(by_model.get(label), 1.0)
+        # The QA time series buckets the same spend, stacked by model.
+        qa_series = result.series_qa_by_model
+        assert qa_series.dimension == "model"
+        assert label in {k.key for k in qa_series.keys}
+        series_model_total = sum(b.costs.get(label, 0.0) for b in qa_series.buckets)
+        assert _approx(series_model_total, 1.0)
+        type_series = result.series_by_type
+        assert type_series.dimension == "type"
+        assert {k.key for k in type_series.keys} == {
+            "inference",
+            "qa",
+            "compute",
+        }
+        type_qa_total = sum(b.costs.get("qa", 0.0) for b in type_series.buckets)
+        qa_series_grand_total = sum(b.cost_usd for b in qa_series.buckets)
+        assert _approx(type_qa_total, qa_series_grand_total)
+        analysis_type_series = result.series_by_analysis_type
+        assert analysis_type_series.dimension == "analysis_type"
+        assert "trial_classifier" in {
+            key.key for key in analysis_type_series.keys
+        }
+        classifier_total = sum(
+            bucket.costs.get("trial_classifier", 0.0)
+            for bucket in analysis_type_series.buckets
+        )
+        assert classifier_total >= 1.0
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                AnalysisCostModel.__table__.delete().where(
+                    AnalysisCostModel.id.like(f"qacost-{_RUN}-%")
+                )
+            )
