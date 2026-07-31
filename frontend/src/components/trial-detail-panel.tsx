@@ -193,8 +193,9 @@ function TrialAnalysisCard({
   const [live, setLive] = useState<Trial | null>(null);
   // The parent's snapshot can carry a superseded report (e.g. after a
   // re-run), so the card holds a loading state instead of painting it and
-  // swapping. Set once the per-trial fetch settles, either way.
-  const [synced, setSynced] = useState(false);
+  // swapping. Holds the id whose per-trial fetch has settled: an id, not a
+  // boolean, so the first render after a trial switch is already unsynced.
+  const [syncedId, setSyncedId] = useState<string | null>(null);
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   // Set when WE queued a run. This keeps the card in its progress state
@@ -219,7 +220,6 @@ function TrialAnalysisCard({
   useEffect(() => {
     trialIdRef.current = trialProp.id;
     setLive(null);
-    setSynced(false);
     setQueuing(false);
     setQueuedAt(null);
     setLogText(null);
@@ -245,7 +245,8 @@ function TrialAnalysisCard({
       } catch {
         // The card falls back to the parent's snapshot.
       } finally {
-        if (!cancelled && trialIdRef.current === trialProp.id) setSynced(true);
+        if (!cancelled && trialIdRef.current === trialProp.id)
+          setSyncedId(trialProp.id);
       }
     })();
     return () => {
@@ -256,6 +257,7 @@ function TrialAnalysisCard({
   // The id check covers the first render after a trial switch, before the
   // reset effect above has cleared the previous trial's polled state.
   const trial = live && live.id === trialProp.id ? live : trialProp;
+  const synced = syncedId === trialProp.id;
   const analysisActive =
     trial.analysis_status === "running" ||
     trial.analysis_status === "pending" ||
