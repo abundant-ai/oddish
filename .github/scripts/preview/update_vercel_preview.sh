@@ -105,9 +105,40 @@ if ! is_configured_vercel; then
   exit 0
 fi
 
+# Vercel's GitHub integration auto-builds every push with the branch env vars
+# that existed at push time. When those vars already match what we'd write,
+# skip the rewrite AND the force-redeploy: the auto-created build is already
+# correct, and forcing a second build of the same commit only burns minutes.
+# Any drift (or any doubt) takes the old rewrite + force-redeploy path.
+force_redeploy_file="$(mktemp)"
+echo true > "$force_redeploy_file"
+
 (
   cd "$GITHUB_WORKSPACE/frontend"
   vercel pull --yes --environment=preview --git-branch="$VERCEL_GIT_BRANCH" --token="$VERCEL_TOKEN"
+
+  desired_env=(
+    "NEXT_PUBLIC_ODDISH_PREVIEW=true"
+    "NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_LABEL=$backend_label"
+    "NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL=$database_label"
+  )
+  if [ -n "$backend_api_url" ]; then
+    desired_env+=(
+      "NEXT_PUBLIC_API_URL=$backend_api_url"
+      "NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_URL=$backend_api_url"
+    )
+  fi
+  [ -z "$database_url" ] || desired_env+=("NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_URL=$database_url")
+  [ -z "${PR_URL:-}" ] || desired_env+=("NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL=$PR_URL")
+  [ -z "${PR_TITLE:-}" ] || desired_env+=("NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE=$PR_TITLE")
+
+  if [ -n "$backend_api_url" ] &&
+    python "$script_dir/vercel_env_diff.py" .vercel/.env.preview.local "${desired_env[@]}"; then
+    echo "Per-branch Vercel env already up to date; reusing the auto-created deployment."
+    echo false > "$force_redeploy_file"
+    exit 0
+  fi
+
   if [ -n "$backend_api_url" ]; then
     set_vercel_env NEXT_PUBLIC_API_URL "$backend_api_url"
   else
@@ -123,11 +154,16 @@ fi
 )
 
 vercel_output="$(mktemp)"
-GITHUB_OUTPUT="$vercel_output" python "$script_dir/redeploy_vercel.py"
+GITHUB_OUTPUT="$vercel_output" VERCEL_FORCE_REDEPLOY="$(cat "$force_redeploy_file")" \
+  python "$script_dir/redeploy_vercel.py"
 [ -z "$github_output" ] || cat "$vercel_output" >> "$github_output"
 preview_url="$(read_output_value "$vercel_output" preview_url)"
-if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ] && [ -n "$preview_url" ]; then
+if [ -n "$preview_url" ]; then
+  # The reused auto-created deployment may still be building; block until it
+  # is READY before aliasing or probing it.
   vercel inspect "$preview_url" --wait --timeout=10m --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN" >/dev/null
+fi
+if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ] && [ -n "$preview_url" ]; then
   vercel alias set "$preview_url" "$PREVIEW_ALIAS_HOSTNAME" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
   preview_alias_url="https://$PREVIEW_ALIAS_HOSTNAME"
   wait_for_url_ready "$preview_alias_url"

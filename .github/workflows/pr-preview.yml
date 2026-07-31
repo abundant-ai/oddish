@@ -187,19 +187,20 @@ jobs:
     needs:
       - detect-changes
       - prepare-preview-database
-      - deploy-preview-backend
     # Run for every open same-repository PR, not only frontend changes: the
     # branch ruleset requires a working Preview deployment before merge.
+    #
+    # Deliberately does NOT wait for deploy-preview-backend: the backend URL it
+    # bakes into the frontend is the deterministic preview_api_url from
+    # detect-changes, so the two deploys are independent and run in parallel.
+    # require-working-preview still verifies both ends before the gate goes
+    # green, so a backend failure can't produce a silently-broken preview.
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
       (
         needs.prepare-preview-database.result == 'success' ||
         needs.prepare-preview-database.result == 'skipped'
-      ) &&
-      (
-        needs.deploy-preview-backend.result == 'success' ||
-        needs.deploy-preview-backend.result == 'skipped'
       )
     runs-on: ubuntu-latest
     permissions:

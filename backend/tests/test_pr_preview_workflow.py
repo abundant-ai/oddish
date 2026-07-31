@@ -52,15 +52,22 @@ def test_prepare_only_needs_detect():
     assert "stop-previous" not in job.get("if", "")
 
 
-def test_vercel_waits_for_backend_deploy():
+def test_vercel_runs_parallel_to_backend_deploy():
+    # The Vercel job bakes in the deterministic preview_api_url from
+    # detect-changes, not the deploy job's output, so serializing it behind
+    # the Modal deploy only adds wall-clock. The require-working-preview gate
+    # still verifies the backend before the check goes green.
     job = _wf()["jobs"]["update-vercel-preview"]
     needs = _needs(job)
-    assert "deploy-preview-backend" in needs
+    assert "deploy-preview-backend" not in needs
     assert "prepare-preview-database" in needs
     assert "detect-changes" in needs
     condition = job.get("if", "")
-    assert "needs.deploy-preview-backend.result == 'success'" in condition
-    assert "needs.deploy-preview-backend.result == 'skipped'" in condition
+    assert "needs.prepare-preview-database.result == 'success'" in condition
+    assert "needs.prepare-preview-database.result == 'skipped'" in condition
+    gate = _wf()["jobs"]["require-working-preview"]
+    assert "deploy-preview-backend" in _needs(gate)
+    assert "update-vercel-preview" in _needs(gate)
 
 
 def test_backend_and_vercel_are_siblings():
@@ -380,6 +387,117 @@ def test_no_migrations_no_backend_implication():
     assert outputs["run_migrations"] == "false"
     assert outputs["deploy_frontend"] == "false"
     assert outputs["any_change"] == "false"
+
+
+def _load_script(name):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(name.removesuffix(".py"), PREVIEW / name)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_env_diff_matches_and_drifts(tmp_path):
+    diff = _load_script("vercel_env_diff.py")
+    dotenv = tmp_path / "env"
+    dotenv.write_text(
+        'NEXT_PUBLIC_API_URL="https://x.modal.run"\n'
+        'NEXT_PUBLIC_ODDISH_PREVIEW="true"\n'
+        'NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE="fix: \\"quoted\\" title"\n'
+    )
+    current = diff.parse_dotenv(dotenv.read_text())
+    assert current["NEXT_PUBLIC_API_URL"] == "https://x.modal.run"
+    assert current["NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE"] == 'fix: "quoted" title'
+
+    import sys
+
+    argv = sys.argv
+    try:
+        sys.argv = [
+            "vercel_env_diff.py",
+            str(dotenv),
+            "NEXT_PUBLIC_API_URL=https://x.modal.run",
+            'NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE=fix: "quoted" title',
+        ]
+        assert diff.main() == 0
+        sys.argv = [
+            "vercel_env_diff.py",
+            str(dotenv),
+            "NEXT_PUBLIC_API_URL=https://other.modal.run",
+        ]
+        assert diff.main() == 1
+        sys.argv = ["vercel_env_diff.py", str(tmp_path / "missing"), "A=b"]
+        assert diff.main() == 1
+    finally:
+        sys.argv = argv
+
+
+def _run_redeploy_decision(force_env, state, monkeypatch):
+    mod = _load_script("redeploy_vercel.py")
+    calls = {"redeployed": False}
+    monkeypatch.setattr(
+        mod,
+        "find_existing_deployment",
+        lambda *a: {"name": "oddish", "uid": "d1", "url": "auto.vercel.app", "readyState": state},
+    )
+
+    def fake_redeploy(*a):
+        calls["redeployed"] = True
+        return {"url": "forced.vercel.app"}
+
+    monkeypatch.setattr(mod, "redeploy", fake_redeploy)
+    for key, value in {
+        "VERCEL_TOKEN": "t",
+        "VERCEL_PROJECT_ID": "p",
+        "VERCEL_ORG_ID": "o",
+        "VERCEL_GIT_BRANCH": "b",
+        "VERCEL_GIT_COMMIT_SHA": "sha",
+        "VERCEL_FORCE_REDEPLOY": force_env,
+    }.items():
+        monkeypatch.setenv(key, value)
+    mod.main()
+    return calls["redeployed"]
+
+
+@pytest.fixture
+def _github_output(monkeypatch, tmp_path):
+    out = tmp_path / "out"
+    out.write_text("")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    return out
+
+
+def test_redeploy_skipped_when_env_unchanged(_github_output, monkeypatch):
+    assert _run_redeploy_decision("false", "READY", monkeypatch) is False
+    assert "preview_url=https://auto.vercel.app" in _github_output.read_text()
+
+
+def test_redeploy_forced_by_default(_github_output, monkeypatch):
+    assert _run_redeploy_decision("true", "READY", monkeypatch) is True
+    assert "preview_url=https://forced.vercel.app" in _github_output.read_text()
+
+
+def test_failed_auto_deployment_still_forces_redeploy(_github_output, monkeypatch):
+    # A reused deployment must be viable: if the auto build errored, skipping
+    # the redeploy would alias the preview to a dead build.
+    assert _run_redeploy_decision("false", "ERROR", monkeypatch) is True
+
+
+def test_building_auto_deployment_is_reusable(_github_output, monkeypatch):
+    # QUEUED/BUILDING is fine to adopt -- update_vercel_preview.sh blocks on
+    # `vercel inspect --wait` before aliasing or probing the deployment.
+    assert _run_redeploy_decision("false", "BUILDING", monkeypatch) is False
+
+
+def test_update_script_wires_skip_path():
+    s = (PREVIEW / "update_vercel_preview.sh").read_text()
+    assert "vercel_env_diff.py" in s
+    assert "VERCEL_FORCE_REDEPLOY" in s
+    # inspect --wait must gate BOTH paths (a reused auto deployment can still
+    # be building), so it runs before the alias/no-alias fork.
+    assert s.index("vercel inspect") < s.index("vercel alias set")
+    assert ".vercel/.env.preview.local" in s
 
 
 def _reset_wf():
