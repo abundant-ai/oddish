@@ -40,6 +40,7 @@ from modal_app import (
     DISPATCHER_NONPREEMPTIBLE,
     DISPATCHER_TIMEOUT_SECONDS,
     MAX_WORKERS_PER_POLL,
+    ORACLE_WORKER_NONPREEMPTIBLE,
     POLL_INTERVAL_SECONDS,
     RECONCILER_CPU,
     RECONCILER_MEMORY_MB,
@@ -82,6 +83,7 @@ from oddish.workers.queue.runtime_status import (
     record_queue_runtime_status,
 )
 from oddish.workers.queue.worker_job_dispatcher import (
+    get_queued_oracle_job_counts,
     select_job_function,
     stamp_dispatch_stage,
 )
@@ -180,7 +182,13 @@ async def _effective_model_concurrency(queue_key: str) -> int:
     return (await _effective_model_concurrency_limits((queue_key,)))[queue_key]
 
 
-async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
+async def _run_one_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    *,
+    nonpreemptible: bool = WORKER_NONPREEMPTIBLE,
+    claim_lane: str | None = None,
+) -> None:
     """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
     Shared body for the default ``process_single_job`` and every blessed-variant
@@ -253,10 +261,11 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
             modal_function_call_id=fc_id,
             post_success_hooks=_POST_SUCCESS_HOOKS,
             harbor_variant_id=harbor_variant_id,
+            claim_lane=claim_lane,
             worker_billing_spec=WorkerBillingSpec(
                 cpu_cores=WORKER_CPU,
                 memory_mb=WORKER_MEMORY_MB,
-                nonpreemptible=WORKER_NONPREEMPTIBLE,
+                nonpreemptible=nonpreemptible,
             ),
         )
         if jobs_processed == 0:
@@ -305,29 +314,70 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
     memory=WORKER_MEMORY_MB,
     nonpreemptible=WORKER_NONPREEMPTIBLE,
 )
-async def process_single_job(queue_key: str, harbor_variant_id: str = "default"):
+async def process_single_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    claim_lane: str = "default",
+):
     """Default-image single-job worker.
 
     Serves ``default`` and ``ephemeral`` (the latter spawns an out-of-process
     child from this image); blessed variants run on their own image Function.
     """
-    await _run_one_job(queue_key, harbor_variant_id)
+    await _run_one_job(queue_key, harbor_variant_id, claim_lane=claim_lane)
 
 
-def _make_variant_entry(variant_id: str):
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    min_containers=0,
+    buffer_containers=0,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=WORKER_CPU,
+    memory=WORKER_MEMORY_MB,
+    nonpreemptible=ORACLE_WORKER_NONPREEMPTIBLE,
+)
+async def process_oracle_job(
+    queue_key: str,
+    harbor_variant_id: str = "default",
+    claim_lane: str = "oracle",
+):
+    await _run_one_job(
+        queue_key,
+        harbor_variant_id,
+        nonpreemptible=ORACLE_WORKER_NONPREEMPTIBLE,
+        claim_lane=claim_lane,
+    )
+
+
+def _make_variant_entry(variant_id: str, nonpreemptible: bool, worker_claim_lane: str):
     """Build the entrypoint for a blessed variant's single-job Function.
 
     Closes over *variant_id* so the Function defaults to its own lane even if the
     dispatcher's explicit ``harbor_variant_id`` kwarg is ever omitted.
     """
 
-    async def _entry(queue_key: str, harbor_variant_id: str = variant_id):
-        await _run_one_job(queue_key, harbor_variant_id)
+    async def _entry(
+        queue_key: str,
+        harbor_variant_id: str = variant_id,
+        claim_lane: str = worker_claim_lane,
+    ):
+        await _run_one_job(
+            queue_key,
+            harbor_variant_id,
+            nonpreemptible=nonpreemptible,
+            claim_lane=claim_lane,
+        )
 
     return _entry
 
 
-def build_harbor_variant_functions(modal_app) -> dict[str, object]:
+def build_harbor_variant_functions(
+    modal_app, *, nonpreemptible: bool, claim_lane: str, name_suffix: str = ""
+) -> dict[str, object]:
     """Register one image-bound ``process_single_job__<id>`` per blessed variant.
 
     Returns ``variant_id -> Function``. Empty unless ``HARBOR_VARIANTS`` is
@@ -353,10 +403,10 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
             timeout=WORKER_TIMEOUT_SECONDS,
             cpu=WORKER_CPU,
             memory=WORKER_MEMORY_MB,
-            nonpreemptible=WORKER_NONPREEMPTIBLE,
-            name=harbor_variant_function_name(variant_id),
+            nonpreemptible=nonpreemptible,
+            name=harbor_variant_function_name(variant_id) + name_suffix,
             serialized=True,
-        )(_make_variant_entry(variant_id))
+        )(_make_variant_entry(variant_id, nonpreemptible, claim_lane))
     return functions
 
 
@@ -570,7 +620,15 @@ async def precompute_dashboard_stats():
 # in-process Harbor matches the pin. Keyed by ``variant_id``; ``default`` +
 # ``ephemeral`` always route to the base ``process_single_job``. Empty unless
 # HARBOR_VARIANTS is populated.
-_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
+_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(
+    app, nonpreemptible=WORKER_NONPREEMPTIBLE, claim_lane="default"
+)
+_ORACLE_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(
+    app,
+    nonpreemptible=ORACLE_WORKER_NONPREEMPTIBLE,
+    claim_lane="oracle",
+    name_suffix="__oracle",
+)
 
 
 async def _build_gke_task_image_entry(task_id: str, version: int) -> str:
@@ -767,12 +825,18 @@ async def poll_queue():
         # base image; blessed ids -> their own image), then spawn. Use Modal's
         # async spawn interface inside this async function to avoid blocking the
         # event loop and spurious AsyncUsageWarning noise.
+        oracle_counts = await get_queued_oracle_job_counts(spawn_plan)
         spawn_calls = []
         for unit in spawn_plan:
+            claim_lane = "oracle" if oracle_counts.get(unit, 0) > 0 else "default"
+            oracle_counts[unit] = oracle_counts.get(unit, 0) - 1
             fn, spawn_kwargs = select_job_function(
                 unit,
                 default_fn=process_single_job,
                 variant_fns=_VARIANT_JOB_FUNCTIONS,
+                claim_lane=claim_lane,
+                oracle_default_fn=process_oracle_job,
+                oracle_variant_fns=_ORACLE_VARIANT_JOB_FUNCTIONS,
             )
             spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
         await asyncio.gather(*spawn_calls)

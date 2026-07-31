@@ -333,6 +333,7 @@ def test_blessed_variant_routes_independently_of_default():
 
 _DEFAULT_FN = object()
 _VARIANT_FN = object()
+_ORACLE_FN = object()
 
 
 def test_default_and_ephemeral_route_to_the_base_function():
@@ -362,3 +363,19 @@ def test_unregistered_variant_falls_back_to_base_function():
     )
     assert fn is _DEFAULT_FN
     assert kwargs["harbor_variant_id"] == "harbor-missing"
+
+
+def test_nop_oracle_lane_routes_to_its_dedicated_function():
+    fn, kwargs = select_job_function(
+        ("nop_oracle", "default"),
+        default_fn=_DEFAULT_FN,
+        variant_fns={},
+        claim_lane="oracle",
+        oracle_default_fn=_ORACLE_FN,
+    )
+    assert fn is _ORACLE_FN
+    assert kwargs == {
+        "queue_key": "nop_oracle",
+        "harbor_variant_id": "default",
+        "claim_lane": "oracle",
+    }

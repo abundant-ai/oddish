@@ -21,7 +21,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 
@@ -198,6 +198,24 @@ WHERE  id = (
       -- ``IS NULL`` checks degenerate to TRUE.
       AND  (tr.deleted_at IS NULL)
       AND  (tk.deleted_at IS NULL)
+      AND  (
+          $6::text IS NULL
+          OR ($6::text = 'oracle'
+              AND wj.kind::text = 'TRIAL'
+              AND (
+                  LOWER(COALESCE(tr.agent, '')) = 'oracle'
+                  OR LOWER(COALESCE(tr.agent, '')) LIKE 'oracle-%'
+                  OR LOWER(COALESCE(tr.agent, '')) LIKE 'agent-oracle%'
+              ))
+          OR ($6::text = 'default' AND NOT (
+              wj.kind::text = 'TRIAL'
+              AND (
+                  LOWER(COALESCE(tr.agent, '')) = 'oracle'
+                  OR LOWER(COALESCE(tr.agent, '')) LIKE 'oracle-%'
+                  OR LOWER(COALESCE(tr.agent, '')) LIKE 'agent-oracle%'
+              )
+          ))
+      )
     ORDER  BY wj.priority DESC,
               COALESCE(rpg.running_count, 0) ASC,
               wj.created_at ASC
@@ -302,6 +320,7 @@ async def claim_single_worker_job(
     queue_slot: int,
     modal_function_call_id: str | None = None,
     harbor_variant_id: str | None = "default",
+    claim_lane: Literal["default", "oracle"] | None = None,
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
 
@@ -322,6 +341,7 @@ async def claim_single_worker_job(
             queue_slot,
             modal_function_call_id,
             harbor_variant_id,
+            claim_lane,
         )
     finally:
         await connection.close()
@@ -528,6 +548,7 @@ async def run_single_worker_job(
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
+    claim_lane: Literal["default", "oracle"] | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
@@ -545,13 +566,15 @@ async def run_single_worker_job(
     """
     _ensure_handlers_registered()
 
-    job = await claim_single_worker_job(
-        queue_key,
-        worker_id=worker_id,
-        queue_slot=queue_slot,
-        modal_function_call_id=modal_function_call_id,
-        harbor_variant_id=harbor_variant_id,
-    )
+    claim_kwargs = {
+        "worker_id": worker_id,
+        "queue_slot": queue_slot,
+        "modal_function_call_id": modal_function_call_id,
+        "harbor_variant_id": harbor_variant_id,
+    }
+    if claim_lane is not None:
+        claim_kwargs["claim_lane"] = claim_lane
+    job = await claim_single_worker_job(queue_key, **claim_kwargs)
     if job is None:
         return False
 
@@ -662,6 +685,7 @@ async def drain_worker_jobs(
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
     harbor_variant_id: str | None = "default",
+    claim_lane: Literal["default", "oracle"] | None = None,
     worker_billing_spec: WorkerBillingSpec | None = None,
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
@@ -689,15 +713,18 @@ async def drain_worker_jobs(
     deadline = _now() + budget_seconds
     processed = 0
     while True:
-        job_found = await run_job(
-            queue_key,
-            worker_id=worker_id,
-            queue_slot=queue_slot,
-            modal_function_call_id=modal_function_call_id,
-            post_success_hooks=post_success_hooks,
-            harbor_variant_id=harbor_variant_id,
-            worker_billing_spec=worker_billing_spec,
-        )
+        run_kwargs = {
+            "worker_id": worker_id,
+            "queue_slot": queue_slot,
+            "modal_function_call_id": modal_function_call_id,
+            "post_success_hooks": post_success_hooks,
+            "harbor_variant_id": harbor_variant_id,
+        }
+        if claim_lane is not None:
+            run_kwargs["claim_lane"] = claim_lane
+        if worker_billing_spec is not None:
+            run_kwargs["worker_billing_spec"] = worker_billing_spec
+        job_found = await run_job(queue_key, **run_kwargs)
         if not job_found:
             break
         processed += 1

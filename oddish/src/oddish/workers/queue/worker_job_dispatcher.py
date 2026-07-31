@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from oddish.config import settings
+from oddish.config import NOP_ORACLE_QUEUE_KEY, settings
 from oddish.db import get_pool
 
 
@@ -36,6 +36,7 @@ __all__ = [
     "discover_active_worker_job_queue_keys",
     "fetch_running_worker_handles",
     "get_worker_job_org_queue_counts",
+    "get_queued_oracle_job_counts",
     "select_job_function",
     "stamp_dispatch_stage",
 ]
@@ -225,11 +226,51 @@ async def get_worker_job_org_queue_counts(
     return queued_by_org_queue, running_by_queue
 
 
+async def get_queued_oracle_job_counts(
+    units: list[tuple[str, str]],
+) -> dict[tuple[str, str], int]:
+    """Count queued oracle trials by their existing dispatch unit."""
+    oracle_units = list(
+        dict.fromkeys(unit for unit in units if unit[0] == NOP_ORACLE_QUEUE_KEY)
+    )
+    if not oracle_units:
+        return {}
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT wj.queue_key, wj.harbor_variant_id, COUNT(*) AS queued
+        FROM worker_jobs wj
+        JOIN unnest($1::text[], $2::text[]) units(queue_key, harbor_variant_id)
+          ON wj.queue_key = units.queue_key
+         AND wj.harbor_variant_id = units.harbor_variant_id
+        JOIN trials tr ON wj.subject_table = 'trials' AND wj.subject_id = tr.id
+        WHERE wj.kind::text = 'TRIAL'
+          AND wj.status::text IN ('QUEUED', 'RETRYING')
+          AND wj.available_after <= NOW()
+          AND (
+              LOWER(COALESCE(tr.agent, '')) = 'oracle'
+              OR LOWER(COALESCE(tr.agent, '')) LIKE 'oracle-%'
+              OR LOWER(COALESCE(tr.agent, '')) LIKE 'agent-oracle%'
+          )
+        GROUP BY wj.queue_key, wj.harbor_variant_id
+        """,
+        [queue_key for queue_key, _variant in oracle_units],
+        [variant for _queue_key, variant in oracle_units],
+    )
+    return {
+        (str(row["queue_key"]), str(row["harbor_variant_id"])): int(row["queued"])
+        for row in rows
+    }
+
+
 def select_job_function(
     unit: tuple[str, str],
     *,
     default_fn: Any,
     variant_fns: dict[str, Any],
+    claim_lane: str | None = None,
+    oracle_default_fn: Any | None = None,
+    oracle_variant_fns: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, str]]:
     """Pick the worker Function + spawn kwargs for one ``(queue_key, variant)``.
 
@@ -241,8 +282,14 @@ def select_job_function(
     ``harbor_variant_id`` so its claim is scoped to the right lane.
     """
     queue_key, variant = unit
+    if claim_lane == "oracle" and oracle_default_fn is not None:
+        default_fn = oracle_default_fn
+        variant_fns = oracle_variant_fns or {}
     fn = variant_fns.get(variant, default_fn)
-    return fn, {"queue_key": queue_key, "harbor_variant_id": variant}
+    kwargs = {"queue_key": queue_key, "harbor_variant_id": variant}
+    if claim_lane is not None:
+        kwargs["claim_lane"] = claim_lane
+    return fn, kwargs
 
 
 def _org_sort_key(org_id: str | None) -> tuple[int, str]:

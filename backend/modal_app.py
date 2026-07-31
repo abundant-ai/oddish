@@ -155,12 +155,14 @@ WORKER_MAX_CONTAINERS = _env_int(
     2688,
 )
 
-# Mark single-job worker containers as non-preemptible so Modal does not
-# interrupt long-running trials / analyses / verdicts mid-execution. Modal
-# applies a 3x CPU+memory price multiplier when this is enabled
-# (https://modal.com/docs/guide/preemption);
-WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
-DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
+# Keep ordinary work preemptible. Modal applies a 3x CPU+memory price multiplier
+# to non-preemptible containers, so reserve that capacity for the baseline lane
+# that creates oracle results.
+WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", False)
+ORACLE_WORKER_NONPREEMPTIBLE = _env_flag(
+    "ODDISH_MODAL_ORACLE_WORKER_NONPREEMPTIBLE", True
+)
+DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", False)
 
 # Per-function CPU/memory floors (see API_CPU/API_MEMORY_MB note above).
 # - Worker: keeps the historical 1 core / 3 GiB; Harbor scratch + log handling
@@ -417,8 +419,7 @@ def assert_gke_cluster_exists() -> None:
         )
     except subprocess.TimeoutExpired:
         print(
-            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; "
-            "continuing"
+            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; continuing"
         )
         return
     if result.returncode == 0:

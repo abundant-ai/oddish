@@ -129,3 +129,24 @@ async def test_drain_passes_slot_and_hooks_through():
         ("analysis-key", "worker-1", 7, "fc-123"),
         ("analysis-key", "worker-1", 7, "fc-123"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_drain_passes_claim_lane_through():
+    lanes = []
+
+    async def run_job(queue_key, **kwargs):
+        lanes.append(kwargs["claim_lane"])
+        return False
+
+    await drain_worker_jobs(
+        "nop_oracle",
+        worker_id="worker-1",
+        queue_slot=7,
+        budget_seconds=1000.0,
+        claim_lane="oracle",
+        _run_job=run_job,
+        _now=lambda: 0.0,
+    )
+
+    assert lanes == ["oracle"]
