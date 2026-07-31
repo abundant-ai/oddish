@@ -27,13 +27,26 @@ export async function GET(
       return NextResponse.json(error, { status: res.status });
     }
 
-    const data = await res.json();
+    // Presigned URLs expire in 15 min, so cache for 10 min to be safe.
+    // This allows the browser to reuse the listing without hitting the backend.
+    const cacheControl = "private, max-age=600, stale-while-revalidate=60";
 
-    // Presigned URLs expire in 15 min, so cache for 10 min to be safe
-    // This allows the browser to reuse the listing without hitting the backend
+    // Streamed listings (stream=1) are NDJSON — pass the body through so the
+    // client can paint the tree before the file contents finish loading.
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/x-ndjson")) {
+      return new NextResponse(res.body, {
+        headers: {
+          "Content-Type": "application/x-ndjson",
+          "Cache-Control": cacheControl,
+        },
+      });
+    }
+
+    const data = await res.json();
     return NextResponse.json(data, {
       headers: {
-        "Cache-Control": "private, max-age=600, stale-while-revalidate=60",
+        "Cache-Control": cacheControl,
       },
     });
   } catch (error) {

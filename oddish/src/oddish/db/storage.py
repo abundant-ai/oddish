@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import OrderedDict
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+import gzip
 import io
 import json
 import posixpath
@@ -119,9 +121,52 @@ def extract_task_tarfile(tar: tarfile.TarFile, destination: Path) -> None:
         tar.extract(member, path=destination, filter="data")
 
 
-def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, object]]:
+# Inline-content limits for recursive task listings: files at or below the
+# per-file cap come back with ``content`` attached so the file tree and the
+# file bodies arrive in a single round trip; the total cap bounds the response
+# size for tasks with many small files.
+_INLINE_CONTENT_MAX_FILE_BYTES = 100 * 1024
+_INLINE_CONTENT_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+# Fan-out width for fetching per-file objects when inlining from the
+# expanded / plain S3 layouts (the archive layout reads from memory).
+_INLINE_CONTENT_MAX_CONCURRENCY = 16
+
+
+def _inline_eligible_files(files: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Pick the files whose bodies fit the inline caps, shallowest first.
+
+    Root files (instruction.md, task.toml, ...) are what viewers open
+    first, so they win the budget — and, on streaming reads, arrive first.
+    """
+    ordered = sorted(
+        files, key=lambda meta: (str(meta["path"]).count("/"), str(meta["path"]))
+    )
+    budget = _INLINE_CONTENT_MAX_TOTAL_BYTES
+    eligible: list[dict[str, object]] = []
+    for meta in ordered:
+        size = int(meta.get("size") or 0)
+        if size > _INLINE_CONTENT_MAX_FILE_BYTES or size > budget:
+            continue
+        budget -= size
+        eligible.append(meta)
+    return eligible
+
+
+def _parse_task_archive(
+    archive_bytes: bytes,
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    """Parse a task tarball once: member metadata plus small text bodies.
+
+    Decompresses the gzip stream exactly once into memory, then reads
+    members and extracts inline-eligible text bodies from the seekable
+    plain-tar buffer. Bodies that are binary (not valid UTF-8) or over
+    the inline caps are skipped; the per-file read path serves those.
+    """
+    raw = gzip.decompress(archive_bytes)
     files: dict[str, dict[str, object]] = {}
-    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tar:
+    infos: dict[str, tarfile.TarInfo] = {}
+    texts: dict[str, str] = {}
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tar:
         for member in tar.getmembers():
             if not member.isfile():
                 continue
@@ -133,7 +178,41 @@ def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, obj
                 "size": member.size,
                 "last_modified": datetime.fromtimestamp(member.mtime, tz=timezone.utc),
             }
-    return [files[path] for path in sorted(files)]
+            infos[normalized_path] = member
+        members = [files[path] for path in sorted(files)]
+        for meta in _inline_eligible_files(members):
+            info = infos.get(str(meta["path"]))
+            if info is None:
+                continue
+            extracted = tar.extractfile(info)
+            if extracted is None:
+                continue
+            try:
+                texts[str(meta["path"])] = extracted.read().decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+    return members, texts
+
+
+def _task_archive_members_from_bytes(archive_bytes: bytes) -> list[dict[str, object]]:
+    return _parse_task_archive(archive_bytes)[0]
+
+
+def _merge_inline_contents(
+    files: list[dict[str, object]], texts: dict[str, str]
+) -> list[dict[str, object]]:
+    """Return copies of *files* with ``content`` attached where a body is known.
+
+    Copies keep the archive cache's member dicts pristine.
+    """
+    if not texts:
+        return files
+    return [
+        {**meta, "content": texts[str(meta["path"])]}
+        if str(meta["path"]) in texts
+        else meta
+        for meta in files
+    ]
 
 
 def _read_task_archive_text(archive_bytes: bytes, file_path: str) -> str:
@@ -182,12 +261,13 @@ class StorageClient:
     # deletes the staging object.
     _TRIAL_IMPORT_ARCHIVE_OBJECT_NAME = ".oddish-trial-import.tar.gz"
 
-    # Per-process archive cache: maps (archive_key, etag) -> (bytes, members)
-    # where members is the list produced by ``_task_archive_members_from_bytes``.
-    # Size-bounded in total decompressed byte footprint so a single task doesn't
-    # blow the limit. Keys without a known etag fall back to
+    # Per-process archive cache: maps (archive_key, etag) ->
+    # (bytes, members, texts) as produced by ``_parse_task_archive``, so a
+    # cache hit serves listings, inlined contents, and file reads with zero
+    # decompression. Size-bounded in total byte footprint so a single task
+    # doesn't blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]]]]" = OrderedDict()
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = OrderedDict()
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -195,10 +275,16 @@ class StorageClient:
         mb = getattr(settings, "tasks_archive_cache_mb", 256) or 0
         return max(int(mb), 0) * 1024 * 1024
 
+    @staticmethod
+    def _archive_cache_entry_size(
+        value: tuple[bytes, list[dict[str, object]], dict[str, str]],
+    ) -> int:
+        return len(value[0]) + sum(len(text) for text in value[2].values())
+
     @classmethod
     def _archive_cache_get(
         cls, cache_key: tuple[str, str]
-    ) -> tuple[bytes, list[dict[str, object]]] | None:
+    ) -> tuple[bytes, list[dict[str, object]], dict[str, str]] | None:
         entry = cls._archive_cache.get(cache_key)
         if entry is None:
             return None
@@ -209,22 +295,22 @@ class StorageClient:
     def _archive_cache_put(
         cls,
         cache_key: tuple[str, str],
-        value: tuple[bytes, list[dict[str, object]]],
+        value: tuple[bytes, list[dict[str, object]], dict[str, str]],
     ) -> None:
         capacity = cls._archive_cache_capacity_bytes()
         if capacity <= 0:
             return
-        size = len(value[0])
+        size = cls._archive_cache_entry_size(value)
         if size > capacity:
             return
         existing = cls._archive_cache.pop(cache_key, None)
         if existing is not None:
-            cls._archive_cache_bytes -= len(existing[0])
+            cls._archive_cache_bytes -= cls._archive_cache_entry_size(existing)
         cls._archive_cache[cache_key] = value
         cls._archive_cache_bytes += size
         while cls._archive_cache_bytes > capacity and cls._archive_cache:
             _, evicted = cls._archive_cache.popitem(last=False)
-            cls._archive_cache_bytes -= len(evicted[0])
+            cls._archive_cache_bytes -= cls._archive_cache_entry_size(evicted)
 
     async def _head_archive_cache_key(self, archive_key: str) -> tuple[str, str] | None:
         """Build a stable cache key for an archive object.
@@ -278,16 +364,62 @@ class StorageClient:
         while len(cls._archive_etag_hints) > cls._ARCHIVE_ETAG_HINTS_MAX:
             cls._archive_etag_hints.popitem(last=False)
 
+    async def _iter_object_contents(
+        self, files: list[dict[str, object]]
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Concurrently fetch small text objects, yielding as they arrive.
+
+        The per-file S3 twin of the archive text extraction: the backend
+        sits next to S3, so fanning out the small GETs server-side is far
+        cheaper than the client fetching files one round trip at a time.
+        Best-effort — binary (non-UTF-8) objects and fetch failures are
+        simply not yielded; the per-file endpoint / presigned URL still
+        serves those.
+        """
+        eligible = _inline_eligible_files(files)
+        if not eligible:
+            return
+
+        semaphore = asyncio.Semaphore(_INLINE_CONTENT_MAX_CONCURRENCY)
+
+        async def fetch_one(meta: dict[str, object]) -> tuple[str, str] | None:
+            async with semaphore:
+                try:
+                    raw = await self.download_bytes(str(meta["key"]))
+                    return str(meta["path"]), raw.decode("utf-8")
+                except Exception:
+                    return None
+
+        tasks = [asyncio.create_task(fetch_one(meta)) for meta in eligible]
+        try:
+            for future in asyncio.as_completed(tasks):
+                result = await future
+                if result is not None:
+                    yield result
+        finally:
+            for task in tasks:
+                task.cancel()
+
+    async def _inline_object_contents(
+        self, files: list[dict[str, object]]
+    ) -> list[dict[str, object]]:
+        """Fetch small text objects and return copies with ``content`` attached."""
+        contents = {
+            path: text async for path, text in self._iter_object_contents(files)
+        }
+        return _merge_inline_contents(files, contents)
+
     async def _load_task_archive(
         self, archive_key: str
-    ) -> tuple[bytes, list[dict[str, object]]]:
+    ) -> tuple[bytes, list[dict[str, object]], dict[str, str]]:
         """Fetch and parse a task archive, preferring the in-process cache.
 
-        Callers that need both the listing and a member body can reuse the
-        returned ``(bytes, members)`` tuple without re-downloading or
-        re-decompressing the tarball. As a side effect the archive's
-        ETag (or ``(length, last_modified)`` fallback) is stashed so a
-        subsequent ``_head_archive_etag`` call doesn't re-issue HEAD.
+        Callers that need the listing, a member body, or the inline-eligible
+        text contents can reuse the returned ``(bytes, members, texts)``
+        tuple without re-downloading or re-decompressing the tarball. As a
+        side effect the archive's ETag (or ``(length, last_modified)``
+        fallback) is stashed so a subsequent ``_head_archive_etag`` call
+        doesn't re-issue HEAD.
         """
         cache_key = await self._head_archive_cache_key(archive_key)
         if cache_key is not None:
@@ -297,8 +429,8 @@ class StorageClient:
                 return cached
 
         archive_bytes = await self.download_bytes(archive_key)
-        members = _task_archive_members_from_bytes(archive_bytes)
-        value = (archive_bytes, members)
+        members, texts = _parse_task_archive(archive_bytes)
+        value = (archive_bytes, members, texts)
         if cache_key is not None:
             self._archive_cache_put(cache_key, value)
         return value
@@ -706,6 +838,7 @@ class StorageClient:
         presign: bool,
         presign_expiration: int = 900,
         version: int | None = None,
+        inline: bool = True,
     ) -> dict:
         """List files in a task's S3 directory.
 
@@ -713,6 +846,10 @@ class StorageClient:
         is tried first.  If it doesn't exist (e.g. backfilled v1 tasks whose
         files live at the unversioned ``tasks/{task_id}/`` prefix) the method
         falls back automatically.
+
+        With ``inline=True`` (default), recursive listings attach small text
+        file bodies as ``content``. ``stream_task_files`` passes ``inline=False``
+        to return the bare tree fast and stream the bodies separately.
         """
         # Prefer the per-file expanded layout when available. Sibling prefix
         # (``v{N}-files/``) isolates expansion artifacts from user files.
@@ -729,11 +866,14 @@ class StorageClient:
                     cursor=cursor,
                     presign=presign,
                     presign_expiration=presign_expiration,
+                    inline=inline,
                 )
 
         root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
-            archive_bytes, archive_files = await self._load_task_archive(archive_key)
+            _bytes, archive_files, archive_texts = await self._load_task_archive(
+                archive_key
+            )
             relative_prefix = normalize_s3_relative_path(prefix)
             if relative_prefix and not relative_prefix.endswith("/"):
                 relative_prefix = f"{relative_prefix}/"
@@ -753,7 +893,9 @@ class StorageClient:
             if recursive:
                 return {
                     "task_id": task_id,
-                    "files": filtered_files,
+                    "files": _merge_inline_contents(filtered_files, archive_texts)
+                    if inline
+                    else filtered_files,
                     "dirs": [],
                     "prefix": full_prefix,
                     "recursive": True,
@@ -837,7 +979,9 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": files,
+                "files": await self._inline_object_contents(files)
+                if inline
+                else files,
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,
@@ -904,6 +1048,7 @@ class StorageClient:
         cursor: str | None,
         presign: bool,
         presign_expiration: int,
+        inline: bool = True,
     ) -> dict:
         """List files in a task's expanded per-file S3 layout.
 
@@ -947,7 +1092,9 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": files,
+                "files": await self._inline_object_contents(files)
+                if inline
+                else files,
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,
@@ -1105,6 +1252,51 @@ class StorageClient:
             "presign_expires_in": presign_expiration if presign else None,
         }
 
+    async def stream_task_files(
+        self,
+        *,
+        task_id: str,
+        prefix: str | None = None,
+        recursive: bool = True,
+        limit: int = 1000,
+        cursor: str | None = None,
+        presign: bool = True,
+        presign_expiration: int = 900,
+        version: int | None = None,
+    ) -> AsyncIterator[dict]:
+        """Stream a task file listing: the tree first, then file contents.
+
+        Yields one ``{"type": "listing", ...}`` chunk as soon as the tree
+        is known, then ``{"type": "content", "path", "content"}`` chunks as
+        small text bodies become available (shallowest files first), so
+        clients can paint the tree without waiting for the content fan-out.
+        """
+        listing = await self.list_task_files(
+            task_id=task_id,
+            prefix=prefix,
+            recursive=recursive,
+            limit=limit,
+            cursor=cursor,
+            presign=presign,
+            presign_expiration=presign_expiration,
+            version=version,
+            inline=False,
+        )
+        yield {"type": "listing", **listing}
+
+        files = list(listing.get("files") or [])
+        archive_key = listing.get("archive_key")
+        if archive_key:
+            # Cache hit from the listing above — no re-download/re-parse.
+            _bytes, _members, texts = await self._load_task_archive(str(archive_key))
+            for meta in _inline_eligible_files(files):
+                text = texts.get(str(meta["path"]))
+                if text is not None:
+                    yield {"type": "content", "path": meta["path"], "content": text}
+        else:
+            async for path, text in self._iter_object_contents(files):
+                yield {"type": "content", "path": path, "content": text}
+
     async def get_task_file_content(
         self,
         *,
@@ -1159,8 +1351,12 @@ class StorageClient:
 
         root_prefix, archive_key = await self._resolve_task_prefix(task_id, version)
         if await self.object_exists(archive_key):
-            archive_bytes, _members = await self._load_task_archive(archive_key)
-            content = _read_task_archive_text(archive_bytes, normalized_path)
+            archive_bytes, _members, texts = await self._load_task_archive(archive_key)
+            # Small text members were extracted during the (cached) parse;
+            # only oversize members pay a tar read here.
+            content = texts.get(normalized_path)
+            if content is None:
+                content = _read_task_archive_text(archive_bytes, normalized_path)
             archive_etag = await self._head_archive_etag(archive_key)
             return {
                 "path": normalized_path,
