@@ -115,7 +115,7 @@ export function StaticChecksPanel({
           className="text-muted-foreground hover:text-foreground border-border ml-auto rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
           title={
             pinnedOld
-              ? "The checks run on the current version — open the task page to re-run"
+              ? "The checks run on the current version — select the current version to re-run"
               : qaActive
                 ? "Task QA is running and includes these checks — wait for it to finish"
                 : "Audit this task's source with the latest prompt"
