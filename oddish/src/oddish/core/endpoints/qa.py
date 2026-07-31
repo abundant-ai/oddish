@@ -395,6 +395,34 @@ async def backfill_task_analysis_core(
             detail="A pre-trial audit is queued or running; wait for it to finish",
         )
 
+    # A failed analysis attempt can leave its job in RETRYING while the
+    # trial row reads FAILED, which passes the status guard above. That job
+    # will classify its trial again on its own; queuing task QA beside it
+    # would classify the trial twice (the same rule the per-trial rerun
+    # applies).
+    active_analysis_job = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            WorkerJobModel.kind == WorkerJobKind.ANALYSIS,
+            WorkerJobModel.subject_table == "trials",
+            WorkerJobModel.subject_id.in_([trial.id for trial in live_trials]),
+            WorkerJobModel.status.in_(
+                [
+                    WorkerJobStatus.QUEUED,
+                    WorkerJobStatus.RETRYING,
+                    WorkerJobStatus.RUNNING,
+                ]
+            ),
+        )
+        .limit(1)
+    )
+    if active_analysis_job is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="An analysis job is queued or running for a trial; "
+            "wait for it to finish",
+        )
+
     reset_count = 0
     if force:
         if trial_ids is not None:
