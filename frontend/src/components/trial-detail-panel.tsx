@@ -2,10 +2,6 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
-import {
-  PreTrialFindingList,
-  preTrialAuditState,
-} from "@/components/task-pre-trial-card";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import {
@@ -1521,48 +1517,6 @@ export function TrialDetailPanel({
                 />
               )}
 
-              {/* Pre-trial audit of the version THIS trial ran on. Sits below
-                  the post-trial assessment: what the source was known to be
-                  wrong with, next to what the agent then did with it. */}
-              {(() => {
-                const items = trial.pre_trial_findings ?? [];
-                const state = preTrialAuditState(
-                  trial.pre_trial_status,
-                  items.length
-                );
-                if (state === "unaudited") return null;
-                return (
-                  <Card className="border-slate-500/25 bg-slate-500/5">
-                    <CardContent className="px-4 py-3">
-                      <div className="text-muted-foreground mb-2 flex items-baseline justify-between text-[11px] font-semibold tracking-wider uppercase">
-                        <span>Pre-trial audit</span>
-                        <span className="normal-case font-normal tracking-normal">
-                          {state === "running"
-                            ? "running…"
-                            : state === "failed"
-                              ? "failed"
-                              : state === "clean"
-                                ? "no defects found"
-                                : `${items.length} finding${items.length === 1 ? "" : "s"}`}
-                          {hasDisplayableCostUsd(trial.pre_trial_cost_usd)
-                            ? ` · ${formatCostUsd(trial.pre_trial_cost_usd)}`
-                            : ""}
-                        </span>
-                      </div>
-                      {state === "failed" && trial.pre_trial_error ? (
-                        <p className="text-muted-foreground font-mono text-[11px] break-all">
-                          {trial.pre_trial_error}
-                        </p>
-                      ) : null}
-                      {items.length > 0 ? (
-                        <div className="space-y-2">
-                          <PreTrialFindingList items={items} />
-                        </div>
-                      ) : null}
-                    </CardContent>
-                  </Card>
-                );
-              })()}
 
               {/* Execution Timeline - shows progress during running trials */}
               {trial.harbor_stage && (
