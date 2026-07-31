@@ -39,6 +39,8 @@ jobs:
           set -euo pipefail
           git fetch origin main staging
           target="${REQUESTED:-$(git rev-parse origin/staging)}"
+          target="$(git rev-parse --verify "${target}^{commit}")" \
+            || { echo "::error::target_sha '${REQUESTED}' does not resolve to a commit"; exit 1; }
           # (1) target must be on staging
           git merge-base --is-ancestor "$target" origin/staging \
             || { echo "::error::$target is not on staging"; exit 1; }
@@ -67,5 +69,6 @@ jobs:
           set -euo pipefail
           git push origin "${{ steps.target.outputs.sha }}:refs/heads/main"
           git fetch origin main
-          test "$(git rev-parse origin/main)" = "${{ steps.target.outputs.sha }}"
+          test "$(git rev-parse origin/main)" = "${{ steps.target.outputs.sha }}" \
+            || { echo "::error::post-push identity assertion failed: origin/main != promoted target"; exit 1; }
           echo "origin/main == ${{ steps.target.outputs.sha }} — promotion complete"
