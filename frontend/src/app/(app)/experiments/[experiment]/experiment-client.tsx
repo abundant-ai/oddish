@@ -656,14 +656,9 @@ function ExperimentContent({
                 <AlertTitle>Rename failed</AlertTitle>
                 <AlertDescription>{nameError}</AlertDescription>
               </Alert>
-            ) : lightweightError && tasksForExperiment.length > 0 ? (
-              <Alert>
-                <AlertTitle>Could not refresh experiment</AlertTitle>
-                <AlertDescription>
-                  Showing the most recently loaded task data.
-                </AlertDescription>
-              </Alert>
             ) : trialsStalled ? (
+              // Outranks the refresh alert below: this one carries the only
+              // recovery control.
               <Alert variant="destructive">
                 <AlertTitle>Some trial results failed to load</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-2">
@@ -680,6 +675,13 @@ function ExperimentContent({
                   >
                     Retry
                   </Button>
+                </AlertDescription>
+              </Alert>
+            ) : lightweightError && tasksForExperiment.length > 0 ? (
+              <Alert>
+                <AlertTitle>Could not refresh experiment</AlertTitle>
+                <AlertDescription>
+                  Showing the most recently loaded task data.
                 </AlertDescription>
               </Alert>
             ) : null
