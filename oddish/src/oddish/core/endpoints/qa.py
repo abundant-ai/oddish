@@ -329,11 +329,25 @@ async def backfill_task_analysis_core(
             detail="Can only run QA after all trials finish",
         )
 
-    if any(
-        trial.analysis_status
-        in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
-        for trial in live_trials
-    ):
+    # PENDING/QUEUED always block: that job will run soon and would collide.
+    # A RUNNING claim blocks only inside its TTL — past it the worker is
+    # presumed dead, and this backfill is the recovery path (the same rule
+    # the per-trial rerun applies).
+    from datetime import timedelta
+
+    from oddish.core.endpoints.trials import _ANALYSIS_CLAIM_TTL_MINUTES
+
+    claim_ttl = timedelta(minutes=_ANALYSIS_CLAIM_TTL_MINUTES)
+
+    def _analysis_in_progress(trial: TrialModel) -> bool:
+        if trial.analysis_status in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED):
+            return True
+        if trial.analysis_status is not AnalysisStatus.RUNNING:
+            return False
+        started = trial.analysis_started_at
+        return started is not None and utcnow() - started < claim_ttl
+
+    if any(_analysis_in_progress(trial) for trial in live_trials):
         raise HTTPException(
             status_code=400,
             detail="QA is already in progress for this task",
