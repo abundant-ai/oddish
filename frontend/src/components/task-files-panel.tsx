@@ -673,8 +673,12 @@ export function TaskFilesPanel({
         const dirs: TaskDirectory[] = data.dirs || [];
         const tree = buildNodesFromListing(files, dirs);
         setFileTree(tree);
+        // The checks pane is the default view, so nothing pre-selects
+        // behind it: a hidden auto-selected file prefetches content that
+        // later flashes under whichever file the user actually picks. Only
+        // the file-only view (public share) paints a file immediately.
         const firstFile = findFirstFile(tree);
-        if (firstFile) {
+        if (firstFile && !checksAvailable) {
           setSelectedFile(firstFile);
         }
       } catch (err) {
@@ -695,7 +699,7 @@ export function TaskFilesPanel({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl]);
+  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, checksAvailable]);
 
   const loadDirectory = useCallback(
     async (path: string) => {
@@ -1095,20 +1099,14 @@ export function TaskFilesPanel({
       );
     }
 
-    if (fileContentLoading) {
+    // A null fileContent only means "not loaded yet" — the load effect
+    // hasn't run for this selection. Failed loads store an error string.
+    if (fileContentLoading || fileContent === null) {
       return (
         <div className="space-y-2 p-4">
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-3/4" />
           <Skeleton className="h-4 w-5/6" />
-        </div>
-      );
-    }
-
-    if (fileContent === null) {
-      return (
-        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
-          Unable to load file content
         </div>
       );
     }
