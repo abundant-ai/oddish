@@ -683,7 +683,7 @@ def build_verdict_prompt(
         # A load failure is not a clean audit. Rendering the pass glyph here
         # would hide an unexploited must_fix leak from the verdict's rules.
         quality_check_summary = (
-            "⚠ Unknown — the audit findings did not load. "
+            "⚠ Unknown — the audit findings are not available. "
             "Do not read this as a pass."
         )
     else:

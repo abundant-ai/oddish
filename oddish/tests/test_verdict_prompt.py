@@ -124,4 +124,4 @@ def test_prompt_marks_a_failed_item_load_as_unknown_not_passed():
         [_classification()], pre_trial_items=[], pre_trial_load_failed=True
     )
     assert "✓ Passed" not in prompt
-    assert "did not load" in prompt
+    assert "not available" in prompt
