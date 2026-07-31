@@ -4,11 +4,7 @@ import { useMemo } from "react";
 import { PatchDiff } from "@pierre/diffs/react";
 import { CodeRenderer } from "./code-renderer";
 import { useIsDark } from "./use-is-dark";
-import {
-  PIERRE_THEME,
-  PIERRE_UNSAFE_CSS,
-  PIERRE_STYLE_OVERRIDES,
-} from "./pierre-options";
+import { PIERRE_THEME, PIERRE_UNSAFE_CSS } from "./pierre-options";
 
 interface DiffRendererProps {
   content: string;
@@ -45,15 +41,13 @@ export function DiffRenderer({ content, fileName }: DiffRendererProps) {
     [isDark]
   );
 
-  const style = useMemo(() => PIERRE_STYLE_OVERRIDES(isDark), [isDark]);
-
   if (!looksLikeUnifiedDiff(content)) {
     return <CodeRenderer content={content} fileName={fileName} />;
   }
 
   return (
     <div className="h-full overflow-auto p-2">
-      <PatchDiff patch={content} options={options} style={style} />
+      <PatchDiff patch={content} options={options} />
     </div>
   );
 }

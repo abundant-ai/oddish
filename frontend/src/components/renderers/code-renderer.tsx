@@ -3,11 +3,7 @@
 import { useMemo } from "react";
 import { File as PierreFile } from "@pierre/diffs/react";
 import { useIsDark } from "./use-is-dark";
-import {
-  PIERRE_THEME,
-  PIERRE_UNSAFE_CSS,
-  PIERRE_STYLE_OVERRIDES,
-} from "./pierre-options";
+import { PIERRE_THEME, PIERRE_UNSAFE_CSS } from "./pierre-options";
 
 interface CodeRendererProps {
   content: string;
@@ -34,14 +30,11 @@ export function CodeRenderer({ content, fileName }: CodeRendererProps) {
     [isDark]
   );
 
-  const style = useMemo(() => PIERRE_STYLE_OVERRIDES(isDark), [isDark]);
-
   return (
     <div className="h-full overflow-auto">
       <PierreFile
         file={{ name: fileName, contents: content }}
         options={options}
-        style={style}
       />
     </div>
   );
