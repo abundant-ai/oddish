@@ -67,6 +67,8 @@ from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
+    make_task_files_ndjson_response,
+    stream_task_files_s3,
 )
 from oddish.core.idempotency import (
     IdempotencyReplay,
@@ -1636,11 +1638,17 @@ async def list_task_files(
         True, description="Include presigned URLs for direct S3 access"
     ),
     version: int | None = Query(None, description="Task version number"),
-) -> dict:
+    stream: bool = Query(
+        False,
+        description="Stream NDJSON: the file tree first, then file contents",
+    ),
+):
     """List all files in a task's S3 directory.
 
     When presign=True (default), includes presigned URLs for each file,
     allowing clients to fetch content directly from S3 without additional API calls.
+    With stream=True the response is NDJSON: a listing chunk as soon as the
+    tree is known, then per-file content chunks as they load.
     """
     auth.require_scope(APIKeyScope.READ)
 
@@ -1653,6 +1661,19 @@ async def list_task_files(
         )
         if version is None and task.current_version:
             version = task.current_version.version
+
+    if stream:
+        return make_task_files_ndjson_response(
+            stream_task_files_s3(
+                task_id=task_id,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                version=version,
+            )
+        )
 
     return await list_task_files_s3(
         task_id=task_id,

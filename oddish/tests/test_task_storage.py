@@ -490,7 +490,7 @@ async def test_list_task_files_inlines_small_text_contents(monkeypatch):
     assert by_path["environment/run.sh"]["content"] == "#!/bin/sh\necho hi\n"
 
 
-def test_inline_task_archive_contents_skips_binary_and_oversize():
+def test_parse_task_archive_skips_binary_and_oversize():
     big_text = "x" * (storage_mod._INLINE_CONTENT_MAX_FILE_BYTES + 1)
     members = {
         "small.txt": b"hello\n",
@@ -505,16 +505,58 @@ def test_inline_task_archive_contents_skips_binary_and_oversize():
             tar.addfile(info, io.BytesIO(data))
     archive_bytes = buffer.getvalue()
 
-    files = storage_mod._task_archive_members_from_bytes(archive_bytes)
-    result = storage_mod._inline_task_archive_contents(archive_bytes, files)
+    files, texts = storage_mod._parse_task_archive(archive_bytes)
 
-    by_path = {entry["path"]: entry for entry in result}
+    assert texts == {"small.txt": "hello\n"}
+    merged = storage_mod._merge_inline_contents(files, texts)
+    by_path = {entry["path"]: entry for entry in merged}
     assert by_path["small.txt"]["content"] == "hello\n"
     assert "content" not in by_path["image.png"]
     assert "content" not in by_path["big.txt"]
     # Source member dicts stay pristine — they may be shared via the
     # per-process archive cache across requests.
     assert all("content" not in meta for meta in files)
+
+
+@pytest.mark.asyncio
+async def test_stream_task_files_yields_listing_then_contents(monkeypatch):
+    """The stream starts with the bare tree, then delivers file bodies
+    shallowest-first so viewers can paint immediately."""
+    archive_bytes = _make_task_archive(
+        {
+            "task.toml": "name = 'demo'\n",
+            "environment/run.sh": "#!/bin/sh\necho hi\n",
+        }
+    )
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == "tasks/task-123/.oddish-task.tar.gz"
+
+    async def fake_download_bytes(s3_key: str) -> bytes:
+        return archive_bytes
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "download_bytes", fake_download_bytes)
+
+    chunks = [
+        chunk
+        async for chunk in storage.stream_task_files(task_id="task-123", presign=False)
+    ]
+
+    assert chunks[0]["type"] == "listing"
+    # The listing chunk is the bare tree — no inlined bodies.
+    assert all("content" not in entry for entry in chunks[0]["files"])
+    assert [entry["path"] for entry in chunks[0]["files"]] == [
+        "environment/run.sh",
+        "task.toml",
+    ]
+    # Contents follow, root files first.
+    assert [(c["path"], c["content"]) for c in chunks[1:]] == [
+        ("task.toml", "name = 'demo'\n"),
+        ("environment/run.sh", "#!/bin/sh\necho hi\n"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -795,7 +837,7 @@ async def test_list_task_files_falls_back_to_archive_without_manifest(monkeypatc
         assert s3_key == "tasks/task-123/v2/.oddish-task.tar.gz"
         return (
             archive_bytes,
-            storage_mod._task_archive_members_from_bytes(archive_bytes),
+            *storage_mod._parse_task_archive(archive_bytes),
         )
 
     monkeypatch.setattr(storage, "object_exists", fake_object_exists)
@@ -894,7 +936,7 @@ async def test_get_task_file_content_falls_back_to_archive_when_expanded_member_
     async def fake_load_task_archive(s3_key: str):
         return (
             archive_bytes,
-            storage_mod._task_archive_members_from_bytes(archive_bytes),
+            *storage_mod._parse_task_archive(archive_bytes),
         )
 
     async def fake_head_archive_etag(s3_key: str) -> str | None:
@@ -929,7 +971,7 @@ async def test_get_task_file_content_falls_back_to_archive(monkeypatch):
     async def fake_load_task_archive(s3_key: str):
         return (
             archive_bytes,
-            storage_mod._task_archive_members_from_bytes(archive_bytes),
+            *storage_mod._parse_task_archive(archive_bytes),
         )
 
     async def fake_head_archive_etag(s3_key: str) -> str | None:
@@ -973,7 +1015,7 @@ async def test_expanded_and_archive_listings_agree_on_file_set(monkeypatch):
     async def archive_load(s3_key: str):
         return (
             archive_bytes,
-            storage_mod._task_archive_members_from_bytes(archive_bytes),
+            *storage_mod._parse_task_archive(archive_bytes),
         )
 
     monkeypatch.setattr(storage_archive, "object_exists", archive_object_exists)

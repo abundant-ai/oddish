@@ -47,6 +47,8 @@ from oddish.core.sharing.helpers import (
     get_trial_file_content_s3,
     list_task_files_s3,
     list_trial_files_s3,
+    make_task_files_ndjson_response,
+    stream_task_files_s3,
 )
 from oddish.core.trial_io import (
     read_trial_agent_file,
@@ -855,7 +857,11 @@ async def list_task_files(
     cursor: str | None = Query(None),
     presign: bool = Query(True),
     version: int | None = Query(None, description="Task version number"),
-) -> dict:
+    stream: bool = Query(
+        False,
+        description="Stream NDJSON: the file tree first, then file contents",
+    ),
+):
     """List all files in a task's S3 directory with optional presigned URLs."""
     async with get_session() as session:
         task = (
@@ -869,6 +875,19 @@ async def list_task_files(
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
         if version is None and task.current_version:
             version = task.current_version.version
+
+    if stream:
+        return make_task_files_ndjson_response(
+            stream_task_files_s3(
+                task_id=task_id,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                version=version,
+            )
+        )
 
     return await list_task_files_s3(
         task_id=task_id,

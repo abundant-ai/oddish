@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import secrets
+from collections.abc import AsyncIterator
 
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import StreamingResponse
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -306,6 +310,57 @@ async def list_task_files_s3(
         raise
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to list files")
+
+
+async def stream_task_files_s3(
+    task_id: str,
+    prefix: str | None,
+    recursive: bool,
+    limit: int,
+    cursor: str | None,
+    presign: bool,
+    version: int | None = None,
+):
+    """Stream a task file listing chunk-by-chunk (tree first, then contents).
+
+    Errors before the first chunk surface as HTTP errors; a failure
+    mid-stream just ends the stream — the client already has the tree and
+    falls back to per-file fetches for missing bodies.
+    """
+    storage = get_storage_client()
+
+    stream = storage.stream_task_files(
+        task_id=task_id,
+        prefix=prefix,
+        recursive=recursive,
+        limit=limit,
+        cursor=cursor,
+        presign=presign,
+        version=version,
+    )
+    started = False
+    try:
+        async for chunk in stream:
+            started = True
+            yield chunk
+    except HTTPException:
+        if not started:
+            raise
+    except Exception:
+        if not started:
+            raise HTTPException(status_code=500, detail="Failed to list files")
+
+
+def make_task_files_ndjson_response(
+    stream: AsyncIterator[dict],
+) -> StreamingResponse:
+    """Wrap a task-files chunk stream as an NDJSON streaming response."""
+
+    async def ndjson() -> AsyncIterator[str]:
+        async for chunk in stream:
+            yield json.dumps(jsonable_encoder(chunk), separators=(",", ":")) + "\n"
+
+    return StreamingResponse(ndjson(), media_type="application/x-ndjson")
 
 
 async def get_task_file_content_s3(

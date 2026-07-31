@@ -69,6 +69,47 @@ interface FilesListingResponse {
   files?: TaskFile[];
 }
 
+/**
+ * Chunks of the NDJSON listing stream: the bare tree first, then file
+ * bodies as the backend loads them (shallowest files first).
+ */
+type FilesStreamChunk =
+  | ({ type: "listing" } & FilesListingResponse)
+  | { type: "content"; path: string; content: string };
+
+async function* iterateNdjsonLines(
+  body: ReadableStream<Uint8Array>
+): AsyncGenerator<unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line) yield JSON.parse(line);
+        newline = buffer.indexOf("\n");
+      }
+    }
+    const rest = (buffer + decoder.decode()).trim();
+    if (rest) yield JSON.parse(rest);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function collectFileNodes(nodes: TreeNode[], map: Map<string, TreeNode>): void {
+  for (const node of nodes) {
+    if (node.type === "file") map.set(node.path, node);
+    if (node.children) collectFileNodes(node.children, map);
+  }
+}
+
 interface TreeNode {
   name: string;
   path: string;
@@ -395,6 +436,12 @@ export function TaskFilesPanel({
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
+  // Mirrors selectedFile for the listing stream loop, so a content chunk
+  // for the file currently on screen can paint it immediately.
+  const selectedFileRef = useRef<TreeNode | null>(null);
+  useEffect(() => {
+    selectedFileRef.current = selectedFile;
+  }, [selectedFile]);
   const verdictTaskKey =
     isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
@@ -412,12 +459,14 @@ export function TaskFilesPanel({
   const shouldScopeFilesToVersion = taskVersion !== undefined || !filesUrl;
 
   const verdictSource = verdictTask ?? task;
-  // The whole tree (and inlined contents where available) comes back from
-  // one recursive request — task trees are shallow, there's nothing to
-  // page or lazy-load.
+  // The whole tree comes back from one recursive request — task trees are
+  // shallow, there's nothing to page or lazy-load. stream=1 asks for
+  // NDJSON (tree first, then file bodies); endpoints that don't stream
+  // (trial files) ignore it and answer with plain JSON.
   const buildListingUrl = useCallback(() => {
     const params = new URLSearchParams();
     params.set("recursive", "1");
+    params.set("stream", "1");
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
@@ -635,6 +684,7 @@ export function TaskFilesPanel({
     }
 
     let cancelled = false;
+    const controller = new AbortController();
 
     async function fetchFiles() {
       setLoading(true);
@@ -645,29 +695,14 @@ export function TaskFilesPanel({
       setFileContent(null);
       setExpandedDirs(new Set());
 
-      try {
-        // One recursive request loads the entire tree and any inlined
-        // file contents, so folder expands and most file clicks need no
-        // further round trips.
-        const res = await fetch(buildListingUrl());
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(
-            data.detail || `Failed to fetch files: ${res.statusText}`
-          );
-        }
-        const data: FilesListingResponse = await res.json();
-
-        if (cancelled) return;
-
-        const tree = buildTreeFromListing(data.files || []);
+      // The checks pane is the default view, so nothing pre-selects
+      // behind it: a hidden auto-selected file prefetches content that
+      // later flashes under whichever file the user actually picks. Only
+      // the file-only view (public share) paints a file immediately.
+      // Prefer instruction.md — the tree is fully nested, so a plain
+      // first-file walk would land inside environment/ instead.
+      const applyListing = (tree: TreeNode[]) => {
         setFileTree(tree);
-        // The checks pane is the default view, so nothing pre-selects
-        // behind it: a hidden auto-selected file prefetches content that
-        // later flashes under whichever file the user actually picks. Only
-        // the file-only view (public share) paints a file immediately.
-        // Prefer instruction.md — the tree is fully nested now, so a plain
-        // first-file walk would land inside environment/ instead.
         if (!checksAvailable) {
           const defaultFile =
             findNodeBySuffix(tree, "instruction.md") ??
@@ -676,6 +711,55 @@ export function TaskFilesPanel({
           if (defaultFile) {
             setSelectedFile(defaultFile);
           }
+        }
+      };
+
+      try {
+        const res = await fetch(buildListingUrl(), {
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(
+            data.detail || `Failed to fetch files: ${res.statusText}`
+          );
+        }
+
+        const contentType = res.headers.get("content-type") ?? "";
+        if (contentType.includes("application/x-ndjson") && res.body) {
+          // Streamed listing: the tree paints as soon as the first chunk
+          // lands; file bodies keep trickling in behind it.
+          let nodeMap: Map<string, TreeNode> | null = null;
+          for await (const raw of iterateNdjsonLines(res.body)) {
+            if (cancelled) return;
+            const chunk = raw as FilesStreamChunk;
+            if (chunk.type === "listing" && nodeMap === null) {
+              const tree = buildTreeFromListing(chunk.files || []);
+              nodeMap = new Map();
+              collectFileNodes(tree, nodeMap);
+              applyListing(tree);
+              setLoading(false);
+            } else if (chunk.type === "content" && nodeMap) {
+              const node = nodeMap.get(chunk.path);
+              if (node && node.content === undefined) {
+                node.content = chunk.content;
+                // Paint immediately if this file is on screen waiting.
+                if (selectedFileRef.current?.path === chunk.path) {
+                  setFileContent(chunk.content);
+                  setIsTruncated(false);
+                  setFileContentLoading(false);
+                }
+              }
+            }
+          }
+          if (nodeMap === null) {
+            throw new Error("Failed to fetch files");
+          }
+        } else {
+          // Plain JSON listing (trial files, and any non-streaming source).
+          const data: FilesListingResponse = await res.json();
+          if (cancelled) return;
+          applyListing(buildTreeFromListing(data.files || []));
         }
       } catch (err) {
         if (!cancelled) {
@@ -694,6 +778,7 @@ export function TaskFilesPanel({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, checksAvailable]);
 
