@@ -26,14 +26,14 @@ Individual trial classifications:
 
 1. Hard tasks are good. A 10-40% pass rate is ideal for a benchmark. Never mark a task bad because it is difficult. Failures are expected.
 2. One success proves that the task is solvable.
-3. One trial that reports an issue can be noise. The same issue in most trials is a signal. There is one exception: a proven leak is a fact, not noise. One trial that read the hidden tests, the solution, or other blocked access proves that the hole exists. A `must_fix` item with the dimension `info_leakage` in any trial's action items proves the hole in the same way, even when every trial passed.
+3. One trial that reports an issue can be noise. The same issue in most trials is a signal. There is one exception: a proven leak is a fact, not noise. One trial that read the hidden tests, the solution, or other blocked access proves that the hole exists. A `must_fix` item with the dimension `info_leakage` in any trial's action items proves the hole in the same way, even when every trial passed. A `must_fix` finding with the dimension `info_leakage` in the static quality check also proves the hole, even when no trial used it.
 4. A baseline failure decides the verdict by itself. A nop baseline that passed means that the task is possibly pre-solved. An oracle baseline that failed means that the reference solution does not work. Either one -> is_good=false, high confidence.
 5. Do not trust "underspecified instruction" claims easily. Ask this question: could the agent find the missing detail in the codebase? If yes, that trial's classification is not correct. Give it less weight.
 
 ## VERDICT
 
 * A baseline failure (rule 4) -> is_good=false, high confidence.
-* Any trial proves a leak or an access hole (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`) -> is_good=false, even when only one trial shows it (rule 3).
+* Any trial proves a leak or an access hole (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`) -> is_good=false, even when only one trial shows it (rule 3). A `must_fix` finding with the dimension `info_leakage` in the static quality check -> is_good=false in the same way.
 * Most trials show the SAME task problem, with clear evidence -> is_good=false. Medium confidence; high when all trials agree.
 * Everything else -> is_good=true. A run with only GOOD_FAILURE results, a mixed run, and one isolated BAD classification are all normal for a hard task.
 

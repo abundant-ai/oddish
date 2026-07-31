@@ -244,7 +244,7 @@ Field notes:
 
 * `root_cause` — for GOOD_FAILURE, name the first wrong step, not the final symptom. For BAD_FAILURE, name the defect and how it caused this failure.
 * `recommendation` — a task defect found during a GOOD_FAILURE run goes in `action_items`, never here.
-* `action_items` — one entry per NEW task weakness this trial revealed, using the fixed values shown. Do not repeat a pre-trial item — assess those in `exploitation` instead. Cite a real file and line range where possible.
+* `action_items` — one entry per NEW task weakness this trial revealed, using the fixed values shown. Do not repeat a pre-trial item — assess those in `exploitation` instead. The verdict reads the pre-trial findings directly, so a repeated item only adds noise. Cite a real file and line range where possible.
 * `exploitation` — exactly one entry per pre-trial action item, when any were provided. Set `links_to` to that item's id, copied exactly — matching breaks otherwise. `exploited=true` only if the trajectory shows the agent used that weakness (cite the step and a short quote); `causal=true` only if that changed the outcome. File access alone is not proof. No pre-trial items -> empty list.
 
 Your classification MUST match the verified result: **{result}** (pass -> a SUCCESS label; fail -> FAILURE or HARNESS_ERROR; partial or unknown -> as defined under LABELS; baseline runs -> as defined in the run-type context).

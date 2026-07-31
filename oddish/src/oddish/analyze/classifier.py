@@ -19,6 +19,7 @@ from oddish.config import (
 from oddish.analyze._sdk_utils import Colors
 
 from .models import (
+    ActionItem,
     BaselineValidation,
     Classification,
     TrialClassification,
@@ -647,6 +648,7 @@ def build_verdict_prompt(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
+    pre_trial_items: list[ActionItem] | None = None,
 ) -> str:
     """Render the verdict-synthesis prompt, sent by ``VerdictBlock``."""
     if baseline:
@@ -661,7 +663,23 @@ def build_verdict_prompt(
     else:
         baseline_summary = "Not run"
 
-    quality_check_summary = "✓ Passed" if quality_check_passed else "✗ Failed"
+    if pre_trial_items:
+        # The classify prompt tells trials NOT to repeat a pre-trial item in
+        # their action_items, so an unexploited pre-trial hole reaches the
+        # verdict only through this list. The exploited flags are already
+        # aggregated from the trials (aggregate_exploited_into_pre_trial runs
+        # before the verdict).
+        findings = "\n".join(
+            f"  - [{item.tier.value}/{item.dimension.value}] {item.title}"
+            + (" (a trial exploited it)" if item.exploited else " (no trial used it)")
+            for item in pre_trial_items
+        )
+        quality_check_summary = (
+            f"{len(pre_trial_items)} finding(s) from the audit of the task source:\n"
+            + findings
+        )
+    else:
+        quality_check_summary = "✓ Passed" if quality_check_passed else "✗ Failed"
 
     trial_lines = []
     for i, classification in enumerate(classifications, 1):

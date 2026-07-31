@@ -74,3 +74,44 @@ def test_prompt_lists_action_items_so_unused_leaks_reach_the_verdict():
 def test_prompt_marks_empty_action_items():
     prompt = build_verdict_prompt([_classification()])
     assert "(none)" in prompt
+
+
+def _pre_trial_leak(exploited: bool = False) -> ActionItem:
+    return ActionItem(
+        source=ActionItemSource.PRE_TRIAL,
+        problem_type=ProblemType.MISMATCH,
+        dimension=Dimension.INFO_LEAKAGE,
+        file="Dockerfile",
+        line_start=3,
+        line_end=3,
+        title="The image ships the reference solution",
+        detail="solution/ is readable by the agent",
+        recommendation="Do not copy solution/ into the image",
+        tier=ActionTier.MUST_FIX,
+        exploited=exploited,
+    )
+
+
+def test_prompt_lists_pre_trial_findings_so_unexploited_holes_reach_the_verdict():
+    """The classify prompt forbids repeating a pre-trial item in trial action
+    items, so a hole no trial used reaches the verdict only through the
+    static-check section — and the verdict's leak rule keys on that line."""
+    prompt = build_verdict_prompt(
+        [_classification()], pre_trial_items=[_pre_trial_leak()]
+    )
+    assert (
+        "[must_fix/info_leakage] The image ships the reference solution" in prompt
+    )
+    assert "(no trial used it)" in prompt
+
+
+def test_prompt_marks_exploited_pre_trial_findings():
+    prompt = build_verdict_prompt(
+        [_classification()], pre_trial_items=[_pre_trial_leak(exploited=True)]
+    )
+    assert "(a trial exploited it)" in prompt
+
+
+def test_prompt_without_pre_trial_items_keeps_the_pass_glyph():
+    prompt = build_verdict_prompt([_classification()], pre_trial_items=[])
+    assert "✓ Passed" in prompt

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from oddish.analyze.models import (
+    ActionItem,
     BaselineValidation,
     TaskVerdictModel,
     TrialClassification,
@@ -42,10 +43,12 @@ class VerdictBlock(Block):
         *,
         baseline: BaselineValidation | None = None,
         quality_check_passed: bool = True,
+        pre_trial_items: list[ActionItem] | None = None,
     ) -> None:
         self.classifications = classifications
         self.baseline = baseline
         self.quality_check_passed = quality_check_passed
+        self.pre_trial_items = pre_trial_items
 
     # ---- prompt sections ----
     def sections(self) -> list[dict]:
@@ -55,7 +58,10 @@ class VerdictBlock(Block):
                 "raw_input": {},
                 "schema": _EmptyInput,
                 "formatter": lambda _d: vp.verdict_section(
-                    self.classifications, self.baseline, self.quality_check_passed
+                    self.classifications,
+                    self.baseline,
+                    self.quality_check_passed,
+                    self.pre_trial_items,
                 ),
                 # Pass the sentinel explicitly rather than relying on
                 # render_section's default text. Otherwise build_prompt's guard
