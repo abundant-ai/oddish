@@ -300,6 +300,7 @@ async def resolve_append_version_id(
     task: TaskModel,
     experiment_id: str | None,
     uploaded_content_hash: str | None,
+    use_default_version: bool = False,
 ) -> str | None:
     """Task version an append should pin its new trials to.
 
@@ -310,11 +311,17 @@ async def resolve_append_version_id(
     ``fetch_experiment_effective_version_ids``, the same rule the experiment
     grid pivots on, so an append lands where its results will be displayed.
 
+    ``use_default_version`` is the opt-out for the deliberate case -- moving an
+    experiment onto the task's current content. It resolves per task, so one
+    flag covers a sweep whose tasks sit on different versions.
+
     Falls back to ``task.current_version_id`` when the submission uploaded
     content, when there is no target experiment, or when that experiment has no
     trials for this task yet.
     """
-    if uploaded_content_hash is not None or experiment_id is None:
+    if use_default_version or uploaded_content_hash is not None:
+        return task.current_version_id
+    if experiment_id is None:
         return task.current_version_id
     from oddish.core.helpers import fetch_experiment_effective_version_ids
 
@@ -645,6 +652,7 @@ async def create_task_sweep_core(
             task=task,
             experiment_id=new_experiment_id,
             uploaded_content_hash=submission.content_hash,
+            use_default_version=submission.use_default_version,
         )
 
         trials, supersede_by_spec = await _plan_append_trials(

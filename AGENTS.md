@@ -499,6 +499,13 @@ against older content. Submissions that carry content or name an experiment
 with no trials for the task also keep the task default. `create_task` is
 unaffected: a fresh task always runs its own upload.
 
+`use_default_version` on `TaskSweepSubmission` (`--use-default-version`, or
+`use_default_version: true` in a sweep config) is the opt-out for deliberately
+moving an experiment onto the task's current content. It resolves per task, so
+one flag covers a sweep whose tasks sit on different versions. It pins to the
+task default rather than the numerically highest version, so the appended
+trials are the ones the grid pivots to and stay visible.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and

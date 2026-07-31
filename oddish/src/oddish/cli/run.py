@@ -507,6 +507,18 @@ def run(
             ),
         ),
     ] = False,
+    use_default_version: Annotated[
+        bool,
+        typer.Option(
+            "--use-default-version",
+            help=(
+                "When appending to an existing task, pin new trials to the "
+                "task's current default version instead of the version the "
+                "target experiment is already running. No effect when this run "
+                "uploads task files, which set their own version."
+            ),
+        ),
+    ] = False,
     force: Annotated[
         bool,
         typer.Option(
@@ -788,6 +800,10 @@ def run(
         # Config can opt out of the baseline gate
         if "gate_baselines" in sweep_config:
             gate_baselines = sweep_config["gate_baselines"]
+        # Config can send appends to the task default instead of the
+        # experiment's version. The CLI flag wins when both are set.
+        if "use_default_version" in sweep_config and not use_default_version:
+            use_default_version = sweep_config["use_default_version"]
         # Config can set Harbor passthrough options
         if "disable_verification" in sweep_config:
             disable_verification = sweep_config["disable_verification"]
@@ -955,6 +971,7 @@ def run(
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
             content_hash=task_content_hash,
+            use_default_version=use_default_version,
             link=link,
             registry_auth=registry_auth,
         )

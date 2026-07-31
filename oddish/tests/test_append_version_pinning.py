@@ -106,3 +106,48 @@ async def test_versionless_task_stays_versionless(effective_versions):
     )
 
     assert version_id is None
+
+
+@pytest.mark.asyncio
+async def test_use_default_version_overrides_the_experiments_version(
+    effective_versions,
+):
+    effective_versions.mapping["task-a"] = "task-a-v15"
+
+    version_id = await sweep_mod.resolve_append_version_id(
+        None,
+        task=_task(current_version_id="task-a-v16"),
+        experiment_id="exp-1",
+        uploaded_content_hash=None,
+        use_default_version=True,
+    )
+
+    assert version_id == "task-a-v16"
+    assert effective_versions.calls == []
+
+
+def test_payload_carries_use_default_version():
+    from oddish.cli.api import build_sweep_payload
+
+    def _payload(**kw):
+        return build_sweep_payload(
+            task_id="task-a",
+            configs=[],
+            environment=None,
+            user=None,
+            priority="low",
+            experiment_id="exp-1",
+            append_to_task=True,
+            **kw,
+        )
+
+    assert _payload(use_default_version=True)["use_default_version"] is True
+    assert "use_default_version" not in _payload()
+
+
+def test_submission_defaults_to_the_experiments_version():
+    from oddish.schemas import TaskSweepSubmission
+
+    submission = TaskSweepSubmission(task_id="task-a", configs=[])
+
+    assert submission.use_default_version is False
