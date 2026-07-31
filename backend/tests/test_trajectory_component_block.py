@@ -16,7 +16,7 @@ from oddish.blocks.block import BlockParseError
 
 _TEMPLATE = (
     Path(__file__).resolve().parents[2]
-    / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.v1.txt"
+    / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.txt"
 ).read_text()
 
 
@@ -142,14 +142,14 @@ def test_instructions_seed_template_matches_legacy_text():
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
     template = (
-        REPO_ROOT / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.v1.txt"
+        REPO_ROOT / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.txt"
     ).read_text()
     labels = ["reading_files", "debugging"]
     rendered = tp.instructions_section(template, labels)
     assert "reading_files, debugging" in rendered
     assert "{{taxonomy}}" not in rendered
-    assert rendered.startswith("Produce a 2-3 sentence summary")
-    assert rendered.rstrip().endswith("Highlights must be ordered by step_id ascending.")
+    assert rendered.startswith("Write a summary of 2-3 sentences")
+    assert rendered.rstrip().endswith("Order the highlights by `step_id`, lowest first.")
     # Byte-identity of the seed depends on this file having no trailing newline;
     # editors auto-append one, so guard against it silently creeping back in.
     assert not template.endswith("\n")

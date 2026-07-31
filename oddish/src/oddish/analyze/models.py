@@ -81,7 +81,7 @@ class TrialClassificationModel(BaseModel):
         description="1-2 sentence explanation of what caused this outcome"
     )
     recommendation: str = Field(
-        description="How to fix the task (if BAD_FAILURE or BAD_SUCCESS), or 'N/A' if task is fine"
+        description="How to fix the task (if the label marks a task problem), or 'N/A' if task is fine"
     )
     action_items: list[ActionItem] = Field(
         default_factory=list,
@@ -128,6 +128,13 @@ class TrialClassification:
 
     @property
     def is_task_problem(self) -> bool:
+        # A HARNESS_ERROR hidden_file_leak voids the run, but the exposure
+        # itself is a task defect (verdict rule: any leak -> is_good=false).
+        if (
+            self.classification is Classification.HARNESS_ERROR
+            and self.subtype == "hidden_file_leak"
+        ):
+            return True
         return self.classification.is_task_problem
 
     @classmethod

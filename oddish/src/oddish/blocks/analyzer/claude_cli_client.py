@@ -47,7 +47,7 @@ class CliConfig:
 
     cwd: Path
     add_dirs: tuple[Path, ...] = ()
-    allowed_tools: tuple[str, ...] = ("Read", "Glob")
+    allowed_tools: tuple[str, ...] = ("Read", "Glob", "Grep")
     json_schema: str | None = None
     timeout: float | None = None
     verbose: bool = False

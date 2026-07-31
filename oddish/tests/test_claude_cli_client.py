@@ -139,7 +139,7 @@ async def test_cli_client_binds_the_command_to_its_config(monkeypatch, tmp_path)
     assert command[command.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in command
     assert command[command.index("--json-schema") + 1] == '{"type":"object"}'
-    assert command[command.index("--tools") + 1] == "Read,Glob"
+    assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
     add_dirs = [command[i + 1] for i, a in enumerate(command) if a == "--add-dir"]
     assert add_dirs == [str(task_dir), str(qa_dir)]
 
@@ -311,4 +311,4 @@ def test_resolve_analysis_model_and_env_moved_with_the_subprocess(monkeypatch):
 
 def test_cli_config_defaults_to_read_only_tools():
     config = CliConfig(cwd=Path("/tmp"))
-    assert config.allowed_tools == ("Read", "Glob")
+    assert config.allowed_tools == ("Read", "Glob", "Grep")

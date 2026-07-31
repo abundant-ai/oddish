@@ -665,6 +665,13 @@ def build_verdict_prompt(
 
     trial_lines = []
     for i, classification in enumerate(classifications, 1):
+        # Without the action items, a leak that no trial used is invisible
+        # here: every trial can be GOOD_* while a must_fix hole sits in the
+        # items, and the verdict's leak rule keys on exactly that.
+        items = "\n".join(
+            f"    - [{item.tier.value}/{item.dimension.value}] {item.title}"
+            for item in classification.action_items
+        )
         trial_lines.append(
             f"""Trial {i}: {classification.trial_name}
   Classification: {classification.classification.value}
@@ -673,6 +680,8 @@ def build_verdict_prompt(
   Evidence: {classification.evidence}
   Root Cause: {classification.root_cause}
   Recommendation: {classification.recommendation}
+  Action items:
+{items if items else "    (none)"}
 """
         )
     trial_classifications = "\n".join(trial_lines)
