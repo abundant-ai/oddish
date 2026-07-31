@@ -286,11 +286,8 @@ function ExperimentContent({
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
-    // Null disables polling: a finished experiment is immutable from this
-    // page's point of view, so re-fetching every loaded trial page forever
-    // is pure waste. Mutations made here (rerun, delete, unlink) refresh
-    // explicitly via refreshTaskPages, and polling resumes as soon as the
-    // refreshed data shows active work again.
+    // Null = no polling. Page-local mutations refresh via refreshTaskPages,
+    // which recomputes this, so polling resumes when work restarts.
     return hasActiveTasks ? 30000 : null;
   }, [tasksForExperiment]);
 
@@ -318,11 +315,9 @@ function ExperimentContent({
     [mutateLightweight, mutateTrials, mutateCostTotals]
   );
 
-  // Keep fetching trial batches in the background until every task is
-  // enriched. Un-enriched rows render skeleton chips meanwhile (the table
-  // treats ``trials == null`` as pending), so no manual "load more" step
-  // exists. Batches load sequentially: each increment fires one request, and
-  // ``canLoadMoreTrials`` stays false until it settles.
+  // Load remaining batches sequentially: canLoadMoreTrials is false while a
+  // fetch is in flight, so this fires once per settled page. Un-enriched rows
+  // render skeleton chips (the table treats ``trials == null`` as pending).
   useEffect(() => {
     if (!canLoadMoreTrials) return;
     void setTrialsSize((size) => size + 1);
