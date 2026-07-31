@@ -43,7 +43,6 @@ import {
   Microscope,
   CheckCircle2,
   XCircle,
-  AlertTriangle,
   ExternalLink,
   Route,
   Package,
@@ -51,7 +50,9 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { AnalysisProse } from "@/components/analysis-prose";
+import { Skeleton } from "@/components/ui/skeleton";
+import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
+import { QaReportSkeleton } from "@/components/qa-report/skeleton";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -123,9 +124,13 @@ const TrajectoryGraphView = dynamic(
 
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
-    <div className="text-muted-foreground flex h-full min-h-[160px] items-center justify-center gap-2 text-sm">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span>{label}</span>
+    <div className="flex min-h-[160px] flex-col gap-2 p-4">
+      <span className="sr-only">{label}</span>
+      <Skeleton className="h-4 w-1/3" />
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-11/12" />
+      <Skeleton className="h-3 w-4/5" />
+      <Skeleton className="mt-2 h-24 w-full rounded-lg" />
     </div>
   );
 }
@@ -192,6 +197,11 @@ function TrialAnalysisCard({
   onQueued?: () => void;
 }) {
   const [live, setLive] = useState<Trial | null>(null);
+  // The parent's snapshot can carry a superseded report (e.g. after a
+  // re-run), so the card holds a loading state instead of painting it and
+  // swapping. Holds the id whose per-trial fetch has settled: an id, not a
+  // boolean, so the first render after a trial switch is already unsynced.
+  const [syncedId, setSyncedId] = useState<string | null>(null);
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   // Set when WE queued a run. This keeps the card in its progress state
@@ -232,14 +242,20 @@ function TrialAnalysisCard({
     let cancelled = false;
     (async () => {
       try {
+        // The timeout bounds the synced gate: a hung fetch must fall back
+        // to the parent snapshot, not pin the report skeleton forever.
         const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
           cache: "no-store",
+          signal: AbortSignal.timeout(15000),
         });
         if (!res.ok || cancelled) return;
         const fresh = (await res.json()) as Trial;
         if (!cancelled && trialIdRef.current === trialProp.id) setLive(fresh);
       } catch {
         // The card falls back to the parent's snapshot.
+      } finally {
+        if (!cancelled && trialIdRef.current === trialProp.id)
+          setSyncedId(trialProp.id);
       }
     })();
     return () => {
@@ -250,6 +266,7 @@ function TrialAnalysisCard({
   // The id check covers the first render after a trial switch, before the
   // reset effect above has cleared the previous trial's polled state.
   const trial = live && live.id === trialProp.id ? live : trialProp;
+  const synced = syncedId === trialProp.id;
   const analysisActive =
     trial.analysis_status === "running" ||
     trial.analysis_status === "pending" ||
@@ -461,43 +478,42 @@ function TrialAnalysisCard({
     }
   }
 
+  // Analysis wall-clock, shown in the report header.
+  let analysisDuration: string | null = null;
+  if (trial.analysis_started_at && trial.analysis_finished_at) {
+    const secs = Math.round(
+      (new Date(trial.analysis_finished_at).getTime() -
+        new Date(trial.analysis_started_at).getTime()) /
+        1000,
+    );
+    if (Number.isFinite(secs) && secs >= 0) {
+      analysisDuration =
+        secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    }
+  }
+
+  const showReport =
+    synced && hasAnalysis && !inProgress && !!trial.analysis?.classification;
+
   return (
     <Card
       className={
         inProgress
           ? "border-blue-500/30 bg-blue-500/5"
-          : trial.analysis?.classification?.startsWith("GOOD")
-            ? "border-emerald-500/30 bg-emerald-500/5"
-            : trial.analysis?.classification?.startsWith("BAD")
-              ? "border-amber-500/30 bg-amber-500/5"
-              : "border-slate-500/30 bg-slate-500/5"
+          : showReport
+            ? // The report card carries the verdict tint itself.
+              "border-border/60"
+            : "border-slate-500/30 bg-slate-500/5"
       }
     >
       <CardContent className="px-4 py-3">
-        <div className="text-muted-foreground mb-2 flex items-center justify-between text-[11px] font-semibold tracking-wider uppercase">
-          <div>
-            <span>QA Assessment</span>
-            {trial.analysis?.prompt_version != null && (
-              <span
-                className="ml-2 normal-case font-normal tracking-normal"
-                title={
-                  trial.analysis.prompt_scope_id
-                    ? `${trial.analysis.prompt_scope} override: ${trial.analysis.prompt_scope_id}`
-                    : `${trial.analysis.prompt_scope ?? "global"} prompt`
-                }
-              >
-                {trial.analysis.prompt_kind ?? "QA_POST_TRIAL"} v
-                {trial.analysis.prompt_version} ·{" "}
-                {trial.analysis.prompt_scope ?? "global"}
-              </span>
-            )}
-          </div>
-          {showQueueButton && (
+        {showQueueButton && (
+          <div className="mb-2 flex justify-end">
             <button
               type="button"
               disabled={queuing || queueBlockedReason !== null}
               onClick={queueRun}
-              className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal disabled:cursor-not-allowed disabled:opacity-50"
+              className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
               title={
                 queueBlockedReason ??
                 (hasAnalysis
@@ -511,8 +527,8 @@ function TrialAnalysisCard({
                   ? "Re-run analysis"
                   : "Run analysis"}
             </button>
-          )}
-        </div>
+          </div>
+        )}
         {queueError && (
           <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
         )}
@@ -523,127 +539,91 @@ function TrialAnalysisCard({
             {queueBlockedReason}
           </p>
         )}
-        <div className="flex items-start gap-3">
-          {inProgress ? (
-            <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
-          ) : trial.analysis?.classification?.startsWith("GOOD") ? (
-            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
-          ) : trial.analysis?.classification?.startsWith("BAD") ? (
-            <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
-          ) : hasAnalysis ? (
-            <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
-          ) : (
-            <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
-          )}
-          <div className="min-w-0 flex-1">
-            {inProgress ? (
-              <div className="flex flex-col gap-1">
-                <span className="font-mono text-sm font-bold">
-                  {trial.analysis_status === "running"
-                    ? "Analyzing"
-                    : "Analysis queued"}
-                </span>
-                <span className="text-muted-foreground text-xs">
-                  {progressLine}
-                </span>
-              </div>
-            ) : !hasAnalysis ? (
-              <div className="flex flex-col gap-1">
-                <span className="font-mono text-sm font-bold">
-                  No analysis yet
-                </span>
-                <span className="text-muted-foreground text-xs">
-                  This trial has not been analyzed.
-                </span>
-              </div>
-            ) : (
-              <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-sm font-bold">
-                    {trial.analysis?.classification?.replace("_", " ") ||
-                      "Analysis"}
-                  </span>
-                  {trial.analysis?.subtype &&
-                    !/^n\/a/i.test(trial.analysis.subtype) && (
-                      <span
-                        className={cn(
-                          "rounded border px-1.5 py-0.5 font-mono text-[10px]",
-                          trial.analysis?.classification?.startsWith("BAD")
-                            ? "border-amber-500/50 text-amber-600 dark:text-amber-400"
-                            : trial.analysis?.classification?.startsWith("GOOD")
-                              ? "border-emerald-500/50 text-emerald-600 dark:text-emerald-400"
-                              : "border-border text-muted-foreground",
-                        )}
-                      >
-                        {trial.analysis.subtype.replace(/_/g, " ")}
-                      </span>
-                    )}
-                </div>
-                {trial.analysis_status === "failed" &&
-                  trial.analysis_error && (
-                    <p className="mt-1 text-xs text-red-500">
-                      Analysis failed: {trial.analysis_error}
-                    </p>
-                  )}
-                {trial.analysis?.root_cause &&
-                  trial.analysis.root_cause !== trial.analysis.evidence && (
-                    <div className="border-border/60 bg-muted/30 mt-3 rounded-md border p-2.5">
-                      <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
-                        Root cause
-                      </span>
-                      <AnalysisProse
-                        text={trial.analysis.root_cause}
-                        className="text-muted-foreground mt-1"
-                      />
-                    </div>
-                  )}
-                {trial.analysis?.recommendation &&
-                  !/^n\/a/i.test(trial.analysis.recommendation) && (
-                    <div className="border-border/60 bg-muted/30 mt-2 rounded-md border border-l-2 border-l-amber-500/60 p-2.5">
-                      <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
-                        Fix
-                      </span>
-                      <AnalysisProse
-                        text={trial.analysis.recommendation}
-                        className="text-muted-foreground mt-1"
-                      />
-                    </div>
-                  )}
-                {(trial.analysis?.action_items?.length ?? 0) > 0 && (
-                  <div className="mt-3">
-                    <span className="text-foreground/80 font-mono text-[10px] font-semibold tracking-wider uppercase">
-                      Action items ({trial.analysis!.action_items!.length})
-                    </span>
-                    <div className="mt-1">
-                      <PreTrialFindingList
-                        items={trial.analysis!.action_items!}
-                      />
-                    </div>
-                  </div>
-                )}
-                {trial.analysis?.evidence &&
-                  (trial.analysis.root_cause &&
-                  trial.analysis.root_cause !== trial.analysis.evidence ? (
-                    <details className="mt-2">
-                      <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
-                        Evidence
-                      </summary>
-                      <AnalysisProse
-                        text={trial.analysis.evidence}
-                        className="text-muted-foreground/90 mt-1"
-                      />
-                    </details>
-                  ) : (
-                    <AnalysisProse
-                      text={trial.analysis.evidence}
-                      className="text-muted-foreground/90 mt-2"
-                    />
-                  ))}
-              </>
+        {!synced && !inProgress ? (
+          // The snapshot can carry a superseded report; hold the card's
+          // shape until the fresh fetch settles instead of painting it and
+          // swapping.
+          <QaReportSkeleton />
+        ) : showReport ? (
+          <>
+            {trial.analysis_status === "failed" && trial.analysis_error && (
+              <p className="mb-2 text-xs text-red-500">
+                Analysis failed: {trial.analysis_error}
+              </p>
             )}
+            <QaAssessmentReport
+              classification={trial.analysis!.classification!}
+              subtype={trial.analysis?.subtype}
+              rootCause={trial.analysis?.root_cause || trial.analysis?.evidence}
+              recommendation={trial.analysis?.recommendation}
+              evidence={
+                // Without a root cause the evidence IS the lead text above;
+                // passing it again would render the same prose twice.
+                trial.analysis?.root_cause &&
+                trial.analysis?.evidence &&
+                trial.analysis.evidence !== trial.analysis.root_cause
+                  ? trial.analysis.evidence
+                  : null
+              }
+              actionItems={trial.analysis?.action_items}
+              log={logText}
+              logOpen={logOpen}
+              onLogToggle={setLogOpen}
+              duration={analysisDuration}
+              raw={trial.analysis}
+            />
+          </>
+        ) : (
+          <div className="flex items-start gap-3">
+            {inProgress ? (
+              <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
+            ) : hasAnalysis ? (
+              <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
+            ) : (
+              <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
+            )}
+            <div className="min-w-0 flex-1">
+              {inProgress ? (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    {trial.analysis_status === "running"
+                      ? "Analyzing"
+                      : "Analysis queued"}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    {progressLine}
+                  </span>
+                </div>
+              ) : hasAnalysis ? (
+                // Analysis state exists but produced no report (e.g. failed
+                // before the classifier returned).
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">Analysis</span>
+                  {trial.analysis_status === "failed" &&
+                  trial.analysis_error ? (
+                    <span className="text-xs text-red-500">
+                      Analysis failed: {trial.analysis_error}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">
+                      No report was produced.
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    No analysis yet
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    This trial has not been analyzed.
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-        {logText && (
+        )}
+        {logText && !showReport && (
           <details
             className="mt-3"
             open={logOpen}
