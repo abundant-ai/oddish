@@ -80,6 +80,53 @@ def find_existing_deployment(token, project_id, team_id, branch, commit_sha):
     )
 
 
+def branch_env_last_updated_ms(token, project_id, team_id, branch):
+    """Newest updatedAt across the branch's env records, in ms epoch.
+
+    Returns 0 when no branch-scoped records exist or the response shape is
+    unexpected -- callers treat 0 as "cannot prove the auto build is
+    current" and force a rebuild.
+    """
+    params = urllib.parse.urlencode({"teamId": team_id})
+    url = (
+        "https://api.vercel.com/v9/projects/"
+        f"{urllib.parse.quote(project_id, safe='')}/env?{params}"
+    )
+    request = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {token}"}
+    )
+    with urllib.request.urlopen(request) as response:
+        payload = json.load(response)
+    stamps = [
+        env.get("updatedAt") or env.get("createdAt") or 0
+        for env in payload.get("envs", [])
+        if env.get("gitBranch") == branch
+    ]
+    return max(stamps, default=0)
+
+
+def auto_deployment_is_current(token, project_id, team_id, branch, deployment):
+    """Whether the auto-created deployment was built after the branch env
+    was last written.
+
+    An env diff alone can't prove the build is current: a cancelled run may
+    have written the env and died before rebuilding, leaving the push-time
+    auto build baked with stale values while the stored env already matches.
+    Any doubt (missing timestamps, API error) counts as stale.
+    """
+    deployed_at = deployment.get("createdAt") or deployment.get("created") or 0
+    try:
+        env_updated_at = branch_env_last_updated_ms(
+            token, project_id, team_id, branch
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"env freshness check failed ({exc}); forcing a rebuild")
+        return False
+    if not deployed_at or not env_updated_at:
+        return False
+    return env_updated_at < deployed_at
+
+
 def redeploy(token, team_id, project_name, deployment_id):
     url = (
         "https://api.vercel.com/v13/deployments"
@@ -113,7 +160,14 @@ def main():
     deployment = find_existing_deployment(
         token, project_id, team_id, branch, commit_sha
     )
-    if not force and deployment_state(deployment) not in FAILED_STATES:
+    reuse = (
+        not force
+        and deployment_state(deployment) not in FAILED_STATES
+        and auto_deployment_is_current(
+            token, project_id, team_id, branch, deployment
+        )
+    )
+    if reuse:
         preview_url = "https://" + deployment["url"]
         print(f"Reusing auto-created deployment (branch env unchanged): {preview_url}")
     else:

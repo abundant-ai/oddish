@@ -6,6 +6,28 @@ const POLL_INTERVAL_MS = 5_000;
 // The same-origin health route holds its backend probe open for up to 25s
 // (covering a Modal cold start), so give it a little headroom.
 const PROBE_TIMEOUT_MS = 30_000;
+// A warm backend answers the health route well under a second. A first
+// probe that only succeeds after this long means the backend was cold or
+// down while the page server-rendered, so its data likely failed -- treat
+// it as a recovery even though no failed probe preceded it.
+const SLOW_FIRST_PROBE_MS = 5_000;
+const RELOAD_GUARD_KEY = "oddish-preview-health-reloaded-at";
+// A slow-but-healthy backend must not reload the page on every visit, so
+// recovery reloads are rate-limited per tab.
+const RELOAD_GUARD_WINDOW_MS = 60_000;
+
+function reloadOnce() {
+  try {
+    const last = Number(sessionStorage.getItem(RELOAD_GUARD_KEY) || 0);
+    if (Date.now() - last < RELOAD_GUARD_WINDOW_MS) {
+      return;
+    }
+    sessionStorage.setItem(RELOAD_GUARD_KEY, String(Date.now()));
+  } catch {
+    // sessionStorage unavailable -- reload without the guard.
+  }
+  window.location.reload();
+}
 
 /**
  * Polls the same-origin /api/preview-backend-health route and, while the
@@ -31,9 +53,11 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
     }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let firstProbe = true;
 
     const probe = async () => {
       let healthy = false;
+      const startedAt = Date.now();
       try {
         const res = await fetch("/api/preview-backend-health", {
           cache: "no-store",
@@ -49,10 +73,13 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
       if (cancelled) {
         return;
       }
+      const slowFirstProbe =
+        firstProbe && Date.now() - startedAt > SLOW_FIRST_PROBE_MS;
+      firstProbe = false;
       if (healthy) {
         setReady(true);
-        if (wasDown.current) {
-          window.location.reload();
+        if (wasDown.current || slowFirstProbe) {
+          reloadOnce();
         }
         return;
       }

@@ -457,13 +457,22 @@ def test_env_diff_matches_and_drifts(tmp_path):
         sys.argv = argv
 
 
-def _run_redeploy_decision(force_env, state, monkeypatch):
+def _run_redeploy_decision(force_env, state, monkeypatch, *, env_updated_at=1):
     mod = _load_script("redeploy_vercel.py")
     calls = {"redeployed": False}
     monkeypatch.setattr(
         mod,
         "find_existing_deployment",
-        lambda *a: {"name": "oddish", "uid": "d1", "url": "auto.vercel.app", "readyState": state},
+        lambda *a: {
+            "name": "oddish",
+            "uid": "d1",
+            "url": "auto.vercel.app",
+            "readyState": state,
+            "createdAt": 1_000,
+        },
+    )
+    monkeypatch.setattr(
+        mod, "branch_env_last_updated_ms", lambda *a: env_updated_at
     )
 
     def fake_redeploy(*a):
@@ -512,6 +521,24 @@ def test_building_auto_deployment_is_reusable(_github_output, monkeypatch):
     # QUEUED/BUILDING is fine to adopt -- update_vercel_preview.sh blocks on
     # `vercel inspect --wait` before aliasing or probing the deployment.
     assert _run_redeploy_decision("false", "BUILDING", monkeypatch) is False
+
+
+def test_env_written_after_auto_build_forces_redeploy(_github_output, monkeypatch):
+    # An env diff alone can't prove the auto build is current: a cancelled
+    # run may have written the env and died before rebuilding. If the env
+    # was touched after the auto deployment was created, rebuild anyway.
+    assert (
+        _run_redeploy_decision("false", "READY", monkeypatch, env_updated_at=2_000)
+        is True
+    )
+
+
+def test_unknown_env_freshness_forces_redeploy(_github_output, monkeypatch):
+    # No timestamps -> cannot prove the build is current -> rebuild.
+    assert (
+        _run_redeploy_decision("false", "READY", monkeypatch, env_updated_at=0)
+        is True
+    )
 
 
 def test_update_script_wires_skip_path():
