@@ -128,9 +128,8 @@ export function StaticChecksPanel({
           {loadError}
         </p>
       ) : state === "unaudited" ? (
-        <p className="text-muted-foreground text-sm leading-relaxed">
-          The checks have not run yet.
-        </p>
+        // The header summary already says "Not run yet"; no body needed.
+        null
       ) : state === "running" ? (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-full rounded-lg" />
