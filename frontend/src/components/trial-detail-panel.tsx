@@ -50,7 +50,9 @@ import {
   GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
+import { QaReportSkeleton } from "@/components/qa-report/skeleton";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -122,9 +124,13 @@ const TrajectoryGraphView = dynamic(
 
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
-    <div className="text-muted-foreground flex h-full min-h-[160px] items-center justify-center gap-2 text-sm">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span>{label}</span>
+    <div className="flex min-h-[160px] flex-col gap-2 p-4">
+      <span className="sr-only">{label}</span>
+      <Skeleton className="h-4 w-1/3" />
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-11/12" />
+      <Skeleton className="h-3 w-4/5" />
+      <Skeleton className="mt-2 h-24 w-full rounded-lg" />
     </div>
   );
 }
@@ -531,14 +537,10 @@ function TrialAnalysisCard({
           </p>
         )}
         {!synced && !inProgress ? (
-          // The snapshot can carry a superseded report; wait for the fresh
-          // fetch instead of painting it and swapping.
-          <div className="flex items-start gap-3">
-            <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
-            <span className="text-muted-foreground text-xs">
-              Loading analysis…
-            </span>
-          </div>
+          // The snapshot can carry a superseded report; hold the card's
+          // shape until the fresh fetch settles instead of painting it and
+          // swapping.
+          <QaReportSkeleton />
         ) : showReport ? (
           <>
             {trial.analysis_status === "failed" && trial.analysis_error && (
