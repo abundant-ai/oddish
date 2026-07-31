@@ -182,6 +182,7 @@ function ExperimentContent({
 
   const {
     data: trialPages,
+    error: trialsError,
     isLoading: isLoadingTrialPages,
     isValidating: isValidatingTrials,
     setSize: setTrialsSize,
@@ -274,8 +275,15 @@ function ExperimentContent({
     if (!trialPages) return 0;
     return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
   }, [trialPages]);
+  const totalTaskCount = lightweightTasks?.length ?? 0;
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
+  // A failed batch stalls the auto-load chain: hasMoreTrials keys off the
+  // last *successful* page, so once SWR's error retries give up, nothing
+  // re-requests the hole. Surfaced below as a Retry alert; mutateTrials()
+  // revalidates every held page, which refills the hole and lets the
+  // auto-load effect resume.
+  const trialsStalled = Boolean(trialsError) && trialsLoadedCount < totalTaskCount;
 
   const refreshIntervalMs = useMemo(() => {
     if (tasksForExperiment.length === 0) return 5000;
@@ -661,6 +669,25 @@ function ExperimentContent({
                 <AlertTitle>Could not refresh experiment</AlertTitle>
                 <AlertDescription>
                   Showing the most recently loaded task data.
+                </AlertDescription>
+              </Alert>
+            ) : trialsStalled ? (
+              <Alert variant="destructive">
+                <AlertTitle>Some trial results failed to load</AlertTitle>
+                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  <span>
+                    Loaded {trialsLoadedCount}/{totalTaskCount} tasks.
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="h-7"
+                    onClick={() => void mutateTrials()}
+                    disabled={isValidatingTrials}
+                  >
+                    Retry
+                  </Button>
                 </AlertDescription>
               </Alert>
             ) : null
