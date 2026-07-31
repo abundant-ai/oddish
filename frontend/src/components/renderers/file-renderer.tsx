@@ -20,27 +20,37 @@ import { RawRenderer } from "./raw-renderer";
 // Heavy renderers are code-split so they don't inflate the main bundle.
 const MarkdownRenderer = dynamic(
   () => import("./markdown-renderer").then((m) => m.MarkdownRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Rendering markdown..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Rendering markdown..." /> }
 );
 
 const NotebookRenderer = dynamic(
   () => import("./notebook-renderer").then((m) => m.NotebookRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Rendering notebook..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Rendering notebook..." /> }
 );
 
 const XlsxRenderer = dynamic(
   () => import("./xlsx-renderer").then((m) => m.XlsxRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Loading spreadsheet..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Loading spreadsheet..." /> }
 );
 
 const DocxRenderer = dynamic(
   () => import("./docx-renderer").then((m) => m.DocxRenderer),
-  { ssr: false, loading: () => <LoadingStub label="Converting document..." /> },
+  { ssr: false, loading: () => <LoadingStub label="Converting document..." /> }
+);
+
+const CastRenderer = dynamic(
+  () => import("./cast-renderer").then((m) => m.CastRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Loading recording..." /> }
+);
+
+const ResultJsonRenderer = dynamic(
+  () => import("./result-json-renderer").then((m) => m.ResultJsonRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Rendering result..." /> }
 );
 
 function LoadingStub({ label }: { label: string }) {
   return (
-    <div className="flex h-full items-center justify-center gap-2 p-8 text-muted-foreground">
+    <div className="text-muted-foreground flex h-full items-center justify-center gap-2 p-8">
       <Loader2 className="h-5 w-5 animate-spin" />
       <span>{label}</span>
     </div>
@@ -58,6 +68,8 @@ type FileRendererKind =
   | "notebook"
   | "json"
   | "config-json"
+  | "result-json"
+  | "cast"
   | "csv"
   | "log"
   | "code"
@@ -134,7 +146,11 @@ function getFileRendererKind(fileName: string): FileRendererKind {
   if (lower.endsWith("/config.json") || lower === "config.json") {
     return "config-json";
   }
+  if (lower.endsWith("/result.json") || lower === "result.json") {
+    return "result-json";
+  }
   if (ext === "json") return "json";
+  if (ext === "cast") return "cast";
 
   if (ext === "csv" || ext === "tsv") return "csv";
   if (ext === "log") return "log";
@@ -221,6 +237,10 @@ export function FileRenderer({
       return <JsonRenderer content={content ?? ""} />;
     case "config-json":
       return <ConfigJsonRenderer content={content ?? ""} />;
+    case "result-json":
+      return <ResultJsonRenderer content={content ?? ""} />;
+    case "cast":
+      return <CastRenderer content={content ?? ""} />;
     case "csv": {
       const delimiter = fileName.toLowerCase().endsWith(".tsv") ? "\t" : ",";
       return <CsvRenderer content={content ?? ""} delimiter={delimiter} />;
@@ -242,7 +262,7 @@ export function FileRenderer({
 
 function MissingUrl({ fileName }: { fileName: string }) {
   return (
-    <div className="flex h-full items-center justify-center p-8 text-sm text-muted-foreground">
+    <div className="text-muted-foreground flex h-full items-center justify-center p-8 text-sm">
       Cannot preview {fileName}: no URL available
     </div>
   );
@@ -285,7 +305,7 @@ function ArrayBufferWrapper({
 
   if (error) {
     return (
-      <div className="p-4 text-sm text-destructive">
+      <div className="text-destructive p-4 text-sm">
         Failed to load {fileName}: {error}
       </div>
     );
