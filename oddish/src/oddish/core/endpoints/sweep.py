@@ -60,6 +60,7 @@ async def _plan_append_trials(
     task: TaskModel,
     submission: TaskSweepSubmission,
     target_experiment_id: str | None,
+    append_version_id: str | None,
     default_environment: EnvironmentType | None,
     allowed_environments: Collection[EnvironmentType] | None,
 ) -> tuple[list[TrialSpec], list[list[str]]]:
@@ -67,13 +68,17 @@ async def _plan_append_trials(
 
     Must be re-run after the task row is locked: an unlocked snapshot can race
     with a concurrent append and overshoot ``n_trials``.
+
+    Counts against ``append_version_id`` -- the version the new trials will be
+    pinned to -- so the declarative N compares like with like instead of
+    measuring this request against another version's trials.
     """
     existing_counts: dict[tuple[str, str | None], int] | None = None
     failed_trial_ids: dict[tuple[str, str | None], list[str]] = defaultdict(list)
-    if task.current_version_id is not None:
+    if append_version_id is not None:
         reconcile_where = [
             TrialModel.task_id == task.id,
-            TrialModel.task_version_id == task.current_version_id,
+            TrialModel.task_version_id == append_version_id,
             TrialModel.is_probe.is_(False),
             TrialModel.superseded_by_trial_id.is_(None),
         ]
@@ -287,6 +292,36 @@ async def _existing_task_environment(
     )
     existing_environment = result.scalar_one_or_none()
     return EnvironmentType(existing_environment) if existing_environment else None
+
+
+async def resolve_append_version_id(
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    experiment_id: str | None,
+    uploaded_content_hash: str | None,
+) -> str | None:
+    """Task version an append should pin its new trials to.
+
+    A submission carrying no content hash uploaded no task directory, so it
+    targets the task as the experiment already runs it: stay on that
+    experiment's version rather than pulling the experiment onto a default that
+    some unrelated run advanced. The version comes from
+    ``fetch_experiment_effective_version_ids``, the same rule the experiment
+    grid pivots on, so an append lands where its results will be displayed.
+
+    Falls back to ``task.current_version_id`` when the submission uploaded
+    content, when there is no target experiment, or when that experiment has no
+    trials for this task yet.
+    """
+    if uploaded_content_hash is not None or experiment_id is None:
+        return task.current_version_id
+    from oddish.core.helpers import fetch_experiment_effective_version_ids
+
+    effective_versions = await fetch_experiment_effective_version_ids(
+        session, experiment_id=experiment_id, task_ids=[task.id]
+    )
+    return effective_versions.get(task.id, task.current_version_id)
 
 
 def _resolve_sweep_environments(
@@ -602,11 +637,22 @@ async def create_task_sweep_core(
         if submission.tags:
             task.tags = {**(task.tags or {}), **submission.tags}
 
+        # Resolved after the row lock above so it reads the committed default.
+        # Only an explicitly targeted experiment pins the version: an implicit
+        # primary is not a request to run that experiment's older content.
+        append_version_id = await resolve_append_version_id(
+            session,
+            task=task,
+            experiment_id=new_experiment_id,
+            uploaded_content_hash=submission.content_hash,
+        )
+
         trials, supersede_by_spec = await _plan_append_trials(
             session,
             task=task,
             submission=submission,
             target_experiment_id=target_experiment_id,
+            append_version_id=append_version_id,
             default_environment=effective_default_env,
             allowed_environments=allowed_environments,
         )
@@ -636,6 +682,7 @@ async def create_task_sweep_core(
                 experiment_id=new_experiment_id,
                 billed_user_id=attribution.billed_user_id,
                 supersede_failed_trial_ids=supersede_by_spec,
+                task_version_id=append_version_id,
             )
         except TrialSupersedeConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

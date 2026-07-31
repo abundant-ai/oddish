@@ -486,6 +486,19 @@ cleanup cannot expose the prior expansion. The replacement clears derived-file
 bookkeeping and pre-trial audit state before re-enqueuing expansion. Existing
 trials pinned to that version resolve to the replacement content.
 
+Sweep appends resolve their own version through `resolve_append_version_id`
+(`oddish/core/endpoints/sweep.py`). A submission whose `content_hash` is `None`
+uploaded no task directory, so it pins new trials -- and scopes its
+failed-trial reconciliation -- to the target experiment's effective version
+rather than `tasks.current_version_id`. This keeps a top-up on the version the
+experiment grid already displays instead of pivoting the whole row onto a
+default that an unrelated run advanced. Only an experiment the submission names
+explicitly counts: an append that falls back to the task's implicit primary
+experiment keeps the task default, so probes and task-page top-ups never run
+against older content. Submissions that carry content or name an experiment
+with no trials for the task also keep the task default. `create_task` is
+unaffected: a fresh task always runs its own upload.
+
 `GET /experiments/{experiment_id}/cost-totals` reports both cost and token
 usage across every trial owned by the experiment, including older versions,
 superseded retries, probes, and soft-deleted trials. Its `billed_*` cost and
