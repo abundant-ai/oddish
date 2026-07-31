@@ -428,6 +428,12 @@ def test_backend_status_probe_covers_parallel_deploy_window():
     assert route_hold >= 60_000
     assert max_duration * 1_000 > route_hold
     assert client_timeout > route_hold
+    # The slow-first-probe reload decision must use the route's server-side
+    # backend timing (probeMs), never client wall time -- wall time also
+    # counts the route's own function cold start and would reload needlessly
+    # right after a fresh frontend deploy.
+    assert "probeMs" in route
+    assert "probeMs" in status
 
 
 def _load_script(name):

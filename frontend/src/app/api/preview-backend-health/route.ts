@@ -29,13 +29,17 @@ export async function GET() {
     return NextResponse.json({ ready: false });
   }
 
+  // probeMs is the backend fetch alone -- the client uses it to tell a cold
+  // backend from an incidentally slow round trip (its own wall clock would
+  // also count this route's function cold start and network time).
+  const startedAt = Date.now();
   try {
     const res = await fetch(`${apiUrl.replace(/\/+$/, "")}/openapi.json`, {
       cache: "no-store",
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
-    return NextResponse.json({ ready: res.ok });
+    return NextResponse.json({ ready: res.ok, probeMs: Date.now() - startedAt });
   } catch {
-    return NextResponse.json({ ready: false });
+    return NextResponse.json({ ready: false, probeMs: Date.now() - startedAt });
   }
 }

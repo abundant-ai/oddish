@@ -7,10 +7,13 @@ const POLL_INTERVAL_MS = 5_000;
 // (outlasting a Modal cold start), so the client must not abort before the
 // route can answer.
 const PROBE_TIMEOUT_MS = 125_000;
-// A warm backend answers the health route well under a second. A first
-// probe that only succeeds after this long means the backend was cold or
-// down while the page server-rendered, so its data likely failed -- treat
-// it as a recovery even though no failed probe preceded it.
+// A warm backend answers its probe well under a second. A first probe whose
+// SERVER-MEASURED backend fetch (probeMs from the health route) took this
+// long means the backend was cold or down while the page server-rendered,
+// so its data likely failed -- treat it as a recovery even though no failed
+// probe preceded it. Client wall time is deliberately not used: it would
+// also count the health route's own function cold start and network time,
+// reloading needlessly right after a fresh frontend deploy.
 const SLOW_FIRST_PROBE_MS = 5_000;
 const RELOAD_GUARD_KEY = "oddish-preview-health-reloaded-at";
 // A slow-but-healthy backend must not reload the page on every visit, so
@@ -60,7 +63,7 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
 
     const probe = async () => {
       let healthy = false;
-      const startedAt = Date.now();
+      let backendProbeMs: number | null = null;
       try {
         const res = await fetch("/api/preview-backend-health", {
           cache: "no-store",
@@ -69,6 +72,9 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
         if (res.ok) {
           const body = await res.json().catch(() => null);
           healthy = body?.ready === true;
+          if (typeof body?.probeMs === "number") {
+            backendProbeMs = body.probeMs;
+          }
         }
       } catch {
         // Probe route unreachable -- treat as not ready and keep polling.
@@ -77,7 +83,9 @@ export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
         return;
       }
       const slowFirstProbe =
-        firstProbe && Date.now() - startedAt > SLOW_FIRST_PROBE_MS;
+        firstProbe &&
+        backendProbeMs !== null &&
+        backendProbeMs > SLOW_FIRST_PROBE_MS;
       firstProbe = false;
       if (healthy) {
         setReady(true);
