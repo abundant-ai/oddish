@@ -44,11 +44,13 @@ class VerdictBlock(Block):
         baseline: BaselineValidation | None = None,
         quality_check_passed: bool = True,
         pre_trial_items: list[ActionItem] | None = None,
+        pre_trial_load_failed: bool = False,
     ) -> None:
         self.classifications = classifications
         self.baseline = baseline
         self.quality_check_passed = quality_check_passed
         self.pre_trial_items = pre_trial_items
+        self.pre_trial_load_failed = pre_trial_load_failed
 
     # ---- prompt sections ----
     def sections(self) -> list[dict]:
@@ -62,6 +64,7 @@ class VerdictBlock(Block):
                     self.baseline,
                     self.quality_check_passed,
                     self.pre_trial_items,
+                    self.pre_trial_load_failed,
                 ),
                 # Pass the sentinel explicitly rather than relying on
                 # render_section's default text. Otherwise build_prompt's guard

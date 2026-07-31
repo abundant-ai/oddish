@@ -1278,6 +1278,7 @@ async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypa
         timeout,
         task_id=None,
         pre_trial_items=None,
+        pre_trial_load_failed=False,
     ):
         captured["classifications"] = classifications
         captured["baseline"] = baseline

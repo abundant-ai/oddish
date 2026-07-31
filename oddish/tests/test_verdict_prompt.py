@@ -115,3 +115,13 @@ def test_prompt_marks_exploited_pre_trial_findings():
 def test_prompt_without_pre_trial_items_keeps_the_pass_glyph():
     prompt = build_verdict_prompt([_classification()], pre_trial_items=[])
     assert "✓ Passed" in prompt
+
+
+def test_prompt_marks_a_failed_item_load_as_unknown_not_passed():
+    """A load failure must not masquerade as a clean audit: the verdict's
+    leak rule keys on the findings, and a false pass glyph hides them."""
+    prompt = build_verdict_prompt(
+        [_classification()], pre_trial_items=[], pre_trial_load_failed=True
+    )
+    assert "✓ Passed" not in prompt
+    assert "did not load" in prompt

@@ -20,7 +20,12 @@ def verdict_section(
     baseline: BaselineValidation | None,
     quality_check_passed: bool,
     pre_trial_items: list[ActionItem] | None = None,
+    pre_trial_load_failed: bool = False,
 ) -> str:
     return build_verdict_prompt(
-        classifications, baseline, quality_check_passed, pre_trial_items
+        classifications,
+        baseline,
+        quality_check_passed,
+        pre_trial_items,
+        pre_trial_load_failed,
     )

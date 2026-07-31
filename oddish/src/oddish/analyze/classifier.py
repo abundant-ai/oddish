@@ -649,6 +649,7 @@ def build_verdict_prompt(
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
     pre_trial_items: list[ActionItem] | None = None,
+    pre_trial_load_failed: bool = False,
 ) -> str:
     """Render the verdict-synthesis prompt, sent by ``VerdictBlock``."""
     if baseline:
@@ -677,6 +678,13 @@ def build_verdict_prompt(
         quality_check_summary = (
             f"{len(pre_trial_items)} finding(s) from the audit of the task source:\n"
             + findings
+        )
+    elif pre_trial_load_failed:
+        # A load failure is not a clean audit. Rendering the pass glyph here
+        # would hide an unexploited must_fix leak from the verdict's rules.
+        quality_check_summary = (
+            "⚠ Unknown — the audit findings did not load. "
+            "Do not read this as a pass."
         )
     else:
         quality_check_summary = "✓ Passed" if quality_check_passed else "✗ Failed"

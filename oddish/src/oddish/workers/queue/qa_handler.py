@@ -106,6 +106,7 @@ async def synthesize_task_verdict(
     timeout: float,
     task_id: str | None = None,
     pre_trial_items: list[ActionItem] | None = None,
+    pre_trial_load_failed: bool = False,
 ) -> TaskVerdictModel:
     """Synthesize the task verdict through VerdictBlock + AnalyzerBlock.
 
@@ -138,6 +139,7 @@ async def synthesize_task_verdict(
         baseline=baseline,
         quality_check_passed=quality_check_passed,
         pre_trial_items=pre_trial_items,
+        pre_trial_load_failed=pre_trial_load_failed,
     )
     prompt = vb.build_prompt()
 
@@ -886,11 +888,14 @@ async def run_task_qa_job(
         # The classify prompt tells trials not to repeat pre-trial findings
         # in their action items, so an audit hole no trial exploited reaches
         # the verdict only through this list. Loaded after the aggregation so
-        # the items carry their exploited stamps. Best-effort like above.
+        # the items carry their exploited stamps. Best-effort like above —
+        # but a load failure must render as "unknown", never as a clean pass.
         pre_trial_items: list[ActionItem] = []
+        pre_trial_load_failed = False
         try:
             pre_trial_items = await _load_pre_trial_items(task_id)
         except Exception as exc:  # noqa: BLE001
+            pre_trial_load_failed = True
             console.print(
                 f"[red]Pre-trial item load failed for {task_id}: "
                 f"{type(exc).__name__}: {exc}[/red]"
@@ -919,6 +924,7 @@ async def run_task_qa_job(
             timeout,
             task_id=task_id,
             pre_trial_items=pre_trial_items,
+            pre_trial_load_failed=pre_trial_load_failed,
         )
 
         verdict_result = build_verdict_payload(verdict, classifications)
