@@ -167,6 +167,9 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
     trial.analysis_error = None
     trial.analysis_started_at = None
     trial.analysis_finished_at = None
+    # Also drop the previous run's log, so the card never shows the old
+    # run's output while the new run waits for a worker.
+    trial.analysis_log = None
 
 
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:

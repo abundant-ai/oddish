@@ -24,12 +24,12 @@ from oddish.blocks.analyzer.claude_cli_client import (
     ClaudeCliClient,
     CliConfig,
     extract_claude_result,
-    parse_cli_envelope,
     parse_stream_json_result,
 )
 
 _ENVELOPE = json.dumps(
     {
+        "type": "result",
         "structured_output": {"classification": "GOOD_SUCCESS"},
         "total_cost_usd": 0.25,
         "usage": {"input_tokens": 100, "output_tokens": 20},
@@ -37,18 +37,41 @@ _ENVELOPE = json.dumps(
 )
 
 
+class _FakeStdout:
+    """One stream-json event per line; optionally hangs at EOF."""
+
+    def __init__(self, data: bytes, process: "_FakeProcess") -> None:
+        self._lines = [line + b"\n" for line in data.splitlines()]
+        self._process = process
+
+    async def readline(self) -> bytes:
+        if self._lines:
+            return self._lines.pop(0)
+        if self._process.hangs and not self._process.killed:
+            await asyncio.sleep(3600)
+        return b""
+
+
+class _FakeStderr:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
 class _FakeProcess:
     def __init__(self, *, stdout: bytes = b"", stderr: bytes = b"", returncode=0):
-        self._stdout = stdout
-        self._stderr = stderr
-        self.returncode = returncode
+        self.stdout = _FakeStdout(stdout, self)
+        self.stderr = _FakeStderr(stderr)
+        self._exit_code = returncode
+        self.returncode: int | None = None
         self.hangs = False
         self.killed = False
 
-    async def communicate(self):
-        if self.hangs and not self.killed:
-            await asyncio.sleep(3600)
-        return self._stdout, self._stderr
+    async def wait(self) -> int:
+        self.returncode = -9 if self.killed else self._exit_code
+        return self.returncode
 
     def kill(self):
         self.killed = True
@@ -113,6 +136,8 @@ async def test_cli_client_binds_the_command_to_its_config(monkeypatch, tmp_path)
 
     command = captured["command"]
     assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert command[command.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in command
     assert command[command.index("--json-schema") + 1] == '{"type":"object"}'
     assert command[command.index("--tools") + 1] == "Read,Glob"
     add_dirs = [command[i + 1] for i, a in enumerate(command) if a == "--add-dir"]
@@ -143,6 +168,51 @@ async def test_cli_client_records_usage_from_the_envelope(monkeypatch, tmp_path)
     assert client.last_usage.cost_usd == 0.25
     assert client.last_usage.input_tokens == 100
     assert client.last_usage.source == "native"
+
+
+@pytest.mark.asyncio
+async def test_cli_client_yields_one_chunk_per_event_line(monkeypatch, tmp_path):
+    """The analysis log renders each event as it arrives, so the client must
+    yield per line instead of one blob at the end."""
+    assistant = json.dumps({"type": "assistant", "message": {"content": []}})
+    stdout = (assistant + "\n" + _ENVELOPE + "\n").encode()
+    _fake_exec(monkeypatch, _FakeProcess(stdout=stdout))
+
+    client = ClaudeCliClient(model="anthropic/test", config=CliConfig(cwd=tmp_path))
+    chunks = [chunk async for chunk in client.stream("classify")]
+
+    assert chunks == [assistant, _ENVELOPE]
+    assert parse_stream_json_result("".join(chunks)) == {
+        "classification": "GOOD_SUCCESS"
+    }
+
+
+@pytest.mark.asyncio
+async def test_cli_client_does_not_yield_non_json_lines(monkeypatch, tmp_path):
+    """Chunks are joined and parsed as adjacent JSON downstream, so one noise
+    line on stdout must not reach the yielded stream."""
+    stdout = (b"claude-code starting up\n" + _ENVELOPE.encode() + b"\n")
+    _fake_exec(monkeypatch, _FakeProcess(stdout=stdout))
+
+    client = ClaudeCliClient(model="anthropic/test", config=CliConfig(cwd=tmp_path))
+    chunks = [chunk async for chunk in client.stream("classify")]
+
+    assert chunks == [_ENVELOPE]
+
+
+@pytest.mark.asyncio
+async def test_cli_client_keeps_a_non_json_line_for_error_context(
+    monkeypatch, tmp_path
+):
+    _fake_exec(
+        monkeypatch,
+        _FakeProcess(stdout=b"segfault in tool host\n", returncode=1),
+    )
+
+    client = ClaudeCliClient(model="anthropic/test", config=CliConfig(cwd=tmp_path))
+
+    with pytest.raises(RuntimeError, match="segfault in tool host"):
+        await _drain(client)
 
 
 @pytest.mark.asyncio
@@ -194,10 +264,6 @@ def test_extract_claude_result_rejects_an_empty_envelope():
         extract_claude_result({"result": None})
 
 
-def test_parse_cli_envelope_reads_one_json_object():
-    assert parse_cli_envelope(_ENVELOPE) == {"classification": "GOOD_SUCCESS"}
-
-
 def test_parse_stream_json_result_reads_the_last_result_event():
     raw = (
         '{"type": "assistant", "message": "thinking"}'
@@ -210,6 +276,16 @@ def test_parse_stream_json_result_skips_a_trailing_empty_result_event():
     raw = (
         '{"type": "result", "structured_output": {"classification": "GOOD_SUCCESS"}}'
         '{"type": "result", "structured_output": null, "result": null}'
+    )
+    assert parse_stream_json_result(raw) == {"classification": "GOOD_SUCCESS"}
+
+
+def test_parse_stream_json_result_skips_non_json_noise_between_events():
+    raw = (
+        "claude-code starting up"
+        '{"type": "assistant", "message": "thinking"}'
+        "\x1b[32msome ansi banner\x1b[0m"
+        '{"type": "result", "structured_output": {"classification": "GOOD_SUCCESS"}}'
     )
     assert parse_stream_json_result(raw) == {"classification": "GOOD_SUCCESS"}
 

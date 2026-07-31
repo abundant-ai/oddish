@@ -7,7 +7,7 @@ import os
 import shlex
 import tarfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 import logging
 from harbor.models.trial.result import TrialResult
 
@@ -236,6 +236,7 @@ class TrialClassifier:
         verbose: bool = False,
         timeout: int = 300,
         prompt_template: str | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ):
         self._model = model
         self._verbose = verbose
@@ -243,6 +244,9 @@ class TrialClassifier:
         # Cloud QA supplies the latest QA_POST_TRIAL registry version. Keep the
         # packaged prompt as a fallback for local/library callers without a DB.
         self._prompt_template = prompt_template or _CLASSIFY_PROMPT
+        # Receives each streamed analyzer event; used for the live analysis
+        # log. Only the sandbox path streams during the run.
+        self._on_chunk = on_chunk
         self._setup_authentication()
 
     def _setup_authentication(self) -> None:
@@ -446,10 +450,7 @@ class TrialClassifier:
         from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
         from oddish.blocks.analyzer import analyzer_llm_client
         from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
-        from oddish.blocks.analyzer.claude_cli_client import (
-            parse_cli_envelope,
-            parse_stream_json_result,
-        )
+        from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
 
         client_type = resolve_substrate(
             AnalyzerType.POST_TRIAL,
@@ -512,11 +513,10 @@ class TrialClassifier:
             task_id=context.get("task_id"),
             block_metadata=metadata,
             model=block_model,
-            output_transform=(
-                parse_stream_json_result if use_sandbox else parse_cli_envelope
-            ),
+            output_transform=parse_stream_json_result,
             sandbox_config=sandbox_config,
             cli_config=cli_config,
+            on_chunk=self._on_chunk,
         )
         if use_sandbox:
             # CliConfig.timeout bounds the CLAUDE_CLI path from inside, where it
@@ -558,7 +558,7 @@ class TrialClassifier:
         """Classify without a block: local runs have no DB row to persist to."""
         from oddish.blocks.analyzer.claude_cli_client import (
             ClaudeCliClient,
-            parse_cli_envelope,
+            parse_stream_json_result,
         )
 
         client = ClaudeCliClient(
@@ -569,7 +569,7 @@ class TrialClassifier:
             raw = "".join([chunk async for chunk in client.stream(prompt)])
         finally:
             await client.aclose()
-        return parse_cli_envelope(raw)
+        return parse_stream_json_result(raw)
 
     def _parse_trial_classification_structured(
         self,
