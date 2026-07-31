@@ -118,7 +118,6 @@ interface ExperimentDetailViewProps {
   headerRight?: React.ReactNode;
   headerDescription?: React.ReactNode;
   inlineAlert?: React.ReactNode;
-  tableFooter?: React.ReactNode;
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
@@ -918,7 +917,6 @@ export function ExperimentDetailView({
   headerRight,
   headerDescription,
   inlineAlert,
-  tableFooter,
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
@@ -1446,7 +1444,6 @@ export function ExperimentDetailView({
                   });
                 }}
               />
-              {tableFooter}
             </div>
           )}
         </div>
