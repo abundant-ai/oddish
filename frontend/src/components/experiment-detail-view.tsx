@@ -1031,6 +1031,13 @@ export function ExperimentDetailView({
     ExperimentAgentSummary[]
   >([]);
   const hydratedFromUrl = useRef(false);
+  // Deep-linked ?trial= that wasn't in the loaded data when the URL was read:
+  // trial pages stream in after the task shells, so on direct loads the trial
+  // is almost never there yet. Held here until it resolves from a streamed
+  // page or a direct /api/trials fetch.
+  const [pendingUrlTrialId, setPendingUrlTrialId] = useState<string | null>(
+    null
+  );
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;
   const deferredTasksForDerivedData = useDeferredValue(tasksForExperiment);
 
@@ -1124,7 +1131,10 @@ export function ExperimentDetailView({
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
         next.set("trial", drawerState.trial.id);
-      } else {
+      } else if (pendingUrlTrialId == null) {
+        // While a deep-linked trial is still resolving, the drawer is in task
+        // mode but the ?trial= param must survive for the promotion to keep
+        // the URL truthful.
         next.delete("trial");
         next.delete("tab");
         next.delete("file");
@@ -1141,7 +1151,7 @@ export function ExperimentDetailView({
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawerState, searchParams]);
+  }, [drawerState, searchParams, pendingUrlTrialId]);
 
   useEffect(() => {
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
@@ -1178,6 +1188,11 @@ export function ExperimentDetailView({
         });
         return;
       }
+      // Hydration runs off the task shells, before any trial page has
+      // streamed in, so the trial is almost never findable here. Open the
+      // task drawer below and keep the id pending; it resolves once a
+      // streamed page carries it or the direct /api/trials fetch lands.
+      setPendingUrlTrialId(urlTrialId);
     }
 
     setDrawerState({
@@ -1217,14 +1232,29 @@ export function ExperimentDetailView({
     const foundTrialIndex = drawerState.trial
       ? orderedTrials.findIndex((t) => t.id === drawerState.trial!.id)
       : -1;
-    const resolvedTrialIndex = foundTrialIndex >= 0 ? foundTrialIndex : null;
-    const resolvedTrial =
+    let resolvedTrialIndex = foundTrialIndex >= 0 ? foundTrialIndex : null;
+    let resolvedTrial =
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
         : drawerState.trial;
+    // Deep-linked ?trial= that hydration couldn't find: promote the drawer to
+    // it as soon as a streamed trial page carries it.
+    let resolvedMode = drawerState.mode;
+    if (pendingUrlTrialId != null && drawerState.mode === "task") {
+      const pendingIndex = orderedTrials.findIndex(
+        (t) => t.id === pendingUrlTrialId
+      );
+      if (pendingIndex >= 0) {
+        resolvedMode = "trial";
+        resolvedTrial = orderedTrials[pendingIndex];
+        resolvedTrialIndex = pendingIndex;
+        setPendingUrlTrialId(null);
+      }
+    }
     const resolvedTaskIndex = tasksForExperiment.indexOf(liveTask);
     setDrawerState({
       ...drawerState,
+      mode: resolvedMode,
       task: liveTask,
       taskIndex:
         resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
@@ -1234,7 +1264,48 @@ export function ExperimentDetailView({
       orderedTrials,
       trialGroups,
     });
-  }, [tasksForExperiment, drawerState, buildTrialGroups]);
+  }, [tasksForExperiment, drawerState, buildTrialGroups, pendingUrlTrialId]);
+
+  // A deep-linked trial can also point at data the grid will never stream in
+  // (a task beyond the prefetched pages, or a superseded trial), so resolve
+  // the pending id with a direct fetch too. Whichever source lands first
+  // wins: a resolve from a streamed page clears the pending id, which
+  // cancels this fetch, and the drawer-state guard makes a stale promotion
+  // a no-op. Public share pages can't use the authed route and skip this.
+  useEffect(() => {
+    if (pendingUrlTrialId == null || !loadFullTrialOnOpen) return;
+    let cancelled = false;
+    (async () => {
+      let fetched: Trial | null = null;
+      try {
+        const res = await fetch(
+          `${apiBaseUrl}/trials/${encodeURIComponent(pendingUrlTrialId)}`,
+          { cache: "no-store" }
+        );
+        if (res.ok) fetched = (await res.json()) as Trial;
+      } catch {
+        // Fall through: the deep link degrades to the task drawer.
+      }
+      if (cancelled) return;
+      setPendingUrlTrialId(null);
+      if (!fetched) return;
+      const trial = fetched;
+      setDrawerState((prev) => {
+        if (!prev || !prev.isOpen || prev.mode !== "task") return prev;
+        if (prev.task.id !== trial.task_id) return prev;
+        const index = prev.orderedTrials.findIndex((t) => t.id === trial.id);
+        return {
+          ...prev,
+          mode: "trial",
+          trial: index >= 0 ? prev.orderedTrials[index] : trial,
+          trialIndex: index >= 0 ? index : null,
+        };
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingUrlTrialId, loadFullTrialOnOpen, apiBaseUrl]);
 
   // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
   // only the loaded pages, and only the trials the grid renders, so it
@@ -1273,6 +1344,7 @@ export function ExperimentDetailView({
   }, [deferredTasksForDerivedData, costTotals]);
 
   const closeDrawer = () => {
+    setPendingUrlTrialId(null);
     setDrawerState(null);
   };
 
