@@ -191,6 +191,10 @@ function TrialAnalysisCard({
   onQueued?: () => void;
 }) {
   const [live, setLive] = useState<Trial | null>(null);
+  // The parent's snapshot can carry a superseded report (e.g. after a
+  // re-run), so the card holds a loading state instead of painting it and
+  // swapping. Set once the per-trial fetch settles, either way.
+  const [synced, setSynced] = useState(false);
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
   // Set when WE queued a run. This keeps the card in its progress state
@@ -215,6 +219,7 @@ function TrialAnalysisCard({
   useEffect(() => {
     trialIdRef.current = trialProp.id;
     setLive(null);
+    setSynced(false);
     setQueuing(false);
     setQueuedAt(null);
     setLogText(null);
@@ -239,6 +244,8 @@ function TrialAnalysisCard({
         if (!cancelled && trialIdRef.current === trialProp.id) setLive(fresh);
       } catch {
         // The card falls back to the parent's snapshot.
+      } finally {
+        if (!cancelled && trialIdRef.current === trialProp.id) setSynced(true);
       }
     })();
     return () => {
@@ -474,7 +481,8 @@ function TrialAnalysisCard({
     }
   }
 
-  const showReport = hasAnalysis && !inProgress && !!trial.analysis?.classification;
+  const showReport =
+    synced && hasAnalysis && !inProgress && !!trial.analysis?.classification;
 
   return (
     <Card
@@ -520,7 +528,16 @@ function TrialAnalysisCard({
             {queueBlockedReason}
           </p>
         )}
-        {showReport ? (
+        {!synced && !inProgress ? (
+          // The snapshot can carry a superseded report; wait for the fresh
+          // fetch instead of painting it and swapping.
+          <div className="flex items-start gap-3">
+            <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
+            <span className="text-muted-foreground text-xs">
+              Loading analysis…
+            </span>
+          </div>
+        ) : showReport ? (
           <>
             {trial.analysis_status === "failed" && trial.analysis_error && (
               <p className="mb-2 text-xs text-red-500">
