@@ -397,14 +397,20 @@ def test_backend_status_probe_covers_parallel_deploy_window():
     components = REPO / "frontend/src/components"
     banner = (components / "preview-banner.tsx").read_text()
     status = (components / "preview-backend-status.tsx").read_text()
+    route = (
+        REPO / "frontend/src/app/api/preview-backend-health/route.ts"
+    ).read_text()
     assert "PreviewBackendStatus" in banner
     assert 'backendLabel !== "production"' in banner
     assert '"use client"' in status
-    assert "/health" in status
-    # The probe timeout must outlast a Modal cold start (~30s), same
-    # constraint as wait_for_modal_ready.py.
-    m = re.search(r"PROBE_TIMEOUT_MS = ([\d_]+)", status)
-    assert m and int(m.group(1).replace("_", "")) >= 60_000
+    # The probe must go through a same-origin route handler: the hosted
+    # backend (backend/api/app.py) has no unauthenticated /health route and
+    # its CORS allowlist does not include preview origins, so a direct
+    # browser fetch can never observe a success.
+    assert 'fetch("/api/preview-backend-health"' in status
+    assert "backendUrl" not in status
+    assert "openapi.json" in route
+    assert "NEXT_PUBLIC_ODDISH_PREVIEW" in route
 
 
 def _load_script(name):

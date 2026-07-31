@@ -3,51 +3,48 @@
 import { useEffect, useRef, useState } from "react";
 
 const POLL_INTERVAL_MS = 5_000;
-// A probe against a cold-starting Modal backend hangs until the container
-// boots (~30s measured); the timeout must outlast that or every attempt
-// aborts mid-boot and the badge never clears.
-const PROBE_TIMEOUT_MS = 120_000;
+// The same-origin health route holds its backend probe open for up to 25s
+// (covering a Modal cold start), so give it a little headroom.
+const PROBE_TIMEOUT_MS = 30_000;
 
 /**
- * Polls the preview backend's /health endpoint and, while it is unreachable
- * or its database is disconnected, shows a "still deploying" chip in the
+ * Polls the same-origin /api/preview-backend-health route and, while the
+ * preview backend is unreachable, shows a "still deploying" chip in the
  * preview banner. The Vercel preview deploys in parallel with the Modal
  * backend, so the frontend can go live minutes before its backend exists;
  * this is the user-facing cover for that window. Once the backend turns
- * healthy after having been down, the page reloads so server-rendered data
+ * ready after having been down, the page reloads so server-rendered data
  * that failed during the outage is refetched.
+ *
+ * The probe deliberately goes through a Next.js route handler instead of
+ * fetching the backend directly: the hosted backend has no unauthenticated
+ * health route and its CORS allowlist does not include preview origins, so
+ * a direct browser fetch can never observe a success.
  */
-export function PreviewBackendStatus({
-  backendUrl,
-  enabled,
-}: {
-  backendUrl: string;
-  enabled: boolean;
-}) {
+export function PreviewBackendStatus({ enabled }: { enabled: boolean }) {
   const [ready, setReady] = useState<boolean | null>(null);
   const wasDown = useRef(false);
 
   useEffect(() => {
-    if (!enabled || !backendUrl) {
+    if (!enabled) {
       return;
     }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const healthUrl = `${backendUrl.replace(/\/+$/, "")}/health`;
 
     const probe = async () => {
       let healthy = false;
       try {
-        const res = await fetch(healthUrl, {
+        const res = await fetch("/api/preview-backend-health", {
           cache: "no-store",
           signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
         });
         if (res.ok) {
           const body = await res.json().catch(() => null);
-          healthy = !body || body.status === "healthy";
+          healthy = body?.ready === true;
         }
       } catch {
-        // Unreachable or timed out -- the backend isn't up yet.
+        // Probe route unreachable -- treat as not ready and keep polling.
       }
       if (cancelled) {
         return;
@@ -71,7 +68,7 @@ export function PreviewBackendStatus({
         clearTimeout(timer);
       }
     };
-  }, [backendUrl, enabled]);
+  }, [enabled]);
 
   if (!enabled || ready !== false) {
     return null;

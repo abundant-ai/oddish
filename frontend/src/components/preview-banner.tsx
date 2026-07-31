@@ -86,10 +86,7 @@ export function PreviewBanner() {
           value={databaseLabel}
           url={databaseUrl}
         />
-        <PreviewBackendStatus
-          backendUrl={backendUrl}
-          enabled={backendLabel !== "production"}
-        />
+        <PreviewBackendStatus enabled={backendLabel !== "production"} />
       </div>
     </div>
   );
