@@ -46,7 +46,6 @@ const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
 
 const TRIALS_BATCH_SIZE = 250;
-const TRIALS_PREFETCH_PAGES = 2;
 const EXPERIMENT_TIMING_STORAGE_KEY = "oddish:experiment-table-timing";
 const ACTIVE_TASK_STATUSES = new Set([
   "pending",
@@ -185,7 +184,6 @@ function ExperimentContent({
     data: trialPages,
     isLoading: isLoadingTrialPages,
     isValidating: isValidatingTrials,
-    size: trialsPageSize,
     setSize: setTrialsSize,
     mutate: mutateTrials,
   } = useSWRInfinite<Task[]>(getTrialsPageKey, fetchExperimentTasksPage, {
@@ -273,18 +271,8 @@ function ExperimentContent({
     if (!trialPages) return 0;
     return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
   }, [trialPages]);
-  const totalTaskCount = lightweightTasks?.length ?? 0;
-  const remainingTrialTaskCount = Math.max(
-    0,
-    totalTaskCount - trialsLoadedCount
-  );
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
-  const canLoadAllTrials =
-    totalTaskCount > 0 &&
-    remainingTrialTaskCount > 0 &&
-    !isLoadingTrialPages &&
-    !isValidatingTrials;
 
   const refreshIntervalMs = useMemo(() => {
     if (tasksForExperiment.length === 0) return 5000;
@@ -298,7 +286,12 @@ function ExperimentContent({
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
-    return hasActiveTasks ? 30000 : 90000;
+    // Null disables polling: a finished experiment is immutable from this
+    // page's point of view, so re-fetching every loaded trial page forever
+    // is pure waste. Mutations made here (rerun, delete, unlink) refresh
+    // explicitly via refreshTaskPages, and polling resumes as soon as the
+    // refreshed data shows active work again.
+    return hasActiveTasks ? 30000 : null;
   }, [tasksForExperiment]);
 
   const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
@@ -325,27 +318,15 @@ function ExperimentContent({
     [mutateLightweight, mutateTrials, mutateCostTotals]
   );
 
-  const loadMoreTrials = useCallback(() => {
+  // Keep fetching trial batches in the background until every task is
+  // enriched. Un-enriched rows render skeleton chips meanwhile (the table
+  // treats ``trials == null`` as pending), so no manual "load more" step
+  // exists. Batches load sequentially: each increment fires one request, and
+  // ``canLoadMoreTrials`` stays false until it settles.
+  useEffect(() => {
     if (!canLoadMoreTrials) return;
     void setTrialsSize((size) => size + 1);
   }, [canLoadMoreTrials, setTrialsSize]);
-
-  const loadAllTrials = useCallback(() => {
-    if (!canLoadAllTrials || totalTaskCount === 0) return;
-    void setTrialsSize(Math.ceil(totalTaskCount / TRIALS_BATCH_SIZE));
-  }, [canLoadAllTrials, setTrialsSize, totalTaskCount]);
-
-  useEffect(() => {
-    if (!canLoadMoreTrials || isLoadingTrialPages || isValidatingTrials) return;
-    if (trialsPageSize >= TRIALS_PREFETCH_PAGES) return;
-    void setTrialsSize((size) => Math.min(size + 1, TRIALS_PREFETCH_PAGES));
-  }, [
-    canLoadMoreTrials,
-    isLoadingTrialPages,
-    isValidatingTrials,
-    trialsPageSize,
-    setTrialsSize,
-  ]);
 
   useEffect(() => {
     if (!isExperimentTimingEnabled() || tasksForExperiment.length === 0) return;
@@ -384,7 +365,7 @@ function ExperimentContent({
   }, []);
 
   useEffect(() => {
-    if (!allTasksUrl) return;
+    if (!allTasksUrl || refreshIntervalMs == null) return;
 
     const intervalId = window.setInterval(() => {
       void mutateLightweight();
@@ -682,40 +663,6 @@ function ExperimentContent({
                 <AlertTitle>Could not refresh experiment</AlertTitle>
                 <AlertDescription>
                   Showing the most recently loaded task data.
-                </AlertDescription>
-              </Alert>
-            ) : null
-          }
-          tableFooter={
-            remainingTrialTaskCount > 0 ? (
-              <Alert>
-                <AlertTitle>Trial details are loading on demand</AlertTitle>
-                <AlertDescription className="flex flex-wrap items-center gap-2">
-                  <span>
-                    Loaded compact trial data for {trialsLoadedCount}/
-                    {totalTaskCount} tasks.
-                  </span>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="h-7"
-                    onClick={loadMoreTrials}
-                    disabled={!canLoadMoreTrials}
-                  >
-                    Load next{" "}
-                    {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7"
-                    onClick={loadAllTrials}
-                    disabled={!canLoadAllTrials}
-                  >
-                    Load all
-                  </Button>
                 </AlertDescription>
               </Alert>
             ) : null
