@@ -33,6 +33,7 @@ interface ResultData {
   started_at?: string;
   finished_at?: string;
   environment_setup?: Interval;
+  agent_setup?: Interval;
   agent_execution?: Interval;
   verifier?: Interval;
 }
@@ -169,7 +170,7 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
           </div>
 
           <div className="border-border space-y-2 border-t pt-3">
-            <div className="grid grid-cols-3 gap-4 text-sm">
+            <div className="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
               <div>
                 <div className="text-muted-foreground mb-1 text-xs">
                   Environment Setup
@@ -178,6 +179,17 @@ export function ResultJsonRenderer({ content }: ResultJsonRendererProps) {
                   {formatDuration(
                     data.environment_setup?.started_at,
                     data.environment_setup?.finished_at
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-muted-foreground mb-1 text-xs">
+                  Agent Setup
+                </div>
+                <div className="font-mono text-xs">
+                  {formatDuration(
+                    data.agent_setup?.started_at,
+                    data.agent_setup?.finished_at
                   )}
                 </div>
               </div>
