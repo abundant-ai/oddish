@@ -48,6 +48,12 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
+import {
+  formatLineRange,
+  parseLineRange,
+  type LineRange,
+} from "@/lib/line-range";
+import { sameFilePath } from "@/lib/file-path";
 
 type DrawerMode = "task" | "trial";
 
@@ -939,6 +945,39 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false }
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  // Task-definition pane addressing. The drawer can show the task's file
+  // tree beside the trial view, so the two panes address independently:
+  // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
+  // task pane owns ?taskFile= / ?taskLines=.
+  const [taskPaneFile, setTaskPaneFile] = useState<string | null>(() =>
+    searchParams.get("taskFile")
+  );
+  const [taskPaneLines, setTaskPaneLines] = useState<LineRange | null>(() =>
+    parseLineRange(searchParams.get("taskLines"))
+  );
+  // Mirrors taskPaneFile so the change handler can compare without an
+  // impure setState updater.
+  const taskPaneFileRef = useRef<string | null>(taskPaneFile);
+  const handleTaskPaneFileChange = useCallback((path: string | null) => {
+    // A different file makes the old line anchor meaningless — drop it.
+    if (!sameFilePath(taskPaneFileRef.current, path)) setTaskPaneLines(null);
+    taskPaneFileRef.current = path;
+    setTaskPaneFile(path);
+  }, []);
+  // Reset the pane address when the drawer moves to another task (grid
+  // selection, prev/next nav) or closes — the old path belongs to the old
+  // task. The first open keeps it so deep links land.
+  const lastDrawerTaskIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const taskId = drawerState?.task.id ?? null;
+    if (
+      lastDrawerTaskIdRef.current !== null &&
+      taskId !== lastDrawerTaskIdRef.current
+    ) {
+      handleTaskPaneFileChange(null);
+    }
+    lastDrawerTaskIdRef.current = taskId;
+  }, [drawerState?.task.id, handleTaskPaneFileChange]);
   // When loadFullTrialOnOpen is set, the grid only has slim trials, so fetch
   // the clicked/navigated trial's full detail; the popup renders the slim trial
   // until this resolves. No-op (and never fetches) on the public share page.
@@ -1136,8 +1175,8 @@ export function ExperimentDetailView({
 
     // Base the rewrite on the live URL, not the useSearchParams snapshot:
     // replaceState never refreshes that hook, and TrialDetailPanel writes
-    // its own params (tab/file) the same way — a stale base here would
-    // silently wipe them (and vice versa).
+    // its own params (tab/file/lines) the same way — a stale base here
+    // would silently wipe them (and vice versa).
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
     if (drawerState?.isOpen) {
@@ -1151,6 +1190,17 @@ export function ExperimentDetailView({
         next.delete("trial");
         next.delete("tab");
         next.delete("file");
+        next.delete("lines");
+      }
+      if (taskPaneFile) {
+        next.set("taskFile", taskPaneFile);
+      } else {
+        next.delete("taskFile");
+      }
+      if (taskPaneLines) {
+        next.set("taskLines", formatLineRange(taskPaneLines));
+      } else {
+        next.delete("taskLines");
       }
     } else if (pendingUrlTrialId == null) {
       // Same pending guard as above: a trial-only deep link keeps the drawer
@@ -1160,6 +1210,9 @@ export function ExperimentDetailView({
       next.delete("trial");
       next.delete("tab");
       next.delete("file");
+      next.delete("lines");
+      next.delete("taskFile");
+      next.delete("taskLines");
     }
 
     if (next.toString() !== current.toString()) {
@@ -1167,7 +1220,7 @@ export function ExperimentDetailView({
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawerState, pendingUrlTrialId]);
+  }, [drawerState, pendingUrlTrialId, taskPaneFile, taskPaneLines]);
 
   useEffect(() => {
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
@@ -1677,6 +1730,10 @@ export function ExperimentDetailView({
               staticChecksTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
+              initialFilePath={taskPaneFile}
+              selectedLines={taskPaneLines}
+              onSelectLinesChange={setTaskPaneLines}
+              onSelectedFileChange={handleTaskPaneFileChange}
               apiBaseUrl={apiBaseUrl}
               showAnalysis={showAnalysis}
               contentOnly={true}
@@ -1712,6 +1769,10 @@ export function ExperimentDetailView({
                   ? handleNavigateToFirstTrial
                   : undefined
               }
+              initialFilePath={taskPaneFile}
+              selectedLines={taskPaneLines}
+              onSelectLinesChange={setTaskPaneLines}
+              onSelectedFileChange={handleTaskPaneFileChange}
               apiBaseUrl={apiBaseUrl}
               contentOnly={true}
             />
