@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -45,6 +44,22 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  formatLineRange,
+  parseLineRange,
+  type LineRange,
+} from "@/lib/line-range";
+import { sameFilePath } from "@/lib/file-path";
+
+/**
+ * Read a query param from the live URL. The panel keeps the URL current
+ * via replaceState, which never refreshes Next's useSearchParams hook —
+ * so live reads must come straight from location.
+ */
+function getLiveParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get(name);
+}
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
 import { QaReportSkeleton } from "@/components/qa-report/skeleton";
@@ -824,8 +839,6 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const searchParams = useSearchParams();
-
   const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
@@ -834,7 +847,7 @@ export function TrialDetailPanel({
   );
 
   const [activeTab, setActiveTab] = useState(() => {
-    const urlTab = searchParams.get("tab");
+    const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
   const [showFullError, setShowFullError] = useState(false);
@@ -844,35 +857,73 @@ export function TrialDetailPanel({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    searchParams.get("file"),
+    getLiveParam("file"),
+  );
+  // Line-anchor range within the selected file (``?lines=L12-L20``).
+  const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
+    parseLineRange(getLiveParam("lines")),
   );
 
   const hydratedFromUrl = useRef(false);
 
-  // Hydrate from URL on first open
+  // Hydrate from the URL on first open. Reads the live URL, not the
+  // useSearchParams snapshot: replaceState never refreshes that hook, so on
+  // a remount (e.g. the drawer's pane layout changing) the snapshot is the
+  // stale page-load query and would reset the panel to where the user
+  // started instead of where they are.
   useEffect(() => {
     if (!isOpen || hydratedFromUrl.current) return;
     hydratedFromUrl.current = true;
-    const urlTab = searchParams.get("tab");
-    const urlFile = searchParams.get("file");
+    const urlTab = getLiveParam("tab");
+    const urlFile = getLiveParam("file");
+    const urlLines = parseLineRange(getLiveParam("lines"));
     if (urlTab && validTabs.has(urlTab)) setActiveTab(urlTab);
     if (urlFile) {
       setFilesTargetPath(urlFile);
+      filesTargetPathRef.current = urlFile;
       if (!urlTab) setActiveTab("files");
     }
-  }, [isOpen, searchParams, validTabs]);
+    if (urlLines) setSelectedLines(urlLines);
+  }, [isOpen, validTabs]);
 
-  // Sync tab & file to URL (without triggering Next.js router navigation).
-  // Based on the live URL, not the useSearchParams snapshot: replaceState
-  // never refreshes that hook, and the experiment view writes its own
-  // params (task/trial) the same way — a stale base here silently wiped
-  // them the moment a tab was selected.
+  // The file viewer reports every selection change (tree clicks and
+  // auto-selects alike): the ?file= param stays live, and switching to a
+  // different file drops the line anchor — the old range would otherwise
+  // highlight arbitrary lines of the new file. The ref mirrors the state
+  // so the comparison doesn't need an impure setState updater.
+  const filesTargetPathRef = useRef<string | null>(filesTargetPath);
+  const handleSelectedFileChange = useCallback((path: string | null) => {
+    if (!sameFilePath(filesTargetPathRef.current, path)) setSelectedLines(null);
+    filesTargetPathRef.current = path;
+    setFilesTargetPath(path);
+  }, []);
+
+  // Navigating to a different trial keeps the file path (attempts share
+  // layouts, and comparing the same file across attempts is the point) but
+  // drops the line anchor — it addressed the previous trial's content and
+  // would highlight arbitrary lines here.
+  const lastTrialIdRef = useRef<string | null>(trial?.id ?? null);
+  useEffect(() => {
+    const id = trial?.id ?? null;
+    if (id && lastTrialIdRef.current && id !== lastTrialIdRef.current) {
+      setSelectedLines(null);
+    }
+    lastTrialIdRef.current = id;
+  }, [trial?.id]);
+
+  // Sync tab, file & lines to URL (without triggering router navigation).
+  // Based on the live URL rather than the useSearchParams snapshot:
+  // replaceState doesn't refresh that hook, and the experiment view writes
+  // its own params (task/trial/taskFile/taskLines) the same way — a stale
+  // base would silently wipe them. The tab is written explicitly even for
+  // summary, so every tab is its own address and every tab click visibly
+  // updates the URL.
   useEffect(() => {
     if (!isOpen || !hydratedFromUrl.current) return;
     const current = new URLSearchParams(window.location.search);
     const next = new URLSearchParams(window.location.search);
 
-    if (activeTab && activeTab !== "summary") {
+    if (activeTab) {
       next.set("tab", activeTab);
     } else {
       next.delete("tab");
@@ -884,11 +935,17 @@ export function TrialDetailPanel({
       next.delete("file");
     }
 
+    if (selectedLines) {
+      next.set("lines", formatLineRange(selectedLines));
+    } else {
+      next.delete("lines");
+    }
+
     if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [isOpen, activeTab, filesTargetPath]);
+  }, [isOpen, activeTab, filesTargetPath, selectedLines]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
@@ -947,7 +1004,10 @@ export function TrialDetailPanel({
   const handleTimelineStageClick = (stageId: string) => {
     const filePath = STAGE_FILE_MAP[stageId] ?? null;
     setActiveTab("files");
-    setFilesTargetPath(filePath);
+    // Through the shared handler so a file change drops the old line
+    // anchor and the path ref stays in sync — a bare setFilesTargetPath
+    // would let the previous ?lines= range land on the new file.
+    handleSelectedFileChange(filePath);
   };
 
   // Reset state when panel closes
@@ -1622,6 +1682,9 @@ export function TrialDetailPanel({
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               initialFilePath={filesTargetPath}
+              selectedLines={selectedLines}
+              onSelectLinesChange={setSelectedLines}
+              onSelectedFileChange={handleSelectedFileChange}
               contentOnly
             />
           </TabsContent>
