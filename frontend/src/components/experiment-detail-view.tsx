@@ -1353,31 +1353,40 @@ export function ExperimentDetailView({
   // the pending id with a direct fetch too. The fetched trial is only staged
   // here; the effect below opens it once its host task shell is known.
   // Whichever source lands first wins: a resolve from the streamed path
-  // clears the pending id, which cancels this fetch. Only a definitive 404
-  // gives the deep link up — transient failures keep the id pending so the
-  // streamed path can still resolve it.
+  // clears the pending id, which cancels this fetch. Transient failures
+  // retry with backoff (the streamed path keeps running meanwhile); a
+  // definitive 404 or exhausted retries give the deep link up so the
+  // pending state and stale URL params don't outlive their chances.
   useEffect(() => {
     if (pendingUrlTrialId == null || !loadFullTrialOnOpen) return;
     let cancelled = false;
     (async () => {
-      let fetched: Trial | null = null;
-      let definitiveMiss = false;
-      try {
-        const res = await fetch(
-          `${apiBaseUrl}/trials/${encodeURIComponent(pendingUrlTrialId)}`,
-          { cache: "no-store" }
-        );
-        if (res.ok) fetched = (await res.json()) as Trial;
-        else if (res.status === 404) definitiveMiss = true;
-      } catch {
-        // Transient network failure: leave the id pending.
+      const MAX_ATTEMPTS = 3;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const res = await fetch(
+            `${apiBaseUrl}/trials/${encodeURIComponent(pendingUrlTrialId)}`,
+            { cache: "no-store" }
+          );
+          if (cancelled) return;
+          if (res.ok) {
+            const fetched = (await res.json()) as Trial;
+            if (!cancelled) setResolvedUrlTrial(fetched);
+            return;
+          }
+          if (res.status === 404) break;
+        } catch {
+          // Transient network failure — retry below.
+        }
+        if (cancelled) return;
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * 2 ** (attempt - 1))
+          );
+          if (cancelled) return;
+        }
       }
-      if (cancelled) return;
-      if (definitiveMiss) {
-        setPendingUrlTrialId(null);
-        return;
-      }
-      if (fetched) setResolvedUrlTrial(fetched);
+      if (!cancelled) setPendingUrlTrialId(null);
     })();
     return () => {
       cancelled = true;
