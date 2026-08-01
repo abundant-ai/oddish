@@ -856,12 +856,25 @@ export function TrialDetailPanel({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // ``?file=`` / ``?lines=`` are scoped by ``?tab=``: on the artifacts tab
+  // they address the artifact browser, otherwise the files tab. Each tab
+  // keeps its own state; the URL carries the active tab's pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    getLiveParam("file"),
+    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file"),
   );
   // Line-anchor range within the selected file (``?lines=L12-L20``).
   const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
-    parseLineRange(getLiveParam("lines")),
+    getLiveParam("tab") === "artifacts"
+      ? null
+      : parseLineRange(getLiveParam("lines")),
+  );
+  const [artifactsTargetPath, setArtifactsTargetPath] = useState<
+    string | null
+  >(() => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null));
+  const [artifactsLines, setArtifactsLines] = useState<LineRange | null>(() =>
+    getLiveParam("tab") === "artifacts"
+      ? parseLineRange(getLiveParam("lines"))
+      : null,
   );
 
   const hydratedFromUrl = useRef(false);
@@ -878,6 +891,15 @@ export function TrialDetailPanel({
     const urlFile = getLiveParam("file");
     const urlLines = parseLineRange(getLiveParam("lines"));
     if (urlTab && validTabs.has(urlTab)) setActiveTab(urlTab);
+    if (urlTab === "artifacts") {
+      // ?file=/?lines= address the artifact browser while tab=artifacts.
+      if (urlFile) {
+        setArtifactsTargetPath(urlFile);
+        artifactsTargetPathRef.current = urlFile;
+      }
+      if (urlLines) setArtifactsLines(urlLines);
+      return;
+    }
     if (urlFile) {
       setFilesTargetPath(urlFile);
       filesTargetPathRef.current = urlFile;
@@ -898,15 +920,35 @@ export function TrialDetailPanel({
     setFilesTargetPath(path);
   }, []);
 
-  // Navigating to a different trial keeps the file path (attempts share
+  // Same shape for the artifacts tab: its browser reports selections the
+  // same way, and a different file drops the artifact line anchor. The
+  // comparison also accepts the file's storage path — a deep link can
+  // address a multi-step artifact by storage path, and the browser echoes
+  // back the relativized tree path, which is not a suffix match of it.
+  const artifactsTargetPathRef = useRef<string | null>(artifactsTargetPath);
+  const handleArtifactsFileChange = useCallback(
+    (path: string | null, fullPath?: string) => {
+      const prev = artifactsTargetPathRef.current;
+      const same =
+        sameFilePath(prev, path) ||
+        (fullPath !== undefined && sameFilePath(prev, fullPath));
+      if (!same) setArtifactsLines(null);
+      artifactsTargetPathRef.current = path;
+      setArtifactsTargetPath(path);
+    },
+    []
+  );
+
+  // Navigating to a different trial keeps the file paths (attempts share
   // layouts, and comparing the same file across attempts is the point) but
-  // drops the line anchor — it addressed the previous trial's content and
-  // would highlight arbitrary lines here.
+  // drops the line anchors — they addressed the previous trial's content
+  // and would highlight arbitrary lines here.
   const lastTrialIdRef = useRef<string | null>(trial?.id ?? null);
   useEffect(() => {
     const id = trial?.id ?? null;
     if (id && lastTrialIdRef.current && id !== lastTrialIdRef.current) {
       setSelectedLines(null);
+      setArtifactsLines(null);
     }
     lastTrialIdRef.current = id;
   }, [trial?.id]);
@@ -929,14 +971,31 @@ export function TrialDetailPanel({
       next.delete("tab");
     }
 
-    if (filesTargetPath) {
-      next.set("file", filesTargetPath);
+    // ?file=/?lines= describe the active tab's view: the files tab's pair
+    // or the artifacts tab's pair. On tabs with no file view (summary,
+    // live, trajectory) they drop out of the URL — the tab states stay in
+    // React, so flipping back restores and re-writes them.
+    const paneFile =
+      activeTab === "artifacts"
+        ? artifactsTargetPath
+        : activeTab === "files"
+          ? filesTargetPath
+          : null;
+    const paneLines =
+      activeTab === "artifacts"
+        ? artifactsLines
+        : activeTab === "files"
+          ? selectedLines
+          : null;
+
+    if (paneFile) {
+      next.set("file", paneFile);
     } else {
       next.delete("file");
     }
 
-    if (selectedLines) {
-      next.set("lines", formatLineRange(selectedLines));
+    if (paneLines) {
+      next.set("lines", formatLineRange(paneLines));
     } else {
       next.delete("lines");
     }
@@ -945,7 +1004,14 @@ export function TrialDetailPanel({
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [isOpen, activeTab, filesTargetPath, selectedLines]);
+  }, [
+    isOpen,
+    activeTab,
+    filesTargetPath,
+    selectedLines,
+    artifactsTargetPath,
+    artifactsLines,
+  ]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
@@ -1692,6 +1758,10 @@ export function TrialDetailPanel({
           <TabsContent value="artifacts" className="m-0 h-full p-0">
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+              initialFilePath={artifactsTargetPath}
+              selectedLines={artifactsLines}
+              onSelectLinesChange={setArtifactsLines}
+              onSelectedFileChange={handleArtifactsFileChange}
             />
           </TabsContent>
 
