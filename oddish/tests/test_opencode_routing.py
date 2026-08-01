@@ -42,3 +42,20 @@ def test_opencode_required_outbound_domains_resolves_non_openrouter_provider():
     domains = OddishOpenCode.required_outbound_domains(model_name="xai/grok-4.5")
 
     assert "api.x.ai" in domains
+
+
+def test_opencode_required_outbound_domains_allowlists_per_trial_base_url():
+    """A trial that pins a custom transport host via ``kwargs["extra_env"]`` must
+    have that host allowlisted -- the per-trial route ``kwargs`` are forwarded to
+    ``outbound_hosts_for_model``, mirroring ``AzureCompatibleCodex``. Without the
+    forward, a closed-internet trial overriding its base URL is firewalled."""
+    domains = OddishOpenCode.required_outbound_domains(
+        model_name="openrouter/tencent/hy3",
+        kwargs={
+            "extra_env": {
+                "OPENROUTER_BASE_URL": "https://gateway.internal.example/api"
+            }
+        },
+    )
+
+    assert "gateway.internal.example" in domains

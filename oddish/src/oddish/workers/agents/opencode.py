@@ -61,6 +61,13 @@ class OddishOpenCode(OpenCode):
         routed provider.
         """
         domains: set[str] = set(_OPENCODE_INSTALL_HOSTS)
-        for host in outbound_hosts_for_model(model_name, infer_bare_provider=True):
+        # Forward the per-trial ``kwargs`` so a transport host pinned in
+        # ``kwargs["extra_env"]`` (e.g. a custom ``OPENROUTER_BASE_URL``) is
+        # allowlisted too -- the same path ``AzureCompatibleCodex`` relies on.
+        # Without it, a closed-internet trial that overrides its base URL is
+        # firewalled at the model call after install.
+        for host in outbound_hosts_for_model(
+            model_name, agent_kwargs=kwargs, infer_bare_provider=True
+        ):
             domains.add(host)
         return sorted(domains)
