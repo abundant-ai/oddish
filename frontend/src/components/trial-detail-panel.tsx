@@ -862,10 +862,15 @@ export function TrialDetailPanel({
     }
   }, [isOpen, searchParams, validTabs]);
 
-  // Sync tab & file to URL (without triggering Next.js router navigation)
+  // Sync tab & file to URL (without triggering Next.js router navigation).
+  // Based on the live URL, not the useSearchParams snapshot: replaceState
+  // never refreshes that hook, and the experiment view writes its own
+  // params (task/trial) the same way — a stale base here silently wiped
+  // them the moment a tab was selected.
   useEffect(() => {
     if (!isOpen || !hydratedFromUrl.current) return;
-    const next = new URLSearchParams(searchParams.toString());
+    const current = new URLSearchParams(window.location.search);
+    const next = new URLSearchParams(window.location.search);
 
     if (activeTab && activeTab !== "summary") {
       next.set("tab", activeTab);
@@ -879,11 +884,11 @@ export function TrialDetailPanel({
       next.delete("file");
     }
 
-    if (next.toString() !== searchParams.toString()) {
+    if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [isOpen, activeTab, filesTargetPath, searchParams]);
+  }, [isOpen, activeTab, filesTargetPath]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
