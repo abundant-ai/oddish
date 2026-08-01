@@ -98,6 +98,9 @@ export function CodeRenderer({
       unsafeCSS: PIERRE_UNSAFE_CSS,
       enableLineSelection: true,
       onLineSelected: (range: SelectedLineRange | null) => {
+        // A user-driven selection means the user is already looking at the
+        // lines — disarm the deep-link scroll so it never yanks the view.
+        didScrollRef.current = true;
         onSelectLinesRef.current?.(toLineRange(range));
       },
       onPostRender: () => {
