@@ -64,14 +64,15 @@ export function CodeRenderer({
   // are the only vertical content).
   const didScrollRef = useRef(false);
   // A new file is a new deep-link surface: the once-only scroll re-arms so
-  // a range on the next file scrolls into view too. Also render-time (not
-  // an effect) so an early onPostRender never sees the stale armed state.
-  const prevFileRef = useRef<{ name: string; contents: string } | null>(null);
-  if (
-    prevFileRef.current?.name !== fileName ||
-    prevFileRef.current?.contents !== content
-  ) {
-    prevFileRef.current = { name: fileName, contents: content };
+  // a range on the next file scrolls into view too. Keyed on the file name
+  // only — a same-file content update (e.g. "Load full file") must not
+  // re-arm and yank the reader back to the anchor. A failed first attempt
+  // (content not rendered yet) leaves the flag unset, so the empty-to-
+  // loaded path needs no content key. Render-time (not an effect) so an
+  // early onPostRender never sees the stale armed state.
+  const prevFileNameRef = useRef<string | null>(null);
+  if (prevFileNameRef.current !== fileName) {
+    prevFileNameRef.current = fileName;
     didScrollRef.current = false;
   }
   const scrollToSelection = () => {
