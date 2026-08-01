@@ -1271,6 +1271,14 @@ export function ExperimentDetailView({
     });
   }, [tasksForExperiment, drawerState, buildTrialGroups]);
 
+  // Any drawer change the user makes themselves cancels an unresolved deep
+  // link: a late resolve must never yank them away from where they went.
+  const cancelPendingDeepLink = useCallback(() => {
+    setPendingUrlTrialId(null);
+    setResolvedUrlTrial(null);
+    hydrationTaskIdRef.current = null;
+  }, []);
+
   // Open a resolved deep-link trial. Yields if the user has navigated on
   // their own since hydration: only a closed drawer, the host task's own
   // task-mode drawer, or the task drawer hydration itself opened (possibly
@@ -1324,7 +1332,21 @@ export function ExperimentDetailView({
         return;
       }
     }
-  }, [pendingUrlTrialId, tasksForExperiment, openDeepLinkTrial]);
+    // Public share pages have no by-id fetch, so this scan is their only
+    // resolution source: once everything the page will ever have is loaded
+    // and the id still isn't there, the deep link is dead — give it up so
+    // URL sync can drop the stale param.
+    if (!loadFullTrialOnOpen && !isLoading && !isLoadingTrials) {
+      setPendingUrlTrialId(null);
+    }
+  }, [
+    pendingUrlTrialId,
+    tasksForExperiment,
+    openDeepLinkTrial,
+    loadFullTrialOnOpen,
+    isLoading,
+    isLoadingTrials,
+  ]);
 
   // A deep-linked trial can also point at data the grid will never stream in
   // (a task beyond the prefetched pages, or a superseded trial), so resolve
@@ -1372,9 +1394,25 @@ export function ExperimentDetailView({
     const host = tasksForExperiment.find(
       (t) => t.id === resolvedUrlTrial.task_id
     );
-    if (!host) return;
+    if (!host) {
+      // Shells cover the whole experiment in one request, so once they're
+      // loaded a missing host means the trial belongs to another experiment
+      // or an unlinked task — it can't open on this page. Give the deep
+      // link up so URL sync drops the stale params instead of pinning the
+      // pending state for the whole session.
+      if (!isLoading && tasksForExperiment.length > 0) {
+        cancelPendingDeepLink();
+      }
+      return;
+    }
     openDeepLinkTrial(host, resolvedUrlTrial);
-  }, [resolvedUrlTrial, tasksForExperiment, openDeepLinkTrial]);
+  }, [
+    resolvedUrlTrial,
+    tasksForExperiment,
+    openDeepLinkTrial,
+    isLoading,
+    cancelPendingDeepLink,
+  ]);
 
   // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
   // only the loaded pages, and only the trials the grid renders, so it
@@ -1413,9 +1451,7 @@ export function ExperimentDetailView({
   }, [deferredTasksForDerivedData, costTotals]);
 
   const closeDrawer = () => {
-    setPendingUrlTrialId(null);
-    setResolvedUrlTrial(null);
-    hydrationTaskIdRef.current = null;
+    cancelPendingDeepLink();
     setDrawerState(null);
   };
 
@@ -1424,6 +1460,7 @@ export function ExperimentDetailView({
     const firstGroup = drawerState.trialGroups[0];
     if (!firstGroup || firstGroup.trials.length === 0) return;
 
+    cancelPendingDeepLink();
     const firstTrial = firstGroup.trials[0];
     setDrawerState({
       ...drawerState,
@@ -1435,6 +1472,7 @@ export function ExperimentDetailView({
 
   const handleNavigateToTask = () => {
     if (!drawerState) return;
+    cancelPendingDeepLink();
     setDrawerState({
       ...drawerState,
       mode: "task",
@@ -1445,6 +1483,7 @@ export function ExperimentDetailView({
 
   const handleNavigateToTrial = (trial: Trial, trialIndex: number) => {
     if (!drawerState) return;
+    cancelPendingDeepLink();
     setDrawerState({
       ...drawerState,
       mode: "trial",
@@ -1549,6 +1588,7 @@ export function ExperimentDetailView({
                 readOnly={readOnly}
                 showAnalysis={showAnalysis}
                 onTrialSelect={(trial, task, context) => {
+                  cancelPendingDeepLink();
                   const taskIndex = tasksForExperiment.findIndex(
                     (t) => t.id === task.id
                   );
@@ -1568,6 +1608,7 @@ export function ExperimentDetailView({
                   setProbeDrawer({ taskId: task.id, trialId: trial.id })
                 }
                 onTaskSelect={(task, context) => {
+                  cancelPendingDeepLink();
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
                   // If the task has trials, jump straight into the first one
                   // so the user immediately sees results alongside the task
