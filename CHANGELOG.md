@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-01]
+
+### Added
+
+- Static checks / QA analysis get independent per-trial and pre-trial triggers instead of only running through full task-level QA: `POST /trials/{id}/analysis/rerun` queues one trial's classification alone, and `POST /tasks/{id}/qa/pre-trial` queues just the pre-trial audit, each guarded so a live job for the same subject blocks a second queue and a running full QA job blocks both partial triggers (#982). While an analysis or audit is running, the QA card now streams live progress: both analyzer backends emit `stream-json` events, a new `trials.analysis_log` column captures a running log flushed every ~2s, and `GET /trials/{id}/analysis-log` reports the log plus queue position (#981). Trial and task pages gained Run/Re-run buttons with elapsed timers, queue position, and a collapsible live log panel that survives trial switches (#983). QA reports render as compact markdown (bullets, inline code, bold) instead of plain text, with a colored BAD/GOOD subtype pill and boxed "Root cause"/"Fix" sections (#980). The trial drawer's QA block was replaced with a verdict-tinted `QaAssessmentReport` card — green/amber/red/orange by verdict semantics, root-cause-first layout, tiered `must_fix`/`should_fix`/`optional` action-item groups, and a copy-JSON button (#987). The task detail pane renamed "pre-trial audit" to **Static checks**, promoted it to the pane's default view with a live-status sidebar entry above Files, and dropped the separate probe launch UI and per-trial pre-trial findings block (#994). All QA prompts (post-trial classification, verdict, pre-trial) were rewritten in plain technical English — shorter, terminology cleaned up (`gaming_attempt` → `reward_hacking`), new checks for privilege escalation and unintended access, and the verdict prompt now lists each trial's pre-trial action items (#978).
+- A third "midnight" theme — flat near-black surfaces with subtle CRT scanlines — joins light/dark in the theme toggle, cycling light → dark → midnight → light (#1002, #1009).
+- File previews for `result.json`, `.diff`/`.patch`, and code files now render through `@pierre/diffs`: a dedicated `ResultJsonRenderer` summarizes task/agent metadata, execution timeline, tokens, cost, and reward status; diffs get parsed hunks with word-level highlighting and multi-file support; code views get shiki syntax highlighting and virtualized rendering — all dynamically imported to keep the main bundle small (#999).
+- CI gained a staging environment: a one-shot bootstrap workflow provisions a persistent Supabase `staging` branch, mirrors the full prod dataset under one consistent snapshot, and quiesces copied jobs/trials/tasks to a terminal status, hardened over several follow-up fixes for connection pooling, disk sizing, and snapshot lifetime (#1010, #1011, #1012, #1013, #1020, #1022); a `Promote` workflow fast-forwards `main` to a reviewed `staging` commit and a 6-hourly `Branch Sync Guard` catches drift (#1000, #1001); a `Draft Release` workflow drafts a GitHub release on version bumps and a nightly `Nightly PyPI` workflow publishes `X.Y.Z.devYYYYMMDD` builds from `staging` (#1015, #1017); the Modal deploy attaches a per-app database-override secret to the `oddish-staging` app the same way per-PR previews already do (#1007).
+
+### Changed
+
+- The task files panel now loads the entire file tree in one recursive request instead of lazily fetching per directory, inlining small text file contents in the response (#998).
+- The experiment trials table auto-loads all remaining trial batches sequentially instead of requiring manual "Load next"/"Load all" clicks, and polling is disabled entirely (rather than slowed to 90s) when an experiment has no active tasks (#1008).
+
+### Fixed
+
+- Ephemeral Harbor runs (custom-Harbor trials) now forward the trial's persisted `agent_config` — including `extra_allowed_hosts`, setup timeouts, and agent env — into the out-of-process child instead of dropping it, fixing setup failures such as DNS resolution errors for tasks that need outbound network access (#992).
+- Per-user daily spend Slack alerts no longer re-fire for a user whose breach already sent — the cron job stopped deleting delivered alert rows to "re-arm" them, so a repeat check can no longer double-notify the same threshold crossing (#1019).
+
+### Removed
+
+- The Agent Graph feature (the condensed phase-by-phase trajectory view, its LLM/heuristic generator, and the `trials.trajectory_graph` column) was reverted end-to-end — API routes, frontend tab, and backing storage all removed (#996).
+
+---
+
 ## [2026-07-27]
 
 ### Changed
