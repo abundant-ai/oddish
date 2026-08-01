@@ -1134,7 +1134,12 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!hydratedFromUrl.current) return;
 
-    const next = new URLSearchParams(searchParams.toString());
+    // Base the rewrite on the live URL, not the useSearchParams snapshot:
+    // replaceState never refreshes that hook, and TrialDetailPanel writes
+    // its own params (tab/file) the same way — a stale base here would
+    // silently wipe them (and vice versa).
+    const current = new URLSearchParams(window.location.search);
+    const next = new URLSearchParams(window.location.search);
     if (drawerState?.isOpen) {
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
@@ -1157,12 +1162,12 @@ export function ExperimentDetailView({
       next.delete("file");
     }
 
-    if (next.toString() !== searchParams.toString()) {
+    if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawerState, searchParams, pendingUrlTrialId]);
+  }, [drawerState, pendingUrlTrialId]);
 
   useEffect(() => {
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
