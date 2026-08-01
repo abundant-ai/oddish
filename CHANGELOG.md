@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-01]
+
+### Added
+
+- `opencode` trials can now run on closed-internet (`allow_internet=false`) tasks. Stock opencode self-installs (nvm/Node/`opencode-ai`) at trial start and had no Oddish egress declaration, so on a closed-internet trial Harbor's Modal firewall blackholed its install and model calls alike — the trial died at DNS during agent setup (`curl: (6) Could not resolve host: raw.githubusercontent.com`) before the model was ever reached. A new `OddishOpenCode` wrapper implements `required_outbound_domains` to allowlist opencode's install-bootstrap hosts plus the model transport host, and `_build_agent_config` routes `-a opencode` through it. Model host resolution reuses `outbound_hosts_for_model`, so OpenRouter-served models (`openrouter/tencent/hy3`) resolve to `openrouter.ai` alongside every other routed provider. Mirrors the `AzureCompatibleCodex` fix below.
+
+---
+
 ## [2026-07-27]
 
 ### Changed

@@ -2491,6 +2491,39 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
     assert "OPENAI_API_KEY" not in (agent_config.env or {})
 
 
+def test_build_agent_config_uses_oddish_opencode_wrapper(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="opencode",
+        model="openrouter/tencent/hy3",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
+    )
+    assert agent_config.model_name == "openrouter/tencent/hy3"
+
+
+def test_build_agent_config_preserves_custom_opencode_import(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="opencode",
+        model="openrouter/tencent/hy3",
+        raw_harbor_config={
+            "agent_config": {
+                "name": "opencode",
+                "import_path": "custom.module:CustomOpenCode",
+            }
+        },
+    )
+
+    assert agent_config.import_path == "custom.module:CustomOpenCode"
+
+
 def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
 
