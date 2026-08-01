@@ -1405,6 +1405,15 @@ export function ExperimentDetailView({
   // experiment in one request).
   useEffect(() => {
     if (!resolvedUrlTrial) return;
+    // A cancelled deep link stays cancelled: an in-flight fetch can write
+    // resolvedUrlTrial back after cancelPendingDeepLink cleared it (both
+    // updates land in the same batch, last write wins). The pending id is
+    // nulled by every cancel, so a mismatch means this value is a late
+    // revival — drop it instead of reopening a drawer the user closed.
+    if (pendingUrlTrialId !== resolvedUrlTrial.id) {
+      setResolvedUrlTrial(null);
+      return;
+    }
     const host = tasksForExperiment.find(
       (t) => t.id === resolvedUrlTrial.task_id
     );
@@ -1423,6 +1432,7 @@ export function ExperimentDetailView({
     openDeepLinkTrial(host, resolvedUrlTrial);
   }, [
     resolvedUrlTrial,
+    pendingUrlTrialId,
     tasksForExperiment,
     openDeepLinkTrial,
     isLoading,
