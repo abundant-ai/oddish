@@ -1669,6 +1669,7 @@ export function ExperimentDetailView({
               showAnalysis={showAnalysis}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
+                cancelPendingDeepLink();
                 const { trialGroups, orderedTrials } =
                   buildTrialGroups(nextTask);
                 setDrawerState({
