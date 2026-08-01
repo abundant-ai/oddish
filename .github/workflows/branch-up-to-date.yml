@@ -1,35 +1,18 @@
 name: Branch up to date
 
-# Fails a PR whose branch does not already contain the current tip of its base
-# branch (main, for normal PRs), and doubles as the gate every other PR
-# workflow blocks on: each of them calls this file via `workflow_call` as an
-# `up-to-date` job and wires `needs: up-to-date` into its entry jobs, so a
-# stale branch can't turn any PR check green. Re-runs on every push to the PR
-# (`synchronize`) and stays red until you rebase or merge the base in and push
-# again. To make it bind the merge button directly, add "Up to date with base"
-# to the main ruleset's required checks (it already requires the preview gate).
+# Fails a PR whose branch does not contain the current tip of its base branch.
+# The other PR workflows call this file via workflow_call and `needs:` the
+# up-to-date job, so a stale branch can't turn any PR check green; adding "Up
+# to date with base" to the main ruleset binds the merge button directly.
 #
-# Implementation: one commit-compare API call, `BASE_REF...HEAD_SHA`. Its
-# `behind_by` counts base commits missing from the branch, so 0 means the live
-# base tip is already an ancestor of the PR head. No checkout: the obvious git
-# version needs full history for `merge-base --is-ancestor`, and checking out
-# the default `pull_request` ref would be a trap besides — that ref is the PR
-# pre-merged with main, so main is always its ancestor and the check could
-# never fail. Comparing `head.sha` against the base *branch name* resolves the
-# base tip at request time, the freshest answer available.
+# One compare API call (behind_by == 0) instead of a checkout: an ancestry
+# test needs full history, and the default pull_request checkout is the merge
+# ref — the branch already merged with main, whose tip is therefore always an
+# ancestor — so a checkout-based version could never fail.
 #
-# Callers fire on non-PR events too (push to main, workflow_dispatch, and
-# merge_group if a queue is enabled later). The check step is scoped to
-# `pull_request`, so on those events the job passes trivially and the gate
-# stays open. No `concurrency` group here on purpose: this file runs inside
-# several caller workflows at once, and a shared group would let their gate
-# jobs cancel each other; the standalone run is one API call, not worth
-# deduplicating.
-#
-# Known gap, by design: when main advances *after* your last push, no PR event
-# fires, so a green result can go stale until the next push. GitHub's native
-# "Require branches to be up to date before merging" setting closes that gap at
-# merge time; this check is the earlier, per-push signal.
+# The step is scoped to pull_request so callers' push / workflow_dispatch /
+# merge_group runs pass trivially. No concurrency group: several callers run
+# this at once, and a shared group would let their gate jobs cancel each other.
 
 on:
   pull_request:

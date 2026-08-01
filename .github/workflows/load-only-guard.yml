@@ -34,8 +34,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Blocks the guard on branch freshness; passes trivially on push to main.
-  # See .github/workflows/branch-up-to-date.yml.
   up-to-date:
     uses: ./.github/workflows/branch-up-to-date.yml
     permissions:
