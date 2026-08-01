@@ -1,11 +1,13 @@
 name: Branch up to date
 
 # Fails a PR whose branch does not already contain the current tip of its base
-# branch (main, for normal PRs). Runs on every push to the PR (`synchronize`),
-# so pushing from a stale branch flips the check red and it stays red until you
-# rebase or merge the base in and push again. To make it actually block the
-# merge button, mark the "Up to date with base" check as required on main
-# (Settings -> Branches, or a ruleset).
+# branch (main, for normal PRs), and doubles as the gate every other PR
+# workflow blocks on: each of them calls this file via `workflow_call` as an
+# `up-to-date` job and wires `needs: up-to-date` into its entry jobs, so a
+# stale branch can't turn any PR check green. Re-runs on every push to the PR
+# (`synchronize`) and stays red until you rebase or merge the base in and push
+# again. To make it bind the merge button directly, add "Up to date with base"
+# to the main ruleset's required checks (it already requires the preview gate).
 #
 # Implementation: one commit-compare API call, `BASE_REF...HEAD_SHA`. Its
 # `behind_by` counts base commits missing from the branch, so 0 means the live
@@ -16,6 +18,14 @@ name: Branch up to date
 # never fail. Comparing `head.sha` against the base *branch name* resolves the
 # base tip at request time, the freshest answer available.
 #
+# Callers fire on non-PR events too (push to main, workflow_dispatch, and
+# merge_group if a queue is enabled later). The check step is scoped to
+# `pull_request`, so on those events the job passes trivially and the gate
+# stays open. No `concurrency` group here on purpose: this file runs inside
+# several caller workflows at once, and a shared group would let their gate
+# jobs cancel each other; the standalone run is one API call, not worth
+# deduplicating.
+#
 # Known gap, by design: when main advances *after* your last push, no PR event
 # fires, so a green result can go stale until the next push. GitHub's native
 # "Require branches to be up to date before merging" setting closes that gap at
@@ -23,10 +33,7 @@ name: Branch up to date
 
 on:
   pull_request:
-
-concurrency:
-  group: branch-up-to-date-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 jobs:
   up-to-date:
@@ -35,12 +42,13 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-    env:
-      GH_TOKEN: ${{ github.token }}
-      BASE_REF: ${{ github.event.pull_request.base.ref }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Require branch to contain the latest base commit
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           compare="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_REF//\//%2F}...${HEAD_SHA}")"
@@ -52,6 +60,6 @@ jobs:
             echo "Branch already contains the latest ${BASE_REF} commit."
             exit 0
           fi
-          echo "::error::Branch is ${behind} commit(s) behind ${BASE_REF}. Bring it up to date and push again:"
+          echo "::error::Branch is ${behind} commit(s) behind ${BASE_REF}. PR checks are blocked until it catches up:"
           echo "::error::  git fetch origin ${BASE_REF} && git merge origin/${BASE_REF}   (or rebase instead of merge)"
           exit 1

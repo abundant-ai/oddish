@@ -13,8 +13,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Branch-freshness gate (.github/workflows/branch-up-to-date.yml). Gating
+  # detect-changes is enough to block the whole deploy chain: when it skips,
+  # require-working-preview (the ruleset-required check, `if: always()`) sees
+  # DETECT_RESULT != success and fails red. stop-preview is deliberately NOT
+  # gated — teardown must run when a stale PR is closed.
+  up-to-date:
+    if: github.event.action != 'closed'
+    uses: ./.github/workflows/branch-up-to-date.yml
+    permissions:
+      contents: read
+
   detect-changes:
     name: Detect preview changes
+    needs: up-to-date
     if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:

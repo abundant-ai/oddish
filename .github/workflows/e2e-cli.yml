@@ -36,8 +36,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Blocks the suite on branch freshness; passes trivially on push to main.
+  # See .github/workflows/branch-up-to-date.yml.
+  up-to-date:
+    uses: ./.github/workflows/branch-up-to-date.yml
+    permissions:
+      contents: read
+
   e2e:
     name: "oddish run → queued trial"
+    needs: up-to-date
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

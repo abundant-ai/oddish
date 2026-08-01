@@ -53,8 +53,16 @@ permissions:
   contents: read
 
 jobs:
+  # Blocks the suite on branch freshness; passes trivially on push to main and
+  # workflow_dispatch. See .github/workflows/branch-up-to-date.yml.
+  up-to-date:
+    uses: ./.github/workflows/branch-up-to-date.yml
+    permissions:
+      contents: read
+
   dashboard:
     name: "signed-in task view"
+    needs: up-to-date
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

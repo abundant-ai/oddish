@@ -26,8 +26,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Blocks the guard on branch freshness. See
+  # .github/workflows/branch-up-to-date.yml.
+  up-to-date:
+    uses: ./.github/workflows/branch-up-to-date.yml
+    permissions:
+      contents: read
+
   guard:
     name: Single alembic head (${{ matrix.tree }})
+    needs: up-to-date
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
