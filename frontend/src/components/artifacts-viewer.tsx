@@ -209,7 +209,8 @@ interface ArtifactsViewerProps {
   filesUrl: string;
   /**
    * Deep-linked file to select once the listing loads (``?file=`` while
-   * ``tab=artifacts``). Exact path or suffix (bare file name) both work.
+   * ``tab=artifacts``). Accepts the tree path shown in the browser, the
+   * original storage path, or a suffix of either (bare file name).
    */
   initialFilePath?: string | null;
   /** Line range to highlight in the selected file (``?lines=``). */
@@ -271,9 +272,17 @@ export function ArtifactsViewer({
       if (prev && allFiles.some((f) => f.path === prev)) return prev;
       const wanted = initialFilePathRef.current;
       if (wanted) {
+        // Match against the relativized tree path and the original storage
+        // path: multi-step artifacts insert the step segment into the tree
+        // path (steps/setup/artifacts/x → setup/x), so a storage path from
+        // the files API is not a suffix of it and only fullPath can match.
         const match =
           allFiles.find((f) => f.path === wanted) ??
-          allFiles.find((f) => sameFilePath(f.path, wanted));
+          allFiles.find((f) => f.fullPath === wanted) ??
+          allFiles.find((f) => sameFilePath(f.path, wanted)) ??
+          allFiles.find(
+            (f) => f.fullPath != null && sameFilePath(f.fullPath, wanted),
+          );
         // An unresolved deep link keeps the selection empty instead of
         // falling through to the first file: reporting that fallback
         // would wipe the ?file= / ?lines= address it couldn't resolve.
