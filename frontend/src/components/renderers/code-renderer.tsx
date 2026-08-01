@@ -1,23 +1,87 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { File as PierreFile } from "@pierre/diffs/react";
+import type { SelectedLineRange } from "@pierre/diffs";
 import { useIsDark } from "./use-is-dark";
 import { PIERRE_THEME, PIERRE_UNSAFE_CSS } from "./pierre-options";
+import type { LineRange } from "@/lib/line-range";
 
 interface CodeRendererProps {
   content: string;
   /** Used for language inference; not displayed (the file header is disabled). */
   fileName: string;
+  /** Skip language inference and render as plain text (log-free raw views). */
+  plainText?: boolean;
+  /** Line range to highlight (1-indexed, inclusive) — the ``?lines=`` anchor. */
+  selectedLines?: LineRange | null;
+  /** Called when the user selects lines (click / shift-click / drag). */
+  onSelectLines?: (range: LineRange | null) => void;
+}
+
+/** Pierre ranges carry diff-side metadata and can run backwards (drag up). */
+function toLineRange(range: SelectedLineRange | null): LineRange | null {
+  if (!range) return null;
+  return {
+    start: Math.min(range.start, range.end),
+    end: Math.max(range.start, range.end),
+  };
 }
 
 /**
- * Full-file code view powered by @pierre/diffs (shiki highlighting, line
- * numbers, virtualized rendering for large files). Language is inferred
- * from the file name.
+ * The one pierre-backed text-file view (shiki highlighting, line numbers,
+ * virtualized rendering for large files). Every line-oriented preview —
+ * code, logs (shiki has a ``log`` grammar), plain text, and raw mode —
+ * renders through this component, so line selection behaves identically
+ * everywhere: ``?lines=L12-L20`` deep links highlight and scroll to their
+ * range, and selecting lines (click / shift-click / drag) reports back up
+ * for URL sync. Language is inferred from the file name unless
+ * ``plainText`` is set.
  */
-export function CodeRenderer({ content, fileName }: CodeRendererProps) {
+export function CodeRenderer({
+  content,
+  fileName,
+  plainText = false,
+  selectedLines,
+  onSelectLines,
+}: CodeRendererProps) {
   const isDark = useIsDark();
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Threaded through refs so the pierre options object stays stable across
+  // selection changes — rebuilding it would re-initialize the component.
+  const onSelectLinesRef = useRef(onSelectLines);
+  const selectedLinesRef = useRef(selectedLines ?? null);
+  useEffect(() => {
+    onSelectLinesRef.current = onSelectLines;
+    selectedLinesRef.current = selectedLines ?? null;
+  });
+
+  // Scroll the deep-linked range into view once per file. Pierre renders
+  // into a shadow root, so the line element can't be queried from here;
+  // instead the target offset is computed from the fixed row height
+  // (--diffs-line-height, 1.25rem — the file header is disabled, so rows
+  // are the only vertical content).
+  const didScrollRef = useRef(false);
+  // A new file is a new deep-link surface: the once-only scroll re-arms so
+  // a range on the next file scrolls into view too.
+  useEffect(() => {
+    didScrollRef.current = false;
+  }, [fileName, content]);
+  const scrollToSelection = () => {
+    if (didScrollRef.current) return;
+    const selection = selectedLinesRef.current;
+    const container = containerRef.current;
+    if (!selection || !container) return;
+    const rootFontSize =
+      Number.parseFloat(getComputedStyle(document.documentElement).fontSize) ||
+      16;
+    const lineHeight = 1.25 * rootFontSize;
+    const top = (selection.start - 1) * lineHeight;
+    if (container.scrollHeight < top) return; // not fully rendered yet
+    didScrollRef.current = true;
+    container.scrollTop = Math.max(0, top - container.clientHeight / 3);
+  };
 
   const options = useMemo(
     () => ({
@@ -26,15 +90,27 @@ export function CodeRenderer({ content, fileName }: CodeRendererProps) {
       themeType: (isDark ? "dark" : "light") as "dark" | "light",
       overflow: "scroll" as const,
       unsafeCSS: PIERRE_UNSAFE_CSS,
+      enableLineSelection: true,
+      onLineSelected: (range: SelectedLineRange | null) => {
+        onSelectLinesRef.current?.(toLineRange(range));
+      },
+      onPostRender: () => {
+        scrollToSelection();
+      },
     }),
     [isDark]
   );
 
   return (
-    <div className="h-full overflow-auto">
+    <div ref={containerRef} className="h-full overflow-auto">
       <PierreFile
-        file={{ name: fileName, contents: content }}
+        file={{
+          name: fileName,
+          contents: content,
+          ...(plainText ? { lang: "text" as const } : null),
+        }}
         options={options}
+        selectedLines={selectedLines ?? null}
       />
     </div>
   );
