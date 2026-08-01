@@ -53,3 +53,34 @@ pytest_plugins = ("pytest_asyncio",)
 @pytest.fixture(scope="session")
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_db_schema():
+    """Create the full table set once per session when a test DB is configured.
+
+    Several DB-backed suites (admin costs, analyzers router, github-id
+    backfill) assume the tables already exist rather than creating them.
+    Historically they leaned on an earlier-collected suite's drop-and-create
+    fixture to have run first; make that bootstrap explicit and ordering-proof.
+    Non-destructive (``checkfirst``): suites that want a pristine schema still
+    reset it themselves.
+    """
+    import asyncio
+    import os
+
+    url = os.environ.get("ODDISH_DATABASE_URL")
+    if url:
+        from oddish.db.models import Base
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        async def _create_all() -> None:
+            engine = create_async_engine(url)
+            try:
+                async with engine.begin() as conn:
+                    await conn.run_sync(Base.metadata.create_all)
+            finally:
+                await engine.dispose()
+
+        asyncio.run(_create_all())
+    yield
