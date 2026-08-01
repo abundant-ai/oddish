@@ -1,5 +1,4 @@
 import { Suspense } from "react";
-import { auth } from "@clerk/nextjs/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
@@ -9,7 +8,7 @@ import { SelectionProvider } from "./selection-context";
 import { RecentTasksResults } from "./recent-tasks-results";
 import { TasksGridSkeleton } from "./tasks-grid-skeleton";
 
-// Reads auth + searchParams, so the route is always dynamically rendered.
+// Reads searchParams, so the route is always dynamically rendered.
 // Forcing it also avoids the static-prerender error for the client components
 // that call useSearchParams (sidebar, toolbar).
 export const dynamic = "force-dynamic";
@@ -34,7 +33,6 @@ export default async function TasksPage({
 }: {
   searchParams?: Promise<RawSearchParams>;
 }) {
-  const { orgId } = await auth();
   const sp = (await searchParams) ?? {};
 
   const offset = Math.max(Number(first(sp.offset) ?? "0") || 0, 0);
@@ -55,7 +53,7 @@ export default async function TasksPage({
                       Page {page}
                     </div>
                   </div>
-                  <TasksToolbar orgId={orgId ?? null} />
+                  <TasksToolbar />
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <Suspense

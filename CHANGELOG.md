@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-01]
+
+### Removed
+
+- The cc_chat feature (in-dashboard Claude Code chat sessions) is removed end to end: the `/chat-sessions` backend routes and chat orchestrator, the chat services (turns, events, session queries, transcript buffer, archive, CLAUDE.md templates), the `chat_sessions` / `chat_session_events` / `chat_turns` tables (dropped by migration `chatdrop001`), and the frontend chat drawer, history modal, and per-scope Chat buttons. The Daytona sandbox infrastructure the chat feature shared with the hosted analyzer (Daytona client, provisioner, ClaudeCodeRuntime, stream rendering, and the analyzer block runner) moves from `backend/api/services/cc_chat/` to `backend/api/services/sandbox/`. The legacy `ODDISH_CC_CHAT_DAYTONA_SNAPSHOT` env var is still honored as the fallback for the analyzer's sandbox snapshot (`ODDISH_AGENT_DAYTONA_SNAPSHOT` takes precedence).
+
+---
+
 ## [2026-07-27]
 
 ### Changed

@@ -4,17 +4,16 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Clock, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
 import { cn } from "@/lib/utils";
 
 const AUTO_REFRESH_KEY = "oddish.tasks.autoRefresh";
 const REFRESH_MS = 60000;
 
-// Header actions for the tasks page: chat, a manual refresh of the
+// Header actions for the tasks page: a manual refresh of the
 // server-rendered results, an opt-in auto-refresh toggle (off by default,
 // persisted), and import. Search and tag filtering live in the sidebar.
-export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
+export function TasksToolbar() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -43,7 +42,6 @@ export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
 
   return (
     <div className="flex items-center gap-2">
-      {orgId ? <ChatButton scopeKind="global" scopeId={orgId} /> : null}
       <Button
         type="button"
         variant="outline"

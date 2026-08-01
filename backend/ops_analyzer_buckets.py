@@ -32,7 +32,7 @@ async def buckets(analyzer_id: str) -> None:
 
     from sqlalchemy import text
 
-    from api.services.cc_chat.analyzer_prompt import build_cohort_prompt
+    from api.services.sandbox.analyzer_prompt import build_cohort_prompt
     from oddish.db import get_session
     from oddish.evals.analyzer.bucketing import bucket_subanalyses
     from oddish.evals.analyzer.core import build_roster

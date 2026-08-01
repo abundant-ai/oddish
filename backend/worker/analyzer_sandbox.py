@@ -16,7 +16,7 @@ import logging
 from importlib.resources import files
 from typing import Any
 
-from api.services.cc_chat.analyzer_block_runner import run_analyzer_blocks
+from api.services.sandbox.analyzer_block_runner import run_analyzer_blocks
 from oddish.config import settings
 from oddish.core.analyzer_inputs import (
     models_by_task_from_rows,

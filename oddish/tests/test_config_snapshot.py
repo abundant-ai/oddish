@@ -1,6 +1,6 @@
-"""The analyzer shares cc_chat's pre-baked snapshot, but reads a neutral
-setting first so the two can diverge without a cc_chat-named knob silently
-governing the analyzer."""
+"""The analyzer reads the neutral agent snapshot setting first, falling back
+to the legacy cc_chat-named env var (which predates the removed chat feature
+and is still what prod sets)."""
 
 from oddish.config import Settings
 
@@ -10,7 +10,7 @@ def test_analyzer_snapshot_prefers_agent_setting():
     assert s.analyzer_snapshot == "agent-v1"
 
 
-def test_analyzer_snapshot_falls_back_to_cc_chat():
+def test_analyzer_snapshot_falls_back_to_legacy_cc_chat_var():
     """Prod today sets only ODDISH_CC_CHAT_DAYTONA_SNAPSHOT; it must keep working."""
     s = Settings(agent_daytona_snapshot="", cc_chat_daytona_snapshot="cc-v1")
     assert s.analyzer_snapshot == "cc-v1"

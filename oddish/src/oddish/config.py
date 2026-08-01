@@ -1225,17 +1225,18 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
-    # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
-    # claude-code + harbor already installed. When set, sandboxes are created
-    # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
-    # minute of per-chat provisioning). Unset -> default base image + install
-    # at provision time. See docs/cc-chat-snapshot.md to build it.
+    # Legacy name for the pre-baked Daytona sandbox snapshot (claude-code +
+    # harbor already installed). It predates the removed cc_chat feature and
+    # prod still sets ODDISH_CC_CHAT_DAYTONA_SNAPSHOT, so the env var is kept
+    # as a fallback for the analyzer snapshot below. Prefer
+    # ODDISH_AGENT_DAYTONA_SNAPSHOT for new deployments.
+    # See docs/sandbox-snapshot.md to build the snapshot.
     cc_chat_daytona_snapshot: str = ""
 
-    # Snapshot for non-chat agent sandboxes (the analyzer). Falls back to the
-    # cc_chat snapshot above, which is the same image: ClaudeCodeRuntime.install
-    # checks claude-code and harbor independently, so a leaner analyzer-only
-    # image would still pay harbor's pip install on every sandbox.
+    # Snapshot for agent sandboxes (the analyzer). When set, sandboxes are
+    # created from it and ClaudeCodeRuntime.install() skips the npm/pip
+    # installs (~a minute of per-sandbox provisioning). Unset -> the legacy
+    # setting above, then the default base image + install at provision time.
     agent_daytona_snapshot: str = ""
 
     @property
@@ -1309,11 +1310,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
-    # Externally reachable base URL of the oddish backend API. Injected into
-    # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
-    # oddish-query CLI can call back into the backend. Optional override — when
-    # unset, the orchestrator derives it from MODAL_APP_NAME via
-    # api_base_url_for_modal_app(), so prod and PR previews work automatically.
+    # Externally reachable base URL of the oddish backend API, used where a
+    # sandboxed or external process must call back into the backend (probe
+    # creds, QA assignments). Optional override — when unset, consumers derive
+    # it from MODAL_APP_NAME via api_base_url_for_modal_app(), so prod and PR
+    # previews work automatically.
     public_api_base_url: str = ""
 
     # Database connection pools (constants — override on Settings class
