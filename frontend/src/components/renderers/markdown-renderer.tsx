@@ -58,11 +58,26 @@ function nodeLineRange(node: MdNode | undefined): LineRange | null {
  * 1-3 space indent, which would leave validly indented root blocks
  * without anchors.
  */
+type HastChild = MdNode & {
+  type?: string;
+  tagName?: string;
+  children?: HastChild[];
+};
+
 function rehypeMarkRootBlocks() {
-  return (tree: { children?: (MdNode & { type?: string })[] }) => {
+  return (tree: { children?: HastChild[] }) => {
     for (const child of tree.children ?? []) {
-      if (child.type === "element") {
-        child.properties = { ...child.properties, dataMdRoot: "" };
+      if (child.type !== "element") continue;
+      child.properties = { ...child.properties, dataMdRoot: "" };
+      // Fenced code anchors on the code element nested inside the root
+      // pre (the pre component just unwraps to its children), so the
+      // mark has to reach through.
+      if (child.tagName === "pre") {
+        for (const nested of child.children ?? []) {
+          if (nested.type === "element" && nested.tagName === "code") {
+            nested.properties = { ...nested.properties, dataMdRoot: "" };
+          }
+        }
       }
     }
   };
