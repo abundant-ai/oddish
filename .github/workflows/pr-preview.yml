@@ -13,7 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # stop-preview stays ungated: closing a stale PR must still tear down its preview.
+  # stop-preview does not depend on this job: it must still run when an
+  # out-of-date PR is closed.
   up-to-date:
     if: github.event.action != 'closed'
     uses: ./.github/workflows/branch-up-to-date.yml

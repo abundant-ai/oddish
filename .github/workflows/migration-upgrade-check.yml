@@ -21,7 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Stale must FAIL this required check, not skip it: skipped counts as satisfied.
+  # If the branch is out of date this job must fail rather than skip:
+  # GitHub treats a skipped required check as passing.
   up-to-date:
     uses: ./.github/workflows/branch-up-to-date.yml
     permissions:

@@ -1,8 +1,10 @@
 name: Branch up to date
 
-# Fails PRs whose branch is behind its base; other PR workflows gate on it via
-# workflow_call. No checkout on purpose: the default pull_request ref is the
-# branch pre-merged with main, so an ancestry check there could never fail.
+# Fails if the PR branch does not contain the latest commit on its base
+# branch. The other PR workflows run this before their own jobs.
+# It uses the compare API instead of a checkout: on pull_request events the
+# default checkout is the PR already merged with its base, so the base tip is
+# always an ancestor and the check would always pass.
 
 on:
   pull_request:
