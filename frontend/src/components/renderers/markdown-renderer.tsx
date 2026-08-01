@@ -218,7 +218,9 @@ export function MarkdownRenderer({
       })
     );
     target?.scrollIntoView({ block: "center" });
-  }, [selectedLines]);
+    // ``content`` is a dependency so the scroll re-fires after the re-arm
+    // above when navigating documents with the same deep-linked range.
+  }, [selectedLines, content]);
 
   const handleBlockClick = (range: LineRange, shiftKey: boolean) => {
     if (!onSelectLines) return;
@@ -244,11 +246,15 @@ export function MarkdownRenderer({
     const selected = lineRangesIntersect(selectedLines ?? null, range);
     return (
       <div
-      // The wrapper takes over first-child duty from the block elements'
-      // own first:mt-0 (they're no longer direct children of the body).
+        // The wrapper takes over first/last-child duty from the block
+        // elements' own first:mt-0 / last:mb-0 (they're no longer direct
+        // children of the body): the leading gutter button makes every
+        // wrapped element :last-child, so without the higher-specificity
+        // [&:not(:last-child)>p] rule every root paragraph would match its
+        // own last:mb-0 and inter-paragraph spacing would collapse.
         data-md-start={range.start}
         data-md-end={range.end}
-        className={`group/md-block relative [&:first-child>*]:mt-0 ${
+        className={`group/md-block relative [&:first-child>*]:mt-0 [&:not(:last-child)>p]:mb-3 ${
           selected ? "rounded bg-amber-400/15 dark:bg-amber-300/10" : ""
         }`}
       >
