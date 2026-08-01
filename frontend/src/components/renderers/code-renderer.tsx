@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 import { File as PierreFile } from "@pierre/diffs/react";
 import type { SelectedLineRange } from "@pierre/diffs";
 import { useIsDark } from "./use-is-dark";
@@ -50,12 +50,12 @@ export function CodeRenderer({
 
   // Threaded through refs so the pierre options object stays stable across
   // selection changes — rebuilding it would re-initialize the component.
+  // Synced during render, not in an effect: pierre's onPostRender can fire
+  // before parent effects run, and must see the current values.
   const onSelectLinesRef = useRef(onSelectLines);
   const selectedLinesRef = useRef(selectedLines ?? null);
-  useEffect(() => {
-    onSelectLinesRef.current = onSelectLines;
-    selectedLinesRef.current = selectedLines ?? null;
-  });
+  onSelectLinesRef.current = onSelectLines;
+  selectedLinesRef.current = selectedLines ?? null;
 
   // Scroll the deep-linked range into view once per file. Pierre renders
   // into a shadow root, so the line element can't be queried from here;
@@ -64,10 +64,16 @@ export function CodeRenderer({
   // are the only vertical content).
   const didScrollRef = useRef(false);
   // A new file is a new deep-link surface: the once-only scroll re-arms so
-  // a range on the next file scrolls into view too.
-  useEffect(() => {
+  // a range on the next file scrolls into view too. Also render-time (not
+  // an effect) so an early onPostRender never sees the stale armed state.
+  const prevFileRef = useRef<{ name: string; contents: string } | null>(null);
+  if (
+    prevFileRef.current?.name !== fileName ||
+    prevFileRef.current?.contents !== content
+  ) {
+    prevFileRef.current = { name: fileName, contents: content };
     didScrollRef.current = false;
-  }, [fileName, content]);
+  }
   const scrollToSelection = () => {
     if (didScrollRef.current) return;
     const selection = selectedLinesRef.current;
