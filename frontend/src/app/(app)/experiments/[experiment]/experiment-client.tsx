@@ -46,7 +46,6 @@ const HEADER_ACTION_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
 
 const TRIALS_BATCH_SIZE = 250;
-const TRIALS_PREFETCH_PAGES = 2;
 const EXPERIMENT_TIMING_STORAGE_KEY = "oddish:experiment-table-timing";
 const ACTIVE_TASK_STATUSES = new Set([
   "pending",
@@ -183,9 +182,9 @@ function ExperimentContent({
 
   const {
     data: trialPages,
+    error: trialsError,
     isLoading: isLoadingTrialPages,
     isValidating: isValidatingTrials,
-    size: trialsPageSize,
     setSize: setTrialsSize,
     mutate: mutateTrials,
   } = useSWRInfinite<Task[]>(getTrialsPageKey, fetchExperimentTasksPage, {
@@ -266,25 +265,20 @@ function ExperimentContent({
   );
 
   const isLoading = isLoadingTasks;
+  // hasMoreTrials keeps pending rows in skeleton state between batches.
   const isLoadingTrials =
     (lightweightTasks?.length ?? 0) > 0 &&
-    (isLoadingTrialPages || isValidatingTrials);
+    (isLoadingTrialPages || isValidatingTrials || hasMoreTrials);
   const trialsLoadedCount = useMemo(() => {
     if (!trialPages) return 0;
     return trialPages.reduce((sum, page) => sum + (page?.length ?? 0), 0);
   }, [trialPages]);
   const totalTaskCount = lightweightTasks?.length ?? 0;
-  const remainingTrialTaskCount = Math.max(
-    0,
-    totalTaskCount - trialsLoadedCount
-  );
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
-  const canLoadAllTrials =
-    totalTaskCount > 0 &&
-    remainingTrialTaskCount > 0 &&
-    !isLoadingTrialPages &&
-    !isValidatingTrials;
+  // hasMoreTrials only tracks successful pages, so a failed batch stalls
+  // the chain here until the Retry alert's mutateTrials() refills it.
+  const trialsStalled = Boolean(trialsError) && trialsLoadedCount < totalTaskCount;
 
   const refreshIntervalMs = useMemo(() => {
     if (tasksForExperiment.length === 0) return 5000;
@@ -298,7 +292,8 @@ function ExperimentContent({
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
-    return hasActiveTasks ? 30000 : 90000;
+    // null disables the interval; refreshTaskPages restarts it when work resumes.
+    return hasActiveTasks ? 30000 : null;
   }, [tasksForExperiment]);
 
   const experimentName = tasksForExperiment[0]?.experiment_name ?? "";
@@ -325,27 +320,11 @@ function ExperimentContent({
     [mutateLightweight, mutateTrials, mutateCostTotals]
   );
 
-  const loadMoreTrials = useCallback(() => {
+  // Sequential: canLoadMoreTrials is false while a fetch is in flight.
+  useEffect(() => {
     if (!canLoadMoreTrials) return;
     void setTrialsSize((size) => size + 1);
   }, [canLoadMoreTrials, setTrialsSize]);
-
-  const loadAllTrials = useCallback(() => {
-    if (!canLoadAllTrials || totalTaskCount === 0) return;
-    void setTrialsSize(Math.ceil(totalTaskCount / TRIALS_BATCH_SIZE));
-  }, [canLoadAllTrials, setTrialsSize, totalTaskCount]);
-
-  useEffect(() => {
-    if (!canLoadMoreTrials || isLoadingTrialPages || isValidatingTrials) return;
-    if (trialsPageSize >= TRIALS_PREFETCH_PAGES) return;
-    void setTrialsSize((size) => Math.min(size + 1, TRIALS_PREFETCH_PAGES));
-  }, [
-    canLoadMoreTrials,
-    isLoadingTrialPages,
-    isValidatingTrials,
-    trialsPageSize,
-    setTrialsSize,
-  ]);
 
   useEffect(() => {
     if (!isExperimentTimingEnabled() || tasksForExperiment.length === 0) return;
@@ -384,7 +363,7 @@ function ExperimentContent({
   }, []);
 
   useEffect(() => {
-    if (!allTasksUrl) return;
+    if (!allTasksUrl || refreshIntervalMs == null) return;
 
     const intervalId = window.setInterval(() => {
       void mutateLightweight();
@@ -677,45 +656,32 @@ function ExperimentContent({
                 <AlertTitle>Rename failed</AlertTitle>
                 <AlertDescription>{nameError}</AlertDescription>
               </Alert>
-            ) : lightweightError && tasksForExperiment.length > 0 ? (
-              <Alert>
-                <AlertTitle>Could not refresh experiment</AlertTitle>
-                <AlertDescription>
-                  Showing the most recently loaded task data.
-                </AlertDescription>
-              </Alert>
-            ) : null
-          }
-          tableFooter={
-            remainingTrialTaskCount > 0 ? (
-              <Alert>
-                <AlertTitle>Trial details are loading on demand</AlertTitle>
+            ) : trialsStalled ? (
+              // Outranks the refresh alert below: this one carries the only
+              // recovery control.
+              <Alert variant="destructive">
+                <AlertTitle>Some trial results failed to load</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-2">
                   <span>
-                    Loaded compact trial data for {trialsLoadedCount}/
-                    {totalTaskCount} tasks.
+                    Loaded {trialsLoadedCount}/{totalTaskCount} tasks.
                   </span>
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
                     className="h-7"
-                    onClick={loadMoreTrials}
-                    disabled={!canLoadMoreTrials}
+                    onClick={() => void mutateTrials()}
+                    disabled={isValidatingTrials}
                   >
-                    Load next{" "}
-                    {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
+                    Retry
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7"
-                    onClick={loadAllTrials}
-                    disabled={!canLoadAllTrials}
-                  >
-                    Load all
-                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : lightweightError && tasksForExperiment.length > 0 ? (
+              <Alert>
+                <AlertTitle>Could not refresh experiment</AlertTitle>
+                <AlertDescription>
+                  Showing the most recently loaded task data.
                 </AlertDescription>
               </Alert>
             ) : null
