@@ -17,7 +17,7 @@ jobs:
   bootstrap:
     if: vars.STAGING_DB_BOOTSTRAP_DONE != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 300
     permissions:
       contents: read
       packages: read
@@ -290,6 +290,98 @@ jobs:
             exit 1
           fi
 
+      - name: Scale branch compute up for the bulk load
+        shell: bash
+        env:
+          BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+        run: |
+          set -euo pipefail
+          # Management API: GET/PATCH /v1/projects/{ref}/billing/addons
+          # (operationIds v1-list-project-addons / v1-apply-project-addon).
+          # Branches are projects under the hood, so the branch ref works
+          # directly as {ref}. A compute change restarts the instance; the
+          # DB host/password are unaffected by a resize, so
+          # steps.branch.outputs.db_url stays valid and is not re-resolved.
+          addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
+          target_variant="ci_large"
+
+          rank() {
+            case "$1" in
+              ci_micro) echo 0 ;;
+              ci_small) echo 1 ;;
+              ci_medium) echo 2 ;;
+              ci_large) echo 3 ;;
+              ci_xlarge) echo 4 ;;
+              ci_2xlarge) echo 5 ;;
+              ci_4xlarge) echo 6 ;;
+              ci_8xlarge) echo 7 ;;
+              ci_12xlarge) echo 8 ;;
+              ci_16xlarge) echo 9 ;;
+              ci_24xlarge|ci_24xlarge_optimized_cpu|ci_24xlarge_optimized_memory|ci_24xlarge_high_memory) echo 10 ;;
+              ci_48xlarge|ci_48xlarge_optimized_cpu|ci_48xlarge_optimized_memory|ci_48xlarge_high_memory) echo 11 ;;
+              *) echo -1 ;;
+            esac
+          }
+
+          http_code=$(curl -sS -o /tmp/addons.json -w '%{http_code}' \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "$addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::failed to read branch compute addons (HTTP $http_code)"
+            cat /tmp/addons.json >&2 || true
+            exit 1
+          fi
+
+          current_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/addons.json)
+          echo "current branch compute: ${current_variant:-none}"
+
+          if [ "$(rank "$current_variant")" -ge "$(rank "$target_variant")" ]; then
+            echo "branch compute is already >= ${target_variant}; nothing to do"
+            exit 0
+          fi
+
+          echo "scaling branch compute from ${current_variant:-none} to ${target_variant}"
+          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$target_variant" \
+            '{addon_type: $addon_type, addon_variant: $addon_variant}')
+          http_code=$(curl -sS -o /tmp/addon_apply.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "$addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::branch compute scale-up request failed (HTTP $http_code)"
+            cat /tmp/addon_apply.json >&2 || true
+            exit 1
+          fi
+          echo "compute scale-up accepted (HTTP $http_code); waiting for branch to become healthy again"
+
+          ready=0
+          status="" preview=""
+          for i in $(seq 1 30); do
+            sleep 20
+            bj=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+              | jq -c 'first(.[] | select(.persistent == true) | select(.name == "staging"))')
+            if [ -n "$bj" ] && [ "$bj" != "null" ]; then
+              status=$(jq -r '.status // empty' <<<"$bj")
+              preview=$(jq -r '.preview_project_status // empty' <<<"$bj")
+              case "$status" in
+                MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+                  if [ "$preview" = "ACTIVE_HEALTHY" ]; then
+                    ready=1
+                    break
+                  fi
+                  ;;
+              esac
+            fi
+            echo "waiting for branch health after compute scale-up (attempt $i/30, status=${status:-none} preview=${preview:-none})"
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::branch did not return to healthy after compute scale-up (status=${status:-none} preview=${preview:-none})"
+            exit 1
+          fi
+          echo "branch healthy again after compute scale-up (status=$status preview=$preview)"
+
       - name: Mirror complete prod data (with quiesce)
         env:
           TARGET_DB_URL: ${{ steps.branch.outputs.db_url }}
@@ -310,6 +402,35 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}
         run: gh variable set STAGING_DB_BOOTSTRAP_DONE --body "true" --repo "$GITHUB_REPOSITORY"
+
+      - name: Scale branch compute back down
+        shell: bash
+        continue-on-error: true
+        env:
+          BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+        run: |
+          set -euo pipefail
+          # Best-effort: land on a small standing tier for day-to-day staging
+          # use instead of leaving the large bulk-load tier active. Must not
+          # fail the job -- the mirror already succeeded and the guard
+          # variable is already flipped by the previous step.
+          addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
+          target_variant="ci_small"
+
+          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$target_variant" \
+            '{addon_type: $addon_type, addon_variant: $addon_variant}')
+          http_code=$(curl -sS -o /tmp/addon_apply_down.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "$addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::warning::branch compute scale-down request failed (HTTP $http_code); leaving branch on the bulk-load tier"
+            cat /tmp/addon_apply_down.json >&2 || true
+            exit 1
+          fi
+          echo "compute scale-down to ${target_variant} accepted (HTTP $http_code)"
 
       - name: Summary
         shell: bash
