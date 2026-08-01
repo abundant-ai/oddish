@@ -32,6 +32,7 @@ from slack_notifications import (
     FinishedExperiment,
     FinishedTrial,
     LiveTrialSpend,
+    OrgCredits,
     QaFailure,
     SlackAlert,
     TaskFinished,
@@ -144,6 +145,7 @@ def test_alert_defaults_apply_when_no_admin_has_overridden() -> None:
     assert notifications.DEFAULT_TRIAL_PING_USD == 200.0
     # Failure DMs are not cost alerts, so this one stays in code.
     assert notifications.EXPERIMENT_FAILED_RATIO == 0.5
+    assert notifications.LOW_ORG_CREDITS_THRESHOLD_USD == 1000.0
 
 
 @pytest.mark.parametrize(
@@ -545,6 +547,66 @@ def test_build_alerts_user_daily_overage_is_exclusive_and_configurable() -> None
 
     assert keys(5_000) == []
     assert keys(4_999) == ["user-daily-overage:org-1:user-1"]
+
+
+def test_build_alerts_pings_channel_when_org_credits_are_low() -> None:
+    alerts = build_alerts(
+        AlertCandidates(
+            org_credits=[
+                OrgCredits(
+                    org_id="org-1",
+                    org_name="Abundant <Prod>",
+                    month_key="2026-08",
+                    limit_usd=10_000,
+                    used_usd=8_900,
+                    reserved_usd=250,
+                )
+            ]
+        ),
+        settings=DEFAULT_ALERT_SETTINGS,
+        recent_cutoff=datetime.now(timezone.utc) - timedelta(hours=24),
+        dashboard_url="https://www.oddish.app",
+    )
+
+    assert [alert.key for alert in alerts] == [
+        "org-low-credits:org-1:2026-08:10000"
+    ]
+    assert alerts[0].text.splitlines() == [
+        ":warning: *Oddish credits are low*",
+        "Org: *Abundant &lt;Prod&gt;*",
+        "Remaining monthly credits: *$850.00* (alert below $1,000.00)",
+        "Monthly cap: *$10,000.00*",
+        "Month-to-date spend: *$8,900.00*",
+        "In-flight reservation: *$250.00*",
+        "<https://www.oddish.app/admin|open admin costs>",
+    ]
+    assert alerts[0].mention_emails == DEFAULT_ALWAYS_PING_EMAILS
+    assert not alerts[0].dm_only
+
+
+def test_build_alerts_low_org_credits_threshold_is_exclusive() -> None:
+    def keys(remaining: float) -> list[str]:
+        alerts = build_alerts(
+            AlertCandidates(
+                org_credits=[
+                    OrgCredits(
+                        org_id="org-1",
+                        org_name="Abundant",
+                        month_key="2026-08",
+                        limit_usd=10_000,
+                        used_usd=10_000 - remaining,
+                        reserved_usd=0,
+                    )
+                ]
+            ),
+            settings=DEFAULT_ALERT_SETTINGS,
+            recent_cutoff=datetime.now(timezone.utc) - timedelta(hours=24),
+            dashboard_url="https://www.oddish.app",
+        )
+        return [alert.key for alert in alerts]
+
+    assert keys(1000) == []
+    assert keys(999.99) == ["org-low-credits:org-1:2026-08:10000"]
 
 
 def test_build_alerts_reports_unpriceable_models_once_each() -> None:

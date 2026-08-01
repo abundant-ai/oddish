@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from auth.provisioning import fetch_slack_user_id_from_clerk
 from modal_app import app, image, slack_notification_secrets
-from models import SlackExpenseAlertModel, UserModel
+from models import OrganizationModel, SlackExpenseAlertModel, UserModel
 from oddish.core.admin import _real_spend_filter
 from oddish.core.cost_basis import (
     CANCELLED_HARBOR_STAGE,
@@ -24,6 +24,12 @@ from oddish.core.cost_basis import (
     settled_cost_from_row,
 )
 from oddish.core.endpoints._common import USER_CANCELLED_MESSAGE
+from oddish.core.quotas import (
+    get_effective_org_limit,
+    org_inflight_reserved_usd,
+    start_of_month_utc,
+    sum_org_cost_usd,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -51,6 +57,7 @@ log = logging.getLogger("oddish.slack_notifications")
 # DEFAULT_*_USD constants in user_alert_prefs, which each user can override.
 # This one governs failure DMs rather than spend, so it stays a module constant.
 EXPERIMENT_FAILED_RATIO = 0.5
+LOW_ORG_CREDITS_THRESHOLD_USD = 1000.0
 
 # Slack lookup errors that genuinely mean "this person has no Slack account".
 # Only these are safe to treat as a settled answer and cache.
@@ -100,6 +107,16 @@ class UserSpend:
     spend_24h_usd: float
     daily_avg_7d_usd: float
     live_trial_count: int
+
+
+@dataclass(frozen=True)
+class OrgCredits:
+    org_id: str
+    org_name: str
+    month_key: str
+    limit_usd: float
+    used_usd: float
+    reserved_usd: float
 
 
 @dataclass(frozen=True)
@@ -177,6 +194,7 @@ class AlertCandidates:
     trials: list[TrialSpend] = field(default_factory=list)
     live_trials: list[LiveTrialSpend] = field(default_factory=list)
     user_spend: list[UserSpend] = field(default_factory=list)
+    org_credits: list[OrgCredits] = field(default_factory=list)
     unpriced_models: list[UnpricedModel] = field(default_factory=list)
     failed_experiments: list[FailedExperiment] = field(default_factory=list)
     failed_trials: list[FailedTrial] = field(default_factory=list)
@@ -429,6 +447,30 @@ def build_alerts(
                     f"Running or retrying trials included: {user.live_trial_count}\n"
                     f"<{dashboard_url}/admin|open admin costs>"
                 ),
+            )
+        )
+
+    for org in candidates.org_credits:
+        remaining_usd = org.limit_usd - org.used_usd - org.reserved_usd
+        if remaining_usd >= LOW_ORG_CREDITS_THRESHOLD_USD:
+            continue
+        alerts.append(
+            SlackAlert(
+                key=(
+                    f"org-low-credits:{org.org_id}:{org.month_key}:"
+                    f"{org.limit_usd:g}"
+                ),
+                text=(
+                    ":warning: *Oddish credits are low*\n"
+                    f"Org: *{_escape(org.org_name)}*\n"
+                    f"Remaining monthly credits: *${remaining_usd:,.2f}* "
+                    f"(alert below ${LOW_ORG_CREDITS_THRESHOLD_USD:,.2f})\n"
+                    f"Monthly cap: *${org.limit_usd:,.2f}*\n"
+                    f"Month-to-date spend: *${org.used_usd:,.2f}*\n"
+                    f"In-flight reservation: *${org.reserved_usd:,.2f}*\n"
+                    f"<{dashboard_url}/admin|open admin costs>"
+                ),
+                mention_emails=settings.always_ping_emails,
             )
         )
 
@@ -779,6 +821,33 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 .execution_options(include_deleted=True)
             )
         ).all()
+
+        month_start = start_of_month_utc(now)
+        month_key = month_start.strftime("%Y-%m")
+        org_rows = (
+            await session.execute(
+                select(OrganizationModel.id, OrganizationModel.name).where(
+                    OrganizationModel.is_active.is_(True)
+                )
+            )
+        ).all()
+        org_credit_records: list[OrgCredits] = []
+        for org_row in org_rows:
+            limit_usd = await get_effective_org_limit(session, org_row.id)
+            if limit_usd is None:
+                continue
+            used_usd = await sum_org_cost_usd(session, org_row.id, month_start)
+            reserved_usd = await org_inflight_reserved_usd(session, org_row.id)
+            org_credit_records.append(
+                OrgCredits(
+                    org_id=str(org_row.id),
+                    org_name=str(org_row.name),
+                    month_key=month_key,
+                    limit_usd=float(limit_usd),
+                    used_usd=float(used_usd),
+                    reserved_usd=float(reserved_usd),
+                )
+            )
 
         # Trials that ran (recorded tokens) but settled to NULL cost: no native
         # cost and no token estimate. Grouping by model lets us alert once per
@@ -1160,6 +1229,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             trials=trials,
             live_trials=live_trials,
             user_spend=user_spend,
+            org_credits=org_credit_records,
             unpriced_models=unpriced_models,
             failed_experiments=failed_experiments,
             failed_trials=failed_trial_records,
