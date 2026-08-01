@@ -224,6 +224,9 @@ export function MarkdownRenderer({
 
   const handleBlockClick = (range: LineRange, shiftKey: boolean) => {
     if (!onSelectLines) return;
+    // A user-driven selection means the user is already looking at the
+    // block — disarm the deep-link scroll so it never yanks the view.
+    didScrollRef.current = true;
     if (shiftKey && selectedLines) {
       // Shift-click merges the block into the selection.
       onSelectLines({
