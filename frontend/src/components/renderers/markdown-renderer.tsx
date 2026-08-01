@@ -293,26 +293,35 @@ export function MarkdownRenderer({
         // own last:mb-0 and inter-paragraph spacing would collapse.
         data-md-start={range.start}
         data-md-end={range.end}
-        className={`group/md-block relative [&:first-child>*]:mt-0 [&:not(:last-child)>p]:mb-3 ${
+        // The first-child rule replaces the heading elements' own
+        // first:mt-0 (they're no longer direct children of the body); it
+        // targets headings only so leading blockquotes/code keep their
+        // normal top margin, same as non-anchored markdown.
+        className={`group/md-block relative [&:first-child>:is(h1,h2,h3,h4,h5,h6)]:mt-0 [&:not(:last-child)>p]:mb-3 ${
           selected ? "rounded bg-amber-400/15 dark:bg-amber-300/10" : ""
         }`}
       >
-        <button
-          type="button"
-          onClick={(event) => handleBlockClick(range, event.shiftKey)}
-          onMouseDown={(event) => {
-            if (event.shiftKey) event.preventDefault();
-          }}
-          className={`absolute -left-8 top-0.5 w-7 select-none pr-1 text-right font-mono text-[10px] leading-6 transition-opacity hover:text-foreground ${
-            selected
-              ? "text-amber-700 opacity-100 dark:text-amber-300"
-              : "text-muted-foreground/50 opacity-0 group-hover/md-block:opacity-100"
-          }`}
-          title={`Select lines ${range.start}${range.end !== range.start ? `-${range.end}` : ""}`}
-          aria-label={`Select source lines ${range.start} to ${range.end}`}
-        >
-          {range.start}
-        </button>
+        {onSelectLines ? (
+          // The gutter button only renders when selection is wired —
+          // highlight-only usage (selectedLines without onSelectLines)
+          // must not show controls that do nothing.
+          <button
+            type="button"
+            onClick={(event) => handleBlockClick(range, event.shiftKey)}
+            onMouseDown={(event) => {
+              if (event.shiftKey) event.preventDefault();
+            }}
+            className={`absolute -left-8 top-0.5 w-7 select-none pr-1 text-right font-mono text-[10px] leading-6 transition-opacity hover:text-foreground focus-visible:opacity-100 ${
+              selected
+                ? "text-amber-700 opacity-100 dark:text-amber-300"
+                : "text-muted-foreground/50 opacity-0 group-hover/md-block:opacity-100"
+            }`}
+            title={`Select lines ${range.start}${range.end !== range.start ? `-${range.end}` : ""}`}
+            aria-label={`Select source lines ${range.start} to ${range.end}`}
+          >
+            {range.start}
+          </button>
+        ) : null}
         {element}
       </div>
     );
