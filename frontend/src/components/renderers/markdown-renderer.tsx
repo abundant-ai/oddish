@@ -26,6 +26,13 @@ import {
 interface MarkdownRendererProps {
   content: string;
   /**
+   * Identity of the rendered document. Keys the once-only deep-link scroll:
+   * a new file re-arms it, while a same-file content update (e.g. loading
+   * the untruncated version) must not scroll the reader back to the anchor.
+   * Callers without a file identity fall back to keying on content.
+   */
+  fileName?: string;
+  /**
    * Source-line range to highlight (the ``?lines=L12-L20`` anchor). The
    * grammar is source lines of the .md file — the same address the raw
    * view uses — mapped onto rendered blocks via remark position data.
@@ -224,6 +231,7 @@ function CodeBlock({
 
 export function MarkdownRenderer({
   content,
+  fileName,
   selectedLines,
   onSelectLines,
 }: MarkdownRendererProps) {
@@ -235,18 +243,26 @@ export function MarkdownRenderer({
   // viewport — the user is already there.
   const didScrollRef = useRef(false);
   // A new document re-arms the once-only scroll, so a deep-linked range in
-  // the next file scrolls into view too.
+  // the next file scrolls into view too. Keyed on the file identity when
+  // the caller provides one — a same-file content update (e.g. loading the
+  // untruncated version) must not re-arm and yank the reader back to the
+  // anchor. Same rule as code-renderer.
+  const scrollKey = fileName ?? content;
   useEffect(() => {
     didScrollRef.current = false;
-  }, [content]);
+  }, [scrollKey]);
   useEffect(() => {
     if (didScrollRef.current || !selectedLines) return;
-    didScrollRef.current = true;
     const container = containerRef.current;
     if (!container) return;
     const blocks = Array.from(
       container.querySelectorAll<HTMLElement>("[data-md-start]")
     );
+    // No blocks means the document hasn't rendered yet (content still
+    // loading): leave the scroll armed so the loaded content — a re-fire
+    // via the ``content`` dependency — gets the one attempt.
+    if (blocks.length === 0) return;
+    didScrollRef.current = true;
     const target = blocks.find((el) =>
       lineRangesIntersect(selectedLines, {
         start: Number(el.dataset.mdStart),
@@ -254,8 +270,6 @@ export function MarkdownRenderer({
       })
     );
     target?.scrollIntoView({ block: "center" });
-    // ``content`` is a dependency so the scroll re-fires after the re-arm
-    // above when navigating documents with the same deep-linked range.
   }, [selectedLines, content]);
 
   const handleBlockClick = (range: LineRange, shiftKey: boolean) => {

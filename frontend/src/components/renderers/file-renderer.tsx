@@ -256,6 +256,7 @@ export function FileRenderer({
       return (
         <MarkdownRenderer
           content={content ?? ""}
+          fileName={fileName}
           selectedLines={selectedLines}
           onSelectLines={onSelectLines}
         />
