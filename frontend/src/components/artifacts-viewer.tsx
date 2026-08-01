@@ -30,6 +30,8 @@ import {
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
 import { fetcher } from "@/lib/api";
+import { sameFilePath } from "@/lib/file-path";
+import type { LineRange } from "@/lib/line-range";
 
 // Truncate previews of files larger than 100KB so we don't blow up the
 // renderer pane on huge artifacts (matches TaskFilesPanel).
@@ -205,9 +207,28 @@ function collectFiles(nodes: TreeNode[]): TreeNode[] {
 
 interface ArtifactsViewerProps {
   filesUrl: string;
+  /**
+   * Deep-linked file to select once the listing loads (``?file=`` while
+   * ``tab=artifacts``). Exact path or suffix (bare file name) both work.
+   */
+  initialFilePath?: string | null;
+  /** Line range to highlight in the selected file (``?lines=``). */
+  selectedLines?: LineRange | null;
+  onSelectLinesChange?: (range: LineRange | null) => void;
+  /**
+   * Reports the selected file's path whenever a file is selected, for URL
+   * sync. Never called with null — transient resets are not reported.
+   */
+  onSelectedFileChange?: (path: string) => void;
 }
 
-export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
+export function ArtifactsViewer({
+  filesUrl,
+  initialFilePath,
+  selectedLines,
+  onSelectLinesChange,
+  onSelectedFileChange,
+}: ArtifactsViewerProps) {
   const { data, isLoading, error } = useSWR<ArtifactsListing>(
     `${filesUrl}?recursive=1`,
     fetcher,
@@ -227,7 +248,15 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
 
-  // First load: expand every dir and select the first file. We also re-run
+  // A deep-linked path owns the first selection; read through a ref so the
+  // load effect doesn't re-run when the parent echoes selections back.
+  const initialFilePathRef = useRef(initialFilePath);
+  useEffect(() => {
+    initialFilePathRef.current = initialFilePath;
+  });
+
+  // First load: expand every dir and select the deep-linked file if one is
+  // addressed (exact path or suffix), else the first file. We also re-run
   // this if the file set changes (e.g. trial finishes producing artifacts
   // while the drawer is open) but only fall back to a fresh selection when
   // the previously selected path no longer exists.
@@ -240,10 +269,33 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
     setExpandedDirs(new Set(collectDirPaths(tree)));
     setSelectedPath((prev) => {
       if (prev && allFiles.some((f) => f.path === prev)) return prev;
+      const wanted = initialFilePathRef.current;
+      if (wanted) {
+        const match =
+          allFiles.find((f) => f.path === wanted) ??
+          allFiles.find((f) => sameFilePath(f.path, wanted));
+        // An unresolved deep link keeps the selection empty instead of
+        // falling through to the first file: reporting that fallback
+        // would wipe the ?file= / ?lines= address it couldn't resolve.
+        // The effect re-runs as the listing grows, so a late-arriving
+        // artifact still resolves.
+        return match?.path ?? null;
+      }
       const first = findFirstFile(tree);
       return first?.path ?? null;
     });
   }, [tree, allFiles]);
+
+  // Report file selections upward for URL sync. Nulls (transient resets)
+  // are never reported — they would wipe a live ?file= anchor.
+  const onSelectedFileChangeRef = useRef(onSelectedFileChange);
+  useEffect(() => {
+    onSelectedFileChangeRef.current = onSelectedFileChange;
+  });
+  useEffect(() => {
+    if (selectedPath === null) return;
+    onSelectedFileChangeRef.current?.(selectedPath);
+  }, [selectedPath]);
 
   const selectedFile = useMemo(
     () => allFiles.find((f) => f.path === selectedPath) ?? null,
@@ -365,6 +417,8 @@ export function ArtifactsViewer({ filesUrl }: ArtifactsViewerProps) {
         selectedFile={selectedFile}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
+        selectedLines={selectedLines}
+        onSelectLinesChange={onSelectLinesChange}
       />
     </div>
   );
@@ -375,6 +429,8 @@ interface ArtifactContentPaneProps {
   selectedFile: TreeNode | null;
   viewMode: "rendered" | "raw";
   onViewModeChange: (mode: "rendered" | "raw") => void;
+  selectedLines?: LineRange | null;
+  onSelectLinesChange?: (range: LineRange | null) => void;
 }
 
 function ArtifactContentPane({
@@ -382,6 +438,8 @@ function ArtifactContentPane({
   selectedFile,
   viewMode,
   onViewModeChange,
+  selectedLines,
+  onSelectLinesChange,
 }: ArtifactContentPaneProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [content, setContent] = useState<string | null>(null);
@@ -573,6 +631,8 @@ function ArtifactContentPane({
             content={isBinary ? null : content}
             fileSize={fileSize}
             viewMode={viewMode}
+            selectedLines={selectedLines}
+            onSelectLines={onSelectLinesChange}
           />
         )}
       </div>
