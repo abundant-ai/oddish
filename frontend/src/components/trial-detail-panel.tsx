@@ -921,15 +921,23 @@ export function TrialDetailPanel({
   }, []);
 
   // Same shape for the artifacts tab: its browser reports selections the
-  // same way, and a different file drops the artifact line anchor.
+  // same way, and a different file drops the artifact line anchor. The
+  // comparison also accepts the file's storage path — a deep link can
+  // address a multi-step artifact by storage path, and the browser echoes
+  // back the relativized tree path, which is not a suffix match of it.
   const artifactsTargetPathRef = useRef<string | null>(artifactsTargetPath);
-  const handleArtifactsFileChange = useCallback((path: string | null) => {
-    if (!sameFilePath(artifactsTargetPathRef.current, path)) {
-      setArtifactsLines(null);
-    }
-    artifactsTargetPathRef.current = path;
-    setArtifactsTargetPath(path);
-  }, []);
+  const handleArtifactsFileChange = useCallback(
+    (path: string | null, fullPath?: string) => {
+      const prev = artifactsTargetPathRef.current;
+      const same =
+        sameFilePath(prev, path) ||
+        (fullPath !== undefined && sameFilePath(prev, fullPath));
+      if (!same) setArtifactsLines(null);
+      artifactsTargetPathRef.current = path;
+      setArtifactsTargetPath(path);
+    },
+    []
+  );
 
   // Navigating to a different trial keeps the file paths (attempts share
   // layouts, and comparing the same file across attempts is the point) but

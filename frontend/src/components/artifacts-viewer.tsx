@@ -217,10 +217,13 @@ interface ArtifactsViewerProps {
   selectedLines?: LineRange | null;
   onSelectLinesChange?: (range: LineRange | null) => void;
   /**
-   * Reports the selected file's path whenever a file is selected, for URL
-   * sync. Never called with null — transient resets are not reported.
+   * Reports the selected file's tree path (and its original storage path,
+   * when known) whenever a file is selected, for URL sync. The storage path
+   * lets the parent recognize a deep link that addressed the file by
+   * storage path — the two forms differ for multi-step artifacts. Never
+   * called with null — transient resets are not reported.
    */
-  onSelectedFileChange?: (path: string) => void;
+  onSelectedFileChange?: (path: string, fullPath?: string) => void;
 }
 
 export function ArtifactsViewer({
@@ -303,8 +306,11 @@ export function ArtifactsViewer({
   });
   useEffect(() => {
     if (selectedPath === null) return;
-    onSelectedFileChangeRef.current?.(selectedPath);
-  }, [selectedPath]);
+    const file = allFiles.find((f) => f.path === selectedPath);
+    onSelectedFileChangeRef.current?.(selectedPath, file?.fullPath);
+    // allFiles is a dependency only to read the fullPath; a listing refresh
+    // re-reports the same selection, which the parent treats as a no-op.
+  }, [selectedPath, allFiles]);
 
   const selectedFile = useMemo(
     () => allFiles.find((f) => f.path === selectedPath) ?? null,
