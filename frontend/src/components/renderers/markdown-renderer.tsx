@@ -41,6 +41,7 @@ interface MdNode {
     start?: { line?: number; column?: number };
     end?: { line?: number };
   };
+  properties?: Record<string, unknown>;
 }
 
 function nodeLineRange(node: MdNode | undefined): LineRange | null {
@@ -51,12 +52,28 @@ function nodeLineRange(node: MdNode | undefined): LineRange | null {
 }
 
 /**
+ * Marks the document root's direct children so ``isRootBlock`` can tell
+ * them apart from nested content at render time (hast nodes carry no
+ * parent pointers). A column-1 heuristic breaks on CommonMark's optional
+ * 1-3 space indent, which would leave validly indented root blocks
+ * without anchors.
+ */
+function rehypeMarkRootBlocks() {
+  return (tree: { children?: (MdNode & { type?: string })[] }) => {
+    for (const child of tree.children ?? []) {
+      if (child.type === "element") {
+        child.properties = { ...child.properties, dataMdRoot: "" };
+      }
+    }
+  };
+}
+
+/**
  * Only root-level blocks get anchors; nested content (list items' bodies,
- * blockquote children) is covered by its parent's range. Root blocks start
- * in column 1 of the source, nested content is indented or prefixed.
+ * blockquote children) is covered by its parent's range.
  */
 function isRootBlock(node: MdNode | undefined): boolean {
-  return node?.position?.start?.column === 1;
+  return node?.properties?.dataMdRoot !== undefined;
 }
 
 const LANGUAGE_MAP: Record<string, string> = {
@@ -289,6 +306,7 @@ export function MarkdownRenderer({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
+        rehypePlugins={[rehypeMarkRootBlocks]}
         components={{
           h1: ({ node, children }) =>
             anchored(
