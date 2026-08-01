@@ -38,7 +38,7 @@ interface MarkdownRendererProps {
 interface MdNode {
   position?: {
     start?: { line?: number; column?: number };
-    end?: { line?: number };
+    end?: { line?: number; column?: number };
   };
   properties?: Record<string, unknown>;
 }
@@ -46,7 +46,12 @@ interface MdNode {
 function nodeLineRange(node: MdNode | undefined): LineRange | null {
   const start = node?.position?.start?.line;
   if (!start) return null;
-  const end = node?.position?.end?.line ?? start;
+  let end = node?.position?.end?.line ?? start;
+  // unist end points are exclusive: an end at column 1 means the block
+  // ended with the previous line's newline (common for lists), so the
+  // block does not actually cover this line. Treating it as covered made
+  // adjacent blocks overlap by one line.
+  if (end > start && node?.position?.end?.column === 1) end -= 1;
   return { start, end: Math.max(start, end) };
 }
 
