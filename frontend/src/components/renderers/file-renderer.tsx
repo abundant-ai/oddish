@@ -8,11 +8,9 @@ import { VideoRenderer } from "./video-renderer";
 import { AudioRenderer } from "./audio-renderer";
 import { PdfRenderer } from "./pdf-renderer";
 import { BinaryRenderer } from "./binary-renderer";
-import { LogRenderer } from "./log-renderer";
 import { CsvRenderer } from "./csv-renderer";
-import { TextRenderer } from "./text-renderer";
 import { ConfigJsonRenderer } from "./config-json-renderer";
-import { RawRenderer } from "./raw-renderer";
+import type { LineRange } from "@/lib/line-range";
 
 // Heavy renderers are code-split so they don't inflate the main bundle.
 const MarkdownRenderer = dynamic(
@@ -189,6 +187,13 @@ interface FileRendererProps {
    * types ignore this and always render normally.
    */
   viewMode?: "rendered" | "raw";
+  /**
+   * Line range to highlight and scroll to (the ``?lines=L12-L20`` anchor).
+   * Only honored by line-oriented renderers (code, log, text).
+   */
+  selectedLines?: LineRange | null;
+  /** Selection changes from the line-oriented renderers, for URL sync. */
+  onSelectLines?: (range: LineRange | null) => void;
 }
 
 /**
@@ -203,11 +208,21 @@ export function FileRenderer({
   fileSize,
   kind,
   viewMode = "rendered",
+  selectedLines,
+  onSelectLines,
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
 
   if (viewMode === "raw" && !URL_BASED_KINDS.has(resolvedKind)) {
-    return <RawRenderer content={content ?? ""} />;
+    return (
+      <CodeRenderer
+        content={content ?? ""}
+        fileName={fileName}
+        plainText
+        selectedLines={selectedLines}
+        onSelectLines={onSelectLines}
+      />
+    );
   }
 
   switch (resolvedKind) {
@@ -254,12 +269,20 @@ export function FileRenderer({
       return <CsvRenderer content={content ?? ""} delimiter={delimiter} />;
     }
     case "log":
-      return <LogRenderer content={content ?? ""} />;
     case "text":
-      return <TextRenderer content={content ?? ""} />;
     case "code":
     default:
-      return <CodeRenderer content={content ?? ""} fileName={fileName} />;
+      // Logs render through the same pierre view — shiki ships a ``log``
+      // grammar, so levels and timestamps highlight properly.
+      return (
+        <CodeRenderer
+          content={content ?? ""}
+          fileName={fileName}
+          plainText={resolvedKind === "text"}
+          selectedLines={selectedLines}
+          onSelectLines={onSelectLines}
+        />
+      );
   }
 }
 
