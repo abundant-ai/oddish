@@ -1,0 +1,32 @@
+description: >
+  Synthetic seed case: the oracle baseline failed, which by rule 4 decides the
+  verdict on its own. The verdict must be is_good=false with high confidence.
+inputs:
+  num_trials: 2
+  baseline_summary: |-
+    ✗ FAILED:
+      - CRITICAL: oracle agent failed - reference solution doesn't work
+  quality_check_summary: "✓ Passed"
+  trial_classifications: |
+    Trial 1: trial-001
+      Classification: BAD_FAILURE
+      Subtype: Environment Issues
+      Reward: 0.0
+      Evidence: The verifier imports numpy but the image does not install it; every test errored at collection with ModuleNotFoundError.
+      Root Cause: The test environment is missing a dependency the verifier needs.
+      Recommendation: Add numpy to the environment image.
+      Action items:
+        - [must_fix/verifier] The verifier requires numpy that the image does not install
+
+    Trial 2: trial-002
+      Classification: BAD_FAILURE
+      Subtype: Environment Issues
+      Reward: 0.0
+      Evidence: Same ModuleNotFoundError at collection; the agent's implementation was never exercised.
+      Root Cause: The test environment is missing a dependency the verifier needs.
+      Recommendation: Add numpy to the environment image.
+      Action items:
+        - [must_fix/verifier] The verifier requires numpy that the image does not install
+expected:
+  is_good: false
+  confidence_in: [high]

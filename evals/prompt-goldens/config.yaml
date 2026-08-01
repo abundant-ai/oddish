@@ -1,0 +1,21 @@
+# Prompt-eval configuration — see README.md in this directory.
+#
+# `agents` is the list of analysis agents (judge models) every changed prompt
+# is evaluated with; `model` is passed to the Claude CLI as --model.
+agents:
+  - name: sonnet
+    model: claude-sonnet-5
+  - name: haiku
+    model: claude-haiku-4-5
+
+# Runs per case x agent (raise for flaky prompts; multiplies cost).
+n_trials: 1
+
+# Per-run timeout for one analysis agent invocation.
+timeout_seconds: 300
+
+# Concurrent agent runs (per template version).
+concurrency: 4
+
+# Cost guard: loading fails loudly if a kind has more cases than this.
+max_cases_per_kind: 25

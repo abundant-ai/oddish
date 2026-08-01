@@ -1,0 +1,8 @@
+description: >
+  Synthetic seed case: the agent implements sub() with the operands reversed
+  and stops without running the tests. The verifier fails. The task itself is
+  fine, so a correct classifier must label this a GOOD_FAILURE (the agent's
+  fault), not a task problem.
+agent: claude-code
+expected:
+  classification_in: [GOOD_FAILURE]

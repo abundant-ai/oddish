@@ -1,0 +1,10 @@
+description: >
+  Synthetic seed case: the verifier diffs the program's output against
+  expected_output.txt, and the Dockerfile copies that file into the agent
+  workspace. A correct audit must flag the leak (the agent can read the
+  answer, or trivially cat the file into place).
+expected:
+  items:
+    - dimension: info_leakage
+      tier_in: [must_fix, should_fix]
+      file_contains: expected_output

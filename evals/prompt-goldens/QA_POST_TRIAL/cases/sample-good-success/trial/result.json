@@ -1,0 +1,13 @@
+{
+  "trial_name": "sample-good-success",
+  "task_name": "sample-calc",
+  "agent_result": {
+    "name": "claude-code",
+    "model": "anthropic/claude-sonnet-4-5"
+  },
+  "verifier_result": {
+    "rewards": {
+      "reward": 1.0
+    }
+  }
+}

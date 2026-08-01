@@ -1,0 +1,31 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.9, pytest-8.2.0, pluggy-1.5.0
+rootdir: /app
+collected 4 items
+
+tests/test_calc.py::test_add PASSED                                      [ 25%]
+tests/test_calc.py::test_add_negative PASSED                             [ 50%]
+tests/test_calc.py::test_sub FAILED                                      [ 75%]
+tests/test_calc.py::test_sub_negative FAILED                             [100%]
+
+=================================== FAILURES ===================================
+___________________________________ test_sub ___________________________________
+
+    def test_sub():
+>       assert sub(5, 3) == 2
+E       assert -2 == 2
+E        +  where -2 = sub(5, 3)
+
+tests/test_calc.py:9: AssertionError
+______________________________ test_sub_negative _______________________________
+
+    def test_sub_negative():
+>       assert sub(-5, 3) == -8
+E       assert 8 == -8
+E        +  where 8 = sub(-5, 3)
+
+tests/test_calc.py:13: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_calc.py::test_sub - assert -2 == 2
+FAILED tests/test_calc.py::test_sub_negative - assert 8 == -8
+========================= 2 failed, 2 passed in 0.03s ==========================

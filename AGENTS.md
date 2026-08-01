@@ -205,6 +205,18 @@ trial classification records the post-trial prompt kind and version in
 `trials.analysis`; local/library classification without a registry row falls
 back to the packaged `analyze/classify_prompt.txt`.
 
+The QA prompt files are regression-tested by golden evals: a PR that edits
+`classify_prompt.txt`, `verdict_prompt.txt`, or `prompts/pre_trial_qa.txt`
+triggers `.github/workflows/prompt-eval.yml`, which runs **only the changed
+prompts** over the frozen cases in `evals/prompt-goldens/` — the merge-base
+version vs the PR version, across the agents in
+`evals/prompt-goldens/config.yaml` — and posts the comparison as a sticky PR
+comment. The harness (`oddish/src/oddish/evals/prompt_eval/`) executes each
+kind through the production code path (`TrialClassifier`, `PreTrialBlock`, the
+verdict template). Case format and local-run instructions:
+`evals/prompt-goldens/README.md`. When editing a prompt's output contract,
+update the affected goldens' `expected` blocks in the same PR.
+
 Hosted prompt overrides may be scoped to an org, user, experiment, task, or
 trial. Resolution is trial → task → experiment → user → org → global, and every
 domain-scoped read must first verify that the target belongs to the active org.

@@ -1,0 +1,40 @@
+description: >
+  Synthetic seed case: baselines passed, the static check is clean, and the
+  trials split into one fair success and two fair failures. A hard task with a
+  33% pass rate is a good task; the verdict must be is_good=true.
+inputs:
+  num_trials: 3
+  baseline_summary: "✓ Passed (nop failed as expected, oracle passed as expected)"
+  quality_check_summary: "✓ Passed"
+  trial_classifications: |
+    Trial 1: trial-001
+      Classification: GOOD_SUCCESS
+      Subtype: Correct Solution
+      Reward: 1.0
+      Evidence: All 4 tests passed. The agent implemented add and sub correctly and verified them before finishing.
+      Root Cause: The agent solved the task.
+      Recommendation: N/A
+      Action items:
+        (none)
+
+    Trial 2: trial-002
+      Classification: GOOD_FAILURE
+      Subtype: Implementation Bugs
+      Reward: 0.0
+      Evidence: test_sub and test_sub_negative failed; sub(5, 3) returned -2 because the agent wrote `return b - a`.
+      Root Cause: The agent reversed the operands in sub and never ran the tests.
+      Recommendation: N/A
+      Action items:
+        (none)
+
+    Trial 3: trial-003
+      Classification: GOOD_FAILURE
+      Subtype: Premature Stop
+      Reward: 0.0
+      Evidence: The agent implemented add only and declared the task complete; sub still raises NotImplementedError.
+      Root Cause: The agent stopped before finishing the second function.
+      Recommendation: N/A
+      Action items:
+        (none)
+expected:
+  is_good: true

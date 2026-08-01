@@ -1,0 +1,40 @@
+{
+  "schema_version": "ATIF-v1",
+  "session_id": "sample-good-failure",
+  "agent": {"name": "claude-code", "model_name": "anthropic/claude-sonnet-4-5"},
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Implement add(a, b) and sub(a, b) in calc.py as described in instruction.md. Both must work for negative numbers."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Reading the current calc.py.",
+      "tool_calls": [
+        {"tool_name": "read", "arguments": {"file_path": "/app/calc.py"}}
+      ]
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "Implementing both functions now.",
+      "tool_calls": [
+        {
+          "tool_name": "write",
+          "arguments": {
+            "file_path": "/app/calc.py",
+            "content": "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return b - a\n"
+          }
+        }
+      ]
+    },
+    {
+      "step_id": 4,
+      "source": "agent",
+      "message": "Both functions are implemented. add returns the sum and sub returns the difference. The task is complete."
+    }
+  ],
+  "final_metrics": {"total_input_tokens": 1620, "total_output_tokens": 260, "total_steps": 4}
+}
