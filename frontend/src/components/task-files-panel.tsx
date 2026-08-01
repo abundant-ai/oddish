@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
+import type { LineRange } from "@/lib/line-range";
 import {
   FileRenderer,
   isBinaryRendererFile,
@@ -162,6 +163,20 @@ interface TaskFilesPanelProps {
    * "Task definition" pane). Falls back to `taskId` when not set.
    */
   staticChecksTaskId?: string | null;
+  /**
+   * Line range to highlight in the selected file — the ``?lines=L12-L20``
+   * deep-link anchor. Honored by line-oriented renderers only.
+   */
+  selectedLines?: LineRange | null;
+  /** Line selection changes from the file viewer, for URL sync. */
+  onSelectLinesChange?: (range: LineRange | null) => void;
+  /**
+   * Reports the selected file's path whenever a file is selected (tree
+   * clicks and auto-selection alike), so callers can keep ``?file=`` live
+   * and drop a stale ``?lines=`` when the file changes. Never called with
+   * null — transient resets (listing reloads, close) are not reported.
+   */
+  onSelectedFileChange?: (path: string) => void;
 }
 
 function getNodeName(path: string): string {
@@ -354,6 +369,9 @@ export function TaskFilesPanel({
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
+  selectedLines,
+  onSelectLinesChange,
+  onSelectedFileChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
   // The STATIC CHECKS entry is keyed off the task even in filesUrl-driven
@@ -436,6 +454,12 @@ export function TaskFilesPanel({
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
   const copiedFileContentTimeoutRef = useRef<number | null>(null);
+  // Mirrors initialFilePath for the async listing loader: applyListing
+  // runs in a fetch closure that would otherwise capture a stale value.
+  const initialFilePathRef = useRef(initialFilePath);
+  useEffect(() => {
+    initialFilePathRef.current = initialFilePath;
+  }, [initialFilePath]);
   // Mirrors selectedFile for the listing stream loop, so a content chunk
   // for the file currently on screen can paint it immediately.
   const selectedFileRef = useRef<TreeNode | null>(null);
@@ -709,7 +733,11 @@ export function TaskFilesPanel({
       const applyListing = (tree: TreeNode[]) => {
         paintedTree = true;
         setFileTree(tree);
-        if (!checksAvailable) {
+        // A deep-linked initialFilePath owns the first selection: letting
+        // the default auto-select land first would report the wrong path
+        // upward and clear the link's line anchor before the target file
+        // is applied.
+        if (!checksAvailable && !initialFilePathRef.current) {
           const defaultFile =
             findNodeBySuffix(tree, "instruction.md") ??
             tree.find((node) => node.type === "file") ??
@@ -983,6 +1011,21 @@ export function TaskFilesPanel({
     }
   }, [selectedFile]);
 
+  // Report file selection changes upward for URL sync. Null selections are
+  // never reported: every null write is a transient reset (listing reload,
+  // panel close) — no user gesture deselects a file — and reporting one
+  // would wipe a live ?file= / ?lines= anchor that the next listing is
+  // about to resolve (e.g. keeping the same file across trial navigation).
+  const onSelectedFileChangeRef = useRef(onSelectedFileChange);
+  useEffect(() => {
+    onSelectedFileChangeRef.current = onSelectedFileChange;
+  });
+  const selectedFilePath = selectedFile?.path ?? null;
+  useEffect(() => {
+    if (selectedFilePath === null) return;
+    onSelectedFileChangeRef.current?.(selectedFilePath);
+  }, [selectedFilePath]);
+
   // Reset state when panel closes or task changes
   useEffect(() => {
     if (!isOpen) {
@@ -1178,6 +1221,8 @@ export function TaskFilesPanel({
             content={isBinary ? null : fileContent}
             fileSize={fullFileSize ?? selectedFile.size}
             viewMode={viewMode}
+            selectedLines={selectedLines}
+            onSelectLines={onSelectLinesChange}
           />
         </div>
         {!isBinary && isTruncated && (

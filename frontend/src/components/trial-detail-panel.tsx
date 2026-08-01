@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -45,6 +44,22 @@ import {
   Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  formatLineRange,
+  parseLineRange,
+  type LineRange,
+} from "@/lib/line-range";
+import { sameFilePath } from "@/lib/file-path";
+
+/**
+ * Read a query param from the live URL. The panel keeps the URL current
+ * via replaceState, which never refreshes Next's useSearchParams hook —
+ * so live reads must come straight from location.
+ */
+function getLiveParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get(name);
+}
 import { Skeleton } from "@/components/ui/skeleton";
 import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
 import { QaReportSkeleton } from "@/components/qa-report/skeleton";
@@ -824,8 +839,6 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const searchParams = useSearchParams();
-
   const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
@@ -834,7 +847,7 @@ export function TrialDetailPanel({
   );
 
   const [activeTab, setActiveTab] = useState(() => {
-    const urlTab = searchParams.get("tab");
+    const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
   const [showFullError, setShowFullError] = useState(false);
@@ -843,47 +856,162 @@ export function TrialDetailPanel({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // ``?file=`` / ``?lines=`` are scoped by ``?tab=``: on the artifacts tab
+  // they address the artifact browser, otherwise the files tab. Each tab
+  // keeps its own state; the URL carries the active tab's pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    searchParams.get("file"),
+    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file"),
+  );
+  // Line-anchor range within the selected file (``?lines=L12-L20``).
+  const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
+    getLiveParam("tab") === "artifacts"
+      ? null
+      : parseLineRange(getLiveParam("lines")),
+  );
+  const [artifactsTargetPath, setArtifactsTargetPath] = useState<
+    string | null
+  >(() => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null));
+  const [artifactsLines, setArtifactsLines] = useState<LineRange | null>(() =>
+    getLiveParam("tab") === "artifacts"
+      ? parseLineRange(getLiveParam("lines"))
+      : null,
   );
 
   const hydratedFromUrl = useRef(false);
 
-  // Hydrate from URL on first open
+  // Hydrate from the URL on first open. Reads the live URL, not the
+  // useSearchParams snapshot: replaceState never refreshes that hook, so on
+  // a remount (e.g. the drawer's pane layout changing) the snapshot is the
+  // stale page-load query and would reset the panel to where the user
+  // started instead of where they are.
   useEffect(() => {
     if (!isOpen || hydratedFromUrl.current) return;
     hydratedFromUrl.current = true;
-    const urlTab = searchParams.get("tab");
-    const urlFile = searchParams.get("file");
+    const urlTab = getLiveParam("tab");
+    const urlFile = getLiveParam("file");
+    const urlLines = parseLineRange(getLiveParam("lines"));
     if (urlTab && validTabs.has(urlTab)) setActiveTab(urlTab);
+    if (urlTab === "artifacts") {
+      // ?file=/?lines= address the artifact browser while tab=artifacts.
+      if (urlFile) {
+        setArtifactsTargetPath(urlFile);
+        artifactsTargetPathRef.current = urlFile;
+      }
+      if (urlLines) setArtifactsLines(urlLines);
+      return;
+    }
     if (urlFile) {
       setFilesTargetPath(urlFile);
+      filesTargetPathRef.current = urlFile;
       if (!urlTab) setActiveTab("files");
     }
-  }, [isOpen, searchParams, validTabs]);
+    if (urlLines) setSelectedLines(urlLines);
+  }, [isOpen, validTabs]);
 
-  // Sync tab & file to URL (without triggering Next.js router navigation)
+  // The file viewer reports every selection change (tree clicks and
+  // auto-selects alike): the ?file= param stays live, and switching to a
+  // different file drops the line anchor — the old range would otherwise
+  // highlight arbitrary lines of the new file. The ref mirrors the state
+  // so the comparison doesn't need an impure setState updater.
+  const filesTargetPathRef = useRef<string | null>(filesTargetPath);
+  const handleSelectedFileChange = useCallback((path: string | null) => {
+    if (!sameFilePath(filesTargetPathRef.current, path)) setSelectedLines(null);
+    filesTargetPathRef.current = path;
+    setFilesTargetPath(path);
+  }, []);
+
+  // Same shape for the artifacts tab: its browser reports selections the
+  // same way, and a different file drops the artifact line anchor. The
+  // comparison also accepts the file's storage path — a deep link can
+  // address a multi-step artifact by storage path, and the browser echoes
+  // back the relativized tree path, which is not a suffix match of it.
+  const artifactsTargetPathRef = useRef<string | null>(artifactsTargetPath);
+  const handleArtifactsFileChange = useCallback(
+    (path: string | null, fullPath?: string) => {
+      const prev = artifactsTargetPathRef.current;
+      const same =
+        sameFilePath(prev, path) ||
+        (fullPath !== undefined && sameFilePath(prev, fullPath));
+      if (!same) setArtifactsLines(null);
+      artifactsTargetPathRef.current = path;
+      setArtifactsTargetPath(path);
+    },
+    []
+  );
+
+  // Navigating to a different trial keeps the file paths (attempts share
+  // layouts, and comparing the same file across attempts is the point) but
+  // drops the line anchors — they addressed the previous trial's content
+  // and would highlight arbitrary lines here.
+  const lastTrialIdRef = useRef<string | null>(trial?.id ?? null);
+  useEffect(() => {
+    const id = trial?.id ?? null;
+    if (id && lastTrialIdRef.current && id !== lastTrialIdRef.current) {
+      setSelectedLines(null);
+      setArtifactsLines(null);
+    }
+    lastTrialIdRef.current = id;
+  }, [trial?.id]);
+
+  // Sync tab, file & lines to URL (without triggering router navigation).
+  // Based on the live URL rather than the useSearchParams snapshot:
+  // replaceState doesn't refresh that hook, and the experiment view writes
+  // its own params (task/trial/taskFile/taskLines) the same way — a stale
+  // base would silently wipe them. The tab is written explicitly even for
+  // summary, so every tab is its own address and every tab click visibly
+  // updates the URL.
   useEffect(() => {
     if (!isOpen || !hydratedFromUrl.current) return;
-    const next = new URLSearchParams(searchParams.toString());
+    const current = new URLSearchParams(window.location.search);
+    const next = new URLSearchParams(window.location.search);
 
-    if (activeTab && activeTab !== "summary") {
+    if (activeTab) {
       next.set("tab", activeTab);
     } else {
       next.delete("tab");
     }
 
-    if (filesTargetPath) {
-      next.set("file", filesTargetPath);
+    // ?file=/?lines= describe the active tab's view: the files tab's pair
+    // or the artifacts tab's pair. On tabs with no file view (summary,
+    // live, trajectory) they drop out of the URL — the tab states stay in
+    // React, so flipping back restores and re-writes them.
+    const paneFile =
+      activeTab === "artifacts"
+        ? artifactsTargetPath
+        : activeTab === "files"
+          ? filesTargetPath
+          : null;
+    const paneLines =
+      activeTab === "artifacts"
+        ? artifactsLines
+        : activeTab === "files"
+          ? selectedLines
+          : null;
+
+    if (paneFile) {
+      next.set("file", paneFile);
     } else {
       next.delete("file");
     }
 
-    if (next.toString() !== searchParams.toString()) {
+    if (paneLines) {
+      next.set("lines", formatLineRange(paneLines));
+    } else {
+      next.delete("lines");
+    }
+
+    if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [isOpen, activeTab, filesTargetPath, searchParams]);
+  }, [
+    isOpen,
+    activeTab,
+    filesTargetPath,
+    selectedLines,
+    artifactsTargetPath,
+    artifactsLines,
+  ]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
@@ -942,7 +1070,10 @@ export function TrialDetailPanel({
   const handleTimelineStageClick = (stageId: string) => {
     const filePath = STAGE_FILE_MAP[stageId] ?? null;
     setActiveTab("files");
-    setFilesTargetPath(filePath);
+    // Through the shared handler so a file change drops the old line
+    // anchor and the path ref stays in sync — a bare setFilesTargetPath
+    // would let the previous ?lines= range land on the new file.
+    handleSelectedFileChange(filePath);
   };
 
   // Reset state when panel closes
@@ -1617,6 +1748,9 @@ export function TrialDetailPanel({
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               initialFilePath={filesTargetPath}
+              selectedLines={selectedLines}
+              onSelectLinesChange={setSelectedLines}
+              onSelectedFileChange={handleSelectedFileChange}
               contentOnly
             />
           </TabsContent>
@@ -1624,6 +1758,10 @@ export function TrialDetailPanel({
           <TabsContent value="artifacts" className="m-0 h-full p-0">
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+              initialFilePath={artifactsTargetPath}
+              selectedLines={artifactsLines}
+              onSelectLinesChange={setArtifactsLines}
+              onSelectedFileChange={handleArtifactsFileChange}
             />
           </TabsContent>
 

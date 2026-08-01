@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Columns2, PanelLeft, PanelRight } from "lucide-react";
 import { ResizableDrawer } from "@/components/ui/resizable-drawer";
 import {
   ResizableHandle,
@@ -13,6 +13,8 @@ import { cn } from "@/lib/utils";
 
 type DrawerMode = "task" | "trial";
 
+type PaneLayout = "task" | "split" | "trial";
+
 interface UnifiedDrawerWrapperProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -20,8 +22,9 @@ interface UnifiedDrawerWrapperProps {
   taskContent: React.ReactNode;
   /**
    * Render the trial detail. Receives a `paneAction` slot that should be
-   * placed in the trial header — it's the toggle that hides/shows the task
-   * pane from within the trial view.
+   * placed in the trial header — the pane layout control renders there
+   * whenever the task pane is hidden (otherwise it lives in the task
+   * pane's own header).
    */
   renderTrial?: (paneAction: React.ReactNode) => React.ReactNode;
   /** Convenience fallback when there's no paneAction slot (e.g. task mode). */
@@ -39,6 +42,16 @@ interface UnifiedDrawerWrapperProps {
   minWidth?: number;
   maxWidth?: number;
 }
+
+const LAYOUT_CHOICES: Array<{
+  layout: PaneLayout;
+  icon: typeof PanelLeft;
+  label: string;
+}> = [
+  { layout: "task", icon: PanelLeft, label: "Task only" },
+  { layout: "split", icon: Columns2, label: "Task and trial side by side" },
+  { layout: "trial", icon: PanelRight, label: "Trial only" },
+];
 
 export function UnifiedDrawerWrapper({
   open,
@@ -66,6 +79,11 @@ export function UnifiedDrawerWrapper({
     displayMode === "trial" && showTask && showTrial && hasLeft;
   const taskOnlyActive =
     displayMode === "trial" && showTask && hasLeft && !showTrial;
+  const paneLayout: PaneLayout = taskOnlyActive
+    ? "task"
+    : sideBySideActive
+      ? "split"
+      : "trial";
 
   const [width, setWidth] = useState(
     sideBySideActive ? sideBySideWidth : defaultWidth,
@@ -100,56 +118,46 @@ export function UnifiedDrawerWrapper({
     setWidth(next);
   };
 
-  // The task-def pane carries the "trials" toggle — clicking it expands or
-  // collapses the trial pane on its right. Disabled when toggling would
-  // collapse everything.
-  const trialsToggle = onShowTrialChange ? (
-    <Button
-      type="button"
-      size="sm"
-      variant="ghost"
-      className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-[10px] font-semibold tracking-wide uppercase"
-      onClick={() => onShowTrialChange(!showTrial)}
-      disabled={showTrial && !showTask}
-      aria-pressed={!showTrial}
-      title={showTrial ? "Hide trials pane" : "Show trials pane"}
-    >
-      {showTrial ? (
-        <PanelRightClose className="h-3.5 w-3.5" />
-      ) : (
-        <PanelRightOpen className="h-3.5 w-3.5" />
-      )}
-      <span className="hidden sm:inline">
-        {showTrial ? "Hide trials" : "Show trials"}
-      </span>
-    </Button>
-  ) : null;
+  const applyLayout = (next: PaneLayout) => {
+    onShowTaskChange?.(next !== "trial");
+    onShowTrialChange?.(next !== "task");
+  };
 
-  // Lives in the trial pane header — controls the task-def pane on its left.
-  const taskToggle = onShowTaskChange ? (
-    <Button
-      type="button"
-      size="sm"
-      variant="ghost"
-      className="text-muted-foreground hover:text-foreground h-7 gap-1 px-2 text-[10px] font-semibold tracking-wide uppercase"
-      onClick={() => onShowTaskChange(!showTask)}
-      disabled={showTask && !showTrial}
-      aria-pressed={!showTask}
-      title={
-        showTask ? "Hide task definition pane" : "Show task definition pane"
-      }
-    >
-      {showTask ? (
-        // Mirror of PanelRightClose for the left pane.
-        <PanelRightClose className="h-3.5 w-3.5 -scale-x-100" />
-      ) : (
-        <PanelRightOpen className="h-3.5 w-3.5 -scale-x-100" />
-      )}
-      <span className="hidden sm:inline">
-        {showTask ? "Hide task" : "Show task"}
-      </span>
-    </Button>
-  ) : null;
+  // One segmented control for the pane layout (task / split / trial)
+  // replaces the old pair of hide/show buttons that lived in different
+  // headers with cross-dependent disabled states. It renders at the right
+  // of the leftmost visible pane's header: the task pane's when that pane
+  // is shown, else the trial header via the paneAction slot.
+  const layoutControl =
+    hasLeft &&
+    displayMode === "trial" &&
+    (onShowTaskChange || onShowTrialChange) ? (
+      <div
+        role="group"
+        aria-label="Pane layout"
+        className="border-border bg-background/60 flex items-center gap-0.5 rounded-md border p-0.5"
+      >
+        {LAYOUT_CHOICES.map(({ layout, icon: Icon, label }) => (
+          <Button
+            key={layout}
+            type="button"
+            size="icon"
+            variant="ghost"
+            className={cn(
+              "h-6 w-6",
+              paneLayout === layout
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            onClick={() => applyLayout(layout)}
+            aria-pressed={paneLayout === layout}
+            title={label}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </Button>
+        ))}
+      </div>
+    ) : null;
 
   const taskFilesPane = (
     <div className="bg-background flex h-full flex-col overflow-hidden">
@@ -157,7 +165,7 @@ export function UnifiedDrawerWrapper({
         <span className="text-muted-foreground pl-2 text-[10px] font-semibold tracking-wider uppercase">
           Task definition
         </span>
-        {trialsToggle}
+        {layoutControl}
       </div>
       <div className="flex flex-1 flex-col overflow-hidden">
         {sideBySideLeft}
@@ -166,34 +174,54 @@ export function UnifiedDrawerWrapper({
   );
 
   const renderedTrial = renderTrial
-    ? renderTrial(taskToggle)
+    ? renderTrial(paneLayout === "trial" ? layoutControl : null)
     : (trialContent ?? null);
 
+  const showLeftPane = displayMode === "trial" && hasLeft && showTask;
+  const showTrialPane = displayMode === "trial" && !taskOnlyActive;
+
+  // The panels carry stable keys plus react-resizable-panels' id/order so
+  // toggling one pane never remounts the other — remounting the trial pane
+  // used to reset it (tab, file, scroll) every time the task pane was
+  // shown or hidden.
   const body =
     displayMode === "task" ? (
       <div className="flex h-full flex-col overflow-hidden">{taskContent}</div>
-    ) : sideBySideActive ? (
+    ) : (
       <ResizablePanelGroup
         direction="horizontal"
         autoSaveId="trial-detail-side-by-side"
         className="h-full"
       >
-        <ResizablePanel defaultSize={42} minSize={20} maxSize={70}>
-          {taskFilesPane}
-        </ResizablePanel>
-        <ResizableHandle withHandle />
-        <ResizablePanel defaultSize={58} minSize={30}>
-          <div className="flex h-full flex-col overflow-hidden">
-            {renderedTrial}
-          </div>
-        </ResizablePanel>
+        {showLeftPane ? (
+          <ResizablePanel
+            key="task-pane"
+            id="task-pane"
+            order={1}
+            defaultSize={42}
+            minSize={sideBySideActive ? 20 : undefined}
+            maxSize={sideBySideActive ? 70 : undefined}
+          >
+            {taskFilesPane}
+          </ResizablePanel>
+        ) : null}
+        {sideBySideActive ? (
+          <ResizableHandle key="pane-handle" withHandle />
+        ) : null}
+        {showTrialPane ? (
+          <ResizablePanel
+            key="trial-pane"
+            id="trial-pane"
+            order={2}
+            defaultSize={58}
+            minSize={sideBySideActive ? 30 : undefined}
+          >
+            <div className="flex h-full flex-col overflow-hidden">
+              {renderedTrial}
+            </div>
+          </ResizablePanel>
+        ) : null}
       </ResizablePanelGroup>
-    ) : taskOnlyActive ? (
-      taskFilesPane
-    ) : (
-      <div className="flex h-full flex-col overflow-hidden">
-        {renderedTrial}
-      </div>
     );
 
   return (
