@@ -234,10 +234,22 @@ async def main() -> None:
                                 f'SELECT "{pk}", "{col}" FROM "{t}" WHERE "{col}" IS NOT NULL')
                     finally:
                         await conn.close()
-                    for r in rows:
+                    # Set-based patch: row-by-row UPDATEs over the pooler ran
+                    # for hours on millions of rows (observed: 4h silent).
+                    # Stage the pairs in a typed temp table and join once.
+                    started = time.monotonic()
+                    if rows:
+                        tmp = f"_patch_{t}_{col}"
                         await dst.execute(
-                            f'UPDATE "{t}" SET "{col}"=$1 WHERE "{pk}"=$2', r[col], r[pk])
-                    print(f"patched {t}.{col}: {len(rows)} rows", flush=True)
+                            f'CREATE TEMP TABLE "{tmp}" ON COMMIT DROP AS '
+                            f'SELECT "{pk}", "{col}" FROM "{t}" WITH NO DATA')
+                        await dst.copy_records_to_table(
+                            tmp, records=[(r[pk], r[col]) for r in rows])
+                        await dst.execute(
+                            f'UPDATE "{t}" AS tgt SET "{col}" = p."{col}" '
+                            f'FROM "{tmp}" AS p WHERE tgt."{pk}" = p."{pk}"')
+                    print(f"patched {t}.{col}: {len(rows)} rows in "
+                          f"{time.monotonic() - started:.0f}s", flush=True)
                 for stmt in QUIESCE:
                     tag = await dst.execute(stmt)
                     print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}", flush=True)
