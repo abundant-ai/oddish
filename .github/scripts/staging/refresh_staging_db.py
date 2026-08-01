@@ -185,15 +185,17 @@ async def main() -> None:
                                 # CASCADE, not plain TRUNCATE: Postgres refuses to
                                 # truncate a table with an existing FK reference
                                 # from another table regardless of whether that
-                                # table currently holds any rows (verified against
-                                # a real instance: TRUNCATE "tasks" alone errors
-                                # even with "trials" empty). CASCADE is safe here
-                                # because `order` is strictly parent-before-child,
-                                # so anything CASCADE can reach from t is either a
-                                # same-run child that hasn't been loaded yet (still
-                                # empty) or an EXCLUDEd table already emptied by
-                                # the initial reversed-order pass below.
-                                await dst.execute(f'TRUNCATE TABLE "{t}" CASCADE')
+                                # DELETE, not TRUNCATE: plain TRUNCATE errors
+                                # structurally when any FK references t, and
+                                # TRUNCATE ... CASCADE follows EVERY FK edge —
+                                # including the back-edges dropped from the topo
+                                # order (tasks.current_version_id -> task_versions),
+                                # so a task_versions retry would silently empty the
+                                # already-loaded tasks table. DELETE is safe: at
+                                # retry time no loaded row references t's rows
+                                # (children load later; back-edge columns are still
+                                # NULL until the patch phase).
+                                await dst.execute(f'DELETE FROM "{t}"')
                                 await _copy_table_from_src(t, select_cols, cols)
                             break
                         except (asyncpg.PostgresConnectionError,
