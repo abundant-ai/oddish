@@ -21,8 +21,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # A skipped required check counts as satisfied, so a stale branch must FAIL
-  # this job, not skip it: always() plus the blocking step, not plain needs.
+  # Stale must FAIL this required check, not skip it: skipped counts as satisfied.
   up-to-date:
     uses: ./.github/workflows/branch-up-to-date.yml
     permissions:

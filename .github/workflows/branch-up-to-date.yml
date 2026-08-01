@@ -1,18 +1,8 @@
 name: Branch up to date
 
-# Fails a PR whose branch does not contain the current tip of its base branch.
-# The other PR workflows call this file via workflow_call and `needs:` the
-# up-to-date job, so a stale branch can't turn any PR check green; adding "Up
-# to date with base" to the main ruleset binds the merge button directly.
-#
-# One compare API call (behind_by == 0) instead of a checkout: an ancestry
-# test needs full history, and the default pull_request checkout is the merge
-# ref — the branch already merged with main, whose tip is therefore always an
-# ancestor — so a checkout-based version could never fail.
-#
-# The step is scoped to pull_request so callers' push / workflow_dispatch /
-# merge_group runs pass trivially. No concurrency group: several callers run
-# this at once, and a shared group would let their gate jobs cancel each other.
+# Fails PRs whose branch is behind its base; other PR workflows gate on it via
+# workflow_call. No checkout on purpose: the default pull_request ref is the
+# branch pre-merged with main, so an ancestry check there could never fail.
 
 on:
   pull_request:

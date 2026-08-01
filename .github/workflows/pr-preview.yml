@@ -13,9 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Gating detect-changes blocks the whole deploy chain: require-working-preview
-  # fails red whenever detection didn't succeed. stop-preview stays ungated so a
-  # stale PR's preview is still torn down on close.
+  # stop-preview stays ungated: closing a stale PR must still tear down its preview.
   up-to-date:
     if: github.event.action != 'closed'
     uses: ./.github/workflows/branch-up-to-date.yml
