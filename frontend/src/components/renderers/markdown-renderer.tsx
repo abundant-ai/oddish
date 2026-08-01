@@ -258,18 +258,19 @@ export function MarkdownRenderer({
     const blocks = Array.from(
       container.querySelectorAll<HTMLElement>("[data-md-start]")
     );
-    // No blocks means the document hasn't rendered yet (content still
-    // loading): leave the scroll armed so the loaded content — a re-fire
-    // via the ``content`` dependency — gets the one attempt.
-    if (blocks.length === 0) return;
-    didScrollRef.current = true;
     const target = blocks.find((el) =>
       lineRangesIntersect(selectedLines, {
         start: Number(el.dataset.mdStart),
         end: Number(el.dataset.mdEnd),
       })
     );
-    target?.scrollIntoView({ block: "center" });
+    // The one attempt is only consumed when the target actually renders.
+    // Until then the scroll stays armed: the document may still be loading,
+    // or a truncated preview may not reach the range yet — the full
+    // content re-fires this effect via the ``content`` dependency.
+    if (!target) return;
+    didScrollRef.current = true;
+    target.scrollIntoView({ block: "center" });
   }, [selectedLines, content]);
 
   const handleBlockClick = (range: LineRange, shiftKey: boolean) => {
