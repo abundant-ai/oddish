@@ -1004,7 +1004,10 @@ export function TrialDetailPanel({
   const handleTimelineStageClick = (stageId: string) => {
     const filePath = STAGE_FILE_MAP[stageId] ?? null;
     setActiveTab("files");
-    setFilesTargetPath(filePath);
+    // Through the shared handler so a file change drops the old line
+    // anchor and the path ref stays in sync — a bare setFilesTargetPath
+    // would let the previous ?lines= range land on the new file.
+    handleSelectedFileChange(filePath);
   };
 
   // Reset state when panel closes
