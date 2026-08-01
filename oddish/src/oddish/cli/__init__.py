@@ -8,6 +8,7 @@ from oddish.cli.combine import combine
 from oddish.cli.costs import costs
 from oddish.cli.delete import delete
 from oddish.cli.experiment import experiment_app
+from oddish.cli.link import link_app
 from oddish.cli.logs import logs
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
@@ -42,6 +43,7 @@ app.command()(collect)
 app.command()(qa)
 app.command()(delete)
 app.add_typer(experiment_app, name="experiment")
+app.add_typer(link_app, name="link")
 app.add_typer(report_app, name="report")
 app.add_typer(prompt_app, name="prompt")
 app.add_typer(qa_jobs_app, name="qa-jobs")
