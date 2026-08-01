@@ -151,9 +151,10 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #15
-# (the tbh agent's real CLI integration) merged as this commit.
-HARBOR_DEFAULT_SHA = "f6b86c4edb57d2993510aae0d10832790ee6ba0a"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #16
+# (gemini-cli no longer silently downgrades a "*flash" model id to the CLI's
+# current flash model) merged as this commit.
+HARBOR_DEFAULT_SHA = "0ab5968fc99b18e99a292fa5c2919090214d28db"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
