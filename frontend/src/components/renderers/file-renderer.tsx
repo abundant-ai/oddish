@@ -253,7 +253,14 @@ export function FileRenderer({
         />
       );
     case "markdown":
-      return <MarkdownRenderer content={content ?? ""} />;
+      return (
+        <MarkdownRenderer
+          content={content ?? ""}
+          fileName={fileName}
+          selectedLines={selectedLines}
+          onSelectLines={onSelectLines}
+        />
+      );
     case "notebook":
       return <NotebookRenderer content={content ?? ""} />;
     case "json":
