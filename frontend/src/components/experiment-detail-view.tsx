@@ -1613,9 +1613,10 @@ export function ExperimentDetailView({
                     trialGroups: context.trialGroups,
                   });
                 }}
-                onProbeSelect={(trial, task) =>
-                  setProbeDrawer({ taskId: task.id, trialId: trial.id })
-                }
+                onProbeSelect={(trial, task) => {
+                  cancelPendingDeepLink();
+                  setProbeDrawer({ taskId: task.id, trialId: trial.id });
+                }}
                 onTaskSelect={(task, context) => {
                   cancelPendingDeepLink();
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
