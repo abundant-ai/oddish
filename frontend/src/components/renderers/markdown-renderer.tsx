@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/table";
 import { useIsDark } from "./use-is-dark";
 import {
-  lineRangesEqual,
   lineRangesIntersect,
   type LineRange,
 } from "@/lib/line-range";
@@ -267,8 +266,13 @@ export function MarkdownRenderer({
       });
       return;
     }
-    // Plain click selects the block; clicking the selected block clears.
-    onSelectLines(lineRangesEqual(selectedLines ?? null, range) ? null : range);
+    // Plain click selects the block; clicking a block that already shows
+    // as selected clears. The clear test matches the highlight test
+    // (intersection, not equality) so a deep-linked partial range inside
+    // a block clears on the first click instead of re-selecting.
+    onSelectLines(
+      lineRangesIntersect(selectedLines ?? null, range) ? null : range
+    );
   };
 
   // Wrap a root-level block so it carries its source-line range: a faint
