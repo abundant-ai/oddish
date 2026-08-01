@@ -179,6 +179,7 @@ jobs:
 
       - name: Compute required disk from prod relation sizes
         id: sizing
+        shell: bash
         working-directory: backend
         env:
           SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
