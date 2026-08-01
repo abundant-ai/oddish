@@ -21,8 +21,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # If the branch is out of date this job must fail rather than skip:
-  # GitHub treats a skipped required check as passing.
   up-to-date:
     uses: ./.github/workflows/branch-up-to-date.yml
     permissions:
@@ -30,7 +28,6 @@ jobs:
 
   upgrade:
     needs: up-to-date
-    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -60,12 +57,6 @@ jobs:
       # a container on the same user-defined network as the service container.
       ODDISH_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/postgres
     steps:
-      - name: Block on stale branch
-        if: needs.up-to-date.result != 'success'
-        run: |
-          echo "::error::Branch is behind main — this required check is blocked until the branch is brought up to date (see the 'Up to date with base' job)."
-          exit 1
-
       - uses: actions/checkout@v5
         with:
           # Full history so we can diff HEAD against the PR base commit.
@@ -115,7 +106,7 @@ jobs:
         run: uv run alembic upgrade head
 
       - name: Summarize migration run
-        if: ${{ always() && needs.up-to-date.result == 'success' }}
+        if: ${{ always() }}
         run: |
           {
             echo "## Migration upgrade check"

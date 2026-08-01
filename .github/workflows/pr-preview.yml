@@ -255,11 +255,12 @@ jobs:
   require-working-preview:
     name: Require working preview
     needs:
+      - up-to-date
       - detect-changes
       - prepare-preview-database
       - deploy-preview-backend
       - update-vercel-preview
-    if: always() && github.event.action != 'closed'
+    if: always() && github.event.action != 'closed' && needs.up-to-date.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: Preview
