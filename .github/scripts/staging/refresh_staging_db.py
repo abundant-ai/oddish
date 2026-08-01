@@ -9,6 +9,7 @@ Self-enforcing: unclassified tables or unexpected FK cycles abort the run.
 import asyncio
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -85,7 +86,31 @@ async def _src_connect(url: str):
     return await asyncpg.connect(url, statement_cache_size=0)
 
 
+def _pick_spool_dir() -> str:
+    # The per-table spool (src -> tempfile -> dst) can run tens of GB for the
+    # largest tables, and this job runs inside a container (ghcr.io ci-base)
+    # on a GitHub-hosted runner, where neither the container's default temp
+    # dir nor a host-mounted volume is reliably the roomier option (and /mnt
+    # may not even be mounted in-container). Measure the real candidates and
+    # spool wherever there's the most free space.
+    candidates = ["/__w", os.environ.get("RUNNER_TEMP"), tempfile.gettempdir()]
+    best_dir, best_free = tempfile.gettempdir(), -1
+    for c in candidates:
+        if not c or not os.path.isdir(c) or not os.access(c, os.W_OK):
+            continue
+        try:
+            free = shutil.disk_usage(c).free
+        except OSError:
+            continue
+        if free > best_free:
+            best_dir, best_free = c, free
+    return best_dir
+
+
 async def main() -> None:
+    spool_dir = _pick_spool_dir()
+    print(f"spool dir: {spool_dir} ({shutil.disk_usage(spool_dir).free / 1e9:.2f} GB free)",
+          flush=True)
     src_url = _session_pooler(_plain(os.environ["SOURCE_DB_URL"]))
     holder = await _src_connect(src_url)
     dst = await asyncpg.connect(_plain(os.environ["TARGET_DB_URL"]),
@@ -122,18 +147,21 @@ async def main() -> None:
         ping_task = asyncio.create_task(_keepalive())
 
         async def _copy_table_from_src(t: str, select_cols: str, cols: list[str]) -> None:
-            conn = await _src_connect(src_url)
-            try:
-                async with conn.transaction(isolation="repeatable_read", readonly=True):
-                    await conn.execute("SET LOCAL statement_timeout = 0")
-                    await conn.execute(f"SET TRANSACTION SNAPSHOT '{snapshot_id}'")
-                    with tempfile.TemporaryFile() as spool:
+            with tempfile.TemporaryFile(dir=spool_dir) as spool:
+                conn = await _src_connect(src_url)
+                try:
+                    async with conn.transaction(isolation="repeatable_read", readonly=True):
+                        await conn.execute("SET LOCAL statement_timeout = 0")
+                        await conn.execute(f"SET TRANSACTION SNAPSHOT '{snapshot_id}'")
                         await conn.copy_from_query(
                             f'SELECT {select_cols} FROM "{t}"', output=spool)
-                        spool.seek(0)
-                        await dst.copy_to_table(t, source=spool, columns=cols)
-            finally:
-                await conn.close()
+                finally:
+                    await conn.close()
+                # Source is fully closed before the (potentially very long)
+                # destination upload starts — no source connection ever idles
+                # through it (the observed kill mode on both pooler modes).
+                spool.seek(0)
+                await dst.copy_to_table(t, source=spool, columns=cols)
 
         try:
             async with dst.transaction():
@@ -154,6 +182,20 @@ async def main() -> None:
                         attempts += 1
                         try:
                             async with dst.transaction():   # savepoint
+                                # CASCADE, not plain TRUNCATE: Postgres refuses to
+                                # truncate a table with an existing FK reference
+                                # from another table regardless of whether that
+                                # DELETE, not TRUNCATE: plain TRUNCATE errors
+                                # structurally when any FK references t, and
+                                # TRUNCATE ... CASCADE follows EVERY FK edge —
+                                # including the back-edges dropped from the topo
+                                # order (tasks.current_version_id -> task_versions),
+                                # so a task_versions retry would silently empty the
+                                # already-loaded tasks table. DELETE is safe: at
+                                # retry time no loaded row references t's rows
+                                # (children load later; back-edge columns are still
+                                # NULL until the patch phase).
+                                await dst.execute(f'DELETE FROM "{t}"')
                                 await _copy_table_from_src(t, select_cols, cols)
                             break
                         except (asyncpg.PostgresConnectionError,

@@ -177,11 +177,40 @@ jobs:
           ODDISH_DATABASE_URL: ${{ steps.branch.outputs.db_url }}
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
 
+      - name: Compute required disk from prod relation sizes
+        id: sizing
+        working-directory: backend
+        env:
+          SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY' | tee /tmp/sizing.out
+          import asyncio, math, os
+          import asyncpg
+          EXCLUDE = {"alembic_version_oddish","alembic_version_backend","alembic_version",
+                     "queue_slots","trial_events","_preview_seed_state","submission_idempotency"}
+          async def main():
+              url = os.environ["SOURCE_DB_URL"].replace("postgresql+asyncpg://","postgresql://",1).replace(":6543/",":5432/",1)
+              c = await asyncpg.connect(url, statement_cache_size=0)
+              rows = await c.fetch("""
+                SELECT tablename, pg_total_relation_size(format('%I.%I','public',tablename)) AS bytes
+                FROM pg_tables WHERE schemaname='public' ORDER BY bytes DESC""")
+              inc = [(r["tablename"], r["bytes"]) for r in rows if r["tablename"] not in EXCLUDE]
+              total = sum(b for _, b in inc)
+              for t, b in inc[:12]:
+                  print(f"  {t}: {b/1e9:.2f} GB")
+              gb = max(25, math.ceil(total*1.6/1e9) + 8)
+              print(f"total include: {total/1e9:.2f} GB -> disk target {gb} GB")
+              print(f"target_gb={gb}", file=open(os.environ["GITHUB_OUTPUT"], "a"))
+              await c.close()
+          asyncio.run(main())
+          PY
+
       - name: Ensure branch disk is large enough for the full copy
         shell: bash
         env:
           BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
-          TARGET_GB: "25"
+          TARGET_GB: ${{ steps.sizing.outputs.target_gb }}
         run: |
           set -euo pipefail
           # Management API: GET/POST /v1/projects/{ref}/config/disk
