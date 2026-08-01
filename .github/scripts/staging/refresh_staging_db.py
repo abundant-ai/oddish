@@ -82,8 +82,24 @@ async def _topo_order(conn, include: set[str]) -> list[str]:
     return order
 
 
+async def _connect_with_retry(url: str, attempts: int = 12, delay: float = 15.0):
+    # The staging branch restarts on compute/disk changes, and its pooler can
+    # report healthy while still refusing connections for a short window
+    # (observed: econnrefused seconds after ACTIVE_HEALTHY). Retry connects.
+    last: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            return await asyncpg.connect(url, statement_cache_size=0)
+        except (asyncpg.PostgresConnectionError, ConnectionError, OSError) as exc:
+            last = exc
+            print(f"connect attempt {i}/{attempts} failed: {exc!r}; retrying in {delay:.0f}s",
+                  flush=True)
+            await asyncio.sleep(delay)
+    raise last  # type: ignore[misc]
+
+
 async def _src_connect(url: str):
-    return await asyncpg.connect(url, statement_cache_size=0)
+    return await _connect_with_retry(url)
 
 
 def _pick_spool_dir() -> str:
@@ -113,8 +129,7 @@ async def main() -> None:
           flush=True)
     src_url = _session_pooler(_plain(os.environ["SOURCE_DB_URL"]))
     holder = await _src_connect(src_url)
-    dst = await asyncpg.connect(_plain(os.environ["TARGET_DB_URL"]),
-                                statement_cache_size=0)
+    dst = await _connect_with_retry(_plain(os.environ["TARGET_DB_URL"]))
     src_tables, dst_tables = await _tables(holder), await _tables(dst)
     include = (src_tables & dst_tables) - EXCLUDE
     unclassified = (src_tables - dst_tables - EXCLUDE)
