@@ -1041,6 +1041,11 @@ export function ExperimentDetailView({
   // A pending deep-link trial fetched directly by id, staged until its host
   // task shell is available to open the drawer with.
   const [resolvedUrlTrial, setResolvedUrlTrial] = useState<Trial | null>(null);
+  // Task drawer opened by hydration itself while a deep-link trial was still
+  // pending (possibly from a stale ?task= naming the wrong task). The
+  // resolver may replace this drawer; any other open drawer means the user
+  // navigated, and the deep link yields.
+  const hydrationTaskIdRef = useRef<string | null>(null);
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;
   const deferredTasksForDerivedData = useDeferredValue(tasksForExperiment);
 
@@ -1173,41 +1178,43 @@ export function ExperimentDetailView({
       ? (tasksForExperiment.find((t) => t.id === urlTaskId) ??
         tasksForExperiment.find((t) => t.name === urlTaskId))
       : null;
-    if (!task) {
-      // The trial id alone must be enough to address a trial: without a
-      // usable ?task= the direct fetch recovers the host task from the
-      // trial's own task_id.
-      if (urlTrialId) setPendingUrlTrialId(urlTrialId);
-      return;
+
+    if (urlTrialId) {
+      // The trial id is the source of truth for its host task, so scan every
+      // loaded task rather than trusting ?task= — a stale or missing task
+      // param must not strand the link. Public share pages carry their full
+      // trials here; the authed page usually has none yet and falls through
+      // to the pending path.
+      for (const host of tasksForExperiment) {
+        const trial = (host.trials ?? []).find((t) => t.id === urlTrialId);
+        if (trial) {
+          const { trialGroups, orderedTrials } = buildTrialGroups(host);
+          setDrawerState({
+            isOpen: true,
+            mode: "trial",
+            task: host,
+            taskIndex: tasksForExperiment.indexOf(host),
+            orderedTasks: tasksForExperiment,
+            trial,
+            trialIndex: orderedTrials.findIndex((t) => t.id === trial.id),
+            orderedTrials,
+            trialGroups,
+          });
+          return;
+        }
+      }
+      // Not loaded yet: keep the id pending; it resolves from a streamed
+      // trial page or the direct /api/trials fetch. Remember which task
+      // drawer hydration opens below so the resolver may replace it — it
+      // must never replace one the user opened themselves.
+      setPendingUrlTrialId(urlTrialId);
+      hydrationTaskIdRef.current = task?.id ?? null;
     }
+
+    if (!task) return;
 
     const taskIndex = tasksForExperiment.indexOf(task);
     const { trialGroups, orderedTrials } = buildTrialGroups(task);
-
-    if (urlTrialId) {
-      const trial = orderedTrials.find((t) => t.id === urlTrialId) ?? null;
-      if (trial) {
-        const trialIndex = orderedTrials.indexOf(trial);
-        setDrawerState({
-          isOpen: true,
-          mode: "trial",
-          task,
-          taskIndex,
-          orderedTasks: tasksForExperiment,
-          trial,
-          trialIndex,
-          orderedTrials,
-          trialGroups,
-        });
-        return;
-      }
-      // Hydration runs off the task shells, before any trial page has
-      // streamed in, so the trial is almost never findable here. Open the
-      // task drawer below and keep the id pending; it resolves once a
-      // streamed page carries it or the direct /api/trials fetch lands.
-      setPendingUrlTrialId(urlTrialId);
-    }
-
     setDrawerState({
       isOpen: true,
       mode: "task",
@@ -1245,29 +1252,14 @@ export function ExperimentDetailView({
     const foundTrialIndex = drawerState.trial
       ? orderedTrials.findIndex((t) => t.id === drawerState.trial!.id)
       : -1;
-    let resolvedTrialIndex = foundTrialIndex >= 0 ? foundTrialIndex : null;
-    let resolvedTrial =
+    const resolvedTrialIndex = foundTrialIndex >= 0 ? foundTrialIndex : null;
+    const resolvedTrial =
       resolvedTrialIndex != null
         ? orderedTrials[resolvedTrialIndex]
         : drawerState.trial;
-    // Deep-linked ?trial= that hydration couldn't find: promote the drawer to
-    // it as soon as a streamed trial page carries it.
-    let resolvedMode = drawerState.mode;
-    if (pendingUrlTrialId != null && drawerState.mode === "task") {
-      const pendingIndex = orderedTrials.findIndex(
-        (t) => t.id === pendingUrlTrialId
-      );
-      if (pendingIndex >= 0) {
-        resolvedMode = "trial";
-        resolvedTrial = orderedTrials[pendingIndex];
-        resolvedTrialIndex = pendingIndex;
-        setPendingUrlTrialId(null);
-      }
-    }
     const resolvedTaskIndex = tasksForExperiment.indexOf(liveTask);
     setDrawerState({
       ...drawerState,
-      mode: resolvedMode,
       task: liveTask,
       taskIndex:
         resolvedTaskIndex >= 0 ? resolvedTaskIndex : drawerState.taskIndex,
@@ -1277,36 +1269,93 @@ export function ExperimentDetailView({
       orderedTrials,
       trialGroups,
     });
-  }, [tasksForExperiment, drawerState, buildTrialGroups, pendingUrlTrialId]);
+  }, [tasksForExperiment, drawerState, buildTrialGroups]);
+
+  // Open a resolved deep-link trial. Yields if the user has navigated on
+  // their own since hydration: only a closed drawer, the host task's own
+  // task-mode drawer, or the task drawer hydration itself opened (possibly
+  // off a stale ?task=) may be replaced. Yielding still clears the pending
+  // state — a deep link never overrides the user.
+  const openDeepLinkTrial = useCallback(
+    (host: Task, trial: Trial) => {
+      setDrawerState((prev) => {
+        if (
+          prev &&
+          !(
+            prev.mode === "task" &&
+            (prev.task.id === host.id ||
+              prev.task.id === hydrationTaskIdRef.current)
+          )
+        ) {
+          return prev;
+        }
+        const { trialGroups, orderedTrials } = buildTrialGroups(host);
+        const index = orderedTrials.findIndex((t) => t.id === trial.id);
+        return {
+          isOpen: true,
+          mode: "trial",
+          task: host,
+          taskIndex: tasksForExperiment.indexOf(host),
+          orderedTasks: tasksForExperiment,
+          trial: index >= 0 ? orderedTrials[index] : trial,
+          trialIndex: index >= 0 ? index : null,
+          orderedTrials,
+          trialGroups,
+        };
+      });
+      setPendingUrlTrialId(null);
+      setResolvedUrlTrial(null);
+    },
+    [tasksForExperiment, buildTrialGroups]
+  );
+
+  // Resolve a pending deep-link trial from grid data as it streams in. This
+  // is the only resolution path public share pages have (they can't use the
+  // authed by-id route), and it also covers the authed page whenever the
+  // direct fetch below is slow or failed transiently.
+  useEffect(() => {
+    if (pendingUrlTrialId == null) return;
+    for (const host of tasksForExperiment) {
+      const trial = (host.trials ?? []).find(
+        (t) => t.id === pendingUrlTrialId
+      );
+      if (trial) {
+        openDeepLinkTrial(host, trial);
+        return;
+      }
+    }
+  }, [pendingUrlTrialId, tasksForExperiment, openDeepLinkTrial]);
 
   // A deep-linked trial can also point at data the grid will never stream in
   // (a task beyond the prefetched pages, or a superseded trial), so resolve
   // the pending id with a direct fetch too. The fetched trial is only staged
-  // here; the effect below opens it once its host task is known. Whichever
-  // source lands first wins: a resolve from a streamed page clears the
-  // pending id, which cancels this fetch. Public share pages can't use the
-  // authed route and skip this (they carry full trials up front, so the
-  // streamed-data path covers them).
+  // here; the effect below opens it once its host task shell is known.
+  // Whichever source lands first wins: a resolve from the streamed path
+  // clears the pending id, which cancels this fetch. Only a definitive 404
+  // gives the deep link up — transient failures keep the id pending so the
+  // streamed path can still resolve it.
   useEffect(() => {
     if (pendingUrlTrialId == null || !loadFullTrialOnOpen) return;
     let cancelled = false;
     (async () => {
       let fetched: Trial | null = null;
+      let definitiveMiss = false;
       try {
         const res = await fetch(
           `${apiBaseUrl}/trials/${encodeURIComponent(pendingUrlTrialId)}`,
           { cache: "no-store" }
         );
         if (res.ok) fetched = (await res.json()) as Trial;
+        else if (res.status === 404) definitiveMiss = true;
       } catch {
-        // Fall through: the deep link degrades to whatever is open.
+        // Transient network failure: leave the id pending.
       }
       if (cancelled) return;
-      if (!fetched) {
+      if (definitiveMiss) {
         setPendingUrlTrialId(null);
         return;
       }
-      setResolvedUrlTrial(fetched);
+      if (fetched) setResolvedUrlTrial(fetched);
     })();
     return () => {
       cancelled = true;
@@ -1315,39 +1364,17 @@ export function ExperimentDetailView({
 
   // Open a directly-fetched deep-link trial. The trial is the source of
   // truth: its task_id names the host task, so the link works even when the
-  // ?task= param is missing or stale. Waits for the task shell to arrive if
-  // it hasn't yet (shells cover the whole experiment in one request).
+  // ?task= param is missing or names the wrong task. Waits for the host
+  // task's shell to arrive if it hasn't yet (shells cover the whole
+  // experiment in one request).
   useEffect(() => {
     if (!resolvedUrlTrial) return;
-    const task = tasksForExperiment.find(
+    const host = tasksForExperiment.find(
       (t) => t.id === resolvedUrlTrial.task_id
     );
-    if (!task) return;
-    setDrawerState((prev) => {
-      // Hydration may have opened the host task's drawer already; anything
-      // else open means the user navigated since, and the deep link yields.
-      if (prev && !(prev.mode === "task" && prev.task.id === task.id)) {
-        return prev;
-      }
-      const { trialGroups, orderedTrials } = buildTrialGroups(task);
-      const index = orderedTrials.findIndex(
-        (t) => t.id === resolvedUrlTrial.id
-      );
-      return {
-        isOpen: true,
-        mode: "trial",
-        task,
-        taskIndex: tasksForExperiment.indexOf(task),
-        orderedTasks: tasksForExperiment,
-        trial: index >= 0 ? orderedTrials[index] : resolvedUrlTrial,
-        trialIndex: index >= 0 ? index : null,
-        orderedTrials,
-        trialGroups,
-      };
-    });
-    setResolvedUrlTrial(null);
-    setPendingUrlTrialId(null);
-  }, [resolvedUrlTrial, tasksForExperiment, buildTrialGroups]);
+    if (!host) return;
+    openDeepLinkTrial(host, resolvedUrlTrial);
+  }, [resolvedUrlTrial, tasksForExperiment, openDeepLinkTrial]);
 
   // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
   // only the loaded pages, and only the trials the grid renders, so it
@@ -1388,6 +1415,7 @@ export function ExperimentDetailView({
   const closeDrawer = () => {
     setPendingUrlTrialId(null);
     setResolvedUrlTrial(null);
+    hydrationTaskIdRef.current = null;
     setDrawerState(null);
   };
 
