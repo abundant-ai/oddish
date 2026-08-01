@@ -1409,12 +1409,13 @@ export function ExperimentDetailView({
       (t) => t.id === resolvedUrlTrial.task_id
     );
     if (!host) {
-      // Shells cover the whole experiment in one request, so once they're
-      // loaded a missing host means the trial belongs to another experiment
-      // or an unlinked task — it can't open on this page. Give the deep
-      // link up so URL sync drops the stale params instead of pinning the
-      // pending state for the whole session.
-      if (!isLoading && tasksForExperiment.length > 0) {
+      // Shells cover the whole experiment in one request, but slim-task
+      // pages can still merge in hosts the shells never returned (shells
+      // are capped, and the trials merge appends enriched-only tasks). So
+      // the deep link only gives up once BOTH loads are done and the host
+      // still isn't there — then it truly belongs to another experiment
+      // or an unlinked task, and URL sync may drop the stale params.
+      if (!isLoading && !isLoadingTrials && tasksForExperiment.length > 0) {
         cancelPendingDeepLink();
       }
       return;
@@ -1425,6 +1426,7 @@ export function ExperimentDetailView({
     tasksForExperiment,
     openDeepLinkTrial,
     isLoading,
+    isLoadingTrials,
     cancelPendingDeepLink,
   ]);
 
