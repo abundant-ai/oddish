@@ -447,8 +447,10 @@ def test_task_toml_escapes_llm_controlled_strings():
         checkpoints=[Checkpoint("a", "a", "", "true")],
     )
     parsed = tomllib.loads(render_task_toml(task, long_horizon_minutes=30))
-    assert parsed["task"]["metadata"]["category"] == 'ret2libc "pwn"\ninjected = 1'
-    assert "injected" not in parsed["task"]["metadata"]  # not smuggled as a key
+    # Harbor reads a top-level [metadata] table, not [task.metadata].
+    assert parsed["metadata"]["category"] == 'ret2libc "pwn"\ninjected = 1'
+    assert "injected" not in parsed["metadata"]  # not smuggled as a key
+    assert "metadata" not in parsed["task"]  # not nested under [task]
 
 
 def test_exit_code_tracks_accepted_not_just_gate():

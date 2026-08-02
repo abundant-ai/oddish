@@ -49,7 +49,9 @@ def render_task_toml(task: GeneratedTask, *, long_horizon_minutes: float) -> str
         "[task]",
         f"name = {_toml_str(f'crackbench/{task.slug}')}",
         "",
-        "[task.metadata]",
+        # Harbor/oddish read a top-level [metadata] table (TaskConfig.metadata),
+        # not [task.metadata]; nesting it under [task] drops these fields.
+        "[metadata]",
         f"category = {_toml_str(task.category)}",
         f"difficulty = {_toml_str(task.difficulty)}",
         f"long_horizon_target_minutes = {int(long_horizon_minutes)}",
