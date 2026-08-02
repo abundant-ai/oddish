@@ -37,8 +37,9 @@ class LLM(Protocol):
 _NO_MATCH = object()
 
 
-def _scan_balanced_json(candidate: str) -> Any:
-    """Return the LARGEST balanced JSON value in ``candidate``, or ``_NO_MATCH``.
+def _scan_balanced_json(candidate: str) -> tuple[Any, int]:
+    """Return ``(value, span)`` for the LARGEST balanced JSON value in
+    ``candidate``, or ``(_NO_MATCH, 0)``.
 
     Scans every start position, matching each against its own bracket type, and
     keeps the widest parseable region. Preferring the largest region means:
@@ -83,32 +84,35 @@ def _scan_balanced_json(candidate: str) -> Any:
                         else:
                             best_len = span
                     break  # this opener's region is closed; try the next start
-    return best
+    return best, best_len
 
 
 def extract_json(text: str) -> Any:
-    """Best-effort extraction of the first JSON value in a model response.
+    """Best-effort extraction of the most substantial JSON value in a response.
 
-    Tries each ```-fenced block in order and then the whole response; for each,
-    attempts strict JSON and then a balanced-region scan. An earlier non-JSON
-    fence (e.g. a shell example) therefore does not trap extraction. Raises
-    ValueError if no JSON object/array can be found.
+    Considers each ```-fenced block AND the whole response as candidates; each
+    contributes either its strict-parse or its largest balanced region, and the
+    widest value across all candidates wins. So neither an earlier non-JSON fence
+    (e.g. a shell example) nor a tiny valid decoy fence (``{}``, ``[0]``) traps
+    extraction. Raises ValueError if no JSON object/array can be found.
     """
     if not text:
         raise ValueError("empty response")
-    candidates = [
+    fenced = [
         m.group(1) for m in re.finditer(r"```(?:json)?\s*(.+?)```", text, re.DOTALL)
     ]
-    candidates.append(text)
-    for candidate in candidates:
+    best: Any = _NO_MATCH
+    best_len = 0
+    for candidate in (*fenced, text):
         try:
-            return json.loads(candidate)
+            value, span = json.loads(candidate), len(candidate.strip())
         except json.JSONDecodeError:
-            pass
-        found = _scan_balanced_json(candidate)
-        if found is not _NO_MATCH:
-            return found
-    raise ValueError("no parseable JSON found in response")
+            value, span = _scan_balanced_json(candidate)
+        if value is not _NO_MATCH and span > best_len:
+            best, best_len = value, span
+    if best is _NO_MATCH:
+        raise ValueError("no parseable JSON found in response")
+    return best
 
 
 class AnthropicLLM:

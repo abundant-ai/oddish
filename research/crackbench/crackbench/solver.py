@@ -230,6 +230,14 @@ class OddishSolver:
                 f"trial {task_id} did not reach a terminal state within "
                 f"{self._threshold + 45:.0f} min; inconclusive"
             )
+        if _is_execution_failure(snapshot):
+            # Build / infra / harness error (or cancellation) — the trial never
+            # ran a real solve attempt, so it must not be scored as a Brock miss
+            # and admitted. Raise so the harness skips it.
+            raise RuntimeError(
+                f"trial {task_id} terminated in an execution failure "
+                f"(infra/build/harness), not a solve attempt; inconclusive"
+            )
 
         solved, minutes, reward = classify_oddish_snapshot(
             snapshot, elapsed_min=elapsed_min, solve_reward=self._solve_reward
@@ -293,6 +301,16 @@ def _is_terminal(snapshot: Any) -> bool:
         "terminal",
         "done",
     }
+
+
+_EXECUTION_FAILURE_STATES = {"failed", "error", "errored", "cancelled", "canceled"}
+
+
+def _is_execution_failure(snapshot: Any) -> bool:
+    """Terminal states meaning the trial did not complete a real solve attempt
+    (build/infra/harness error or cancellation), as opposed to a genuine miss."""
+    status = _deep_find(snapshot, ("status", "state", "harbor_stage"))
+    return isinstance(status, str) and status.lower() in _EXECUTION_FAILURE_STATES
 
 
 def _to_float(value: Any) -> float | None:

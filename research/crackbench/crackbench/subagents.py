@@ -172,12 +172,13 @@ def generate_tasks(
     )
     payload = extract_json(raw)
     if isinstance(payload, dict):
-        items = payload.get("tasks", [])
+        items = payload.get("tasks") or []  # "tasks": null -> [] (not None)
     elif isinstance(payload, list):
         items = payload
     else:
         raise ValueError(f"unexpected generator payload type: {type(payload)!r}")
-    tasks = [GeneratedTask.from_dict(item) for item in items]
+    # Skip non-object elements: a decoy array/scalar must not crash from_dict.
+    tasks = [GeneratedTask.from_dict(t) for t in items if isinstance(t, dict)]
     # Bound the batch to the requested size so the N-of-``tasks_per_iteration``
     # gate keeps a fixed denominator even when a live model over-produces. An
     # under-sized batch is surfaced by the caller rather than silently padded.
