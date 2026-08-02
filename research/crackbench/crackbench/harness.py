@@ -98,6 +98,12 @@ def run_iteration(
         max_tokens=config.max_gen_tokens,
     )
     log(f"[iter {index}] fable generated {len(tasks)} candidate task(s)")
+    if len(tasks) != config.tasks_per_iteration:
+        log(
+            f"[iter {index}] ! batch size {len(tasks)} != requested "
+            f"{config.tasks_per_iteration}; the {config.min_long_horizon}-of-"
+            f"{config.tasks_per_iteration} gate reads against this batch"
+        )
 
     evaluations: list[TaskEvaluation] = []
     for idx, task in enumerate(tasks):

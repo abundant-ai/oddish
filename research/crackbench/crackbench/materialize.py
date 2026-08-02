@@ -51,7 +51,8 @@ def render_task_toml(task: GeneratedTask, *, long_horizon_minutes: float) -> str
         "build_timeout_sec = 1800",
         "",
         "[agent]",
-        f"max_timeout_sec = {agent_timeout_sec}",
+        # oddish validate_task_timeout_config requires [agent].timeout_sec.
+        f"timeout_sec = {agent_timeout_sec}",
         "",
         "[verifier]",
         "timeout_sec = 900",

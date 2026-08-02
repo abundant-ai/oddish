@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -94,6 +94,25 @@ def test_generated_task_roundtrips():
     for t in tasks:
         again = GeneratedTask.from_dict(t.to_dict())
         assert again.to_dict() == t.to_dict()
+
+
+def test_generate_tasks_trims_to_requested_n():
+    """A model that over-produces must not inflate the gate's denominator."""
+
+    class OverProducer:
+        def complete(self, *, system, prompt, model, max_tokens, temperature=1.0):
+            tasks = [
+                {"slug": f"t{i}", "title": f"T{i}", "instruction": "i",
+                 "checkpoints": [{"id": "a", "verify_cmd": "true"}]}
+                for i in range(7)
+            ]
+            return json.dumps({"tasks": tasks})
+
+    got = generate_tasks(
+        OverProducer(), CheckpointGuidance("", []), n=5, minutes=30,
+        model="m", max_tokens=100,
+    )
+    assert len(got) == 5
 
 
 def test_validation_flags_bad_task():
@@ -187,9 +206,33 @@ def test_write_task_dir_layout(tmp_path):
         assert (dest / rel).exists(), rel
     toml = (dest / "task.toml").read_text()
     assert 'name = "crackbench/demo"' in toml
-    assert "max_timeout_sec" in toml
+    # oddish requires [agent].timeout_sec specifically (not max_timeout_sec).
+    assert "[agent]\ntimeout_sec = " in toml
     # solution must not leak into the instruction
     assert "do the thing" in (dest / "instruction.md").read_text()
+
+
+def test_task_toml_satisfies_oddish_timeout_contract(tmp_path):
+    """Mirror oddish.task_timeouts.validate_task_timeout_config's required fields.
+
+    oddish rejects a task at submit time unless task.toml declares positive
+    [agent].timeout_sec, [environment].build_timeout_sec, and [verifier].timeout_sec.
+    """
+    task = GeneratedTask(
+        slug="c", title="C", category="pwn", difficulty="expert", summary="s",
+        instruction="i", checkpoints=[Checkpoint("a", "a", "", "true")],
+    )
+    dest = write_task_dir(task, tmp_path / "c", long_horizon_minutes=45)
+    cfg = tomllib.loads((dest / "task.toml").read_text())
+    for section, field in (
+        ("agent", "timeout_sec"),
+        ("environment", "build_timeout_sec"),
+        ("verifier", "timeout_sec"),
+    ):
+        assert field in cfg.get(section, {}), f"[{section}].{field} missing"
+        value = cfg[section][field]
+        assert isinstance(value, (int, float)) and not isinstance(value, bool)
+        assert value > 0, f"[{section}].{field} must be positive"
 
 
 def test_generated_verifier_computes_dense_reward(tmp_path):

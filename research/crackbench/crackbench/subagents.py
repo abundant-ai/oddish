@@ -177,4 +177,10 @@ def generate_tasks(
         items = payload
     else:
         raise ValueError(f"unexpected generator payload type: {type(payload)!r}")
-    return [GeneratedTask.from_dict(item) for item in items]
+    tasks = [GeneratedTask.from_dict(item) for item in items]
+    # Bound the batch to the requested size so the N-of-``tasks_per_iteration``
+    # gate keeps a fixed denominator even when a live model over-produces. An
+    # under-sized batch is surfaced by the caller rather than silently padded.
+    if len(tasks) > n:
+        tasks = tasks[:n]
+    return tasks
