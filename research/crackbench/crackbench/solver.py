@@ -209,7 +209,10 @@ class OddishSolver:
             raise RuntimeError(f"could not find task id in oddish run output: {submit}")
 
         start = time.monotonic()
-        deadline = start + (self._threshold + 20) * 60
+        # Poll past the task's own [agent].timeout_sec (threshold + 30 min, set by
+        # render_task_toml) plus verifier headroom, so a success in that final
+        # window is observed instead of being recorded as an unsolved run.
+        deadline = start + (self._threshold + 45) * 60
         snapshot: Any = None
         while time.monotonic() < deadline:
             snapshot = self._run_json(

@@ -10,6 +10,7 @@ import json
 import subprocess
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,6 +58,12 @@ def test_extract_json_variants(text):
 def test_extract_json_raises_on_garbage():
     with pytest.raises(ValueError):
         extract_json("no json here")
+
+
+def test_extract_json_skips_leading_non_json_braces():
+    # a non-JSON brace pair before the real payload must not abort the scan
+    assert extract_json('reasoning {not: json} then\n{"tasks": [1]}') == {"tasks": [1]}
+    assert extract_json("junk [not, json] then [1, 2, 3]") == [1, 2, 3]
 
 
 # --- fake generator + parsing ----------------------------------------------
@@ -442,6 +449,14 @@ def test_task_toml_escapes_llm_controlled_strings():
     parsed = tomllib.loads(render_task_toml(task, long_horizon_minutes=30))
     assert parsed["task"]["metadata"]["category"] == 'ret2libc "pwn"\ninjected = 1'
     assert "injected" not in parsed["task"]["metadata"]  # not smuggled as a key
+
+
+def test_exit_code_tracks_accepted_not_just_gate():
+    from crackbench.cli import _exit_code
+
+    # any long-horizon tasks produced => success, even if no iteration "passed"
+    assert _exit_code(SimpleNamespace(accepted=["a"])) == 0
+    assert _exit_code(SimpleNamespace(accepted=[])) == 2
 
 
 def test_run_iteration_rejects_invalid_and_batch_gate(tmp_path):

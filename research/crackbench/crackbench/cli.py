@@ -110,8 +110,17 @@ def main(argv: list[str] | None = None) -> int:
         f"\ndone: {passed}/{total} iteration(s) passed the gate; "
         f"{len(result.accepted)} long-horizon task(s) accepted -> {config.out_dir}"
     )
-    # Exit 0 if at least one iteration cleared the gate, else 2 (nothing found).
-    return 0 if passed > 0 else 2
+    return _exit_code(result)
+
+
+def _exit_code(result) -> int:
+    """0 if the run produced any long-horizon tasks, else 2.
+
+    Acceptance is per-task, not gated on a whole iteration clearing the
+    N-of-M bar, so a run can write a useful corpus without any iteration
+    "passing". Automation keying off the exit code must see that as success.
+    """
+    return 0 if result.accepted else 2
 
 
 if __name__ == "__main__":  # pragma: no cover

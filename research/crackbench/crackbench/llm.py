@@ -48,35 +48,37 @@ def extract_json(text: str) -> Any:
         return json.loads(candidate)
     except json.JSONDecodeError:
         pass
-    # Fall back to scanning for the first balanced { } or [ ] region.
+    # Fall back to scanning for a balanced { } or [ ] region. Try EVERY opener
+    # position, not just the first: prose can contain a non-JSON brace pair
+    # before the real payload, and that must not abort the search.
     for opener, closer in (("{", "}"), ("[", "]")):
         start = candidate.find(opener)
-        if start == -1:
-            continue
-        depth = 0
-        in_str = False
-        esc = False
-        for i in range(start, len(candidate)):
-            ch = candidate[i]
-            if in_str:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-                continue
-            if ch == '"':
-                in_str = True
-            elif ch == opener:
-                depth += 1
-            elif ch == closer:
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(candidate[start : i + 1])
-                    except json.JSONDecodeError:
-                        break
+        while start != -1:
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(candidate)):
+                ch = candidate[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == opener:
+                    depth += 1
+                elif ch == closer:
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(candidate[start : i + 1])
+                        except json.JSONDecodeError:
+                            break  # not valid JSON; advance to the next opener
+            start = candidate.find(opener, start + 1)
     raise ValueError("no parseable JSON found in response")
 
 
