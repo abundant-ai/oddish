@@ -208,7 +208,8 @@ class OddishSolver:
         if not task_id:
             raise RuntimeError(f"could not find task id in oddish run output: {submit}")
 
-        deadline = time.monotonic() + (self._threshold + 20) * 60
+        start = time.monotonic()
+        deadline = start + (self._threshold + 20) * 60
         snapshot: Any = None
         while time.monotonic() < deadline:
             snapshot = self._run_json(
@@ -217,21 +218,37 @@ class OddishSolver:
             if _is_terminal(snapshot):
                 break
             time.sleep(self._poll)
+        elapsed_min = (time.monotonic() - start) / 60.0
 
-        reward = _to_float(_deep_find(snapshot, ("reward",)))
-        seconds = _to_float(
-            _deep_find(snapshot, ("trajectory_duration_seconds", "duration_seconds"))
+        solved, minutes, reward = classify_oddish_snapshot(
+            snapshot, elapsed_min=elapsed_min, solve_reward=self._solve_reward
         )
-        minutes = (seconds / 60.0) if seconds is not None else (self._threshold + 20)
-        reward = reward if reward is not None else 0.0
-        solved = reward >= self._solve_reward
         return SolveResult(
             solver=self.name,
             solved=solved,
             minutes=round(minutes, 1),
-            reward=round(reward, 3),
+            reward=reward,
             detail=f"task_id={task_id}",
         )
+
+
+def classify_oddish_snapshot(
+    snapshot: Any, *, elapsed_min: float, solve_reward: float
+) -> tuple[bool, float, float]:
+    """Derive (solved, minutes, reward) from a terminal oddish status snapshot.
+
+    Prefer the agent's own ``trajectory_duration_seconds``; when oddish reports
+    none, fall back to the measured wall-clock (submit -> terminal) rather than a
+    constant, so a fast success with no trajectory metric is not forced over the
+    long-horizon threshold.
+    """
+    reward = _to_float(_deep_find(snapshot, ("reward",)))
+    seconds = _to_float(
+        _deep_find(snapshot, ("trajectory_duration_seconds", "duration_seconds"))
+    )
+    minutes = (seconds / 60.0) if seconds is not None else max(0.0, elapsed_min)
+    reward = reward if reward is not None else 0.0
+    return reward >= solve_reward, minutes, round(reward, 3)
 
 
 def _deep_find(obj: Any, keys: tuple[str, ...]) -> Any:

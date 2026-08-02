@@ -16,13 +16,14 @@ import pytest
 from crackbench.config import HarnessConfig
 from crackbench.harness import run, run_iteration, default_llm_factory
 from crackbench.llm import FakeLLM, extract_json
-from crackbench.materialize import write_task_dir
+from crackbench.materialize import render_dockerfile, write_task_dir
 from crackbench.models import Checkpoint, GeneratedTask
 from crackbench.solver import (
     MockSolver,
     OddishSolver,
     SolveResult,
     classify_long_horizon,
+    classify_oddish_snapshot,
 )
 from crackbench.subagents import CheckpointGuidance, generate_tasks
 
@@ -373,6 +374,50 @@ class _MixedBatchLLM:
         tasks.append({"slug": "bad", "title": "Bad", "instruction": "do it",
                       "checkpoints": []})  # invalid: no checkpoints
         return json.dumps({"tasks": tasks})
+
+
+def test_oddish_snapshot_missing_duration_uses_wall_clock():
+    # solved with no trajectory duration must use measured wall-clock, not a
+    # constant that would force every such success over the threshold.
+    solved, minutes, reward = classify_oddish_snapshot(
+        {"reward": 1.0}, elapsed_min=3.0, solve_reward=1.0
+    )
+    assert solved and reward == 1.0 and minutes == 3.0
+    lh, _ = classify_long_horizon(
+        SolveResult("brock-oddish", solved, minutes, reward), minutes_threshold=30
+    )
+    assert not lh  # a fast success must not be classified long-horizon
+    # a reported trajectory duration wins over wall-clock
+    _, minutes2, _ = classify_oddish_snapshot(
+        {"reward": 1.0, "trajectory_duration_seconds": 2400},
+        elapsed_min=3.0, solve_reward=1.0,
+    )
+    assert minutes2 == 40.0
+
+
+def test_fake_llm_reproducible_across_instances():
+    def batch(seed):
+        return generate_tasks(
+            FakeLLM(seed=seed), CheckpointGuidance("", []), n=5, minutes=30,
+            model="m", max_tokens=100,
+        )
+
+    assert [t.to_dict() for t in batch(5)] == [t.to_dict() for t in batch(5)]
+    assert [t.slug for t in batch(5)] != [t.slug for t in batch(6)]
+
+
+def test_dockerfile_bootstraps_pip_for_pwntools():
+    task = GeneratedTask(
+        slug="p", title="P", category="pwn", difficulty="expert", summary="s",
+        instruction="i",
+        environment={"base_image": "ubuntu:24.04",
+                     "packages": ["gdb", "python3", "pwntools"]},
+        checkpoints=[Checkpoint("a", "a", "", "true")],
+    )
+    df = render_dockerfile(task)
+    assert "python3-pip" in df  # interpreter+pip bootstrapped before pip install
+    assert "--break-system-packages" in df  # ubuntu:24.04 is PEP 668 managed
+    assert "pwntools" in df
 
 
 def test_run_iteration_rejects_invalid_and_batch_gate(tmp_path):

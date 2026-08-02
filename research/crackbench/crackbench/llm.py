@@ -127,14 +127,15 @@ class FakeLLM:
     """Deterministic offline double.
 
     Produces canned checkpoint guidance for reader subagents and a varied,
-    parseable batch of tasks for the generator subagent. Output varies per call
-    (seeded by an internal counter) so successive iterations differ, mimicking a
-    real generator while staying fully reproducible.
+    parseable batch of tasks for the generator subagent. Output is a pure
+    function of the per-instance ``seed``; the harness builds a fresh,
+    distinctly-seeded instance each iteration, so successive iterations differ
+    while every run stays reproducible. It holds no mutable state, so the
+    concurrent reader fan-out is race-free.
     """
 
     def __init__(self, *, seed: int = 0) -> None:
         self._seed = seed
-        self._calls = 0
 
     def complete(
         self,
@@ -145,7 +146,6 @@ class FakeLLM:
         max_tokens: int,
         temperature: float = 1.0,
     ) -> str:
-        self._calls += 1
         if ROLE_READER in system:
             return self._fake_guidance(prompt)
         if ROLE_GENERATOR in system:
@@ -170,7 +170,7 @@ class FakeLLM:
     # -- generator role ----------------------------------------------------
     def _fake_tasks(self, prompt: str) -> str:
         n = _requested_count(prompt, default=5)
-        batch_seed = (self._seed * 1_000_003) ^ (self._calls * 97)
+        batch_seed = (self._seed * 1_000_003 + 7) & 0xFFFFFFFF
         archetypes = _ARCHETYPES
         tasks = []
         for i in range(n):

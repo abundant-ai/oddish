@@ -70,6 +70,10 @@ def render_dockerfile(task: GeneratedTask) -> str:
     packages = task.environment.get("packages", []) or []
     apt = [p for p in packages if p not in {"pwntools"}]
     pip = [p for p in packages if p in {"pwntools"}]
+    if pip:
+        # pip packages need an interpreter and pip; ubuntu:24.04 ships neither by
+        # default and is PEP 668 externally-managed (hence --break-system-packages).
+        apt = apt + ["python3", "python3-pip"]
     lines = [
         f"FROM {base}",
         "ENV DEBIAN_FRONTEND=noninteractive",
@@ -82,7 +86,10 @@ def render_dockerfile(task: GeneratedTask) -> str:
             "    && rm -rf /var/lib/apt/lists/*",
         ]
     if pip:
-        lines.append(f"RUN pip3 install --no-cache-dir {' '.join(sorted(set(pip)))}")
+        lines.append(
+            "RUN pip3 install --no-cache-dir --break-system-packages "
+            + " ".join(sorted(set(pip)))
+        )
     lines += [
         "WORKDIR /workspace",
         "# TODO(full-realization): COPY the symbol-poor challenge binary / assets here.",
