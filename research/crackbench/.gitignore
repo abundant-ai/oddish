@@ -1,0 +1,6 @@
+# Harness run artifacts and solver scratch space
+runs/
+.crackbench-solve/
+__pycache__/
+*.pyc
+.pytest_cache/
