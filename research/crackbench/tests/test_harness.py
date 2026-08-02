@@ -317,3 +317,72 @@ def test_target_stops_early(tmp_path):
     assert len(result.accepted) >= 2
     # should not have run all 10 iterations to collect just 2
     assert len(result.iterations) < 10
+
+
+# --- review-fix regressions -------------------------------------------------
+
+
+def test_task_toml_declares_no_network(tmp_path):
+    task = GeneratedTask(
+        slug="n", title="N", category="pwn", difficulty="hard", summary="s",
+        instruction="i", checkpoints=[Checkpoint("a", "a", "", "true")],
+    )
+    dest = write_task_dir(task, tmp_path / "n", long_horizon_minutes=30)
+    cfg = tomllib.loads((dest / "task.toml").read_text())
+    # CrackMeBench discipline; oddish closed_internet preflight requires it.
+    assert cfg["environment"]["network_mode"] == "no-network"
+
+
+def test_verifier_fails_closed_on_empty_verify_cmd(tmp_path):
+    task = GeneratedTask(
+        slug="e", title="E", category="pwn", difficulty="hard", summary="s",
+        instruction="i",
+        checkpoints=[
+            Checkpoint("cp-empty", "E", "", "", weight=1.0),
+            Checkpoint("cp-ok", "O", "", "true", weight=1.0),
+        ],
+    )
+    dest = write_task_dir(task, tmp_path / "e", long_horizon_minutes=30)
+    out = tmp_path / "out"
+    proc = subprocess.run(
+        ["bash", str(dest / "tests" / "test.sh")],
+        capture_output=True, text=True,
+        env={"CRACKBENCH_VERIFIER_OUT": str(out), "PATH": "/usr/bin:/bin"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    # empty verify_cmd must NOT pass (bash -c "" would exit 0): reward = 1 of 2
+    assert (out / "reward.txt").read_text().strip() == "0.5"
+    by_id = {c["id"]: c for c in json.loads((out / "metrics.json").read_text())["checkpoints"]}
+    assert by_id["cp-empty"]["passed"] is False
+    assert by_id["cp-ok"]["passed"] is True
+
+
+class _MixedBatchLLM:
+    """Reader role -> canned rules; generator role -> 4 valid + 1 invalid task."""
+
+    def complete(self, *, system, prompt, model, max_tokens, temperature=1.0):
+        from crackbench.llm import ROLE_GENERATOR
+
+        if ROLE_GENERATOR not in system:
+            return "- checkpoints settled by an executable oracle"
+        tasks = [
+            {"slug": f"ok{i}", "title": f"Ok{i}", "instruction": "do it",
+             "checkpoints": [{"id": "a", "verify_cmd": "true"}]}
+            for i in range(4)
+        ]
+        tasks.append({"slug": "bad", "title": "Bad", "instruction": "do it",
+                      "checkpoints": []})  # invalid: no checkpoints
+        return json.dumps({"tasks": tasks})
+
+
+def test_run_iteration_rejects_invalid_and_batch_gate(tmp_path):
+    cfg = _cfg(tmp_path, tasks_per_iteration=5, min_long_horizon=2)
+    it, _ = run_iteration(
+        cfg, 1, llm_factory=lambda i: _MixedBatchLLM(),
+        solver=MockSolver(seed=0), log=lambda *_: None,
+    )
+    assert len(it.evaluations) == 4  # the invalid task was excluded from scoring
+    assert [r["slug"] for r in it.rejected] == ["bad"]
+    # an under-full batch (4 valid < 5 requested) cannot clear the 2-of-5 gate,
+    # regardless of how many of the 4 are long-horizon
+    assert not it.passed_gate(cfg.min_long_horizon)

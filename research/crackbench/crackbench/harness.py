@@ -98,18 +98,27 @@ def run_iteration(
         max_tokens=config.max_gen_tokens,
     )
     log(f"[iter {index}] fable generated {len(tasks)} candidate task(s)")
-    if len(tasks) != config.tasks_per_iteration:
+
+    # Reject structurally-invalid candidates before scoring: an invalid task must
+    # not be solved, counted as long-horizon, or written into the accepted corpus.
+    rejected: list[dict] = []
+    valid: list = []
+    for task in tasks:
+        errors = task.validation_errors()
+        if errors:
+            rejected.append({"slug": task.slug, "errors": errors})
+            log(f"[iter {index}]   ! rejected {task.slug}: {errors}")
+        else:
+            valid.append(task)
+    if len(valid) != config.tasks_per_iteration:
         log(
-            f"[iter {index}] ! batch size {len(tasks)} != requested "
+            f"[iter {index}] ! {len(valid)} valid task(s) != requested "
             f"{config.tasks_per_iteration}; the {config.min_long_horizon}-of-"
-            f"{config.tasks_per_iteration} gate reads against this batch"
+            f"{config.tasks_per_iteration} gate cannot pass on this batch"
         )
 
     evaluations: list[TaskEvaluation] = []
-    for idx, task in enumerate(tasks):
-        errors = task.validation_errors()
-        if errors:
-            log(f"[iter {index}]   ! {task.slug}: validation issues {errors}")
+    for idx, task in enumerate(valid):
         result = solver.solve(task, iteration=index, index=idx)
         long_horizon, reason = classify_long_horizon(
             result, minutes_threshold=config.long_horizon_minutes
@@ -127,6 +136,8 @@ def run_iteration(
         guidance_digest=guidance.digest,
         guidance_sources=guidance.sources,
         evaluations=evaluations,
+        expected_batch_size=config.tasks_per_iteration,
+        rejected=rejected,
     )
     return iteration, guidance
 

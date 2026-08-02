@@ -48,6 +48,10 @@ def render_task_toml(task: GeneratedTask, *, long_horizon_minutes: float) -> str
         "",
         "[environment]",
         "# Harbor builds environment/Dockerfile for this task.",
+        # CrackMeBench tasks are self-contained: no egress. Harbor defaults
+        # network_mode to "public", and oddish's closed_internet preflight flags
+        # that, so declare no-network explicitly.
+        'network_mode = "no-network"',
         "build_timeout_sec = 1800",
         "",
         "[agent]",
@@ -147,14 +151,19 @@ passed = failed = 0
 for cp in checkpoints:
     weight = float(cp.get("weight", 1.0))
     total += weight
-    proc = subprocess.run(["bash", "-c", cp["verify_cmd"]],
-                          capture_output=True, text=True)
-    ok = proc.returncode == 0
+    cmd = (cp.get("verify_cmd") or "").strip()
+    if not cmd:
+        # Fail closed: an empty command would make `bash -c ""` exit 0 and
+        # silently "pass" a broken checkpoint, inflating reward.
+        ok, code = False, None
+    else:
+        proc = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
+        ok, code = proc.returncode == 0, proc.returncode
     earned += weight if ok else 0.0
     passed += 1 if ok else 0
     failed += 0 if ok else 1
     results.append({"id": cp["id"], "title": cp.get("title", cp["id"]),
-                    "weight": weight, "passed": ok, "exit_code": proc.returncode})
+                    "weight": weight, "passed": ok, "exit_code": code})
 
 reward = round(earned / total, 6) if total else 0.0
 with open(f"{out}/reward.txt", "w") as fh:

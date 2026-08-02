@@ -162,6 +162,8 @@ class IterationResult:
     guidance_digest: str
     guidance_sources: list[str]
     evaluations: list[TaskEvaluation]
+    expected_batch_size: int
+    rejected: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def long_horizon_count(self) -> int:
@@ -172,14 +174,22 @@ class IterationResult:
         return [e.task for e in self.evaluations if e.long_horizon]
 
     def passed_gate(self, min_long_horizon: int) -> bool:
-        return self.long_horizon_count >= min_long_horizon
+        # Require a full batch of valid tasks AND enough long-horizon ones, so an
+        # undersized or partly-invalid batch can't clear the
+        # N-of-tasks_per_iteration base-rate test on a shrunken denominator.
+        return (
+            len(self.evaluations) >= self.expected_batch_size
+            and self.long_horizon_count >= min_long_horizon
+        )
 
     def to_dict(self, min_long_horizon: int) -> dict[str, Any]:
         return {
             "index": self.index,
             "guidance_digest": self.guidance_digest,
             "guidance_sources": self.guidance_sources,
-            "generated": len(self.evaluations),
+            "evaluated": len(self.evaluations),
+            "expected_batch_size": self.expected_batch_size,
+            "rejected": self.rejected,
             "long_horizon_count": self.long_horizon_count,
             "passed_gate": self.passed_gate(min_long_horizon),
             "evaluations": [e.to_dict() for e in self.evaluations],
