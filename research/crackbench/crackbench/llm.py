@@ -38,14 +38,18 @@ _NO_MATCH = object()
 
 
 def _scan_balanced_json(candidate: str) -> Any:
-    """Return the first balanced JSON value in ``candidate``, or ``_NO_MATCH``.
+    """Return the LARGEST balanced JSON value in ``candidate``, or ``_NO_MATCH``.
 
-    Scans start positions in DOCUMENT ORDER, matching each against its own bracket
-    type, so (a) a non-JSON brace pair before the payload doesn't abort the
-    search, and (b) a top-level array is returned whole rather than misread as its
-    first nested object (which would drop the tasks list).
+    Scans every start position, matching each against its own bracket type, and
+    keeps the widest parseable region. Preferring the largest region means:
+    (a) a non-JSON brace pair before the payload doesn't abort the search,
+    (b) a top-level array is returned whole rather than as its first nested
+    object, and (c) a small decoy fragment (``{}``, ``[0]``, ``["x"]``) before the
+    real payload does not win over the actual (much larger) task batch.
     """
     pairs = {"{": "}", "[": "]"}
+    best: Any = _NO_MATCH
+    best_len = 0
     for start, opener in enumerate(candidate):
         closer = pairs.get(opener)
         if closer is None:
@@ -70,11 +74,16 @@ def _scan_balanced_json(candidate: str) -> Any:
             elif ch == closer:
                 depth -= 1
                 if depth == 0:
-                    try:
-                        return json.loads(candidate[start : i + 1])
-                    except json.JSONDecodeError:
-                        break  # this region isn't valid JSON; try the next opener
-    return _NO_MATCH
+                    span = i + 1 - start
+                    if span > best_len:
+                        try:
+                            best = json.loads(candidate[start : i + 1])
+                        except json.JSONDecodeError:
+                            pass
+                        else:
+                            best_len = span
+                    break  # this opener's region is closed; try the next start
+    return best
 
 
 def extract_json(text: str) -> Any:

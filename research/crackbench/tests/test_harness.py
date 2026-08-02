@@ -81,6 +81,13 @@ def test_extract_json_ignores_earlier_non_json_fence():
     assert extract_json(text) == {"tasks": [1]}
 
 
+def test_extract_json_prefers_largest_over_decoy_fragments():
+    # small valid-JSON decoys ({}, [0]) before the payload must not win
+    text = 'sure! {} and note tasks[0]; here:\n{"tasks": [1, 2, 3]}'
+    assert extract_json(text) == {"tasks": [1, 2, 3]}
+    assert extract_json('note {} then [{"slug": "a"}]') == [{"slug": "a"}]
+
+
 # --- fake generator + parsing ----------------------------------------------
 
 
