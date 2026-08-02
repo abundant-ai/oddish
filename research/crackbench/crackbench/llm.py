@@ -34,25 +34,17 @@ class LLM(Protocol):
     ) -> str: ...
 
 
-def extract_json(text: str) -> Any:
-    """Best-effort extraction of the first JSON value in a model response.
+_NO_MATCH = object()
 
-    Handles ```json fences and leading/trailing prose. Raises ValueError if no
-    balanced JSON object/array can be found.
+
+def _scan_balanced_json(candidate: str) -> Any:
+    """Return the first balanced JSON value in ``candidate``, or ``_NO_MATCH``.
+
+    Scans start positions in DOCUMENT ORDER, matching each against its own bracket
+    type, so (a) a non-JSON brace pair before the payload doesn't abort the
+    search, and (b) a top-level array is returned whole rather than misread as its
+    first nested object (which would drop the tasks list).
     """
-    if not text:
-        raise ValueError("empty response")
-    fence = re.search(r"```(?:json)?\s*(.+?)```", text, re.DOTALL)
-    candidate = fence.group(1) if fence else text
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        pass
-    # Fall back to scanning for a balanced {...} or [...] region. Scan candidate
-    # start positions in DOCUMENT ORDER, matching each against its own bracket
-    # type, so (a) a non-JSON brace pair before the payload doesn't abort the
-    # search, and (b) a prose-wrapped top-level array is returned whole rather
-    # than misread as its first nested object (which would drop the tasks list).
     pairs = {"{": "}", "[": "]"}
     for start, opener in enumerate(candidate):
         closer = pairs.get(opener)
@@ -82,6 +74,31 @@ def extract_json(text: str) -> Any:
                         return json.loads(candidate[start : i + 1])
                     except json.JSONDecodeError:
                         break  # this region isn't valid JSON; try the next opener
+    return _NO_MATCH
+
+
+def extract_json(text: str) -> Any:
+    """Best-effort extraction of the first JSON value in a model response.
+
+    Tries each ```-fenced block in order and then the whole response; for each,
+    attempts strict JSON and then a balanced-region scan. An earlier non-JSON
+    fence (e.g. a shell example) therefore does not trap extraction. Raises
+    ValueError if no JSON object/array can be found.
+    """
+    if not text:
+        raise ValueError("empty response")
+    candidates = [
+        m.group(1) for m in re.finditer(r"```(?:json)?\s*(.+?)```", text, re.DOTALL)
+    ]
+    candidates.append(text)
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+        found = _scan_balanced_json(candidate)
+        if found is not _NO_MATCH:
+            return found
     raise ValueError("no parseable JSON found in response")
 
 

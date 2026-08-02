@@ -72,6 +72,15 @@ def test_extract_json_returns_prose_wrapped_top_level_array():
     assert extract_json(text) == [{"slug": "a"}, {"slug": "b"}]
 
 
+def test_extract_json_ignores_earlier_non_json_fence():
+    # a shell fence before the real JSON fence must not trap extraction
+    text = (
+        "first, a shell example:\n```bash\nls -la\n```\n"
+        'then the answer:\n```json\n{"tasks": [1]}\n```'
+    )
+    assert extract_json(text) == {"tasks": [1]}
+
+
 # --- fake generator + parsing ----------------------------------------------
 
 
