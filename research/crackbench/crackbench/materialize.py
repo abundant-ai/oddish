@@ -24,7 +24,7 @@ import json
 import math
 from pathlib import Path
 
-from .models import GeneratedTask
+from .models import GeneratedTask, as_str_list
 
 _GENERATED_BY = "crackbench-auto-research"
 
@@ -79,7 +79,8 @@ def render_task_toml(task: GeneratedTask, *, long_horizon_minutes: float) -> str
 
 def render_dockerfile(task: GeneratedTask) -> str:
     base = task.environment.get("base_image", "ubuntu:24.04")
-    packages = task.environment.get("packages", []) or []
+    # Coerce defensively: a bare string must not split into single-letter packages.
+    packages = as_str_list(task.environment.get("packages"))
     apt = [p for p in packages if p not in {"pwntools"}]
     pip = [p for p in packages if p in {"pwntools"}]
     # The generated verifier (tests/test.sh) runs a python3 heredoc, so python3

@@ -20,6 +20,23 @@ def slugify(text: str) -> str:
     return slug or "task"
 
 
+def as_str_list(value: Any) -> list[str]:
+    """Coerce a JSON value into a list of strings.
+
+    A bare string is wrapped as a single element rather than iterated into
+    characters — live models often emit a string where a list is expected
+    (``techniques``, ``environment.packages``, ``depends_on``), and splitting it
+    would inflate difficulty and emit single-letter packages.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    return [str(value)]
+
+
 @dataclass
 class Checkpoint:
     """A single deterministically verifiable sub-goal of a task.
@@ -47,7 +64,7 @@ class Checkpoint:
             description=str(data.get("description", "")),
             verify_cmd=str(data.get("verify_cmd", "false")),
             weight=float(data.get("weight", 1.0)),
-            depends_on=[str(d) for d in data.get("depends_on", []) or []],
+            depends_on=as_str_list(data.get("depends_on")),
         )
 
 
@@ -79,6 +96,9 @@ class GeneratedTask:
             Checkpoint.from_dict(c) for c in data.get("checkpoints", []) or []
         ]
         est = data.get("estimated_solve_minutes")
+        environment = dict(data.get("environment", {}) or {})
+        if "packages" in environment:
+            environment["packages"] = as_str_list(environment.get("packages"))
         return cls(
             slug=slugify(str(data.get("slug") or title)),
             title=title,
@@ -87,8 +107,8 @@ class GeneratedTask:
             summary=str(data.get("summary", "")),
             instruction=str(data.get("instruction", "")),
             checkpoints=checkpoints,
-            environment=dict(data.get("environment", {}) or {}),
-            techniques=[str(t) for t in data.get("techniques", []) or []],
+            environment=environment,
+            techniques=as_str_list(data.get("techniques")),
             solution_notes=str(data.get("solution_notes", "")),
             estimated_solve_minutes=float(est) if est is not None else None,
         )

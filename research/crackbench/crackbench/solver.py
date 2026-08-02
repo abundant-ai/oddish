@@ -222,6 +222,14 @@ class OddishSolver:
                 break
             time.sleep(self._poll)
         elapsed_min = (time.monotonic() - start) / 60.0
+        if not _is_terminal(snapshot):
+            # Timed out (e.g. queue delay or a slow trial). This is inconclusive,
+            # not a Brock failure — raise so the harness skips the task instead of
+            # admitting a never-finished run into the accepted corpus.
+            raise RuntimeError(
+                f"trial {task_id} did not reach a terminal state within "
+                f"{self._threshold + 45:.0f} min; inconclusive"
+            )
 
         solved, minutes, reward = classify_oddish_snapshot(
             snapshot, elapsed_min=elapsed_min, solve_reward=self._solve_reward

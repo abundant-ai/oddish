@@ -119,7 +119,15 @@ def run_iteration(
 
     evaluations: list[TaskEvaluation] = []
     for idx, task in enumerate(valid):
-        result = solver.solve(task, iteration=index, index=idx)
+        try:
+            result = solver.solve(task, iteration=index, index=idx)
+        except Exception as exc:  # noqa: BLE001
+            # A solver that can't produce a verdict (e.g. an oddish trial that
+            # timed out) is inconclusive: skip the task rather than admitting it
+            # as a Brock failure / long-horizon.
+            rejected.append({"slug": task.slug, "errors": [f"solver error: {exc}"]})
+            log(f"[iter {index}]   ~ skipped {task.slug}: solver error: {exc}")
+            continue
         long_horizon, reason = classify_long_horizon(
             result, minutes_threshold=config.long_horizon_minutes
         )

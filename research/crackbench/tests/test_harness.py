@@ -478,3 +478,49 @@ def test_run_iteration_rejects_invalid_and_batch_gate(tmp_path):
     # an under-full batch (4 valid < 5 requested) cannot clear the 2-of-5 gate,
     # regardless of how many of the 4 are long-horizon
     assert not it.passed_gate(cfg.min_long_horizon)
+
+
+def test_from_dict_coerces_string_list_fields():
+    # a live model may return a string where a list is expected; it must not be
+    # split into characters
+    t = GeneratedTask.from_dict({
+        "slug": "s", "title": "T", "instruction": "i",
+        "techniques": "custom-vm",
+        "environment": {"base_image": "ubuntu:24.04", "packages": "gdb"},
+        "checkpoints": [{"id": "a", "verify_cmd": "true", "depends_on": "cp-x"}],
+    })
+    assert t.techniques == ["custom-vm"]
+    assert t.environment["packages"] == ["gdb"]
+    assert t.checkpoints[0].depends_on == ["cp-x"]
+
+
+def test_dockerfile_handles_string_packages():
+    task = GeneratedTask(
+        slug="s", title="T", category="reverse-engineering", difficulty="hard",
+        summary="s", instruction="i",
+        environment={"base_image": "ubuntu:24.04", "packages": "gdb"},  # bypasses from_dict
+        checkpoints=[Checkpoint("a", "a", "", "true")],
+    )
+    df = render_dockerfile(task)
+    assert "gdb" in df  # whole token; a char-split would leave only "b d g ..."
+
+
+def test_run_iteration_skips_inconclusive_solver(tmp_path):
+    cfg = _cfg(tmp_path, tasks_per_iteration=5, min_long_horizon=2)
+    base = MockSolver(seed=0, long_horizon_minutes=cfg.long_horizon_minutes)
+
+    class FlakySolver:  # first task is "inconclusive" (e.g. an oddish timeout)
+        name = "flaky"
+
+        def solve(self, task, *, iteration, index):
+            if index == 0:
+                raise RuntimeError("trial did not reach a terminal state; inconclusive")
+            return base.solve(task, iteration=iteration, index=index)
+
+    it, _ = run_iteration(
+        cfg, 1, llm_factory=default_llm_factory(cfg), solver=FlakySolver(),
+        log=lambda *_: None,
+    )
+    assert len(it.evaluations) == 4  # the inconclusive task is skipped, not scored
+    assert any("solver error" in r["errors"][0] for r in it.rejected)
+    assert not it.passed_gate(cfg.min_long_horizon)  # under-full batch can't pass
