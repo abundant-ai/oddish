@@ -16,7 +16,7 @@ import pytest
 from crackbench.config import HarnessConfig
 from crackbench.harness import run, run_iteration, default_llm_factory
 from crackbench.llm import FakeLLM, extract_json
-from crackbench.materialize import render_dockerfile, write_task_dir
+from crackbench.materialize import render_dockerfile, render_task_toml, write_task_dir
 from crackbench.models import Checkpoint, GeneratedTask
 from crackbench.solver import (
     MockSolver,
@@ -418,6 +418,30 @@ def test_dockerfile_bootstraps_pip_for_pwntools():
     assert "python3-pip" in df  # interpreter+pip bootstrapped before pip install
     assert "--break-system-packages" in df  # ubuntu:24.04 is PEP 668 managed
     assert "pwntools" in df
+
+
+def test_dockerfile_always_installs_python3():
+    # the verifier runs a python3 heredoc, so python3 must be present even when
+    # the task declares no python packages.
+    task = GeneratedTask(
+        slug="r", title="R", category="reverse-engineering", difficulty="hard",
+        summary="s", instruction="i",
+        environment={"base_image": "ubuntu:24.04", "packages": ["gdb"]},
+        checkpoints=[Checkpoint("a", "a", "", "true")],
+    )
+    assert "python3" in render_dockerfile(task)
+
+
+def test_task_toml_escapes_llm_controlled_strings():
+    # a category/difficulty carrying a quote or newline must still yield valid TOML
+    task = GeneratedTask(
+        slug="x", title="X", category='ret2libc "pwn"\ninjected = 1',
+        difficulty="hard", summary="s", instruction="i",
+        checkpoints=[Checkpoint("a", "a", "", "true")],
+    )
+    parsed = tomllib.loads(render_task_toml(task, long_horizon_minutes=30))
+    assert parsed["task"]["metadata"]["category"] == 'ret2libc "pwn"\ninjected = 1'
+    assert "injected" not in parsed["task"]["metadata"]  # not smuggled as a key
 
 
 def test_run_iteration_rejects_invalid_and_batch_gate(tmp_path):

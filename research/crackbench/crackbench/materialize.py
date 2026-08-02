@@ -29,6 +29,16 @@ from .models import GeneratedTask
 _GENERATED_BY = "crackbench-auto-research"
 
 
+def _toml_str(value: object) -> str:
+    """Return a valid TOML basic string for arbitrary (LLM-controlled) text.
+
+    json.dumps yields the same ``"..."`` quoting and the same ``\\"`` / ``\\\\`` /
+    ``\\n`` / ``\\t`` / ``\\uXXXX`` escapes TOML accepts, so a value containing a
+    quote or newline can't break the rendered task.toml.
+    """
+    return json.dumps(str(value))
+
+
 def render_task_toml(task: GeneratedTask, *, long_horizon_minutes: float) -> str:
     # Give the agent a ceiling comfortably above the long-horizon threshold so a
     # genuinely long task is not cut off before it can finish.
@@ -37,14 +47,14 @@ def render_task_toml(task: GeneratedTask, *, long_horizon_minutes: float) -> str
         'version = "1.0"',
         "",
         "[task]",
-        f'name = "crackbench/{task.slug}"',
+        f"name = {_toml_str(f'crackbench/{task.slug}')}",
         "",
         "[task.metadata]",
-        f'category = "{task.category}"',
-        f'difficulty = "{task.difficulty}"',
+        f"category = {_toml_str(task.category)}",
+        f"difficulty = {_toml_str(task.difficulty)}",
         f"long_horizon_target_minutes = {int(long_horizon_minutes)}",
-        f'generated_by = "{_GENERATED_BY}"',
-        f"techniques = {json.dumps(task.techniques)}",
+        f"generated_by = {_toml_str(_GENERATED_BY)}",
+        f"techniques = {json.dumps([str(t) for t in task.techniques])}",
         "",
         "[environment]",
         "# Harbor builds environment/Dockerfile for this task.",
@@ -70,10 +80,14 @@ def render_dockerfile(task: GeneratedTask) -> str:
     packages = task.environment.get("packages", []) or []
     apt = [p for p in packages if p not in {"pwntools"}]
     pip = [p for p in packages if p in {"pwntools"}]
+    # The generated verifier (tests/test.sh) runs a python3 heredoc, so python3
+    # must always be present even if the task itself declares no packages;
+    # ubuntu:24.04 ships none by default.
+    apt = apt + ["python3"]
     if pip:
-        # pip packages need an interpreter and pip; ubuntu:24.04 ships neither by
-        # default and is PEP 668 externally-managed (hence --break-system-packages).
-        apt = apt + ["python3", "python3-pip"]
+        # pip packages also need pip; ubuntu:24.04 is PEP 668 externally-managed
+        # (hence --break-system-packages below).
+        apt = apt + ["python3-pip"]
     lines = [
         f"FROM {base}",
         "ENV DEBIAN_FRONTEND=noninteractive",
