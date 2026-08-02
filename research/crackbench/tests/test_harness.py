@@ -66,6 +66,12 @@ def test_extract_json_skips_leading_non_json_braces():
     assert extract_json("junk [not, json] then [1, 2, 3]") == [1, 2, 3]
 
 
+def test_extract_json_returns_prose_wrapped_top_level_array():
+    # a top-level array must be returned whole, not misread as its first object
+    text = 'here are the tasks:\n[{"slug": "a"}, {"slug": "b"}]'
+    assert extract_json(text) == [{"slug": "a"}, {"slug": "b"}]
+
+
 # --- fake generator + parsing ----------------------------------------------
 
 

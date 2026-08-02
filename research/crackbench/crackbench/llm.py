@@ -48,37 +48,40 @@ def extract_json(text: str) -> Any:
         return json.loads(candidate)
     except json.JSONDecodeError:
         pass
-    # Fall back to scanning for a balanced { } or [ ] region. Try EVERY opener
-    # position, not just the first: prose can contain a non-JSON brace pair
-    # before the real payload, and that must not abort the search.
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = candidate.find(opener)
-        while start != -1:
-            depth = 0
-            in_str = False
-            esc = False
-            for i in range(start, len(candidate)):
-                ch = candidate[i]
-                if in_str:
-                    if esc:
-                        esc = False
-                    elif ch == "\\":
-                        esc = True
-                    elif ch == '"':
-                        in_str = False
-                    continue
-                if ch == '"':
-                    in_str = True
-                elif ch == opener:
-                    depth += 1
-                elif ch == closer:
-                    depth -= 1
-                    if depth == 0:
-                        try:
-                            return json.loads(candidate[start : i + 1])
-                        except json.JSONDecodeError:
-                            break  # not valid JSON; advance to the next opener
-            start = candidate.find(opener, start + 1)
+    # Fall back to scanning for a balanced {...} or [...] region. Scan candidate
+    # start positions in DOCUMENT ORDER, matching each against its own bracket
+    # type, so (a) a non-JSON brace pair before the payload doesn't abort the
+    # search, and (b) a prose-wrapped top-level array is returned whole rather
+    # than misread as its first nested object (which would drop the tasks list).
+    pairs = {"{": "}", "[": "]"}
+    for start, opener in enumerate(candidate):
+        closer = pairs.get(opener)
+        if closer is None:
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(candidate)):
+            ch = candidate[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == opener:
+                depth += 1
+            elif ch == closer:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(candidate[start : i + 1])
+                    except json.JSONDecodeError:
+                        break  # this region isn't valid JSON; try the next opener
     raise ValueError("no parseable JSON found in response")
 
 
