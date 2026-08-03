@@ -293,6 +293,7 @@ async def test_local_runner_preserves_concurrent_cancellation(
         assert trial.status == TrialStatus.FAILED
         assert trial.analysis_status == AnalysisStatus.FAILED
         assert trial.analysis_error == "Cancelled because quota was reached"
+    assert await _wj_status(oracle_id) == WorkerJobStatus.CANCELLED
     assert quota_checks == [
         {
             "org_id": "org-local",

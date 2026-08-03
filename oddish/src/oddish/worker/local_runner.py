@@ -43,6 +43,7 @@ from oddish.db import (
     get_session,
 )
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.llm_key_fingerprint import platform_key_hash_for_provider
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
@@ -414,6 +415,34 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 trial.status = TrialStatus.SUCCESS
                 logger.info("local_runner: trial %s -> SUCCESS", trial_id)
             trial.finished_at = finished_at
+            completed = True
+        else:
+            logger.info(
+                "local_runner: trial %s completion ignored; status is %s",
+                trial_id,
+                trial.status.value,
+            )
+
+        # A cancellation or another terminal writer can win while Harbor is
+        # still exiting. Preserve that trial outcome, but do not leave local
+        # mode's scheduling row RUNNING forever: the baseline gate treats an
+        # active worker job as authoritative retry evidence.
+        if trial is not None and trial.status in (
+            TrialStatus.SUCCESS,
+            TrialStatus.FAILED,
+            TrialStatus.SKIPPED,
+        ):
+            cancelled = (
+                trial.status == TrialStatus.SKIPPED
+                or trial.harbor_stage == CANCELLED_HARBOR_STAGE
+            )
+            if cancelled:
+                worker_job_status = WorkerJobStatus.CANCELLED
+            elif trial.status == TrialStatus.SUCCESS:
+                worker_job_status = WorkerJobStatus.SUCCESS
+            else:
+                worker_job_status = WorkerJobStatus.FAILED
+            settled_at = trial.finished_at or finished_at
             await session.execute(
                 update(WorkerJobModel)
                 .where(
@@ -423,23 +452,16 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                     WorkerJobModel.status == WorkerJobStatus.RUNNING,
                 )
                 .values(
-                    status=(
-                        WorkerJobStatus.FAILED
-                        if failure is not None
-                        else WorkerJobStatus.SUCCESS
-                    ),
-                    finished_at=finished_at,
-                    heartbeat_at=finished_at,
+                    status=worker_job_status,
+                    finished_at=settled_at,
+                    heartbeat_at=settled_at,
                     next_retry_at=None,
-                    error_message=str(failure) if failure is not None else None,
+                    error_message=(
+                        None
+                        if worker_job_status == WorkerJobStatus.SUCCESS
+                        else trial.error_message
+                    ),
                 )
-            )
-            completed = True
-        else:
-            logger.info(
-                "local_runner: trial %s completion ignored; status is %s",
-                trial_id,
-                trial.status.value,
             )
 
     from oddish.core.quota_enforcement import enforce_trial_quotas_until_checked
