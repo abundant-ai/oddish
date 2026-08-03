@@ -250,6 +250,7 @@ def test_capacity_error_prunes_then_retries_branch_creation_end_to_end():
         "GITHUB_REPOSITORY": "abundant-ai/oddish",
         "GITHUB_ENV": str(github_env),
         "GITHUB_OUTPUT": str(github_output),
+        "MAX_ATTEMPTS": "1",
         "CAPACITY_RETRY_DELAY_SECONDS": "0",
     }
     proc = subprocess.run(
@@ -265,6 +266,7 @@ def test_capacity_error_prunes_then_retries_branch_creation_end_to_end():
     assert delete_log.read_text().splitlines() == ["leaked-id"]
     assert "Supabase branch capacity is full" in proc.stderr
     assert "pruned 1 closed-PR Supabase preview branch(es)" in proc.stderr
+    assert "retrying pr-999 creation after capacity pruning" in proc.stderr
     assert "branch_id=current-id" in github_output.read_text()
 
 

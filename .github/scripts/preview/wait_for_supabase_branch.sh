@@ -14,9 +14,14 @@ set -uo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRANCH_NAME="pr-${PR_NUMBER}"
-MAX_ATTEMPTS=3
+MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 CAPACITY_RETRY_DELAY_SECONDS="${CAPACITY_RETRY_DELAY_SECONDS:-15}"
 CREATE_ERROR=""
+
+if [[ ! "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MAX_ATTEMPTS must be a positive integer" >&2
+  exit 2
+fi
 
 # Branch lifecycle states we treat as terminal failures and recover from
 # by deleting + recreating the branch:
@@ -90,6 +95,7 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   if [ -z "$existing" ] || [ "$existing" = "null" ]; then
     echo "creating $BRANCH_NAME (data-less, attempt $attempt/$MAX_ATTEMPTS)" >&2
     if ! create_branch; then
+      create_recovered=false
       if is_capacity_limit_error; then
         echo "Supabase branch capacity is full; pruning closed-PR previews" >&2
         if [ -z "${GH_TOKEN:-}" ] || [ -z "${GITHUB_REPOSITORY:-}" ]; then
@@ -97,16 +103,25 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
         elif pruned=$(CURRENT_BRANCH_NAME="$BRANCH_NAME" \
           "$script_dir/prune_closed_supabase_branches.sh"); then
           echo "pruned $pruned closed-PR Supabase preview branch(es)" >&2
+          # Supabase can release the branch-project slot asynchronously after
+          # delete returns, so honor the normal retry delay before consuming it.
+          sleep "$CAPACITY_RETRY_DELAY_SECONDS"
+          echo "retrying $BRANCH_NAME creation after capacity pruning" >&2
+          if create_branch; then
+            create_recovered=true
+          fi
         else
           echo "closed-PR Supabase preview pruning failed; leaving branches untouched" >&2
         fi
       fi
 
-      if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
-        sleep "$CAPACITY_RETRY_DELAY_SECONDS"
-        continue
+      if [ "$create_recovered" != "true" ]; then
+        if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+          sleep "$CAPACITY_RETRY_DELAY_SECONDS"
+          continue
+        fi
+        break
       fi
-      break
     fi
     branch_was_created=true
   else
