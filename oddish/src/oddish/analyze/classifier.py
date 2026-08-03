@@ -228,6 +228,62 @@ def classify_trial(
     )
 
 
+def _attempt_dirs_named_by(root_data: dict) -> set[str]:
+    """Job directories the job-level ``result.json`` attributes to this attempt.
+
+    Harbor mints a fresh ``task-<slug>__<id>`` directory per attempt inside a
+    per-trial wrapper, and every attempt re-uploads that wrapper to the same S3
+    prefix without clearing it -- so a retried trial's downloaded tree holds one
+    such directory per attempt, side by side. Only the *latest* attempt
+    overwrites the job-level ``result.json``, and its ``reward_stats`` /
+    ``exception_stats`` name that attempt's directory. That is the only signal
+    in the tree that tells the current attempt from the stale ones.
+    """
+    names: set[str] = set()
+    stats = root_data.get("stats")
+    evals = stats.get("evals") if isinstance(stats, dict) else None
+    if not isinstance(evals, dict):
+        return names
+    for eval_data in evals.values():
+        if not isinstance(eval_data, dict):
+            continue
+        for key in ("reward_stats", "exception_stats"):
+            grouped = eval_data.get(key)
+            if not isinstance(grouped, dict):
+                continue
+            for entry in grouped.values():
+                # reward_stats nests one level deeper than exception_stats:
+                # {metric: {value: [names]}} vs {exception: [names]}.
+                buckets = entry.values() if isinstance(entry, dict) else [entry]
+                for bucket in buckets:
+                    if isinstance(bucket, list):
+                        names.update(n for n in bucket if isinstance(n, str))
+    return names
+
+
+def _current_attempt_result(trial_dir: Path, root_data: dict) -> Path | None:
+    """Pick the nested per-attempt ``result.json`` this trial's row describes.
+
+    Prefer the directory the job-level result names; fall back to the first in
+    sorted order so the choice is at least deterministic when the job result
+    names nothing we can see (older layouts, partial uploads).
+    """
+    candidates = sorted(
+        subdir
+        for subdir in trial_dir.iterdir()
+        if subdir.is_dir()
+        and subdir.name.startswith("task-")
+        and (subdir / "result.json").exists()
+    )
+    if not candidates:
+        return None
+    named = _attempt_dirs_named_by(root_data)
+    for subdir in candidates:
+        if subdir.name in named:
+            return subdir / "result.json"
+    return candidates[0] / "result.json"
+
+
 class TrialClassifier:
     """Classifies trial outcomes using Claude Code to identify task quality issues."""
 
@@ -280,12 +336,9 @@ class TrialClassifier:
             try:
                 root_data = json.loads(result_path.read_text())
                 if "n_total_trials" in root_data or "stats" in root_data:
-                    for subdir in trial_dir.iterdir():
-                        if subdir.is_dir() and subdir.name.startswith("task-"):
-                            nested_result = subdir / "result.json"
-                            if nested_result.exists():
-                                result_path = nested_result
-                                break
+                    nested = _current_attempt_result(trial_dir, root_data)
+                    if nested is not None:
+                        result_path = nested
             except Exception:
                 pass
 

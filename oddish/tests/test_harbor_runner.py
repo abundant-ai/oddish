@@ -1721,6 +1721,12 @@ async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
         harbor_stage="completed",
         # An LLM agent: baselines take the skip path (test_qa_skips_baselines).
         agent="claude-code",
+        # First attempt, never classified: the stale-analysis clear
+        # (test_retry_clears_stale_analysis) reads these and must no-op here.
+        attempts=1,
+        started_at=None,
+        analysis_started_at=None,
+        analysis_finished_at=None,
     )
     calls = []
 

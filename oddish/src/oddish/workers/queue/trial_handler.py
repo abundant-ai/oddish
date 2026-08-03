@@ -503,6 +503,10 @@ async def _prepare_trial_run(
         # reservation mid-run. Settlement overwrites it with the actual key.
         trial.phase_timing = None
         trial.has_trajectory = False
+        # A stale analysis from an earlier attempt is dropped in
+        # ``_run_post_trial_hooks``, not here: clearing it at attempt start would
+        # leave the trial unclassified for the whole attempt, racing an in-flight
+        # QA job that snapshots its work list up front.
         trial.attempts += 1
 
         if not trial.idempotency_key:
@@ -965,6 +969,50 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
                     f"[red]Post-trial assignment enqueue failed for {trial.id}: "
                     f"{type(exc).__name__}: {exc}[/red]"
                 )
+
+        # This trial re-ran, so any classification on it describes an earlier
+        # attempt -- one whose reward, result and artifacts
+        # ``_prepare_trial_run`` cleared. QA is terminal-sticky
+        # (``_trial_needs_classification`` skips SUCCESS/FAILED), so leaving it
+        # would pin that attempt's verdict forever: a HARNESS_ERROR from an
+        # infra-killed attempt riding on a trial that went on to pass.
+        #
+        # Cleared here rather than at attempt start, under the task + trial
+        # locks this function already holds, so it is atomic with the
+        # ``maybe_start_qa_stage`` re-enqueue below and the trial is terminal
+        # (its artifacts complete). Clearing at attempt start would instead
+        # leave the trial unclassified for the length of an attempt, racing an
+        # in-flight QA job that snapshots its work list up front.
+        #
+        # No timestamp comparison, and none would be safe: a label such a job
+        # wrote mid-attempt -- off the row ``_prepare_trial_run`` had already
+        # wiped -- carries a NEWER stamp than this attempt's own start, yet is
+        # exactly the kind that must go. Probes are the one exception; the probe
+        # path writes their classification during settlement, just above.
+        if trial.attempts > 1 and not trial.is_probe and trial.analysis_status:
+            trial.analysis = None
+            trial.analysis_status = None
+            trial.analysis_error = None
+            trial.analysis_started_at = None
+            trial.analysis_finished_at = None
+            trial.analysis_log = None
+            # ``maybe_start_qa_stage`` only fires from PENDING/RUNNING. If QA
+            # already closed this task out while the attempt was still running,
+            # nothing would re-enqueue it and the trial would strand
+            # unclassified -- so reopen the task the way ``append_trials``
+            # reopens a finished task when live trials appear. COMPLETED is the
+            # only status that reaches here: this function returns above on a
+            # FAILED task, and VERDICT_PENDING/ANALYZING mean a QA job is live
+            # and will classify the trial itself now that its analysis is gone.
+            if task.status == TaskStatus.COMPLETED:
+                task.status = TaskStatus.RUNNING
+                task.finished_at = None
+                if task.run_analysis:
+                    task.verdict = None
+                    task.verdict_status = None
+                    task.verdict_error = None
+                    task.verdict_started_at = None
+                    task.verdict_finished_at = None
 
         await maybe_gate_llm_trials(session, trial_id)
         if await maybe_start_qa_stage(session, trial_id):
