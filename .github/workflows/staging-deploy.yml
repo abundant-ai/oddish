@@ -1,0 +1,300 @@
+name: Staging Deploy
+
+# Runs on every push to staging so the staging deployment tracks staging HEAD.
+# paths-ignore keeps this from double-running alongside the one-shot bootstrap
+# workflow (staging-db-bootstrap.yml), which owns initial branch creation, the
+# schema snapshot, and the full data copy -- this workflow only ever resolves
+# the branch that already exists.
+on:
+  push:
+    branches: [staging]
+    paths-ignore:
+      - ".github/workflows/staging-db-bootstrap.yml"
+      - ".github/scripts/staging/refresh_staging_db.py"
+  workflow_dispatch: {}
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://abundant-ai-staging--oddish-staging-api.modal.run
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    # Python 3.13, uv, and a warm uv cache live in the base image --
+    # refreshed weekly by .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: staging
+      MODAL_APP_NAME: oddish-staging
+      MODAL_SECRET_ENVIRONMENT: main
+      # Hold LLM trials until a task's nop/oracle baselines validate it (mirrors
+      # modal-deploy.yml's prod setting).
+      ODDISH_GATE_LLM_ON_BASELINES: "1"
+      # GKE (TPU) execution backend, mirroring modal-deploy.yml's prod block.
+      # backend/modal_app.py only bakes env vars prefixed ODDISH_GKE_ into the
+      # deployed image (its ENV_VARS dict filters on that prefix); an unprefixed
+      # name here would be silently dropped rather than erroring, so the prefix
+      # on every one of these is load-bearing, not decorative.
+      ODDISH_GKE_ENABLED: "true"
+      ODDISH_GKE_PROJECT_ID: "abundant-default"
+      ODDISH_GKE_REGION: "us-east5"
+      ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
+      ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
+      ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
+      ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
+      ODDISH_GKE_IDLE_CLUSTER_TTL_HOURS: "1"
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      # Low caps: staging carries no production traffic.
+      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "8"
+      ODDISH_MODAL_MAX_WORKERS_PER_POLL: "16"
+      # Explicit documentation of the default (MODAL_APP_NAME != "oddish").
+      ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      # This job never reads a stored DB-URL secret: it resolves the staging
+      # branch and rotates its password every run instead. That is safe only
+      # because the Modal secret is this password's one consumer and gets
+      # republished from the same fresh value later in this job, before
+      # Deploy runs -- there is no other holder of the old password left
+      # depending on it. The step logic here must stay identical to
+      # staging-db-bootstrap.yml's branch-resolution step (same `branch` id
+      # and outputs); update both if the resolution flow ever changes.
+      - name: Resolve staging branch and rotate its database password
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Readiness fields (.status, .preview_project_status) exist only on
+          # `branches list` entries — the same source wait_for_supabase_branch.sh
+          # polls. `branches get` (by ID, below) is only for the connection document.
+          find_branch_json() {
+            supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+              | jq -c 'first(.[] | select(.persistent == true) | select(.name == "staging"))'
+          }
+          is_failed() {
+            case "$1" in
+              MIGRATIONS_FAILED|FUNCTIONS_FAILED|RESTORE_FAILED|INIT_FAILED|PAUSE_FAILED) return 0 ;;
+            esac
+            return 1
+          }
+          # Deliberate divergence from the bootstrap workflow: only bootstrap may recreate the branch, because only bootstrap re-mirrors the data afterward.
+          existing=$(find_branch_json)
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            st=$(jq -r '.status // empty' <<<"$existing")
+            pv=$(jq -r '.preview_project_status // empty' <<<"$existing")
+            if is_failed "$st" || is_failed "$pv"; then
+              bid=$(jq -r '.id' <<<"$existing")
+              echo "::error::staging branch $bid is terminal-failed (status=$st preview=$pv). Deploys never recreate the persistent branch — reset the guard (gh variable set STAGING_DB_BOOTSTRAP_DONE --body false) and re-run the Staging DB Bootstrap workflow to rebuild and re-mirror it."
+              exit 1
+            fi
+          fi
+          ready=0
+          branch_id="" branch_ref="" status="" preview=""
+          for i in $(seq 1 60); do
+            bj=$(find_branch_json)
+            if [ -n "$bj" ] && [ "$bj" != "null" ]; then
+              read -r branch_id branch_ref status preview < <(
+                jq -r '[.id, .project_ref, .status, .preview_project_status] | @tsv' <<<"$bj")
+              if is_failed "$status" || is_failed "$preview"; then
+                echo "::error::staging branch $branch_id failed (status=$status preview=$preview)"
+                exit 1
+              fi
+              case "$status" in
+                MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+                  if [ "$preview" = "ACTIVE_HEALTHY" ]; then ready=1; break; fi ;;
+              esac
+            fi
+            echo "waiting for staging branch (attempt $i/60, status=${status:-none} preview=${preview:-none})"
+            sleep 10
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::staging branch never became ready (status=${status:-none} preview=${preview:-none})"
+            exit 1
+          fi
+
+          branch_json=$(supabase branches get "$branch_id" --project-ref "$SUPABASE_PROJECT_REF" -o json)
+          postgres_url=$(printf '%s' "$branch_json" | jq -r '.POSTGRES_URL // empty')
+          if [ -z "$branch_ref" ] || [ -z "$postgres_url" ]; then
+            echo "::error::branches get response missing project_ref or POSTGRES_URL"
+            exit 1
+          fi
+
+          # `branches get` redacts the password; reset it via the Management
+          # API and splice the fresh value into POSTGRES_URL ourselves (same
+          # recipe as wait_for_supabase_branch.sh).
+          DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+          echo "::add-mask::$DB_PASSWORD"
+          http_code=$(curl -sS -o /tmp/pwreset.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$DB_PASSWORD\"}" \
+            "https://api.supabase.com/v1/projects/${branch_ref}/database/password" \
+            || echo "curl_failed")
+          if [ "$http_code" != "200" ] && [ "$http_code" != "204" ]; then
+            echo "::error::password reset failed (HTTP $http_code)"
+            cat /tmp/pwreset.json >&2 || true
+            exit 1
+          fi
+
+          # Session pooler ONLY (5432). The branch POSTGRES_URL defaults to the
+          # transaction pooler (6543), which poisons session state under
+          # migrations/DDL (SET lock_timeout sticks to the shared backend).
+          if [[ "$postgres_url" =~ ^postgres(ql)?://([^:@/]+):[^@]*@([^:/@]+)(:([0-9]+))?(/.*)?$ ]]; then
+            db_user="${BASH_REMATCH[2]}"
+            db_host="${BASH_REMATCH[3]}"
+            db_port="5432"
+          else
+            echo "::error::could not parse POSTGRES_URL"
+            exit 1
+          fi
+          db_url="postgresql+asyncpg://${db_user}:${DB_PASSWORD}@${db_host}:${db_port}/postgres"
+          echo "::add-mask::$db_url"
+
+          # Smoke-test with libpq's psql before handing the URL off -- this is
+          # what catches a stale/mismatched credential before Alembic does.
+          psql_url="postgresql://${db_user}:${DB_PASSWORD}@${db_host}:${db_port}/postgres"
+          smoke_deadline=$(($(date +%s) + 300))
+          while true; do
+            if PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$smoke_deadline" ]; then
+              echo "::error::psql smoke test against staging branch failed"
+              cat /tmp/psql.err >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "db_url=$db_url" >> "$GITHUB_OUTPUT"
+          echo "branch_ref=$branch_ref" >> "$GITHUB_OUTPUT"
+          echo "branch ready: ref=$branch_ref host=$db_host status=$status"
+
+      # Self-healing: runs on every deploy (not just bootstrap) so a manual or
+      # out-of-band resize gets caught and corrected here. Staging is pinned
+      # to a fixed tier -- it does not track prod's compute.
+      - name: Pin branch compute to the staging tier
+        shell: bash
+        continue-on-error: true
+        env:
+          BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+          STAGING_COMPUTE_VARIANT: "ci_large"
+        run: |
+          set -euo pipefail
+          # Compute is a billing addon (GET/PATCH /v1/projects/{ref}/billing/addons,
+          # operationIds v1-list-project-addons / v1-apply-project-addon). Branches
+          # are projects under the hood, so BRANCH_REF works directly as {ref}.
+          addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
+
+          http_code=$(curl -sS -o /tmp/branch_addons.json -w '%{http_code}' \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "$addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::failed to read branch compute addons (HTTP $http_code)"
+            cat /tmp/branch_addons.json >&2 || true
+            exit 1
+          fi
+          branch_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/branch_addons.json)
+
+          if [ "$branch_variant" = "$STAGING_COMPUTE_VARIANT" ]; then
+            echo "compute already pinned: ${branch_variant}"
+            exit 0
+          fi
+
+          echo "compute mismatch (branch=${branch_variant:-none}, target=${STAGING_COMPUTE_VARIANT}); patching branch"
+          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$STAGING_COMPUTE_VARIANT" \
+            '{addon_type: $addon_type, addon_variant: $addon_variant}')
+          http_code=$(curl -sS -o /tmp/addon_apply.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "$addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::branch compute pin request failed (HTTP $http_code)"
+            cat /tmp/addon_apply.json >&2 || true
+            exit 1
+          fi
+          echo "compute pin to ${STAGING_COMPUTE_VARIANT} accepted (HTTP $http_code); waiting for branch to become healthy again"
+
+          ready=0
+          status="" preview=""
+          for i in $(seq 1 30); do
+            sleep 20
+            bj=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+              | jq -c 'first(.[] | select(.persistent == true) | select(.name == "staging"))')
+            if [ -n "$bj" ] && [ "$bj" != "null" ]; then
+              status=$(jq -r '.status // empty' <<<"$bj")
+              preview=$(jq -r '.preview_project_status // empty' <<<"$bj")
+              case "$status" in
+                MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+                  if [ "$preview" = "ACTIVE_HEALTHY" ]; then
+                    ready=1
+                    break
+                  fi
+                  ;;
+              esac
+            fi
+            echo "waiting for branch health after compute pin (attempt $i/30, status=${status:-none} preview=${preview:-none})"
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::branch did not return to healthy after compute pin (status=${status:-none} preview=${preview:-none})"
+            exit 1
+          fi
+          echo "branch healthy again after compute pin (status=$status preview=$preview)"
+
+      - name: Core migrations
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+          ODDISH_DATABASE_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv sync --frozen --extra server
+          uv run alembic upgrade head
+
+      - name: Backend migrations
+        working-directory: backend
+        env:
+          ODDISH_DATABASE_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv sync --frozen
+          uv run alembic upgrade head
+
+      - name: Republish oddish-staging-db secret
+        working-directory: backend
+        env:
+          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv run modal secret create --env staging --force oddish-staging-db \
+            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
+            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
+            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
+            "LOGFIRE_ENVIRONMENT=staging"
+
+      - name: Deploy
+        working-directory: backend
+        run: |
+          uv sync --frozen
+          uv run modal deploy deploy.py

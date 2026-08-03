@@ -1,0 +1,106 @@
+name: Nightly PyPI
+on:
+  schedule:
+    - cron: "0 0 * * *"
+      timezone: "America/Los_Angeles"   # midnight PST/PDT year-round (native, DST-aware)
+  workflow_dispatch: {}
+
+concurrency:
+  group: nightly-pypi
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.ver.outputs.changed }}
+      version: ${{ steps.ver.outputs.version }}
+      sha: ${{ steps.ver.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: staging            # nightlies come from staging ONLY (spec D19)
+          fetch-depth: 0          # tags needed for the changed-since check
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Compute nightly version (skip when staging unchanged)
+        id: ver
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          last=$(git tag --list 'v*.dev*' --sort=-creatordate | head -1 || true)
+          if [ -n "$last" ] && [ "$(git rev-parse "$last^{commit}")" = "$sha" ]; then
+            echo "staging unchanged since $last — skipping"
+            echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base=$(python3 -c 'import tomllib; print(tomllib.load(open("oddish/pyproject.toml","rb"))["project"]["version"])')
+          latest=$(curl -fsSL https://pypi.org/pypi/oddish/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])')
+          uv run --with packaging python3 -c "
+          from packaging.version import Version
+          import sys
+          sys.exit(0 if Version('$base') > Version('$latest') else 1)" \
+            || { echo "::error::pyproject version $base must be bumped past the latest PyPI release $latest (bump-after-release rule, spec D20)"; exit 1; }
+          version="${base}.dev$(TZ=America/Los_Angeles date +%Y%m%d)"
+          { echo "changed=true"; echo "version=$version"; echo "sha=$sha"; } >> "$GITHUB_OUTPUT"
+
+      - name: Build + check + smoke
+        if: steps.ver.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          (cd oddish && uv version "${{ steps.ver.outputs.version }}")   # build-time only, never committed
+          uv build --project oddish
+          uvx twine check oddish/dist/*
+          uv venv --python 3.13 /tmp/oddish-nightly
+          WHEEL="$(find oddish/dist -maxdepth 1 -name '*.whl' -print -quit)"
+          uv pip install --python /tmp/oddish-nightly/bin/python "$WHEEL"
+          /tmp/oddish-nightly/bin/python -c 'import importlib.metadata, oddish; assert oddish.__version__ == importlib.metadata.version("oddish") == "${{ steps.ver.outputs.version }}"'
+          for command in run status pull cancel; do
+            /tmp/oddish-nightly/bin/oddish "$command" --help >/dev/null
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: steps.ver.outputs.changed == 'true'
+        with:
+          name: oddish-nightly
+          path: oddish/dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-nightly
+      url: https://pypi.org/p/oddish
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: oddish-nightly
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true     # same-day rerun stays green
+
+  tag:
+    needs: [build, publish]
+    if: needs.build.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          fetch-depth: 1
+      - name: Tag the built staging commit
+        run: |
+          set -euo pipefail
+          git tag "v${{ needs.build.outputs.version }}" "${{ needs.build.outputs.sha }}"
+          git push origin "v${{ needs.build.outputs.version }}"
+          # GITHUB_TOKEN tag pushes trigger no workflows — deliberate: nightlies
+          # must never create Releases or fire publish-pypi.yml.

@@ -17,8 +17,22 @@ dashboard at oddish.app.
 
 ## Git workflow
 
-Never directly commit or push to `main`. Check out a feature branch, commit
-there, push that branch, and open a PR for review.
+Never directly commit or push to `main` or `staging`. Check out a feature
+branch, commit there, push that branch, and open a PR for review — PRs target
+`staging` (the default branch). `main` is release-only: it advances solely via
+fast-forward promotion by a release manager, who runs the `Promotion Preflight`
+workflow (it verifies the approved promotion PR, the staging deploy, and the
+fast-forward condition, then prints the push command) and executes that push
+themselves; never merge, squash, or push to `main` directly.
+
+## Releases
+
+PyPI stable releases: publish the auto-drafted GitHub Release (created on
+promotion when `oddish/pyproject.toml` changes). Immediately after publishing
+a release, bump the version in `oddish/pyproject.toml` on `staging` — the
+nightly build refuses to run until the version is ahead of PyPI's latest.
+Nightlies (`X.Y.Z.devYYYYMMDD`) publish from `staging` at midnight PT and are
+installed with `pip install --pre oddish`.
 
 ## Useful pointers
 

@@ -1,0 +1,453 @@
+name: Staging DB Bootstrap
+# One-shot: runs when this file lands on staging. To re-mirror on demand:
+# first reset the guard (gh variable set STAGING_DB_BOOTSTRAP_DONE --body false),
+# then re-run a completed run of this workflow or push an edit to it.
+on:
+  push:
+    branches: [staging]
+    paths:
+      - ".github/workflows/staging-db-bootstrap.yml"
+      - ".github/scripts/staging/refresh_staging_db.py"
+  # Manual re-mirror: reset the guard first
+  # (gh variable set STAGING_DB_BOOTSTRAP_DONE --body false), then dispatch.
+  workflow_dispatch: {}
+
+concurrency:
+  group: staging-db-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    if: vars.STAGING_DB_BOOTSTRAP_DONE != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      # Prod is read-only source for the schema snapshot and the data copy.
+      PREVIEW_SAMPLE_SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+      SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Create persistent branch if absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+            | jq -r '.[] | select(.name=="staging") | .id')
+          if [ -n "$existing" ]; then
+            echo "staging branch already exists: $existing"
+          else
+            supabase branches create staging --persistent --project-ref "$SUPABASE_PROJECT_REF"
+          fi
+
+      - name: Wait for branch health and resolve its database URL
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Readiness fields (.status, .preview_project_status) exist only on
+          # `branches list` entries — the same source wait_for_supabase_branch.sh
+          # polls. `branches get` (by ID, below) is only for the connection document.
+          find_branch_json() {
+            supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+              | jq -c 'first(.[] | select(.persistent == true) | select(.name == "staging"))'
+          }
+          is_failed() {
+            case "$1" in
+              MIGRATIONS_FAILED|FUNCTIONS_FAILED|RESTORE_FAILED|INIT_FAILED|PAUSE_FAILED) return 0 ;;
+            esac
+            return 1
+          }
+          # At bootstrap time the branch holds no data — a branch left terminal-failed
+          # by a prior run is recreated once instead of failing loudly forever.
+          existing=$(find_branch_json)
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            st=$(jq -r '.status // empty' <<<"$existing")
+            pv=$(jq -r '.preview_project_status // empty' <<<"$existing")
+            if is_failed "$st" || is_failed "$pv"; then
+              bid=$(jq -r '.id' <<<"$existing")
+              echo "existing staging branch $bid is terminal-failed (status=$st preview=$pv); recreating"
+              supabase branches delete "$bid" --project-ref "$SUPABASE_PROJECT_REF"
+              supabase branches create staging --persistent --project-ref "$SUPABASE_PROJECT_REF"
+            fi
+          fi
+          ready=0
+          branch_id="" branch_ref="" status="" preview=""
+          for i in $(seq 1 60); do
+            bj=$(find_branch_json)
+            if [ -n "$bj" ] && [ "$bj" != "null" ]; then
+              read -r branch_id branch_ref status preview < <(
+                jq -r '[.id, .project_ref, .status, .preview_project_status] | @tsv' <<<"$bj")
+              if is_failed "$status" || is_failed "$preview"; then
+                echo "::error::staging branch $branch_id failed (status=$status preview=$preview)"
+                exit 1
+              fi
+              case "$status" in
+                MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+                  if [ "$preview" = "ACTIVE_HEALTHY" ]; then ready=1; break; fi ;;
+              esac
+            fi
+            echo "waiting for staging branch (attempt $i/60, status=${status:-none} preview=${preview:-none})"
+            sleep 10
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::staging branch never became ready (status=${status:-none} preview=${preview:-none})"
+            exit 1
+          fi
+
+          branch_json=$(supabase branches get "$branch_id" --project-ref "$SUPABASE_PROJECT_REF" -o json)
+          postgres_url=$(printf '%s' "$branch_json" | jq -r '.POSTGRES_URL // empty')
+          if [ -z "$branch_ref" ] || [ -z "$postgres_url" ]; then
+            echo "::error::branches get response missing project_ref or POSTGRES_URL"
+            exit 1
+          fi
+
+          # `branches get` redacts the password; reset it via the Management
+          # API and splice the fresh value into POSTGRES_URL ourselves (same
+          # recipe as wait_for_supabase_branch.sh).
+          DB_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')
+          echo "::add-mask::$DB_PASSWORD"
+          http_code=$(curl -sS -o /tmp/pwreset.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$DB_PASSWORD\"}" \
+            "https://api.supabase.com/v1/projects/${branch_ref}/database/password" \
+            || echo "curl_failed")
+          if [ "$http_code" != "200" ] && [ "$http_code" != "204" ]; then
+            echo "::error::password reset failed (HTTP $http_code)"
+            cat /tmp/pwreset.json >&2 || true
+            exit 1
+          fi
+
+          # Session pooler ONLY (5432). The branch POSTGRES_URL defaults to the
+          # transaction pooler (6543), which poisons session state under
+          # migrations/DDL (SET lock_timeout sticks to the shared backend).
+          if [[ "$postgres_url" =~ ^postgres(ql)?://([^:@/]+):[^@]*@([^:/@]+)(:([0-9]+))?(/.*)?$ ]]; then
+            db_user="${BASH_REMATCH[2]}"
+            db_host="${BASH_REMATCH[3]}"
+            db_port="5432"
+          else
+            echo "::error::could not parse POSTGRES_URL"
+            exit 1
+          fi
+          db_url="postgresql+asyncpg://${db_user}:${DB_PASSWORD}@${db_host}:${db_port}/postgres"
+          echo "::add-mask::$db_url"
+
+          # Smoke-test with libpq's psql before handing the URL off -- this is
+          # what catches a stale/mismatched credential before Alembic does.
+          psql_url="postgresql://${db_user}:${DB_PASSWORD}@${db_host}:${db_port}/postgres"
+          smoke_deadline=$(($(date +%s) + 300))
+          while true; do
+            if PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$smoke_deadline" ]; then
+              echo "::error::psql smoke test against staging branch failed"
+              cat /tmp/psql.err >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "db_url=$db_url" >> "$GITHUB_OUTPUT"
+          echo "branch_ref=$branch_ref" >> "$GITHUB_OUTPUT"
+          echo "branch ready: ref=$branch_ref host=$db_host status=$status"
+
+      - name: Bootstrap schema (prod snapshot + Alembic pointers + upgrade head)
+        env:
+          ODDISH_DATABASE_URL: ${{ steps.branch.outputs.db_url }}
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/preview/bootstrap_preview_db.py"
+
+      - name: Compute required disk from prod relation sizes
+        id: sizing
+        shell: bash
+        working-directory: backend
+        env:
+          SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY' | tee /tmp/sizing.out
+          import asyncio, math, os
+          import asyncpg
+          EXCLUDE = {"alembic_version_oddish","alembic_version_backend","alembic_version",
+                     "queue_slots","trial_events","_preview_seed_state","submission_idempotency"}
+          async def main():
+              url = os.environ["SOURCE_DB_URL"].replace("postgresql+asyncpg://","postgresql://",1).replace(":6543/",":5432/",1)
+              c = await asyncpg.connect(url, statement_cache_size=0)
+              rows = await c.fetch("""
+                SELECT tablename, pg_total_relation_size(format('%I.%I','public',tablename)) AS bytes
+                FROM pg_tables WHERE schemaname='public' ORDER BY bytes DESC""")
+              inc = [(r["tablename"], r["bytes"]) for r in rows if r["tablename"] not in EXCLUDE]
+              total = sum(b for _, b in inc)
+              for t, b in inc[:12]:
+                  print(f"  {t}: {b/1e9:.2f} GB")
+              gb = max(25, math.ceil(total*1.6/1e9) + 8)
+              print(f"total include: {total/1e9:.2f} GB -> disk target {gb} GB")
+              print(f"target_gb={gb}", file=open(os.environ["GITHUB_OUTPUT"], "a"))
+              await c.close()
+          asyncio.run(main())
+          PY
+
+      - name: Ensure branch disk is large enough for the full copy
+        shell: bash
+        env:
+          BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+          TARGET_GB: ${{ steps.sizing.outputs.target_gb }}
+        run: |
+          set -euo pipefail
+          # Management API: GET/POST /v1/projects/{ref}/config/disk
+          # (operationIds v1-get-database-disk / v1-modify-database-disk).
+          # Branches are projects under the hood, so the branch ref works
+          # directly as {ref}. GET succeeds with 200, POST (resize) with 201.
+          disk_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/config/disk"
+
+          http_code=$(curl -sS -o /tmp/disk.json -w '%{http_code}' \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "$disk_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::failed to read branch disk attributes (HTTP $http_code)"
+            cat /tmp/disk.json >&2 || true
+            exit 1
+          fi
+
+          current_gb=$(jq -r '.attributes.size_gb' /tmp/disk.json)
+          disk_type=$(jq -r '.attributes.type' /tmp/disk.json)
+          iops=$(jq -r '.attributes.iops' /tmp/disk.json)
+          throughput=$(jq -r '.attributes.throughput_mibps // empty' /tmp/disk.json)
+          echo "current branch disk: ${current_gb}GB (type=$disk_type iops=$iops throughput_mibps=${throughput:-n/a})"
+
+          if [ "$current_gb" -ge "$TARGET_GB" ]; then
+            echo "branch disk is already >= ${TARGET_GB}GB; nothing to do"
+            exit 0
+          fi
+
+          echo "growing branch disk from ${current_gb}GB to ${TARGET_GB}GB"
+          # The modify-disk body requires the full attributes object (type +
+          # iops are mandatory alongside size_gb), so re-send the current
+          # type/iops/throughput and only bump size_gb.
+          if [ "$disk_type" = "gp3" ] && [ -n "$throughput" ]; then
+            body=$(jq -n --arg type "$disk_type" --argjson size_gb "$TARGET_GB" \
+              --argjson iops "$iops" --argjson throughput_mibps "$throughput" \
+              '{attributes: {type: $type, size_gb: $size_gb, iops: $iops, throughput_mibps: $throughput_mibps}}')
+          else
+            body=$(jq -n --arg type "$disk_type" --argjson size_gb "$TARGET_GB" --argjson iops "$iops" \
+              '{attributes: {type: $type, size_gb: $size_gb, iops: $iops}}')
+          fi
+
+          http_code=$(curl -sS -o /tmp/disk_resize.json -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "$disk_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::branch disk resize request failed (HTTP $http_code)"
+            cat /tmp/disk_resize.json >&2 || true
+            exit 1
+          fi
+          echo "disk resize accepted (HTTP $http_code); polling for completion"
+
+          resized=0
+          for i in $(seq 1 10); do
+            sleep 30
+            http_code=$(curl -sS -o /tmp/disk.json -w '%{http_code}' \
+              -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+              "$disk_url")
+            if [[ "$http_code" != 2* ]]; then
+              echo "::error::failed to poll branch disk attributes (HTTP $http_code)"
+              cat /tmp/disk.json >&2 || true
+              exit 1
+            fi
+            new_gb=$(jq -r '.attributes.size_gb' /tmp/disk.json)
+            echo "poll $i/10: branch disk reports ${new_gb}GB"
+            if [ "$new_gb" -ge "$TARGET_GB" ]; then
+              echo "branch disk resized to ${new_gb}GB"
+              resized=1
+              break
+            fi
+          done
+          if [ "$resized" -ne 1 ]; then
+            echo "::error::branch disk did not reach ${TARGET_GB}GB after polling"
+            exit 1
+          fi
+
+      - name: Scale branch compute up for the bulk load
+        shell: bash
+        env:
+          BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+        run: |
+          set -euo pipefail
+          # Management API: GET/PATCH /v1/projects/{ref}/billing/addons
+          # (operationIds v1-list-project-addons / v1-apply-project-addon).
+          # Branches are projects under the hood, so the branch ref works
+          # directly as {ref}. A compute change restarts the instance; the
+          # DB host/password are unaffected by a resize, so
+          # steps.branch.outputs.db_url stays valid and is not re-resolved.
+          addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
+          target_variant="ci_large"
+
+          rank() {
+            case "$1" in
+              ci_micro) echo 0 ;;
+              ci_small) echo 1 ;;
+              ci_medium) echo 2 ;;
+              ci_large) echo 3 ;;
+              ci_xlarge) echo 4 ;;
+              ci_2xlarge) echo 5 ;;
+              ci_4xlarge) echo 6 ;;
+              ci_8xlarge) echo 7 ;;
+              ci_12xlarge) echo 8 ;;
+              ci_16xlarge) echo 9 ;;
+              ci_24xlarge|ci_24xlarge_optimized_cpu|ci_24xlarge_optimized_memory|ci_24xlarge_high_memory) echo 10 ;;
+              ci_48xlarge|ci_48xlarge_optimized_cpu|ci_48xlarge_optimized_memory|ci_48xlarge_high_memory) echo 11 ;;
+              *) echo -1 ;;
+            esac
+          }
+
+          http_code=$(curl -sS -o /tmp/addons.json -w '%{http_code}' \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            "$addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::failed to read branch compute addons (HTTP $http_code)"
+            cat /tmp/addons.json >&2 || true
+            exit 1
+          fi
+
+          current_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/addons.json)
+          echo "current branch compute: ${current_variant:-none}"
+
+          if [ "$(rank "$current_variant")" -ge "$(rank "$target_variant")" ]; then
+            echo "branch compute is already >= ${target_variant}; nothing to do"
+            exit 0
+          fi
+
+          echo "scaling branch compute from ${current_variant:-none} to ${target_variant}"
+          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$target_variant" \
+            '{addon_type: $addon_type, addon_variant: $addon_variant}')
+          http_code=$(curl -sS -o /tmp/addon_apply.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "$addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::error::branch compute scale-up request failed (HTTP $http_code)"
+            cat /tmp/addon_apply.json >&2 || true
+            exit 1
+          fi
+          echo "compute scale-up accepted (HTTP $http_code); waiting for branch to become healthy again"
+
+          ready=0
+          status="" preview=""
+          for i in $(seq 1 30); do
+            sleep 20
+            bj=$(supabase branches list --project-ref "$SUPABASE_PROJECT_REF" -o json \
+              | jq -c 'first(.[] | select(.persistent == true) | select(.name == "staging"))')
+            if [ -n "$bj" ] && [ "$bj" != "null" ]; then
+              status=$(jq -r '.status // empty' <<<"$bj")
+              preview=$(jq -r '.preview_project_status // empty' <<<"$bj")
+              case "$status" in
+                MIGRATIONS_PASSED|FUNCTIONS_DEPLOYED)
+                  if [ "$preview" = "ACTIVE_HEALTHY" ]; then
+                    ready=1
+                    break
+                  fi
+                  ;;
+              esac
+            fi
+            echo "waiting for branch health after compute scale-up (attempt $i/30, status=${status:-none} preview=${preview:-none})"
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::branch did not return to healthy after compute scale-up (status=${status:-none} preview=${preview:-none})"
+            exit 1
+          fi
+          echo "branch healthy again after compute scale-up (status=$status preview=$preview)"
+
+      - name: Mirror complete prod data (with quiesce)
+        env:
+          TARGET_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/staging/refresh_staging_db.py"
+
+      - name: Publish oddish-staging-db Modal secret
+        env:
+          MODAL_ENVIRONMENT: staging
+          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db \
+            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
+            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
+            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
+            "LOGFIRE_ENVIRONMENT=staging"
+
+      - name: Mark bootstrap done
+        shell: bash
+        # Best-effort: the workflow token cannot write repo variables in this
+        # repo (403). The data work is already complete and committed at this
+        # point, so a failure here must not fail the run — set the guard by
+        # hand if this step reports an error.
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: gh variable set STAGING_DB_BOOTSTRAP_DONE --body "true" --repo "$GITHUB_REPOSITORY"
+
+      - name: Return branch compute to the staging tier
+        shell: bash
+        continue-on-error: true
+        env:
+          BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+          STAGING_COMPUTE_VARIANT: "ci_large"
+        run: |
+          set -euo pipefail
+          # Staging runs a fixed compute tier, not prod's -- this step only
+          # undoes the temporary bump from "Scale branch compute up for the
+          # bulk load" above. Must not fail the job -- the mirror already
+          # succeeded and the guard variable is already flipped by the
+          # previous step.
+          branch_addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
+
+          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$STAGING_COMPUTE_VARIANT" \
+            '{addon_type: $addon_type, addon_variant: $addon_variant}')
+          http_code=$(curl -sS -o /tmp/addon_apply_down.json -w '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "$branch_addons_url")
+          if [[ "$http_code" != 2* ]]; then
+            echo "::warning::branch compute return request failed (HTTP $http_code); leaving branch on the bulk-load tier"
+            cat /tmp/addon_apply_down.json >&2 || true
+            exit 1
+          fi
+          echo "compute return to ${STAGING_COMPUTE_VARIANT} accepted (HTTP $http_code)"
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Staging DB bootstrap"
+            echo "- Persistent branch: staging (project $SUPABASE_PROJECT_REF)"
+            echo "- Schema: prod snapshot + upgrade head (both chains)"
+            echo "- Data: complete prod copy with quiesce (counts in the Mirror step log)"
+            echo "- Modal secret oddish-staging-db published to env staging"
+          } >> "$GITHUB_STEP_SUMMARY"
