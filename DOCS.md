@@ -26,6 +26,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
+- `oddish admin concurrency` - inspect, set, or clear operator queue-key limits
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
@@ -407,6 +408,29 @@ oddish status --queue --stale-after 30 # widen the stale-heartbeat window
 On hosted Oddish these diagnostics require a **full-scope** API key
 (`read`/`tasks` keys get a clear error); a self-hosted core server applies no
 auth.
+
+### Operator Concurrency Controls
+
+Hosted Oddish operators can inspect every layer of a queue key's concurrency
+limit and make a database-backed override without using a raw API request:
+
+```bash
+# Read the deploy limit, DB override, controller advisory, and effective limit
+oddish admin concurrency get xai/v9m-rl-learnability-tp8
+
+# Set or clear the database override
+oddish admin concurrency set xai/v9m-rl-learnability-tp8 300
+oddish admin concurrency clear xai/v9m-rl-learnability-tp8
+
+# Machine-readable output for audit logs and automation
+oddish admin concurrency get xai/v9m-rl-learnability-tp8 --json
+```
+
+Queue keys are canonicalized by the same model-aware helper as the dispatcher.
+`set` accepts limits from `0` through `10000`; `0` disables dispatch for that
+queue. Both mutation commands read the setting back and fail if the stored
+override does not match. These hosted endpoints require an admin key in the
+configured operator organization. Use `--api-url`/`-u` to target another API.
 
 ## Stream Live Logs
 

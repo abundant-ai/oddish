@@ -33,6 +33,7 @@ from oddish.core.admin import (
     UserCostBreakdownResponse,
     WorkerJobsResponse,
     get_cost_breakdown_core,
+    get_model_concurrency_setting_core,
     get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
@@ -112,6 +113,19 @@ async def update_model_concurrency(
     require_operator_org(auth)
     async with get_session() as session:
         return await update_model_concurrency_core(session, request)
+
+
+@router.get("/concurrency", response_model=ModelConcurrencySetting)
+async def get_model_concurrency(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    queue_key: str = Query(..., min_length=1, max_length=512),
+) -> ModelConcurrencySetting:
+    """Read deploy, override, advisory, and effective limits for one queue."""
+    require_operator_org(auth)
+    if not queue_key.strip():
+        raise HTTPException(status_code=422, detail="queue_key must not be blank")
+    async with get_session() as session:
+        return await get_model_concurrency_setting_core(session, queue_key)
 
 
 @router.get("/worker-jobs", response_model=WorkerJobsResponse)

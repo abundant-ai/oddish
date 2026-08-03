@@ -1057,6 +1057,9 @@ PREVIEW_URL_TEMPLATE = os.environ.get(
     "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
 )
 
+# Shared contract for the hosted concurrency API and its CLI client.
+MAX_MODEL_CONCURRENCY = 10_000
+
 
 def api_base_url_for_modal_app(app_name: str | None = None) -> str:
     """Derive the deployed backend API base URL from the Modal app identity.

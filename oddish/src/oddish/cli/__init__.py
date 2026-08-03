@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typer
+from oddish.cli.admin import admin_app
 from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.collect import collect
@@ -42,6 +43,7 @@ app.command()(costs)
 app.command()(collect)
 app.command()(qa)
 app.command()(delete)
+app.add_typer(admin_app, name="admin")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(link_app, name="link")
 app.add_typer(report_app, name="report")

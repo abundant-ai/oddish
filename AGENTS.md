@@ -324,7 +324,9 @@ status/health and slot topology, model concurrency, shared-channel Slack alert
 settings, and the global cost-excluded LLM-key list) additionally require the active org to match
 `ODDISH_OPERATOR_ORG_ID`, which fails closed when unset; the frontend discovers
 that capability through `GET /admin/operator-access` and hides those controls
-for other orgs.
+for other orgs. `GET /admin/concurrency` reports the deploy, database override,
+deprecated-controller advisory, and actual effective limit for one canonical
+queue key; `PUT /admin/concurrency` sets or clears the database override.
 
 The authenticated org-scoped cost leaderboard is served by `GET /leaderboard` in
 `backend/api/routers/dashboard.py`. It shares the admin cost dashboard's
