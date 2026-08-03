@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,10 @@ def test_capacity_pruner_deletes_only_closed_non_current_pr_branches():
     bins = tmp / "bin"
     bins.mkdir()
     delete_log = tmp / "deleted"
+    curl_log = tmp / "curl-log"
+    reopen_count = tmp / "reopen-count"
+    reopen_count.write_text("0")
+    recently_closed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     branches = [
         {"id": "closed-id", "name": "pr-101", "persistent": False},
@@ -77,6 +82,10 @@ def test_capacity_pruner_deletes_only_closed_non_current_pr_branches():
         {"id": "error-id", "name": "pr-103", "persistent": False},
         {"id": "persistent-id", "name": "pr-104", "persistent": True},
         {"id": "current-id", "name": "pr-105", "persistent": False},
+        {"id": "fresh-id", "name": "pr-106", "persistent": False},
+        {"id": "null-persistent-id", "name": "pr-107", "persistent": None},
+        {"id": "missing-persistent-id", "name": "pr-108"},
+        {"id": "reopened-id", "name": "pr-109", "persistent": False},
         {"id": "other-id", "name": "feature-branch", "persistent": False},
     ]
 
@@ -97,10 +106,27 @@ def test_capacity_pruner_deletes_only_closed_non_current_pr_branches():
     fake_curl = bins / "curl"
     fake_curl.write_text(
         "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$CURL_LOG"\n'
         'case "$*" in\n'
-        "  */pulls/101*) printf '%s\\n' '{\"state\":\"closed\"}' ;;\n"
-        "  */pulls/102*) printf '%s\\n' '{\"state\":\"open\"}' ;;\n"
+        "  */pulls/101*) printf '%s\\n' "
+        '\'{"state":"closed","closed_at":"2000-01-01T00:00:00Z"}\' ;;\n'
+        '  */pulls/102*) printf \'%s\\n\' \'{"state":"open","closed_at":null}\' ;;\n'
         "  */pulls/103*) exit 22 ;;\n"
+        "  */pulls/106*) printf '%s\\n' "
+        '"{\\"state\\":\\"closed\\",\\"closed_at\\":\\"'
+        + recently_closed_at
+        + '\\"}" ;;\n'
+        "  */pulls/109*)\n"
+        '    count=$(cat "$REOPEN_COUNT")\n'
+        "    count=$((count + 1))\n"
+        '    printf \'%s\' "$count" > "$REOPEN_COUNT"\n'
+        '    if [ "$count" -eq 1 ]; then\n'
+        "      printf '%s\\n' "
+        '\'{"state":"closed","closed_at":"2000-01-01T00:00:00Z"}\'\n'
+        "    else\n"
+        '      printf \'%s\\n\' \'{"state":"open","closed_at":null}\'\n'
+        "    fi\n"
+        "    ;;\n"
         "  *) exit 2 ;;\n"
         "esac\n"
     )
@@ -111,6 +137,8 @@ def test_capacity_pruner_deletes_only_closed_non_current_pr_branches():
         "PATH": f"{bins}:{os.environ['PATH']}",
         "BRANCHES_JSON": json.dumps(branches),
         "DELETE_LOG": str(delete_log),
+        "CURL_LOG": str(curl_log),
+        "REOPEN_COUNT": str(reopen_count),
         "SUPABASE_PROJECT_REF": "project-ref",
         "GH_TOKEN": "test-token",
         "GITHUB_REPOSITORY": "abundant-ai/oddish",
@@ -130,6 +158,113 @@ def test_capacity_pruner_deletes_only_closed_non_current_pr_branches():
     assert "keeping Supabase branch pr-102" in proc.stderr
     assert "could not read GitHub PR #103" in proc.stderr
     assert "keeping current Supabase branch pr-105" in proc.stderr
+    assert (
+        "keeping Supabase branch pr-106 (GitHub PR closed too recently)" in proc.stderr
+    )
+    requested = curl_log.read_text()
+    assert "/pulls/107" not in requested
+    assert "/pulls/108" not in requested
+    assert reopen_count.read_text() == "2"
+    assert "keeping Supabase branch pr-109 (GitHub PR state=open)" in proc.stderr
+
+
+@needs_bash
+def test_capacity_error_prunes_then_retries_branch_creation_end_to_end():
+    tmp = Path(tempfile.mkdtemp())
+    bins = tmp / "bin"
+    bins.mkdir()
+    state = tmp / "state"
+    state.write_text("leaked")
+    create_count = tmp / "create-count"
+    create_count.write_text("0")
+    delete_log = tmp / "deleted"
+    github_env = tmp / "github-env"
+    github_output = tmp / "github-output"
+
+    fake_supabase = bins / "supabase"
+    fake_supabase.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'case "$1 $2" in\n'
+        '  "branches list")\n'
+        '    case "$(cat "$STATE_FILE")" in\n'
+        "      leaked) printf '%s\\n' "
+        '\'[{"id":"leaked-id","name":"pr-123","persistent":false}]\' ;;\n'
+        "      current) printf '%s\\n' "
+        '\'[{"id":"current-id","name":"pr-999","persistent":false,'
+        '"project_ref":"preview-ref","status":"MIGRATIONS_PASSED",'
+        '"preview_project_status":"ACTIVE_HEALTHY"}]\' ;;\n'
+        "      *) printf '%s\\n' '[]' ;;\n"
+        "    esac\n"
+        "    ;;\n"
+        '  "branches create")\n'
+        '    count=$(cat "$CREATE_COUNT")\n'
+        "    count=$((count + 1))\n"
+        '    printf \'%s\' "$count" > "$CREATE_COUNT"\n'
+        '    if [ "$count" -eq 1 ]; then\n'
+        "      echo 'Cannot create more than 50 active branch projects' >&2\n"
+        "      exit 1\n"
+        "    fi\n"
+        "    printf '%s' current > \"$STATE_FILE\"\n"
+        "    ;;\n"
+        '  "branches delete")\n'
+        '    printf \'%s\\n\' "$3" >> "$DELETE_LOG"\n'
+        "    printf '%s' empty > \"$STATE_FILE\"\n"
+        "    ;;\n"
+        '  "branches get")\n'
+        "    printf '%s\\n' "
+        '\'{"POSTGRES_URL":"postgresql://postgres.preview:old@db.example.test:5432/postgres"}\'\n'
+        "    ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n"
+    )
+    fake_supabase.chmod(0o755)
+
+    fake_curl = bins / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        "  */pulls/123*) printf '%s\\n' "
+        '\'{"state":"closed","closed_at":"2000-01-01T00:00:00Z"}\' ;;\n'
+        "  *api.supabase.com*) printf '204' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n"
+    )
+    fake_curl.chmod(0o755)
+
+    fake_psql = bins / "psql"
+    fake_psql.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_psql.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{bins}:{os.environ['PATH']}",
+        "STATE_FILE": str(state),
+        "CREATE_COUNT": str(create_count),
+        "DELETE_LOG": str(delete_log),
+        "PR_NUMBER": "999",
+        "SUPABASE_PROJECT_REF": "project-ref",
+        "SUPABASE_ACCESS_TOKEN": "test-token",
+        "GH_TOKEN": "test-token",
+        "GITHUB_REPOSITORY": "abundant-ai/oddish",
+        "GITHUB_ENV": str(github_env),
+        "GITHUB_OUTPUT": str(github_output),
+        "CAPACITY_RETRY_DELAY_SECONDS": "0",
+    }
+    proc = subprocess.run(
+        ["bash", str(PREVIEW / "wait_for_supabase_branch.sh")],
+        env=env,
+        cwd=str(tmp),
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert create_count.read_text() == "2"
+    assert delete_log.read_text().splitlines() == ["leaked-id"]
+    assert "Supabase branch capacity is full" in proc.stderr
+    assert "pruned 1 closed-PR Supabase preview branch(es)" in proc.stderr
+    assert "branch_id=current-id" in github_output.read_text()
 
 
 def test_vercel_waits_for_backend_deploy():
