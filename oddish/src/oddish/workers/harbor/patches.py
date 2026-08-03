@@ -49,10 +49,42 @@ def apply_harbor_patches() -> None:
     global _PATCHED
     if _PATCHED:
         return
+    _patch_daytona_gpu_types()
     _patch_restricted_network_runtime_fields()
     _patch_daytona_dind()
     _patch_modal_dind()
     _PATCHED = True
+
+
+def _patch_daytona_gpu_types() -> None:
+    """Extend older Harbor Daytona GPU aliases to the current Daytona set."""
+    try:
+        module = importlib.import_module("harbor.environments.daytona.environment")
+    except Exception:
+        logger.debug("Harbor Daytona environment unavailable; skipping GPU type patch")
+        return
+
+    gpu_map = getattr(module, "DAYTONA_GPU_TYPE_MAP", None)
+    if not isinstance(gpu_map, dict):
+        logger.debug("Harbor Daytona GPU type map unavailable; skipping patch")
+        return
+
+    gpu_map.update(
+        {
+            "h200": "H200",
+            "nvidia-h200": "H200",
+            "nvidia-h200-141gb": "H200",
+            "rtx-pro-6000": "RTX-PRO-6000",
+            "rtx_pro_6000": "RTX-PRO-6000",
+            "nvidia-rtx-pro-6000": "RTX-PRO-6000",
+            "rtx-4090": "RTX-4090",
+            "rtx_4090": "RTX-4090",
+            "nvidia-rtx-4090": "RTX-4090",
+            "rtx-5090": "RTX-5090",
+            "rtx_5090": "RTX-5090",
+            "nvidia-rtx-5090": "RTX-5090",
+        }
+    )
 
 
 def _patch_restricted_network_runtime_fields() -> None:

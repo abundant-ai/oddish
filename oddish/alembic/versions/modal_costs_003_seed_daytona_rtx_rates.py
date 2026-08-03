@@ -1,22 +1,8 @@
-"""seed daytona compute rate rows
+"""seed new daytona gpu rate rows
 
-Revision ID: modal_costs_002
-Revises: analyzer_task_cost_001
-Create Date: 2026-07-22 00:00:00.000000
-
-Adds daytona rows to the ``modal_rates`` card so daytona sandbox spans price
-instead of recording as ``no_rate``. Only the sandbox class exists for daytona;
-the oddish worker always runs on Modal.
-
-Public list prices from daytona.io/pricing, converted per-hour / 3600 to
-per-second. Free-tier allowances (20 vCPU-h + 40 GiB-h/day, $200 credit) are
-not modeled -- this is a gross list-price estimate, matching the Modal rows.
-
-Idempotent via ON CONFLICT DO NOTHING on the (provider, sku, effective_at)
-natural key, so the create_all-bootstrapped path and re-runs stay safe.
-Mirrored by the daytona block of oddish.costs.modal_cost.DEFAULT_RATES; the
-drift between the union of all modal_costs_* seeds and DEFAULT_RATES is
-unit-tested (tests/test_modal_cost_pricing.py).
+Revision ID: modal_costs_003
+Revises: trajgraph_002
+Create Date: 2026-08-03 00:00:00.000000
 """
 
 from datetime import datetime, timezone
@@ -28,19 +14,16 @@ from alembic import op
 
 from oddish.db import generate_id
 
-revision: str = "modal_costs_002"
-down_revision: Union[str, Sequence[str], None] = "analyzer_task_cost_001"
+revision: str = "modal_costs_003"
+down_revision: Union[str, Sequence[str], None] = "trajgraph_002"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 SEED_EFFECTIVE_AT = datetime(2025, 1, 1, tzinfo=timezone.utc)
-SEED_NOTE = "daytona.io/pricing 2026-07-22"
+SEED_NOTE = "daytona.io/pricing 2026-08-03"
 SEED_RATES: tuple[tuple[str, str, str], ...] = (
-    ("daytona", "sandbox:cpu_core_sec", "0.0000140"),
-    ("daytona", "sandbox:mem_gib_sec", "0.0000045"),
-    ("daytona", "gpu:H200", "0.0012611111"),
-    ("daytona", "gpu:H100", "0.0010972222"),
-    ("daytona", "gpu:RTX_PRO_6000", "0.0008416667"),
+    ("daytona", "gpu:RTX_5090", "0.0003583333"),
+    ("daytona", "gpu:RTX_4090", "0.0002750000"),
 )
 
 
@@ -82,6 +65,7 @@ def downgrade() -> None:
             """
             DELETE FROM modal_rates
             WHERE provider = 'daytona' AND effective_at = :effective_at
+              AND sku IN ('gpu:RTX_5090', 'gpu:RTX_4090')
             """
         ),
         {"effective_at": SEED_EFFECTIVE_AT},

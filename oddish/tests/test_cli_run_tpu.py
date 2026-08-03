@@ -139,13 +139,13 @@ def test_override_gpus_on_tpu_task_raises_clear_error(tmp_path, monkeypatch):
         run._default_cloud_environment_for_task(tmp_path, override_gpus=4)
 
 
-def test_gpu_task_stays_modal_even_with_gke_available(tmp_path, monkeypatch):
+def test_gpu_task_routes_to_daytona_even_with_gke_available(tmp_path, monkeypatch):
     (tmp_path / "task.toml").write_text("x")
     _patch_env(monkeypatch, gpus=2, tpu=None)
     _stub_registry_with_gke(monkeypatch)
     assert (
         run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
-        == EnvironmentType.MODAL
+        == EnvironmentType.DAYTONA
     )
 
 

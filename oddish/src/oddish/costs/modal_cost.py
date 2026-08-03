@@ -105,10 +105,10 @@ DEFAULT_RATES: tuple[RateRow, ...] = tuple(
         ("modal", "gpu:A10", "0.000306"),
         ("modal", "gpu:L4", "0.000222"),
         ("modal", "gpu:T4", "0.000164"),
-        # Daytona (seeded by modal_costs_002). Public list prices from
+        # Daytona (seeded by modal_costs_002+). Public list prices from
         # daytona.io/pricing, converted per-hour / 3600 to per-second. Only the
         # sandbox class exists for daytona (the oddish worker always runs on
-        # Modal); GPU trials route to Modal, so daytona GPU rows are defensive.
+        # Modal).
         # Free-tier allowances (20 vCPU-h + 40 GiB-h/day, $200 credit) are not
         # modeled: this is a gross list-price estimate, like the Modal rows.
         ("daytona", "sandbox:cpu_core_sec", "0.0000140"),
@@ -116,6 +116,8 @@ DEFAULT_RATES: tuple[RateRow, ...] = tuple(
         ("daytona", "gpu:H200", "0.0012611111"),
         ("daytona", "gpu:H100", "0.0010972222"),
         ("daytona", "gpu:RTX_PRO_6000", "0.0008416667"),
+        ("daytona", "gpu:RTX_5090", "0.0003583333"),
+        ("daytona", "gpu:RTX_4090", "0.0002750000"),
     )
 )
 
@@ -149,6 +151,8 @@ _CANONICAL_GPUS = (
     "H200",
     "H100",
     "RTX_PRO_6000",
+    "RTX_5090",
+    "RTX_4090",
     "A100-80GB",
     "A100-40GB",
     "L40S",

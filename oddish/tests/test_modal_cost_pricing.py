@@ -145,6 +145,8 @@ def test_normalize_gpu_type() -> None:
     assert normalize_gpu_type("A100_80GB") == "A100-80GB"
     assert normalize_gpu_type("L40S") == "L40S"
     assert normalize_gpu_type("rtx pro 6000") == "RTX_PRO_6000"
+    assert normalize_gpu_type("rtx-5090") == "RTX_5090"
+    assert normalize_gpu_type("RTX_4090") == "RTX_4090"
     assert normalize_gpu_type("any") is None
     assert normalize_gpu_type("ANY") is None
     assert normalize_gpu_type("warpcore9000") is None
@@ -220,6 +222,23 @@ def test_daytona_sandbox_prices_at_daytona_rates() -> None:
     )
     assert res.cost_usd == Decimal(60) * (
         Decimal(2) * DAYTONA_CPU + Decimal(4) * DAYTONA_MEM
+    )
+
+
+def test_daytona_rtx_gpu_prices_at_daytona_rates() -> None:
+    sel = select_rates(DEFAULT_RATES, "daytona", "sandbox", "RTX_4090", T0)
+    assert sel.gpu is not None
+    assert sel.gpu.sku == "gpu:RTX_4090"
+    assert sel.gpu.usd_per_sec == Decimal("0.0002750000")
+
+    res = estimate_span_cost(
+        T0,
+        T0 + timedelta(seconds=10),
+        _sandbox(gpu_type="RTX_4090", gpu_count=1),
+        sel,
+    )
+    assert res.cost_usd == Decimal(10) * (
+        Decimal(2) * DAYTONA_CPU + Decimal(4) * DAYTONA_MEM + Decimal("0.0002750000")
     )
 
 
@@ -466,6 +485,7 @@ def test_default_rates_mirror_migration_seed_exactly() -> None:
     # migration can append rows without pinning DEFAULT_RATES' ordering.
     seed = _migration_seed_rates("modal_costs_001_add_modal_costs.py")
     seed += _migration_seed_rates("modal_costs_002_seed_daytona_rates.py")
+    seed += _migration_seed_rates("modal_costs_003_seed_daytona_rtx_rates.py")
     expected = {(row.provider, row.sku, str(row.usd_per_sec)) for row in DEFAULT_RATES}
     assert set(seed) == expected
     assert len(seed) == len(DEFAULT_RATES), "duplicate or missing seed row"
