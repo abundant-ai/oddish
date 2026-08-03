@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 MODAL_IMAGE_BUILD_FAILED_STAGE = "image_build_failed"
+DAYTONA_CAPACITY_REJECTED_STAGE = "capacity_rejected"
 
 _MODAL_IMAGE_BUILD_FAILED_RE = re.compile(
     r"\bImage build for im-[^\s]+ failed\b",

@@ -462,12 +462,16 @@ async def test_prepare_trial_run_ignores_superseded_trial(monkeypatch):
     trial.attempts = 2
 
     @asynccontextmanager
-    async def fake_trial_session(
-        _trial_id, *, allow_missing=False, with_for_update=False
-    ):
-        yield SimpleNamespace(), trial
+    async def fake_get_session():
+        yield SimpleNamespace()
 
-    monkeypatch.setattr(trial_handler_mod, "_trial_session", fake_trial_session)
+    async def fake_lock(_session, _trial_id, *, allow_missing=False):
+        return trial, object(), None
+
+    monkeypatch.setattr(trial_handler_mod, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        trial_handler_mod, "_lock_capacity_source_then_trial", fake_lock
+    )
 
     prepared = await trial_handler_mod._prepare_trial_run(
         trial_id=trial.id,

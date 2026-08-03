@@ -217,6 +217,25 @@ async def test_trial_handler_returns_permanent_fail_on_modal_image_build(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_trial_handler_returns_permanent_fail_on_capacity_rejection(monkeypatch):
+    trial_row = SimpleNamespace(
+        status=TrialStatus.FAILED,
+        harbor_stage="capacity_rejected",
+        error_message="Daytona capacity request exceeds the managed pool limit",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(monkeypatch, "run_trial_job")
+
+    outcome = await TrialJobHandler().run(_trial_claim(attempts=1, max_attempts=6))
+
+    assert outcome.failure is not None
+    assert outcome.failure.retryable is False
+    assert "managed pool limit" in outcome.failure.error_message
+
+
+@pytest.mark.asyncio
 async def test_trial_handler_fails_permanently_when_row_missing(monkeypatch):
     monkeypatch.setattr(handlers_module, "get_session", _fake_get_session_factory(None))
     _patch_run(monkeypatch, "run_trial_job")

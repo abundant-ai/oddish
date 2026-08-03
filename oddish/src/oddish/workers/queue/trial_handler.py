@@ -17,6 +17,7 @@ from harbor.models.job.config import RetryConfig
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import is_nop_oracle_agent, settings
 from oddish.costs.modal_cost import SpanResources
@@ -72,6 +73,7 @@ from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
+    DAYTONA_CAPACITY_REJECTED_STAGE,
     MODAL_IMAGE_BUILD_FAILED_STAGE,
     is_modal_image_build_failure,
 )
@@ -184,12 +186,156 @@ class TrialExecutionResult:
     tailed_attempt: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DaytonaCapacitySourceIdentity:
+    task_id: str
+    task_version_id: str | None
+    task_path: str | None
+    task_s3_key: str | None
+    task_version_content_hash: str | None
+    environment: str
+    harbor_config_json: str | None
+
+
 @dataclass(slots=True)
 class DaytonaCapacityPreflight:
     task_path_to_run: Path
     temp_task_dir: Path | None
     resolved_task_s3_key: str | None
     requested_memory_mb: int
+    source_identity: DaytonaCapacitySourceIdentity
+
+
+class DaytonaCapacityPreflightChanged(RuntimeError):
+    """The trial inputs changed after capacity was accounted and acquired."""
+
+
+class DaytonaCapacityWaitObsolete(RuntimeError):
+    """The trial became terminal or superseded while waiting for capacity."""
+
+
+class TrialWorkerJobOwnershipLost(RuntimeError):
+    """The claimed worker job no longer belongs to this worker attempt."""
+
+
+async def _load_daytona_capacity_source(
+    session: AsyncSession,
+    trial: TrialModel,
+) -> tuple[DaytonaCapacitySourceIdentity, TaskModel | None]:
+    task = await session.get(TaskModel, trial.task_id)
+    version = None
+    if trial.task_version_id:
+        version = await session.get(TaskVersionModel, trial.task_version_id)
+    return _daytona_capacity_source_identity(trial, task, version), task
+
+
+def _daytona_capacity_source_identity(
+    trial: TrialModel,
+    task: TaskModel | None,
+    version: TaskVersionModel | None,
+) -> DaytonaCapacitySourceIdentity:
+    task_path = task.task_path if task else None
+    task_s3_key = task.task_s3_key if task else None
+    if version is not None:
+        task_path = version.task_path or task_path
+        task_s3_key = version.task_s3_key or task_s3_key
+
+    harbor_config_json = (
+        json.dumps(trial.harbor_config, sort_keys=True, separators=(",", ":"))
+        if trial.harbor_config is not None
+        else None
+    )
+    return DaytonaCapacitySourceIdentity(
+        task_id=task.id if task else trial.task_id,
+        task_version_id=trial.task_version_id,
+        task_path=task_path,
+        task_s3_key=task_s3_key,
+        task_version_content_hash=version.content_hash if version else None,
+        environment=(trial.environment or settings.harbor_environment).lower(),
+        harbor_config_json=harbor_config_json,
+    )
+
+
+async def _lock_capacity_source_then_trial(
+    session: AsyncSession,
+    trial_id: str,
+    *,
+    allow_missing: bool = False,
+) -> tuple[
+    TrialModel | None,
+    DaytonaCapacitySourceIdentity | None,
+    TaskModel | None,
+]:
+    """Lock Task/Version -> Trial, the canonical cancellation-safe order."""
+    observed_trial = await session.get(TrialModel, trial_id)
+    if observed_trial is None:
+        if allow_missing:
+            return None, None, None
+        raise RuntimeError(f"Trial {trial_id} not found in database")
+
+    observed_task_id = observed_trial.task_id
+    observed_version_id = observed_trial.task_version_id
+    task = await session.get(TaskModel, observed_task_id, with_for_update=True)
+    version = None
+    if observed_version_id:
+        version = await session.get(
+            TaskVersionModel,
+            observed_version_id,
+            with_for_update=True,
+        )
+
+    # User cancellation takes Task -> Trial -> worker_job. Taking the same
+    # order here prevents prepare/reject from deadlocking a cancellation that
+    # already owns the task row. If the unlocked ID read raced a reassignment,
+    # end this transaction and retry from the new source instead of locking a
+    # second task after the trial row.
+    trial = await session.get(
+        TrialModel,
+        trial_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if trial is None:
+        if allow_missing:
+            return None, None, None
+        raise RuntimeError(f"Trial {trial_id} not found in database")
+    if (
+        trial.task_id != observed_task_id
+        or trial.task_version_id != observed_version_id
+    ):
+        raise DaytonaCapacityPreflightChanged(
+            f"Trial {trial_id} source IDs changed while acquiring row locks"
+        )
+    return trial, _daytona_capacity_source_identity(trial, task, version), task
+
+
+async def _assert_worker_job_ownership(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    worker_id: str | None,
+    worker_job_id: str | None,
+    worker_job_attempt: int | None,
+) -> None:
+    if worker_job_id is None:
+        return
+    worker_job = await session.get(
+        WorkerJobModel,
+        worker_job_id,
+        with_for_update=True,
+    )
+    owns_worker_job = bool(
+        worker_job is not None
+        and worker_job.status == WorkerJobStatus.RUNNING
+        and (worker_id is None or worker_job.current_worker_id == worker_id)
+        and (worker_job_attempt is None or worker_job.attempts == worker_job_attempt)
+        and worker_job.subject_id == trial_id
+    )
+    if not owns_worker_job:
+        raise TrialWorkerJobOwnershipLost(
+            f"worker_job {worker_job_id} lost ownership before trial "
+            f"{trial_id} state transition"
+        )
 
 
 @dataclass(slots=True)
@@ -482,11 +628,19 @@ async def _prepare_trial_run(
     worker_id: str | None,
     queue_slot: int | None,
     modal_function_call_id: str | None,
+    worker_job_id: str | None = None,
+    worker_job_attempt: int | None = None,
+    expected_capacity_source: DaytonaCapacitySourceIdentity | None = None,
 ) -> PreparedTrialRun | None:
-    async with _trial_session(trial_id, with_for_update=True) as (session, trial):
+    async with get_session() as session:
+        trial, capacity_source, task = await _lock_capacity_source_then_trial(
+            session,
+            trial_id,
+        )
         if not trial:
             console.print(f"[yellow]Trial {trial_id} not found, skipping[/yellow]")
             return None
+        assert capacity_source is not None
         if trial.superseded_by_trial_id is not None:
             console.print(f"[dim]Trial {trial_id} was superseded, skipping[/dim]")
             return None
@@ -499,6 +653,22 @@ async def _prepare_trial_run(
                 f"[dim]Trial {trial_id} became terminal before preparation, skipping[/dim]"
             )
             return None
+
+        await _assert_worker_job_ownership(
+            session,
+            trial_id=trial_id,
+            worker_id=worker_id,
+            worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+        )
+
+        if (
+            expected_capacity_source is not None
+            and capacity_source != expected_capacity_source
+        ):
+            raise DaytonaCapacityPreflightChanged(
+                f"Trial {trial_id} inputs changed while waiting for Daytona capacity"
+            )
 
         trial.status = TrialStatus.RUNNING
         trial.started_at = utcnow()
@@ -530,7 +700,6 @@ async def _prepare_trial_run(
         if not trial.idempotency_key:
             trial.idempotency_key = str(uuid.uuid4())
 
-        task = await session.get(TaskModel, trial.task_id)
         if task and task.status == TaskStatus.PENDING:
             task.status = TaskStatus.RUNNING
             task.started_at = utcnow()
@@ -548,17 +717,6 @@ async def _prepare_trial_run(
                 experiment_name = experiment.name
                 experiment_owner_user_id = experiment.owner_user_id
 
-        task_path: str | None = None
-        task_s3_key: str | None = None
-        if trial.task_version_id:
-            tv = await session.get(TaskVersionModel, trial.task_version_id)
-            if tv:
-                task_path = tv.task_path
-                task_s3_key = tv.task_s3_key
-        if task_path is None and task:
-            task_path = task.task_path
-        if task_s3_key is None and task:
-            task_s3_key = task.task_s3_key
         trial_agent = trial.agent
         trial_model = settings.normalize_trial_model(trial_agent, trial.model)
         if trial.model != trial_model:
@@ -577,8 +735,8 @@ async def _prepare_trial_run(
         # harvests it from ``worker_jobs.RETURNING``.
 
         return PreparedTrialRun(
-            task_path=task_path,
-            task_s3_key=task_s3_key,
+            task_path=capacity_source.task_path,
+            task_s3_key=capacity_source.task_s3_key,
             task_id=task_id,
             trial_agent=trial_agent,
             trial_model=trial_model,
@@ -1500,10 +1658,96 @@ def _capacity_request_memory_mb(
             default=0,
         )
     )
-    return min(
-        _capacity_memory_mb(agent_resources) + verifier_memory_mb,
-        settings.daytona_capacity_memory_limit_mb,
+    return _capacity_memory_mb(agent_resources) + verifier_memory_mb
+
+
+async def _daytona_capacity_wait_is_active(trial_id: str) -> bool:
+    async with _trial_session(trial_id, allow_missing=True) as (_session, trial):
+        return bool(
+            trial is not None
+            and trial.superseded_by_trial_id is None
+            and trial.status
+            not in (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
+        )
+
+
+async def _active_daytona_capacity_source(
+    trial_id: str,
+) -> DaytonaCapacitySourceIdentity | None:
+    async with _trial_session(trial_id, allow_missing=True) as (session, trial):
+        if (
+            trial is None
+            or trial.superseded_by_trial_id is not None
+            or trial.status
+            in (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
+        ):
+            return None
+        source_identity, _task = await _load_daytona_capacity_source(session, trial)
+        return source_identity
+
+
+async def _reject_daytona_capacity_request(
+    trial_id: str,
+    *,
+    requested_memory_mb: int,
+    memory_limit_mb: int,
+    worker_id: str | None = None,
+    worker_job_id: str | None = None,
+    worker_job_attempt: int | None = None,
+    expected_capacity_source: DaytonaCapacitySourceIdentity | None = None,
+) -> None:
+    error_message = (
+        f"Daytona capacity request {requested_memory_mb} MiB exceeds the managed "
+        f"pool limit {memory_limit_mb} MiB"
     )
+    org_id: str | None = None
+    billed_user_id: str | None = None
+    rejected = False
+    async with get_session() as session:
+        trial, current_source, _task = await _lock_capacity_source_then_trial(
+            session,
+            trial_id,
+            allow_missing=True,
+        )
+        if (
+            trial is not None
+            and trial.superseded_by_trial_id is None
+            and trial.status
+            not in (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
+        ):
+            await _assert_worker_job_ownership(
+                session,
+                trial_id=trial_id,
+                worker_id=worker_id,
+                worker_job_id=worker_job_id,
+                worker_job_attempt=worker_job_attempt,
+            )
+            if expected_capacity_source is not None:
+                if current_source != expected_capacity_source:
+                    raise DaytonaCapacityPreflightChanged(
+                        f"Trial {trial_id} inputs changed before Daytona capacity "
+                        "rejection"
+                    )
+            trial.status = TrialStatus.FAILED
+            trial.harbor_stage = DAYTONA_CAPACITY_REJECTED_STAGE
+            trial.error_message = error_message
+            trial.finished_at = utcnow()
+            trial.next_retry_at = None
+            trial.current_worker_id = None
+            trial.current_queue_slot = None
+            trial.heartbeat_at = utcnow()
+            org_id = trial.org_id
+            billed_user_id = trial.billed_user_id
+            rejected = True
+
+    if rejected:
+        console.print(f"[red]Trial {trial_id} FAILED (Daytona capacity)[/red]")
+        await _finish_trial_settlement(
+            trial_id=trial_id,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+            run_post_trial_hooks=True,
+        )
 
 
 async def _daytona_capacity_preflight(
@@ -1520,42 +1764,38 @@ async def _daytona_capacity_preflight(
             in (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
         ):
             return None
-        environment = (trial.environment or settings.harbor_environment).lower()
-        if environment != EnvironmentType.DAYTONA.value:
+        source_identity, _task = await _load_daytona_capacity_source(session, trial)
+        if source_identity.environment != EnvironmentType.DAYTONA.value:
             return None
-
-        task = await session.get(TaskModel, trial.task_id)
-        task_path = task.task_path if task else None
-        task_s3_key = task.task_s3_key if task else None
-        if trial.task_version_id:
-            version = await session.get(TaskVersionModel, trial.task_version_id)
-            if version is not None:
-                task_path = version.task_path or task_path
-                task_s3_key = version.task_s3_key or task_s3_key
-        task_id = task.id if task else trial.task_id
         harbor_config = trial.harbor_config
 
     resolved = await resolve_task_directory(
-        task_id=task_id,
-        task_s3_key=task_s3_key,
-        task_path=task_path,
+        task_id=source_identity.task_id,
+        task_s3_key=source_identity.task_s3_key,
+        task_path=source_identity.task_path,
     )
     task_path_to_run, temp_task_dir, resolved_task_s3_key = resolved
-    agent_resources = capture_sandbox_resources(
-        task_path_to_run, harbor_config, EnvironmentType.DAYTONA.value
-    )
-    verifier_resources = capture_verifier_resource_options(
-        task_path_to_run, harbor_config, EnvironmentType.DAYTONA.value
-    )
-    requested_memory_mb = _capacity_request_memory_mb(
-        agent_resources, verifier_resources
-    )
-    return DaytonaCapacityPreflight(
-        task_path_to_run=task_path_to_run,
-        temp_task_dir=temp_task_dir,
-        resolved_task_s3_key=resolved_task_s3_key,
-        requested_memory_mb=requested_memory_mb,
-    )
+    try:
+        agent_resources = capture_sandbox_resources(
+            task_path_to_run, harbor_config, EnvironmentType.DAYTONA.value
+        )
+        verifier_resources = capture_verifier_resource_options(
+            task_path_to_run, harbor_config, EnvironmentType.DAYTONA.value
+        )
+        requested_memory_mb = _capacity_request_memory_mb(
+            agent_resources, verifier_resources
+        )
+        return DaytonaCapacityPreflight(
+            task_path_to_run=task_path_to_run,
+            temp_task_dir=temp_task_dir,
+            resolved_task_s3_key=resolved_task_s3_key,
+            requested_memory_mb=requested_memory_mb,
+            source_identity=source_identity,
+        )
+    except BaseException:
+        if temp_task_dir is not None:
+            shutil.rmtree(temp_task_dir, ignore_errors=True)
+        raise
 
 
 async def _run_trial_job_with_capacity(
@@ -1569,6 +1809,7 @@ async def _run_trial_job_with_capacity(
     worker_job_attempt: int | None = None,
     resolved_task: tuple[Path, Path | None, str | None] | None = None,
     capacity_lease: ProviderCapacityLease | None = None,
+    expected_capacity_source: DaytonaCapacitySourceIdentity | None = None,
 ) -> None:
     """
     Execute a claimed trial.
@@ -1604,6 +1845,9 @@ async def _run_trial_job_with_capacity(
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
+        worker_job_id=worker_job_id,
+        worker_job_attempt=worker_job_attempt,
+        expected_capacity_source=expected_capacity_source,
     )
     if prepared_trial is None:
         return
@@ -1906,19 +2150,6 @@ async def run_trial_job(
     worker_job_attempt: int | None = None,
 ) -> None:
     """Acquire Daytona-wide capacity before the trial attempt starts."""
-    preflight = await _daytona_capacity_preflight(trial_id)
-    if preflight is None:
-        await _run_trial_job_with_capacity(
-            trial_id,
-            queue_key,
-            worker_id=worker_id,
-            queue_slot=queue_slot,
-            modal_function_call_id=modal_function_call_id,
-            worker_job_id=worker_job_id,
-            worker_job_attempt=worker_job_attempt,
-        )
-        return
-
     owner_id = ":".join(
         (
             worker_job_id or f"trial-{trial_id}",
@@ -1926,6 +2157,13 @@ async def run_trial_job(
             worker_id or str(uuid.uuid4()),
         )
     )
+
+    async def _wait_check() -> None:
+        if not await _daytona_capacity_wait_is_active(trial_id):
+            raise DaytonaCapacityWaitObsolete(
+                f"Trial {trial_id} became terminal or superseded while waiting "
+                "for Daytona capacity"
+            )
 
     async def _wait_heartbeat() -> None:
         if worker_job_id is not None:
@@ -1939,36 +2177,108 @@ async def run_trial_job(
                     "for Daytona capacity"
                 )
 
-    lease: ProviderCapacityLease | None = None
-    try:
-        lease = await wait_for_provider_capacity(
-            provider=EnvironmentType.DAYTONA.value,
-            owner_id=owner_id,
-            requested_memory_mb=preflight.requested_memory_mb,
-            memory_limit_mb=settings.daytona_capacity_memory_limit_mb,
-            lease_limit=settings.daytona_capacity_max_leases,
-            lease_seconds=settings.daytona_capacity_lease_seconds,
-            heartbeat_seconds=settings.daytona_capacity_heartbeat_seconds,
-            poll_seconds=settings.daytona_capacity_poll_seconds,
-            wait_heartbeat=_wait_heartbeat,
-        )
-        await _run_trial_job_with_capacity(
-            trial_id,
-            queue_key,
-            worker_id=worker_id,
-            queue_slot=queue_slot,
-            modal_function_call_id=modal_function_call_id,
-            worker_job_id=worker_job_id,
-            worker_job_attempt=worker_job_attempt,
-            resolved_task=(
-                preflight.task_path_to_run,
-                preflight.temp_task_dir,
-                preflight.resolved_task_s3_key,
-            ),
-            capacity_lease=lease,
-        )
-    finally:
-        if lease is not None:
-            await lease.release()
-        if preflight.temp_task_dir is not None:
-            shutil.rmtree(preflight.temp_task_dir, ignore_errors=True)
+    while True:
+        preflight = await _daytona_capacity_preflight(trial_id)
+        if preflight is None:
+            direct_source = None
+            if settings.daytona_capacity_enabled:
+                direct_source = await _active_daytona_capacity_source(trial_id)
+                if (
+                    direct_source is not None
+                    and direct_source.environment == EnvironmentType.DAYTONA.value
+                ):
+                    continue
+            try:
+                await _run_trial_job_with_capacity(
+                    trial_id,
+                    queue_key,
+                    worker_id=worker_id,
+                    queue_slot=queue_slot,
+                    modal_function_call_id=modal_function_call_id,
+                    worker_job_id=worker_job_id,
+                    worker_job_attempt=worker_job_attempt,
+                    expected_capacity_source=direct_source,
+                )
+            except DaytonaCapacityPreflightChanged as exc:
+                console.print(f"[yellow]{exc}; recomputing capacity[/yellow]")
+                continue
+            except TrialWorkerJobOwnershipLost as exc:
+                console.print(f"[dim]{exc}; dropping obsolete claim[/dim]")
+            return
+
+        if preflight.requested_memory_mb > settings.daytona_capacity_memory_limit_mb:
+            try:
+                try:
+                    await _reject_daytona_capacity_request(
+                        trial_id,
+                        requested_memory_mb=preflight.requested_memory_mb,
+                        memory_limit_mb=settings.daytona_capacity_memory_limit_mb,
+                        worker_id=worker_id,
+                        worker_job_id=worker_job_id,
+                        worker_job_attempt=worker_job_attempt,
+                        expected_capacity_source=preflight.source_identity,
+                    )
+                except DaytonaCapacityPreflightChanged as exc:
+                    console.print(f"[yellow]{exc}; recomputing capacity[/yellow]")
+                    continue
+                except TrialWorkerJobOwnershipLost as exc:
+                    console.print(f"[dim]{exc}; dropping obsolete claim[/dim]")
+                    return
+            finally:
+                if preflight.temp_task_dir is not None:
+                    shutil.rmtree(preflight.temp_task_dir, ignore_errors=True)
+            return
+
+        lease: ProviderCapacityLease | None = None
+        retry_with_fresh_preflight = False
+        lease_released = True
+        try:
+            lease = await wait_for_provider_capacity(
+                provider=EnvironmentType.DAYTONA.value,
+                owner_id=owner_id,
+                requested_memory_mb=preflight.requested_memory_mb,
+                memory_limit_mb=settings.daytona_capacity_memory_limit_mb,
+                lease_limit=settings.daytona_capacity_max_leases,
+                lease_seconds=settings.daytona_capacity_lease_seconds,
+                heartbeat_seconds=settings.daytona_capacity_heartbeat_seconds,
+                poll_seconds=settings.daytona_capacity_poll_seconds,
+                wait_heartbeat=_wait_heartbeat,
+                wait_check=_wait_check,
+            )
+            try:
+                await _run_trial_job_with_capacity(
+                    trial_id,
+                    queue_key,
+                    worker_id=worker_id,
+                    queue_slot=queue_slot,
+                    modal_function_call_id=modal_function_call_id,
+                    worker_job_id=worker_job_id,
+                    worker_job_attempt=worker_job_attempt,
+                    resolved_task=(
+                        preflight.task_path_to_run,
+                        preflight.temp_task_dir,
+                        preflight.resolved_task_s3_key,
+                    ),
+                    capacity_lease=lease,
+                    expected_capacity_source=preflight.source_identity,
+                )
+            except DaytonaCapacityPreflightChanged as exc:
+                console.print(f"[yellow]{exc}; recomputing capacity[/yellow]")
+                retry_with_fresh_preflight = True
+        except (DaytonaCapacityWaitObsolete, TrialWorkerJobOwnershipLost) as exc:
+            console.print(f"[dim]{exc}; dropping capacity waiter[/dim]")
+            return
+        finally:
+            if lease is not None:
+                lease_released = await lease.release()
+            if preflight.temp_task_dir is not None:
+                shutil.rmtree(preflight.temp_task_dir, ignore_errors=True)
+
+        if retry_with_fresh_preflight:
+            if not lease_released:
+                raise RuntimeError(
+                    "Could not release stale Daytona capacity lease before "
+                    "re-accounting"
+                )
+            continue
+        return

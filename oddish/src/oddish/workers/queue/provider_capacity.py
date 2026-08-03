@@ -19,6 +19,24 @@ WAITING = "WAITING"
 HELD = "HELD"
 
 
+class ProviderCapacityRequestTooLarge(ValueError):
+    """Raised when one request cannot fit in the managed provider pool."""
+
+
+def _validate_capacity_request(
+    *, requested_memory_mb: int, memory_limit_mb: int
+) -> None:
+    if requested_memory_mb <= 0:
+        raise ValueError("requested_memory_mb must be positive")
+    if memory_limit_mb <= 0:
+        raise ValueError("memory_limit_mb must be positive")
+    if requested_memory_mb > memory_limit_mb:
+        raise ProviderCapacityRequestTooLarge(
+            f"requested memory {requested_memory_mb} MiB exceeds provider "
+            f"capacity limit {memory_limit_mb} MiB"
+        )
+
+
 @asynccontextmanager
 async def _capacity_connection() -> AsyncIterator[asyncpg.Connection]:
     conn = await asyncpg.connect(
@@ -51,7 +69,10 @@ async def _try_acquire(
     lease_limit: int,
     lease_seconds: int,
 ) -> tuple[bool, ProviderCapacitySnapshot]:
-    requested_memory_mb = min(max(requested_memory_mb, 1), memory_limit_mb)
+    _validate_capacity_request(
+        requested_memory_mb=requested_memory_mb,
+        memory_limit_mb=memory_limit_mb,
+    )
     async with _capacity_connection() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -232,10 +253,10 @@ class ProviderCapacityLease:
                         self._owner_task.cancel()
                     return
 
-    async def release(self) -> None:
+    async def release(self) -> bool:
         async with self._release_lock:
             if self._released:
-                return
+                return True
             self._stop.set()
             if self._heartbeat_task is not None:
                 await asyncio.gather(self._heartbeat_task, return_exceptions=True)
@@ -247,8 +268,9 @@ class ProviderCapacityLease:
                     self.provider,
                     self.owner_id,
                 )
-                return
+                return False
             self._released = True
+            return True
 
 
 async def wait_for_provider_capacity(
@@ -262,14 +284,21 @@ async def wait_for_provider_capacity(
     heartbeat_seconds: int,
     poll_seconds: float,
     wait_heartbeat: Callable[[], Awaitable[None]] | None = None,
+    wait_check: Callable[[], Awaitable[None]] | None = None,
 ) -> ProviderCapacityLease:
     """Wait FIFO for both weighted memory and hard lease-count capacity."""
+    _validate_capacity_request(
+        requested_memory_mb=requested_memory_mb,
+        memory_limit_mb=memory_limit_mb,
+    )
     started = time.monotonic()
     next_wait_heartbeat = started
     next_log = started
     try:
         while True:
             now = time.monotonic()
+            if wait_check is not None:
+                await wait_check()
             if wait_heartbeat is not None and now >= next_wait_heartbeat:
                 await wait_heartbeat()
                 next_wait_heartbeat = now + heartbeat_seconds
@@ -285,7 +314,7 @@ async def wait_for_provider_capacity(
                 lease = ProviderCapacityLease(
                     provider=provider,
                     owner_id=owner_id,
-                    requested_memory_mb=min(requested_memory_mb, memory_limit_mb),
+                    requested_memory_mb=requested_memory_mb,
                     lease_seconds=lease_seconds,
                     heartbeat_seconds=heartbeat_seconds,
                 )
