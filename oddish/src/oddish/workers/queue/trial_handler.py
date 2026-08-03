@@ -2172,7 +2172,7 @@ async def run_trial_job(
                 current_worker_id=worker_id,
             )
             if not still_owned:
-                raise RuntimeError(
+                raise TrialWorkerJobOwnershipLost(
                     f"worker_job {worker_job_id} lost ownership while waiting "
                     "for Daytona capacity"
                 )
@@ -2242,6 +2242,7 @@ async def run_trial_job(
                 lease_seconds=settings.daytona_capacity_lease_seconds,
                 heartbeat_seconds=settings.daytona_capacity_heartbeat_seconds,
                 poll_seconds=settings.daytona_capacity_poll_seconds,
+                waiter_seconds=settings.daytona_capacity_waiter_seconds,
                 wait_heartbeat=_wait_heartbeat,
                 wait_check=_wait_check,
             )

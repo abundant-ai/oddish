@@ -417,8 +417,7 @@ def assert_gke_cluster_exists() -> None:
         )
     except subprocess.TimeoutExpired:
         print(
-            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; "
-            "continuing"
+            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; continuing"
         )
         return
     if result.returncode == 0:
@@ -537,7 +536,10 @@ ENV_VARS = {
         "ODDISH_DAYTONA_CAPACITY_DEFAULT_REQUEST_MB", "4096"
     ),
     "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS": os.environ.get(
-        "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS", "300"
+        "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS", "7200"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_WAITER_SECONDS": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_WAITER_SECONDS", "300"
     ),
     "ODDISH_DAYTONA_CAPACITY_HEARTBEAT_SECONDS": os.environ.get(
         "ODDISH_DAYTONA_CAPACITY_HEARTBEAT_SECONDS", "30"

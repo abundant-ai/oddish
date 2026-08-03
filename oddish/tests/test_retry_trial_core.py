@@ -12,6 +12,7 @@ from harbor.trial.hooks import TrialEvent
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import oddish.queue as queue_mod
+from oddish.config import QuotaMode, settings
 from oddish.core import endpoints
 import oddish.core.endpoints.trials as trials_endpoint_mod
 import oddish.workers.queue.trial_handler as trial_handler_mod
@@ -145,6 +146,75 @@ class _RecordingSession:
 
     async def commit(self):
         self.events.append(("commit", None))
+
+
+@pytest.mark.asyncio
+async def test_retry_locks_quota_task_version_trial_then_worker_jobs(monkeypatch):
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    events = []
+    trial = _RecordingTrial(events)
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.COMPLETED,
+        finished_at=None,
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    quota_lock_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event[0] == "execute" and "pg_advisory_xact_lock" in event[1]
+    ]
+    # One pre-lock establishes the global order; admit_trials then re-enters
+    # that same transaction-scoped lock after the rows are validated.
+    assert len(quota_lock_indexes) == 2
+
+    locked_gets = [event for event in events if event[0] == "get"]
+    assert locked_gets[:3] == [
+        (
+            "get",
+            "task-1",
+            {"with_for_update": True, "populate_existing": True},
+        ),
+        (
+            "get",
+            "task-1-v1",
+            {"with_for_update": True, "populate_existing": True},
+        ),
+        (
+            "get",
+            "task-1-0",
+            {"with_for_update": True, "populate_existing": True},
+        ),
+    ]
+    task_lock_index = events.index(locked_gets[0])
+    trial_lock_index = events.index(locked_gets[2])
+    worker_job_lock_index = next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "execute"
+        and "FROM   worker_jobs" in event[1]
+        and "FOR UPDATE" in event[1]
+    )
+    assert quota_lock_indexes[0] < task_lock_index
+    assert task_lock_index < trial_lock_index < quota_lock_indexes[1]
+    assert quota_lock_indexes[1] < worker_job_lock_index
 
 
 @pytest.mark.asyncio

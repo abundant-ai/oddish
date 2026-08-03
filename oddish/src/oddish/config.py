@@ -16,6 +16,11 @@ from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
 logger = logging.getLogger(__name__)
 
+DAYTONA_CAPACITY_CONNECT_TIMEOUT_SECONDS = 10
+DAYTONA_CAPACITY_COMMAND_TIMEOUT_SECONDS = 30
+DAYTONA_CAPACITY_CLOSE_TIMEOUT_SECONDS = 10
+DAYTONA_CAPACITY_TEARDOWN_GRACE_SECONDS = 3600
+
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
     "claude-code": "bedrock",
@@ -1236,7 +1241,8 @@ class Settings(BaseSettings):
     daytona_capacity_headroom_memory_mb: int = Field(default=460_800, ge=0)
     daytona_capacity_max_leases: int = Field(default=384, gt=0)
     daytona_capacity_default_request_mb: int = Field(default=4096, gt=0)
-    daytona_capacity_lease_seconds: int = Field(default=300, ge=60)
+    daytona_capacity_lease_seconds: int = Field(default=7200, ge=60)
+    daytona_capacity_waiter_seconds: int = Field(default=300, ge=60)
     daytona_capacity_heartbeat_seconds: int = Field(default=30, ge=5)
     daytona_capacity_poll_seconds: float = Field(default=5.0, gt=0)
 
@@ -1536,6 +1542,31 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ODDISH_DAYTONA_CAPACITY_HEARTBEAT_SECONDS must be smaller than "
                 "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS"
+            )
+        bounded_failure_seconds = (
+            self.daytona_capacity_heartbeat_seconds
+            + DAYTONA_CAPACITY_CONNECT_TIMEOUT_SECONDS
+            + DAYTONA_CAPACITY_COMMAND_TIMEOUT_SECONDS
+            + DAYTONA_CAPACITY_CLOSE_TIMEOUT_SECONDS
+        )
+        if (
+            self.daytona_capacity_lease_seconds - bounded_failure_seconds
+            < DAYTONA_CAPACITY_TEARDOWN_GRACE_SECONDS
+        ):
+            raise ValueError(
+                "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS must leave at least "
+                f"{DAYTONA_CAPACITY_TEARDOWN_GRACE_SECONDS} seconds for sandbox "
+                "teardown after a bounded heartbeat failure"
+            )
+        if self.daytona_capacity_waiter_seconds <= (
+            self.daytona_capacity_poll_seconds
+            + DAYTONA_CAPACITY_CONNECT_TIMEOUT_SECONDS
+            + DAYTONA_CAPACITY_COMMAND_TIMEOUT_SECONDS
+            + DAYTONA_CAPACITY_CLOSE_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "ODDISH_DAYTONA_CAPACITY_WAITER_SECONDS must exceed the poll "
+                "interval plus one bounded database operation"
             )
         return self
 

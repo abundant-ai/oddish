@@ -26,14 +26,24 @@ async def provider_name():
         )
 
 
-async def _try(provider: str, owner: str, memory: int, *, limit=10, count=10):
+async def _try(
+    provider: str,
+    owner: str,
+    memory: int,
+    *,
+    limit=10,
+    count=10,
+    lease_seconds=300,
+    waiter_seconds=60,
+):
     return await provider_capacity._try_acquire(
         provider=provider,
         owner_id=owner,
         requested_memory_mb=memory,
         memory_limit_mb=limit,
         lease_limit=count,
-        lease_seconds=300,
+        lease_seconds=lease_seconds,
+        waiter_seconds=waiter_seconds,
     )
 
 
@@ -70,6 +80,89 @@ async def test_fifo_waiter_cannot_be_bypassed(provider_name):
     await provider_capacity._release(provider=provider_name, owner_id="owner-a")
     assert not (await _try(provider_name, "owner-c", 1))[0]
     assert (await _try(provider_name, "owner-b", 8))[0]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_dead_head_waiter_expires_short_while_held_lease_keeps_grace(
+    provider_name,
+):
+    assert (
+        await _try(
+            provider_name,
+            "held-owner",
+            10,
+            lease_seconds=7200,
+            waiter_seconds=60,
+        )
+    )[0]
+    assert not (
+        await _try(
+            provider_name,
+            "dead-head",
+            1,
+            lease_seconds=7200,
+            waiter_seconds=60,
+        )
+    )[0]
+    # Exercise both ON CONFLICT refresh branches: a live holder keeps the long
+    # teardown lease while a live waiter keeps only its short queue-entry TTL.
+    assert (
+        await _try(
+            provider_name,
+            "held-owner",
+            10,
+            lease_seconds=7200,
+            waiter_seconds=60,
+        )
+    )[0]
+    assert not (
+        await _try(
+            provider_name,
+            "dead-head",
+            1,
+            lease_seconds=7200,
+            waiter_seconds=60,
+        )
+    )[0]
+
+    async with provider_capacity._capacity_connection() as conn:
+        expiries = await conn.fetchrow(
+            """
+            SELECT EXTRACT(EPOCH FROM (held.lease_expires_at - NOW())) AS held_ttl,
+                   EXTRACT(EPOCH FROM (waiter.lease_expires_at - NOW())) AS waiter_ttl
+            FROM provider_capacity_leases held
+            JOIN provider_capacity_leases waiter ON waiter.provider = held.provider
+            WHERE held.provider = $1 AND held.owner_id = 'held-owner'
+              AND waiter.owner_id = 'dead-head'
+            """,
+            provider_name,
+        )
+        await conn.execute(
+            """
+            UPDATE provider_capacity_leases
+            SET lease_expires_at = NOW() - INTERVAL '1 second'
+            WHERE provider = $1 AND owner_id = 'dead-head'
+            """,
+            provider_name,
+        )
+
+    assert float(expiries["held_ttl"]) > 7000
+    assert 0 < float(expiries["waiter_ttl"]) <= 60
+
+    await provider_capacity._release(
+        provider=provider_name,
+        owner_id="held-owner",
+    )
+    assert (
+        await _try(
+            provider_name,
+            "next-owner",
+            1,
+            lease_seconds=7200,
+            waiter_seconds=60,
+        )
+    )[0]
 
 
 @requires_db

@@ -7,7 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from oddish.config import Settings, settings
+from oddish.config import (
+    DAYTONA_CAPACITY_CLOSE_TIMEOUT_SECONDS,
+    DAYTONA_CAPACITY_COMMAND_TIMEOUT_SECONDS,
+    DAYTONA_CAPACITY_CONNECT_TIMEOUT_SECONDS,
+    Settings,
+    settings,
+)
 from oddish.costs.modal_cost import SpanResources
 from oddish.db import TrialStatus
 from oddish.workers.queue import provider_capacity
@@ -76,6 +82,8 @@ def test_daytona_capacity_defaults_match_incident_ceiling_and_headroom():
     assert config.daytona_capacity_memory_limit_mb == 1800 * 1024
     assert config.daytona_capacity_max_leases == 384
     assert config.daytona_capacity_default_request_mb == 4096
+    assert config.daytona_capacity_lease_seconds == 7200
+    assert config.daytona_capacity_waiter_seconds == 300
 
 
 def test_daytona_capacity_rejects_invalid_headroom(monkeypatch):
@@ -83,6 +91,44 @@ def test_daytona_capacity_rejects_invalid_headroom(monkeypatch):
     monkeypatch.setenv("ODDISH_DAYTONA_CAPACITY_HEADROOM_MEMORY_MB", "4096")
     with pytest.raises(ValueError, match="HEADROOM_MEMORY_MB"):
         Settings()
+
+
+def test_daytona_capacity_rejects_lease_without_teardown_window(monkeypatch):
+    monkeypatch.setenv("ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS", "300")
+    with pytest.raises(ValueError, match="3600 seconds for sandbox teardown"):
+        Settings()
+
+
+def test_daytona_capacity_rejects_waiter_ttl_shorter_than_refresh_bound(monkeypatch):
+    monkeypatch.setenv("ODDISH_DAYTONA_CAPACITY_WAITER_SECONDS", "60")
+    monkeypatch.setenv("ODDISH_DAYTONA_CAPACITY_POLL_SECONDS", "20")
+    with pytest.raises(ValueError, match="WAITER_SECONDS must exceed"):
+        Settings()
+
+
+@pytest.mark.asyncio
+async def test_capacity_connection_bounds_connect_commands_and_close(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Connection:
+        async def close(self, *, timeout):
+            captured["close_timeout"] = timeout
+
+    connection = Connection()
+
+    async def fake_connect(dsn, **kwargs):
+        captured["dsn"] = dsn
+        captured.update(kwargs)
+        return connection
+
+    monkeypatch.setattr(provider_capacity.asyncpg, "connect", fake_connect)
+
+    async with provider_capacity._capacity_connection() as observed:
+        assert observed is connection
+
+    assert captured["timeout"] == DAYTONA_CAPACITY_CONNECT_TIMEOUT_SECONDS
+    assert captured["command_timeout"] == DAYTONA_CAPACITY_COMMAND_TIMEOUT_SECONDS
+    assert captured["close_timeout"] == DAYTONA_CAPACITY_CLOSE_TIMEOUT_SECONDS
 
 
 def test_capacity_memory_uses_effective_bound_and_safe_default(monkeypatch):
@@ -872,14 +918,13 @@ async def test_capacity_wait_stops_when_worker_job_loses_ownership(
     monkeypatch.setattr(trial_handler, "_daytona_capacity_preflight", fake_preflight)
     monkeypatch.setattr(trial_handler, "wait_for_provider_capacity", fake_wait)
     monkeypatch.setattr(trial_handler, "heartbeat_worker_job", lost_heartbeat)
-    with pytest.raises(RuntimeError, match="lost ownership"):
-        await trial_handler.run_trial_job(
-            "trial-1",
-            "openai/model-a",
-            worker_id="worker-1",
-            worker_job_id="job-1",
-            worker_job_attempt=2,
-        )
+    await trial_handler.run_trial_job(
+        "trial-1",
+        "openai/model-a",
+        worker_id="worker-1",
+        worker_job_id="job-1",
+        worker_job_attempt=2,
+    )
 
 
 @pytest.mark.asyncio
@@ -992,3 +1037,85 @@ async def test_capacity_lease_release_retries_after_database_failure(monkeypatch
     await lease.release()
     assert lease._released is True
     assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_timeout_cancels_owner_but_renews_until_teardown(monkeypatch):
+    attempts = 0
+    teardown_started = asyncio.Event()
+    renewed_during_teardown = asyncio.Event()
+    releases: list[tuple[str, str]] = []
+
+    async def timed_out_then_recovers(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("capacity heartbeat command timed out")
+        renewed_during_teardown.set()
+        return True
+
+    async def fake_release(*, provider, owner_id):
+        releases.append((provider, owner_id))
+
+    monkeypatch.setattr(provider_capacity, "_heartbeat", timed_out_then_recovers)
+    monkeypatch.setattr(provider_capacity, "_release", fake_release)
+
+    async def owner():
+        lease = provider_capacity.ProviderCapacityLease(
+            provider="daytona",
+            owner_id="owner",
+            requested_memory_mb=4096,
+            lease_seconds=7200,
+            heartbeat_seconds=0.01,
+        )
+        lease.start()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            teardown_started.set()
+            await asyncio.wait_for(renewed_during_teardown.wait(), timeout=1)
+            await lease.release()
+
+    owner_task = asyncio.create_task(owner())
+    await asyncio.wait_for(teardown_started.wait(), timeout=1)
+    await asyncio.wait_for(renewed_during_teardown.wait(), timeout=1)
+    await asyncio.wait_for(owner_task, timeout=1)
+
+    assert attempts >= 2
+    assert releases == [("daytona", "owner")]
+
+
+@pytest.mark.asyncio
+async def test_release_racing_failed_heartbeat_does_not_cancel_owner(monkeypatch):
+    heartbeat_started = asyncio.Event()
+    finish_heartbeat = asyncio.Event()
+    releases: list[str] = []
+
+    async def failing_heartbeat(**kwargs):
+        heartbeat_started.set()
+        await finish_heartbeat.wait()
+        raise TimeoutError("capacity heartbeat command timed out")
+
+    async def fake_release(*, provider, owner_id):
+        releases.append(owner_id)
+
+    monkeypatch.setattr(provider_capacity, "_heartbeat", failing_heartbeat)
+    monkeypatch.setattr(provider_capacity, "_release", fake_release)
+
+    lease = provider_capacity.ProviderCapacityLease(
+        provider="daytona",
+        owner_id="owner",
+        requested_memory_mb=4096,
+        lease_seconds=7200,
+        heartbeat_seconds=0.01,
+    )
+    lease.start()
+    await asyncio.wait_for(heartbeat_started.wait(), timeout=1)
+
+    release_task = asyncio.create_task(lease.release())
+    await asyncio.sleep(0)
+    finish_heartbeat.set()
+    assert await asyncio.wait_for(release_task, timeout=1)
+
+    assert releases == ["owner"]
+    assert not asyncio.current_task().cancelling()

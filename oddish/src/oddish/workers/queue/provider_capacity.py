@@ -11,7 +11,12 @@ import time
 
 import asyncpg
 
-from oddish.config import settings
+from oddish.config import (
+    DAYTONA_CAPACITY_CLOSE_TIMEOUT_SECONDS,
+    DAYTONA_CAPACITY_COMMAND_TIMEOUT_SECONDS,
+    DAYTONA_CAPACITY_CONNECT_TIMEOUT_SECONDS,
+    settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +47,14 @@ async def _capacity_connection() -> AsyncIterator[asyncpg.Connection]:
     conn = await asyncpg.connect(
         settings.asyncpg_url,
         statement_cache_size=0,
+        timeout=DAYTONA_CAPACITY_CONNECT_TIMEOUT_SECONDS,
+        command_timeout=DAYTONA_CAPACITY_COMMAND_TIMEOUT_SECONDS,
         server_settings=settings.asyncpg_server_settings(),
     )
     try:
         yield conn
     finally:
-        await conn.close()
+        await conn.close(timeout=DAYTONA_CAPACITY_CLOSE_TIMEOUT_SECONDS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,11 +75,14 @@ async def _try_acquire(
     memory_limit_mb: int,
     lease_limit: int,
     lease_seconds: int,
+    waiter_seconds: int = 300,
 ) -> tuple[bool, ProviderCapacitySnapshot]:
     _validate_capacity_request(
         requested_memory_mb=requested_memory_mb,
         memory_limit_mb=memory_limit_mb,
     )
+    if waiter_seconds <= 0:
+        raise ValueError("waiter_seconds must be positive")
     async with _capacity_connection() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -90,10 +100,15 @@ async def _try_acquire(
                     provider, owner_id, requested_memory_mb, state,
                     heartbeat_at, lease_expires_at
                 ) VALUES ($1, $2, $3, 'WAITING', NOW(),
-                          NOW() + make_interval(secs => $4))
+                          NOW() + make_interval(secs => $5))
                 ON CONFLICT (provider, owner_id) DO UPDATE
                 SET heartbeat_at = NOW(),
-                    lease_expires_at = NOW() + make_interval(secs => $4),
+                    lease_expires_at = NOW() + make_interval(
+                        secs => CASE
+                            WHEN provider_capacity_leases.state = 'WAITING' THEN $5
+                            ELSE $4
+                        END
+                    ),
                     requested_memory_mb = CASE
                         WHEN provider_capacity_leases.state = 'WAITING' THEN $3
                         ELSE provider_capacity_leases.requested_memory_mb
@@ -103,6 +118,7 @@ async def _try_acquire(
                 owner_id,
                 requested_memory_mb,
                 lease_seconds,
+                waiter_seconds,
             )
             state = await conn.fetchval(
                 "SELECT state FROM provider_capacity_leases "
@@ -214,8 +230,15 @@ class ProviderCapacityLease:
         self._owner_task = asyncio.current_task()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
+    def _cancel_owner(self) -> None:
+        if (
+            self._owner_task is not None
+            and not self._owner_task.done()
+            and not self._owner_task.cancelling()
+        ):
+            self._owner_task.cancel()
+
     async def _heartbeat_loop(self) -> None:
-        last_success = time.monotonic()
         while True:
             try:
                 await asyncio.wait_for(
@@ -225,33 +248,33 @@ class ProviderCapacityLease:
             except TimeoutError:
                 pass
             try:
-                if not await _heartbeat(
+                held = await _heartbeat(
                     provider=self.provider,
                     owner_id=self.owner_id,
                     lease_seconds=self.lease_seconds,
-                ):
+                )
+                if self._stop.is_set():
+                    return
+                if not held:
                     logger.error(
                         "provider capacity lease disappeared provider=%s owner=%s",
                         self.provider,
                         self.owner_id,
                     )
-                    if self._owner_task is not None:
-                        self._owner_task.cancel()
+                    self._cancel_owner()
                     return
-                last_success = time.monotonic()
             except Exception:
+                if self._stop.is_set():
+                    return
                 logger.exception(
                     "provider capacity heartbeat failed provider=%s owner=%s",
                     self.provider,
                     self.owner_id,
                 )
-                if (
-                    time.monotonic() - last_success
-                    >= self.lease_seconds - self.heartbeat_seconds
-                ):
-                    if self._owner_task is not None:
-                        self._owner_task.cancel()
-                    return
+                # Start Harbor cancellation on the first bounded DB failure,
+                # but keep renewing if Postgres recovers until release() tells
+                # us teardown has actually finished.
+                self._cancel_owner()
 
     async def release(self) -> bool:
         async with self._release_lock:
@@ -283,6 +306,7 @@ async def wait_for_provider_capacity(
     lease_seconds: int,
     heartbeat_seconds: int,
     poll_seconds: float,
+    waiter_seconds: int = 300,
     wait_heartbeat: Callable[[], Awaitable[None]] | None = None,
     wait_check: Callable[[], Awaitable[None]] | None = None,
 ) -> ProviderCapacityLease:
@@ -291,6 +315,8 @@ async def wait_for_provider_capacity(
         requested_memory_mb=requested_memory_mb,
         memory_limit_mb=memory_limit_mb,
     )
+    if waiter_seconds <= 0:
+        raise ValueError("waiter_seconds must be positive")
     started = time.monotonic()
     next_wait_heartbeat = started
     next_log = started
@@ -309,6 +335,7 @@ async def wait_for_provider_capacity(
                 memory_limit_mb=memory_limit_mb,
                 lease_limit=lease_limit,
                 lease_seconds=lease_seconds,
+                waiter_seconds=waiter_seconds,
             )
             if acquired:
                 lease = ProviderCapacityLease(

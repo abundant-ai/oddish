@@ -133,9 +133,7 @@ async def rerun_trial_analysis_core(
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
     trial = (
         await session.execute(
-            select(TrialModel)
-            .where(TrialModel.id == trial_id)
-            .with_for_update()
+            select(TrialModel).where(TrialModel.id == trial_id).with_for_update()
         )
     ).scalar_one_or_none()
     if trial is None:
@@ -166,7 +164,8 @@ async def rerun_trial_analysis_core(
     # A failed analysis can leave its job in RETRYING. Enqueuing another job
     # then would run the analysis twice. The existing job serves the re-run.
     active_job = await session.scalar(
-        select(WorkerJobModel.id).where(
+        select(WorkerJobModel.id)
+        .where(
             WorkerJobModel.kind == WorkerJobKind.ANALYSIS,
             WorkerJobModel.subject_table == "trials",
             WorkerJobModel.subject_id == trial_id,
@@ -191,13 +190,13 @@ async def rerun_trial_analysis_core(
     # A QUEUED full QA job is fine: it classifies this trial itself when it
     # starts, and the per-trial claim keeps the two jobs from colliding.
     running_task_qa = await session.scalar(
-        select(WorkerJobModel.id).where(
+        select(WorkerJobModel.id)
+        .where(
             WorkerJobModel.kind == WorkerJobKind.QA,
             WorkerJobModel.subject_table == "tasks",
             WorkerJobModel.subject_id == trial.task_id,
             WorkerJobModel.status == WorkerJobStatus.RUNNING,
-            func.coalesce(WorkerJobModel.payload["mode"].astext, "full")
-            != "pre_trial",
+            func.coalesce(WorkerJobModel.payload["mode"].astext, "full") != "pre_trial",
         )
         .limit(1)
     )
@@ -275,9 +274,7 @@ async def _qa_queue_position(
                     WorkerJobModel.queue_key,
                     WorkerJobModel.priority,
                     WorkerJobModel.created_at,
-                    (WorkerJobModel.available_after > func.now()).label(
-                        "in_backoff"
-                    ),
+                    (WorkerJobModel.available_after > func.now()).label("in_backoff"),
                 )
                 .where(
                     WorkerJobModel.kind == kind,
@@ -380,9 +377,63 @@ async def retry_trial_core(
     re-consults its scope's baselines; ``--no-baseline-gate`` sets it False to
     re-run the trial ungated.
     """
-    old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    old_trial = await session.get(TrialModel, old_trial.id)
+    from oddish.config import QuotaMode, is_nop_oracle_agent, settings
+    from oddish.core.quota_admission import admit_trials
+    from oddish.core.quotas import acquire_quota_locks
+
+    observed_trial = await get_trial_for_org_core(
+        session, trial_id=trial_id, org_id=org_id
+    )
+    observed_task_id = observed_trial.task_id
+    observed_version_id = observed_trial.task_version_id
+    observed_billed_user_id = observed_trial.billed_user_id
+
+    # Append acquires quota advisory locks before its Task row. Retry must join
+    # that global order or append and retry can deadlock quota <-> Task. The
+    # later admit_trials call may acquire these transaction locks again; that
+    # is an immediate, re-entrant acquisition by the same PostgreSQL session.
+    if settings.quota_mode == QuotaMode.ENFORCE and org_id is not None:
+        await acquire_quota_locks(session, org_id, observed_billed_user_id)
+
+    # Capacity admission and cancellation both continue Task -> TaskVersion ->
+    # Trial -> worker_job after quota. Retry mutates all but the version row,
+    # so it must join that order before superseding or cancelling its worker.
+    task = await session.get(
+        TaskModel,
+        observed_task_id,
+        with_for_update=True,
+        populate_existing=True,
+    )
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    if observed_version_id is not None:
+        await session.get(
+            TaskVersionModel,
+            observed_version_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
+    old_trial = await session.get(
+        TrialModel,
+        observed_trial.id,
+        with_for_update=True,
+        populate_existing=True,
+    )
     if old_trial is None:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+    if (
+        old_trial.task_id != observed_task_id
+        or old_trial.task_version_id != observed_version_id
+        or old_trial.billed_user_id != observed_billed_user_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="This trial's source or billing changed while retrying; retry again",
+        )
+    if org_id is not None and (
+        (old_trial.org_id is not None and old_trial.org_id != org_id)
+        or (old_trial.org_id is None and task.org_id != org_id)
+    ):
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     if old_trial.superseded_by_trial_id is not None:
@@ -412,18 +463,11 @@ async def retry_trial_core(
             ),
         )
 
-    task = await session.get(TaskModel, old_trial.task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-    from oddish.config import is_nop_oracle_agent, settings
     from oddish.queue import (
         apply_baseline_gate_to_new_llm_trials,
         enqueue_trial_worker_job,
         reserve_next_trial_index,
     )
-
-    from oddish.core.quota_admission import admit_trials
 
     await admit_trials(
         session,
