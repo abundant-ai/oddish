@@ -64,6 +64,7 @@ from oddish.workers.harbor.runner import (
     HarborOutcome,
     capture_live_sandbox_resources,
     capture_sandbox_resources,
+    capture_verifier_resource_options,
     capture_verifier_resources,
     run_harbor_trial_async,
 )
@@ -76,6 +77,10 @@ from oddish.workers.queue.trial_failures import (
 )
 from oddish.workers.queue import byok, job_tokens
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
+from oddish.workers.queue.provider_capacity import (
+    ProviderCapacityLease,
+    wait_for_provider_capacity,
+)
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
 
@@ -177,6 +182,14 @@ class TrialExecutionResult:
     outcome: HarborOutcome | None
     execution_error: str | None
     tailed_attempt: int | None = None
+
+
+@dataclass(slots=True)
+class DaytonaCapacityPreflight:
+    task_path_to_run: Path
+    temp_task_dir: Path | None
+    resolved_task_s3_key: str | None
+    requested_memory_mb: int
 
 
 @dataclass(slots=True)
@@ -1302,6 +1315,7 @@ async def _execute_trial(
     worker_job_attempt: int | None = None,
     cost_state: SandboxCostState | None = None,
     extra_agent_env: dict[str, str] | None = None,
+    capacity_lease: ProviderCapacityLease | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
     tailed_attempt: int | None = None
@@ -1370,6 +1384,8 @@ async def _execute_trial(
         console.print(f"[red]Trial {trial_id} execution error: {execution_error}[/red]")
         outcome = None
     finally:
+        if capacity_lease is not None:
+            await capacity_lease.release()
         heartbeat_stop.set()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
         # Stop the tailer (final flush + checkpoint) here, but defer the event
@@ -1449,7 +1465,91 @@ async def _settle_compute_costs(
         )
 
 
-async def run_trial_job(
+def _capacity_memory_mb(resources: SpanResources | None) -> int:
+    if resources is not None:
+        values = [
+            value
+            for value in (resources.mem_request_mb, resources.mem_limit_mb)
+            if value is not None and value > 0
+        ]
+        if values:
+            return max(values)
+    return settings.daytona_capacity_default_request_mb
+
+
+def _capacity_request_memory_mb(
+    agent_resources: SpanResources | None,
+    verifier_resources: tuple[SpanResources, ...] | None,
+) -> int:
+    # Harbor executes task steps serially. Reserve for the agent sandbox plus
+    # the largest separate verifier sandbox that can overlap it.
+    verifier_memory_mb = (
+        settings.daytona_capacity_default_request_mb
+        if verifier_resources is None
+        else max(
+            (_capacity_memory_mb(resources) for resources in verifier_resources),
+            default=0,
+        )
+    )
+    return min(
+        _capacity_memory_mb(agent_resources) + verifier_memory_mb,
+        settings.daytona_capacity_memory_limit_mb,
+    )
+
+
+async def _daytona_capacity_preflight(
+    trial_id: str,
+) -> DaytonaCapacityPreflight | None:
+    if not settings.daytona_capacity_enabled:
+        return None
+
+    async with _trial_session(trial_id) as (session, trial):
+        if (
+            trial is None
+            or trial.superseded_by_trial_id is not None
+            or trial.status
+            in (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
+        ):
+            return None
+        environment = (trial.environment or settings.harbor_environment).lower()
+        if environment != EnvironmentType.DAYTONA.value:
+            return None
+
+        task = await session.get(TaskModel, trial.task_id)
+        task_path = task.task_path if task else None
+        task_s3_key = task.task_s3_key if task else None
+        if trial.task_version_id:
+            version = await session.get(TaskVersionModel, trial.task_version_id)
+            if version is not None:
+                task_path = version.task_path or task_path
+                task_s3_key = version.task_s3_key or task_s3_key
+        task_id = task.id if task else trial.task_id
+        harbor_config = trial.harbor_config
+
+    resolved = await resolve_task_directory(
+        task_id=task_id,
+        task_s3_key=task_s3_key,
+        task_path=task_path,
+    )
+    task_path_to_run, temp_task_dir, resolved_task_s3_key = resolved
+    agent_resources = capture_sandbox_resources(
+        task_path_to_run, harbor_config, EnvironmentType.DAYTONA.value
+    )
+    verifier_resources = capture_verifier_resource_options(
+        task_path_to_run, harbor_config, EnvironmentType.DAYTONA.value
+    )
+    requested_memory_mb = _capacity_request_memory_mb(
+        agent_resources, verifier_resources
+    )
+    return DaytonaCapacityPreflight(
+        task_path_to_run=task_path_to_run,
+        temp_task_dir=temp_task_dir,
+        resolved_task_s3_key=resolved_task_s3_key,
+        requested_memory_mb=requested_memory_mb,
+    )
+
+
+async def _run_trial_job_with_capacity(
     trial_id: str,
     queue_key: str,
     *,
@@ -1458,6 +1558,8 @@ async def run_trial_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
+    resolved_task: tuple[Path, Path | None, str | None] | None = None,
+    capacity_lease: ProviderCapacityLease | None = None,
 ) -> None:
     """
     Execute a claimed trial.
@@ -1478,9 +1580,10 @@ async def run_trial_job(
             f"[dim]Trial {trial_id} current status: {trial.status.value}, agent: {trial.agent}[/dim]"
         )
 
-        if trial.idempotency_key and trial.status in (
+        if trial.status in (
             TrialStatus.SUCCESS,
             TrialStatus.FAILED,
+            TrialStatus.SKIPPED,
         ):
             console.print(
                 f"[yellow]Trial {trial_id} already processed (idempotent), skipping[/yellow]"
@@ -1528,15 +1631,13 @@ async def run_trial_job(
 
     # Determine task path: download from S3 if needed, or use local path
     temp_task_dir = None
-    (
-        task_path_to_run,
-        temp_task_dir,
-        resolved_task_s3_key,
-    ) = await resolve_task_directory(
-        task_id=prepared_trial.task_id,
-        task_s3_key=prepared_trial.task_s3_key,
-        task_path=prepared_trial.task_path,
-    )
+    if resolved_task is None:
+        resolved_task = await resolve_task_directory(
+            task_id=prepared_trial.task_id,
+            task_s3_key=prepared_trial.task_s3_key,
+            task_path=prepared_trial.task_path,
+        )
+    task_path_to_run, temp_task_dir, resolved_task_s3_key = resolved_task
     if temp_task_dir:
         console.print(f"[dim]Downloaded task from S3: {resolved_task_s3_key}[/dim]")
     else:
@@ -1661,6 +1762,7 @@ async def run_trial_job(
                 job_scoped_bundle,
                 byok.merge_byok_env(byok_env, probe_agent_env),
             ),
+            capacity_lease=capacity_lease,
         )
         await _settle_compute_costs(cost_state, execution.outcome)
 
@@ -1782,3 +1884,82 @@ async def run_trial_job(
         # Same for the job-scoped credential token (revoke on terminal status).
         if job_scoped_bundle is not None and worker_job_id:
             await _revoke_job_credentials(worker_job_id, trial_id)
+
+
+async def run_trial_job(
+    trial_id: str,
+    queue_key: str,
+    *,
+    worker_id: str | None = None,
+    queue_slot: int | None = None,
+    modal_function_call_id: str | None = None,
+    worker_job_id: str | None = None,
+    worker_job_attempt: int | None = None,
+) -> None:
+    """Acquire Daytona-wide capacity before the trial attempt starts."""
+    preflight = await _daytona_capacity_preflight(trial_id)
+    if preflight is None:
+        await _run_trial_job_with_capacity(
+            trial_id,
+            queue_key,
+            worker_id=worker_id,
+            queue_slot=queue_slot,
+            modal_function_call_id=modal_function_call_id,
+            worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+        )
+        return
+
+    owner_id = ":".join(
+        (
+            worker_job_id or f"trial-{trial_id}",
+            str(worker_job_attempt or 0),
+            worker_id or str(uuid.uuid4()),
+        )
+    )
+
+    async def _wait_heartbeat() -> None:
+        if worker_job_id is not None:
+            still_owned = await heartbeat_worker_job(
+                worker_job_id,
+                current_worker_id=worker_id,
+            )
+            if not still_owned:
+                raise RuntimeError(
+                    f"worker_job {worker_job_id} lost ownership while waiting "
+                    "for Daytona capacity"
+                )
+
+    lease: ProviderCapacityLease | None = None
+    try:
+        lease = await wait_for_provider_capacity(
+            provider=EnvironmentType.DAYTONA.value,
+            owner_id=owner_id,
+            requested_memory_mb=preflight.requested_memory_mb,
+            memory_limit_mb=settings.daytona_capacity_memory_limit_mb,
+            lease_limit=settings.daytona_capacity_max_leases,
+            lease_seconds=settings.daytona_capacity_lease_seconds,
+            heartbeat_seconds=settings.daytona_capacity_heartbeat_seconds,
+            poll_seconds=settings.daytona_capacity_poll_seconds,
+            wait_heartbeat=_wait_heartbeat,
+        )
+        await _run_trial_job_with_capacity(
+            trial_id,
+            queue_key,
+            worker_id=worker_id,
+            queue_slot=queue_slot,
+            modal_function_call_id=modal_function_call_id,
+            worker_job_id=worker_job_id,
+            worker_job_attempt=worker_job_attempt,
+            resolved_task=(
+                preflight.task_path_to_run,
+                preflight.temp_task_dir,
+                preflight.resolved_task_s3_key,
+            ),
+            capacity_lease=lease,
+        )
+    finally:
+        if lease is not None:
+            await lease.release()
+        if preflight.temp_task_dir is not None:
+            shutil.rmtree(preflight.temp_task_dir, ignore_errors=True)

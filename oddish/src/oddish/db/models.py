@@ -1534,6 +1534,48 @@ class QueueSlotModel(Base):
     )
 
 
+class ProviderCapacityLeaseModel(Base):
+    """Weighted provider-wide lease, including FIFO capacity waiters."""
+
+    __tablename__ = "provider_capacity_leases"
+
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    requested_memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'WAITING'")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("NOW()")
+    )
+    acquired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("NOW()")
+    )
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "requested_memory_mb > 0", name="ck_provider_capacity_memory_positive"
+        ),
+        CheckConstraint(
+            "state IN ('WAITING', 'HELD')", name="ck_provider_capacity_state"
+        ),
+        Index(
+            "ix_provider_capacity_leases_admission",
+            "provider",
+            "state",
+            "created_at",
+            "owner_id",
+        ),
+        Index("ix_provider_capacity_leases_expiry", "lease_expires_at"),
+    )
+
+
 class WorkerJobModel(TimestampedMixin, Base):
     """Unified queue row for every kind of compute work.
 

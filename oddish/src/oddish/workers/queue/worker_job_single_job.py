@@ -252,18 +252,19 @@ async def heartbeat_worker_job(
     current_worker_id: str | None = None,
     pending_failure_count: int = 0,
     pending_last_error: str | None = None,
-) -> None:
+) -> bool:
     """Update a RUNNING worker_job's heartbeat timestamp.
 
-    No-ops for terminal rows so a late heartbeat after SUCCESS / FAILED
-    / CANCELLED can't resurrect a row. Follows the same failure-folding
-    pattern as the trial heartbeat so a pooler blip produces a
-    diagnostic breadcrumb rather than a silent stale-reap.
+    Returns whether the caller still owns a RUNNING row. Terminal or reclaimed
+    rows return false, so a caller waiting on some other resource can stop
+    before doing work. Follows the same failure-folding pattern as the trial
+    heartbeat so a pooler blip produces a diagnostic breadcrumb rather than a
+    silent stale-reap.
     """
     connection = await _open_connection()
     try:
         if pending_failure_count > 0:
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    heartbeat_at = NOW(),
@@ -280,7 +281,7 @@ async def heartbeat_worker_job(
                 current_worker_id,
             )
         else:
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    heartbeat_at = NOW()
@@ -291,6 +292,7 @@ async def heartbeat_worker_job(
                 job_id,
                 current_worker_id,
             )
+        return command.endswith(" 1")
     finally:
         await connection.close()
 

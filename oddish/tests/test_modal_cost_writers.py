@@ -15,6 +15,7 @@ from oddish.costs.modal_cost import SpanResources
 from oddish.workers.harbor.runner import (
     capture_live_sandbox_resources,
     capture_sandbox_resources,
+    capture_verifier_resource_options,
     capture_verifier_resources,
 )
 from oddish.workers.queue import trial_handler
@@ -129,6 +130,33 @@ memory_mb = 6144
     assert resources.cpu_request == 3
     assert resources.cpu_limit == 3
     assert resources.mem_request_mb == 6144
+
+
+def test_separate_verifier_capture_includes_each_step(make_task) -> None:
+    task = make_task(
+        name="step-verifiers",
+        task_toml="""\
+version = "1.0"
+[environment]
+memory_mb = 1024
+
+[[steps]]
+name = "small"
+[steps.verifier]
+environment_mode = "separate"
+[steps.verifier.environment]
+memory_mb = 2048
+
+[[steps]]
+name = "large"
+[steps.verifier]
+environment_mode = "separate"
+[steps.verifier.environment]
+memory_mb = 16384
+""",
+    )
+    resources = capture_verifier_resource_options(task, None, "daytona")
+    assert [item.mem_request_mb for item in resources] == [2048, 16384]
 
 
 def test_live_environment_resources_override_prefork_snapshot() -> None:

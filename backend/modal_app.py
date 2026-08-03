@@ -521,6 +521,30 @@ ENV_VARS = {
         or DEFAULT_OPERATOR_ORG_ID
     ),
     "ODDISH_HARBOR_ENVIRONMENT": "daytona",
+    "ODDISH_DAYTONA_CAPACITY_ENABLED": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_ENABLED", "1"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_TOTAL_MEMORY_MB": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_TOTAL_MEMORY_MB", "2304000"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_HEADROOM_MEMORY_MB": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_HEADROOM_MEMORY_MB", "460800"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_MAX_LEASES": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_MAX_LEASES", "384"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_DEFAULT_REQUEST_MB": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_DEFAULT_REQUEST_MB", "4096"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS", "300"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_HEARTBEAT_SECONDS": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_HEARTBEAT_SECONDS", "30"
+    ),
+    "ODDISH_DAYTONA_CAPACITY_POLL_SECONDS": os.environ.get(
+        "ODDISH_DAYTONA_CAPACITY_POLL_SECONDS", "5"
+    ),
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
@@ -556,6 +580,11 @@ ENV_VARS = {
         k: v
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k.startswith("ODDISH_GKE_")
+    },
+    **{
+        k: v
+        for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
+        if k.startswith("ODDISH_DAYTONA_CAPACITY_")
     },
 }
 

@@ -175,11 +175,19 @@ async def test_scheduled_only_queue_is_inactive(monkeypatch):
                             queue_key=queue_key, wait_p50=300.0, wait_p95=600.0
                         )
                     ],
+                    SimpleNamespace(
+                        used_memory_mb=4096,
+                        held_leases=1,
+                        waiting_leases=2,
+                        waiting_memory_mb=8192,
+                        oldest_wait_seconds=30.0,
+                    ),
                 ]
             )
 
         async def execute(self, statement, params=None):
-            return SimpleNamespace(all=lambda: next(self.rows))
+            value = next(self.rows)
+            return SimpleNamespace(all=lambda: value, one=lambda: value)
 
     async def no_overrides(session):
         return {}
@@ -200,6 +208,7 @@ async def test_scheduled_only_queue_is_inactive(monkeypatch):
 
     assert capacity.queued_scheduled == 3
     assert not capacity.active
+    assert health.provider_capacity[0].waiting_leases == 2
 
     async def unexpected_global_read(session):
         raise AssertionError("tenant view read global queue state")

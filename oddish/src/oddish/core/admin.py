@@ -737,11 +737,25 @@ class QueueRuntimeComponentStatus(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProviderCapacityStat(BaseModel):
+    provider: str
+    used_memory_mb: int
+    memory_limit_mb: int
+    total_memory_mb: int
+    reserved_headroom_memory_mb: int
+    held_leases: int
+    lease_limit: int
+    waiting_leases: int
+    waiting_memory_mb: int
+    oldest_wait_seconds: float | None
+
+
 class QueueHealthResponse(BaseModel):
     totals_queued: int
     totals_running: int
     throughput: list[QueueThroughputStat]
     capacity: list[QueueCapacityStat]
+    provider_capacity: list[ProviderCapacityStat] = Field(default_factory=list)
     dispatcher: QueueRuntimeComponentStatus | None
     reconciler: QueueRuntimeComponentStatus | None
     timestamp: str
@@ -968,6 +982,52 @@ async def get_queue_health_core(
         await get_queue_runtime_statuses(session) if include_global_details else {}
     )
 
+    provider_capacity: list[ProviderCapacityStat] = []
+    if include_global_details and settings.daytona_capacity_enabled:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT COALESCE(SUM(requested_memory_mb)
+                               FILTER (WHERE state = 'HELD'
+                                   AND lease_expires_at > NOW()), 0) AS used_memory_mb,
+                           COUNT(*) FILTER (WHERE state = 'HELD'
+                               AND lease_expires_at > NOW()) AS held_leases,
+                           COUNT(*) FILTER (WHERE state = 'WAITING'
+                               AND lease_expires_at > NOW()) AS waiting_leases,
+                           COALESCE(SUM(requested_memory_mb)
+                               FILTER (WHERE state = 'WAITING'
+                                   AND lease_expires_at > NOW()), 0) AS waiting_memory_mb,
+                           EXTRACT(EPOCH FROM (NOW() - MIN(created_at)
+                               FILTER (WHERE state = 'WAITING'
+                                   AND lease_expires_at > NOW()))) AS oldest_wait_seconds
+                    FROM provider_capacity_leases
+                    WHERE provider = 'daytona'
+                    """
+                )
+            )
+        ).one()
+        provider_capacity.append(
+            ProviderCapacityStat(
+                provider="daytona",
+                used_memory_mb=int(row.used_memory_mb or 0),
+                memory_limit_mb=settings.daytona_capacity_memory_limit_mb,
+                total_memory_mb=settings.daytona_capacity_total_memory_mb,
+                reserved_headroom_memory_mb=(
+                    settings.daytona_capacity_headroom_memory_mb
+                ),
+                held_leases=int(row.held_leases or 0),
+                lease_limit=settings.daytona_capacity_max_leases,
+                waiting_leases=int(row.waiting_leases or 0),
+                waiting_memory_mb=int(row.waiting_memory_mb or 0),
+                oldest_wait_seconds=(
+                    float(row.oldest_wait_seconds)
+                    if row.oldest_wait_seconds is not None
+                    else None
+                ),
+            )
+        )
+
     def _component(name: str) -> QueueRuntimeComponentStatus | None:
         row = statuses.get(name)
         if row is None:
@@ -988,6 +1048,7 @@ async def get_queue_health_core(
         totals_running=totals_running,
         throughput=throughput,
         capacity=capacity,
+        provider_capacity=provider_capacity,
         dispatcher=_component(DISPATCHER_COMPONENT),
         reconciler=_component(RECONCILER_COMPONENT),
         timestamp=now.isoformat(),

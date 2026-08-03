@@ -71,6 +71,9 @@ from oddish.workers.queue.concurrency_controller import (
     merge_advisory_over_static,
     recompute_advisory_limits,
 )
+from oddish.workers.queue.provider_capacity import (
+    cleanup_stale_provider_capacity_leases,
+)
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
     cleanup_stale_queue_slots,
@@ -417,6 +420,23 @@ async def reconcile_queue_state():
             phase_errors.append(f"stale_slot_cleanup: {e}")
             log_exception("reconcile phase failed", phase="stale_slot_cleanup")
             console.print(f"[yellow]Stale slot cleanup skipped: {e}[/yellow]")
+
+        try:
+            capacity_cleared = await cleanup_stale_provider_capacity_leases()
+            summary["stale_provider_capacity_leases_cleared"] = capacity_cleared
+            if capacity_cleared > 0:
+                console.print(
+                    "metric=provider_capacity_stale_cleared "
+                    f"count={capacity_cleared}"
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            phase_errors.append(f"provider_capacity_cleanup: {e}")
+            log_exception(
+                "reconcile phase failed", phase="provider_capacity_cleanup"
+            )
+            console.print(
+                f"[yellow]Provider-capacity cleanup skipped: {e}[/yellow]"
+            )
 
         try:
             cleanup_counts = await cleanup_orphaned_queue_state()

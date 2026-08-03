@@ -1225,6 +1225,28 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
+    # Daytona enforces one account-wide memory ceiling across every sandbox,
+    # while Oddish's normal queue slots are isolated per model. Reserve 20% of
+    # the observed 2250 GiB provider ceiling for hosted analyzer/chat traffic
+    # and provider accounting drift, and independently cap sandbox count to the
+    # incident-safe level. The gate only covers queued trial workers; the
+    # headroom is the explicit allowance for other Daytona consumers.
+    daytona_capacity_enabled: bool = True
+    daytona_capacity_total_memory_mb: int = Field(default=2_304_000, gt=0)
+    daytona_capacity_headroom_memory_mb: int = Field(default=460_800, ge=0)
+    daytona_capacity_max_leases: int = Field(default=384, gt=0)
+    daytona_capacity_default_request_mb: int = Field(default=4096, gt=0)
+    daytona_capacity_lease_seconds: int = Field(default=300, ge=60)
+    daytona_capacity_heartbeat_seconds: int = Field(default=30, ge=5)
+    daytona_capacity_poll_seconds: float = Field(default=5.0, gt=0)
+
+    @property
+    def daytona_capacity_memory_limit_mb(self) -> int:
+        return (
+            self.daytona_capacity_total_memory_mb
+            - self.daytona_capacity_headroom_memory_mb
+        )
+
     # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
     # claude-code + harbor already installed. When set, sandboxes are created
     # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
@@ -1498,6 +1520,23 @@ class Settings(BaseSettings):
         if self.gke_project_id and not self.gke_cluster_name:
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"
+        return self
+
+    @model_validator(mode="after")
+    def _validate_daytona_capacity(self) -> "Settings":
+        if self.daytona_capacity_memory_limit_mb <= 0:
+            raise ValueError(
+                "ODDISH_DAYTONA_CAPACITY_HEADROOM_MEMORY_MB must be smaller than "
+                "ODDISH_DAYTONA_CAPACITY_TOTAL_MEMORY_MB"
+            )
+        if (
+            self.daytona_capacity_heartbeat_seconds
+            >= self.daytona_capacity_lease_seconds
+        ):
+            raise ValueError(
+                "ODDISH_DAYTONA_CAPACITY_HEARTBEAT_SECONDS must be smaller than "
+                "ODDISH_DAYTONA_CAPACITY_LEASE_SECONDS"
+            )
         return self
 
     @model_validator(mode="after")

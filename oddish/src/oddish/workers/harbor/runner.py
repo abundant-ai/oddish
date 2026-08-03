@@ -660,16 +660,27 @@ def capture_verifier_resources(
     task_path: Path, harbor_config: dict[str, Any] | None, provider: str = "modal"
 ) -> SpanResources | None:
     """Return the separate verifier's effective resources, if it has one."""
+    resources = capture_verifier_resource_options(task_path, harbor_config, provider)
+    return resources[0] if resources else None
+
+
+def capture_verifier_resource_options(
+    task_path: Path, harbor_config: dict[str, Any] | None, provider: str = "modal"
+) -> tuple[SpanResources, ...] | None:
+    """Return each separate verifier, or ``None`` when metadata is unreadable."""
     try:
         task = HarborTaskConfig.model_validate_toml(
             (task_path / "task.toml").read_text()
         )
         hc = HarborConfig.model_validate(harbor_config or {})
+        resources: list[SpanResources] = []
         for step in task.steps or [None]:
             env = resolve_effective_verifier_env_config(task, step)
             if env is not None:
-                return _resources_from_environment_config(env, hc.environment, provider)
-        return None
+                resources.append(
+                    _resources_from_environment_config(env, hc.environment, provider)
+                )
+        return tuple(resources)
     except Exception:
         return None
 

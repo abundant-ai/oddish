@@ -1,6 +1,9 @@
 from oddish.workers.queue.analysis_handler import run_analysis_job
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.queue_manager import run_polling_worker
+from oddish.workers.queue.provider_capacity import (
+    cleanup_stale_provider_capacity_leases,
+)
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
     cleanup_stale_queue_slots,
@@ -34,6 +37,7 @@ __all__ = [
     "run_worker",
     "acquire_queue_slot",
     "cleanup_stale_queue_slots",
+    "cleanup_stale_provider_capacity_leases",
     "ensure_queue_slots",
     "release_queue_slot",
     # Unified worker_jobs surface

@@ -104,6 +104,7 @@ Postgres
   - trials / tasks    # domain state + live UI columns
   - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
+  - provider_capacity_leases # weighted provider-wide sandbox admission
   - model_concurrency_overrides # admin-set limits over deploy configuration
         |
         v
@@ -250,7 +251,8 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
 
 `oddish` owns the execution core and shared queue/runtime primitives:
 
-- core models and migrations, including `worker_jobs` and `queue_slots`
+- core models and migrations, including `worker_jobs`, `queue_slots`, and
+  `provider_capacity_leases`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
   handler registry (`TrialJobHandler`, `QaJobHandler`, `TaskExpandJobHandler`,
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
@@ -734,7 +736,8 @@ sweep):
 2. `reconcile_queue_state()` runs on its own `CLEANUP_INTERVAL_SECONDS` (240s)
    schedule under a generous `CLEANUP_TIMEOUT_SECONDS` (600s) so it is never
    SIGKILLed mid-transaction. Each phase is wrapped best-effort: stale
-   `queue_slots` lease cleanup, `cleanup_orphaned_queue_state` (zombie-txn reap
+   `queue_slots` and provider-capacity lease cleanup,
+   `cleanup_orphaned_queue_state` (zombie-txn reap
    + stale-heartbeat sweep + stage safety nets + **per-slot** orphaned slot
    release — see invariants below), and the experiments owner backfill
    (`dashboard_owner_backfill`, which keeps the dashboard Mine filter on its
@@ -870,7 +873,18 @@ silently breaks throughput or correctness — read before touching
    Dynamic advice never exceeds an admin override, and an override-read failure
    fails closed at zero rather than risking reopening a disabled queue.
 
-4. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
+4. **Daytona capacity is provider-wide, not per model.** Before a Daytona trial
+   is marked RUNNING or increments `trials.attempts`, its worker registers a
+   FIFO row in `provider_capacity_leases` and waits for both the aggregate
+   memory budget and hard lease-count ceiling. The row is owned by the worker
+   job attempt, heartbeats through the Harbor run, and is deleted in `finally`;
+   expiry plus the reconciler recover SIGKILL leaks. Memory is the effective
+   task request plus any separate-verifier request, with a conservative default
+   when metadata is missing. The configured headroom is deliberately left for
+   hosted analyzer/chat Daytona consumers, which do not use trial queue jobs.
+   A waiting row has no sandbox id because no provider call has happened yet.
+
+5. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
    model under two keys gets the *sum* of both buckets against one provider quota
    (→ 429s, split dashboards, starvation). Canonicalize at enqueue in
    `oddish.config` (`normalize_trial_model` / `get_queue_key_for_trial` /
@@ -880,11 +894,11 @@ silently breaks throughput or correctness — read before touching
    `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
    model across two buckets.
 
-5. **No provider-level concurrency cap.** Each Bedrock/Gemini model id is its own
+6. **No provider-level model-API concurrency cap.** Each Bedrock/Gemini model id is its own
    bucket, but they share one AWS/Google account quota — the sum of per-model
    limits can exceed account RPM/TPM with no global throttle (a source of 429s).
 
-6. **Stale-heartbeat reap can double-run a trial.** If heartbeats stall for
+7. **Stale-heartbeat reap can double-run a trial.** If heartbeats stall for
    `STALE_HEARTBEAT_MINUTES` (15, e.g. a pooler blip), the reaper flips the live
    trial to `RETRYING` and another worker may run it concurrently — no fencing
    token. The window is a deliberate trade-off (raised from 10 after an incident);
@@ -924,7 +938,8 @@ Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
 poolers such as Supavisor / PgBouncer.
 
-Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
+Modal runtime knobs (scaling, schedules, CPU/memory, concurrency, and the
+`ODDISH_DAYTONA_CAPACITY_*` provider-wide sandbox gate) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 `ODDISH_DEFAULT_MODEL_CONCURRENCY` / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
 `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS` / `MODAL_APP_NAME` /

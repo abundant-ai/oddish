@@ -86,6 +86,20 @@ _HEALTH = {
             "oldest_queued_age_seconds": 60.0,
         }
     ],
+    "provider_capacity": [
+        {
+            "provider": "daytona",
+            "used_memory_mb": 4096,
+            "memory_limit_mb": 1843200,
+            "total_memory_mb": 2304000,
+            "reserved_headroom_memory_mb": 460800,
+            "held_leases": 1,
+            "lease_limit": 384,
+            "waiting_leases": 2,
+            "waiting_memory_mb": 8192,
+            "oldest_wait_seconds": 30.0,
+        }
+    ],
     "dispatcher": {"component": "dispatcher", "updated_at": None},
     "reconciler": None,
     "timestamp": "2026-01-01T00:00:00+00:00",
@@ -133,6 +147,9 @@ def test_queue_diag_hits_all_admin_endpoints_and_tolerates_worker_jobs_404():
     # Rendered capacity should include the queue key (may be width-truncated).
     assert "Capacity by queue" in result.output
     assert "openai/gpt" in result.output
+    assert "Provider-wide sandbox capacity" in result.output
+    assert "daytona" in result.output
+    assert "450 GiB" in result.output
     # queue-status is rendered in human mode (per-kind rollup), not just --json.
     assert "Jobs by kind" in result.output
     assert "QA" in result.output

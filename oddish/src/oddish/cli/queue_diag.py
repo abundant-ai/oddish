@@ -143,6 +143,38 @@ def _render_health(health: dict[str, Any]) -> None:
             )
         console.print(table)
 
+    provider_capacity = health.get("provider_capacity") or []
+    if provider_capacity:
+        table = Table(
+            title="Provider-wide sandbox capacity",
+            show_header=True,
+            box=None,
+            padding=(0, 2),
+        )
+        table.add_column("Provider", style="cyan")
+        table.add_column("Memory used/limit", justify="right")
+        table.add_column("Headroom", justify="right")
+        table.add_column("Leases used/limit", justify="right")
+        table.add_column("Waiting", justify="right")
+        table.add_column("Waiting memory", justify="right")
+        table.add_column("Oldest wait", justify="right")
+        for row in provider_capacity:
+            oldest = row.get("oldest_wait_seconds")
+            oldest_str = (
+                f"{oldest / 60:.0f}m" if isinstance(oldest, (int, float)) else "-"
+            )
+            table.add_row(
+                str(row.get("provider", "-")),
+                f"{int(row.get('used_memory_mb', 0)) / 1024:.0f}/"
+                f"{int(row.get('memory_limit_mb', 0)) / 1024:.0f} GiB",
+                f"{int(row.get('reserved_headroom_memory_mb', 0)) / 1024:.0f} GiB",
+                f"{row.get('held_leases', 0)}/{row.get('lease_limit', 0)}",
+                str(row.get("waiting_leases", 0)),
+                f"{int(row.get('waiting_memory_mb', 0)) / 1024:.0f} GiB",
+                oldest_str,
+            )
+        console.print(table)
+
 
 def _render_queue_status(status: dict[str, Any]) -> None:
     """Per-kind queued/running rollup from ``/admin/queue-status``.
