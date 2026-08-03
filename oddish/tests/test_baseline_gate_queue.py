@@ -108,6 +108,19 @@ async def _set_baseline_outcomes(
                     finished_at=utcnow(),
                 )
             )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id.in_(
+                    select(TrialModel.id).where(
+                        TrialModel.task_id == task_id,
+                        TrialModel.queue_key == "nop_oracle",
+                    )
+                ),
+            )
+            .values(status=WorkerJobStatus.SUCCESS, finished_at=utcnow())
+        )
         baseline_id = (
             await session.execute(
                 select(TrialModel.id).where(
@@ -116,6 +129,58 @@ async def _set_baseline_outcomes(
             )
         ).scalar_one()
     return baseline_id
+
+
+async def _set_failed_oracle(
+    task_id: str, *, attempts: int, max_attempts: int, job_status: WorkerJobStatus
+) -> str:
+    async with get_session() as session:
+        nop_id = await session.scalar(
+            select(TrialModel.id).where(
+                TrialModel.task_id == task_id, TrialModel.agent == "nop"
+            )
+        )
+        oracle_id = await session.scalar(
+            select(TrialModel.id).where(
+                TrialModel.task_id == task_id, TrialModel.agent == "oracle"
+            )
+        )
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == nop_id)
+            .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(WorkerJobModel.subject_id == nop_id)
+            .values(status=WorkerJobStatus.SUCCESS, finished_at=utcnow())
+        )
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == oracle_id)
+            .values(
+                status=TrialStatus.FAILED,
+                reward=None,
+                attempts=attempts,
+                max_attempts=max_attempts,
+                harbor_stage="completed",
+                finished_at=utcnow(),
+            )
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(WorkerJobModel.subject_id == oracle_id)
+            .values(
+                status=job_status,
+                attempts=attempts,
+                max_attempts=max_attempts,
+                finished_at=(
+                    utcnow() if job_status == WorkerJobStatus.FAILED else None
+                ),
+            )
+        )
+    assert oracle_id is not None
+    return oracle_id
 
 
 @pytest.mark.asyncio
@@ -171,6 +236,88 @@ async def test_valid_baselines_unblock_llm(monkeypatch, cleanup_task_ids):
             )
         ).scalar_one()
     assert llm_trial.status != TrialStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_failed_baseline_with_retryable_job_stays_blocked(
+    monkeypatch, cleanup_task_ids
+):
+    from oddish.workers.queue.cleanup import _advance_running_tasks_to_analysis
+
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-retryable-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("retryable"), task_id=task_id)
+
+    oracle_id = await _set_failed_oracle(
+        task_id,
+        attempts=2,
+        max_attempts=6,
+        job_status=WorkerJobStatus.RUNNING,
+    )
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, oracle_id) is False
+        await _advance_running_tasks_to_analysis(session, [])
+
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == WorkerJobStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_successful_baseline_retry_releases_llm(monkeypatch, cleanup_task_ids):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-retry-success-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(
+            session, _mixed_submission("retry-success"), task_id=task_id
+        )
+
+    oracle_id = await _set_failed_oracle(
+        task_id,
+        attempts=2,
+        max_attempts=6,
+        job_status=WorkerJobStatus.RETRYING,
+    )
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, oracle_id) is False
+
+    await _set_baseline_outcomes(task_id, oracle_reward=1.0, nop_reward=0.0)
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, oracle_id) is True
+
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == WorkerJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_exhausted_failed_baseline_resolves_faulty(
+    monkeypatch, cleanup_task_ids
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-exhausted-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("exhausted"), task_id=task_id)
+
+    oracle_id = await _set_failed_oracle(
+        task_id,
+        attempts=6,
+        max_attempts=6,
+        job_status=WorkerJobStatus.FAILED,
+    )
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, oracle_id) is True
+
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == WorkerJobStatus.CANCELLED
+    async with get_session() as session:
+        llm_trial = await session.scalar(
+            select(TrialModel).where(
+                TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+            )
+        )
+    assert llm_trial is not None
+    assert llm_trial.status == TrialStatus.SKIPPED
+    assert llm_trial.error_message == GATE_SKIP_MESSAGE
 
 
 @pytest.mark.asyncio
@@ -335,6 +482,19 @@ async def test_gate_is_experiment_scoped(monkeypatch, cleanup_task_ids):
                 TrialModel.queue_key == "nop_oracle",
             )
             .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
+        )
+        await session.execute(
+            update(WorkerJobModel)
+            .where(
+                WorkerJobModel.subject_id.in_(
+                    select(TrialModel.id).where(
+                        TrialModel.task_id == task_id,
+                        TrialModel.experiment_id == exp_a,
+                        TrialModel.queue_key == "nop_oracle",
+                    )
+                )
+            )
+            .values(status=WorkerJobStatus.SUCCESS, finished_at=utcnow())
         )
         a_oracle_id = (
             await session.execute(

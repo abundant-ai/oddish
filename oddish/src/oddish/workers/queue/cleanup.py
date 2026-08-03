@@ -885,7 +885,7 @@ async def _advance_running_tasks_to_analysis(
 
     # -----------------------------------------------------------------
     # 2b. Baseline gate backstop: (task_version, experiment) groups whose
-    #     nop/oracle baselines are all terminal but whose LLM trials are
+    #     nop/oracle baselines and TRIAL jobs are settled but whose LLM trials are
     #     still BLOCKED. Normally the last baseline's handler resolves the
     #     gate; this re-drives it if that handler was killed first. The gate
     #     is (task version, experiment)-scoped, so group + match BLOCKED LLM
@@ -933,6 +933,16 @@ async def _advance_running_tasks_to_analysis(
                     HAVING COUNT(*) FILTER (
                         WHERE base.status
                             IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                           OR EXISTS (
+                               SELECT 1
+                               FROM worker_jobs baseline_job
+                               WHERE baseline_job.subject_table = 'trials'
+                                 AND baseline_job.kind::text = 'TRIAL'
+                                 AND baseline_job.subject_id = base.id
+                                 AND baseline_job.status::text IN (
+                                     'QUEUED', 'RUNNING', 'RETRYING', 'BLOCKED'
+                                 )
+                           )
                     ) = 0
                     """
                 ),
