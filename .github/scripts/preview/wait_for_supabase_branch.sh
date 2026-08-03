@@ -12,8 +12,11 @@
 # (up to MAX_ATTEMPTS) so a flaky run doesn't poison every push to the PR.
 set -uo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRANCH_NAME="pr-${PR_NUMBER}"
 MAX_ATTEMPTS=3
+CAPACITY_RETRY_DELAY_SECONDS="${CAPACITY_RETRY_DELAY_SECONDS:-15}"
+CREATE_ERROR=""
 
 # Branch lifecycle states we treat as terminal failures and recover from
 # by deleting + recreating the branch:
@@ -49,6 +52,21 @@ delete_branch_by_id() {
   supabase branches delete "$id" --project-ref "$SUPABASE_PROJECT_REF" || true
 }
 
+create_branch() {
+  local output rc
+  output=$(supabase branches create "$BRANCH_NAME" \
+    --project-ref "$SUPABASE_PROJECT_REF" 2>&1)
+  rc=$?
+  [ -z "$output" ] || printf '%s\n' "$output" >&2
+  CREATE_ERROR="$output"
+  return "$rc"
+}
+
+is_capacity_limit_error() {
+  [[ "$CREATE_ERROR" == *"Cannot create more than"* ]] &&
+    [[ "$CREATE_ERROR" == *"active branch projects"* ]]
+}
+
 ready=0
 branch_was_created=false
 branch_id="" branch_ref="" status="" preview=""
@@ -71,8 +89,25 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
 
   if [ -z "$existing" ] || [ "$existing" = "null" ]; then
     echo "creating $BRANCH_NAME (data-less, attempt $attempt/$MAX_ATTEMPTS)" >&2
-    supabase branches create "$BRANCH_NAME" \
-      --project-ref "$SUPABASE_PROJECT_REF"
+    if ! create_branch; then
+      if is_capacity_limit_error; then
+        echo "Supabase branch capacity is full; pruning closed-PR previews" >&2
+        if [ -z "${GH_TOKEN:-}" ] || [ -z "${GITHUB_REPOSITORY:-}" ]; then
+          echo "GitHub credentials are unavailable; cannot prune safely" >&2
+        elif pruned=$(CURRENT_BRANCH_NAME="$BRANCH_NAME" \
+          "$script_dir/prune_closed_supabase_branches.sh"); then
+          echo "pruned $pruned closed-PR Supabase preview branch(es)" >&2
+        else
+          echo "closed-PR Supabase preview pruning failed; leaving branches untouched" >&2
+        fi
+      fi
+
+      if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+        sleep "$CAPACITY_RETRY_DELAY_SECONDS"
+        continue
+      fi
+      break
+    fi
     branch_was_created=true
   else
     echo "reusing existing branch $(jq -r '.id' <<<"$existing") ($(jq -r '.status' <<<"$existing"))" >&2

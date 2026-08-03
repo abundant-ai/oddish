@@ -34,6 +34,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      pull-requests: read
     container:
       image: ghcr.io/abundant-ai/oddish-ci-base:latest
       credentials:

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ WORKFLOW = REPO / ".github/workflows/pr-preview.yml"
 RESET_WORKFLOW = REPO / ".github/workflows/preview-reset.yml"
 PREVIEW = REPO / ".github/scripts/preview"
 PREPARE = PREVIEW / "prepare_preview_database.sh"
+PRUNE_CLOSED_BRANCHES = PREVIEW / "prune_closed_supabase_branches.sh"
 COMPUTE_PLAN = PREVIEW / "compute_deployment_plan.sh"
 DEPLOY = PREVIEW / "deploy_preview_backend.sh"
 MODAL_APP = REPO / "backend/modal_app.py"
@@ -50,6 +52,84 @@ def test_prepare_only_needs_detect():
     job = _wf()["jobs"]["prepare-preview-database"]
     assert _needs(job) == ["detect-changes"]
     assert "stop-previous" not in job.get("if", "")
+
+
+def test_prepare_can_prune_closed_pr_branches_at_supabase_capacity():
+    job = _wf()["jobs"]["prepare-preview-database"]
+    assert job["permissions"]["pull-requests"] == "read"
+    assert "GITHUB_TOKEN" in job["env"]["GH_TOKEN"]
+
+    wait_script = (PREVIEW / "wait_for_supabase_branch.sh").read_text()
+    assert "active branch projects" in wait_script
+    assert PRUNE_CLOSED_BRANCHES.name in wait_script
+
+
+@needs_bash
+def test_capacity_pruner_deletes_only_closed_non_current_pr_branches():
+    tmp = Path(tempfile.mkdtemp())
+    bins = tmp / "bin"
+    bins.mkdir()
+    delete_log = tmp / "deleted"
+
+    branches = [
+        {"id": "closed-id", "name": "pr-101", "persistent": False},
+        {"id": "open-id", "name": "pr-102", "persistent": False},
+        {"id": "error-id", "name": "pr-103", "persistent": False},
+        {"id": "persistent-id", "name": "pr-104", "persistent": True},
+        {"id": "current-id", "name": "pr-105", "persistent": False},
+        {"id": "other-id", "name": "feature-branch", "persistent": False},
+    ]
+
+    fake_supabase = bins / "supabase"
+    fake_supabase.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [ "$1 $2" = "branches list" ]; then\n'
+        "  printf '%s\\n' \"$BRANCHES_JSON\"\n"
+        'elif [ "$1 $2" = "branches delete" ]; then\n'
+        '  printf \'%s\\n\' "$3" >> "$DELETE_LOG"\n'
+        "else\n"
+        "  exit 2\n"
+        "fi\n"
+    )
+    fake_supabase.chmod(0o755)
+
+    fake_curl = bins / "curl"
+    fake_curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        "  */pulls/101*) printf '%s\\n' '{\"state\":\"closed\"}' ;;\n"
+        "  */pulls/102*) printf '%s\\n' '{\"state\":\"open\"}' ;;\n"
+        "  */pulls/103*) exit 22 ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n"
+    )
+    fake_curl.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{bins}:{os.environ['PATH']}",
+        "BRANCHES_JSON": json.dumps(branches),
+        "DELETE_LOG": str(delete_log),
+        "SUPABASE_PROJECT_REF": "project-ref",
+        "GH_TOKEN": "test-token",
+        "GITHUB_REPOSITORY": "abundant-ai/oddish",
+        "CURRENT_BRANCH_NAME": "pr-105",
+    }
+    proc = subprocess.run(
+        ["bash", str(PRUNE_CLOSED_BRANCHES)],
+        env=env,
+        cwd=str(tmp),
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "1"
+    assert delete_log.read_text().splitlines() == ["closed-id"]
+    assert "keeping Supabase branch pr-102" in proc.stderr
+    assert "could not read GitHub PR #103" in proc.stderr
+    assert "keeping current Supabase branch pr-105" in proc.stderr
 
 
 def test_vercel_waits_for_backend_deploy():
@@ -419,6 +499,7 @@ def test_reset_guard_runs_before_checkout():
     # Container jobs default to sh (dash); the guard's `set -euo pipefail`
     # needs bash (its absence failed the first live dispatch closed).
     assert steps[guard_idx].get("shell") == "bash"
+    assert _reset_wf()["jobs"]["reset"]["permissions"]["pull-requests"] == "read"
     ref = steps[checkout_idx]["with"]["ref"]
     assert "refs/pull/" in ref and "/merge" in ref
 
