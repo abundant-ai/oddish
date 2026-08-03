@@ -174,7 +174,8 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids, dr
         quota_enforcement, "enforce_trial_quotas_until_checked", _check_quota
     )
 
-    task_id = f"local-double-{_RUN}"
+    mode = "dry" if dry_run else "real"
+    task_id = f"local-double-{mode}-{_RUN}"
     cleanup_task_ids.append(task_id)
     async with get_session() as session:
         await create_task(
@@ -203,6 +204,31 @@ async def test_local_runner_no_double_dispatch(monkeypatch, cleanup_task_ids, dr
     assert settlement_order == ["quota_checked", "post_hooks", "remote_teardown"]
     assert local_dispatches == [("released-by-quota", dry_run)]
     assert await _trial_status(oracle_id) == TrialStatus.SUCCESS
+    assert await _wj_status(oracle_id) == WorkerJobStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_local_runner_marks_worker_job_failed_on_exception(
+    monkeypatch, cleanup_task_ids
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
+
+    async def _fail(_trial_id: str) -> None:
+        raise RuntimeError("local Harbor failed")
+
+    monkeypatch.setattr(local_runner, "_run_harbor_trial", _fail)
+
+    task_id = f"local-failed-job-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("failed-job"), task_id=task_id)
+
+    oracle_id = await _trial_id(task_id, "oracle")
+    with pytest.raises(RuntimeError, match="local Harbor failed"):
+        await run_trial_locally(oracle_id)
+
+    assert await _trial_status(oracle_id) == TrialStatus.FAILED
+    assert await _wj_status(oracle_id) == WorkerJobStatus.FAILED
 
 
 @pytest.mark.asyncio
@@ -290,19 +316,19 @@ async def test_local_runner_releases_llm_on_valid_baselines(
 
     llm_id = await _trial_id(task_id, _LLM_AGENT)
     oracle_id = await _trial_id(task_id, "oracle")
+    nop_id = await _trial_id(task_id, "nop")
 
-    # nop already done cleanly; pre-stamp oracle's reward (dry-run skips Harbor,
-    # so the runner won't set it) and let run_trial_locally drive it terminal.
+    # Dry-run skips Harbor, so pre-stamp both baseline rewards and let the local
+    # runner drive both trial and worker-job rows through terminal settlement.
     async with get_session() as session:
         await session.execute(
-            update(TrialModel)
-            .where(TrialModel.task_id == task_id, TrialModel.agent == "nop")
-            .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
+            update(TrialModel).where(TrialModel.id == nop_id).values(reward=0.0)
         )
         await session.execute(
             update(TrialModel).where(TrialModel.id == oracle_id).values(reward=1.0)
         )
 
+    await run_trial_locally(nop_id, dry_run=True)
     await run_trial_locally(oracle_id, dry_run=True)
     await _drain_pending()
 
@@ -324,18 +350,19 @@ async def test_local_runner_cancels_llm_on_faulty_baselines(
 
     llm_id = await _trial_id(task_id, _LLM_AGENT)
     oracle_id = await _trial_id(task_id, "oracle")
+    nop_id = await _trial_id(task_id, "nop")
 
-    # nop fails cleanly, oracle ALSO scores 0 -> task is faulty.
+    # nop fails cleanly, oracle ALSO scores 0 -> task is faulty. Drive both
+    # through local settlement so their worker jobs are terminal too.
     async with get_session() as session:
         await session.execute(
-            update(TrialModel)
-            .where(TrialModel.task_id == task_id, TrialModel.agent == "nop")
-            .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
+            update(TrialModel).where(TrialModel.id == nop_id).values(reward=0.0)
         )
         await session.execute(
             update(TrialModel).where(TrialModel.id == oracle_id).values(reward=0.0)
         )
 
+    await run_trial_locally(nop_id, dry_run=True)
     await run_trial_locally(oracle_id, dry_run=True)
     await _drain_pending()
 

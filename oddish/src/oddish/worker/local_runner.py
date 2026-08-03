@@ -314,7 +314,8 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     """Execute a probe trial in-process and mirror status to the DB.
 
     Status transitions: ``QUEUED`` -> ``RUNNING`` -> ``SUCCESS``
-    (or ``FAILED`` on exception, with ``error_message`` populated).
+    (or ``FAILED`` on exception, with ``error_message`` populated) on both the
+    trial and its worker job.
 
     When ``dry_run`` is True, skips the actual Harbor call. Used in
     tests to exercise the status-transition path without spinning up
@@ -326,8 +327,9 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     # and a gated (BLOCKED) LLM trial is skipped until the baseline gate
     # releases it. ``run_trial_locally`` is the only dispatch entrypoint, so
     # this claim is the single choke point that prevents double-dispatch.
+    claimed_at = datetime.now(timezone.utc)
     async with get_session() as session:
-        claimed = (
+        claimed_trial_id = (
             await session.execute(
                 update(TrialModel)
                 .where(
@@ -344,19 +346,47 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 )
                 .values(
                     status=TrialStatus.RUNNING,
-                    started_at=datetime.now(timezone.utc),
+                    started_at=claimed_at,
                 )
-                .returning(TrialModel.org_id, TrialModel.billed_user_id)
+                .returning(TrialModel.id)
             )
-        ).one_or_none()
-    if claimed is None:
+        ).scalar_one_or_none()
+        if claimed_trial_id is not None:
+            org_id, billed_user_id = (
+                await session.execute(
+                    select(TrialModel.org_id, TrialModel.billed_user_id).where(
+                        TrialModel.id == trial_id
+                    )
+                )
+            ).one()
+            # Local mode bypasses the unified dispatcher, so it must mirror the
+            # scheduling row itself. The baseline gate treats worker_jobs as
+            # authoritative and must never mistake a completed local baseline's
+            # original QUEUED row for work that can still retry.
+            await session.execute(
+                update(WorkerJobModel)
+                .where(
+                    WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                    WorkerJobModel.subject_table == "trials",
+                    WorkerJobModel.subject_id == trial_id,
+                    WorkerJobModel.status.in_(
+                        (WorkerJobStatus.QUEUED, WorkerJobStatus.RETRYING)
+                    ),
+                )
+                .values(
+                    status=WorkerJobStatus.RUNNING,
+                    claimed_at=claimed_at,
+                    started_at=claimed_at,
+                    heartbeat_at=claimed_at,
+                )
+            )
+    if claimed_trial_id is None:
         logger.info(
             "local_runner: trial %s not claimable (already dispatched, gated, "
             "or gone), skipping",
             trial_id,
         )
         return
-    org_id, billed_user_id = claimed
     logger.info("local_runner: trial %s -> RUNNING", trial_id)
 
     failure: Exception | None = None
@@ -368,6 +398,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
         failure = exc
 
     completed = False
+    finished_at = datetime.now(timezone.utc)
     async with get_session() as session:
         trial = await session.get(TrialModel, trial_id, with_for_update=True)
         if trial is None:
@@ -382,7 +413,27 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             else:
                 trial.status = TrialStatus.SUCCESS
                 logger.info("local_runner: trial %s -> SUCCESS", trial_id)
-            trial.finished_at = datetime.now(timezone.utc)
+            trial.finished_at = finished_at
+            await session.execute(
+                update(WorkerJobModel)
+                .where(
+                    WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                    WorkerJobModel.subject_table == "trials",
+                    WorkerJobModel.subject_id == trial_id,
+                    WorkerJobModel.status == WorkerJobStatus.RUNNING,
+                )
+                .values(
+                    status=(
+                        WorkerJobStatus.FAILED
+                        if failure is not None
+                        else WorkerJobStatus.SUCCESS
+                    ),
+                    finished_at=finished_at,
+                    heartbeat_at=finished_at,
+                    next_retry_at=None,
+                    error_message=str(failure) if failure is not None else None,
+                )
+            )
             completed = True
         else:
             logger.info(
