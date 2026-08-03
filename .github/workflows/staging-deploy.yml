@@ -193,36 +193,24 @@ jobs:
           echo "branch ready: ref=$branch_ref host=$db_host status=$status"
 
       # Self-healing: runs on every deploy (not just bootstrap) so a manual or
-      # out-of-band resize on either side gets caught and corrected here.
-      - name: Ensure branch compute matches prod
+      # out-of-band resize gets caught and corrected here. Staging is pinned
+      # to a fixed tier -- it does not track prod's compute.
+      - name: Pin branch compute to the staging tier
         shell: bash
         continue-on-error: true
         env:
           BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+          STAGING_COMPUTE_VARIANT: "ci_large"
         run: |
           set -euo pipefail
           # Compute is a billing addon (GET/PATCH /v1/projects/{ref}/billing/addons,
           # operationIds v1-list-project-addons / v1-apply-project-addon). Branches
           # are projects under the hood, so BRANCH_REF works directly as {ref}.
-          fallback_variant="ci_small"
-
-          http_code=$(curl -sS -o /tmp/prod_addons.json -w '%{http_code}' \
-            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
-            "https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/billing/addons")
-          if [[ "$http_code" != 2* ]]; then
-            echo "::error::failed to read prod compute addons (HTTP $http_code)"
-            cat /tmp/prod_addons.json >&2 || true
-            exit 1
-          fi
-          prod_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/prod_addons.json)
-          if [ -z "$prod_variant" ]; then
-            echo "prod has no compute addon selected (default nano/micro tier); using ${fallback_variant}"
-            prod_variant="$fallback_variant"
-          fi
+          addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
 
           http_code=$(curl -sS -o /tmp/branch_addons.json -w '%{http_code}' \
             -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
-            "https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons")
+            "$addons_url")
           if [[ "$http_code" != 2* ]]; then
             echo "::error::failed to read branch compute addons (HTTP $http_code)"
             cat /tmp/branch_addons.json >&2 || true
@@ -230,26 +218,26 @@ jobs:
           fi
           branch_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/branch_addons.json)
 
-          if [ "$branch_variant" = "$prod_variant" ]; then
-            echo "compute parity: ${prod_variant}"
+          if [ "$branch_variant" = "$STAGING_COMPUTE_VARIANT" ]; then
+            echo "compute already pinned: ${branch_variant}"
             exit 0
           fi
 
-          echo "compute mismatch (branch=${branch_variant:-none}, prod=${prod_variant}); patching branch"
-          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$prod_variant" \
+          echo "compute mismatch (branch=${branch_variant:-none}, target=${STAGING_COMPUTE_VARIANT}); patching branch"
+          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$STAGING_COMPUTE_VARIANT" \
             '{addon_type: $addon_type, addon_variant: $addon_variant}')
           http_code=$(curl -sS -o /tmp/addon_apply.json -w '%{http_code}' \
             -X PATCH \
             -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$body" \
-            "https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons")
+            "$addons_url")
           if [[ "$http_code" != 2* ]]; then
-            echo "::error::branch compute match request failed (HTTP $http_code)"
+            echo "::error::branch compute pin request failed (HTTP $http_code)"
             cat /tmp/addon_apply.json >&2 || true
             exit 1
           fi
-          echo "compute match to ${prod_variant} accepted (HTTP $http_code); waiting for branch to become healthy again"
+          echo "compute pin to ${STAGING_COMPUTE_VARIANT} accepted (HTTP $http_code); waiting for branch to become healthy again"
 
           ready=0
           status="" preview=""
@@ -269,13 +257,13 @@ jobs:
                   ;;
               esac
             fi
-            echo "waiting for branch health after compute match (attempt $i/30, status=${status:-none} preview=${preview:-none})"
+            echo "waiting for branch health after compute pin (attempt $i/30, status=${status:-none} preview=${preview:-none})"
           done
           if [ "$ready" -ne 1 ]; then
-            echo "::error::branch did not return to healthy after compute match (status=${status:-none} preview=${preview:-none})"
+            echo "::error::branch did not return to healthy after compute pin (status=${status:-none} preview=${preview:-none})"
             exit 1
           fi
-          echo "branch healthy again after compute match (status=$status preview=$preview)"
+          echo "branch healthy again after compute pin (status=$status preview=$preview)"
 
       - name: Core migrations
         working-directory: oddish

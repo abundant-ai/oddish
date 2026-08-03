@@ -403,40 +403,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: gh variable set STAGING_DB_BOOTSTRAP_DONE --body "true" --repo "$GITHUB_REPOSITORY"
 
-      - name: Match branch compute to prod
+      - name: Return branch compute to the staging tier
         shell: bash
         continue-on-error: true
         env:
           BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
+          STAGING_COMPUTE_VARIANT: "ci_large"
         run: |
           set -euo pipefail
-          # Best-effort: land the branch on prod's current compute tier rather
-          # than a fixed ci_small, so the staging standing tier tracks prod as
-          # it changes over time. Must not fail the job -- the mirror already
+          # Staging runs a fixed compute tier, not prod's -- this step only
+          # undoes the temporary bump from "Scale branch compute up for the
+          # bulk load" above. Must not fail the job -- the mirror already
           # succeeded and the guard variable is already flipped by the
           # previous step.
-          prod_addons_url="https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/billing/addons"
           branch_addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
-          fallback_variant="ci_small"
 
-          http_code=$(curl -sS -o /tmp/prod_addons.json -w '%{http_code}' \
-            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
-            "$prod_addons_url")
-          if [[ "$http_code" != 2* ]]; then
-            echo "::warning::failed to read prod compute addons (HTTP $http_code); falling back to ${fallback_variant}"
-            cat /tmp/prod_addons.json >&2 || true
-            target_variant="$fallback_variant"
-          else
-            target_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/prod_addons.json)
-            if [ -z "$target_variant" ]; then
-              echo "prod has no compute addon selected (default nano/micro tier); falling back to ${fallback_variant}"
-              target_variant="$fallback_variant"
-            else
-              echo "prod compute: ${target_variant}"
-            fi
-          fi
-
-          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$target_variant" \
+          body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$STAGING_COMPUTE_VARIANT" \
             '{addon_type: $addon_type, addon_variant: $addon_variant}')
           http_code=$(curl -sS -o /tmp/addon_apply_down.json -w '%{http_code}' \
             -X PATCH \
@@ -445,11 +427,11 @@ jobs:
             -d "$body" \
             "$branch_addons_url")
           if [[ "$http_code" != 2* ]]; then
-            echo "::warning::branch compute match request failed (HTTP $http_code); leaving branch on the bulk-load tier"
+            echo "::warning::branch compute return request failed (HTTP $http_code); leaving branch on the bulk-load tier"
             cat /tmp/addon_apply_down.json >&2 || true
             exit 1
           fi
-          echo "compute match to ${target_variant} accepted (HTTP $http_code)"
+          echo "compute return to ${STAGING_COMPUTE_VARIANT} accepted (HTTP $http_code)"
 
       - name: Summary
         shell: bash
