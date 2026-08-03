@@ -490,6 +490,15 @@ async def _prepare_trial_run(
         if trial.superseded_by_trial_id is not None:
             console.print(f"[dim]Trial {trial_id} was superseded, skipping[/dim]")
             return None
+        if trial.status in (
+            TrialStatus.SUCCESS,
+            TrialStatus.FAILED,
+            TrialStatus.SKIPPED,
+        ):
+            console.print(
+                f"[dim]Trial {trial_id} became terminal before preparation, skipping[/dim]"
+            )
+            return None
 
         trial.status = TrialStatus.RUNNING
         trial.started_at = utcnow()

@@ -292,7 +292,7 @@ async def heartbeat_worker_job(
                 job_id,
                 current_worker_id,
             )
-        return command.endswith(" 1")
+        return str(command).endswith(" 1")
     finally:
         await connection.close()
 

@@ -226,6 +226,39 @@ async def test_skipped_trial_is_not_restarted_after_capacity_wait(monkeypatch):
     await trial_handler._run_trial_job_with_capacity("trial-1", "openai/model-a")
 
 
+@pytest.mark.parametrize(
+    "terminal_status",
+    (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED),
+)
+@pytest.mark.asyncio
+async def test_prepare_does_not_revive_trial_that_became_terminal(
+    monkeypatch, terminal_status
+):
+    trial = SimpleNamespace(
+        status=terminal_status,
+        superseded_by_trial_id=None,
+    )
+
+    @asynccontextmanager
+    async def fake_trial_session(
+        _trial_id, *, allow_missing=False, with_for_update=False
+    ):
+        assert with_for_update is True
+        yield SimpleNamespace(), trial
+
+    monkeypatch.setattr(trial_handler, "_trial_session", fake_trial_session)
+
+    prepared = await trial_handler._prepare_trial_run(
+        trial_id="trial-1",
+        worker_id="worker-1",
+        queue_slot=1,
+        modal_function_call_id="fc-1",
+    )
+
+    assert prepared is None
+    assert trial.status == terminal_status
+
+
 @pytest.mark.asyncio
 async def test_capacity_wait_stops_when_worker_job_loses_ownership(
     monkeypatch, tmp_path: Path
