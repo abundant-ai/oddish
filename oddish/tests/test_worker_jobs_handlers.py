@@ -143,6 +143,23 @@ async def test_trial_handler_returns_ok_on_success(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_trial_handler_returns_ok_when_trial_was_skipped(monkeypatch):
+    trial_row = SimpleNamespace(
+        status=TrialStatus.SKIPPED,
+        error_message="baseline gate rejected task",
+    )
+    monkeypatch.setattr(
+        handlers_module, "get_session", _fake_get_session_factory(trial_row)
+    )
+    _patch_run(monkeypatch, "run_trial_job")
+
+    outcome = await TrialJobHandler().run(_trial_claim())
+
+    assert outcome.success is not None
+    assert outcome.failure is None
+
+
+@pytest.mark.asyncio
 async def test_trial_handler_returns_retryable_fail_on_retrying(monkeypatch):
     trial_row = SimpleNamespace(
         status=TrialStatus.RETRYING,

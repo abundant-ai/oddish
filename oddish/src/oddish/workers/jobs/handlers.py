@@ -107,7 +107,7 @@ class TrialJobHandler:
             trial = await session.get(TrialModel, trial_id)
             if trial is None:
                 return _fail_permanent(f"Trial {trial_id} vanished mid-run")
-            if trial.status == TrialStatus.SUCCESS:
+            if trial.status in (TrialStatus.SUCCESS, TrialStatus.SKIPPED):
                 return JobOutcome.ok()
             if trial.status == TrialStatus.RETRYING:
                 return _fail_retryable(
