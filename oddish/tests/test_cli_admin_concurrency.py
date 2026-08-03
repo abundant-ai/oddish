@@ -257,6 +257,46 @@ def test_clear_sends_null_then_reads_back_deploy_fallback(monkeypatch):
     assert "64" in result.output
 
 
+def test_legacy_clear_accepts_absent_override_only_queue(monkeypatch):
+    old_put_payload = {
+        "queue_key": "custom/idle-model",
+        "limit": 64,
+        "deploy_limit": 64,
+        "override_limit": None,
+    }
+    _install_client(
+        monkeypatch,
+        put_response=_Response(200, old_put_payload),
+        get_response=_Response(404, {"detail": "Not Found"}),
+        queue_health_response=_Response(200, {"capacity": []}),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "admin",
+            "concurrency",
+            "clear",
+            "custom/idle-model",
+            "--api-url",
+            "http://api.test",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "queue_key": "custom/idle-model",
+        "limit": None,
+        "deploy_limit": None,
+        "override_limit": None,
+        "controller_enabled": None,
+        "advisory_limit": None,
+        "effective_limit": None,
+        "readback_source": "queue-health-absence",
+    }
+
+
 @pytest.mark.parametrize("limit", ["-1", "10001"])
 def test_set_rejects_values_outside_server_range(monkeypatch, limit):
     calls = _install_client(monkeypatch)

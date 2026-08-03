@@ -50,6 +50,7 @@ def _request_setting(
     queue_key: str,
     *,
     allow_legacy_readback: bool = False,
+    expected_override: int | None = None,
 ) -> dict[str, Any]:
     try:
         response = client.get(
@@ -60,7 +61,12 @@ def _request_setting(
         error_console.print(f"[red]Failed to connect to API:[/red] {exc}")
         raise typer.Exit(1) from exc
     if response.status_code in {404, 405} and allow_legacy_readback:
-        return _request_legacy_readback(client, api_url, queue_key)
+        return _request_legacy_readback(
+            client,
+            api_url,
+            queue_key,
+            expected_override=expected_override,
+        )
     if response.status_code != 200:
         error_console.print(
             f"[red]Failed to read concurrency:[/red] {_api_error(response)}"
@@ -77,6 +83,8 @@ def _request_legacy_readback(
     client: httpx.Client,
     api_url: str,
     queue_key: str,
+    *,
+    expected_override: int | None,
 ) -> dict[str, Any]:
     """Verify an override through queue-health on pre-GET deployments."""
     try:
@@ -104,6 +112,21 @@ def _request_legacy_readback(
         None,
     )
     if row is None:
+        # queue-health includes every stored override, even when its queue is
+        # idle. After a successful clear, absence therefore verifies that an
+        # override-only queue was deleted; its deploy/effective values are not
+        # available from a PUT-only server.
+        if expected_override is None:
+            return {
+                "queue_key": queue_key,
+                "limit": None,
+                "deploy_limit": None,
+                "override_limit": None,
+                "controller_enabled": None,
+                "advisory_limit": None,
+                "effective_limit": None,
+                "readback_source": "queue-health-absence",
+            }
         error_console.print(
             "[red]Concurrency was updated, but queue-health did not return the "
             "queue for readback.[/red]"
@@ -197,6 +220,7 @@ def _mutate_and_read_back(
             api_url,
             mutation["queue_key"],
             allow_legacy_readback=True,
+            expected_override=limit,
         )
 
     if readback.get("queue_key") != mutation["queue_key"]:
