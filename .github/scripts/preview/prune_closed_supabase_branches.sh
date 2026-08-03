@@ -89,7 +89,7 @@ while IFS=$'\t' read -r branch_id branch_name pr_number; do
 
   echo "deleting leaked Supabase branch $branch_id ($branch_name; PR closed)" >&2
   if supabase branches delete "$branch_id" \
-    --project-ref "$SUPABASE_PROJECT_REF" >&2; then
+    --project-ref "$SUPABASE_PROJECT_REF" </dev/null >&2; then
     pruned=$((pruned + 1))
   else
     echo "failed to delete Supabase branch $branch_id; continuing safely" >&2

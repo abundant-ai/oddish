@@ -96,6 +96,7 @@ def test_capacity_pruner_deletes_only_closed_non_current_pr_branches():
         'if [ "$1 $2" = "branches list" ]; then\n'
         "  printf '%s\\n' \"$BRANCHES_JSON\"\n"
         'elif [ "$1 $2" = "branches delete" ]; then\n'
+        "  while IFS= read -r _; do :; done\n"
         '  printf \'%s\\n\' "$3" >> "$DELETE_LOG"\n'
         "else\n"
         "  exit 2\n"
