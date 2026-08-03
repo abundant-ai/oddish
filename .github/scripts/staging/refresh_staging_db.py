@@ -123,148 +123,177 @@ def _pick_spool_dir() -> str:
     return best_dir
 
 
-async def main() -> None:
+async def _run_mirror() -> None:
     spool_dir = _pick_spool_dir()
     print(f"spool dir: {spool_dir} ({shutil.disk_usage(spool_dir).free / 1e9:.2f} GB free)",
           flush=True)
     src_url = _session_pooler(_plain(os.environ["SOURCE_DB_URL"]))
     holder = await _src_connect(src_url)
     dst = await _connect_with_retry(_plain(os.environ["TARGET_DB_URL"]))
-    src_tables, dst_tables = await _tables(holder), await _tables(dst)
-    include = (src_tables & dst_tables) - EXCLUDE
-    unclassified = (src_tables - dst_tables - EXCLUDE)
-    if unclassified:
-        sys.exit(f"Tables on prod but not staging (run migrations first?): {sorted(unclassified)}")
-    order = await _topo_order(holder, include)
-    backedge_cols = {t: [c for (bt, c) in BACKEDGES if bt == t] for t in include}
+    try:
+        src_tables, dst_tables = await _tables(holder), await _tables(dst)
+        include = (src_tables & dst_tables) - EXCLUDE
+        unclassified = (src_tables - dst_tables - EXCLUDE)
+        if unclassified:
+            sys.exit(f"Tables on prod but not staging (run migrations first?): {sorted(unclassified)}")
+        order = await _topo_order(holder, include)
+        backedge_cols = {t: [c for (bt, c) in BACKEDGES if bt == t] for t in include}
 
-    # The holder pins ONE repeatable-read snapshot for the whole run and is kept
-    # warm by a keepalive ping; every table then reads through its own
-    # short-lived connection importing that snapshot, so no source connection
-    # ever idles longer than its own active COPY (the observed kill mode:
-    # the single source socket sat idle through 30+ minute destination uploads).
-    async with holder.transaction(isolation="repeatable_read", readonly=True):
-        await holder.execute("SET LOCAL statement_timeout = 0")
-        await holder.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
-        snapshot_id = await holder.fetchval("SELECT pg_export_snapshot()")
-        assert re.fullmatch(r"[0-9A-Fa-f\-]+", snapshot_id)
-        holder_lock = asyncio.Lock()
-        stop_ping = asyncio.Event()
+        # The holder pins ONE repeatable-read snapshot for the whole run and is kept
+        # warm by a keepalive ping; every table then reads through its own
+        # short-lived connection importing that snapshot, so no source connection
+        # ever idles longer than its own active COPY (the observed kill mode:
+        # the single source socket sat idle through 30+ minute destination uploads).
+        async with holder.transaction(isolation="repeatable_read", readonly=True):
+            await holder.execute("SET LOCAL statement_timeout = 0")
+            await holder.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+            snapshot_id = await holder.fetchval("SELECT pg_export_snapshot()")
+            assert re.fullmatch(r"[0-9A-Fa-f\-]+", snapshot_id)
+            holder_lock = asyncio.Lock()
+            stop_ping = asyncio.Event()
 
-        async def _keepalive() -> None:
-            while not stop_ping.is_set():
-                try:
-                    await asyncio.wait_for(stop_ping.wait(), timeout=60)
-                except asyncio.TimeoutError:
-                    async with holder_lock:
-                        await holder.execute("SELECT 1")
+            async def _keepalive() -> None:
+                while not stop_ping.is_set():
+                    try:
+                        await asyncio.wait_for(stop_ping.wait(), timeout=60)
+                    except asyncio.TimeoutError:
+                        async with holder_lock:
+                            await holder.execute("SELECT 1")
 
-        ping_task = asyncio.create_task(_keepalive())
+            ping_task = asyncio.create_task(_keepalive())
 
-        async def _copy_table_from_src(t: str, select_cols: str, cols: list[str]) -> None:
-            with tempfile.TemporaryFile(dir=spool_dir) as spool:
-                conn = await _src_connect(src_url)
-                try:
-                    async with conn.transaction(isolation="repeatable_read", readonly=True):
-                        await conn.execute("SET LOCAL statement_timeout = 0")
-                        await conn.execute(f"SET TRANSACTION SNAPSHOT '{snapshot_id}'")
-                        await conn.copy_from_query(
-                            f'SELECT {select_cols} FROM "{t}"', output=spool)
-                finally:
-                    await conn.close()
-                # Source is fully closed before the (potentially very long)
-                # destination upload starts — no source connection ever idles
-                # through it (the observed kill mode on both pooler modes).
-                spool.seek(0)
-                await dst.copy_to_table(t, source=spool, columns=cols)
-
-        try:
-            async with dst.transaction():
-                await dst.execute("SET LOCAL statement_timeout = 0")
-                await dst.execute("SET LOCAL synchronous_commit = off")
-                for t in reversed(order):
-                    await dst.execute(f'TRUNCATE TABLE "{t}" CASCADE')
-                for t in order:
-                    started = time.monotonic()
-                    async with holder_lock:
-                        cols = [r["column_name"] for r in await holder.fetch(
-                            "SELECT column_name FROM information_schema.columns "
-                            "WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", t)]
-                    select_cols = ", ".join(
-                        f'NULL AS "{c}"' if c in backedge_cols.get(t, []) else f'"{c}"' for c in cols)
-                    attempts = 0
-                    while True:
-                        attempts += 1
-                        try:
-                            async with dst.transaction():   # savepoint
-                                # CASCADE, not plain TRUNCATE: Postgres refuses to
-                                # truncate a table with an existing FK reference
-                                # from another table regardless of whether that
-                                # DELETE, not TRUNCATE: plain TRUNCATE errors
-                                # structurally when any FK references t, and
-                                # TRUNCATE ... CASCADE follows EVERY FK edge —
-                                # including the back-edges dropped from the topo
-                                # order (tasks.current_version_id -> task_versions),
-                                # so a task_versions retry would silently empty the
-                                # already-loaded tasks table. DELETE is safe: at
-                                # retry time no loaded row references t's rows
-                                # (children load later; back-edge columns are still
-                                # NULL until the patch phase).
-                                await dst.execute(f'DELETE FROM "{t}"')
-                                await _copy_table_from_src(t, select_cols, cols)
-                            break
-                        except (asyncpg.PostgresConnectionError,
-                                asyncpg.InterfaceError,
-                                ConnectionError, OSError) as exc:
-                            if attempts >= 2:
-                                raise
-                            print(f"retrying {t} after transient failure: {exc!r}", flush=True)
-                            await asyncio.sleep(5)
-                    n = await dst.fetchval(f'SELECT count(*) FROM "{t}"')
-                    print(f"mirrored {t}: {n} rows in {time.monotonic() - started:.0f}s", flush=True)
-                for (t, col) in sorted(BACKEDGES):
-                    if t not in include:
-                        continue
-                    pk = "id"
+            async def _copy_table_from_src(t: str, select_cols: str, cols: list[str]) -> None:
+                with tempfile.TemporaryFile(dir=spool_dir) as spool:
                     conn = await _src_connect(src_url)
                     try:
                         async with conn.transaction(isolation="repeatable_read", readonly=True):
+                            await conn.execute("SET LOCAL statement_timeout = 0")
                             await conn.execute(f"SET TRANSACTION SNAPSHOT '{snapshot_id}'")
-                            rows = await conn.fetch(
-                                f'SELECT "{pk}", "{col}" FROM "{t}" WHERE "{col}" IS NOT NULL')
+                            await conn.copy_from_query(
+                                f'SELECT {select_cols} FROM "{t}"', output=spool)
                     finally:
                         await conn.close()
-                    # Set-based patch: row-by-row UPDATEs over the pooler ran
-                    # for hours on millions of rows (observed: 4h silent).
-                    # Stage the pairs in a typed temp table and join once.
-                    started = time.monotonic()
-                    if rows:
-                        tmp = f"_patch_{t}_{col}"
-                        await dst.execute(
-                            f'CREATE TEMP TABLE "{tmp}" ON COMMIT DROP AS '
-                            f'SELECT "{pk}", "{col}" FROM "{t}" WITH NO DATA')
-                        await dst.copy_records_to_table(
-                            tmp, records=[(r[pk], r[col]) for r in rows])
-                        await dst.execute(
-                            f'UPDATE "{t}" AS tgt SET "{col}" = p."{col}" '
-                            f'FROM "{tmp}" AS p WHERE tgt."{pk}" = p."{pk}"')
-                    print(f"patched {t}.{col}: {len(rows)} rows in "
-                          f"{time.monotonic() - started:.0f}s", flush=True)
-                for stmt in QUIESCE:
-                    tag = await dst.execute(stmt)
-                    print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}", flush=True)
-        finally:
-            stop_ping.set()
-            ping_task.cancel()
+                    # Source is fully closed before the (potentially very long)
+                    # destination upload starts — no source connection ever idles
+                    # through it (the observed kill mode on both pooler modes).
+                    spool.seek(0)
+                    await dst.copy_to_table(t, source=spool, columns=cols)
+
             try:
-                await ping_task
-            except (asyncio.CancelledError, Exception):
-                pass
-    live = await dst.fetchval(
-        "SELECT count(*) FROM worker_jobs WHERE status::text NOT IN ('SUCCESS','FAILED','CANCELLED')")
-    assert live == 0, f"{live} non-terminal worker_jobs after quiesce"
-    await holder.close(); await dst.close()
-    print("mirror complete")
+                async with dst.transaction():
+                    await dst.execute("SET LOCAL statement_timeout = 0")
+                    await dst.execute("SET LOCAL synchronous_commit = off")
+                    for t in reversed(order):
+                        await dst.execute(f'TRUNCATE TABLE "{t}" CASCADE')
+                    for t in order:
+                        started = time.monotonic()
+                        async with holder_lock:
+                            cols = [r["column_name"] for r in await holder.fetch(
+                                "SELECT column_name FROM information_schema.columns "
+                                "WHERE table_schema='public' AND table_name=$1 ORDER BY ordinal_position", t)]
+                        select_cols = ", ".join(
+                            f'NULL AS "{c}"' if c in backedge_cols.get(t, []) else f'"{c}"' for c in cols)
+                        attempts = 0
+                        while True:
+                            attempts += 1
+                            try:
+                                async with dst.transaction():   # savepoint
+                                    # CASCADE, not plain TRUNCATE: Postgres refuses to
+                                    # truncate a table with an existing FK reference
+                                    # from another table regardless of whether that
+                                    # DELETE, not TRUNCATE: plain TRUNCATE errors
+                                    # structurally when any FK references t, and
+                                    # TRUNCATE ... CASCADE follows EVERY FK edge —
+                                    # including the back-edges dropped from the topo
+                                    # order (tasks.current_version_id -> task_versions),
+                                    # so a task_versions retry would silently empty the
+                                    # already-loaded tasks table. DELETE is safe: at
+                                    # retry time no loaded row references t's rows
+                                    # (children load later; back-edge columns are still
+                                    # NULL until the patch phase).
+                                    await dst.execute(f'DELETE FROM "{t}"')
+                                    await _copy_table_from_src(t, select_cols, cols)
+                                break
+                            except (asyncpg.PostgresConnectionError,
+                                    asyncpg.InterfaceError,
+                                    ConnectionError, OSError) as exc:
+                                if attempts >= 2:
+                                    raise
+                                print(f"retrying {t} after transient failure: {exc!r}", flush=True)
+                                await asyncio.sleep(5)
+                        n = await dst.fetchval(f'SELECT count(*) FROM "{t}"')
+                        print(f"mirrored {t}: {n} rows in {time.monotonic() - started:.0f}s", flush=True)
+                    for (t, col) in sorted(BACKEDGES):
+                        if t not in include:
+                            continue
+                        pk = "id"
+                        conn = await _src_connect(src_url)
+                        try:
+                            async with conn.transaction(isolation="repeatable_read", readonly=True):
+                                await conn.execute(f"SET TRANSACTION SNAPSHOT '{snapshot_id}'")
+                                rows = await conn.fetch(
+                                    f'SELECT "{pk}", "{col}" FROM "{t}" WHERE "{col}" IS NOT NULL')
+                        finally:
+                            await conn.close()
+                        # Set-based patch: row-by-row UPDATEs over the pooler ran
+                        # for hours on millions of rows (observed: 4h silent).
+                        # Stage the pairs in a typed temp table and join once.
+                        started = time.monotonic()
+                        if rows:
+                            tmp = f"_patch_{t}_{col}"
+                            await dst.execute(
+                                f'CREATE TEMP TABLE "{tmp}" ON COMMIT DROP AS '
+                                f'SELECT "{pk}", "{col}" FROM "{t}" WITH NO DATA')
+                            await dst.copy_records_to_table(
+                                tmp, records=[(r[pk], r[col]) for r in rows])
+                            await dst.execute(
+                                f'UPDATE "{t}" AS tgt SET "{col}" = p."{col}" '
+                                f'FROM "{tmp}" AS p WHERE tgt."{pk}" = p."{pk}"')
+                        print(f"patched {t}.{col}: {len(rows)} rows in "
+                              f"{time.monotonic() - started:.0f}s", flush=True)
+                    for stmt in QUIESCE:
+                        tag = await dst.execute(stmt)
+                        print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}", flush=True)
+            finally:
+                stop_ping.set()
+                ping_task.cancel()
+                try:
+                    await ping_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+        live = await dst.fetchval(
+            "SELECT count(*) FROM worker_jobs WHERE status::text NOT IN ('SUCCESS','FAILED','CANCELLED')")
+        assert live == 0, f"{live} non-terminal worker_jobs after quiesce"
+        print("mirror complete")
+    finally:
+        # A failed attempt must not leak connections into the next retry: close
+        # both ends regardless of how _run_mirror exited, tolerating a
+        # connection that is already dead/closed (e.g. the source drop that
+        # motivated the outer retry in main()).
+        try:
+            await holder.close()
+        except Exception:
+            pass
+        try:
+            await dst.close()
+        except Exception:
+            pass
+
+
+async def main() -> None:
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        try:
+            await _run_mirror()
+            return
+        except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError,
+                ConnectionError, OSError) as exc:
+            if attempt >= attempts:
+                raise
+            print(f"mirror attempt {attempt}/{attempts} failed with a connection error "
+                  f"({exc!r}); restarting the whole mirror with fresh connections "
+                  f"and a fresh snapshot", flush=True)
+            await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
