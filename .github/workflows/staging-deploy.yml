@@ -75,6 +75,32 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # A credential that no longer authenticates almost always means Staging
+      # DB Bootstrap rotated the branch password: it cannot write a GitHub
+      # secret (403), so STAGING_DATABASE_URL stays behind until a human
+      # refreshes it, and a deploy queued in the shared group runs into that.
+      # Name the cause here instead of leaving a bare Alembic auth error.
+      # This fails rather than skips on purpose -- a green run that deployed
+      # nothing would satisfy the promotion preflight.
+      - name: Check the staging database credential
+        shell: bash
+        env:
+          ODDISH_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          set -uo pipefail
+          if [ -z "${ODDISH_DATABASE_URL:-}" ]; then
+            echo "::error::STAGING_DATABASE_URL is not set on the staging environment. Set it with the recipe in the Staging DB Bootstrap job summary, then re-run this workflow."
+            exit 1
+          fi
+          psql_url="${ODDISH_DATABASE_URL/postgresql+asyncpg:\/\//postgresql://}"
+          echo "::add-mask::$psql_url"
+          if ! PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
+            cat /tmp/psql.err >&2 || true
+            echo "::error::STAGING_DATABASE_URL does not authenticate. If Staging DB Bootstrap ran recently it rotated the branch password; refresh this secret with the recipe in that run's job summary, then re-run this workflow."
+            exit 1
+          fi
+          echo "staging database credential authenticates"
+
       # No rotation, no compute pin: this is a PERSISTENT branch, unlike the
       # per-PR preview branches this flow was first modelled on. The database
       # URL is stored once as a secret on the `staging` environment, so a

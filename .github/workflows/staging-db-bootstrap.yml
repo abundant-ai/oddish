@@ -14,6 +14,12 @@ on:
 
 concurrency:
   # Shared with staging-deploy.yml so the two never touch the branch at once.
+  # GitHub holds one pending run per group across both workflows, so a
+  # bootstrap still queued behind a running deploy is cancelled as soon as the
+  # next staging push queues a deploy of its own. Nothing is lost --
+  # STAGING_DB_BOOTSTRAP_DONE stays unset and no mirror has started -- but a
+  # re-mirror cancelled this way has to be dispatched again. Watch a dispatched
+  # run until it takes the lock.
   group: staging-environment
   cancel-in-progress: false
 
@@ -202,7 +208,10 @@ jobs:
           {
             echo "## Staging database password was reset"
             echo
-            echo "Refresh the deploy credential before the next staging deploy:"
+            echo "The new URL is published to the oddish-staging-db Modal secret"
+            echo "by the next step of this run, and the recipe below reads it from"
+            echo "there. Wait for that step to go green, then refresh the deploy"
+            echo "credential:"
             echo
             echo '```bash'
             echo "cd backend && uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E '^postgresql' | tail -1 | gh secret set STAGING_DATABASE_URL --repo $GITHUB_REPOSITORY --env staging"
@@ -214,6 +223,25 @@ jobs:
           echo "branch_ref=$branch_ref" >> "$GITHUB_OUTPUT"
           echo "password_reset=true" >> "$GITHUB_OUTPUT"
           echo "branch ready: ref=$branch_ref host=$db_host status=$status"
+
+      # Published before the schema and data work, not after: a password reset
+      # invalidates the running app's credential the moment it happens, and
+      # this secret is the only durable copy of the new password (the Supabase
+      # API redacts it). Publishing here keeps the recovery recipe printed
+      # above true as soon as it appears, and keeps the password recoverable
+      # if a later step fails. Every step below reads
+      # steps.branch.outputs.db_url directly, so none of them depend on when
+      # this lands.
+      - name: Publish oddish-staging-db Modal secret
+        env:
+          MODAL_ENVIRONMENT: staging
+          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db \
+            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
+            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
+            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
+            "LOGFIRE_ENVIRONMENT=staging"
 
       - name: Bootstrap schema (prod snapshot + Alembic pointers + upgrade head)
         env:
@@ -430,17 +458,6 @@ jobs:
           TARGET_DB_URL: ${{ steps.branch.outputs.db_url }}
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/staging/refresh_staging_db.py"
 
-      - name: Publish oddish-staging-db Modal secret
-        env:
-          MODAL_ENVIRONMENT: staging
-          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
-        run: |
-          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db \
-            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
-            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
-            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
-            "LOGFIRE_ENVIRONMENT=staging"
-
       - name: Mark bootstrap done
         shell: bash
         # Best-effort: the workflow token cannot write repo variables in this
@@ -492,14 +509,17 @@ jobs:
         # dependency on who went first -- the run queues behind this one in
         # the same group and deploys once the mirror and secret publish land.
         #
-        # Skipped after a password reset: STAGING_DATABASE_URL is stale until
-        # a human refreshes it, so the deploy would fail at migrations and
-        # mark the staging tip red while staging itself is healthy -- that
-        # path prints the recipe in the job summary instead. success() is
-        # spelled out because a custom `if` drops the implicit one, and a
-        # half-finished mirror must not dispatch. Best-effort like "Mark
-        # bootstrap done": a token that cannot dispatch must not fail a run
-        # whose data work is already complete.
+        # Skipped after a password reset, where STAGING_DATABASE_URL is stale
+        # until a human refreshes it and this deploy could only fail at
+        # migrations. It does not spare the tip a red run: a push-triggered
+        # deploy queued in the same group still fails that way, and correctly
+        # so, because staging really is not deployed at that commit until the
+        # secret is refreshed. Skipping here only avoids a second run already
+        # known to be doomed; staging-deploy.yml names the cause when it hits
+        # one. success() is spelled out because a custom `if` drops the
+        # implicit one, and a half-finished mirror must not dispatch.
+        # Best-effort like "Mark bootstrap done": a token that cannot dispatch
+        # must not fail a run whose data work is already complete.
         if: success() && steps.branch.outputs.password_reset != 'true'
         continue-on-error: true
         working-directory: ${{ github.workspace }}
