@@ -97,11 +97,20 @@ function OverlayInner({
     if (range) setFailedRange(range);
   });
 
-  // A new selection is a new comment target; a cleared one retires the
-  // composer with it.
+  // The lines the open composer is writing about. Selecting different lines
+  // retires it; re-selecting its own range (what Try again does) must not,
+  // or the retry would close the composer it just opened.
+  const composerRangeRef = useRef<LineRange | null>(null);
+  const selStart = selectedLines?.start ?? null;
+  const selEnd = selectedLines?.end ?? null;
   useEffect(() => {
+    const anchored = composerRangeRef.current;
+    if (anchored && anchored.start === selStart && anchored.end === selEnd) {
+      return;
+    }
+    composerRangeRef.current = null;
     setComposerOpen(false);
-  }, [selectedLines?.start, selectedLines?.end]);
+  }, [selStart, selEnd]);
 
   const openThreads = openLine != null ? (byLine.get(openLine) ?? []) : [];
   const openBottom =
@@ -191,7 +200,10 @@ function OverlayInner({
       {selectedLines && openLine == null && (
         <button
           type="button"
-          onClick={() => setComposerOpen((prev) => !prev)}
+          onClick={() => {
+            composerRangeRef.current = selectedLines;
+            setComposerOpen((prev) => !prev);
+          }}
           style={{ top: remTop(selectedLines.start) }}
           className="bg-primary text-primary-foreground pointer-events-auto absolute left-6 flex h-[1.1rem] w-[1.1rem] items-center justify-center rounded-full shadow-sm transition-transform hover:scale-110"
           title={`Comment on ${formatLineRange(selectedLines)}`}
@@ -211,6 +223,7 @@ function OverlayInner({
           <button
             type="button"
             onClick={() => {
+              composerRangeRef.current = failedRange;
               onSelectLines?.(failedRange);
               setFailedRange(null);
               setComposerOpen(true);
