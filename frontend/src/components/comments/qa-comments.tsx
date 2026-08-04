@@ -38,6 +38,10 @@ export function InlineCommentOverlay(props: {
   filePath: string;
   selectedLines: LineRange | null;
   onSelectLines?: (range: LineRange | null) => void;
+  /** Lines actually rendered. Large files arrive truncated, and a marker
+   *  placed past the last row would stretch the pane's scroll height by
+   *  the whole missing tail. Omit when the file is whole. */
+  lineCount?: number;
 }) {
   const { organization } = useOrganization();
   if (!organization) return null;
@@ -61,25 +65,36 @@ function OverlayInner({
   filePath,
   selectedLines,
   onSelectLines,
+  lineCount,
 }: {
   taskId: string;
   filePath: string;
   selectedLines: LineRange | null;
   onSelectLines?: (range: LineRange | null) => void;
+  lineCount?: number;
 }) {
   const { threads } = useThreads({ query: { metadata: { filePath } } });
+
+  // The last row anyone can point at. Anchoring past it is what stretches
+  // the scroll region, so every offset below runs through this.
+  const maxLine = lineCount && lineCount > 0 ? lineCount : Infinity;
+  const pin = (line: number) => Math.min(line, maxLine);
 
   // One marker per anchor start line; a line can carry several threads.
   // Threads without a line anchor (legacy whole-file comments) pin to line
   // 1 so they stay reachable — the inline overlay is the only comments UI.
+  // Threads anchored past the last rendered line pin to that line, so a
+  // comment on the truncated tail is still readable (and says so) instead
+  // of hiding below a screenful of blank space.
   const byLine = useMemo(() => {
     const map = new Map<number, typeof threads>();
     for (const thread of threads) {
-      const line = thread.metadata.lineStart ?? 1;
+      const line = pin(thread.metadata.lineStart ?? 1);
       map.set(line, [...(map.get(line) ?? []), thread]);
     }
     return map;
-  }, [threads]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threads, maxLine]);
 
   const [openLine, setOpenLine] = useState<number | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
@@ -94,11 +109,18 @@ function OverlayInner({
       : null;
 
   // The lines a click on this line's bubble highlights: the union, so every
-  // commented line lights up when several threads share a start.
+  // commented line lights up when several threads share a start. Pinned to
+  // the last rendered line, so highlight, matching and placement all speak
+  // of the same range — a group whose true range runs past the render says
+  // so in words instead (see `beyondCount`).
   const groupRange = (line: number, group: typeof threads): LineRange => ({
     start: line,
-    end: Math.max(...group.map((t) => t.metadata.lineEnd ?? line)),
+    end: pin(Math.max(...group.map((t) => t.metadata.lineEnd ?? line))),
   });
+
+  /** Threads in this group anchored past the last rendered line. */
+  const beyondCount = (group: typeof threads) =>
+    group.filter((t) => (t.metadata.lineStart ?? 1) > maxLine).length;
 
   /**
    * Is `range` this group's highlight? True for the union we set on click,
@@ -113,7 +135,7 @@ function OverlayInner({
   ): boolean => {
     if (!range || range.start !== line) return false;
     if (range.end === groupRange(line, group).end) return true;
-    return group.some((t) => (t.metadata.lineEnd ?? line) === range.end);
+    return group.some((t) => pin(t.metadata.lineEnd ?? line) === range.end);
   };
 
   // A new selection is a new comment target; a cleared one retires the
@@ -172,7 +194,11 @@ function OverlayInner({
           }}
           style={{ top: remTop(line) }}
           className="bg-primary text-primary-foreground pointer-events-auto absolute left-0.5 flex h-[1.1rem] min-w-[1.1rem] items-center justify-center gap-0.5 rounded-full px-0.5 text-[9px] font-semibold shadow-sm transition-transform hover:scale-110"
-          title={`${group.length} comment thread${group.length === 1 ? "" : "s"}`}
+          title={
+            beyondCount(group) > 0
+              ? `${group.length} comment thread${group.length === 1 ? "" : "s"} (${beyondCount(group)} on lines past the part of this file that is loaded)`
+              : `${group.length} comment thread${group.length === 1 ? "" : "s"}`
+          }
         >
           <MessageSquare className="h-2.5 w-2.5" />
           {group.length > 1 && group.length}
@@ -191,6 +217,11 @@ function OverlayInner({
           <div className="border-border flex items-center justify-between border-b px-3 py-1.5">
             <span className="text-muted-foreground font-mono text-[10px]">
               {formatLineRange(groupRange(openGroup.line, openGroup.threads))}
+              {beyondCount(openGroup.threads) > 0 && (
+                <span className="ml-2 normal-case">
+                  · {beyondCount(openGroup.threads)} below the loaded part
+                </span>
+              )}
             </span>
             <button
               type="button"

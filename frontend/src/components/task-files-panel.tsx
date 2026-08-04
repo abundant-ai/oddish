@@ -1287,6 +1287,14 @@ export function TaskFilesPanel({
                   filePath={selectedFile.path}
                   selectedLines={selectedLines ?? null}
                   onSelectLines={onSelectLinesChange}
+                  // Only while truncated: a marker placed past the last
+                  // rendered row would stretch the pane's scroll height by
+                  // the whole missing tail.
+                  lineCount={
+                    isTruncated && fileContent
+                      ? fileContent.split("\n").length
+                      : undefined
+                  }
                 />
               ) : undefined
             }
