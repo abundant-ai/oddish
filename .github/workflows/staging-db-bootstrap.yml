@@ -13,7 +13,14 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: staging-db-bootstrap
+  # Shared with staging-deploy.yml so the two never touch the branch at once.
+  # GitHub holds one pending run per group across both workflows, so a
+  # bootstrap still queued behind a running deploy is cancelled as soon as the
+  # next staging push queues a deploy of its own. Nothing is lost --
+  # STAGING_DB_BOOTSTRAP_DONE stays unset and no mirror has started -- but a
+  # re-mirror cancelled this way has to be dispatched again. Watch a dispatched
+  # run until it takes the lock.
+  group: staging-environment
   cancel-in-progress: false
 
 jobs:
@@ -144,6 +151,7 @@ jobs:
               echo "stored staging credential works — reusing it (no password reset)"
               echo "db_url=$stored_url" >> "$GITHUB_OUTPUT"
               echo "branch_ref=$branch_ref" >> "$GITHUB_OUTPUT"
+              echo "password_reset=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "stored staging credential did not authenticate; resetting the password"
@@ -197,20 +205,51 @@ jobs:
           # The password changed, so the secret staging-deploy.yml reads is
           # now stale. This job cannot rewrite a GitHub secret (403), so a
           # human must refresh it or every later deploy fails at migrations.
+          # The recipe captures the URL and checks it before writing, because
+          # `gh secret set` stores whatever reaches its stdin and never checks
+          # it for emptiness: piping a failed `modal run` straight in would
+          # replace the credential with an empty value.
           {
             echo "## Staging database password was reset"
             echo
-            echo "Refresh the deploy credential before the next staging deploy:"
+            echo "The new URL is published to the oddish-staging-db-pending Modal"
+            echo "secret by the next step of this run, and the recipe below reads it"
+            echo "from there. Wait for that step to go green, then refresh the deploy"
+            echo "credential. Running this during the mirror is fine: it only writes"
+            echo "the GitHub secret, and the deploy it dispatches queues until this"
+            echo "run finishes."
             echo
             echo '```bash'
-            echo "cd backend && URL=\$(uv run modal run --env staging <emit-url script>)"
-            echo "printf '%s' \"\$URL\" | gh secret set STAGING_DATABASE_URL --env staging"
+            echo "cd backend"
+            echo 'url=$(STAGING_DB_SECRET=oddish-staging-db-pending uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E "^postgresql" | tail -1)'
+            echo 'if [ -z "$url" ]; then'
+            echo '  echo "no URL in the modal output — secret left unchanged"'
+            echo 'else'
+            echo "  printf '%s' \"\$url\" | gh secret set STAGING_DATABASE_URL --repo $GITHUB_REPOSITORY --env staging"
+            echo "  gh workflow run 'Staging Deploy' --ref staging --repo $GITHUB_REPOSITORY"
+            echo 'fi'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::staging DB password was reset — refresh the STAGING_DATABASE_URL secret on the staging environment (see job summary)"
           echo "db_url=$db_url" >> "$GITHUB_OUTPUT"
           echo "branch_ref=$branch_ref" >> "$GITHUB_OUTPUT"
+          echo "password_reset=true" >> "$GITHUB_OUTPUT"
           echo "branch ready: ref=$branch_ref host=$db_host status=$status"
+
+      # A recovery copy of the URL, written before any destructive work. The
+      # Supabase API redacts branch passwords, so without this a run that dies
+      # between the reset and the end of the mirror leaves the new password
+      # with no durable copy anywhere. Deliberately NOT oddish-staging-db:
+      # that is the secret the live app mounts, and giving it a working
+      # credential now would let a cold start authenticate against a database
+      # that is mid-teardown. Nothing mounts this name.
+      - name: Publish the recovery copy of the branch URL
+        env:
+          MODAL_ENVIRONMENT: staging
+          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db-pending \
+            "ODDISH_DATABASE_URL=$BRANCH_DB_URL"
 
       - name: Bootstrap schema (prod snapshot + Alembic pointers + upgrade head)
         env:
@@ -330,7 +369,7 @@ jobs:
             exit 1
           fi
 
-      - name: Scale branch compute up for the bulk load
+      - name: Ensure branch compute for the bulk load
         shell: bash
         env:
           BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
@@ -427,6 +466,12 @@ jobs:
           TARGET_DB_URL: ${{ steps.branch.outputs.db_url }}
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/staging/refresh_staging_db.py"
 
+      # Only now, once the branch holds a complete database. This is the
+      # secret the live app mounts, so until this point it keeps whatever
+      # credential it had -- after a password reset that one is dead, and the
+      # app failing closed is the wanted behaviour while the schema is being
+      # replaced and the tables are being reloaded. The durable copy of the
+      # new password lives in oddish-staging-db-pending from the start.
       - name: Publish oddish-staging-db Modal secret
         env:
           MODAL_ENVIRONMENT: staging
@@ -448,7 +493,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: gh variable set STAGING_DB_BOOTSTRAP_DONE --body "true" --repo "$GITHUB_REPOSITORY"
 
-      - name: Return branch compute to the staging tier
+      - name: Ensure branch compute is on the staging tier
         shell: bash
         continue-on-error: true
         env:
@@ -456,13 +501,31 @@ jobs:
           STAGING_COMPUTE_VARIANT: "ci_large"
         run: |
           set -euo pipefail
-          # Staging runs a fixed compute tier, not prod's -- this step only
-          # undoes the temporary bump from "Scale branch compute up for the
-          # bulk load" above. Must not fail the job -- the mirror already
-          # succeeded and the guard variable is already flipped by the
-          # previous step.
+          # Staging runs a fixed compute tier, not prod's. The bulk-load step
+          # ("Ensure branch compute for the bulk load" above) targets the same
+          # tier, so normally there is nothing to change here; this step exists
+          # to correct drift if someone moved the tier by hand. Must not fail
+          # the job -- the mirror already succeeded and the guard variable is
+          # already flipped by the previous step.
           branch_addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
 
+          # Send no request when the tier already matches. Applying an addon
+          # restarts the instance, and the deploy this run dispatches would
+          # then meet a database still coming back. Only a positively read
+          # matching tier skips: if the read fails, fall through and apply,
+          # which is what this step has always done.
+          current_variant=""
+          if http_code=$(curl -sS -o /tmp/addons_now.json -w '%{http_code}' \
+              -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+              "$branch_addons_url") && [[ "$http_code" == 2* ]]; then
+            current_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/addons_now.json)
+          fi
+          if [ "$current_variant" = "$STAGING_COMPUTE_VARIANT" ]; then
+            echo "branch compute is already ${STAGING_COMPUTE_VARIANT}; leaving it alone"
+            exit 0
+          fi
+
+          echo "returning branch compute from ${current_variant:-unknown} to ${STAGING_COMPUTE_VARIANT}"
           body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$STAGING_COMPUTE_VARIANT" \
             '{addon_type: $addon_type, addon_variant: $addon_variant}')
           http_code=$(curl -sS -o /tmp/addon_apply_down.json -w '%{http_code}' \
@@ -477,6 +540,31 @@ jobs:
             exit 1
           fi
           echo "compute return to ${STAGING_COMPUTE_VARIANT} accepted (HTTP $http_code)"
+
+      - name: Deploy staging against the mirrored branch
+        shell: bash
+        # The shared concurrency group serializes this workflow with
+        # staging-deploy.yml but does not order them: on a push that triggers
+        # both, a deploy that wins the lock migrates the pre-mirror branch and
+        # nothing deploys after the mirror. Dispatching here drops that
+        # dependency on who went first -- the run queues behind this one in
+        # the same group and deploys once the mirror and secret publish land.
+        #
+        # Skipped after a password reset, where STAGING_DATABASE_URL is stale
+        # until a human refreshes it and this deploy could only fail at
+        # migrations. It does not spare the tip a red run: a push-triggered
+        # deploy queued in the same group still fails that way, and correctly
+        # so, because staging really is not deployed at that commit until the
+        # secret is refreshed. Skipping here only avoids a second run already
+        # known to be doomed; staging-deploy.yml names the cause when it hits
+        # one. success() is spelled out because a custom `if` drops the
+        # implicit one, and a half-finished mirror must not dispatch.
+        # Best-effort like "Mark bootstrap done": a token that cannot dispatch
+        # must not fail a run whose data work is already complete.
+        if: success() && steps.branch.outputs.password_reset != 'true'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: gh workflow run 'Staging Deploy' --ref staging --repo "$GITHUB_REPOSITORY"
 
       - name: Summary
         shell: bash
