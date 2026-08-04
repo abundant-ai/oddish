@@ -27,6 +27,10 @@ jobs:
       contents: read
       pull-requests: write
       actions: read
+    env:
+      # A step `if:` cannot use the secrets context; expressions in env can,
+      # so the optional-token gate reads this value instead.
+      HAS_PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN != '' }}
     steps:
       - name: Check that the commenter can write to the repository
         shell: bash
@@ -77,9 +81,7 @@ jobs:
 
       - name: Fast-forward main
         id: push
-        # A step `if:` cannot read the step's own env map; the secrets
-        # context is the supported way to gate on an optional secret.
-        if: ${{ secrets.PROMOTE_TOKEN != '' }}
+        if: env.HAS_PROMOTE_TOKEN == 'true'
         shell: bash
         env:
           PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
