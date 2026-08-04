@@ -37,7 +37,10 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
-import { InlineCommentOverlay } from "@/components/comments/qa-comments";
+import {
+  InlineCommentOverlay,
+  TaskCommentsOverview,
+} from "@/components/comments/qa-comments";
 import type {
   Task,
   TaskDetailResponse,
@@ -1053,6 +1056,29 @@ export function TaskFilesPanel({
     }
   }, [isOpen, taskId]);
 
+  // Overview comment chips navigate to their file at the thread's lines —
+  // same mechanics as the initialFilePath deep link below.
+  const handleOpenFileAtLines = useCallback(
+    (path: string, lines: LineRange | null) => {
+      const node =
+        findNodeByPath(fileTree, path) ?? findNodeBySuffix(fileTree, path);
+      if (!node || node.type !== "file") return;
+      const ancestorPaths = getAncestorPaths(node.path);
+      if (ancestorPaths.length > 0) {
+        setExpandedDirs((prev) => {
+          const next = new Set(prev);
+          for (const ancestorPath of ancestorPaths) next.add(ancestorPath);
+          return next;
+        });
+      }
+      setSelectedFile(node);
+      setOverviewSelected(false);
+      onSelectedFileChange?.(node.path);
+      onSelectLinesChange?.(lines);
+    },
+    [fileTree, onSelectedFileChange, onSelectLinesChange]
+  );
+
   // Navigate to a specific file when initialFilePath changes (suffix match)
   useEffect(() => {
     if (!initialFilePath || fileTree.length === 0) return;
@@ -1553,6 +1579,14 @@ export function TaskFilesPanel({
                   checksLoadError={checksLoadFailure}
                   qaActive={taskQaActive}
                   onOpenTrial={onOpenTrial}
+                  commentsSection={
+                    effectiveChecksTaskId && showAnalysis ? (
+                      <TaskCommentsOverview
+                        taskId={effectiveChecksTaskId}
+                        onOpenFileAtLines={handleOpenFileAtLines}
+                      />
+                    ) : undefined
+                  }
                 />
               ) : (
                 renderFileContent()

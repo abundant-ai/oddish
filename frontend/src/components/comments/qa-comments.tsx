@@ -90,7 +90,20 @@ function OverlayInner({
         <button
           key={line}
           type="button"
-          onClick={() => setOpenLine((prev) => (prev === line ? null : line))}
+          onClick={() => {
+            const opening = openLine !== line;
+            setOpenLine(opening ? line : null);
+            // Opening a thread highlights the lines it addresses — the
+            // same selection mechanism the URL anchor drives.
+            if (opening) {
+              onSelectLines?.({
+                start: line,
+                end: Math.max(
+                  ...group.map((t) => t.metadata.lineEnd ?? line)
+                ),
+              });
+            }
+          }}
           style={{ top: remTop(line) }}
           className="bg-primary text-primary-foreground pointer-events-auto absolute left-0.5 flex h-[1.1rem] min-w-[1.1rem] items-center justify-center gap-0.5 rounded-full px-0.5 text-[9px] font-semibold shadow-sm transition-transform hover:scale-110"
           title={`${group.length} comment thread${group.length === 1 ? "" : "s"}`}
@@ -132,7 +145,9 @@ function OverlayInner({
         </div>
       )}
 
-      {selectedLines && (
+      {/* Hidden while a thread popover is open — its highlight would
+          otherwise sprout a redundant new-comment bubble. */}
+      {selectedLines && openLine == null && (
         <button
           type="button"
           onClick={() => setComposerOpen((prev) => !prev)}
@@ -176,6 +191,93 @@ function OverlayInner({
           />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Every comment thread on the task, for the Task Overview tab — grouped by
+ * file and ordered by line, with a chip that jumps to the file at the
+ * thread's lines. Renders nothing while the task has no comments.
+ */
+export function TaskCommentsOverview({
+  taskId,
+  onOpenFileAtLines,
+}: {
+  taskId: string;
+  onOpenFileAtLines?: (filePath: string, lines: LineRange | null) => void;
+}) {
+  const { organization } = useOrganization();
+  if (!organization) return null;
+  return (
+    <CommentsErrorBoundary key={organization.id}>
+      <RoomProvider id={`qa:${organization.id}:${taskId}`}>
+        <ClientSideSuspense fallback={null}>
+          <CommentsOverviewInner onOpenFileAtLines={onOpenFileAtLines} />
+        </ClientSideSuspense>
+      </RoomProvider>
+    </CommentsErrorBoundary>
+  );
+}
+
+function CommentsOverviewInner({
+  onOpenFileAtLines,
+}: {
+  onOpenFileAtLines?: (filePath: string, lines: LineRange | null) => void;
+}) {
+  const { threads } = useThreads();
+  const sorted = useMemo(
+    () =>
+      [...threads].sort(
+        (a, b) =>
+          a.metadata.filePath.localeCompare(b.metadata.filePath) ||
+          (a.metadata.lineStart ?? 0) - (b.metadata.lineStart ?? 0)
+      ),
+    [threads]
+  );
+
+  if (sorted.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
+          Comments
+        </h2>
+        <span className="text-muted-foreground font-mono text-[11px]">
+          {sorted.length} thread{sorted.length === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="space-y-2">
+        {sorted.map((thread) => {
+          const lines =
+            thread.metadata.lineStart != null && thread.metadata.lineEnd != null
+              ? {
+                  start: thread.metadata.lineStart,
+                  end: thread.metadata.lineEnd,
+                }
+              : null;
+          return (
+            <div
+              key={thread.id}
+              className="border-border overflow-hidden rounded-lg border"
+            >
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenFileAtLines?.(thread.metadata.filePath, lines)
+                }
+                className="text-primary bg-primary/10 hover:bg-primary/20 mt-2 ml-2 rounded px-1.5 py-0.5 font-mono text-[10px] transition-colors"
+                title="Open file at these lines"
+              >
+                {thread.metadata.filePath}
+                {lines ? ` ${formatLineRange(lines)}` : ""}
+              </button>
+              <Thread thread={thread} />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

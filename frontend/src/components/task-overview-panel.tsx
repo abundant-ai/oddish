@@ -113,6 +113,7 @@ export function TaskOverviewPanel({
   checksLoadError,
   qaActive,
   onOpenTrial,
+  commentsSection,
   className,
 }: {
   taskId: string | null;
@@ -153,6 +154,9 @@ export function TaskOverviewPanel({
    * back to the task page deep link.
    */
   onOpenTrial?: (trial: Trial) => boolean;
+  /** Aggregated QA comment threads (rendered by the host so this panel
+   *  stays free of Liveblocks concerns). */
+  commentsSection?: React.ReactNode;
   className?: string;
 }) {
   const router = useRouter();
@@ -606,6 +610,8 @@ export function TaskOverviewPanel({
         </div>
         {trialQaBody()}
       </div>
+
+      {commentsSection}
     </div>
   );
 }
