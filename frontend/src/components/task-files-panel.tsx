@@ -43,11 +43,7 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import {
-  StaticChecksPanel,
-  staticCheckState,
-  staticCheckSummary,
-} from "@/components/static-checks-panel";
+import { TaskOverviewPanel } from "@/components/task-overview-panel";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
@@ -158,11 +154,17 @@ interface TaskFilesPanelProps {
    */
   initialFilePath?: string | null;
   /**
-   * Task id to source the STATIC CHECKS entry from, for panes that drive file
+   * Task id to source the TASK OVERVIEW entry from, for panes that drive file
    * listing via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side
    * "Task definition" pane). Falls back to `taskId` when not set.
    */
   staticChecksTaskId?: string | null;
+  /**
+   * Open a trial from the overview's aggregated QA in the caller's own
+   * context (drawer / panel). Return false when the trial isn't addressable
+   * there; the overview then falls back to the task page deep link.
+   */
+  onOpenTrial?: (trial: Trial) => boolean;
   /**
    * Line range to highlight in the selected file — the ``?lines=L12-L20``
    * deep-link anchor. Honored by line-oriented renderers only.
@@ -369,12 +371,13 @@ export function TaskFilesPanel({
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
+  onOpenTrial,
   selectedLines,
   onSelectLinesChange,
   onSelectedFileChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
-  // The STATIC CHECKS entry is keyed off the task even in filesUrl-driven
+  // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
   // panes (which pass taskId={null}); staticChecksTaskId supplies the id there.
   const effectiveChecksTaskId = taskId ?? staticChecksTaskId ?? null;
   // The pre_trial_* fields live on the version summaries of /detail, not on
@@ -406,11 +409,12 @@ export function TaskFilesPanel({
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
-  const checksAvailable = showAnalysis !== false && effectiveChecksTaskId !== null;
+  const overviewAvailable =
+    showAnalysis !== false && effectiveChecksTaskId !== null;
   // Until /detail answers, the checks state is unknown, not "unaudited":
   // an enabled Run button on the misread queues an audit that wipes findings.
   const checksLoading =
-    checksAvailable && checksDetail === undefined && !checksLoadError;
+    overviewAvailable && checksDetail === undefined && !checksLoadError;
   // A failed revalidation with data already in hand is not "unavailable":
   // SWR keeps the stale data, and hiding live findings behind an error flash
   // on one bad poll is worse than showing them.
@@ -419,10 +423,9 @@ export function TaskFilesPanel({
       ? "Unable to load the static checks state."
       : null;
   const checksFindings = checksVersion?.pre_trial_findings ?? [];
-  const checksState = staticCheckState(
-    checksVersion?.pre_trial_status,
-    checksFindings.length,
-  );
+  const taskQaActive =
+    checksDetail?.task?.verdict_status === "queued" ||
+    checksDetail?.task?.verdict_status === "running";
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -437,12 +440,12 @@ export function TaskFilesPanel({
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
-  // Static checks are the default view; picking a file switches away.
-  const [checksSelected, setChecksSelected] = useState(true);
-  // The one gate for "the checks pane is on screen". The tree highlight and
-  // the main pane must both use it: with checks hidden (public share),
-  // checksSelected stays true but the pane shows a file.
-  const checksShowing = checksSelected && checksAvailable;
+  // The task overview is the default view; picking a file switches away.
+  const [overviewSelected, setOverviewSelected] = useState(true);
+  // The one gate for "the overview pane is on screen". The tree highlight and
+  // the main pane must both use it: with the overview hidden (public share),
+  // overviewSelected stays true but the pane shows a file.
+  const overviewShowing = overviewSelected && overviewAvailable;
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
@@ -715,7 +718,7 @@ export function TaskFilesPanel({
       setError(null);
       setFileTree([]);
       setSelectedFile(null);
-      setChecksSelected(true);
+      setOverviewSelected(true);
       setFileContent(null);
       setExpandedDirs(new Set());
 
@@ -724,7 +727,7 @@ export function TaskFilesPanel({
       // to per-file fetches on click.
       let paintedTree = false;
 
-      // The checks pane is the default view, so nothing pre-selects
+      // The overview pane is the default view, so nothing pre-selects
       // behind it: a hidden auto-selected file prefetches content that
       // later flashes under whichever file the user actually picks. Only
       // the file-only view (public share) paints a file immediately.
@@ -737,7 +740,7 @@ export function TaskFilesPanel({
         // the default auto-select land first would report the wrong path
         // upward and clear the link's line anchor before the target file
         // is applied.
-        if (!checksAvailable && !initialFilePathRef.current) {
+        if (!overviewAvailable && !initialFilePathRef.current) {
           const defaultFile =
             findNodeBySuffix(tree, "instruction.md") ??
             tree.find((node) => node.type === "file") ??
@@ -814,7 +817,7 @@ export function TaskFilesPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, checksAvailable]);
+  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, overviewAvailable]);
 
   // Fetch file content when a file is selected
   useEffect(() => {
@@ -1066,7 +1069,7 @@ export function TaskFilesPanel({
     if (!node || node.type !== "file") return;
 
     setSelectedFile(node);
-    setChecksSelected(false);
+    setOverviewSelected(false);
   }, [initialFilePath, fileTree]);
 
   useEffect(() => {
@@ -1121,7 +1124,7 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = !checksShowing && selectedFile?.path === node.path;
+      const isSelected = !overviewShowing && selectedFile?.path === node.path;
       const Icon =
         node.type === "dir"
           ? isExpanded
@@ -1140,7 +1143,7 @@ export function TaskFilesPanel({
                 toggleDir(node.path);
               } else {
                 setSelectedFile(node);
-                setChecksSelected(false);
+                setOverviewSelected(false);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -1332,7 +1335,7 @@ export function TaskFilesPanel({
     <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
       <div className="border-border bg-muted/30 max-h-[30vh] w-full border-b p-2 md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
         <div className="space-y-2 px-2 py-2">
-          {checksAvailable && (
+          {overviewAvailable && (
             <>
               <Skeleton className="h-3 w-24" />
               <Skeleton className="h-6 w-full" />
@@ -1363,7 +1366,7 @@ export function TaskFilesPanel({
     <>
       {isListingLoading ? (
         listingSkeleton
-      ) : listingError && !checksAvailable ? (
+      ) : listingError && !overviewAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
@@ -1373,7 +1376,7 @@ export function TaskFilesPanel({
             <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
-      ) : fileTree.length === 0 && !checksAvailable ? (
+      ) : fileTree.length === 0 && !overviewAvailable ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <p className="text-muted-foreground text-sm">No files found</p>
@@ -1388,20 +1391,20 @@ export function TaskFilesPanel({
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
           <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              {checksAvailable && (
+              {overviewAvailable && (
                 <div className="border-border mb-2 border-b pb-2">
                   <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                    Static checks
+                    Task overview
                   </div>
                   <button
                     type="button"
-                    onClick={() => setChecksSelected(true)}
+                    onClick={() => setOverviewSelected(true)}
                     className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
-                      checksSelected
+                      overviewSelected
                         ? "bg-primary/20 text-primary"
                         : "hover:bg-muted/50 cursor-pointer"
                     }`}
-                    title="View the task's static checks"
+                    title="View the task overview: task QA plus aggregated trial QA"
                   >
                     <ListChecks
                       className="h-3.5 w-3.5 shrink-0"
@@ -1412,7 +1415,7 @@ export function TaskFilesPanel({
                         ? "Loading…"
                         : checksLoadFailure
                           ? "Unavailable"
-                          : staticCheckSummary(checksState, checksFindings.length)}
+                          : "Overview"}
                     </span>
                   </button>
                 </div>
@@ -1434,7 +1437,7 @@ export function TaskFilesPanel({
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {!checksShowing && selectedFile && (
+            {!overviewShowing && selectedFile && (
               <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
                 <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
@@ -1484,17 +1487,26 @@ export function TaskFilesPanel({
               </div>
             )}
             <div ref={contentRef} className="bg-card flex-1 overflow-auto">
-              {checksShowing ? (
-                <StaticChecksPanel
-                  findings={checksFindings}
-                  status={checksVersion?.pre_trial_status}
-                  error={checksVersion?.pre_trial_error}
-                  costUsd={checksVersion?.pre_trial_cost_usd}
-                  onRerun={handleRerunChecks}
-                  rerunning={checksRerunning}
-                  queueError={checksQueueError}
-                  loading={checksLoading}
-                  loadError={checksLoadFailure}
+              {overviewShowing ? (
+                <TaskOverviewPanel
+                  taskId={effectiveChecksTaskId}
+                  apiBaseUrl={baseUrl}
+                  version={checksVersion?.version ?? null}
+                  // Panes with their own header render the verdict card there;
+                  // the filesUrl-driven panes have no header, so the overview
+                  // carries the verdict itself.
+                  verdictTask={filesUrl ? (checksDetail?.task ?? null) : null}
+                  checksFindings={checksFindings}
+                  checksStatus={checksVersion?.pre_trial_status}
+                  checksError={checksVersion?.pre_trial_error}
+                  checksCostUsd={checksVersion?.pre_trial_cost_usd}
+                  onRerunChecks={handleRerunChecks}
+                  checksRerunning={checksRerunning}
+                  checksQueueError={checksQueueError}
+                  checksLoading={checksLoading}
+                  checksLoadError={checksLoadFailure}
+                  qaActive={taskQaActive}
+                  onOpenTrial={onOpenTrial}
                 />
               ) : (
                 renderFileContent()

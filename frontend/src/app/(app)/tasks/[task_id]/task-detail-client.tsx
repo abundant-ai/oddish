@@ -878,6 +878,20 @@ export function TaskDetailClient({
     [orderedTrials, trialGroups]
   );
 
+  // A trial link from the task overview's aggregated QA. The overview is
+  // scoped to the selected version, so a miss means the trial belongs to
+  // another version — returning false hands the overview its deep-link
+  // fallback, which addresses the right version.
+  const handleOpenTrialFromOverview = useCallback(
+    (trial: Trial): boolean => {
+      const match = orderedTrials.find((t) => t.id === trial.id);
+      if (!match) return false;
+      handleSelectTrial(match);
+      return true;
+    },
+    [orderedTrials, handleSelectTrial]
+  );
+
   const handleOpenTaskFiles = useCallback(() => {
     unresolvedTrialParamRef.current = false;
     setDrawer({
@@ -1407,6 +1421,7 @@ export function TaskDetailClient({
                 onClose={() => {}}
                 taskId={null}
                 staticChecksTaskId={task.id}
+                onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
@@ -1424,6 +1439,7 @@ export function TaskDetailClient({
                 taskId={task.id}
                 task={task}
                 taskVersion={selectedVersion?.version}
+                onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
                 onSelectLinesChange={setTaskPaneLines}
