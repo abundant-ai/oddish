@@ -144,10 +144,6 @@ async def list_task_trials(
         None,
         description="Filter by trial kind: true=probes only, false=real attempts only, omitted=all.",
     ),
-    version: int | None = Query(
-        None,
-        description="Scope to trials of one task version; omitted=all versions.",
-    ),
 ) -> list[TrialResponse]:
     """List all trials for a task (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
@@ -155,9 +151,7 @@ async def list_task_trials(
     async with get_session() as session:
         await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
 
-        return await list_task_trials_for_task(
-            session, task_id, probe=probe, version=version
-        )
+        return await list_task_trials_for_task(session, task_id, probe=probe)
 
 
 @router.get("/experiments/{experiment_id}/trials", response_model=list[TrialResponse])

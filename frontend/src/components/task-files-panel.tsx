@@ -166,6 +166,12 @@ interface TaskFilesPanelProps {
    */
   onOpenTrial?: (trial: Trial) => boolean;
   /**
+   * The host is still streaming `task.trials` (progressive experiment
+   * loading) — the overview renders an empty scope as loading, not as
+   * "no trials".
+   */
+  overviewTrialsLoading?: boolean;
+  /**
    * Line range to highlight in the selected file — the ``?lines=L12-L20``
    * deep-link anchor. Honored by line-oriented renderers only.
    */
@@ -372,6 +378,7 @@ export function TaskFilesPanel({
   initialFilePath,
   staticChecksTaskId,
   onOpenTrial,
+  overviewTrialsLoading,
   selectedLines,
   onSelectLinesChange,
   onSelectedFileChange,
@@ -1506,7 +1513,12 @@ export function TaskFilesPanel({
                           ? null
                           : undefined
                   }
-                  initialTrials={task?.trials ?? null}
+                  // The host's rows are the authoritative set: an experiment
+                  // drawer aggregates only its own trials. A task prop with
+                  // no trials yet still scopes (empty + overviewTrialsLoading
+                  // renders as loading).
+                  scopeTrials={task ? (task.trials ?? []) : null}
+                  scopeLoading={overviewTrialsLoading}
                   // Panes with their own header render the verdict card there;
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.

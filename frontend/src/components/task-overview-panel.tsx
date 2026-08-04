@@ -99,7 +99,8 @@ export function TaskOverviewPanel({
   taskId,
   apiBaseUrl = "/api",
   version,
-  initialTrials,
+  scopeTrials,
+  scopeLoading,
   verdictTask,
   checksFindings,
   checksStatus,
@@ -120,11 +121,16 @@ export function TaskOverviewPanel({
    *  aggregates every trial, and undefined means still resolving — the
    *  trial aggregation waits instead of briefly spanning all versions. */
   version?: number | null;
-  /** Trials the host already has in memory (the experiment grid / task
-   *  page rows). They paint the aggregation instantly; the fetched rows
-   *  replace them to add what the compact payload omits (action items,
-   *  exploitation). */
-  initialTrials?: Trial[] | null;
+  /** The host's authoritative trial set for this context — the experiment
+   *  drawer passes its own trials so the aggregation never widens to other
+   *  experiments; the task page passes the version's trials. The fetch
+   *  then only enriches these rows with what the compact payload omits
+   *  (action items, exploitation). Null/undefined = no host scope: the
+   *  fetched, version-scoped set is used as-is. */
+  scopeTrials?: Trial[] | null;
+  /** The host is still streaming its trial rows — an empty scope renders
+   *  as loading, not as "no trials". */
+  scopeLoading?: boolean;
   /** Render the QA verdict inline — for panes whose host shows no verdict
    *  card of its own (the side-by-side "Task definition" pane). */
   verdictTask?: Task | null;
@@ -162,11 +168,7 @@ export function TaskOverviewPanel({
           version !== null ? `&version=${version}` : ""
         }`
       : null;
-  const {
-    data: trials,
-    error: trialsError,
-    isLoading: trialsLoading,
-  } = useSWR<Trial[]>(trialsKey, fetcher, {
+  const { data: trials, error: trialsError } = useSWR<Trial[]>(trialsKey, fetcher, {
     revalidateOnFocus: false,
     refreshInterval: (data) => {
       const anyAnalysisLive = (data ?? []).some((trial) =>
@@ -176,19 +178,28 @@ export function TaskOverviewPanel({
     },
   });
 
-  // The host's in-memory rows paint the pane while the fetch runs. They can
-  // include probes and are unscoped, so apply the same filters here. An
-  // empty seed proves nothing — the scoped fetch may still return rows the
-  // host never loaded — so only a non-empty seed may paint (an empty one
-  // would render a false "no trials" instead of the loading state).
-  const seedTrials = useMemo(() => {
-    if (!initialTrials) return null;
-    const filtered = initialTrials.filter(
+  // The host's rows define the set — the experiment drawer must never
+  // surface another experiment's trials just because they share the task.
+  // They can include probes, so apply the same filters here.
+  const scoped = useMemo(() => {
+    if (scopeTrials == null) return null;
+    return scopeTrials.filter(
       (trial) => !trial.is_probe && !trial.superseded_by_trial_id,
     );
-    return filtered.length > 0 ? filtered : null;
-  }, [initialTrials]);
-  const displayTrials = trials ?? seedTrials;
+  }, [scopeTrials]);
+  const fetchedById = useMemo(
+    () => new Map((trials ?? []).map((trial) => [trial.id, trial])),
+    [trials],
+  );
+  const displayTrials = useMemo(() => {
+    if (scoped != null) {
+      // The fetch only enriches the host's rows with the fields the
+      // compact payload omits; a row the fetch doesn't know keeps its
+      // compact self.
+      return scoped.map((trial) => fetchedById.get(trial.id) ?? trial);
+    }
+    return trials ?? null;
+  }, [scoped, fetchedById, trials]);
   const versionTrials = useMemo(() => {
     if (version === undefined) return [];
     const all = displayTrials ?? [];
@@ -437,10 +448,14 @@ export function TaskOverviewPanel({
         </div>
       );
     }
-    // Seeded rows keep painting while the scoped fetch loads (or fails —
-    // stale-but-real beats an error flash).
-    if (trialsLoading && !displayTrials) {
-      return (
+    // Without a host scope, the fetch defines the set — wait for it.
+    // Scoped rows render immediately (or fail into the honest states below).
+    if (displayTrials == null) {
+      return trialsError ? (
+        <p className="font-mono text-[11px] break-all text-red-500">
+          Unable to load the task&apos;s trials.
+        </p>
+      ) : (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-full rounded-lg" />
           <Skeleton className="h-8 w-full rounded-lg" />
@@ -448,14 +463,18 @@ export function TaskOverviewPanel({
         </div>
       );
     }
-    if (trialsError && !displayTrials) {
-      return (
-        <p className="font-mono text-[11px] break-all text-red-500">
-          Unable to load the task&apos;s trials.
-        </p>
-      );
-    }
     if (versionTrials.length === 0) {
+      // An empty scope while the host is still streaming its trial rows
+      // is not an answer yet.
+      if (scopeLoading) {
+        return (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-8 w-full rounded-lg" />
+            <Skeleton className="h-8 w-full rounded-lg" />
+            <Skeleton className="h-3 w-2/5" />
+          </div>
+        );
+      }
       return (
         <p className="text-muted-foreground text-sm leading-relaxed">
           {version != null
@@ -574,11 +593,15 @@ export function TaskOverviewPanel({
               ? checksLoadError
                 ? "Unavailable"
                 : "Loading…"
-              : trialsLoading && !displayTrials
-                ? "Loading…"
-                : `${analyzedCount}/${versionTrials.length} trial${
-                    versionTrials.length === 1 ? "" : "s"
-                  } analyzed${version != null ? ` · v${version}` : ""}`}
+              : displayTrials == null
+                ? trialsError
+                  ? "Unavailable"
+                  : "Loading…"
+                : versionTrials.length === 0 && scopeLoading
+                  ? "Loading…"
+                  : `${analyzedCount}/${versionTrials.length} trial${
+                      versionTrials.length === 1 ? "" : "s"
+                    } analyzed${version != null ? ` · v${version}` : ""}`}
           </span>
         </div>
         {trialQaBody()}

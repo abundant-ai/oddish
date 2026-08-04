@@ -151,30 +151,6 @@ async def test_list_task_trials_filters_by_probe(cleanup_task_ids):
     assert len(everything) == len(only_probes) + len(only_normal)
 
 
-@pytest.mark.asyncio
-async def test_list_task_trials_filters_by_version(cleanup_task_ids):
-    from oddish.core.sharing.helpers import list_task_trials_for_task
-
-    async with get_session() as session:
-        task = await create_task(
-            session, _submission(name="version-filter", extra_instructions=None)
-        )
-    cleanup_task_ids.append(task.id)
-
-    async with get_session() as session:
-        everything = await list_task_trials_for_task(session, task.id)
-        assert everything
-        version = everything[0].task_version
-        assert version is not None
-        scoped = await list_task_trials_for_task(session, task.id, version=version)
-        other = await list_task_trials_for_task(
-            session, task.id, version=version + 1
-        )
-
-    assert len(scoped) == len(everything)
-    assert other == []
-
-
 # ---------------------------------------------------------------------------
 # Fix 2 — combine tripwire (pure in-memory, no DB required)
 # ---------------------------------------------------------------------------

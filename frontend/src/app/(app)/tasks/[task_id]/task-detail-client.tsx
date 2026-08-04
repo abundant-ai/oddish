@@ -1420,6 +1420,9 @@ export function TaskDetailClient({
                 isOpen={true}
                 onClose={() => {}}
                 taskId={null}
+                // Scopes the overview's trial aggregation; this pane renders
+                // no header, so none of the task-driven header UI appears.
+                task={task}
                 staticChecksTaskId={task.id}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
