@@ -21,25 +21,37 @@ export function CommentsProvider({ children }: { children: ReactNode }) {
   return (
     <LiveblocksProvider
       authEndpoint="/api/liveblocks-auth"
+      // Both resolvers swallow their own failures. A rejected resolver reads
+      // to Liveblocks as an unresolvable user, which trips the error
+      // boundaries below and hides the comment UI until they remount —
+      // far too harsh a punishment for one dropped request.
       resolveUsers={async ({ userIds }) => {
-        const res = await fetch(
-          `/api/liveblocks-users?ids=${encodeURIComponent(userIds.join(","))}`,
-        );
-        // The result must align 1:1 with userIds — a short/empty array would
-        // mis-map authors.
-        if (!res.ok) return userIds.map(() => UNKNOWN_USER);
-        const users = (await res.json()) as (
-          | { name: string; avatar?: string }
-          | null
-          | undefined
-        )[];
-        return userIds.map((_, index) => users[index] ?? UNKNOWN_USER);
+        try {
+          const res = await fetch(
+            `/api/liveblocks-users?ids=${encodeURIComponent(userIds.join(","))}`,
+          );
+          // The result must align 1:1 with userIds — a short/empty array
+          // would mis-map authors.
+          if (!res.ok) return userIds.map(() => UNKNOWN_USER);
+          const users = (await res.json()) as (
+            | { name: string; avatar?: string }
+            | null
+            | undefined
+          )[];
+          return userIds.map((_, index) => users[index] ?? UNKNOWN_USER);
+        } catch {
+          return userIds.map(() => UNKNOWN_USER);
+        }
       }}
       resolveMentionSuggestions={async ({ text }) => {
-        const res = await fetch(
-          `/api/liveblocks-users?query=${encodeURIComponent(text ?? "")}`,
-        );
-        return res.ok ? await res.json() : [];
+        try {
+          const res = await fetch(
+            `/api/liveblocks-users?query=${encodeURIComponent(text ?? "")}`,
+          );
+          return res.ok ? await res.json() : [];
+        } catch {
+          return [];
+        }
       }}
     >
       {children}
