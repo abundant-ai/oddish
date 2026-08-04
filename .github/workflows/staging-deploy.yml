@@ -100,6 +100,18 @@ jobs:
           # the credential for a database that is merely coming back.
           deadline=$(($(date +%s) + 300))
           until PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; do
+            # A rejected password is deterministic, so retrying it only holds
+            # the shared staging-environment lock for five minutes and delays
+            # the recovery deploy the operator is trying to run. psql exits 2
+            # for the whole connection class including auth, so classify on
+            # the message. Only a positively identified rejection fails fast;
+            # refusals, timeouts and "the database system is starting up" are
+            # a restart and keep retrying.
+            if grep -qiE 'password authentication failed|no password supplied|role .* does not exist' /tmp/psql.err; then
+              cat /tmp/psql.err >&2
+              echo "::error::The staging database rejected STAGING_DATABASE_URL. Staging DB Bootstrap rotates the branch password and cannot write this secret, so refresh it with the recipe in that run's job summary, then re-run this workflow."
+              exit 1
+            fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
               cat /tmp/psql.err >&2 || true
               echo "::error::The staging database did not accept STAGING_DATABASE_URL within 300s. Staging DB Bootstrap rotates the branch password and cannot write this secret, so refresh it with the recipe in that run's job summary; if instead the branch compute was changed, wait for the branch to report healthy and re-run this workflow."

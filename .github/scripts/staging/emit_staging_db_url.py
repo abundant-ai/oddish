@@ -11,9 +11,18 @@ progress output around it. Select the URL line and check it is non-empty
 before writing any secret: `gh secret set` stores whatever reaches its stdin,
 including nothing. The bootstrap job summary prints a recipe that does both,
 then dispatches the Staging Deploy workflow.
+
+Set STAGING_DB_SECRET to read a different secret. The bootstrap writes the
+new password to oddish-staging-db-pending as soon as it resets one, and only
+promotes it to oddish-staging-db once the branch holds a complete database,
+so a recipe printed mid-run reads the pending copy.
 """
 
+import os
+
 import modal
+
+SECRET_NAME = os.environ.get("STAGING_DB_SECRET", "oddish-staging-db")
 
 app = modal.App("emit-staging-db-url")
 image = modal.Image.debian_slim()
@@ -21,7 +30,7 @@ image = modal.Image.debian_slim()
 
 @app.function(
     image=image,
-    secrets=[modal.Secret.from_name("oddish-staging-db", environment_name="staging")],
+    secrets=[modal.Secret.from_name(SECRET_NAME, environment_name="staging")],
 )
 def emit() -> str:
     import os

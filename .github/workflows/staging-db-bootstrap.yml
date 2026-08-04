@@ -212,14 +212,16 @@ jobs:
           {
             echo "## Staging database password was reset"
             echo
-            echo "The new URL is published to the oddish-staging-db Modal secret"
-            echo "by the next step of this run, and the recipe below reads it from"
-            echo "there. Wait for that step to go green, then refresh the deploy"
-            echo "credential:"
+            echo "The new URL is published to the oddish-staging-db-pending Modal"
+            echo "secret by the next step of this run, and the recipe below reads it"
+            echo "from there. Wait for that step to go green, then refresh the deploy"
+            echo "credential. Running this during the mirror is fine: it only writes"
+            echo "the GitHub secret, and the deploy it dispatches queues until this"
+            echo "run finishes."
             echo
             echo '```bash'
             echo "cd backend"
-            echo 'url=$(uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E "^postgresql" | tail -1)'
+            echo 'url=$(STAGING_DB_SECRET=oddish-staging-db-pending uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E "^postgresql" | tail -1)'
             echo 'if [ -z "$url" ]; then'
             echo '  echo "no URL in the modal output — secret left unchanged"'
             echo 'else'
@@ -234,24 +236,20 @@ jobs:
           echo "password_reset=true" >> "$GITHUB_OUTPUT"
           echo "branch ready: ref=$branch_ref host=$db_host status=$status"
 
-      # Published before the schema and data work, not after: a password reset
-      # invalidates the running app's credential the moment it happens, and
-      # this secret is the only durable copy of the new password (the Supabase
-      # API redacts it). Publishing here keeps the recovery recipe printed
-      # above true as soon as it appears, and keeps the password recoverable
-      # if a later step fails. Every step below reads
-      # steps.branch.outputs.db_url directly, so none of them depend on when
-      # this lands.
-      - name: Publish oddish-staging-db Modal secret
+      # A recovery copy of the URL, written before any destructive work. The
+      # Supabase API redacts branch passwords, so without this a run that dies
+      # between the reset and the end of the mirror leaves the new password
+      # with no durable copy anywhere. Deliberately NOT oddish-staging-db:
+      # that is the secret the live app mounts, and giving it a working
+      # credential now would let a cold start authenticate against a database
+      # that is mid-teardown. Nothing mounts this name.
+      - name: Publish the recovery copy of the branch URL
         env:
           MODAL_ENVIRONMENT: staging
           BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
         run: |
-          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db \
-            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
-            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
-            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
-            "LOGFIRE_ENVIRONMENT=staging"
+          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db-pending \
+            "ODDISH_DATABASE_URL=$BRANCH_DB_URL"
 
       - name: Bootstrap schema (prod snapshot + Alembic pointers + upgrade head)
         env:
@@ -467,6 +465,23 @@ jobs:
         env:
           TARGET_DB_URL: ${{ steps.branch.outputs.db_url }}
         run: uv run python "$GITHUB_WORKSPACE/.github/scripts/staging/refresh_staging_db.py"
+
+      # Only now, once the branch holds a complete database. This is the
+      # secret the live app mounts, so until this point it keeps whatever
+      # credential it had -- after a password reset that one is dead, and the
+      # app failing closed is the wanted behaviour while the schema is being
+      # replaced and the tables are being reloaded. The durable copy of the
+      # new password lives in oddish-staging-db-pending from the start.
+      - name: Publish oddish-staging-db Modal secret
+        env:
+          MODAL_ENVIRONMENT: staging
+          BRANCH_DB_URL: ${{ steps.branch.outputs.db_url }}
+        run: |
+          uv run modal secret create --env "$MODAL_ENVIRONMENT" --force oddish-staging-db \
+            "ODDISH_DATABASE_URL=$BRANCH_DB_URL" \
+            "ODDISH_DASHBOARD_URL=https://staging.oddish.app" \
+            "CORS_ALLOWED_ORIGINS=https://staging.oddish.app" \
+            "LOGFIRE_ENVIRONMENT=staging"
 
       - name: Mark bootstrap done
         shell: bash

@@ -1,11 +1,12 @@
 name: Branch Sync Guard
 on:
-  # Divergence can only be created by a commit landing on main, so check
-  # exactly then: immediate signal, silent otherwise. The daily run is a
-  # backstop for the window where this file is not yet on main (a push
-  # trigger only fires for a workflow that exists on the pushed branch).
+  # Either side can break the invariant: a commit landing on main, or a
+  # rewrite of staging that drops main's ancestry. Check on a push to either,
+  # for an immediate signal that stays silent when nothing is wrong. The daily
+  # run is a backstop for the window where this file is not yet on a branch (a
+  # push trigger only fires for a workflow that exists on the pushed branch).
   push:
-    branches: [main]
+    branches: [main, staging]
   schedule:
     - cron: "23 7 * * *"
   workflow_dispatch: {}
