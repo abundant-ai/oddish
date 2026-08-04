@@ -22,6 +22,11 @@ export const PIERRE_UNSAFE_CSS = `
     --diffs-tab-size: 2;
     --diffs-font-size: 0.75rem;
     --diffs-line-height: 1.25rem;
+    /* Pierre pads the code block by this much above line 1 (its own default
+     * is the same 8px, so this changes nothing visually). Pinned because
+     * line-anchored overlays add it to their offsets — see CODE_TOP_REM in
+     * comments/qa-comments.tsx. */
+    --diffs-gap-block: 0.5rem;
     --diffs-light-bg: var(--color-card);
     --diffs-dark-bg: var(--color-card);
     --diffs-fg-number-override: hsl(var(--muted-foreground) / 0.55);

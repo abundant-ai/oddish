@@ -15,8 +15,15 @@ import { CommentsErrorBoundary } from "@/components/comments/comments-provider";
 /** Pierre's fixed row height (--diffs-line-height); anchors overlay rows. */
 const LINE_REM = 1.25;
 
-const remTop = (line: number) => `${(line - 1) * LINE_REM}rem`;
-const remBelow = (line: number) => `${line * LINE_REM}rem`;
+/**
+ * Pierre pads the code block above line 1 (--diffs-gap-block, pinned in
+ * pierre-options.ts). The overlay is positioned against the wrapper around
+ * the whole pierre element, so every offset carries this head start.
+ */
+const CODE_TOP_REM = 0.5;
+
+const remTop = (line: number) => `${CODE_TOP_REM + (line - 1) * LINE_REM}rem`;
+const remBelow = (line: number) => `${CODE_TOP_REM + line * LINE_REM}rem`;
 
 /**
  * GitHub-style inline comment layer for the code view. Rendered inside the
