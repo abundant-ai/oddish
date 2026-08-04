@@ -48,6 +48,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # The persisted workflow token would override the PROMOTE_TOKEN in
+          # the remote URL during the push below.
+          persist-credentials: false
 
       - name: Verify promotion preconditions
         id: checks
@@ -62,6 +65,8 @@ jobs:
           [ "$state" = "OPEN" ] || { echo "::error::pull request #$PR is $state"; exit 1; }
           [ "$base" = "main" ] || { echo "::error::#$PR targets '$base'; promotion targets main"; exit 1; }
           [ "$head" = "staging" ] || { echo "::error::#$PR comes from '$head'; promotion comes from staging"; exit 1; }
+          cross=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isCrossRepository -q .isCrossRepository)
+          [ "$cross" = "false" ] || { echo "::error::#$PR comes from a fork; promotion uses the repository's own staging branch"; exit 1; }
 
           git fetch origin main staging
           target=$(git rev-parse origin/staging)
@@ -104,14 +109,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.issue.number }}
           SHA: ${{ steps.checks.outputs.sha }}
-          PUSHED: ${{ steps.push.outputs.pushed }}
+          PUSH_OUTCOME: ${{ steps.push.outcome }}
           CHECKS: ${{ steps.checks.outcome }}
         run: |
           set -euo pipefail
           if [ "$CHECKS" != "success" ]; then
             body="Promotion checks failed. See the run for the reason: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          elif [ "$PUSHED" = "true" ]; then
+          elif [ "$PUSH_OUTCOME" = "success" ]; then
             body="Promoted. main now points at \`${SHA}\`, the same commit as staging."
+          elif [ "$PUSH_OUTCOME" = "failure" ]; then
+            body="Promotion checks passed but the push failed. See the run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           else
             body=$(printf '%s\n' \
               "Promotion checks passed for \`${SHA}\`." \
