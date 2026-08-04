@@ -270,9 +270,14 @@ jobs:
         # Fork PRs get a read-only token; skip so the verify step below can
         # fail with its clearer same-repository message.
         if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          # The head commit, not GITHUB_SHA: on pull_request events GITHUB_SHA
+          # is the temporary merge commit, and the required-deployments rule
+          # and the pull request page key on the head commit.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          deployment_id=$(jq -n --arg ref "$GITHUB_SHA" \
+          deployment_id=$(jq -n --arg ref "$HEAD_SHA" \
             '{ref: $ref, environment: "Preview", auto_merge: false,
               required_contexts: [], transient_environment: true,
               description: "PR preview gate"}' \
