@@ -176,6 +176,16 @@ export function UnifiedDrawerWrapper({
   // toggling one pane never remounts the other — remounting the trial pane
   // used to reset it (tab, file, scroll) every time the task pane was
   // shown or hidden.
+  //
+  // minSize/maxSize must NOT change together with the panel set: when a
+  // panel's constraints change in the same commit where its sibling mounts
+  // or unmounts, react-resizable-panels re-validates against a panel list
+  // that no longer contains the panel and throws ("Previous layout not
+  // found for panel index -1") in a render loop that kills the tab. So the
+  // min sizes are constant — a lone panel at 100% satisfies them, and the
+  // task pane needs no maxSize because the trial pane's minSize of 30
+  // already caps it at 70 in the split view. Only defaultSize (inert after
+  // first layout) varies.
   const body =
     displayMode === "task" ? (
       <div className="flex h-full flex-col overflow-hidden">{taskContent}</div>
@@ -190,9 +200,8 @@ export function UnifiedDrawerWrapper({
             key="task-pane"
             id="task-pane"
             order={1}
-            defaultSize={42}
-            minSize={sideBySideActive ? 20 : undefined}
-            maxSize={sideBySideActive ? 70 : undefined}
+            defaultSize={sideBySideActive ? 42 : undefined}
+            minSize={20}
           >
             {taskFilesPane}
           </ResizablePanel>
@@ -205,8 +214,8 @@ export function UnifiedDrawerWrapper({
             key="trial-pane"
             id="trial-pane"
             order={2}
-            defaultSize={58}
-            minSize={sideBySideActive ? 30 : undefined}
+            defaultSize={sideBySideActive ? 58 : undefined}
+            minSize={30}
           >
             <div className="flex h-full flex-col overflow-hidden">
               {renderedTrial}
