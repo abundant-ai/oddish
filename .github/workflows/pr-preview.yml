@@ -15,7 +15,13 @@ concurrency:
 jobs:
   detect-changes:
     name: Detect preview changes
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    # Promotion pull requests (staging -> main) provision nothing: the staging
+    # environment already serves the exact commit under review, so a per-PR
+    # copy duplicates it. The required gate below still reports for them.
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != 'staging'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -263,7 +269,8 @@ jobs:
       deployments: write
     env:
       GH_TOKEN: ${{ github.token }}
-      DEPLOY_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
+      PROMOTION_PR: ${{ github.event.pull_request.head.ref == 'staging' }}
+      DEPLOY_URL: ${{ github.event.pull_request.head.ref == 'staging' && 'https://staging.oddish.app' || needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
     steps:
       - name: Create the Preview deployment record
         id: deployment
@@ -316,6 +323,12 @@ jobs:
             echo "- $1" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
+
+          if [ "$PROMOTION_PR" = "true" ]; then
+            echo "- Promotion pull request: staging is the preview environment." >> "$GITHUB_STEP_SUMMARY"
+            echo "- https://staging.oddish.app runs this commit (see Staging Deploy)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           preview_url="${PREVIEW_ALIAS_URL:-${PREVIEW_URL:-}}"
           backend_required=false
@@ -465,7 +478,10 @@ jobs:
 
   stop-preview:
     name: Stop preview
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != 'staging'
     runs-on: ubuntu-latest
     permissions:
       contents: read
