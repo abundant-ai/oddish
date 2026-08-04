@@ -74,10 +74,19 @@ function BellInner() {
           <div className="max-h-96 overflow-y-auto">
             {inboxNotifications.map((notification) =>
               notification.kind === "thread" ? (
-                <ThreadNotification
+                // Each item carries its own suspense + error scope so one
+                // broken thread payload degrades to a plain notification
+                // instead of blanking the whole inbox.
+                <CommentsErrorBoundary
                   key={notification.id}
-                  notification={notification}
-                />
+                  fallback={
+                    <InboxNotification inboxNotification={notification} />
+                  }
+                >
+                  <ClientSideSuspense fallback={null}>
+                    <ThreadNotification notification={notification} />
+                  </ClientSideSuspense>
+                </CommentsErrorBoundary>
               ) : (
                 <InboxNotification
                   key={notification.id}

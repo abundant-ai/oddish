@@ -17,11 +17,19 @@ export async function GET(request: NextRequest) {
   }
 
   const client = await clerkClient();
-  const { data: memberships } =
-    await client.organizations.getOrganizationMembershipList({
+  // Page through the full membership — a single limit:100 call would make
+  // members beyond the first page unmentionable and unresolvable. The hard
+  // ceiling is a runaway guard, not an expected size.
+  const memberships = [];
+  for (let offset = 0; memberships.length < 2000; offset += 100) {
+    const { data } = await client.organizations.getOrganizationMembershipList({
       organizationId: orgId,
       limit: 100,
+      offset,
     });
+    memberships.push(...data);
+    if (data.length < 100) break;
+  }
 
   const ids = request.nextUrl.searchParams.get("ids");
   if (ids !== null) {
