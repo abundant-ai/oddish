@@ -99,6 +99,15 @@ function OverlayInner({
   const [openLine, setOpenLine] = useState<number | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
 
+  // The selection as this overlay sees it. A reader can only select lines
+  // that exist, but a deep link arrives from the URL and can name lines the
+  // truncated render doesn't have — pinned the same way thread anchors are,
+  // so matching and placement keep agreeing. The unpinned `selectedLines`
+  // is still what a new thread records and what the labels say.
+  const pinnedSelection: LineRange | null = selectedLines
+    ? { start: pin(selectedLines.start), end: pin(selectedLines.end) }
+    : null;
+
   // What is actually on screen. Derived from `byLine`, never stored: if the
   // last thread on the open line is deleted, this goes back to null and
   // everything gating on it (notably the new-comment bubble) recovers by
@@ -150,16 +159,17 @@ function OverlayInner({
   // (this subtree remounts per file), so closing it doesn't reopen it.
   const autoOpenedRef = useRef(false);
   useEffect(() => {
-    if (autoOpenedRef.current || !selectedLines) return;
+    if (autoOpenedRef.current || !pinnedSelection) return;
     for (const [line, group] of byLine) {
-      if (isGroupRange(line, group, selectedLines)) {
+      if (isGroupRange(line, group, pinnedSelection)) {
         autoOpenedRef.current = true;
         setOpenLine(line);
         return;
       }
     }
     // isGroupRange is pure over its arguments; byLine and the selection are
-    // the only inputs that can change it.
+    // the only inputs that can change it (pinnedSelection is derived from
+    // selectedLines, and is a fresh object every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [byLine, selectedLines]);
 
@@ -169,7 +179,7 @@ function OverlayInner({
   const closeThread = () => {
     if (
       openGroup &&
-      isGroupRange(openGroup.line, openGroup.threads, selectedLines)
+      isGroupRange(openGroup.line, openGroup.threads, pinnedSelection)
     ) {
       onSelectLines?.(null);
     }
@@ -244,11 +254,11 @@ function OverlayInner({
           otherwise sprout a redundant new-comment bubble. Gated on the
           derived `openGroup`, not on `openLine`, so deleting the last
           thread on the open line brings this back by itself. */}
-      {selectedLines && !openGroup && (
+      {selectedLines && pinnedSelection && !openGroup && (
         <button
           type="button"
           onClick={() => setComposerOpen((prev) => !prev)}
-          style={{ top: remTop(selectedLines.start) }}
+          style={{ top: remTop(pinnedSelection.start) }}
           className="bg-primary text-primary-foreground pointer-events-auto absolute left-6 flex h-[1.1rem] w-[1.1rem] items-center justify-center rounded-full shadow-sm transition-transform hover:scale-110"
           title={`Comment on ${formatLineRange(selectedLines)}`}
         >
@@ -257,9 +267,9 @@ function OverlayInner({
       )}
 
 
-      {selectedLines && composerOpen && (
+      {selectedLines && pinnedSelection && composerOpen && (
         <div
-          style={{ top: remBelow(selectedLines.end) }}
+          style={{ top: remBelow(pinnedSelection.end) }}
           className="border-border bg-background pointer-events-auto absolute left-12 w-[min(28rem,80%)] rounded-lg border shadow-xl"
         >
           <div className="border-border flex items-center justify-between border-b px-3 py-1.5">
