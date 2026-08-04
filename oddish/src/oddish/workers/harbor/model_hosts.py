@@ -113,7 +113,29 @@ _CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
 # is keyed on a ``cursor/`` model prefix.
 TBH_BASE_URL_KEYS = ("TBH_BASE_URL",)
 _TBH_RUNTIME_HOSTS = ("api.meta.ai",)
-_AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {"tbh": _TBH_RUNTIME_HOSTS}
+# opencode has no pre-baked worker image: Harbor's ``OpenCode.install``
+# bootstraps nvm, a Node runtime, and the ``opencode-ai`` npm package at trial
+# start, so a restricted trial must reach the bootstrap chain or agent setup
+# dies at DNS before the model is ever dialed
+# (``curl: (6) Could not resolve host: raw.githubusercontent.com``). This is
+# the narrowest set that lets the documented install script complete; the model
+# transport host comes from ``outbound_hosts_for_model`` as for every agent.
+# Keyed by BOTH the stock agent name and the ``OddishOpenCode`` wrapper's class
+# name: ``_apply_opencode_oddish_wrapper`` nulls ``name`` in favor of an import
+# path, and ``agent_runtime_hosts`` then falls back to the class-name key.
+OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
+    "raw.githubusercontent.com",  # nvm install.sh
+    "github.com",  # nvm git source + opencode-ai release redirect
+    "objects.githubusercontent.com",  # GitHub release-asset CDN
+    "codeload.github.com",  # GitHub tarball fetch
+    "nodejs.org",  # Node runtime downloaded by nvm
+    "registry.npmjs.org",  # npm metadata + package tarballs
+)
+_AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {
+    "tbh": _TBH_RUNTIME_HOSTS,
+    "opencode": OPENCODE_INSTALL_HOSTS,
+    "oddishopencode": OPENCODE_INSTALL_HOSTS,
+}
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"
 _BEDROCK_STS_DOMAINS = ("sts.amazonaws.com",)

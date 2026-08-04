@@ -6,11 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [2026-08-01]
+## [2026-08-05]
 
 ### Added
 
-- `opencode` trials can now run on closed-internet (`allow_internet=false`) tasks. Stock opencode self-installs (nvm/Node/`opencode-ai`) at trial start and had no Oddish egress declaration, so on a closed-internet trial Harbor's Modal firewall blackholed its install and model calls alike — the trial died at DNS during agent setup (`curl: (6) Could not resolve host: raw.githubusercontent.com`) before the model was ever reached. A new `OddishOpenCode` wrapper implements `required_outbound_domains` to allowlist opencode's install-bootstrap hosts plus the model transport host, and `_build_agent_config` routes `-a opencode` through it. Model host resolution reuses `outbound_hosts_for_model`, so OpenRouter-served models (`openrouter/tencent/hy3`) resolve to `openrouter.ai` alongside every other routed provider. Mirrors the `AzureCompatibleCodex` fix below.
+- `opencode` trials can now run on closed-internet (`allow_internet=false`) tasks. Stock opencode self-installs (nvm/Node/`opencode-ai`) at trial start, and a closed-internet trial's enforced egress allowlist — built by `_inject_restricted_agent_model_hosts` as `outbound_hosts_for_model` (model transport) ∪ `agent_runtime_hosts` (the static `_AGENT_RUNTIME_HOSTS` registry) — contained no install hosts, so the trial died at DNS during agent setup (`curl: (6) Could not resolve host: raw.githubusercontent.com`) before the model was ever reached. opencode's install-bootstrap hosts are now registered in `_AGENT_RUNTIME_HOSTS` (keyed by both the stock agent name and the `OddishOpenCode` wrapper class), and `_build_agent_config` routes `-a opencode` through the wrapper. The model transport host was never the gap on Modal: `outbound_hosts_for_model` already resolves OpenRouter-served models (`openrouter/tencent/hy3`) to `openrouter.ai`. Note `required_outbound_domains` — the hook an earlier revision of this change relied on, and which the codex/grok-build/mini-swe wrapper docstrings describe — has no consumer in oddish or harbor; the wrapper still declares it for interface parity, but the registry entry is what takes effect (validated end-to-end on the PR preview backend).
 
 ---
 

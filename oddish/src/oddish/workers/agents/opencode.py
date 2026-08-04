@@ -4,45 +4,38 @@ from typing import Any
 
 from harbor.agents.installed.opencode import OpenCode
 
-from oddish.workers.harbor.model_hosts import outbound_hosts_for_model
-
-# opencode has no pre-baked worker image: Harbor's ``OpenCode.install`` bootstraps
-# the agent at trial start by downloading nvm, a Node runtime, and the
-# ``opencode-ai`` npm package (see
-# ``harbor.agents.installed.opencode.OpenCode.install``). On a closed-internet
-# trial (``allow_internet=false``) Harbor's Modal egress firewall allowlists only
-# the hosts ``required_outbound_domains`` returns, so a stock opencode trial is
-# firewalled during agent setup and dies before the model is ever reached:
-#
-#     curl: (6) Could not resolve host: raw.githubusercontent.com
-#     Error: NVM failed to load
-#
-# These are the hosts that bootstrap chain dials. They are intentionally the
-# narrowest set that lets the documented install script complete; see the PR
-# description for why baking opencode into the worker image is the preferred
-# longer-term fix (it removes the runtime install entirely, so the agent phase
-# need only reach the model host).
-_OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
-    "raw.githubusercontent.com",  # nvm install.sh
-    "github.com",  # nvm git source + opencode-ai release redirect
-    "objects.githubusercontent.com",  # GitHub release-asset CDN
-    "codeload.github.com",  # GitHub tarball fetch
-    "nodejs.org",  # Node runtime downloaded by nvm
-    "registry.npmjs.org",  # npm metadata + package tarballs
+from oddish.workers.harbor.model_hosts import (
+    OPENCODE_INSTALL_HOSTS,
+    outbound_hosts_for_model,
 )
 
 
 class OddishOpenCode(OpenCode):
-    """opencode wrapper that declares its Modal closed-internet egress allowlist.
+    """opencode wrapper for closed-internet trials.
 
-    Mirrors the ``AzureCompatibleCodex`` fix (CHANGELOG #416): Harbor builds the
-    per-trial Modal egress firewall allowlist from ``required_outbound_domains``,
-    so an agent that self-installs at runtime *and* talks to an arbitrary model
-    provider must declare BOTH its install hosts and its model transport host, or
-    every closed-internet trial is firewalled and times out with zero tokens.
+    opencode has no pre-baked worker image: Harbor's ``OpenCode.install``
+    bootstraps nvm, a Node runtime, and the ``opencode-ai`` npm package at trial
+    start. The egress allowlist actually enforced on a closed-internet Modal
+    trial is built by ``_inject_restricted_agent_model_hosts`` (runner.py) as
+    the union of ``outbound_hosts_for_model`` (model transport; resolves
+    ``openrouter/<model>`` -> ``openrouter.ai``) and ``agent_runtime_hosts``,
+    which reads ``_AGENT_RUNTIME_HOSTS`` in model_hosts.py -- where
+    ``OPENCODE_INSTALL_HOSTS`` is registered under both the stock agent name and
+    this wrapper's class name. Without that registration, agent setup dies at
+    DNS before the model is ever dialed:
 
-    Behaviour is otherwise identical to the stock harbor ``OpenCode`` agent; the
-    only override is the egress declaration.
+        curl: (6) Could not resolve host: raw.githubusercontent.com
+        Error: NVM failed to load
+
+    ``required_outbound_domains`` below has no consumer in oddish or harbor
+    today (verified against harbor 504c2518, and end-to-end on the PR preview:
+    a closed-internet opencode trial still died at install with only the hook
+    declared). It is kept for interface parity with the other Oddish agent
+    wrappers (codex, grok-build, mini-swe-agent) that declare the same hook, so
+    the full egress contract lives on the class if a consumer lands. The
+    enforced path is the ``_AGENT_RUNTIME_HOSTS`` registration.
+
+    Behaviour is otherwise identical to the stock harbor ``OpenCode`` agent.
     """
 
     @classmethod
@@ -51,21 +44,17 @@ class OddishOpenCode(OpenCode):
         model_name: str | None = None,
         kwargs: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Egress domains for Harbor's Modal firewall allowlist.
+        """Full egress contract: install-bootstrap hosts + model transport.
 
-        The union of opencode's runtime-install bootstrap hosts and the model
-        transport host(s) for ``model_name``. ``outbound_hosts_for_model`` is the
-        single source of truth for provider host resolution and already handles
-        OpenRouter (``openrouter/<model>`` -> ``openrouter.ai``) -- the transport
-        for models such as ``openrouter/tencent/hy3`` -- alongside every other
-        routed provider.
+        Currently declarative only -- nothing in oddish or harbor calls this
+        hook (see class docstring); the enforced allowlist comes from
+        ``_AGENT_RUNTIME_HOSTS`` + ``outbound_hosts_for_model``. Kept accurate
+        so a future consumer inherits the correct union.
         """
-        domains: set[str] = set(_OPENCODE_INSTALL_HOSTS)
+        domains: set[str] = set(OPENCODE_INSTALL_HOSTS)
         # Forward the per-trial ``kwargs`` so a transport host pinned in
         # ``kwargs["extra_env"]`` (e.g. a custom ``OPENROUTER_BASE_URL``) is
-        # allowlisted too -- the same path ``AzureCompatibleCodex`` relies on.
-        # Without it, a closed-internet trial that overrides its base URL is
-        # firewalled at the model call after install.
+        # included too, mirroring ``AzureCompatibleCodex``.
         for host in outbound_hosts_for_model(
             model_name, agent_kwargs=kwargs, infer_bare_provider=True
         ):
