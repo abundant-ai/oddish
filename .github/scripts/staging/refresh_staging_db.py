@@ -23,6 +23,11 @@ EXCLUDE = {
     "queue_slots", "trial_events", "_preview_seed_state",
     # Prod idempotency claims must not dedupe staging submissions.
     "submission_idempotency",
+    # Prod API keys must never authenticate against staging — they would blur
+    # cost/usage attribution across environments. Staging keys are minted per
+    # person from the staging dashboard. (Purged below as well, since an
+    # excluded table is not truncated and may hold rows from an earlier run.)
+    "api_keys",
 }
 # (task, column) back-edges nulled during COPY and patched after — mirrors
 # preview_seed._BACKEDGES + _LINKAGE_COLUMNS.
@@ -32,6 +37,13 @@ QUIESCE = [
     "UPDATE worker_jobs SET status='CANCELLED' WHERE status::text NOT IN ('SUCCESS','FAILED','CANCELLED')",
     "UPDATE trials SET status='FAILED' WHERE status::text NOT IN ('SUCCESS','FAILED')",
     "UPDATE tasks  SET status='FAILED' WHERE status::text NOT IN ('COMPLETED','FAILED')",
+]
+
+# Destination-only hygiene applied after the load. Separate from QUIESCE
+# (which neutralises copied in-flight work) because this enforces an
+# environment boundary rather than fixing job state.
+PURGE = [
+    "DELETE FROM api_keys",
 ]
 
 
@@ -254,6 +266,9 @@ async def _run_mirror() -> None:
                     for stmt in QUIESCE:
                         tag = await dst.execute(stmt)
                         print(f"quiesce: {stmt.split(' WHERE')[0]} -> {tag}", flush=True)
+                    for stmt in PURGE:
+                        tag = await dst.execute(stmt)
+                        print(f"purge: {stmt} -> {tag}", flush=True)
             finally:
                 stop_ping.set()
                 ping_task.cancel()
