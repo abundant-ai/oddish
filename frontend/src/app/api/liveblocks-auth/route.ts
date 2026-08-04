@@ -9,6 +9,14 @@ import { Liveblocks } from "@liveblocks/node";
  * org's rooms.
  */
 export async function POST() {
+  // Before any config check, so the diagnostics below only ever describe
+  // this deployment to someone already signed in. (Middleware protects
+  // this route too — this is the second lock, not the first.)
+  const { userId, orgId } = await auth();
+  if (!userId || !orgId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const secret = process.env.LIVEBLOCKS_SECRET_KEY;
   if (!secret) {
     return NextResponse.json(
@@ -30,11 +38,6 @@ export async function POST() {
       },
       { status: 503 },
     );
-  }
-
-  const { userId, orgId } = await auth();
-  if (!userId || !orgId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   try {
