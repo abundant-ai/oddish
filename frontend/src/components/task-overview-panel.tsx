@@ -69,9 +69,9 @@ interface SourcedFinding extends PreTrialFinding {
 }
 
 function findingKey(item: PreTrialFinding): string {
-  // The server stamps content-hash ids on findings, so the same defect
-  // reported by the audit and by trials collapses into one row. Items
-  // without an id fall back to a content key.
+  // Server ids are content hashes that include the analyzer source, so they
+  // dedupe within one source only — the cross-source join is `links_to`.
+  // Items without an id fall back to a content key.
   return (
     item.id ?? `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`
   );
@@ -174,6 +174,9 @@ export function TaskOverviewPanel({
     qaTrials,
   } = useMemo(() => {
     const byKey = new Map<string, SourcedFinding>();
+    const addTrial = (row: SourcedFinding, trial: Trial) => {
+      if (!row.trials.some((t) => t.id === trial.id)) row.trials.push(trial);
+    };
     for (const item of checksFindings ?? []) {
       const key = findingKey(item);
       byKey.set(key, { ...item, id: key, fromAudit: true, trials: [] });
@@ -193,14 +196,28 @@ export function TaskOverviewPanel({
         analysis.classification,
         (counts.get(analysis.classification) ?? 0) + 1,
       );
+      // Exploitation assessments are the trial→audit-finding join: an
+      // exploiting trial belongs on the audit row's "seen in" list. A
+      // not-exploited assessment only says the classifier looked — skip it.
+      for (const assessment of analysis.exploitation ?? []) {
+        if (!assessment.exploited || !assessment.links_to) continue;
+        const audited = byKey.get(assessment.links_to);
+        if (!audited) continue;
+        audited.exploited = true;
+        addTrial(audited, trial);
+      }
       for (const item of analysis.action_items ?? []) {
-        const key = findingKey(item);
-        const existing = byKey.get(key);
+        // A post-trial item that links to an audit finding is the same
+        // defect seen from the trial side — fold it into that row. Ids
+        // can't make this join: the server hash includes the source.
+        const linked = item.links_to ? byKey.get(item.links_to) : undefined;
+        const existing = linked ?? byKey.get(findingKey(item));
         if (existing) {
-          existing.trials.push(trial);
+          addTrial(existing, trial);
           // One exploiting trial marks the finding exploited.
           if (item.exploited) existing.exploited = true;
         } else {
+          const key = findingKey(item);
           byKey.set(key, {
             ...item,
             id: key,
@@ -334,7 +351,9 @@ export function TaskOverviewPanel({
           />
         ) : checkState === "clean" ? (
           <p className="text-muted-foreground text-sm leading-relaxed">
-            The source audit and trial QA found no defects in this task.
+            {analyzedCount > 0
+              ? "The source audit and trial QA found no defects in this task."
+              : "The source audit found no defects in this task's source."}
           </p>
         ) : checkState === "unaudited" ? (
           <p className="text-muted-foreground text-sm leading-relaxed">
