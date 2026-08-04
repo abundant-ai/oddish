@@ -1506,6 +1506,7 @@ export function TaskFilesPanel({
                           ? null
                           : undefined
                   }
+                  initialTrials={task?.trials ?? null}
                   // Panes with their own header render the verdict card there;
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.

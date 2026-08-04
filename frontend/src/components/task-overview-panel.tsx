@@ -99,6 +99,7 @@ export function TaskOverviewPanel({
   taskId,
   apiBaseUrl = "/api",
   version,
+  initialTrials,
   verdictTask,
   checksFindings,
   checksStatus,
@@ -119,6 +120,11 @@ export function TaskOverviewPanel({
    *  aggregates every trial, and undefined means still resolving — the
    *  trial aggregation waits instead of briefly spanning all versions. */
   version?: number | null;
+  /** Trials the host already has in memory (the experiment grid / task
+   *  page rows). They paint the aggregation instantly; the fetched rows
+   *  replace them to add what the compact payload omits (action items,
+   *  exploitation). */
+  initialTrials?: Trial[] | null;
   /** Render the QA verdict inline — for panes whose host shows no verdict
    *  card of its own (the side-by-side "Task definition" pane). */
   verdictTask?: Task | null;
@@ -144,31 +150,47 @@ export function TaskOverviewPanel({
   className?: string;
 }) {
   const router = useRouter();
+  const versionKnown = version !== undefined;
   // Probes are excluded at the query: they are internal instruction-overlay
   // runs, not attempts, and their `analysis` is a different shape entirely.
-  const trialsKey = taskId
-    ? `${apiBaseUrl}/tasks/${taskId}/trials?probe=false`
-    : null;
+  // The fetch waits for the version so it can scope server-side — a task
+  // carries trials across many versions and experiments, and every full row
+  // ships its whole analysis payload.
+  const trialsKey =
+    taskId && versionKnown
+      ? `${apiBaseUrl}/tasks/${taskId}/trials?probe=false${
+          version !== null ? `&version=${version}` : ""
+        }`
+      : null;
   const {
     data: trials,
     error: trialsError,
     isLoading: trialsLoading,
   } = useSWR<Trial[]>(trialsKey, fetcher, {
+    revalidateOnFocus: false,
     refreshInterval: (data) => {
       const anyAnalysisLive = (data ?? []).some((trial) =>
         isActivePipelineStatus(trial.analysis_status),
       );
-      return anyAnalysisLive || qaActive ? 5000 : 0;
+      return anyAnalysisLive || qaActive ? 15000 : 0;
     },
   });
 
-  const versionKnown = version !== undefined;
+  // The host's in-memory rows paint the pane while the fetch runs. They can
+  // include probes and are unscoped, so apply the same filters here.
+  const seedTrials = useMemo(() => {
+    if (!initialTrials) return null;
+    return initialTrials.filter(
+      (trial) => !trial.is_probe && !trial.superseded_by_trial_id,
+    );
+  }, [initialTrials]);
+  const displayTrials = trials ?? seedTrials;
   const versionTrials = useMemo(() => {
     if (version === undefined) return [];
-    const all = trials ?? [];
+    const all = displayTrials ?? [];
     if (version === null) return all;
     return all.filter((trial) => trial.task_version === version);
-  }, [trials, version]);
+  }, [displayTrials, version]);
 
   const {
     classificationCounts,
@@ -245,6 +267,23 @@ export function TaskOverviewPanel({
     };
   }, [versionTrials, checksFindings]);
 
+  // The rows handed to SeverityGroups carry only copy-safe fields — its
+  // per-item copy button serializes the row as-is, so the trial objects
+  // stay behind in the lookup map and the copy gets ids.
+  const findingItems = useMemo(
+    () =>
+      mergedFindings.map(({ fromAudit, trials: sources, ...item }) => ({
+        ...item,
+        from_audit: fromAudit,
+        trial_ids: sources.map((t) => t.id),
+      })),
+    [mergedFindings],
+  );
+  const findingSourcesById = useMemo(
+    () => new Map(mergedFindings.map((f) => [f.id ?? "", f])),
+    [mergedFindings],
+  );
+
   const openTrial = (trial: Trial) => {
     if (onOpenTrial?.(trial)) return;
     if (!taskId) return;
@@ -255,7 +294,8 @@ export function TaskOverviewPanel({
   };
 
   const renderFindingSources = (item: PreTrialFinding) => {
-    const sourced = item as SourcedFinding;
+    const sourced = findingSourcesById.get(item.id ?? "");
+    if (!sourced) return null;
     if (!sourced.fromAudit && !(sourced.trials?.length > 0)) return null;
     return (
       <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -320,11 +360,31 @@ export function TaskOverviewPanel({
         </div>
       );
     }
+    // The default tier copy narrates trial classification; these findings
+    // speak to the task itself.
+    const findingsList =
+      findingItems.length > 0 ? (
+        <SeverityGroups
+          items={findingItems}
+          tierEffects={{
+            must_fix:
+              "The defect can decide trials — QA marks the task bad until it is fixed.",
+            should_fix: "Does not change the verdict.",
+            optional: "Does not change the verdict.",
+          }}
+          renderItemFooter={renderFindingSources}
+        />
+      ) : null;
     if (checksLoadError) {
+      // The audit state is unknown, but trial-side findings come from the
+      // trials endpoint — show what survives under the error.
       return (
-        <p className="font-mono text-[11px] break-all text-red-500">
-          {checksLoadError}
-        </p>
+        <>
+          <p className="font-mono text-[11px] break-all text-red-500">
+            {checksLoadError}
+          </p>
+          {findingsList}
+        </>
       );
     }
     return (
@@ -333,26 +393,15 @@ export function TaskOverviewPanel({
           <p className="font-mono text-[11px] break-all text-red-500">
             {checksError || "The source audit failed."}
           </p>
-        ) : checkState === "running" && mergedFindings.length === 0 ? (
+        ) : checkState === "running" && findingItems.length === 0 ? (
           <div className="flex flex-col gap-2">
             <Skeleton className="h-8 w-full rounded-lg" />
             <Skeleton className="h-8 w-full rounded-lg" />
             <Skeleton className="h-3 w-2/5" />
           </div>
         ) : null}
-        {mergedFindings.length > 0 ? (
-          // The default tier copy narrates trial classification; these
-          // findings speak to the task itself.
-          <SeverityGroups
-            items={mergedFindings}
-            tierEffects={{
-              must_fix:
-                "The defect can decide trials — QA marks the task bad until it is fixed.",
-              should_fix: "Does not change the verdict.",
-              optional: "Does not change the verdict.",
-            }}
-            renderItemFooter={renderFindingSources}
-          />
+        {findingsList ? (
+          findingsList
         ) : checkState === "clean" ? (
           <p className="text-muted-foreground text-sm leading-relaxed">
             {analyzedCount > 0
@@ -384,7 +433,9 @@ export function TaskOverviewPanel({
         </div>
       );
     }
-    if (trialsLoading && !trials) {
+    // Seeded rows keep painting while the scoped fetch loads (or fails —
+    // stale-but-real beats an error flash).
+    if (trialsLoading && !displayTrials) {
       return (
         <div className="flex flex-col gap-2">
           <Skeleton className="h-8 w-full rounded-lg" />
@@ -393,7 +444,7 @@ export function TaskOverviewPanel({
         </div>
       );
     }
-    if (trialsError && !trials) {
+    if (trialsError && !displayTrials) {
       return (
         <p className="font-mono text-[11px] break-all text-red-500">
           Unable to load the task&apos;s trials.
@@ -480,16 +531,9 @@ export function TaskOverviewPanel({
               : ""}
           </span>
           <div className="ml-auto flex items-center gap-2">
-            {mergedFindings.length > 0 ? (
+            {findingItems.length > 0 ? (
               <CopyJsonButton
-                // Trials collapse to their ids — the full rows are noise here.
-                value={mergedFindings.map(
-                  ({ trials: sources, fromAudit, ...item }) => ({
-                    ...item,
-                    from_audit: fromAudit,
-                    trial_ids: sources.map((t) => t.id),
-                  }),
-                )}
+                value={findingItems}
                 label="the task's findings"
               />
             ) : null}
@@ -526,7 +570,7 @@ export function TaskOverviewPanel({
               ? checksLoadError
                 ? "Unavailable"
                 : "Loading…"
-              : trialsLoading && !trials
+              : trialsLoading && !displayTrials
                 ? "Loading…"
                 : `${analyzedCount}/${versionTrials.length} trial${
                     versionTrials.length === 1 ? "" : "s"
