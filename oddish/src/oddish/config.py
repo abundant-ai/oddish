@@ -669,6 +669,20 @@ def is_anthropic_platform_model(model: str | None) -> bool:
     )
 
 
+def _dashed_claude_alias(bare_id: str) -> str:
+    """Accept the dotted marketing spelling ("claude-opus-4.8") as an alias of
+    the canonical dashed API id, the same tolerance the Bedrock chokepoint
+    applies -- the direct Anthropic API only knows dashed ids.
+
+    Claude-shaped ids only: OpenAI slugs ("gpt-5.3-codex") are legitimately
+    dotted, and so are Bedrock ids ("anthropic.claude-...-v1:0"), so callers
+    must pass an id that is already stripped to its bare Anthropic form.
+    """
+    if "claude" not in bare_id.lower():
+        return bare_id
+    return bare_id.replace(".", "-")
+
+
 def anthropic_platform_bare_model_id(model: str) -> str:
     """Strip the ``anthropic/`` prefix, returning the bare Anthropic model id."""
     raw = model.strip()
@@ -677,13 +691,7 @@ def anthropic_platform_bare_model_id(model: str) -> str:
         provider_prefix
         and provider_prefix.strip().lower() in _ANTHROPIC_PLATFORM_PROVIDER_PREFIXES
     ):
-        bare_id = str(bare).strip()
-        # Accept the dotted marketing spelling ("claude-opus-4.8") as an alias
-        # of the canonical dashed API id, the same tolerance the Bedrock
-        # chokepoint applies -- the direct API only knows dashed ids.
-        if "claude" in bare_id.lower():
-            bare_id = bare_id.replace(".", "-")
-        return bare_id
+        return _dashed_claude_alias(str(bare).strip())
     return raw
 
 
@@ -882,6 +890,11 @@ def to_anthropic_api_model_id(model: str | None) -> str | None:
     Anthropic API (``ANTHROPIC_API_KEY``) rather than Bedrock -- e.g. the probe
     summary analyzer. Plain Claude ids keep their value (minus an
     ``anthropic/``/``claude/`` provider prefix); non-Claude ids pass through.
+
+    A prefixed id resolves its dotted marketing spelling the same way the trial
+    path does (``anthropic_platform_bare_model_id``), so ``anthropic/`` ids
+    reach the API identically whether they arrive through a trial or through an
+    analyzer block.
     """
     if model is None:
         return None
@@ -902,7 +915,7 @@ def to_anthropic_api_model_id(model: str | None) -> str | None:
     # any other provider prefix is a deliberate transport choice -- pass through.
     provider_prefix, bare = split_provider_model_name(stripped)
     if provider_prefix and provider_prefix.strip().lower() in {"anthropic", "claude"}:
-        return bare
+        return _dashed_claude_alias(str(bare).strip())
     return stripped
 
 

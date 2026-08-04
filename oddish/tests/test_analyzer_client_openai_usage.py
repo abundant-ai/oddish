@@ -215,3 +215,8 @@ def test_anthropic_path_normalizes_wire_model():
         model="global.anthropic.claude-haiku-4-5-20251001-v1:0"
     )
     assert client._model == "claude-haiku-4-5"
+
+    # The dotted marketing spelling is an accepted alias wherever a trial names
+    # a model, so the analyzer resolves it to the dashed API id as well.
+    client = ApiAnalyzerLLMClient(model="anthropic/claude-opus-4.8")
+    assert client._model == "claude-opus-4-8"

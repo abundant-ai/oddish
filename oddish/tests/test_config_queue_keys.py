@@ -11,6 +11,7 @@ from oddish.config import (
     NOP_ORACLE_QUEUE_KEY,
     Settings,
     normalize_model_id,
+    to_anthropic_api_model_id,
 )  # noqa: E402
 
 
@@ -244,6 +245,18 @@ def test_dotted_marketing_spelling_maps_to_global_inference_profile(monkeypatch)
     assert (
         settings.normalize_trial_model("claude-code", "claude-sonnet-4.6")
         == "global.anthropic.claude-sonnet-4-6"
+    )
+    # Analyzer blocks take their wire id from to_anthropic_api_model_id instead
+    # of the trial normalizer, so the alias has to resolve on that path too --
+    # otherwise the same id a trial accepts 404s on the analyzer's API call.
+    assert to_anthropic_api_model_id("anthropic/claude-opus-4.8") == "claude-opus-4-8"
+    assert to_anthropic_api_model_id("claude/claude-sonnet-4.6") == "claude-sonnet-4-6"
+    # Only a Claude id behind an Anthropic prefix collapses its dots: OpenAI
+    # slugs and Bedrock ids are legitimately dotted.
+    assert to_anthropic_api_model_id("openai/gpt-5.3-codex") == "openai/gpt-5.3-codex"
+    assert (
+        to_anthropic_api_model_id("anthropic.claude-haiku-4-5-20251001-v1:0")
+        == "anthropic.claude-haiku-4-5-20251001-v1:0"
     )
 
 
