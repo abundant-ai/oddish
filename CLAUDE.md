@@ -27,6 +27,18 @@ themselves; never merge, squash, or push to `main` directly. A maintainer
 can instead comment `/promote` on the promotion pull request; the workflow
 runs the same checks and, when the promote token is set, does the push.
 
+**Never complete a promotion pull request with the merge button.** The button
+squashes, which puts a new commit on `main` and breaks the fast-forward
+model. Any agent that opens a promotion pull request must start its body
+with this warning, in capitals:
+
+> **DO NOT USE THE MERGE BUTTON ON THIS PULL REQUEST. THE BUTTON CREATES A
+> NEW COMMIT AND BREAKS THE RELEASE MODEL. COMMENT `/promote` TO COMPLETE
+> THE PROMOTION.**
+
+The `Promotion warning` workflow adds the same text to a promotion pull
+request that opens without it.
+
 ## Hotfixes
 
 Branch the fix from `main`, not from `staging`. `main` is always an ancestor of
