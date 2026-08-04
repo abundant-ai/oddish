@@ -1,8 +1,9 @@
 name: Promote on comment
 # Comment `/promote` on the staging -> main pull request.
 #
-# The job always runs the promotion checks and reports them back on the pull
-# request. It performs the fast-forward push only when the repository holds a
+# For a commenter with write access, the job always runs the promotion checks
+# and reports them back on the pull request; anyone else gets a failed run
+# and no reply. It performs the fast-forward push only when the repository holds a
 # PROMOTE_TOKEN secret: a fine-grained personal access token (Contents: Read
 # and write) belonging to a user who is a bypass actor on the main ruleset.
 # The built-in GITHUB_TOKEN cannot do this — `github-actions[bot]` is not
