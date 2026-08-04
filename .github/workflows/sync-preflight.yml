@@ -2,10 +2,13 @@ name: Sync Preflight
 # Read-only: reports whether main and staging satisfy the fast-forward
 # invariant, and prints the exact commands to repair it. Nothing here pushes —
 # a release manager runs the printed commands with their own access.
+# On demand only: sync-guard.yml is the automated tripwire (it fails loudly
+# every 6 hours if the invariant breaks). This workflow is the human-facing
+# companion — run it to answer "can I promote right now?" or to get the exact
+# repair commands after the guard fires. Two crons on one invariant would
+# just double the noise.
 on:
   workflow_dispatch: {}
-  schedule:
-    - cron: "23 7 * * 1-5"
 
 jobs:
   check:
