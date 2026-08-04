@@ -1571,6 +1571,30 @@ export function ExperimentDetailView({
     });
   };
 
+  // A trial link from the task overview's aggregated QA. Always opens in
+  // this drawer: the overview hands over the full trial row, so even a
+  // trial the grid hasn't streamed in yet (or one gathered from another
+  // experiment) renders in place — never a navigation away. A grid match
+  // is still preferred so the per-group trial nav lines up.
+  const handleOpenTrialFromOverview = useCallback(
+    (trial: Trial): boolean => {
+      if (!drawerState) return false;
+      const { trialGroups, orderedTrials } = buildTrialGroups(drawerState.task);
+      const trialIndex = orderedTrials.findIndex((t) => t.id === trial.id);
+      cancelPendingDeepLink();
+      setDrawerState({
+        ...drawerState,
+        mode: "trial",
+        trial: trialIndex >= 0 ? orderedTrials[trialIndex] : trial,
+        trialIndex: trialIndex >= 0 ? trialIndex : null,
+        orderedTrials,
+        trialGroups,
+      });
+      return true;
+    },
+    [drawerState, buildTrialGroups, cancelPendingDeepLink]
+  );
+
   return (
     <>
       {isInitialLoading ? (
@@ -1690,19 +1714,18 @@ export function ExperimentDetailView({
                 onTaskSelect={(task, context) => {
                   cancelPendingDeepLink();
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
-                  // If the task has trials, jump straight into the first one
-                  // so the user immediately sees results alongside the task
-                  // definition. They can navigate back with the in-drawer
-                  // "View task" control.
-                  const firstTrial = orderedTrials[0] ?? null;
+                  // Land on the task overview — task-level QA plus the
+                  // aggregated trial QA — never on a specific trial. Trials
+                  // are one click away via "View trials" or the overview's
+                  // per-trial links.
                   setDrawerState({
                     isOpen: true,
-                    mode: firstTrial ? "trial" : "task",
+                    mode: "task",
                     task,
                     taskIndex: context.taskIndex,
                     orderedTasks: context.orderedTasks,
-                    trial: firstTrial,
-                    trialIndex: firstTrial ? 0 : null,
+                    trial: null,
+                    trialIndex: null,
                     orderedTrials,
                     trialGroups,
                   });
@@ -1727,7 +1750,13 @@ export function ExperimentDetailView({
               isOpen={true}
               onClose={() => {}}
               taskId={null}
+              // The task prop scopes the overview's trial aggregation to
+              // this experiment's rows; this pane renders no header, so
+              // none of the task-driven header UI appears.
+              task={drawerState.task}
               staticChecksTaskId={drawerState.task.id}
+              onOpenTrial={handleOpenTrialFromOverview}
+              overviewTrialsLoading={isLoadingTrials}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
               initialFilePath={taskPaneFile}
@@ -1769,6 +1798,8 @@ export function ExperimentDetailView({
                   ? handleNavigateToFirstTrial
                   : undefined
               }
+              onOpenTrial={handleOpenTrialFromOverview}
+              overviewTrialsLoading={isLoadingTrials}
               initialFilePath={taskPaneFile}
               selectedLines={taskPaneLines}
               onSelectLinesChange={setTaskPaneLines}

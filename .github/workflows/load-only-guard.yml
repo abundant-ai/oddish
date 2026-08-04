@@ -24,6 +24,7 @@ on:
   push:
     branches:
       - main
+      - staging
     paths:
       - "oddish/src/oddish/**.py"
       - "oddish/scripts/load_only_guard.py"

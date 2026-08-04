@@ -1,0 +1,82 @@
+name: Sync Preflight
+# Read-only: reports whether main and staging satisfy the fast-forward
+# invariant, and prints the exact commands to repair it. Nothing here pushes —
+# a maintainer with push access runs the printed commands themselves.
+# On demand only: sync-guard.yml is the automated tripwire (it fails loudly
+# every 6 hours if the invariant breaks). This workflow is the human-facing
+# companion — run it to answer "can I promote right now?" or to get the exact
+# repair commands after the guard fires. Two crons on one invariant would
+# just double the noise.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Report branch relationship
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main staging
+          main_sha=$(git rev-parse origin/main)
+          staging_sha=$(git rev-parse origin/staging)
+          ahead=$(git rev-list --count origin/main..origin/staging)
+          behind=$(git rev-list --count origin/staging..origin/main)
+          {
+            echo "## Branch state"
+            echo
+            echo "| | SHA | |"
+            echo "|---|---|---|"
+            echo "| main | \`${main_sha}\` | staging is $ahead commit(s) ahead |"
+            echo "| staging | \`${staging_sha}\` | staging is $behind commit(s) behind |"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$main_sha" = "$staging_sha" ]; then
+            echo "## Identical — nothing to do" >> "$GITHUB_STEP_SUMMARY"
+            echo "main and staging are the same commit."
+            exit 0
+          fi
+          if [ "$behind" -eq 0 ]; then
+            {
+              echo "## Healthy — promotion is possible"
+              echo
+              echo "main is an ancestor of staging ($ahead commit(s) to promote)."
+              echo "Run the **Promotion Preflight** workflow to promote."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "invariant holds"
+            exit 0
+          fi
+          # Divergence: main carries commits staging does not have.
+          {
+            echo "## Divergence — staging must be rebuilt on main"
+            echo
+            echo "main has $behind commit(s) that staging lacks, so a fast-forward"
+            echo "promotion is impossible until staging is rebuilt on top of main."
+            echo
+            echo "Commits on main but not on staging:"
+            echo '```'
+            git log --oneline origin/staging..origin/main
+            echo '```'
+            echo
+            echo "A maintainer with push access repairs this by rebuilding staging on main and"
+            echo "force-pushing (cherry-picking would create new SHAs and keep the"
+            echo "invariant broken):"
+            echo
+            echo '```bash'
+            echo "git fetch origin main staging"
+            echo "git checkout -B staging-rebuild origin/main"
+            echo "git merge --squash origin/staging   # resolve any conflicts"
+            echo "git commit -m 'chore: rebuild staging on main'"
+            echo "git push --force origin staging-rebuild:refs/heads/staging"
+            echo '```'
+            echo
+            echo "Then verify: \`git fetch origin && git merge-base --is-ancestor origin/main origin/staging && echo OK\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::main and staging have diverged — see the job summary for the repair commands"
