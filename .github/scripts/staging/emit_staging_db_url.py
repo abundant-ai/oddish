@@ -6,9 +6,11 @@ way to recover the live URL after a password reset. Run from backend/:
 
     uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py
 
-Only the URL goes to stdout. Pipe it into
-`gh secret set STAGING_DATABASE_URL --env staging` and dispatch the
-Staging Deploy workflow; the bootstrap job summary prints the exact recipe.
+The URL is the only thing this script prints, but `modal run` writes its own
+progress output around it. Select the URL line and check it is non-empty
+before writing any secret: `gh secret set` stores whatever reaches its stdin,
+including nothing. The bootstrap job summary prints a recipe that does both,
+then dispatches the Staging Deploy workflow.
 """
 
 import modal

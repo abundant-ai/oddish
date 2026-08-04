@@ -205,6 +205,10 @@ jobs:
           # The password changed, so the secret staging-deploy.yml reads is
           # now stale. This job cannot rewrite a GitHub secret (403), so a
           # human must refresh it or every later deploy fails at migrations.
+          # The recipe captures the URL and checks it before writing, because
+          # `gh secret set` stores whatever reaches its stdin and never checks
+          # it for emptiness: piping a failed `modal run` straight in would
+          # replace the credential with an empty value.
           {
             echo "## Staging database password was reset"
             echo
@@ -214,8 +218,14 @@ jobs:
             echo "credential:"
             echo
             echo '```bash'
-            echo "cd backend && uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E '^postgresql' | tail -1 | gh secret set STAGING_DATABASE_URL --repo $GITHUB_REPOSITORY --env staging"
-            echo "gh workflow run 'Staging Deploy' --ref staging --repo $GITHUB_REPOSITORY"
+            echo "cd backend"
+            echo 'url=$(uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E "^postgresql" | tail -1)'
+            echo 'if [ -z "$url" ]; then'
+            echo '  echo "no URL in the modal output — secret left unchanged"'
+            echo 'else'
+            echo "  printf '%s' \"\$url\" | gh secret set STAGING_DATABASE_URL --repo $GITHUB_REPOSITORY --env staging"
+            echo "  gh workflow run 'Staging Deploy' --ref staging --repo $GITHUB_REPOSITORY"
+            echo 'fi'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::staging DB password was reset — refresh the STAGING_DATABASE_URL secret on the staging environment (see job summary)"
