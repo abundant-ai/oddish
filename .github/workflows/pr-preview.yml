@@ -269,8 +269,10 @@ jobs:
       deployments: write
     env:
       GH_TOKEN: ${{ github.token }}
-      PROMOTION_PR: ${{ github.event.pull_request.head.ref == 'staging' }}
-      DEPLOY_URL: ${{ github.event.pull_request.head.ref == 'staging' && 'https://staging.oddish.app' || needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
+      # Same-repository condition included: a fork branch named `staging`
+      # must not short-circuit the gate to success.
+      PROMOTION_PR: ${{ github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository }}
+      DEPLOY_URL: ${{ (github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository) && 'https://staging.oddish.app' || needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
     steps:
       - name: Create the Preview deployment record
         id: deployment
