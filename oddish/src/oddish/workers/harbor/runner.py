@@ -61,6 +61,7 @@ from .agent_config import (
 from .model_hosts import (
     GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS,
+    OPENCODE_INSTALL_HOSTS,
     agent_runtime_hosts,
     outbound_hosts_for_model,
 )
@@ -1086,6 +1087,26 @@ def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     ]
 
 
+def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts the opencode CLI needs across install *and* run.
+
+    opencode self-installs (nvm, a Node runtime, the ``opencode-ai`` npm
+    package) during agent SETUP, which runs under the ENVIRONMENT baseline --
+    the agent-phase allowlist (``extra_allowed_hosts`` / runtime-host merges)
+    only takes effect around ``agent.run()``. Install hosts must therefore ride
+    the environment baseline, exactly like the claude-code arm above. On a
+    legacy closed task (``[environment] allow_internet=false`` -> a no-network
+    baseline for every phase, no dynamic restricted agent phase) this is also
+    the only channel that grants the model transport host, so resolve it here
+    too (``outbound_hosts_for_model`` maps ``openrouter/<model>`` ->
+    ``openrouter.ai`` alongside every other routed provider).
+    """
+    return [
+        *OPENCODE_INSTALL_HOSTS,
+        *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+    ]
+
+
 def _read_query_cli_text() -> str:
     """Thin wrapper so tests can monkeypatch without reaching into probe_staging."""
     from oddish.worker.probe_staging import read_query_cli_text
@@ -1520,6 +1541,25 @@ async def run_harbor_trial_async(
             )
         ):
             hosts = _claude_code_environment_hosts(agent_config)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
+        # opencode self-installs (nvm/Node/opencode-ai) at agent-setup, which
+        # runs under the environment baseline -- same lifecycle problem as the
+        # claude-code arm above, same solution: allow install + model hosts via
+        # the environment baseline, which spans install and run. On a public
+        # baseline the merge is a no-op (harbor ignores extras there), so
+        # modern swe-marathon-shaped tasks (public setup -> restricted agent)
+        # keep their agent phase free of the install hosts.
+        if (agent or "").strip().lower() == "opencode" and not (
+            _supports_daytona_compose_restricted_agent_network(
+                task_path=effective_task_path,
+                environment_config=env_config,
+            )
+        ):
+            hosts = _opencode_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],
