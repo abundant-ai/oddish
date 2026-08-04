@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { NotificationsBell } from "@/components/comments/notifications-bell";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   BookOpen,
@@ -239,6 +240,7 @@ export function Nav() {
             <ThemeToggle />
             {isLoaded && isSignedIn && (
               <>
+                <NotificationsBell />
                 <Button
                   variant="ghost"
                   size="sm"

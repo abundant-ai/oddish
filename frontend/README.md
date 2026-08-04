@@ -47,6 +47,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 Useful optional variables:
 
 ```bash
+# QA review comments (Liveblocks). Unset = comment UI hidden.
+LIVEBLOCKS_SECRET_KEY=sk_...
+
 # Recommended for org-aware backend auth
 CLERK_JWT_TEMPLATE=oddish
 

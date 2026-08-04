@@ -37,6 +37,7 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
+import { QaCommentsSection } from "@/components/comments/qa-comments";
 import type {
   Task,
   TaskDetailResponse,
@@ -1251,6 +1252,17 @@ export function TaskFilesPanel({
               {loadingFullFile ? "Loading..." : "Load full file"}
             </Button>
           </div>
+        )}
+        {/* QA review comments, anchored to the pane's line selection. Only
+            for task-scoped panes (trial-file panes pass taskId=null) and
+            never in public read-only views (showAnalysis=false). */}
+        {taskId && showAnalysis && (
+          <QaCommentsSection
+            taskId={taskId}
+            filePath={selectedFile.path}
+            selectedLines={selectedLines ?? null}
+            onSelectLines={onSelectLinesChange}
+          />
         )}
       </div>
     );
