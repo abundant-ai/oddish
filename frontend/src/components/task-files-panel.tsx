@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import type { ComponentType } from "react";
 import useSWR from "swr";
 import {
   ResizableDrawer,
@@ -16,9 +17,13 @@ import {
   File,
   FileText,
   FileCode,
+  FileJson,
   ChevronRight,
   ChevronDown,
   ChevronUp,
+  Container,
+  FlaskConical,
+  Lightbulb,
   RefreshCw,
   AlertCircle,
   ListChecks,
@@ -29,6 +34,7 @@ import {
   Code,
   Copy,
   Check,
+  ScrollText,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
@@ -311,6 +317,67 @@ function findFirstFile(nodes: TreeNode[]): TreeNode | null {
     }
   }
   return null;
+}
+
+interface FileSection {
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  nodes: TreeNode[];
+}
+
+/**
+ * Reorganize a task-definition tree into semantic sections, mirroring
+ * sauron's task file viewer: Prompt, Solution, Tests, Environment,
+ * Task metadata, Other. The known directories are flattened so their
+ * children sit directly under the section header. Returns null when the
+ * tree has none of the task markers (e.g. trial log listings), so those
+ * panes keep the plain tree.
+ */
+function buildTaskFileSections(tree: TreeNode[]): FileSection[] | null {
+  const prompt: TreeNode[] = [];
+  const metadata: TreeNode[] = [];
+  const solution: TreeNode[] = [];
+  const tests: TreeNode[] = [];
+  const environment: TreeNode[] = [];
+  const other: TreeNode[] = [];
+  let matched = false;
+
+  for (const node of tree) {
+    const name = node.name.toLowerCase();
+    if (node.type === "file" && name === "instruction.md") {
+      prompt.push(node);
+      matched = true;
+    } else if (node.type === "file" && name === "task.toml") {
+      metadata.push(node);
+      matched = true;
+    } else if (node.type === "dir" && name === "solution") {
+      solution.push(...(node.children?.length ? node.children : [node]));
+      matched = true;
+    } else if (node.type === "dir" && (name === "tests" || name === "test")) {
+      tests.push(...(node.children?.length ? node.children : [node]));
+      matched = true;
+    } else if (node.type === "dir" && name === "environment") {
+      environment.push(...(node.children?.length ? node.children : [node]));
+      matched = true;
+    } else {
+      other.push(node);
+    }
+  }
+  if (!matched) return null;
+
+  const sections: FileSection[] = [
+    { label: "Prompt", icon: ScrollText, nodes: prompt },
+    { label: "Solution", icon: Lightbulb, nodes: solution },
+    { label: "Tests", icon: FlaskConical, nodes: tests },
+    { label: "Environment", icon: Container, nodes: environment },
+    { label: "Task metadata", icon: FileJson, nodes: metadata },
+  ];
+  if (other.length > 0) {
+    sections.push({ label: "Other", icon: Folder, nodes: other });
+  }
+  // Empty sections drop out, except Prompt: a task without an
+  // instruction.md is worth surfacing.
+  return sections.filter((s) => s.label === "Prompt" || s.nodes.length > 0);
 }
 
 function getAncestorPaths(path: string): string[] {
@@ -1297,6 +1364,13 @@ export function TaskFilesPanel({
     };
   }, [task?.trials, currentVersion]);
 
+  // Semantic grouping only applies to task-definition trees; trial log
+  // listings (and anything else without the task markers) stay plain.
+  const fileSections = useMemo(
+    () => buildTaskFileSections(fileTree),
+    [fileTree]
+  );
+
   if (!taskId && !filesUrl) {
     return null;
   }
@@ -1420,19 +1494,47 @@ export function TaskFilesPanel({
                   </button>
                 </div>
               )}
-              <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
-                Files
-              </div>
               {listingError ? (
-                <p className="text-muted-foreground px-2 py-2 text-xs">
-                  Unable to load files: {listingError}
-                </p>
+                <>
+                  <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                    Files
+                  </div>
+                  <p className="text-muted-foreground px-2 py-2 text-xs">
+                    Unable to load files: {listingError}
+                  </p>
+                </>
               ) : fileTree.length === 0 ? (
-                <p className="text-muted-foreground px-2 py-2 text-xs">
-                  No files found
-                </p>
+                <>
+                  <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                    Files
+                  </div>
+                  <p className="text-muted-foreground px-2 py-2 text-xs">
+                    No files found
+                  </p>
+                </>
+              ) : fileSections ? (
+                fileSections.map((section) => (
+                  <div key={section.label}>
+                    <div className="text-muted-foreground flex items-center gap-1.5 px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                      <section.icon className="h-3.5 w-3.5 shrink-0" />
+                      {section.label}
+                    </div>
+                    {section.nodes.length > 0 ? (
+                      renderFileTree(section.nodes)
+                    ) : (
+                      <p className="text-muted-foreground/60 px-2 py-1 text-xs italic">
+                        No files
+                      </p>
+                    )}
+                  </div>
+                ))
               ) : (
-                renderFileTree(fileTree)
+                <>
+                  <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                    Files
+                  </div>
+                  {renderFileTree(fileTree)}
+                </>
               )}
             </div>
           </div>
