@@ -9,7 +9,11 @@ import {
 } from "@liveblocks/react/suspense";
 import { Composer, Thread } from "@liveblocks/react-ui";
 import { MessageSquare, MessageSquarePlus, X } from "lucide-react";
-import { formatLineRange, type LineRange } from "@/lib/line-range";
+import {
+  formatLineRange,
+  lineRangesEqual,
+  type LineRange,
+} from "@/lib/line-range";
 import { CommentsErrorBoundary } from "@/components/comments/comments-provider";
 
 /** Pierre's fixed row height (--diffs-line-height); anchors overlay rows. */
@@ -84,6 +88,26 @@ function OverlayInner({
       ? Math.max(...openThreads.map((t) => t.metadata.lineEnd ?? openLine!))
       : null;
 
+  const groupRange = (line: number, group: typeof threads): LineRange => ({
+    start: line,
+    end: Math.max(...group.map((t) => t.metadata.lineEnd ?? line)),
+  });
+
+  // Closing a thread retires the highlight it created — otherwise the
+  // lingering selection sprouts a new-comment bubble the moment the thread
+  // dismisses. A selection the user made themselves in the meantime
+  // (different range) is left alone.
+  const closeThread = () => {
+    if (
+      openLine != null &&
+      openThreads.length > 0 &&
+      lineRangesEqual(selectedLines, groupRange(openLine, openThreads))
+    ) {
+      onSelectLines?.(null);
+    }
+    setOpenLine(null);
+  };
+
   return (
     <div className="pointer-events-none absolute inset-0 z-10">
       {[...byLine.entries()].map(([line, group]) => (
@@ -91,18 +115,14 @@ function OverlayInner({
           key={line}
           type="button"
           onClick={() => {
-            const opening = openLine !== line;
-            setOpenLine(opening ? line : null);
+            if (openLine === line) {
+              closeThread();
+              return;
+            }
             // Opening a thread highlights the lines it addresses — the
             // same selection mechanism the URL anchor drives.
-            if (opening) {
-              onSelectLines?.({
-                start: line,
-                end: Math.max(
-                  ...group.map((t) => t.metadata.lineEnd ?? line)
-                ),
-              });
-            }
+            setOpenLine(line);
+            onSelectLines?.(groupRange(line, group));
           }}
           style={{ top: remTop(line) }}
           className="bg-primary text-primary-foreground pointer-events-auto absolute left-0.5 flex h-[1.1rem] min-w-[1.1rem] items-center justify-center gap-0.5 rounded-full px-0.5 text-[9px] font-semibold shadow-sm transition-transform hover:scale-110"
@@ -130,7 +150,7 @@ function OverlayInner({
             </span>
             <button
               type="button"
-              onClick={() => setOpenLine(null)}
+              onClick={closeThread}
               className="text-muted-foreground hover:text-foreground"
               aria-label="Close thread"
             >
