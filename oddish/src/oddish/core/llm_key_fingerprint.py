@@ -33,6 +33,11 @@ def key_hint(raw_key: str) -> str:
 _ODDISH_PROVIDER_ENV_KEYS: dict[str, str] = {
     "anthropic-hdo": "ANTHROPIC_HDO_API_KEY",
     "azure": "AZURE_OPENAI_API_KEY",
+    # Both spellings of the Azure transport, for the same reason the runner's
+    # redaction map lists both: ``azure_openai`` is not in the normalizer's
+    # provider set, so it can pass through verbatim, and a map keyed on only
+    # ``azure`` would leave those trials unstamped.
+    "azure_openai": "AZURE_OPENAI_API_KEY",
     # Harbor's AWS_ACCESS_KEY_ID entry is Oddish's storage credential, not the
     # bearer token that funds Bedrock model calls.
     "bedrock": "AWS_BEARER_TOKEN_BEDROCK",
@@ -57,6 +62,7 @@ def _oddish_platform_key(provider: str) -> str | None:
     configured = {
         "anthropic-hdo": settings.anthropic_hdo_api_key,
         "azure": settings.azure_openai_api_key,
+        "azure_openai": settings.azure_openai_api_key,
         "meta": settings.meta_api_key,
     }.get(provider)
     return configured or os.environ.get(_ODDISH_PROVIDER_ENV_KEYS[provider])

@@ -207,3 +207,20 @@ def test_anthropic_platform_prefix_ignores_byok_overlay(monkeypatch):
         {"ANTHROPIC_API_KEY": "sk-ant-user"},
         model="global.anthropic.claude-haiku-4-5-20251001-v1:0",
     ) == hash_llm_key("sk-ant-user")
+
+
+def test_azure_openai_spelling_stamps_the_azure_key(monkeypatch):
+    # Both spellings of the Azure transport stamp the credential that funds
+    # Azure runs -- settings first, worker env as the fallback.
+    from oddish.config import settings
+
+    monkeypatch.setattr(settings, "azure_openai_api_key", "azure-platform-key")
+    assert platform_key_hash_for_provider("azure_openai") == hash_llm_key(
+        "azure-platform-key"
+    )
+
+    monkeypatch.setattr(settings, "azure_openai_api_key", None)
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-env-key")
+    assert platform_key_hash_for_provider("azure_openai") == hash_llm_key(
+        "azure-env-key"
+    )
