@@ -24,5 +24,5 @@ jobs:
           set -euo pipefail
           git fetch origin main staging
           git merge-base --is-ancestor origin/main origin/staging \
-            || { echo "::error::main has commits not on staging — FF invariant broken. Recovery: a maintainer with push access force-realigns with 'git push --force origin origin/staging:main' (content-identical)."; exit 1; }
+            || { echo "::error::main has commits not on staging — FF invariant broken. Recovery: rebuild staging on main so main-only commits survive — run the Sync Preflight workflow for the exact commands. Never force-push main."; exit 1; }
           echo "invariant holds"
