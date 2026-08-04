@@ -103,20 +103,25 @@ function BellInner() {
             {orgNotifications.map((notification) =>
               notification.kind === "thread" ? (
                 // Each item carries its own suspense + error scope so one
-                // broken thread payload degrades to a plain notification
-                // instead of blanking the whole inbox.
+                // broken thread payload degrades gracefully instead of
+                // blanking the whole inbox. Fallback rows link to the task
+                // (the room id carries it) — the menu already marked them
+                // read, so a row without a link would strand the mention.
                 <CommentsErrorBoundary
                   key={notification.id}
                   fallback={
-                    <InboxNotification inboxNotification={notification} />
+                    <InboxNotification
+                      inboxNotification={notification}
+                      href={taskHrefFor(notification.roomId)}
+                    />
                   }
                 >
-                  {/* Fallback is the plain row, not null: items must stay
-                      visible while their thread payload loads, since
-                      opening the menu already marked them read. */}
                   <ClientSideSuspense
                     fallback={
-                      <InboxNotification inboxNotification={notification} />
+                      <InboxNotification
+                        inboxNotification={notification}
+                        href={taskHrefFor(notification.roomId)}
+                      />
                     }
                   >
                     <ThreadNotification notification={notification} />
@@ -134,6 +139,15 @@ function BellInner() {
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/** Task-only deep link from a `qa:{orgId}:{taskId}` room id — the fallback
+ * when the thread payload (and its file/line anchor) isn't available. */
+function taskHrefFor(roomId: string | undefined): string | undefined {
+  const taskId = roomId?.split(":").slice(2).join(":");
+  return taskId
+    ? `/tasks/${encodeURIComponent(taskId)}?drawer=task`
+    : undefined;
 }
 
 function ThreadNotification({
