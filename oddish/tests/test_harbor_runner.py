@@ -4348,3 +4348,37 @@ def test_claude_code_environment_hosts_follow_routed_base_url():
 
     assert "api.z.ai" in hosts
     assert "api.anthropic.com" not in hosts
+
+
+def test_opencode_environment_hosts_span_install_and_model():
+    """Regression: closed-internet opencode trials died at nvm DNS with 0 tokens.
+
+    opencode installs during agent SETUP, which runs under the environment
+    baseline -- an agent-phase allowlist can never cover it (observed end-to-end
+    on the PR-1030 preview: build-an-evm-assembler-6c7567f6-1059/-1060 died at
+    ``curl: (6) Could not resolve host: raw.githubusercontent.com``). The
+    environment-baseline hosts must cover both the install bootstrap chain and
+    the model transport, exactly like the claude-code arm.
+    """
+    hosts = harbor_runner._opencode_environment_hosts(
+        HarborAgentConfig(name="opencode", model_name="openrouter/tencent/hy3")
+    )
+
+    assert "raw.githubusercontent.com" in hosts  # nvm install.sh
+    assert "registry.npmjs.org" in hosts  # opencode-ai package
+    assert "nodejs.org" in hosts  # Node runtime
+    assert "openrouter.ai" in hosts  # ...and inference still works
+
+
+def test_opencode_environment_hosts_follow_custom_base_url():
+    """A trial pinning ``OPENROUTER_BASE_URL`` allowlists that host instead."""
+    hosts = harbor_runner._opencode_environment_hosts(
+        HarborAgentConfig(
+            name="opencode",
+            model_name="openrouter/tencent/hy3",
+            env={"OPENROUTER_BASE_URL": "https://gateway.internal.example/api"},
+        )
+    )
+
+    assert "gateway.internal.example" in hosts
+    assert "raw.githubusercontent.com" in hosts
