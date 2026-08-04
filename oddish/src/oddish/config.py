@@ -1217,6 +1217,7 @@ class Settings(BaseSettings):
     # ``e127df61`` died that way on 2026-07-24.
     daytona_auto_stop_interval_mins: int = 120
     daytona_auto_delete_interval_mins: int = 60
+    daytona_sandbox_expiry_minutes: int = 780
 
     # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
     # rejects persistent ones with "Only ephemeral sandboxes are permitted in

@@ -482,7 +482,11 @@ def test_ephemeral_daytona_forces_ownership_labels():
             "environment": {
                 "kwargs": {
                     "auto_labels": False,
-                    "labels": {"task": "x", "oddish.managed": "false"},
+                    "labels": {
+                        "task": "x",
+                        "oddish.managed": "false",
+                        "oddish.expires_at": "0",
+                    },
                 }
             }
         },
@@ -490,10 +494,10 @@ def test_ephemeral_daytona_forces_ownership_labels():
     )
     config = _build_job_config(payload)
     assert config.environment.kwargs["auto_labels"] is True
-    assert config.environment.kwargs["labels"] == {
-        "task": "x",
-        "oddish.managed": "true",
-    }
+    labels = config.environment.kwargs["labels"]
+    assert labels["task"] == "x"
+    assert labels["oddish.managed"] == "true"
+    assert int(labels["oddish.expires_at"]) > 0
 
 
 def test_spawn_args_no_extra_for_docker_env():

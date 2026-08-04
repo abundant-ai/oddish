@@ -38,6 +38,10 @@ def test_daytona_env_kwargs_inject_autostop_autodelete_ephemeral() -> None:
         == settings.daytona_auto_delete_interval_mins
     )
     assert merged["ephemeral"] == settings.daytona_ephemeral
+    expected = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.daytona_sandbox_expiry_minutes
+    )
+    assert abs(int(merged["labels"]["oddish.expires_at"]) - expected.timestamp()) < 2
 
 
 def test_daytona_env_kwargs_caller_overrides_win() -> None:
@@ -45,13 +49,19 @@ def test_daytona_env_kwargs_caller_overrides_win() -> None:
         {
             "ephemeral": False,
             "auto_labels": False,
-            "labels": {"task": "x", "oddish.managed": "false"},
+            "labels": {
+                "task": "x",
+                "oddish.managed": "false",
+                "oddish.expires_at": "0",
+            },
             "extra": "x",
         }
     )
     assert merged["ephemeral"] is False
     assert merged["auto_labels"] is True
-    assert merged["labels"] == {"task": "x", "oddish.managed": "true"}
+    assert merged["labels"]["task"] == "x"
+    assert merged["labels"]["oddish.managed"] == "true"
+    assert int(merged["labels"]["oddish.expires_at"]) > 0
     assert merged["extra"] == "x"
 
 
@@ -83,9 +93,12 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
     now = datetime.now(timezone.utc)
     old = (now - timedelta(minutes=30)).isoformat()
     recent = (now - timedelta(minutes=5)).isoformat()
+    expired = str(int((now - timedelta(minutes=1)).timestamp()))
+    future = str(int((now + timedelta(minutes=1)).timestamp()))
+    labels = {"harbor.managed": "true", "oddish.managed": "true"}
     sandbox = partial(
         SimpleNamespace,
-        labels={"harbor.managed": "true", "oddish.managed": "true"},
+        labels=labels,
         created_at=old,
         updated_at=None,
     )
@@ -105,19 +118,33 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
             state=SandboxState.ERROR,
             labels={"harbor.managed": "true"},
         ),
-        sandbox(id="started", state=SandboxState.STARTED),
+        sandbox(
+            id="expired-started",
+            state=SandboxState.STARTED,
+            labels=labels | {"oddish.expires_at": expired},
+        ),
+        sandbox(
+            id="started",
+            state=SandboxState.STARTED,
+            labels=labels | {"oddish.expires_at": future},
+        ),
+        *[
+            sandbox(
+                id=state.value,
+                state=state,
+                labels=labels | {"oddish.expires_at": expired},
+            )
+            for state in (SandboxState.DESTROYED, SandboxState.DESTROYING)
+        ],
     ]
     calls = _fake_daytona(monkeypatch, sandboxes, {"bad"})
 
-    assert asyncio.run(reap_stale_daytona_sandboxes()) == 2
-    assert calls.deleted == ["error", "failed"]
+    assert asyncio.run(reap_stale_daytona_sandboxes()) == 3
+    assert calls.deleted == ["error", "failed", "expired-started"]
     assert calls.closed is True
     assert calls.query.labels == {
         "harbor.managed": "true",
         "oddish.managed": "true",
     }
-    assert set(calls.query.states) == {
-        SandboxState.ERROR,
-        SandboxState.BUILD_FAILED,
-    }
+    assert calls.query.states is None
     assert calls.query.limit == 50

@@ -17,17 +17,26 @@ logger = logging.getLogger(__name__)
 
 
 async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
-    from daytona import AsyncDaytona, ListSandboxesQuery, SandboxState
+    from daytona import (
+        AsyncDaytona,
+        ListSandboxesQuery,
+        SandboxListSortDirection,
+        SandboxListSortField,
+        SandboxState,
+    )
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_after_minutes)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=stale_after_minutes)
     terminal = {SandboxState.ERROR, SandboxState.BUILD_FAILED}
+    inactive = {SandboxState.DESTROYED, SandboxState.DESTROYING}
     client = AsyncDaytona()
     try:
         query = ListSandboxesQuery(
             limit=50,
             labels={"harbor.managed": "true", "oddish.managed": "true"},
-            states=list(terminal),
-            created_at_before=cutoff,
+            created_at_before=now,
+            sort=SandboxListSortField.CREATEDAT,
+            order=SandboxListSortDirection.ASC,
         )
         sandboxes = []
         async for sandbox in client.list(query):
@@ -40,17 +49,29 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
             try:
                 async with semaphore:
                     sandbox = await client.get(sandbox.id, request_timeout=10)
-                    value = sandbox.updated_at or sandbox.created_at
-                    updated_at = datetime.fromisoformat(value) if value else None
                     if (
                         sandbox.labels.get("harbor.managed") != "true"
                         or sandbox.labels.get("oddish.managed") != "true"
-                        or sandbox.state not in terminal
-                        or updated_at is None
-                        or updated_at.tzinfo is None
-                        or updated_at > cutoff
+                        or sandbox.state in inactive
                     ):
                         return 0
+                    try:
+                        expired = (
+                            int(sandbox.labels.get("oddish.expires_at", ""))
+                            <= now.timestamp()
+                        )
+                    except ValueError:
+                        expired = False
+                    if not expired:
+                        value = sandbox.updated_at or sandbox.created_at
+                        updated_at = datetime.fromisoformat(value) if value else None
+                        if (
+                            sandbox.state not in terminal
+                            or updated_at is None
+                            or updated_at.tzinfo is None
+                            or updated_at > cutoff
+                        ):
+                            return 0
                     await client.delete(sandbox, timeout=30)
                     return 1
             except Exception:
@@ -79,7 +100,14 @@ class DaytonaBackend:
         )
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
-        labels = {**(base_kwargs.get("labels") or {}), "oddish.managed": "true"}
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.daytona_sandbox_expiry_minutes
+        )
+        labels = {
+            **(base_kwargs.get("labels") or {}),
+            "oddish.managed": "true",
+            "oddish.expires_at": str(int(expires_at.timestamp())),
+        }
         return {
             "auto_stop_interval_mins": settings.daytona_auto_stop_interval_mins,
             "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
