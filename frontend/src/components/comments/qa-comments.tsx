@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useOrganization } from "@clerk/nextjs";
 import {
   ClientSideSuspense,
   RoomProvider,
-  useErrorListener,
   useThreads,
 } from "@liveblocks/react/suspense";
 import { Composer, Thread } from "@liveblocks/react-ui";
@@ -80,37 +79,11 @@ function OverlayInner({
   const [openLine, setOpenLine] = useState<number | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
 
-  // Liveblocks runs onComposerSubmit when the submit starts, not when the
-  // create settles, and it rolls a failed create back out of useThreads. So
-  // a failure would otherwise just look like the comment silently vanishing.
-  // Remember what was submitted and surface the failure with a way back.
-  const lastSubmittedRef = useRef<LineRange | null>(null);
-  const [failedRange, setFailedRange] = useState<LineRange | null>(null);
-  useErrorListener((error) => {
-    // Only new threads started by this overlay's composer. A failed reply
-    // (CREATE_COMMENT_ERROR) belongs to its own thread UI, and this ref
-    // would point at some unrelated earlier range. Consume the ref so a
-    // later failure can't replay a range that already succeeded.
-    if (error.context.type !== "CREATE_THREAD_ERROR") return;
-    const range = lastSubmittedRef.current;
-    lastSubmittedRef.current = null;
-    if (range) setFailedRange(range);
-  });
-
-  // The lines the open composer is writing about. Selecting different lines
-  // retires it; re-selecting its own range (what Try again does) must not,
-  // or the retry would close the composer it just opened.
-  const composerRangeRef = useRef<LineRange | null>(null);
-  const selStart = selectedLines?.start ?? null;
-  const selEnd = selectedLines?.end ?? null;
+  // A new selection is a new comment target; a cleared one retires the
+  // composer with it.
   useEffect(() => {
-    const anchored = composerRangeRef.current;
-    if (anchored && anchored.start === selStart && anchored.end === selEnd) {
-      return;
-    }
-    composerRangeRef.current = null;
     setComposerOpen(false);
-  }, [selStart, selEnd]);
+  }, [selectedLines?.start, selectedLines?.end]);
 
   const openThreads = openLine != null ? (byLine.get(openLine) ?? []) : [];
   const openBottom =
@@ -200,10 +173,7 @@ function OverlayInner({
       {selectedLines && openLine == null && (
         <button
           type="button"
-          onClick={() => {
-            composerRangeRef.current = selectedLines;
-            setComposerOpen((prev) => !prev);
-          }}
+          onClick={() => setComposerOpen((prev) => !prev)}
           style={{ top: remTop(selectedLines.start) }}
           className="bg-primary text-primary-foreground pointer-events-auto absolute left-6 flex h-[1.1rem] w-[1.1rem] items-center justify-center rounded-full shadow-sm transition-transform hover:scale-110"
           title={`Comment on ${formatLineRange(selectedLines)}`}
@@ -212,36 +182,6 @@ function OverlayInner({
         </button>
       )}
 
-      {failedRange && (
-        <div
-          style={{ top: remBelow(failedRange.end) }}
-          className="border-destructive bg-background text-destructive pointer-events-auto absolute left-12 flex w-[min(28rem,80%)] items-center gap-2 rounded-lg border px-3 py-2 text-[11px] shadow-xl"
-        >
-          <span className="min-w-0 flex-1">
-            Comment on {formatLineRange(failedRange)} did not save.
-          </span>
-          <button
-            type="button"
-            onClick={() => {
-              composerRangeRef.current = failedRange;
-              onSelectLines?.(failedRange);
-              setFailedRange(null);
-              setComposerOpen(true);
-            }}
-            className="shrink-0 underline"
-          >
-            Try again
-          </button>
-          <button
-            type="button"
-            onClick={() => setFailedRange(null)}
-            className="shrink-0"
-            aria-label="Dismiss"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      )}
 
       {selectedLines && composerOpen && (
         <div
@@ -269,8 +209,6 @@ function OverlayInner({
               lineEnd: selectedLines.end,
             }}
             onComposerSubmit={() => {
-              lastSubmittedRef.current = selectedLines;
-              setFailedRange(null);
               setComposerOpen(false);
               onSelectLines?.(null);
             }}
