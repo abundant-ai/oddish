@@ -253,11 +253,36 @@ jobs:
       - update-vercel-preview
     if: always() && github.event.action != 'closed'
     runs-on: ubuntu-latest
-    environment:
-      name: Preview
-      url: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
+    # No job-level `environment:` key here: GitHub attributes that deployment
+    # record to the person who triggered the run, so pull requests showed a
+    # human as the deployer. The steps below create the same Preview record
+    # through the API with the workflow token, so the deployer is
+    # github-actions. The record still satisfies the staging ruleset's
+    # required-deployments rule (same environment, same commit).
+    permissions:
+      deployments: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
     steps:
+      - name: Create the Preview deployment record
+        id: deployment
+        # Fork PRs get a read-only token; skip so the verify step below can
+        # fail with its clearer same-repository message.
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          set -euo pipefail
+          deployment_id=$(jq -n --arg ref "$GITHUB_SHA" \
+            '{ref: $ref, environment: "Preview", auto_merge: false,
+              required_contexts: [], transient_environment: true,
+              description: "PR preview gate"}' \
+            | gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+            -f state=in_progress >/dev/null
+          echo "id=$deployment_id" >> "$GITHUB_OUTPUT"
+
       - name: Verify preview deployment
+        id: verify
         env:
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           DETECT_RESULT: ${{ needs.detect-changes.result }}
@@ -380,6 +405,22 @@ jobs:
               echo "- Database preview branch: \`$DB_BRANCH_REF\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the deployment result
+        if: always() && steps.deployment.outputs.id != ''
+        env:
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$VERIFY_OUTCOME" = "success" ]; then state=success; fi
+          jq -n --arg state "$state" --arg url "${DEPLOY_URL:-}" \
+            '{state: $state}
+             + (if $url != "" then {environment_url: $url} else {} end)' \
+            | gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" \
+              --input - >/dev/null
+          echo "deployment $DEPLOYMENT_ID marked $state"
 
   post-preview-links:
     name: Post preview links
