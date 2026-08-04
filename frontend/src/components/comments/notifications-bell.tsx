@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useOrganization } from "@clerk/nextjs";
 import {
   ClientSideSuspense,
@@ -43,9 +43,20 @@ export function NotificationsBell() {
   );
 }
 
+/** Rows the menu will show. Also the target the pager below fills. */
+const MAX_SHOWN = 50;
+/** Backstop on the page walk, in case the inbox never reports exhaustion. */
+const MAX_PAGES = 20;
+
 function BellInner() {
   const { organization } = useOrganization();
-  const { inboxNotifications } = useInboxNotifications();
+  const {
+    inboxNotifications,
+    hasFetchedAll,
+    isFetchingMore,
+    fetchMoreError,
+    fetchMore,
+  } = useInboxNotifications();
   const markRead = useMarkInboxNotificationAsRead();
 
   // The Liveblocks inbox is user-scoped but our access token only grants
@@ -57,11 +68,34 @@ function BellInner() {
   const orgNotifications = useMemo(
     () =>
       orgPrefix
-        ? inboxNotifications.filter((n) => n.roomId?.startsWith(orgPrefix))
+        ? inboxNotifications
+            .filter((n) => n.roomId?.startsWith(orgPrefix))
+            .slice(0, MAX_SHOWN)
         : [],
     [inboxNotifications, orgPrefix]
   );
   const unreadCount = orgNotifications.filter((n) => !n.readAt).length;
+
+  // The inbox arrives a page at a time and spans every org, so one page can
+  // be all other orgs' rows — the bell would read empty with mentions
+  // waiting. Keep pulling pages until this org has a menu's worth or the
+  // inbox runs out. `fetchMore` is left out of the deps on purpose: it is a
+  // fresh function each render, and the counts already say when to stop.
+  const pagesRef = useRef(0);
+  useEffect(() => {
+    if (hasFetchedAll || isFetchingMore || fetchMoreError) return;
+    if (orgNotifications.length >= MAX_SHOWN) return;
+    if (pagesRef.current >= MAX_PAGES) return;
+    pagesRef.current += 1;
+    fetchMore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    hasFetchedAll,
+    isFetchingMore,
+    fetchMoreError,
+    orgNotifications.length,
+    inboxNotifications.length,
+  ]);
 
   if (!organization) return null;
 
