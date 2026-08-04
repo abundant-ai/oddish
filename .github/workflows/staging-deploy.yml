@@ -2,10 +2,17 @@ name: Staging Deploy
 
 # Runs on every push to staging so the staging deployment tracks staging HEAD.
 # The concurrency group is shared with staging-db-bootstrap.yml, so a deploy
-# never runs migrations against a branch a bootstrap is mid-mirror on -- it
-# queues and runs afterwards, which also refreshes the app whenever a
-# bootstrap republishes the database secret. Every staging tip gets a deploy
-# run; the promotion preflight depends on that.
+# never runs migrations against a branch a bootstrap is mid-mirror on. The
+# group serializes the two but does not order them, so the bootstrap ends by
+# dispatching a deploy of its own rather than trusting that a queued one lands
+# after the mirror.
+#
+# GitHub keeps at most one run pending per group, so a newer push supersedes a
+# still-queued deploy. That is intended -- the newest commit is what staging
+# should run -- but it means only the tip is guaranteed a deploy run. An
+# intermediate commit can be left with a superseded run and is then not
+# promotable by sha, which is the promotion preflight refusing a commit that
+# never reached staging.
 on:
   push:
     branches: [staging]

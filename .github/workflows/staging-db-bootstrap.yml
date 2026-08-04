@@ -145,6 +145,7 @@ jobs:
               echo "stored staging credential works — reusing it (no password reset)"
               echo "db_url=$stored_url" >> "$GITHUB_OUTPUT"
               echo "branch_ref=$branch_ref" >> "$GITHUB_OUTPUT"
+              echo "password_reset=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "stored staging credential did not authenticate; resetting the password"
@@ -205,12 +206,13 @@ jobs:
             echo
             echo '```bash'
             echo "cd backend && uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E '^postgresql' | tail -1 | gh secret set STAGING_DATABASE_URL --repo $GITHUB_REPOSITORY --env staging"
-            echo "gh workflow run 'Staging Deploy' --repo $GITHUB_REPOSITORY"
+            echo "gh workflow run 'Staging Deploy' --ref staging --repo $GITHUB_REPOSITORY"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::staging DB password was reset — refresh the STAGING_DATABASE_URL secret on the staging environment (see job summary)"
           echo "db_url=$db_url" >> "$GITHUB_OUTPUT"
           echo "branch_ref=$branch_ref" >> "$GITHUB_OUTPUT"
+          echo "password_reset=true" >> "$GITHUB_OUTPUT"
           echo "branch ready: ref=$branch_ref host=$db_host status=$status"
 
       - name: Bootstrap schema (prod snapshot + Alembic pointers + upgrade head)
@@ -480,6 +482,28 @@ jobs:
             exit 1
           fi
           echo "compute return to ${STAGING_COMPUTE_VARIANT} accepted (HTTP $http_code)"
+
+      - name: Deploy staging against the mirrored branch
+        shell: bash
+        # The shared concurrency group serializes this workflow with
+        # staging-deploy.yml but does not order them: on a push that triggers
+        # both, a deploy that wins the lock migrates the pre-mirror branch and
+        # nothing deploys after the mirror. Dispatching here drops that
+        # dependency on who went first -- the run queues behind this one in
+        # the same group and deploys once the mirror and secret publish land.
+        #
+        # Skipped after a password reset: STAGING_DATABASE_URL is stale until
+        # a human refreshes it, so the deploy would fail at migrations and
+        # mark the staging tip red while staging itself is healthy -- that
+        # path prints the recipe in the job summary instead. success() is
+        # spelled out because a custom `if` drops the implicit one, and a
+        # half-finished mirror must not dispatch. Best-effort like "Mark
+        # bootstrap done": a token that cannot dispatch must not fail a run
+        # whose data work is already complete.
+        if: success() && steps.branch.outputs.password_reset != 'true'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: gh workflow run 'Staging Deploy' --ref staging --repo "$GITHUB_REPOSITORY"
 
       - name: Summary
         shell: bash
