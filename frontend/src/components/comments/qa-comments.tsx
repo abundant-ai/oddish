@@ -9,11 +9,7 @@ import {
 } from "@liveblocks/react/suspense";
 import { Composer, Thread } from "@liveblocks/react-ui";
 import { MessageSquare, MessageSquarePlus, X } from "lucide-react";
-import {
-  formatLineRange,
-  lineRangesEqual,
-  type LineRange,
-} from "@/lib/line-range";
+import { formatLineRange, type LineRange } from "@/lib/line-range";
 import { CommentsErrorBoundary } from "@/components/comments/comments-provider";
 
 /** Pierre's fixed row height (--diffs-line-height); anchors overlay rows. */
@@ -81,6 +77,38 @@ function OverlayInner({
   const [openLine, setOpenLine] = useState<number | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
 
+  // What is actually on screen. Derived from `byLine`, never stored: if the
+  // last thread on the open line is deleted, this goes back to null and
+  // everything gating on it (notably the new-comment bubble) recovers by
+  // itself, without an effect to clear `openLine`.
+  const openGroup =
+    openLine != null && byLine.has(openLine)
+      ? { line: openLine, threads: byLine.get(openLine)! }
+      : null;
+
+  // The lines a click on this line's bubble highlights: the union, so every
+  // commented line lights up when several threads share a start.
+  const groupRange = (line: number, group: typeof threads): LineRange => ({
+    start: line,
+    end: Math.max(...group.map((t) => t.metadata.lineEnd ?? line)),
+  });
+
+  /**
+   * Is `range` this group's highlight? True for the union we set on click,
+   * and for any single thread's own range — a deep link addresses one
+   * thread, which may be narrower than the union. Both open and close go
+   * through this, so they can't disagree about what belongs to a group.
+   */
+  const isGroupRange = (
+    line: number,
+    group: typeof threads,
+    range: LineRange | null
+  ): boolean => {
+    if (!range || range.start !== line) return false;
+    if (range.end === groupRange(line, group).end) return true;
+    return group.some((t) => (t.metadata.lineEnd ?? line) === range.end);
+  };
+
   // A new selection is a new comment target; a cleared one retires the
   // composer with it.
   useEffect(() => {
@@ -95,41 +123,24 @@ function OverlayInner({
   useEffect(() => {
     if (autoOpenedRef.current || !selectedLines) return;
     for (const [line, group] of byLine) {
-      if (line !== selectedLines.start) continue;
-      // Any one thread on this line matching is enough. Comparing against
-      // the group's widest end would miss a link to the shorter of two
-      // threads that share a start line.
-      const hit = group.some(
-        (t) => (t.metadata.lineEnd ?? line) === selectedLines.end
-      );
-      if (hit) {
+      if (isGroupRange(line, group, selectedLines)) {
         autoOpenedRef.current = true;
         setOpenLine(line);
         return;
       }
     }
+    // isGroupRange is pure over its arguments; byLine and the selection are
+    // the only inputs that can change it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [byLine, selectedLines]);
 
-  const openThreads = openLine != null ? (byLine.get(openLine) ?? []) : [];
-  const openBottom =
-    openThreads.length > 0
-      ? Math.max(...openThreads.map((t) => t.metadata.lineEnd ?? openLine!))
-      : null;
-
-  const groupRange = (line: number, group: typeof threads): LineRange => ({
-    start: line,
-    end: Math.max(...group.map((t) => t.metadata.lineEnd ?? line)),
-  });
-
-  // Closing a thread retires the highlight it created — otherwise the
-  // lingering selection sprouts a new-comment bubble the moment the thread
-  // dismisses. A selection the user made themselves in the meantime
-  // (different range) is left alone.
+  // Closing retires the highlight the thread put up, so the new-comment
+  // bubble doesn't sprout on lines that already have a conversation. A
+  // selection the reader made themselves meanwhile is left alone.
   const closeThread = () => {
     if (
-      openLine != null &&
-      openThreads.length > 0 &&
-      lineRangesEqual(selectedLines, groupRange(openLine, openThreads))
+      openGroup &&
+      isGroupRange(openGroup.line, openGroup.threads, selectedLines)
     ) {
       onSelectLines?.(null);
     }
@@ -161,20 +172,18 @@ function OverlayInner({
         </button>
       ))}
 
-      {openLine != null && openThreads.length > 0 && (
+      {openGroup && (
         <div
-          style={{ top: remBelow(openBottom ?? openLine) }}
+          // Sits under the last line any thread in the group addresses —
+          // the same range the header names and the highlight covers.
+          style={{
+            top: remBelow(groupRange(openGroup.line, openGroup.threads).end),
+          }}
           className="border-border bg-background pointer-events-auto absolute left-12 w-[min(28rem,80%)] rounded-lg border shadow-xl"
         >
           <div className="border-border flex items-center justify-between border-b px-3 py-1.5">
             <span className="text-muted-foreground font-mono text-[10px]">
-              {openThreads[0].metadata.lineEnd != null &&
-              openThreads[0].metadata.lineStart != null
-                ? formatLineRange({
-                    start: openThreads[0].metadata.lineStart,
-                    end: openThreads[0].metadata.lineEnd,
-                  })
-                : `L${openLine}`}
+              {formatLineRange(groupRange(openGroup.line, openGroup.threads))}
             </span>
             <button
               type="button"
@@ -186,7 +195,7 @@ function OverlayInner({
             </button>
           </div>
           <div className="max-h-80 overflow-y-auto">
-            {openThreads.map((thread) => (
+            {openGroup.threads.map((thread) => (
               <Thread key={thread.id} thread={thread} />
             ))}
           </div>
@@ -194,8 +203,10 @@ function OverlayInner({
       )}
 
       {/* Hidden while a thread popover is open — its highlight would
-          otherwise sprout a redundant new-comment bubble. */}
-      {selectedLines && openLine == null && (
+          otherwise sprout a redundant new-comment bubble. Gated on the
+          derived `openGroup`, not on `openLine`, so deleting the last
+          thread on the open line brings this back by itself. */}
+      {selectedLines && !openGroup && (
         <button
           type="button"
           onClick={() => setComposerOpen((prev) => !prev)}
