@@ -3,27 +3,47 @@
 import { useMemo } from "react";
 import { useRouter } from "next/navigation";
 import useSWR from "swr";
-import { ArrowUpRight, Loader2 } from "lucide-react";
+import { ArrowUpRight, Loader2, SearchCode } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { fetcher } from "@/lib/api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AnalysisProse } from "@/components/analysis-prose";
-import { StaticChecksPanel } from "@/components/static-checks-panel";
 import { SeverityGroups } from "@/components/qa-report/action-items";
 import { CopyJsonButton } from "@/components/qa-report/copy-json-button";
-import {
-  FALLBACK_TOKEN,
-  VERDICT_TOKENS,
-} from "@/components/qa-report/tokens";
+import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { isActivePipelineStatus } from "@/lib/job-status";
+import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
 import type {
   AnalysisClassification,
   PreTrialFinding,
   Task,
   Trial,
 } from "@/lib/types";
+
+export type StaticCheckState =
+  | "unaudited"
+  | "running"
+  | "failed"
+  | "clean"
+  | "findings";
+
+/**
+ * What to say for a task's source audit. Empty findings mean three
+ * different things depending on status: only `success` with no items is
+ * genuinely "we looked and found nothing".
+ */
+export function staticCheckState(
+  status: string | null | undefined,
+  findingCount: number,
+): StaticCheckState {
+  if (!status) return "unaudited";
+  const normalized = status.toLowerCase();
+  if (normalized === "running" || normalized === "queued") return "running";
+  if (normalized === "success") return findingCount > 0 ? "findings" : "clean";
+  return "failed";
+}
 
 /** Problems first: a cheated success or broken task outranks a clean run. */
 const CLASSIFICATION_ORDER: AnalysisClassification[] = [
@@ -42,9 +62,19 @@ const CLASSIFICATION_LABELS: Record<AnalysisClassification, string> = {
   GOOD_SUCCESS: "Good success",
 };
 
-/** A pre-trial-shaped finding plus the trials whose QA surfaced it. */
-interface AggregatedFinding extends PreTrialFinding {
+/** A finding plus where it came from: the source audit, trial QA, or both. */
+interface SourcedFinding extends PreTrialFinding {
+  fromAudit: boolean;
   trials: Trial[];
+}
+
+function findingKey(item: PreTrialFinding): string {
+  // The server stamps content-hash ids on findings, so the same defect
+  // reported by the audit and by trials collapses into one row. Items
+  // without an id fall back to a content key.
+  return (
+    item.id ?? `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`
+  );
 }
 
 function classificationRank(trial: Trial): number {
@@ -60,9 +90,10 @@ function trialLabel(trial: Trial): string {
 }
 
 /**
- * The task overview: the task's own QA (verdict + static checks) followed by
- * the trial-level QA aggregated across the shown version's trials, each
- * finding and classification linking back to the trial that surfaced it.
+ * The task overview: the task's own QA (verdict + the source-audit findings)
+ * merged with the trial-level QA aggregated across the shown version's
+ * trials, each finding and classification linking back to the trial that
+ * surfaced it.
  */
 export function TaskOverviewPanel({
   taskId,
@@ -96,6 +127,8 @@ export function TaskOverviewPanel({
   onRerunChecks: () => void;
   checksRerunning: boolean;
   checksQueueError?: string | null;
+  /** The checks state is still being fetched: an absent status must not
+   * read as "unaudited" — a Run click on that misread wipes real findings. */
   checksLoading?: boolean;
   checksLoadError?: string | null;
   /** Task-level QA in flight — keeps the trial list polling until it lands. */
@@ -137,55 +170,59 @@ export function TaskOverviewPanel({
     classificationCounts,
     unanalyzedCount,
     analyzedCount,
-    aggregatedFindings,
+    mergedFindings,
     qaTrials,
   } = useMemo(() => {
-      const counts = new Map<AnalysisClassification, number>();
-      const findingsByKey = new Map<string, AggregatedFinding>();
-      const withQa: Trial[] = [];
-      let unanalyzed = 0;
-      for (const trial of versionTrials) {
-        if (!trial.analysis && !trial.analysis_status) {
-          unanalyzed += 1;
-          continue;
-        }
-        withQa.push(trial);
-        const analysis = trial.analysis;
-        if (!analysis) continue;
-        counts.set(
-          analysis.classification,
-          (counts.get(analysis.classification) ?? 0) + 1,
-        );
-        for (const item of analysis.action_items ?? []) {
-          // The server stamps content-hash ids on action items, so identical
-          // findings from different trials collapse into one row. Items
-          // without an id fall back to a content key.
-          const key =
-            item.id ??
-            `${item.tier ?? ""}|${item.title ?? ""}|${item.file ?? ""}`;
-          const existing = findingsByKey.get(key);
-          if (existing) {
-            existing.trials.push(trial);
-            // One exploiting trial marks the finding exploited.
-            if (item.exploited) existing.exploited = true;
-          } else {
-            findingsByKey.set(key, { ...item, id: key, trials: [trial] });
-          }
+    const byKey = new Map<string, SourcedFinding>();
+    for (const item of checksFindings ?? []) {
+      const key = findingKey(item);
+      byKey.set(key, { ...item, id: key, fromAudit: true, trials: [] });
+    }
+    const counts = new Map<AnalysisClassification, number>();
+    const withQa: Trial[] = [];
+    let unanalyzed = 0;
+    for (const trial of versionTrials) {
+      if (!trial.analysis && !trial.analysis_status) {
+        unanalyzed += 1;
+        continue;
+      }
+      withQa.push(trial);
+      const analysis = trial.analysis;
+      if (!analysis) continue;
+      counts.set(
+        analysis.classification,
+        (counts.get(analysis.classification) ?? 0) + 1,
+      );
+      for (const item of analysis.action_items ?? []) {
+        const key = findingKey(item);
+        const existing = byKey.get(key);
+        if (existing) {
+          existing.trials.push(trial);
+          // One exploiting trial marks the finding exploited.
+          if (item.exploited) existing.exploited = true;
+        } else {
+          byKey.set(key, {
+            ...item,
+            id: key,
+            fromAudit: false,
+            trials: [trial],
+          });
         }
       }
-      withQa.sort(
-        (a, b) =>
-          classificationRank(a) - classificationRank(b) ||
-          a.created_at.localeCompare(b.created_at),
-      );
-      return {
-        classificationCounts: counts,
-        unanalyzedCount: unanalyzed,
-        analyzedCount: withQa.filter((trial) => trial.analysis).length,
-        aggregatedFindings: Array.from(findingsByKey.values()),
-        qaTrials: withQa,
-      };
-    }, [versionTrials]);
+    }
+    withQa.sort(
+      (a, b) =>
+        classificationRank(a) - classificationRank(b) ||
+        a.created_at.localeCompare(b.created_at),
+    );
+    return {
+      classificationCounts: counts,
+      unanalyzedCount: unanalyzed,
+      analyzedCount: withQa.filter((trial) => trial.analysis).length,
+      mergedFindings: Array.from(byKey.values()),
+      qaTrials: withQa,
+    };
+  }, [versionTrials, checksFindings]);
 
   const openTrial = (trial: Trial) => {
     if (onOpenTrial?.(trial)) return;
@@ -196,15 +233,24 @@ export function TaskOverviewPanel({
     router.push(`/tasks/${taskId}?${params.toString()}`);
   };
 
-  const renderTrialLinks = (item: PreTrialFinding) => {
-    const sourceTrials = (item as AggregatedFinding).trials;
-    if (!sourceTrials || sourceTrials.length === 0) return null;
+  const renderFindingSources = (item: PreTrialFinding) => {
+    const sourced = item as SourcedFinding;
+    if (!sourced.fromAudit && !(sourced.trials?.length > 0)) return null;
     return (
       <div className="mt-1 flex flex-wrap items-center gap-1.5">
         <span className="text-muted-foreground shrink-0 font-mono text-[10px] tracking-widest">
           SEEN IN
         </span>
-        {sourceTrials.map((trial) => (
+        {sourced.fromAudit ? (
+          <span
+            className="border-border text-muted-foreground inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px]"
+            title="Found by the pre-trial audit of the task's source"
+          >
+            <SearchCode className="h-3 w-3 shrink-0" aria-hidden="true" />
+            Source audit
+          </span>
+        ) : null}
+        {(sourced.trials ?? []).map((trial) => (
           <button
             key={trial.id}
             type="button"
@@ -217,6 +263,85 @@ export function TaskOverviewPanel({
           </button>
         ))}
       </div>
+    );
+  };
+
+  const checkState = staticCheckState(checksStatus, checksFindings?.length ?? 0);
+  const checksStateUnknown = Boolean(checksLoading || checksLoadError);
+  // Only a live run blocks the button. A stale "queued" row must stay
+  // re-queueable: re-queue is the backend's recovery path for queued jobs
+  // that never got picked up.
+  const auditRunning = (checksStatus ?? "").toLowerCase() === "running";
+
+  const findingsSummary = checksLoading
+    ? "Loading…"
+    : checksLoadError
+      ? "Unavailable"
+      : checkState === "running"
+        ? "Audit running…"
+        : mergedFindings.length > 0
+          ? `${mergedFindings.length} finding${mergedFindings.length === 1 ? "" : "s"}${
+              checkState === "unaudited" ? " · audit not run" : ""
+            }`
+          : checkState === "failed"
+            ? "Audit failed"
+            : checkState === "unaudited"
+              ? "Audit not run"
+              : "Clean";
+
+  const findingsBody = () => {
+    if (checksLoading) {
+      return (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-8 w-full rounded-lg" />
+          <Skeleton className="h-8 w-full rounded-lg" />
+          <Skeleton className="h-3 w-2/5" />
+        </div>
+      );
+    }
+    if (checksLoadError) {
+      return (
+        <p className="font-mono text-[11px] break-all text-red-500">
+          {checksLoadError}
+        </p>
+      );
+    }
+    return (
+      <>
+        {checkState === "failed" ? (
+          <p className="font-mono text-[11px] break-all text-red-500">
+            {checksError || "The source audit failed."}
+          </p>
+        ) : checkState === "running" && mergedFindings.length === 0 ? (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-8 w-full rounded-lg" />
+            <Skeleton className="h-8 w-full rounded-lg" />
+            <Skeleton className="h-3 w-2/5" />
+          </div>
+        ) : null}
+        {mergedFindings.length > 0 ? (
+          // The default tier copy narrates trial classification; these
+          // findings speak to the task itself.
+          <SeverityGroups
+            items={mergedFindings}
+            tierEffects={{
+              must_fix:
+                "The defect can decide trials — QA marks the task bad until it is fixed.",
+              should_fix: "Does not change the verdict.",
+              optional: "Does not change the verdict.",
+            }}
+            renderItemFooter={renderFindingSources}
+          />
+        ) : checkState === "clean" ? (
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            The source audit and trial QA found no defects in this task.
+          </p>
+        ) : checkState === "unaudited" ? (
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            The source audit has not run on this version yet.
+          </p>
+        ) : null}
+      </>
     );
   };
 
@@ -284,37 +409,14 @@ export function TaskOverviewPanel({
           ) : null}
         </div>
 
-        {aggregatedFindings.length > 0 ? (
-          <div className="flex flex-col gap-2">
-            <h3 className="text-muted-foreground font-mono text-[10px] font-semibold tracking-wider uppercase">
-              Findings from trials
-            </h3>
-            <SeverityGroups
-              items={aggregatedFindings}
-              tierEffects={{
-                must_fix:
-                  "The defect can decide trials — QA marks the task bad until it is fixed.",
-                should_fix: "Does not change the verdict.",
-                optional: "Does not change the verdict.",
-              }}
-              renderItemFooter={renderTrialLinks}
+        <div className="flex flex-col gap-1.5">
+          {qaTrials.map((trial) => (
+            <TrialQaRow
+              key={trial.id}
+              trial={trial}
+              onOpen={() => openTrial(trial)}
             />
-          </div>
-        ) : null}
-
-        <div className="flex flex-col gap-2">
-          <h3 className="text-muted-foreground font-mono text-[10px] font-semibold tracking-wider uppercase">
-            Per-trial QA
-          </h3>
-          <div className="flex flex-col gap-1.5">
-            {qaTrials.map((trial) => (
-              <TrialQaRow
-                key={trial.id}
-                trial={trial}
-                onOpen={() => openTrial(trial)}
-              />
-            ))}
-          </div>
+          ))}
         </div>
       </>
     );
@@ -328,18 +430,53 @@ export function TaskOverviewPanel({
         </div>
       ) : null}
 
-      <StaticChecksPanel
-        className="border-border border-b"
-        findings={checksFindings}
-        status={checksStatus}
-        error={checksError}
-        costUsd={checksCostUsd}
-        onRerun={onRerunChecks}
-        rerunning={checksRerunning}
-        queueError={checksQueueError}
-        loading={checksLoading}
-        loadError={checksLoadError}
-      />
+      <div className="border-border flex flex-col gap-3 border-b p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-muted-foreground font-mono text-[11px] font-semibold tracking-wider uppercase">
+            Findings
+          </h2>
+          <span className="text-muted-foreground font-mono text-[11px]">
+            {findingsSummary}
+            {!checksStateUnknown && hasDisplayableCostUsd(checksCostUsd)
+              ? ` · ${formatCostUsd(checksCostUsd)}`
+              : ""}
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            {mergedFindings.length > 0 ? (
+              <CopyJsonButton
+                // Trials collapse to their ids — the full rows are noise here.
+                value={mergedFindings.map(
+                  ({ trials: sources, fromAudit, ...item }) => ({
+                    ...item,
+                    from_audit: fromAudit,
+                    trial_ids: sources.map((t) => t.id),
+                  }),
+                )}
+                label="the task's findings"
+              />
+            ) : null}
+            <button
+              type="button"
+              disabled={checksRerunning || auditRunning || checksStateUnknown}
+              onClick={onRerunChecks}
+              className="text-muted-foreground hover:text-foreground border-border rounded border px-2 py-0.5 font-mono text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              title="Runs the source audit on the task's current version"
+            >
+              {checksRerunning
+                ? "Queuing…"
+                : checkState === "unaudited"
+                  ? "Run audit"
+                  : "Re-run audit"}
+            </button>
+          </div>
+        </div>
+
+        {checksQueueError ? (
+          <p className="text-[11px] text-red-500">{checksQueueError}</p>
+        ) : null}
+
+        {findingsBody()}
+      </div>
 
       <div className="flex flex-col gap-3 p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -353,17 +490,6 @@ export function TaskOverviewPanel({
                   versionTrials.length === 1 ? "" : "s"
                 } analyzed${version != null ? ` · v${version}` : ""}`}
           </span>
-          {aggregatedFindings.length > 0 ? (
-            <CopyJsonButton
-              // Trials collapse to their ids — the full rows are noise here.
-              value={aggregatedFindings.map(({ trials: sources, ...item }) => ({
-                ...item,
-                trial_ids: sources.map((t) => t.id),
-              }))}
-              label="the aggregated trial findings"
-              className="ml-auto"
-            />
-          ) : null}
         </div>
         {trialQaBody()}
       </div>
