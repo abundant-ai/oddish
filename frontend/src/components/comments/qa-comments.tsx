@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useOrganization } from "@clerk/nextjs";
 import {
   ClientSideSuspense,
@@ -84,6 +84,23 @@ function OverlayInner({
   useEffect(() => {
     setComposerOpen(false);
   }, [selectedLines?.start, selectedLines?.end]);
+
+  // A notification deep link arrives with the lines selected but nothing
+  // open, so the overlay would offer to start a *second* thread on lines
+  // that already have one. Open the existing thread instead. Once per file
+  // (this subtree remounts per file), so closing it doesn't reopen it.
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (autoOpenedRef.current || !selectedLines) return;
+    for (const [line, group] of byLine) {
+      const end = Math.max(...group.map((t) => t.metadata.lineEnd ?? line));
+      if (line === selectedLines.start && end === selectedLines.end) {
+        autoOpenedRef.current = true;
+        setOpenLine(line);
+        return;
+      }
+    }
+  }, [byLine, selectedLines]);
 
   const openThreads = openLine != null ? (byLine.get(openLine) ?? []) : [];
   const openBottom =

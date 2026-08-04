@@ -36,6 +36,7 @@ import type { LineRange } from "@/lib/line-range";
 import {
   FileRenderer,
   isBinaryRendererFile,
+  rendersLineOverlay,
 } from "@/components/renderers/file-renderer";
 import {
   InlineCommentOverlay,
@@ -1078,6 +1079,15 @@ export function TaskFilesPanel({
     },
     [fileTree, onSelectedFileChange, onSelectLinesChange]
   );
+
+  // A line anchor only means something in the line-oriented view. Markdown,
+  // notebooks, JSON and friends render as blocks with no per-line offset, so
+  // landing on one from a comment deep link (?taskLines=) would show nothing
+  // until the reader found the Raw toggle themselves.
+  useEffect(() => {
+    if (!selectedFile || !selectedLines) return;
+    if (!rendersLineOverlay(selectedFile.name)) setViewMode("raw");
+  }, [selectedFile, selectedLines]);
 
   // Navigate to a specific file when initialFilePath changes (suffix match)
   useEffect(() => {

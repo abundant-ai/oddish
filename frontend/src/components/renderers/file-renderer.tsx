@@ -172,6 +172,20 @@ export function isBinaryRendererFile(fileName: string): boolean {
   return BINARY_RENDERER_EXTS.has(ext);
 }
 
+/** Kinds whose rendered view is the line-oriented code view, so a
+ *  ``lineOverlay`` shows up without switching to Raw. */
+const LINE_ORIENTED_KINDS = new Set<FileRendererKind>(["log", "text", "code"]);
+
+/**
+ * Whether this file shows line-anchored overlays in its *rendered* view.
+ * False for markdown, notebooks, JSON, diffs, spreadsheets and the like:
+ * those render as blocks with no stable per-line offset, so anything
+ * anchored to a line (QA comments) only appears in Raw mode.
+ */
+export function rendersLineOverlay(fileName: string): boolean {
+  return LINE_ORIENTED_KINDS.has(getFileRendererKind(fileName));
+}
+
 interface FileRendererProps {
   fileName: string;
   /** URL for media/binary fetches (images, video, audio, pdf, xlsx, docx). */
