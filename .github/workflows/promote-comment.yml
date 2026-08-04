@@ -56,6 +56,7 @@ jobs:
             admin|write|maintain) echo "$ACTOR has $level access" ;;
             *) echo "::error::$ACTOR has '$level' access and cannot promote"; exit 1 ;;
           esac
+          echo "level=$level" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v5
         with:
@@ -70,6 +71,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.issue.number }}
+          COMMENTER_LEVEL: ${{ steps.auth.outputs.level }}
         run: |
           set -euo pipefail
           read -r base head state < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
@@ -85,8 +87,18 @@ jobs:
           git merge-base --is-ancestor origin/main "$target" \
             || { echo "::error::main is not an ancestor of $target — run Sync Preflight for the repair steps"; exit 1; }
 
-          [ "$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json reviewDecision -q .reviewDecision)" = "APPROVED" ] \
-            || { echo "::error::#$PR is not approved by a code owner"; exit 1; }
+          # Approval is policy; an admin's bypass standing waives it, the same
+          # way the ruleset lets an admin push main directly. The direction,
+          # ancestry, and deploy checks below hold for everyone.
+          decision=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json reviewDecision -q .reviewDecision)
+          if [ "$decision" != "APPROVED" ]; then
+            if [ "$COMMENTER_LEVEL" = "admin" ]; then
+              echo "::warning::#$PR has no code-owner approval; the commenter's admin standing waives it"
+              echo "approval=waived" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::#$PR is not approved by a code owner"; exit 1
+            fi
+          fi
 
           gh run list --repo "$GITHUB_REPOSITORY" --workflow "Staging Deploy" \
               --branch staging --commit "$target" --json conclusion -q '.[0].conclusion' \
@@ -128,6 +140,7 @@ jobs:
           SHA: ${{ steps.checks.outputs.sha }}
           PUSH_OUTCOME: ${{ steps.push.outcome }}
           CHECKS: ${{ steps.checks.outcome }}
+          APPROVAL: ${{ steps.checks.outputs.approval }}
         run: |
           set -euo pipefail
           if [ "$CHECKS" != "success" ]; then
@@ -147,5 +160,8 @@ jobs:
               "git fetch origin staging" \
               "git push origin ${SHA}:refs/heads/main" \
               '```')
+            if [ "$APPROVAL" = "waived" ]; then
+              body="$body"$'\n\n'"The admin standing of the commenter waived the missing approval."
+            fi
           fi
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body"
