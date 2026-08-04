@@ -19,7 +19,10 @@ export function CommentsProvider({ children }: { children: ReactNode }) {
         const res = await fetch(
           `/api/liveblocks-users?ids=${encodeURIComponent(userIds.join(","))}`,
         );
-        return res.ok ? await res.json() : [];
+        // The result must align 1:1 with userIds — a short/empty array would
+        // mis-map authors. On failure every user resolves to "unknown".
+        if (!res.ok) return userIds.map(() => undefined);
+        return await res.json();
       }}
       resolveMentionSuggestions={async ({ text }) => {
         const res = await fetch(

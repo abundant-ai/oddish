@@ -33,7 +33,9 @@ export function QaCommentsSection(props: {
     <CommentsErrorBoundary>
       <RoomProvider id={`qa:${organization.id}:${props.taskId}`}>
         <ClientSideSuspense fallback={null}>
-          <FileThreads {...props} />
+          {/* Keyed by file so a collapse choice on one file doesn't stick
+              to the next — each file re-decides from its own thread count. */}
+          <FileThreads key={props.filePath} {...props} />
         </ClientSideSuspense>
       </RoomProvider>
     </CommentsErrorBoundary>

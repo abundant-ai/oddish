@@ -1253,12 +1253,15 @@ export function TaskFilesPanel({
             </Button>
           </div>
         )}
-        {/* QA review comments, anchored to the pane's line selection. Only
-            for task-scoped panes (trial-file panes pass taskId=null) and
-            never in public read-only views (showAnalysis=false). */}
-        {taskId && showAnalysis && (
+        {/* QA review comments, anchored to the pane's line selection.
+            effectiveChecksTaskId covers both the task drawer (taskId) and
+            the side-by-side "Task definition" pane (taskId=null +
+            staticChecksTaskId) — both show the same task files, so threads
+            are shared. Trial-file panes set neither, and public read-only
+            views (showAnalysis=false) never render comments. */}
+        {effectiveChecksTaskId && showAnalysis && (
           <QaCommentsSection
-            taskId={taskId}
+            taskId={effectiveChecksTaskId}
             filePath={selectedFile.path}
             selectedLines={selectedLines ?? null}
             onSelectLines={onSelectLinesChange}
