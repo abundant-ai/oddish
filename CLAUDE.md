@@ -37,7 +37,10 @@ with this warning, in capitals:
 > THE PROMOTION.**
 
 The `Promotion warning` workflow adds the same text to a promotion pull
-request that opens without it.
+request that opens without it. Agents use the template at
+`.github/PULL_REQUEST_TEMPLATE/promotion.md` as the body skeleton for every
+promotion pull request; humans get it with
+`?quick_pull=1&template=promotion.md` on the compare URL.
 
 ## Hotfixes
 
