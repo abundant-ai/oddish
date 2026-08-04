@@ -105,15 +105,6 @@ function OverlayInner({
   const [openLine, setOpenLine] = useState<number | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
 
-  // What is actually on screen. Derived from `byLine`, never stored: if the
-  // last thread on the open line is deleted, this goes back to null and
-  // everything gating on it (notably the new-comment bubble) recovers by
-  // itself, without an effect to clear `openLine`.
-  const openGroup =
-    openLine != null && byLine.has(openLine)
-      ? { line: openLine, threads: byLine.get(openLine)! }
-      : null;
-
   // The lines a click on this line's bubble highlights: the union, so every
   // commented line lights up when several threads share a start.
   const groupRange = (line: number, group: typeof threads): LineRange => ({
@@ -149,6 +140,29 @@ function OverlayInner({
     return group.some((t) => (t.metadata.lineEnd ?? line) === range.end);
   };
 
+  /**
+   * The thread group on screen — a view of the current selection, not state
+   * of its own. Two things follow, and both used to be bugs:
+   *
+   * - Its threads must still exist. Delete the last one and this empties,
+   *   so the new-comment bubble comes back without an effect to notice.
+   * - The selection must still name it. Select other lines and the popover
+   *   steps aside for the composer, instead of blocking new comments until
+   *   the reader closes it by hand.
+   *
+   * A null selection keeps it open: nothing else is competing for the
+   * space, and the overlay may be mounted without selection wiring at all.
+   */
+  const openGroup = (() => {
+    if (openLine == null) return null;
+    const group = byLine.get(openLine);
+    if (!group) return null;
+    if (selectedLines && !isGroupRange(openLine, group, selectedLines)) {
+      return null;
+    }
+    return { line: openLine, threads: group };
+  })();
+
   // A new selection is a new comment target; a cleared one retires the
   // composer with it.
   useEffect(() => {
@@ -174,16 +188,11 @@ function OverlayInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [byLine, selectedLines]);
 
-  // Closing retires the highlight the thread put up, so the new-comment
-  // bubble doesn't sprout on lines that already have a conversation. A
-  // selection the reader made themselves meanwhile is left alone.
+  // Closing retires the highlight along with the thread. `openGroup` only
+  // exists while the selection names it, so any selection standing here is
+  // this thread's — no need to ask again whether it belongs.
   const closeThread = () => {
-    if (
-      openGroup &&
-      isGroupRange(openGroup.line, openGroup.threads, selectedLines)
-    ) {
-      onSelectLines?.(null);
-    }
+    if (openGroup && selectedLines) onSelectLines?.(null);
     setOpenLine(null);
   };
 
@@ -257,10 +266,9 @@ function OverlayInner({
         </div>
       )}
 
-      {/* Hidden while a thread popover is open — its highlight would
-          otherwise sprout a redundant new-comment bubble. Gated on the
-          derived `openGroup`, not on `openLine`, so deleting the last
-          thread on the open line brings this back by itself. */}
+      {/* The selection either has a conversation on it or is somewhere to
+          start one — never both. `openGroup` is the same derived answer the
+          popover above uses, so the two can't appear together. */}
       {selectedLines && !openGroup && (
         <button
           type="button"
@@ -273,7 +281,7 @@ function OverlayInner({
         </button>
       )}
 
-      {selectedLines && composerOpen && (
+      {selectedLines && composerOpen && !openGroup && (
         <div
           style={{ top: remBelow(pin(selectedLines.end)) }}
           className="border-border bg-background pointer-events-auto absolute left-12 w-[min(28rem,80%)] rounded-lg border shadow-xl"
