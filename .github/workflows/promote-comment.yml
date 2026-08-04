@@ -13,16 +13,20 @@ on:
   issue_comment:
     types: [created]
 
-concurrency:
-  group: promote-main
-  cancel-in-progress: false
-
 jobs:
   promote:
     if: >-
       github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, '/promote')
+      (github.event.comment.body == '/promote' ||
+      startsWith(github.event.comment.body, '/promote '))
     runs-on: ubuntu-latest
+    # Job level, not workflow level: a workflow-level group is joined by every
+    # comment in the repository, and a newly queued run replaces the pending
+    # one. A job skipped by the `if` above never queues, so only real
+    # promotions serialize here.
+    concurrency:
+      group: promote-main
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
@@ -33,6 +37,7 @@ jobs:
       HAS_PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN != '' }}
     steps:
       - name: Check that the commenter can write to the repository
+        id: auth
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -86,7 +91,7 @@ jobs:
 
       - name: Fast-forward main
         id: push
-        if: env.HAS_PROMOTE_TOKEN == 'true'
+        if: success() && env.HAS_PROMOTE_TOKEN == 'true'
         shell: bash
         env:
           PROMOTE_TOKEN: ${{ secrets.PROMOTE_TOKEN }}
@@ -96,14 +101,19 @@ jobs:
           git remote set-url origin \
             "https://x-access-token:${PROMOTE_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           # A plain push is fast-forward only; git itself rejects anything else.
-          git push origin "${SHA}:refs/heads/main"
+          # `:?` because an empty source refspec deletes the branch.
+          git push origin "${SHA:?}:refs/heads/main"
           git fetch origin main
           test "$(git rev-parse origin/main)" = "$SHA"
           echo "pushed=true" >> "$GITHUB_OUTPUT"
           echo "origin/main == $SHA"
 
       - name: Report back on the pull request
-        if: always()
+        # Only reply to a commenter who passed the write-access check. Anyone
+        # can comment on a public pull request, so an ungated reply lets a
+        # stranger post bot comments. The failed run stays visible to
+        # maintainers.
+        if: always() && steps.auth.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
