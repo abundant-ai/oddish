@@ -294,7 +294,13 @@ function OverlayInner({
             }}
             onComposerSubmit={() => {
               setComposerOpen(false);
-              onSelectLines?.(null);
+              // Open the thread being created rather than clearing the
+              // selection: otherwise the composer just vanishes and the new
+              // conversation sits closed behind a bubble, which reads as a
+              // failed submit. `openGroup` is derived, so this waits for the
+              // thread to show up in `useThreads` and undoes itself if the
+              // create is rolled back.
+              setOpenLine(pinnedSelection.start);
             }}
           />
         </div>
