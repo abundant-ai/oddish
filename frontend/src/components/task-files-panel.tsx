@@ -1491,7 +1491,21 @@ export function TaskFilesPanel({
                 <TaskOverviewPanel
                   taskId={effectiveChecksTaskId}
                   apiBaseUrl={baseUrl}
-                  version={checksVersion?.version ?? null}
+                  // The pinned version wins outright — falling back to the
+                  // /detail-resolved version while it loads would briefly
+                  // widen the trial aggregation to every version. Without a
+                  // pin, undefined keeps the aggregation waiting until the
+                  // version resolves; only a loaded task with no versions is
+                  // genuinely unscoped.
+                  version={
+                    taskVersion !== undefined
+                      ? taskVersion
+                      : checksVersion
+                        ? checksVersion.version
+                        : checksDetail !== undefined
+                          ? null
+                          : undefined
+                  }
                   // Panes with their own header render the verdict card there;
                   // the filesUrl-driven panes have no header, so the overview
                   // carries the verdict itself.

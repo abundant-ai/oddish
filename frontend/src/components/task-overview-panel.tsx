@@ -115,7 +115,9 @@ export function TaskOverviewPanel({
 }: {
   taskId: string | null;
   apiBaseUrl?: string;
-  /** Version the pane is scoped to; null aggregates every trial. */
+  /** Version the pane is scoped to: a number pins, null deliberately
+   *  aggregates every trial, and undefined means still resolving — the
+   *  trial aggregation waits instead of briefly spanning all versions. */
   version?: number | null;
   /** Render the QA verdict inline — for panes whose host shows no verdict
    *  card of its own (the side-by-side "Task definition" pane). */
@@ -160,9 +162,11 @@ export function TaskOverviewPanel({
     },
   });
 
+  const versionKnown = version !== undefined;
   const versionTrials = useMemo(() => {
+    if (version === undefined) return [];
     const all = trials ?? [];
-    if (version == null) return all;
+    if (version === null) return all;
     return all.filter((trial) => trial.task_version === version);
   }, [trials, version]);
 
@@ -365,6 +369,21 @@ export function TaskOverviewPanel({
   };
 
   const trialQaBody = () => {
+    if (!versionKnown) {
+      // The scoping version hasn't resolved; aggregating now would span
+      // every version. On a dead /detail it never will — say so.
+      return checksLoadError ? (
+        <p className="font-mono text-[11px] break-all text-red-500">
+          Unable to resolve the task version to scope the trials.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-8 w-full rounded-lg" />
+          <Skeleton className="h-8 w-full rounded-lg" />
+          <Skeleton className="h-3 w-2/5" />
+        </div>
+      );
+    }
     if (trialsLoading && !trials) {
       return (
         <div className="flex flex-col gap-2">
@@ -503,11 +522,15 @@ export function TaskOverviewPanel({
             Trial QA
           </h2>
           <span className="text-muted-foreground font-mono text-[11px]">
-            {trialsLoading && !trials
-              ? "Loading…"
-              : `${analyzedCount}/${versionTrials.length} trial${
-                  versionTrials.length === 1 ? "" : "s"
-                } analyzed${version != null ? ` · v${version}` : ""}`}
+            {!versionKnown
+              ? checksLoadError
+                ? "Unavailable"
+                : "Loading…"
+              : trialsLoading && !trials
+                ? "Loading…"
+                : `${analyzedCount}/${versionTrials.length} trial${
+                    versionTrials.length === 1 ? "" : "s"
+                  } analyzed${version != null ? ` · v${version}` : ""}`}
           </span>
         </div>
         {trialQaBody()}
