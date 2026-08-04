@@ -203,7 +203,11 @@ function OverlayInner({
           key={line}
           type="button"
           onClick={() => {
-            if (openLine === line) {
+            // Toggle against what's on screen, not against `openLine`.
+            // The two differ once the selection moves away: the popover is
+            // gone but `openLine` still names this row, and closing what
+            // the reader can't see costs them a click.
+            if (openGroup?.line === line) {
               closeThread();
               return;
             }
