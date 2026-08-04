@@ -470,6 +470,32 @@ def test_spawn_args_requests_daytona_extra_for_daytona_env():
     assert req.startswith("harbor[daytona] @ git+")
 
 
+def test_ephemeral_daytona_forces_ownership_labels():
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="nop",
+        model=None,
+        environment=EnvironmentType.DAYTONA,
+        raw_harbor_config={
+            "environment": {
+                "kwargs": {
+                    "auto_labels": False,
+                    "labels": {"task": "x", "oddish.managed": "false"},
+                }
+            }
+        },
+        is_probe=False,
+    )
+    config = _build_job_config(payload)
+    assert config.environment.kwargs["auto_labels"] is True
+    assert config.environment.kwargs["labels"] == {
+        "task": "x",
+        "oddish.managed": "true",
+    }
+
+
 def test_spawn_args_no_extra_for_docker_env():
     args = harbor_ephemeral._spawn_args(
         _SOURCE, _SHA, environment=EnvironmentType.DOCKER
