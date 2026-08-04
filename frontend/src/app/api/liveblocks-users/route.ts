@@ -16,19 +16,29 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const client = await clerkClient();
-  // Page through the full membership — a single limit:100 call would make
-  // members beyond the first page unmentionable and unresolvable. The hard
-  // ceiling is a runaway guard, not an expected size.
-  const memberships = [];
-  for (let offset = 0; memberships.length < 2000; offset += 100) {
-    const { data } = await client.organizations.getOrganizationMembershipList({
-      organizationId: orgId,
-      limit: 100,
-      offset,
-    });
-    memberships.push(...data);
-    if (data.length < 100) break;
+  let memberships;
+  try {
+    const client = await clerkClient();
+    // Page through the full membership — a single limit:100 call would make
+    // members beyond the first page unmentionable and unresolvable. The hard
+    // ceiling is a runaway guard, not an expected size.
+    memberships = [];
+    for (let offset = 0; memberships.length < 2000; offset += 100) {
+      const { data } =
+        await client.organizations.getOrganizationMembershipList({
+          organizationId: orgId,
+          limit: 100,
+          offset,
+        });
+      memberships.push(...data);
+      if (data.length < 100) break;
+    }
+  } catch (error) {
+    console.error("[liveblocks-users] membership lookup failed:", error);
+    return NextResponse.json(
+      { error: "Failed to list org members" },
+      { status: 500 },
+    );
   }
 
   const ids = request.nextUrl.searchParams.get("ids");
