@@ -1080,10 +1080,18 @@ export function TaskFilesPanel({
     [fileTree, onSelectedFileChange, onSelectLinesChange]
   );
 
+  // Each file opens in its own default view. Without this, a Raw forced by
+  // the effect below (or chosen by hand) follows the reader to every later
+  // file — code included, where Raw drops syntax highlighting.
+  useEffect(() => {
+    setViewMode("rendered");
+  }, [selectedFile?.path]);
+
   // A line anchor only means something in the line-oriented view. Markdown,
   // notebooks, JSON and friends render as blocks with no per-line offset, so
   // landing on one from a comment deep link (?taskLines=) would show nothing
-  // until the reader found the Raw toggle themselves.
+  // until the reader found the Raw toggle themselves. Declared after the
+  // reset above so both firing in one flush ends on Raw, not Rendered.
   useEffect(() => {
     if (!selectedFile || !selectedLines) return;
     if (!rendersLineOverlay(selectedFile.name)) setViewMode("raw");

@@ -42,7 +42,9 @@ export function InlineCommentOverlay(props: {
     // Keyed by file as well as org: the boundary has no way to un-fail
     // itself, so without this a single bad render would hide comments on
     // every other file until an org switch or a full reload.
-    <CommentsErrorBoundary key={`${organization.id}:${props.filePath}`}>
+    <CommentsErrorBoundary
+      key={`${organization.id}:${props.taskId}:${props.filePath}`}
+    >
       <RoomProvider id={`qa:${organization.id}:${props.taskId}`}>
         <ClientSideSuspense fallback={null}>
           <OverlayInner {...props} />
@@ -93,8 +95,14 @@ function OverlayInner({
   useEffect(() => {
     if (autoOpenedRef.current || !selectedLines) return;
     for (const [line, group] of byLine) {
-      const end = Math.max(...group.map((t) => t.metadata.lineEnd ?? line));
-      if (line === selectedLines.start && end === selectedLines.end) {
+      if (line !== selectedLines.start) continue;
+      // Any one thread on this line matching is enough. Comparing against
+      // the group's widest end would miss a link to the shorter of two
+      // threads that share a start line.
+      const hit = group.some(
+        (t) => (t.metadata.lineEnd ?? line) === selectedLines.end
+      );
+      if (hit) {
         autoOpenedRef.current = true;
         setOpenLine(line);
         return;
