@@ -878,15 +878,15 @@ export function TaskDetailClient({
     [orderedTrials, trialGroups]
   );
 
-  // A trial link from the task overview's aggregated QA. The overview is
-  // scoped to the selected version, so a miss means the trial belongs to
-  // another version — returning false hands the overview its deep-link
-  // fallback, which addresses the right version.
+  // A trial link from the task overview's aggregated QA. Always opens in
+  // this page's drawer: the overview hands over the full trial row, so a
+  // trial the current version list doesn't carry still renders in place
+  // instead of routing away. The version-list match is preferred so the
+  // per-group trial nav lines up.
   const handleOpenTrialFromOverview = useCallback(
     (trial: Trial): boolean => {
       const match = orderedTrials.find((t) => t.id === trial.id);
-      if (!match) return false;
-      handleSelectTrial(match);
+      handleSelectTrial(match ?? trial);
       return true;
     },
     [orderedTrials, handleSelectTrial]

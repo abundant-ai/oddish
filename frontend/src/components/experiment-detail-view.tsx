@@ -1571,22 +1571,22 @@ export function ExperimentDetailView({
     });
   };
 
-  // A trial link from the task overview's aggregated QA. The overview lists
-  // every trial of the shown version, so the id may name a trial outside
-  // this experiment's grid — returning false hands the overview its task
-  // page fallback link.
+  // A trial link from the task overview's aggregated QA. Always opens in
+  // this drawer: the overview hands over the full trial row, so even a
+  // trial the grid hasn't streamed in yet (or one gathered from another
+  // experiment) renders in place — never a navigation away. A grid match
+  // is still preferred so the per-group trial nav lines up.
   const handleOpenTrialFromOverview = useCallback(
     (trial: Trial): boolean => {
       if (!drawerState) return false;
       const { trialGroups, orderedTrials } = buildTrialGroups(drawerState.task);
       const trialIndex = orderedTrials.findIndex((t) => t.id === trial.id);
-      if (trialIndex < 0) return false;
       cancelPendingDeepLink();
       setDrawerState({
         ...drawerState,
         mode: "trial",
-        trial: orderedTrials[trialIndex],
-        trialIndex,
+        trial: trialIndex >= 0 ? orderedTrials[trialIndex] : trial,
+        trialIndex: trialIndex >= 0 ? trialIndex : null,
         orderedTrials,
         trialGroups,
       });
