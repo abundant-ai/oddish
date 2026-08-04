@@ -147,7 +147,9 @@ async def _run_mirror() -> None:
           flush=True)
     src_url = _session_pooler(_plain(os.environ["SOURCE_DB_URL"]))
     holder = await _src_connect(src_url)
-    dst = await _connect_with_retry(_plain(os.environ["TARGET_DB_URL"]))
+    # Same 6543->5432 rewrite as the source: the load holds one long
+    # destination transaction, which the transaction pooler reaps.
+    dst = await _connect_with_retry(_session_pooler(_plain(os.environ["TARGET_DB_URL"])))
     try:
         src_tables, dst_tables = await _tables(holder), await _tables(dst)
         include = (src_tables & dst_tables) - EXCLUDE
