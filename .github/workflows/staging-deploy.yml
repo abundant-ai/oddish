@@ -94,11 +94,20 @@ jobs:
           fi
           psql_url="${ODDISH_DATABASE_URL/postgresql+asyncpg:\/\//postgresql://}"
           echo "::add-mask::$psql_url"
-          if ! PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; then
-            cat /tmp/psql.err >&2 || true
-            echo "::error::STAGING_DATABASE_URL does not authenticate. If Staging DB Bootstrap ran recently it rotated the branch password; refresh this secret with the recipe in that run's job summary, then re-run this workflow."
-            exit 1
-          fi
+          # Retry rather than probe once. A branch compute change restarts the
+          # instance, and this project has seen connections refused for seconds
+          # after health already reports green, so a single shot would blame
+          # the credential for a database that is merely coming back.
+          deadline=$(($(date +%s) + 300))
+          until PGCONNECT_TIMEOUT=15 psql "$psql_url" -c 'select 1' >/dev/null 2>/tmp/psql.err; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              cat /tmp/psql.err >&2 || true
+              echo "::error::The staging database did not accept STAGING_DATABASE_URL within 300s. Staging DB Bootstrap rotates the branch password and cannot write this secret, so refresh it with the recipe in that run's job summary; if instead the branch compute was changed, wait for the branch to report healthy and re-run this workflow."
+              exit 1
+            fi
+            echo "staging database not reachable yet; retrying"
+            sleep 10
+          done
           echo "staging database credential authenticates"
 
       # No rotation, no compute pin: this is a PERSISTENT branch, unlike the

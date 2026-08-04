@@ -487,14 +487,30 @@ jobs:
         run: |
           set -euo pipefail
           # Staging runs a fixed compute tier, not prod's. The bulk-load step
-          # targets the same tier, so normally this is a no-op; it exists to
-          # correct drift if someone raised the tier by hand ("Ensure branch
-          # compute for the
-          # bulk load" above. Must not fail the job -- the mirror already
-          # succeeded and the guard variable is already flipped by the
-          # previous step.
+          # ("Ensure branch compute for the bulk load" above) targets the same
+          # tier, so normally there is nothing to change here; this step exists
+          # to correct drift if someone moved the tier by hand. Must not fail
+          # the job -- the mirror already succeeded and the guard variable is
+          # already flipped by the previous step.
           branch_addons_url="https://api.supabase.com/v1/projects/${BRANCH_REF}/billing/addons"
 
+          # Send no request when the tier already matches. Applying an addon
+          # restarts the instance, and the deploy this run dispatches would
+          # then meet a database still coming back. Only a positively read
+          # matching tier skips: if the read fails, fall through and apply,
+          # which is what this step has always done.
+          current_variant=""
+          if http_code=$(curl -sS -o /tmp/addons_now.json -w '%{http_code}' \
+              -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+              "$branch_addons_url") && [[ "$http_code" == 2* ]]; then
+            current_variant=$(jq -r '.selected_addons[]? | select(.type=="compute_instance") | .variant.id // empty' /tmp/addons_now.json)
+          fi
+          if [ "$current_variant" = "$STAGING_COMPUTE_VARIANT" ]; then
+            echo "branch compute is already ${STAGING_COMPUTE_VARIANT}; leaving it alone"
+            exit 0
+          fi
+
+          echo "returning branch compute from ${current_variant:-unknown} to ${STAGING_COMPUTE_VARIANT}"
           body=$(jq -n --arg addon_type "compute_instance" --arg addon_variant "$STAGING_COMPUTE_VARIANT" \
             '{addon_type: $addon_type, addon_variant: $addon_variant}')
           http_code=$(curl -sS -o /tmp/addon_apply_down.json -w '%{http_code}' \
