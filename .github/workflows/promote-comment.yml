@@ -16,10 +16,16 @@ on:
 
 jobs:
   promote:
+    # The command is the first line of the comment, so a maintainer can write
+    # `/promote` and explain the release underneath. Expression string literals
+    # have no escape sequences, so `fromJSON` is the only way to write the line
+    # break; GitHub sends CRLF, and the bare CR clause covers it.
     if: >-
       github.event.issue.pull_request &&
       (github.event.comment.body == '/promote' ||
-      startsWith(github.event.comment.body, '/promote '))
+      startsWith(github.event.comment.body, '/promote ') ||
+      startsWith(github.event.comment.body, fromJSON('"/promote\n"')) ||
+      startsWith(github.event.comment.body, fromJSON('"/promote\r"')))
     runs-on: ubuntu-latest
     # Job level, not workflow level: a workflow-level group is joined by every
     # comment in the repository, and a newly queued run replaces the pending
