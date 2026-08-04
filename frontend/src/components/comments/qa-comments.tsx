@@ -42,7 +42,7 @@ export function InlineCommentOverlay(props: {
   const { organization } = useOrganization();
   if (!organization) return null;
   return (
-    <CommentsErrorBoundary>
+    <CommentsErrorBoundary key={organization.id}>
       <RoomProvider id={`qa:${organization.id}:${props.taskId}`}>
         <ClientSideSuspense fallback={null}>
           <OverlayInner key={props.filePath} {...props} />
@@ -203,7 +203,7 @@ export function QaCommentsSection(props: {
   const { organization } = useOrganization();
   if (!organization) return null;
   return (
-    <CommentsErrorBoundary>
+    <CommentsErrorBoundary key={organization.id}>
       <RoomProvider id={`qa:${organization.id}:${props.taskId}`}>
         <ClientSideSuspense fallback={null}>
           {/* Keyed by file so a collapse choice on one file doesn't stick

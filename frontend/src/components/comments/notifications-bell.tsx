@@ -28,8 +28,14 @@ import { CommentsErrorBoundary } from "@/components/comments/comments-provider";
  * from the URL.
  */
 export function NotificationsBell() {
+  const { organization } = useOrganization();
+  // Gate before any Liveblocks hook runs: mounting the inner bell without
+  // an active org fires an auth call that 401s and trips the boundary,
+  // which never resets — the bell would stay hidden even after an org is
+  // chosen. Keying the boundary by org starts each org from a clean slate.
+  if (!organization) return null;
   return (
-    <CommentsErrorBoundary>
+    <CommentsErrorBoundary key={organization.id}>
       <ClientSideSuspense fallback={null}>
         <BellInner />
       </ClientSideSuspense>
