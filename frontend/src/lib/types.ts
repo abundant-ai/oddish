@@ -681,13 +681,17 @@ export type TrajectoryComponentKind =
   | "thinking_recall"
   | "thinking_understand"
   | "thinking_hypothesize"
-  | "thinking_diagnose"
+  | "thinking_correction"
   | "implementing"
+  | "implementing_correction"
   | "writing_tests"
   | "testing_public"
   | "testing_custom"
-  | "testing_custom_edge_cases"
-  | "debugging";
+  | "testing_edge_cases"
+  | "debugging"
+  // Retired from the backend enum, but stored summaries still carry them.
+  | "thinking_diagnose"
+  | "testing_custom_edge_cases";
 
 export interface TrajectoryComponent {
   step_ids: number[];

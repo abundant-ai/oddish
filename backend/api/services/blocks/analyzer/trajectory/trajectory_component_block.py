@@ -20,7 +20,6 @@ class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
     THINKING_RECALL = "thinking_recall"
     THINKING_UNDERSTAND = "thinking_understand"
     THINKING_HYPOTHESIZE = "thinking_hypothesize"
-    THINKING_DIAGNOSE = "thinking_diagnose"
     THINKING_CORRECTION = "thinking_correction"
 
 
@@ -30,7 +29,7 @@ class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
     WRITING_TESTS = "writing_tests"
     TESTING_PUBLIC = "testing_public"
     TESTING_CUSTOM = "testing_custom"
-    TESTING_CUSTOM_EDGE_CASES = "testing_custom_edge_cases"
+    TESTING_EDGE_CASES = "testing_edge_cases"
     DEBUGGING = "debugging"
 
 
