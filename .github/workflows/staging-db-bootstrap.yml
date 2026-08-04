@@ -13,7 +13,8 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: staging-db-bootstrap
+  # Shared with staging-deploy.yml so the two never touch the branch at once.
+  group: staging-environment
   cancel-in-progress: false
 
 jobs:
@@ -203,8 +204,8 @@ jobs:
             echo "Refresh the deploy credential before the next staging deploy:"
             echo
             echo '```bash'
-            echo "cd backend && URL=\$(uv run modal run --env staging <emit-url script>)"
-            echo "printf '%s' \"\$URL\" | gh secret set STAGING_DATABASE_URL --env staging"
+            echo "cd backend && uv run modal run --env staging ../.github/scripts/staging/emit_staging_db_url.py | grep -E '^postgresql' | tail -1 | gh secret set STAGING_DATABASE_URL --repo $GITHUB_REPOSITORY --env staging"
+            echo "gh workflow run 'Staging Deploy' --repo $GITHUB_REPOSITORY"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning::staging DB password was reset — refresh the STAGING_DATABASE_URL secret on the staging environment (see job summary)"
@@ -330,7 +331,7 @@ jobs:
             exit 1
           fi
 
-      - name: Scale branch compute up for the bulk load
+      - name: Ensure branch compute for the bulk load
         shell: bash
         env:
           BRANCH_REF: ${{ steps.branch.outputs.branch_ref }}
@@ -448,7 +449,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: gh variable set STAGING_DB_BOOTSTRAP_DONE --body "true" --repo "$GITHUB_REPOSITORY"
 
-      - name: Return branch compute to the staging tier
+      - name: Ensure branch compute is on the staging tier
         shell: bash
         continue-on-error: true
         env:
@@ -456,8 +457,10 @@ jobs:
           STAGING_COMPUTE_VARIANT: "ci_large"
         run: |
           set -euo pipefail
-          # Staging runs a fixed compute tier, not prod's -- this step only
-          # undoes the temporary bump from "Scale branch compute up for the
+          # Staging runs a fixed compute tier, not prod's. The bulk-load step
+          # targets the same tier, so normally this is a no-op; it exists to
+          # correct drift if someone raised the tier by hand ("Ensure branch
+          # compute for the
           # bulk load" above. Must not fail the job -- the mirror already
           # succeeded and the guard variable is already flipped by the
           # previous step.

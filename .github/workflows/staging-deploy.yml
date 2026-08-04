@@ -1,20 +1,18 @@
 name: Staging Deploy
 
 # Runs on every push to staging so the staging deployment tracks staging HEAD.
-# paths-ignore keeps this from double-running alongside the one-shot bootstrap
-# workflow (staging-db-bootstrap.yml), which owns initial branch creation, the
-# schema snapshot, and the full data copy -- this workflow only ever resolves
-# the branch that already exists.
+# The concurrency group is shared with staging-db-bootstrap.yml, so a deploy
+# never runs migrations against a branch a bootstrap is mid-mirror on -- it
+# queues and runs afterwards, which also refreshes the app whenever a
+# bootstrap republishes the database secret. Every staging tip gets a deploy
+# run; the promotion preflight depends on that.
 on:
   push:
     branches: [staging]
-    paths-ignore:
-      - ".github/workflows/staging-db-bootstrap.yml"
-      - ".github/scripts/staging/refresh_staging_db.py"
   workflow_dispatch: {}
 
 concurrency:
-  group: staging-deploy
+  group: staging-environment
   cancel-in-progress: false
 
 jobs:
