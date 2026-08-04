@@ -1,0 +1,101 @@
+name: Staging Deploy
+
+# Runs on every push to staging so the staging deployment tracks staging HEAD.
+# paths-ignore keeps this from double-running alongside the one-shot bootstrap
+# workflow (staging-db-bootstrap.yml), which owns initial branch creation, the
+# schema snapshot, and the full data copy -- this workflow only ever resolves
+# the branch that already exists.
+on:
+  push:
+    branches: [staging]
+    paths-ignore:
+      - ".github/workflows/staging-db-bootstrap.yml"
+      - ".github/scripts/staging/refresh_staging_db.py"
+  workflow_dispatch: {}
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://abundant-ai-staging--oddish-staging-api.modal.run
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    # Python 3.13, uv, and a warm uv cache live in the base image --
+    # refreshed weekly by .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: staging
+      MODAL_APP_NAME: oddish-staging
+      MODAL_SECRET_ENVIRONMENT: main
+      # Hold LLM trials until a task's nop/oracle baselines validate it (mirrors
+      # modal-deploy.yml's prod setting).
+      ODDISH_GATE_LLM_ON_BASELINES: "1"
+      # GKE (TPU) execution backend, mirroring modal-deploy.yml's prod block.
+      # backend/modal_app.py only bakes env vars prefixed ODDISH_GKE_ into the
+      # deployed image (its ENV_VARS dict filters on that prefix); an unprefixed
+      # name here would be silently dropped rather than erroring, so the prefix
+      # on every one of these is load-bearing, not decorative.
+      ODDISH_GKE_ENABLED: "true"
+      ODDISH_GKE_PROJECT_ID: "abundant-default"
+      ODDISH_GKE_REGION: "us-east5"
+      ODDISH_GKE_REGISTRY_LOCATION: "us-east5"
+      ODDISH_GKE_REGISTRY_NAME: "oddish-envs"
+      ODDISH_GKE_AUTO_PROVISION_CLUSTER: "true"
+      ODDISH_GKE_AUTO_BUILD_MISSING_IMAGE: "true"
+      ODDISH_GKE_IDLE_CLUSTER_TTL_HOURS: "1"
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      # Low caps: staging carries no production traffic.
+      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "8"
+      ODDISH_MODAL_MAX_WORKERS_PER_POLL: "16"
+      # Explicit documentation of the default (MODAL_APP_NAME != "oddish").
+      ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      # No rotation, no compute pin: this is a PERSISTENT branch, unlike the
+      # per-PR preview branches this flow was first modelled on. The database
+      # URL is stored once as a secret on the `staging` environment, so a
+      # deploy never interrupts the running app's connections and never
+      # touches the branch's compute tier. The bootstrap workflow still
+      # rotates (it may create the branch from scratch) and still restores
+      # the tier after a bulk load.
+      - name: Core migrations
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+          ODDISH_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          uv sync --frozen --extra server
+          uv run alembic upgrade head
+
+      - name: Backend migrations
+        working-directory: backend
+        env:
+          ODDISH_DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+        run: |
+          uv sync --frozen
+          uv run alembic upgrade head
+
+      - name: Deploy
+        working-directory: backend
+        run: |
+          uv sync --frozen
+          uv run modal deploy deploy.py

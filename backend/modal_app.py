@@ -450,7 +450,9 @@ runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
-if MODAL_APP_NAME.startswith("oddish-pr-"):
+# Per-app DB override: per-PR previews and the persistent staging app both
+# borrow every other secret from env "main" and rebind only the database.
+if MODAL_APP_NAME.startswith("oddish-pr-") or MODAL_APP_NAME == "oddish-staging":
     runtime_secrets.append(
         modal.Secret.from_name(
             f"{MODAL_APP_NAME}-db",

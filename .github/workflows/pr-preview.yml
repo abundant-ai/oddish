@@ -226,6 +226,7 @@ jobs:
       # backend was ever provisioned (frontend-only PRs).
       MODAL_API_URL: ${{ needs.detect-changes.outputs.preview_backend_live == 'true' && needs.detect-changes.outputs.preview_api_url || '' }}
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      STAGING_API_URL: ${{ vars.ODDISH_STAGING_API_URL }}
       PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
       PREVIEW_ALIAS_HOSTNAME: pr-${{ github.event.pull_request.number }}.oddish.app
