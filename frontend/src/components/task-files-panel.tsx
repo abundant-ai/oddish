@@ -203,7 +203,7 @@ function getNodeName(path: string): string {
  *  versions[0]. */
 function pickChecksVersion(
   detail: TaskDetailResponse | undefined,
-  pinnedVersion?: number | null,
+  pinnedVersion?: number | null
 ): TaskVersionSummary | null {
   const versions = detail?.versions;
   if (!versions || versions.length === 0) return null;
@@ -404,20 +404,19 @@ export function TaskFilesPanel({
     error: checksLoadError,
     mutate: mutateChecks,
   } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
-      // Poll while the checks run, and while task QA runs: the full QA job
-      // writes fresh findings when it lands, so the pane keeps tracking
-      // until both are terminal.
-      refreshInterval: (data) => {
-        const checksLive =
-          pickChecksVersion(data, taskVersion)?.pre_trial_status ===
-            "running" ||
-          pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
-        const qaLive =
-          data?.task?.verdict_status === "queued" ||
-          data?.task?.verdict_status === "running";
-        return checksLive || qaLive ? 5000 : 0;
-      },
-    });
+    // Poll while the checks run, and while task QA runs: the full QA job
+    // writes fresh findings when it lands, so the pane keeps tracking
+    // until both are terminal.
+    refreshInterval: (data) => {
+      const checksLive =
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "running" ||
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
+      const qaLive =
+        data?.task?.verdict_status === "queued" ||
+        data?.task?.verdict_status === "running";
+      return checksLive || qaLive ? 5000 : 0;
+    },
+  });
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
@@ -700,12 +699,12 @@ export function TaskFilesPanel({
     try {
       const res = await fetch(
         `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
-        { method: "POST" },
+        { method: "POST" }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue static checks",
+          data.detail || data.error || "Failed to queue static checks"
         );
       }
       await mutateChecks();
@@ -829,7 +828,14 @@ export function TaskFilesPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, overviewAvailable]);
+  }, [
+    isOpen,
+    taskId,
+    filesUrl,
+    resolvedFilesUrl,
+    buildListingUrl,
+    overviewAvailable,
+  ]);
 
   // Fetch file content when a file is selected
   useEffect(() => {
@@ -1196,6 +1202,12 @@ export function TaskFilesPanel({
               } else {
                 setSelectedFile(node);
                 setOverviewSelected(false);
+                // A line anchor belongs to the file it was made in. Cleared
+                // here rather than in an effect, so the next file's comment
+                // overlay never sees the previous file's range — with
+                // matching line numbers it would open an unrelated thread.
+                if (node.path !== selectedFile?.path)
+                  onSelectLinesChange?.(null);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
