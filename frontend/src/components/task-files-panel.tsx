@@ -37,10 +37,7 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
-import {
-  InlineCommentOverlay,
-  QaCommentsSection,
-} from "@/components/comments/qa-comments";
+import { InlineCommentOverlay } from "@/components/comments/qa-comments";
 import type {
   Task,
   TaskDetailResponse,
@@ -1274,14 +1271,6 @@ export function TaskFilesPanel({
             staticChecksTaskId) — both show the same task files, so threads
             are shared. Trial-file panes set neither, and public read-only
             views (showAnalysis=false) never render comments. */}
-        {commentsEnabled && (
-          <QaCommentsSection
-            taskId={effectiveChecksTaskId!}
-            filePath={selectedFile.path}
-            selectedLines={selectedLines ?? null}
-            onSelectLines={onSelectLinesChange}
-          />
-        )}
       </div>
     );
   };

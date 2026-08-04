@@ -995,11 +995,14 @@ no backend/DB involvement). Org separation is enforced at token mint:
 `/api/liveblocks-auth` grants only `qa:{callerClerkOrgId}:*` rooms, one room
 per task, with the file/line anchor (`?taskFile=`/`?taskLines=`) carried as
 thread metadata. User info and @mention suggestions resolve through Clerk via
-`/api/liveblocks-users`. UI lives in `src/components/comments/` (per-file
-thread section in `task-files-panel`, notification bell in the nav) and only
-renders for task-scoped panes with `showAnalysis` true, so trial-file panes
-and public share views never show it. Unset `LIVEBLOCKS_SECRET_KEY` hides the
-feature entirely.
+`/api/liveblocks-users`. UI lives in `src/components/comments/`: a
+GitHub-style inline overlay in the line-oriented code view (gutter bubbles on
+commented lines, composer anchored to the current selection — possible
+because pierre rows are a fixed 1.25rem) plus a notification bell in the nav.
+Comments only render for task-scoped panes with `showAnalysis` true, so
+trial-file panes and public share views never show them; rendered markdown
+has variable block heights, so commenting on markdown happens in Raw view.
+Unset `LIVEBLOCKS_SECRET_KEY` hides the feature entirely.
 
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production

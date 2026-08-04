@@ -111,7 +111,14 @@ function BellInner() {
                     <InboxNotification inboxNotification={notification} />
                   }
                 >
-                  <ClientSideSuspense fallback={null}>
+                  {/* Fallback is the plain row, not null: items must stay
+                      visible while their thread payload loads, since
+                      opening the menu already marked them read. */}
+                  <ClientSideSuspense
+                    fallback={
+                      <InboxNotification inboxNotification={notification} />
+                    }
+                  >
                     <ThreadNotification notification={notification} />
                   </ClientSideSuspense>
                 </CommentsErrorBoundary>
