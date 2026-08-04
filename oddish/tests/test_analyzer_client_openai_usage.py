@@ -201,3 +201,17 @@ def test_bare_id_on_public_default_still_warns(monkeypatch):
         _warnings.simplefilter("error")
         _, wire = mod._build_openai_client(model="openai/gpt-5.2")
     assert wire == "gpt-5.2"
+
+
+def test_anthropic_path_normalizes_wire_model():
+    from oddish.blocks.analyzer.analyzer_llm_client import ApiAnalyzerLLMClient
+
+    # The Anthropic SDK only accepts plain API ids: the transport prefix and
+    # Bedrock-shaped ids both normalize at construction.
+    client = ApiAnalyzerLLMClient(model="anthropic/claude-haiku-4-5")
+    assert client._model == "claude-haiku-4-5"
+
+    client = ApiAnalyzerLLMClient(
+        model="global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    )
+    assert client._model == "claude-haiku-4-5"

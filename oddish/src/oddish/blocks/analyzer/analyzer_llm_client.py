@@ -19,6 +19,7 @@ from oddish.config import (
     _infer_provider_prefix,
     is_openai_platform_prefixed,
     settings,
+    to_anthropic_api_model_id,
 )
 
 _DEFAULT_MODEL = "claude-opus-4-8"
@@ -228,6 +229,11 @@ class ApiAnalyzerLLMClient:
             # When set, the response is constrained to this JSON schema during
             # generation instead of being hand-written into free text.
             self._output_schema = output_schema
+            # The Anthropic SDK only accepts plain API ids: strip an
+            # ``anthropic/``/``claude/`` transport prefix and map
+            # Bedrock-shaped ids to their dateless API id (the same
+            # normalization the CLI analyzer path applies).
+            self._model = to_anthropic_api_model_id(model) or model
             key = resolve_analyzer_api_key(api_key)
             self._anthropic = AsyncAnthropic(api_key=key) if key else AsyncAnthropic()
             self._openai = None
