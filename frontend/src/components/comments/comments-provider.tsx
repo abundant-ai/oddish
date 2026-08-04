@@ -50,6 +50,13 @@ export class CommentsErrorBoundary extends Component<
     return { failed: true };
   }
 
+  componentDidCatch(error: unknown) {
+    // The UI hides on failure by design, so leave a trace for whoever is
+    // wondering why the comment UI isn't there (missing/mis-scoped
+    // LIVEBLOCKS_SECRET_KEY is the usual answer).
+    console.warn("[qa-comments] comment UI hidden due to error:", error);
+  }
+
   render() {
     return this.state.failed ? null : this.props.children;
   }

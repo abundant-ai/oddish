@@ -17,6 +17,14 @@ interface CodeRendererProps {
   selectedLines?: LineRange | null;
   /** Called when the user selects lines (click / shift-click / drag). */
   onSelectLines?: (range: LineRange | null) => void;
+  /**
+   * Rendered inside a wrapper that is position:relative and exactly the
+   * size of the file content. Rows are a fixed 1.25rem tall
+   * (``--diffs-line-height``; the file header is disabled), so an overlay
+   * can pin UI to line N at ``top: (N - 1) * 1.25rem`` — this is how QA
+   * comment markers anchor to their lines.
+   */
+  lineOverlay?: React.ReactNode;
 }
 
 /** Pierre ranges carry diff-side metadata and can run backwards (drag up). */
@@ -44,6 +52,7 @@ export function CodeRenderer({
   plainText = false,
   selectedLines,
   onSelectLines,
+  lineOverlay,
 }: CodeRendererProps) {
   const isDark = useIsDark();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -113,15 +122,18 @@ export function CodeRenderer({
 
   return (
     <div ref={containerRef} className="h-full overflow-auto">
-      <PierreFile
-        file={{
-          name: fileName,
-          contents: content,
-          ...(plainText ? { lang: "text" as const } : null),
-        }}
-        options={options}
-        selectedLines={selectedLines ?? null}
-      />
+      <div className="relative min-w-fit">
+        <PierreFile
+          file={{
+            name: fileName,
+            contents: content,
+            ...(plainText ? { lang: "text" as const } : null),
+          }}
+          options={options}
+          selectedLines={selectedLines ?? null}
+        />
+        {lineOverlay}
+      </div>
     </div>
   );
 }

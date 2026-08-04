@@ -194,6 +194,14 @@ interface FileRendererProps {
   selectedLines?: LineRange | null;
   /** Selection changes from the line-oriented renderers, for URL sync. */
   onSelectLines?: (range: LineRange | null) => void;
+  /**
+   * Line-anchored overlay (QA comment markers), forwarded to the
+   * line-oriented code view — fixed row heights make per-line anchoring
+   * possible there. Rendered markdown has variable block heights, so its
+   * rendered view relies on the comments section below the preview instead
+   * (Raw mode gets the overlay).
+   */
+  lineOverlay?: React.ReactNode;
 }
 
 /**
@@ -210,6 +218,7 @@ export function FileRenderer({
   viewMode = "rendered",
   selectedLines,
   onSelectLines,
+  lineOverlay,
 }: FileRendererProps) {
   const resolvedKind = kind ?? getFileRendererKind(fileName);
 
@@ -221,6 +230,7 @@ export function FileRenderer({
         plainText
         selectedLines={selectedLines}
         onSelectLines={onSelectLines}
+        lineOverlay={lineOverlay}
       />
     );
   }
@@ -288,6 +298,7 @@ export function FileRenderer({
           plainText={resolvedKind === "text"}
           selectedLines={selectedLines}
           onSelectLines={onSelectLines}
+          lineOverlay={lineOverlay}
         />
       );
   }

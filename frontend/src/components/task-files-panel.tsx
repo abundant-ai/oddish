@@ -37,7 +37,10 @@ import {
   FileRenderer,
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
-import { QaCommentsSection } from "@/components/comments/qa-comments";
+import {
+  InlineCommentOverlay,
+  QaCommentsSection,
+} from "@/components/comments/qa-comments";
 import type {
   Task,
   TaskDetailResponse,
@@ -1223,6 +1226,8 @@ export function TaskFilesPanel({
       }`;
     }
 
+    const commentsEnabled = Boolean(effectiveChecksTaskId) && showAnalysis;
+
     return (
       <div className="flex h-full flex-col">
         <div className="min-h-0 flex-1 overflow-auto">
@@ -1234,6 +1239,16 @@ export function TaskFilesPanel({
             viewMode={viewMode}
             selectedLines={selectedLines}
             onSelectLines={onSelectLinesChange}
+            lineOverlay={
+              commentsEnabled ? (
+                <InlineCommentOverlay
+                  taskId={effectiveChecksTaskId!}
+                  filePath={selectedFile.path}
+                  selectedLines={selectedLines ?? null}
+                  onSelectLines={onSelectLinesChange}
+                />
+              ) : undefined
+            }
           />
         </div>
         {!isBinary && isTruncated && (
@@ -1259,9 +1274,9 @@ export function TaskFilesPanel({
             staticChecksTaskId) — both show the same task files, so threads
             are shared. Trial-file panes set neither, and public read-only
             views (showAnalysis=false) never render comments. */}
-        {effectiveChecksTaskId && showAnalysis && (
+        {commentsEnabled && (
           <QaCommentsSection
-            taskId={effectiveChecksTaskId}
+            taskId={effectiveChecksTaskId!}
             filePath={selectedFile.path}
             selectedLines={selectedLines ?? null}
             onSelectLines={onSelectLinesChange}
