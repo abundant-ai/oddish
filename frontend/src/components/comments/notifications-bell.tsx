@@ -1,11 +1,12 @@
 "use client";
 
+import { useMemo } from "react";
+import { useOrganization } from "@clerk/nextjs";
 import {
   ClientSideSuspense,
   useInboxNotificationThread,
   useInboxNotifications,
-  useMarkAllInboxNotificationsAsRead,
-  useUnreadInboxNotificationsCount,
+  useMarkInboxNotificationAsRead,
 } from "@liveblocks/react/suspense";
 import { InboxNotification } from "@liveblocks/react-ui";
 import type { InboxNotificationData } from "@liveblocks/client";
@@ -21,8 +22,8 @@ import { CommentsErrorBoundary } from "@/components/comments/comments-provider";
 
 /**
  * Nav-bar bell for QA comment notifications (mentions and thread replies),
- * backed by the Liveblocks inbox. Opening the menu marks everything read;
- * items deep-link to the commented task, file, and lines via the
+ * backed by the Liveblocks inbox. Opening the menu marks the visible items
+ * read; items deep-link to the commented task, file, and lines via the
  * ``?drawer=task&taskFile=&taskLines=`` address the task page hydrates
  * from the URL.
  */
@@ -37,15 +38,36 @@ export function NotificationsBell() {
 }
 
 function BellInner() {
+  const { organization } = useOrganization();
   const { inboxNotifications } = useInboxNotifications();
-  const { count: unreadCount } = useUnreadInboxNotificationsCount();
-  const markAllRead = useMarkAllInboxNotificationsAsRead();
+  const markRead = useMarkInboxNotificationAsRead();
+
+  // The Liveblocks inbox is user-scoped but our access token only grants
+  // the active org's rooms (qa:{orgId}:*) — a mention from another org
+  // would render as a dead row whose thread can't be fetched. Show only
+  // the active org's notifications; the rest reappear (still unread,
+  // since we mark read per visible item) after an org switch.
+  const orgPrefix = organization ? `qa:${organization.id}:` : null;
+  const orgNotifications = useMemo(
+    () =>
+      orgPrefix
+        ? inboxNotifications.filter((n) => n.roomId?.startsWith(orgPrefix))
+        : [],
+    [inboxNotifications, orgPrefix]
+  );
+  const unreadCount = orgNotifications.filter((n) => !n.readAt).length;
+
+  if (!organization) return null;
 
   return (
     <DropdownMenu
       modal={false}
       onOpenChange={(open) => {
-        if (open && unreadCount > 0) markAllRead();
+        if (open) {
+          for (const notification of orgNotifications) {
+            if (!notification.readAt) markRead(notification.id);
+          }
+        }
       }}
     >
       <DropdownMenuTrigger asChild>
@@ -65,14 +87,14 @@ function BellInner() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-96 border-[#6f88b4]/20 p-2">
-        {inboxNotifications.length === 0 ? (
+        {orgNotifications.length === 0 ? (
           <p className="text-muted-foreground px-2 py-4 text-center text-xs">
             No notifications yet. You&apos;ll see @mentions and replies on QA
             comments here.
           </p>
         ) : (
           <div className="max-h-96 overflow-y-auto">
-            {inboxNotifications.map((notification) =>
+            {orgNotifications.map((notification) =>
               notification.kind === "thread" ? (
                 // Each item carries its own suspense + error scope so one
                 // broken thread payload degrades to a plain notification
