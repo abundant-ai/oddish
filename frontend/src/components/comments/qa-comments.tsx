@@ -40,10 +40,13 @@ export function InlineCommentOverlay(props: {
   const { organization } = useOrganization();
   if (!organization) return null;
   return (
-    <CommentsErrorBoundary key={organization.id}>
+    // Keyed by file as well as org: the boundary has no way to un-fail
+    // itself, so without this a single bad render would hide comments on
+    // every other file until an org switch or a full reload.
+    <CommentsErrorBoundary key={`${organization.id}:${props.filePath}`}>
       <RoomProvider id={`qa:${organization.id}:${props.taskId}`}>
         <ClientSideSuspense fallback={null}>
-          <OverlayInner key={props.filePath} {...props} />
+          <OverlayInner {...props} />
         </ClientSideSuspense>
       </RoomProvider>
     </CommentsErrorBoundary>
@@ -84,12 +87,14 @@ function OverlayInner({
   const lastSubmittedRef = useRef<LineRange | null>(null);
   const [failedRange, setFailedRange] = useState<LineRange | null>(null);
   useErrorListener((error) => {
-    if (
-      error.context.type === "CREATE_THREAD_ERROR" ||
-      error.context.type === "CREATE_COMMENT_ERROR"
-    ) {
-      setFailedRange(lastSubmittedRef.current);
-    }
+    // Only new threads started by this overlay's composer. A failed reply
+    // (CREATE_COMMENT_ERROR) belongs to its own thread UI, and this ref
+    // would point at some unrelated earlier range. Consume the ref so a
+    // later failure can't replay a range that already succeeded.
+    if (error.context.type !== "CREATE_THREAD_ERROR") return;
+    const range = lastSubmittedRef.current;
+    lastSubmittedRef.current = null;
+    if (range) setFailedRange(range);
   });
 
   // A new selection is a new comment target; a cleared one retires the
@@ -278,7 +283,7 @@ export function TaskCommentsOverview({
   const { organization } = useOrganization();
   if (!organization) return null;
   return (
-    <CommentsErrorBoundary key={organization.id}>
+    <CommentsErrorBoundary key={`${organization.id}:${taskId}`}>
       <RoomProvider id={`qa:${organization.id}:${taskId}`}>
         <ClientSideSuspense fallback={null}>
           <CommentsOverviewInner onOpenFileAtLines={onOpenFileAtLines} />
