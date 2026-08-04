@@ -177,12 +177,16 @@ export function TaskOverviewPanel({
   });
 
   // The host's in-memory rows paint the pane while the fetch runs. They can
-  // include probes and are unscoped, so apply the same filters here.
+  // include probes and are unscoped, so apply the same filters here. An
+  // empty seed proves nothing — the scoped fetch may still return rows the
+  // host never loaded — so only a non-empty seed may paint (an empty one
+  // would render a false "no trials" instead of the loading state).
   const seedTrials = useMemo(() => {
     if (!initialTrials) return null;
-    return initialTrials.filter(
+    const filtered = initialTrials.filter(
       (trial) => !trial.is_probe && !trial.superseded_by_trial_id,
     );
+    return filtered.length > 0 ? filtered : null;
   }, [initialTrials]);
   const displayTrials = trials ?? seedTrials;
   const versionTrials = useMemo(() => {
