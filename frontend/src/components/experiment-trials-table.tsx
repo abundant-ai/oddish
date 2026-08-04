@@ -2293,51 +2293,73 @@ export function ExperimentTrialsTable({
                                 </TooltipContent>
                               </Tooltip>
                             </div>
-                            {showAnalysis && task.current_version != null && (
-                              <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
-                                v{task.current_version}
-                              </span>
-                            )}
-                            {!readOnly && (() => {
+                            {(() => {
+                              const showVersion =
+                                showAnalysis && task.current_version != null;
                               // Sum the trials actually rendered in this row's
                               // matrix (visible agent columns) so the badge
                               // tracks the grid when agent columns are hidden.
                               // Gathered/shared-task trials count: the badge
                               // prices the row being shown, matching the Cost
                               // tile.
-                              const c = sumTaskTrialCost(orderedTrials);
+                              const cost = readOnly
+                                ? null
+                                : sumTaskTrialCost(orderedTrials);
                               // Agent cost only. QA spend is deliberately not
                               // annotated per row -- the row is already dense,
                               // and QA totals live on the experiment's Cost
                               // tile and on each task's own page.
-                              if (
-                                c.pricedCount === 0 ||
-                                !hasDisplayableCostUsd(c.costUsd)
-                              )
-                                return null;
-                              const marks = costEstimateMarks(
-                                c.hasEstimated,
-                                c.hasNative,
-                              );
+                              const showCost =
+                                cost != null &&
+                                cost.pricedCount > 0 &&
+                                hasDisplayableCostUsd(cost.costUsd);
+
+                              if (!showVersion && !showCost) return null;
+
+                              const marks = showCost
+                                ? costEstimateMarks(
+                                    cost.hasEstimated,
+                                    cost.hasNative,
+                                  )
+                                : null;
+                              const costTone =
+                                showCost && cost.hasEstimated
+                                  ? "text-amber-700 dark:text-amber-400"
+                                  : "text-[color:var(--paper-ink-3)]";
+
                               return (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <span className="inline-flex shrink-0 items-center font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
-                                      {marks.prefix}
-                                      {formatCostUsd(c.costUsd)}
-                                      {marks.suffix}
+                                <div className="flex shrink-0 flex-col items-end gap-0.5 leading-none">
+                                  {showVersion && (
+                                    <span className="inline-flex items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
+                                      v{task.current_version}
                                     </span>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    Total cost across {c.pricedCount} priced
-                                    trial{c.pricedCount === 1 ? "" : "s"}
-                                    {c.hasEstimated && c.hasNative
-                                      ? " · * mixes native + token-estimated pricing"
-                                      : c.hasEstimated
-                                        ? " · ~ token-estimated pricing"
-                                        : ""}
-                                  </TooltipContent>
-                                </Tooltip>
+                                  )}
+                                  {showCost &&
+                                    cost != null &&
+                                    marks != null && (
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <span
+                                            className={`inline-flex items-center font-mono text-[9px] leading-none font-medium tabular-nums ${costTone}`}
+                                          >
+                                            {marks.prefix}
+                                            {formatCostUsd(cost.costUsd)}
+                                            {marks.suffix}
+                                          </span>
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                          Total cost across {cost.pricedCount}{" "}
+                                          priced trial
+                                          {cost.pricedCount === 1 ? "" : "s"}
+                                          {cost.hasEstimated && cost.hasNative
+                                            ? " · * mixes native + token-estimated pricing"
+                                            : cost.hasEstimated
+                                              ? " · ~ token-estimated pricing"
+                                              : ""}
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    )}
+                                </div>
                               );
                             })()}
                             {/* Jump from the experiment to this task's own

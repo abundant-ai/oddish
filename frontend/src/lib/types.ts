@@ -93,6 +93,14 @@ export interface TagListResponse {
   items: TagSummary[];
 }
 
+/** Whether this trial exploited a pre-trial finding, by finding id. */
+interface TrialExploitation {
+  links_to?: string | null;
+  exploited?: boolean | null;
+  exploit_evidence?: string | null;
+  causal?: boolean | null;
+}
+
 interface TrialAnalysis {
   trial_name?: string;
   classification: AnalysisClassification;
@@ -102,6 +110,8 @@ interface TrialAnalysis {
   recommendation?: string;
   /** Task weaknesses this trial revealed; same shape as pre-trial findings. */
   action_items?: PreTrialFinding[];
+  /** Per pre-trial finding assessments — the trial↔audit finding join. */
+  exploitation?: TrialExploitation[];
   reward?: number | null;
   prompt_kind?: string;
   prompt_version?: number;
@@ -366,6 +376,8 @@ export interface PreTrialFinding {
   detail?: string | null;
   recommendation?: string | null;
   exploited?: boolean | null;
+  /** On post-trial items: the pre-trial finding id this one relates to. */
+  links_to?: string | null;
 }
 
 interface TaskCostTotals {

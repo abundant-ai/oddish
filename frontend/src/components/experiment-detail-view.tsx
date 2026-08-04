@@ -48,6 +48,12 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
+import {
+  formatLineRange,
+  parseLineRange,
+  type LineRange,
+} from "@/lib/line-range";
+import { sameFilePath } from "@/lib/file-path";
 
 type DrawerMode = "task" | "trial";
 
@@ -939,6 +945,39 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false }
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  // Task-definition pane addressing. The drawer can show the task's file
+  // tree beside the trial view, so the two panes address independently:
+  // the trial pane owns ?file= / ?lines= (see TrialDetailPanel) and the
+  // task pane owns ?taskFile= / ?taskLines=.
+  const [taskPaneFile, setTaskPaneFile] = useState<string | null>(() =>
+    searchParams.get("taskFile")
+  );
+  const [taskPaneLines, setTaskPaneLines] = useState<LineRange | null>(() =>
+    parseLineRange(searchParams.get("taskLines"))
+  );
+  // Mirrors taskPaneFile so the change handler can compare without an
+  // impure setState updater.
+  const taskPaneFileRef = useRef<string | null>(taskPaneFile);
+  const handleTaskPaneFileChange = useCallback((path: string | null) => {
+    // A different file makes the old line anchor meaningless — drop it.
+    if (!sameFilePath(taskPaneFileRef.current, path)) setTaskPaneLines(null);
+    taskPaneFileRef.current = path;
+    setTaskPaneFile(path);
+  }, []);
+  // Reset the pane address when the drawer moves to another task (grid
+  // selection, prev/next nav) or closes — the old path belongs to the old
+  // task. The first open keeps it so deep links land.
+  const lastDrawerTaskIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const taskId = drawerState?.task.id ?? null;
+    if (
+      lastDrawerTaskIdRef.current !== null &&
+      taskId !== lastDrawerTaskIdRef.current
+    ) {
+      handleTaskPaneFileChange(null);
+    }
+    lastDrawerTaskIdRef.current = taskId;
+  }, [drawerState?.task.id, handleTaskPaneFileChange]);
   // When loadFullTrialOnOpen is set, the grid only has slim trials, so fetch
   // the clicked/navigated trial's full detail; the popup renders the slim trial
   // until this resolves. No-op (and never fetches) on the public share page.
@@ -1031,6 +1070,21 @@ export function ExperimentDetailView({
     ExperimentAgentSummary[]
   >([]);
   const hydratedFromUrl = useRef(false);
+  // Deep-linked ?trial= that wasn't in the loaded data when the URL was read:
+  // trial pages stream in after the task shells, so on direct loads the trial
+  // is almost never there yet. Held here until it resolves from a streamed
+  // page or a direct /api/trials fetch.
+  const [pendingUrlTrialId, setPendingUrlTrialId] = useState<string | null>(
+    null
+  );
+  // A pending deep-link trial fetched directly by id, staged until its host
+  // task shell is available to open the drawer with.
+  const [resolvedUrlTrial, setResolvedUrlTrial] = useState<Trial | null>(null);
+  // Task drawer opened by hydration itself while a deep-link trial was still
+  // pending (possibly from a stale ?task= naming the wrong task). The
+  // resolver may replace this drawer; any other open drawer means the user
+  // navigated, and the deep link yields.
+  const hydrationTaskIdRef = useRef<string | null>(null);
   const isInitialLoading = isLoading && tasksForExperiment.length === 0;
   const deferredTasksForDerivedData = useDeferredValue(tasksForExperiment);
 
@@ -1119,29 +1173,54 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!hydratedFromUrl.current) return;
 
-    const next = new URLSearchParams(searchParams.toString());
+    // Base the rewrite on the live URL, not the useSearchParams snapshot:
+    // replaceState never refreshes that hook, and TrialDetailPanel writes
+    // its own params (tab/file/lines) the same way — a stale base here
+    // would silently wipe them (and vice versa).
+    const current = new URLSearchParams(window.location.search);
+    const next = new URLSearchParams(window.location.search);
     if (drawerState?.isOpen) {
       next.set("task", drawerState.task.id);
       if (drawerState.mode === "trial" && drawerState.trial) {
         next.set("trial", drawerState.trial.id);
-      } else {
+      } else if (pendingUrlTrialId == null) {
+        // While a deep-linked trial is still resolving, the drawer is in task
+        // mode but the ?trial= param must survive for the promotion to keep
+        // the URL truthful.
         next.delete("trial");
         next.delete("tab");
         next.delete("file");
+        next.delete("lines");
       }
-    } else {
+      if (taskPaneFile) {
+        next.set("taskFile", taskPaneFile);
+      } else {
+        next.delete("taskFile");
+      }
+      if (taskPaneLines) {
+        next.set("taskLines", formatLineRange(taskPaneLines));
+      } else {
+        next.delete("taskLines");
+      }
+    } else if (pendingUrlTrialId == null) {
+      // Same pending guard as above: a trial-only deep link keeps the drawer
+      // closed until the trial resolves, and stripping the params here would
+      // destroy the address it's resolving from.
       next.delete("task");
       next.delete("trial");
       next.delete("tab");
       next.delete("file");
+      next.delete("lines");
+      next.delete("taskFile");
+      next.delete("taskLines");
     }
 
-    if (next.toString() !== searchParams.toString()) {
+    if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawerState, searchParams]);
+  }, [drawerState, pendingUrlTrialId, taskPaneFile, taskPaneLines]);
 
   useEffect(() => {
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
@@ -1149,37 +1228,51 @@ export function ExperimentDetailView({
 
     const urlTaskId = searchParams.get("task");
     const urlTrialId = searchParams.get("trial");
-    if (!urlTaskId) return;
+    if (!urlTaskId && !urlTrialId) return;
 
     // Fall back to task name so hand-written links like ?task=<name> work;
     // the URL-sync effect rewrites the param to the canonical id on open.
-    const task =
-      tasksForExperiment.find((t) => t.id === urlTaskId) ??
-      tasksForExperiment.find((t) => t.name === urlTaskId);
+    const task = urlTaskId
+      ? (tasksForExperiment.find((t) => t.id === urlTaskId) ??
+        tasksForExperiment.find((t) => t.name === urlTaskId))
+      : null;
+
+    if (urlTrialId) {
+      // The trial id is the source of truth for its host task, so scan every
+      // loaded task rather than trusting ?task= — a stale or missing task
+      // param must not strand the link. Public share pages carry their full
+      // trials here; the authed page usually has none yet and falls through
+      // to the pending path.
+      for (const host of tasksForExperiment) {
+        const trial = (host.trials ?? []).find((t) => t.id === urlTrialId);
+        if (trial) {
+          const { trialGroups, orderedTrials } = buildTrialGroups(host);
+          setDrawerState({
+            isOpen: true,
+            mode: "trial",
+            task: host,
+            taskIndex: tasksForExperiment.indexOf(host),
+            orderedTasks: tasksForExperiment,
+            trial,
+            trialIndex: orderedTrials.findIndex((t) => t.id === trial.id),
+            orderedTrials,
+            trialGroups,
+          });
+          return;
+        }
+      }
+      // Not loaded yet: keep the id pending; it resolves from a streamed
+      // trial page or the direct /api/trials fetch. Remember which task
+      // drawer hydration opens below so the resolver may replace it — it
+      // must never replace one the user opened themselves.
+      setPendingUrlTrialId(urlTrialId);
+      hydrationTaskIdRef.current = task?.id ?? null;
+    }
+
     if (!task) return;
 
     const taskIndex = tasksForExperiment.indexOf(task);
     const { trialGroups, orderedTrials } = buildTrialGroups(task);
-
-    if (urlTrialId) {
-      const trial = orderedTrials.find((t) => t.id === urlTrialId) ?? null;
-      if (trial) {
-        const trialIndex = orderedTrials.indexOf(trial);
-        setDrawerState({
-          isOpen: true,
-          mode: "trial",
-          task,
-          taskIndex,
-          orderedTasks: tasksForExperiment,
-          trial,
-          trialIndex,
-          orderedTrials,
-          trialGroups,
-        });
-        return;
-      }
-    }
-
     setDrawerState({
       isOpen: true,
       mode: "task",
@@ -1236,6 +1329,170 @@ export function ExperimentDetailView({
     });
   }, [tasksForExperiment, drawerState, buildTrialGroups]);
 
+  // Any drawer change the user makes themselves cancels an unresolved deep
+  // link: a late resolve must never yank them away from where they went.
+  const cancelPendingDeepLink = useCallback(() => {
+    setPendingUrlTrialId(null);
+    setResolvedUrlTrial(null);
+    hydrationTaskIdRef.current = null;
+  }, []);
+
+  // Open a resolved deep-link trial. Yields if the user has navigated on
+  // their own since hydration: only a closed drawer, the host task's own
+  // task-mode drawer, or the task drawer hydration itself opened (possibly
+  // off a stale ?task=) may be replaced. Yielding still clears the pending
+  // state — a deep link never overrides the user.
+  const openDeepLinkTrial = useCallback(
+    (host: Task, trial: Trial) => {
+      setDrawerState((prev) => {
+        if (
+          prev &&
+          !(
+            prev.mode === "task" &&
+            (prev.task.id === host.id ||
+              prev.task.id === hydrationTaskIdRef.current)
+          )
+        ) {
+          return prev;
+        }
+        const { trialGroups, orderedTrials } = buildTrialGroups(host);
+        const index = orderedTrials.findIndex((t) => t.id === trial.id);
+        return {
+          isOpen: true,
+          mode: "trial",
+          task: host,
+          taskIndex: tasksForExperiment.indexOf(host),
+          orderedTasks: tasksForExperiment,
+          trial: index >= 0 ? orderedTrials[index] : trial,
+          trialIndex: index >= 0 ? index : null,
+          orderedTrials,
+          trialGroups,
+        };
+      });
+      setPendingUrlTrialId(null);
+      setResolvedUrlTrial(null);
+    },
+    [tasksForExperiment, buildTrialGroups]
+  );
+
+  // Resolve a pending deep-link trial from grid data as it streams in. This
+  // is the only resolution path public share pages have (they can't use the
+  // authed by-id route), and it also covers the authed page whenever the
+  // direct fetch below is slow or failed transiently.
+  useEffect(() => {
+    if (pendingUrlTrialId == null) return;
+    for (const host of tasksForExperiment) {
+      const trial = (host.trials ?? []).find(
+        (t) => t.id === pendingUrlTrialId
+      );
+      if (trial) {
+        openDeepLinkTrial(host, trial);
+        return;
+      }
+    }
+    // Public share pages have no by-id fetch, so this scan is their only
+    // resolution source: once everything the page will ever have is loaded
+    // and the id still isn't there, the deep link is dead — give it up so
+    // URL sync can drop the stale param.
+    if (!loadFullTrialOnOpen && !isLoading && !isLoadingTrials) {
+      setPendingUrlTrialId(null);
+    }
+  }, [
+    pendingUrlTrialId,
+    tasksForExperiment,
+    openDeepLinkTrial,
+    loadFullTrialOnOpen,
+    isLoading,
+    isLoadingTrials,
+  ]);
+
+  // A deep-linked trial can also point at data the grid will never stream in
+  // (a task beyond the prefetched pages, or a superseded trial), so resolve
+  // the pending id with a direct fetch too. The fetched trial is only staged
+  // here; the effect below opens it once its host task shell is known.
+  // Whichever source lands first wins: a resolve from the streamed path
+  // clears the pending id, which cancels this fetch. Transient failures
+  // retry with backoff (the streamed path keeps running meanwhile); a
+  // definitive 404 or exhausted retries give the deep link up so the
+  // pending state and stale URL params don't outlive their chances.
+  useEffect(() => {
+    if (pendingUrlTrialId == null || !loadFullTrialOnOpen) return;
+    let cancelled = false;
+    (async () => {
+      const MAX_ATTEMPTS = 3;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        try {
+          const res = await fetch(
+            `${apiBaseUrl}/trials/${encodeURIComponent(pendingUrlTrialId)}`,
+            { cache: "no-store" }
+          );
+          if (cancelled) return;
+          if (res.ok) {
+            const fetched = (await res.json()) as Trial;
+            if (!cancelled) setResolvedUrlTrial(fetched);
+            return;
+          }
+          if (res.status === 404) break;
+        } catch {
+          // Transient network failure — retry below.
+        }
+        if (cancelled) return;
+        if (attempt < MAX_ATTEMPTS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * 2 ** (attempt - 1))
+          );
+          if (cancelled) return;
+        }
+      }
+      if (!cancelled) setPendingUrlTrialId(null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingUrlTrialId, loadFullTrialOnOpen, apiBaseUrl]);
+
+  // Open a directly-fetched deep-link trial. The trial is the source of
+  // truth: its task_id names the host task, so the link works even when the
+  // ?task= param is missing or names the wrong task. Waits for the host
+  // task's shell to arrive if it hasn't yet (shells cover the whole
+  // experiment in one request).
+  useEffect(() => {
+    if (!resolvedUrlTrial) return;
+    // A cancelled deep link stays cancelled: an in-flight fetch can write
+    // resolvedUrlTrial back after cancelPendingDeepLink cleared it (both
+    // updates land in the same batch, last write wins). The pending id is
+    // nulled by every cancel, so a mismatch means this value is a late
+    // revival — drop it instead of reopening a drawer the user closed.
+    if (pendingUrlTrialId !== resolvedUrlTrial.id) {
+      setResolvedUrlTrial(null);
+      return;
+    }
+    const host = tasksForExperiment.find(
+      (t) => t.id === resolvedUrlTrial.task_id
+    );
+    if (!host) {
+      // Shells cover the whole experiment in one request, but slim-task
+      // pages can still merge in hosts the shells never returned (shells
+      // are capped, and the trials merge appends enriched-only tasks). So
+      // the deep link only gives up once BOTH loads are done and the host
+      // still isn't there — then it truly belongs to another experiment
+      // or an unlinked task, and URL sync may drop the stale params.
+      if (!isLoading && !isLoadingTrials && tasksForExperiment.length > 0) {
+        cancelPendingDeepLink();
+      }
+      return;
+    }
+    openDeepLinkTrial(host, resolvedUrlTrial);
+  }, [
+    resolvedUrlTrial,
+    pendingUrlTrialId,
+    tasksForExperiment,
+    openDeepLinkTrial,
+    isLoading,
+    isLoadingTrials,
+    cancelPendingDeepLink,
+  ]);
+
   // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
   // only the loaded pages, and only the trials the grid renders, so it
   // understates spend on both counts. Non-cost fields stay client-side --
@@ -1273,6 +1530,7 @@ export function ExperimentDetailView({
   }, [deferredTasksForDerivedData, costTotals]);
 
   const closeDrawer = () => {
+    cancelPendingDeepLink();
     setDrawerState(null);
   };
 
@@ -1281,6 +1539,7 @@ export function ExperimentDetailView({
     const firstGroup = drawerState.trialGroups[0];
     if (!firstGroup || firstGroup.trials.length === 0) return;
 
+    cancelPendingDeepLink();
     const firstTrial = firstGroup.trials[0];
     setDrawerState({
       ...drawerState,
@@ -1292,6 +1551,7 @@ export function ExperimentDetailView({
 
   const handleNavigateToTask = () => {
     if (!drawerState) return;
+    cancelPendingDeepLink();
     setDrawerState({
       ...drawerState,
       mode: "task",
@@ -1302,6 +1562,7 @@ export function ExperimentDetailView({
 
   const handleNavigateToTrial = (trial: Trial, trialIndex: number) => {
     if (!drawerState) return;
+    cancelPendingDeepLink();
     setDrawerState({
       ...drawerState,
       mode: "trial",
@@ -1309,6 +1570,30 @@ export function ExperimentDetailView({
       trialIndex,
     });
   };
+
+  // A trial link from the task overview's aggregated QA. Always opens in
+  // this drawer: the overview hands over the full trial row, so even a
+  // trial the grid hasn't streamed in yet (or one gathered from another
+  // experiment) renders in place — never a navigation away. A grid match
+  // is still preferred so the per-group trial nav lines up.
+  const handleOpenTrialFromOverview = useCallback(
+    (trial: Trial): boolean => {
+      if (!drawerState) return false;
+      const { trialGroups, orderedTrials } = buildTrialGroups(drawerState.task);
+      const trialIndex = orderedTrials.findIndex((t) => t.id === trial.id);
+      cancelPendingDeepLink();
+      setDrawerState({
+        ...drawerState,
+        mode: "trial",
+        trial: trialIndex >= 0 ? orderedTrials[trialIndex] : trial,
+        trialIndex: trialIndex >= 0 ? trialIndex : null,
+        orderedTrials,
+        trialGroups,
+      });
+      return true;
+    },
+    [drawerState, buildTrialGroups, cancelPendingDeepLink]
+  );
 
   return (
     <>
@@ -1406,6 +1691,7 @@ export function ExperimentDetailView({
                 readOnly={readOnly}
                 showAnalysis={showAnalysis}
                 onTrialSelect={(trial, task, context) => {
+                  cancelPendingDeepLink();
                   const taskIndex = tasksForExperiment.findIndex(
                     (t) => t.id === task.id
                   );
@@ -1421,24 +1707,25 @@ export function ExperimentDetailView({
                     trialGroups: context.trialGroups,
                   });
                 }}
-                onProbeSelect={(trial, task) =>
-                  setProbeDrawer({ taskId: task.id, trialId: trial.id })
-                }
+                onProbeSelect={(trial, task) => {
+                  cancelPendingDeepLink();
+                  setProbeDrawer({ taskId: task.id, trialId: trial.id });
+                }}
                 onTaskSelect={(task, context) => {
+                  cancelPendingDeepLink();
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
-                  // If the task has trials, jump straight into the first one
-                  // so the user immediately sees results alongside the task
-                  // definition. They can navigate back with the in-drawer
-                  // "View task" control.
-                  const firstTrial = orderedTrials[0] ?? null;
+                  // Land on the task overview — task-level QA plus the
+                  // aggregated trial QA — never on a specific trial. Trials
+                  // are one click away via "View trials" or the overview's
+                  // per-trial links.
                   setDrawerState({
                     isOpen: true,
-                    mode: firstTrial ? "trial" : "task",
+                    mode: "task",
                     task,
                     taskIndex: context.taskIndex,
                     orderedTasks: context.orderedTasks,
-                    trial: firstTrial,
-                    trialIndex: firstTrial ? 0 : null,
+                    trial: null,
+                    trialIndex: null,
                     orderedTrials,
                     trialGroups,
                   });
@@ -1463,9 +1750,19 @@ export function ExperimentDetailView({
               isOpen={true}
               onClose={() => {}}
               taskId={null}
+              // The task prop scopes the overview's trial aggregation to
+              // this experiment's rows; this pane renders no header, so
+              // none of the task-driven header UI appears.
+              task={drawerState.task}
               staticChecksTaskId={drawerState.task.id}
+              onOpenTrial={handleOpenTrialFromOverview}
+              overviewTrialsLoading={isLoadingTrials}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               taskVersion={resolveExperimentTaskVersion(drawerState.task)}
+              initialFilePath={taskPaneFile}
+              selectedLines={taskPaneLines}
+              onSelectLinesChange={setTaskPaneLines}
+              onSelectedFileChange={handleTaskPaneFileChange}
               apiBaseUrl={apiBaseUrl}
               showAnalysis={showAnalysis}
               contentOnly={true}
@@ -1485,6 +1782,7 @@ export function ExperimentDetailView({
               showAnalysis={showAnalysis}
               onNavigate={(nextTask, nextIndex) => {
                 if (!drawerState) return;
+                cancelPendingDeepLink();
                 const { trialGroups, orderedTrials } =
                   buildTrialGroups(nextTask);
                 setDrawerState({
@@ -1500,6 +1798,12 @@ export function ExperimentDetailView({
                   ? handleNavigateToFirstTrial
                   : undefined
               }
+              onOpenTrial={handleOpenTrialFromOverview}
+              overviewTrialsLoading={isLoadingTrials}
+              initialFilePath={taskPaneFile}
+              selectedLines={taskPaneLines}
+              onSelectLinesChange={setTaskPaneLines}
+              onSelectedFileChange={handleTaskPaneFileChange}
               apiBaseUrl={apiBaseUrl}
               contentOnly={true}
             />
