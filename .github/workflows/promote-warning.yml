@@ -38,5 +38,5 @@ jobs:
             '> **THE BUTTON CREATES A NEW COMMIT AND BREAKS THE RELEASE MODEL.**' \
             '> **COMMENT `/promote` TO COMPLETE THE PROMOTION.**' \
             '')
-          printf '%s\n%s' "$warning" "$body" | gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --body-file -
+          printf '%s\n\n%s' "$warning" "$body" | gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --body-file -
           echo "warning added to #$PR"
