@@ -34,6 +34,7 @@ def test_build_config_toml_defaults_to_responses_backend(tmp_path):
     config = agent.build_config_toml()
     assert 'api_backend = "responses"' in config
     assert "chat_completions" not in config
+    assert config.count("context_window = 256000") == 2
 
 
 def test_build_config_toml_applies_api_backend_override(tmp_path):
@@ -49,6 +50,25 @@ def test_build_config_toml_applies_api_backend_override(tmp_path):
     assert 'api_backend = "responses"' not in config
     # The requested model still routes through, untouched by the rewrite.
     assert "v9-stickynote" in config
+
+
+@pytest.mark.parametrize("value", ["500000", 500000.0, 5e5])
+def test_build_config_toml_applies_context_window_override(tmp_path, value):
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path,
+        model_name="xai/v9m-0804-row11-45p2m-api",
+        context_window=value,
+    )
+    parsed = tomllib.loads(agent.build_config_toml())
+
+    for table in ("v9m-0804-row11-45p2m-api", "grok-build"):
+        assert parsed["model"][table]["context_window"] == 500000
+
+
+@pytest.mark.parametrize("value", ["invalid", "0", -1, 500000.5, True])
+def test_invalid_context_window_rejected(tmp_path, value):
+    with pytest.raises(ValueError, match="context_window"):
+        OddishGrokBuild(logs_dir=tmp_path, context_window=value)
 
 
 def test_invalid_api_backend_rejected(tmp_path):
