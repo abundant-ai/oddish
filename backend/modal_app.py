@@ -5,6 +5,7 @@ from pathlib import Path
 import modal
 from dotenv import dotenv_values
 
+from oddish.config import settings
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
@@ -469,24 +470,25 @@ if SLACK_EXPENSE_SECRET_NAME:
         )
     )
 
-# Queue-key concurrency default for Modal runtime.
-# Example:
-# ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
-NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
-# Per-model queue-key concurrency overrides. Baked into the deploy so the
-# repo is the source of truth; operators can still override the whole JSON
-# via the ODDISH_MODEL_CONCURRENCY_OVERRIDES env var / secret.
-MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
-    "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
-    '{"google/gemini-3.5-flash": 128, '
-    '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
-    '"minimax/minimax-m3": 128, '
-    '"global.anthropic.claude-sonnet-4-6": 128, '
-    '"anthropic/claude-sonnet-5": 256, '
-    '"openai/gpt-5.4-mini": 128, '
-    '"zai/glm-5.2": 64}',
-)
+# Modal concurrency defaults are repository-owned. Runtime changes go through
+# the audited database override API; secrets must never shadow this map.
+MODEL_CONCURRENCY_DEFAULT = 48
+NOP_ORACLE_CONCURRENCY = 256
+MODEL_CONCURRENCY_OVERRIDES = {
+    "google/gemini-3.5-flash": 128,
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0": 128,
+    "minimax/minimax-m3": 128,
+    "global.anthropic.claude-sonnet-4-6": 128,
+    "anthropic/claude-sonnet-5": 256,
+    "openai/gpt-5.4-mini": 128,
+    "zai/glm-5.2": 64,
+}
+settings.default_model_concurrency = MODEL_CONCURRENCY_DEFAULT
+settings.nop_oracle_concurrency = NOP_ORACLE_CONCURRENCY
+settings.model_concurrency_overrides = {
+    settings.normalize_queue_key(key): value
+    for key, value in MODEL_CONCURRENCY_OVERRIDES.items()
+}
 
 # Operator org fallback: the Abundant org's immutable internal id. Named so the
 # hardcoded default can be asserted in tests independently of the deploy env.
@@ -526,11 +528,6 @@ ENV_VARS = {
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
-    "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
-    "ODDISH_MODEL_CONCURRENCY_OVERRIDES": MODEL_CONCURRENCY_OVERRIDES,
-    # nop/oracle do not call model providers; this cap is for Modal/DB/S3
-    # pressure rather than provider rate limits.
-    "ODDISH_NOP_ORACLE_CONCURRENCY": str(NOP_ORACLE_CONCURRENCY),
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),

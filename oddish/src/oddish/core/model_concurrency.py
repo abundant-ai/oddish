@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Iterable
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,17 +69,39 @@ async def set_model_concurrency_override(
     session: AsyncSession,
     queue_key: str,
     limit: int | None,
+    *,
+    actor_user_id: str,
+    actor_api_key_id: str | None = None,
 ) -> str:
     """Upsert or clear an override and return its normalized queue key."""
     if limit is not None and not 0 <= limit <= MAX_MODEL_CONCURRENCY:
         raise ValueError(f"limit must be between 0 and {MAX_MODEL_CONCURRENCY}")
+    if not actor_user_id.strip():
+        raise ValueError("actor_user_id is required")
     normalized = settings.normalize_queue_key(queue_key)
+    params = {"queue_key": normalized}
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:queue_key, 0))"),
+        params,
+    )
+    old_limit = (
+        await session.execute(
+            text(
+                "SELECT concurrency_limit FROM model_concurrency_overrides "
+                "WHERE queue_key = :queue_key"
+            ),
+            params,
+        )
+    ).scalar_one_or_none()
+    if old_limit == limit:
+        return normalized
+
     if limit is None:
         await session.execute(
             text(
                 "DELETE FROM model_concurrency_overrides WHERE queue_key = :queue_key"
             ),
-            {"queue_key": normalized},
+            params,
         )
     else:
         await session.execute(
@@ -94,4 +117,63 @@ async def set_model_concurrency_override(
             ),
             {"queue_key": normalized, "concurrency_limit": limit},
         )
+    deploy_limit = settings.get_model_concurrency(normalized)
+    await session.execute(
+        text(
+            """
+            INSERT INTO model_concurrency_audit
+                (queue_key, old_override_limit, new_override_limit,
+                 old_effective_limit, new_effective_limit,
+                 actor_user_id, actor_api_key_id)
+            VALUES
+                (:queue_key, :old_override_limit, :new_override_limit,
+                 :old_effective_limit, :new_effective_limit,
+                 :actor_user_id, :actor_api_key_id)
+            """
+        ),
+        {
+            "queue_key": normalized,
+            "old_override_limit": old_limit,
+            "new_override_limit": limit,
+            "old_effective_limit": (
+                old_limit if old_limit is not None else deploy_limit
+            ),
+            "new_effective_limit": limit if limit is not None else deploy_limit,
+            "actor_user_id": actor_user_id,
+            "actor_api_key_id": actor_api_key_id,
+        },
+    )
     return normalized
+
+
+async def list_model_concurrency_audit(
+    session: AsyncSession,
+    *,
+    queue_key: str | None = None,
+    before_id: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: dict[str, object] = {"limit": limit}
+    if queue_key is not None:
+        clauses.append("queue_key = :queue_key")
+        params["queue_key"] = settings.normalize_queue_key(queue_key)
+    if before_id is not None:
+        clauses.append("id < :before_id")
+        params["before_id"] = before_id
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    result = await session.execute(
+        text(
+            f"""
+            SELECT id, queue_key, old_override_limit, new_override_limit,
+                   old_effective_limit, new_effective_limit,
+                   actor_user_id, actor_api_key_id, changed_at
+            FROM model_concurrency_audit
+            {where}
+            ORDER BY id DESC
+            LIMIT :limit
+            """
+        ),
+        params,
+    )
+    return [dict(row) for row in result.mappings().all()]

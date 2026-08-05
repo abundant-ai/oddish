@@ -215,10 +215,10 @@ scaling and CPU/memory sizing (`ODDISH_MODAL_API_*`, `ODDISH_MODAL_WORKER_*`,
 and timeouts (`ODDISH_MODAL_POLL_INTERVAL_SECONDS`,
 `ODDISH_MODAL_CLEANUP_*_SECONDS`, `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`),
 throughput (`ODDISH_MODAL_MAX_WORKERS_PER_POLL`, default `256`;
-`ODDISH_MODAL_WORKER_MAX_CONTAINERS`, default `2688`), per-model concurrency
-(`ODDISH_DEFAULT_MODEL_CONCURRENCY`, `ODDISH_MODEL_CONCURRENCY_OVERRIDES`,
-`ODDISH_MODAL_NOP_ORACLE_CONCURRENCY`), and app naming (`MODAL_APP_NAME`,
-`MODAL_SECRET_ENVIRONMENT`).
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS`, default `2688`), and app naming
+(`MODAL_APP_NAME`, `MODAL_SECRET_ENVIRONMENT`). Modal queue concurrency defaults
+are checked-in constants; runtime changes use the attributed `/admin/concurrency`
+API and its database overrides rather than environment variables or secrets.
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
@@ -315,7 +315,9 @@ All routes require auth unless marked public.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/admin/slots` | `queue_slots` lease state |
+| GET | `/admin/concurrency` | Read one queue key's deploy, override, and effective concurrency |
 | PUT | `/admin/concurrency` | Set or clear a database-backed queue-key concurrency override |
+| GET | `/admin/concurrency/audit` | Read newest-first attributed concurrency changes |
 | GET | `/admin/queue-status` | Per-kind queue counts sourced from `trials`/`tasks` |
 | GET | `/admin/orphaned-state` | Stale/orphaned queue state diagnostics |
 | GET | `/admin/worker-jobs` | Unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, and duration percentiles |
@@ -325,6 +327,10 @@ All routes require auth unless marked public.
 | POST | `/github/tasks/{task_id}/refresh` | Refresh task PR comment |
 | POST | `/github/experiments/{experiment_id}/refresh` | Refresh experiment PR comments |
 | GET | `/github/status` | GitHub integration status |
+
+Concurrency endpoints require the operator organization and either an admin
+session or a FULL API key. API-key writes are attributed to the user who created
+the key, and unattributed legacy keys cannot change limits.
 
 ## Database and Migrations
 

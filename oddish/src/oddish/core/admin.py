@@ -23,6 +23,7 @@ from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.core.model_concurrency import (
     MAX_MODEL_CONCURRENCY,
     get_model_concurrency_overrides,
+    list_model_concurrency_audit,
     set_model_concurrency_override,
 )
 from oddish.core.quotas import (
@@ -763,20 +764,68 @@ class ModelConcurrencySetting(BaseModel):
     override_limit: int | None
 
 
+class ModelConcurrencyAuditEntry(BaseModel):
+    id: int
+    queue_key: str
+    old_override_limit: int | None
+    new_override_limit: int | None
+    old_effective_limit: int
+    new_effective_limit: int
+    actor_user_id: str
+    actor_api_key_id: str | None
+    changed_at: datetime
+
+
+async def get_model_concurrency_setting_core(
+    session: AsyncSession,
+    queue_key: str,
+) -> ModelConcurrencySetting:
+    normalized = settings.normalize_queue_key(queue_key)
+    overrides = await get_model_concurrency_overrides(session, (normalized,))
+    deploy_limit = settings.get_model_concurrency(normalized)
+    override_limit = overrides.get(normalized)
+    return ModelConcurrencySetting(
+        queue_key=normalized,
+        limit=override_limit if override_limit is not None else deploy_limit,
+        deploy_limit=deploy_limit,
+        override_limit=override_limit,
+    )
+
+
 async def update_model_concurrency_core(
     session: AsyncSession,
     request: ModelConcurrencyUpdateRequest,
+    *,
+    actor_user_id: str,
+    actor_api_key_id: str | None = None,
 ) -> ModelConcurrencySetting:
     queue_key = await set_model_concurrency_override(
-        session, request.queue_key, request.limit
+        session,
+        request.queue_key,
+        request.limit,
+        actor_user_id=actor_user_id,
+        actor_api_key_id=actor_api_key_id,
     )
-    deploy_limit = settings.get_model_concurrency(queue_key)
-    return ModelConcurrencySetting(
+    return await get_model_concurrency_setting_core(session, queue_key)
+
+
+async def list_model_concurrency_audit_core(
+    session: AsyncSession,
+    *,
+    queue_key: str | None = None,
+    before_id: int | None = None,
+    limit: int = 100,
+) -> list[ModelConcurrencyAuditEntry]:
+    records = await list_model_concurrency_audit(
+        session,
         queue_key=queue_key,
-        limit=deploy_limit if request.limit is None else request.limit,
-        deploy_limit=deploy_limit,
-        override_limit=request.limit,
+        before_id=before_id,
+        limit=limit,
     )
+    return [
+        ModelConcurrencyAuditEntry.model_validate(record, from_attributes=True)
+        for record in records
+    ]
 
 
 async def get_queue_health_core(

@@ -24,6 +24,7 @@ from slack_alert_settings import (
 )
 from oddish.core.admin import (
     CostBreakdownResponse,
+    ModelConcurrencyAuditEntry,
     ModelConcurrencySetting,
     ModelConcurrencyUpdateRequest,
     QueueHealthResponse,
@@ -33,12 +34,14 @@ from oddish.core.admin import (
     UserCostBreakdownResponse,
     WorkerJobsResponse,
     get_cost_breakdown_core,
+    get_model_concurrency_setting_core,
     get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
     get_orphaned_state_core,
     get_user_cost_breakdown_core,
     get_worker_jobs_admin_core,
+    list_model_concurrency_audit_core,
     update_model_concurrency_core,
 )
 from oddish.db import TaskModel, TaskVersionModel, get_session
@@ -110,8 +113,46 @@ async def update_model_concurrency(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ModelConcurrencySetting:
     require_operator_org(auth)
+    if not auth.user_id:
+        raise HTTPException(status_code=403, detail="Attributed user required")
     async with get_session() as session:
-        return await update_model_concurrency_core(session, request)
+        return await update_model_concurrency_core(
+            session,
+            request,
+            actor_user_id=auth.user_id,
+            actor_api_key_id=auth.api_key_id,
+        )
+
+
+@router.get("/concurrency", response_model=ModelConcurrencySetting)
+async def get_model_concurrency(
+    queue_key: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> ModelConcurrencySetting:
+    require_operator_org(auth)
+    if not queue_key.strip():
+        raise HTTPException(status_code=422, detail="queue_key must not be blank")
+    async with get_session() as session:
+        return await get_model_concurrency_setting_core(session, queue_key)
+
+
+@router.get("/concurrency/audit", response_model=list[ModelConcurrencyAuditEntry])
+async def get_model_concurrency_audit(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    queue_key: str | None = None,
+    before_id: int | None = Query(None, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[ModelConcurrencyAuditEntry]:
+    require_operator_org(auth)
+    if queue_key is not None and not queue_key.strip():
+        raise HTTPException(status_code=422, detail="queue_key must not be blank")
+    async with get_session() as session:
+        return await list_model_concurrency_audit_core(
+            session,
+            queue_key=queue_key,
+            before_id=before_id,
+            limit=limit,
+        )
 
 
 @router.get("/worker-jobs", response_model=WorkerJobsResponse)

@@ -15,17 +15,33 @@ class _Session:
     def __init__(self, rows=()):
         self.rows = rows
         self.calls = []
+        self.override_limit = None
 
     async def execute(self, statement, params=None):
-        self.calls.append((str(statement), params or {}))
-        return SimpleNamespace(all=lambda: self.rows)
+        sql = str(statement)
+        params = params or {}
+        self.calls.append((sql, params))
+        old_limit = self.override_limit
+        if "INSERT INTO model_concurrency_overrides" in sql:
+            self.override_limit = params["concurrency_limit"]
+        elif "DELETE FROM model_concurrency_overrides" in sql:
+            self.override_limit = None
+        return SimpleNamespace(
+            all=lambda: self.rows,
+            scalar_one_or_none=lambda: old_limit,
+        )
 
 
 @pytest.mark.parametrize("limit", [-1, 10_001])
 @pytest.mark.asyncio
 async def test_set_model_concurrency_rejects_out_of_range(limit):
     with pytest.raises(ValueError, match="between 0 and 10000"):
-        await set_model_concurrency_override(_Session(), "openai/gpt-5.4-mini", limit)
+        await set_model_concurrency_override(
+            _Session(),
+            "openai/gpt-5.4-mini",
+            limit,
+            actor_user_id="user-1",
+        )
 
 
 @pytest.mark.asyncio
@@ -108,10 +124,96 @@ async def test_override_read_error_fails_closed(monkeypatch):
 async def test_set_and_clear_override():
     session = _Session()
 
-    key = await set_model_concurrency_override(session, "MiniMax/MiniMax-M3", 96)
+    key = await set_model_concurrency_override(
+        session,
+        "MiniMax/MiniMax-M3",
+        96,
+        actor_user_id="user-1",
+        actor_api_key_id="key-1",
+    )
     assert key == "minimax/minimax-m3"
-    assert "INSERT INTO model_concurrency_overrides" in session.calls[0][0]
+    override_insert = next(
+        call
+        for call in session.calls
+        if "INSERT INTO model_concurrency_overrides" in call[0]
+    )
+    assert override_insert[1]["concurrency_limit"] == 96
+    audit_insert = next(
+        call
+        for call in session.calls
+        if "INSERT INTO model_concurrency_audit" in call[0]
+    )
+    assert audit_insert[1] == {
+        "queue_key": "minimax/minimax-m3",
+        "old_override_limit": None,
+        "new_override_limit": 96,
+        "old_effective_limit": settings.get_model_concurrency("minimax/minimax-m3"),
+        "new_effective_limit": 96,
+        "actor_user_id": "user-1",
+        "actor_api_key_id": "key-1",
+    }
+    statements = [statement for statement, _ in session.calls]
+    lock_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "pg_advisory_xact_lock" in statement
+    )
+    read_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "SELECT concurrency_limit" in statement
+    )
+    write_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "INSERT INTO model_concurrency_overrides" in statement
+    )
+    audit_index = next(
+        index
+        for index, statement in enumerate(statements)
+        if "INSERT INTO model_concurrency_audit" in statement
+    )
+    assert lock_index < read_index < write_index < audit_index
 
-    key = await set_model_concurrency_override(session, "MiniMax/MiniMax-M3", None)
+    key = await set_model_concurrency_override(
+        session,
+        "MiniMax/MiniMax-M3",
+        None,
+        actor_user_id="user-1",
+    )
     assert key == "minimax/minimax-m3"
-    assert "DELETE FROM model_concurrency_overrides" in session.calls[1][0]
+    assert any(
+        "DELETE FROM model_concurrency_overrides" in call[0] for call in session.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_unchanged_override_does_not_append_audit_row():
+    session = _Session()
+    session.override_limit = 96
+
+    await set_model_concurrency_override(
+        session,
+        "minimax/minimax-m3",
+        96,
+        actor_user_id="user-1",
+    )
+
+    assert not any(
+        "INSERT INTO model_concurrency_audit" in call[0] for call in session.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_override_change_requires_an_attributed_user():
+    session = _Session()
+
+    with pytest.raises(ValueError, match="actor_user_id is required"):
+        await set_model_concurrency_override(
+            session,
+            "minimax/minimax-m3",
+            96,
+            actor_user_id="   ",
+        )
+
+    assert session.calls == []

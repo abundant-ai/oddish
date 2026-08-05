@@ -105,6 +105,7 @@ Postgres
   - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
   - model_concurrency_overrides # admin-set limits over deploy configuration
+  - model_concurrency_audit # attributed old/new history for every limit change
         |
         v
 Workers (auto-started by API, or standalone via python -m oddish.workers.queue.worker)
@@ -268,9 +269,11 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over
-  `ODDISH_MODEL_CONCURRENCY_OVERRIDES` and are read by both the dispatcher plan
-  and each worker's slot acquisition. This is the supported way to change a
-  per-model limit at runtime. The self-tuning advisory controller
+  checked-in deploy defaults and are read by both the dispatcher plan and each
+  worker's slot acquisition. Hosted Modal defaults cannot be replaced by a
+  runtime environment variable or secret. `GET`/`PUT /admin/concurrency` and
+  `GET /admin/concurrency/audit` are the supported agent-facing read, mutation,
+  and audit surface. The self-tuning advisory controller
   (`ODDISH_DYNAMIC_MODEL_CONCURRENCY` + `concurrency_controller.py`) is
   **deprecated** in favor of it: leave the flag OFF; enabling it logs a
   deprecation warning and the path may be removed
@@ -866,7 +869,7 @@ silently breaks throughput or correctness — read before touching
    link is always `queue_slots.locked_by == worker_jobs.current_worker_id`.
    The limit used for both spawn planning and slot acquisition comes from
    `model_concurrency_overrides` when an admin override exists, otherwise from
-   the deploy-time `ODDISH_MODEL_CONCURRENCY_OVERRIDES` / default settings.
+   the checked-in Modal defaults (or self-hosted default settings).
    Dynamic advice never exceeds an admin override, and an override-read failure
    fails closed at zero rather than risking reopening a disabled queue.
 
@@ -924,11 +927,12 @@ Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
 poolers such as Supavisor / PgBouncer.
 
-Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
-directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
-`ODDISH_DEFAULT_MODEL_CONCURRENCY` / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
+Modal runtime knobs (scaling, schedules, CPU/memory) are read directly by
+`backend/modal_app.py` from `ODDISH_MODAL_*` /
 `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS` / `MODAL_APP_NAME` /
-`MODAL_SECRET_ENVIRONMENT` env vars. `modal_app.py` is the
+`MODAL_SECRET_ENVIRONMENT` env vars. Modal queue concurrency defaults are
+checked-in constants in that module, and runtime changes use the audited admin
+API. `modal_app.py` is the
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
