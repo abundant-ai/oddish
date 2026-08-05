@@ -160,8 +160,11 @@ jobs:
               "git fetch origin staging" \
               "git push origin ${SHA}:refs/heads/main" \
               '```')
-            if [ "$APPROVAL" = "waived" ]; then
-              body="$body"$'\n\n'"The admin standing of the commenter waived the missing approval."
-            fi
+          fi
+          # The pull request thread is where the waiver has to be visible; the
+          # run log holds the warning but nobody reviewing the promotion reads
+          # it. A failed check promoted nothing, so it needs no such notice.
+          if [ "$CHECKS" = "success" ] && [ "$APPROVAL" = "waived" ]; then
+            body="$body"$'\n\n'"The admin standing of the commenter waived the missing approval."
           fi
           gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body "$body"
