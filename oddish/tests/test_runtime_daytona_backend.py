@@ -76,8 +76,7 @@ def _fake_daytona(monkeypatch, sandboxes, fail_ids=()):
         )
 
     class Client:
-        def __init__(self):
-            self._sandbox_api = SimpleNamespace(list_sandboxes=list_sandboxes)
+        _sandbox_api = SimpleNamespace(list_sandboxes=list_sandboxes)
 
         async def list(self, query):
             calls.query = query
@@ -152,10 +151,7 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
     assert asyncio.run(reap_stale_daytona_sandboxes()) == 3
     assert calls.deleted == ["error", "failed", "expired-started"]
     assert calls.closed is True
-    assert calls.query.labels == {
-        "harbor.managed": "true",
-        "oddish.managed": "true",
-    }
+    assert calls.query.labels == labels
     assert calls.terminal_query["include_errored_deleted"] is True
     assert calls.terminal_query["created_at_before"] < now
     assert len(calls.terminal_query["states"]) == 2

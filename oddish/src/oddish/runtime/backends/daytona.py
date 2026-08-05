@@ -1,6 +1,3 @@
-"""Daytona execution backend. ``from daytona import …`` is lazy (confined to
-teardown) so importing this module never requires the Daytona SDK."""
-
 from __future__ import annotations
 
 import asyncio
@@ -63,10 +60,9 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
             try:
                 async with semaphore:
                     sandbox = await client.get(sandbox.id, request_timeout=10)
-                    if (
-                        sandbox.labels.get("harbor.managed") != "true"
-                        or sandbox.labels.get("oddish.managed") != "true"
-                        or sandbox.state in inactive
+                    if sandbox.state in inactive or any(
+                        sandbox.labels.get(key) != value
+                        for key, value in labels.items()
                     ):
                         return 0
                     try:
@@ -155,8 +151,7 @@ class DaytonaBackend:
 
     @contextlib.contextmanager
     def capture_diagnostics(self, job_dir: Path) -> Iterator[Path | None]:
-        # Daytona has no SDK-output capture; no-op.
         yield None
 
 
-_: ExecutionBackend = DaytonaBackend()  # structural conformance check at import
+_: ExecutionBackend = DaytonaBackend()
