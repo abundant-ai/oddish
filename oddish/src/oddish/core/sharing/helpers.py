@@ -18,6 +18,10 @@ from oddish.core.helpers import (
     build_trial_response,
     fetch_trial_queue_info,
 )
+from oddish.core.model_display_names import (
+    apply_model_display_names,
+    load_model_display_names,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -283,7 +287,7 @@ async def list_task_trials_for_public_experiment(
     rows = result.all()
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
-    return [
+    responses = [
         build_trial_response(
             trial,
             task_path,
@@ -291,6 +295,8 @@ async def list_task_trials_for_public_experiment(
         )
         for trial, task_path in rows
     ]
+    apply_model_display_names(responses, await load_model_display_names(session))
+    return responses
 
 
 # =============================================================================

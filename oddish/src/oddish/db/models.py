@@ -2408,6 +2408,33 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class ModelDisplayNameModel(TimestampedMixin, Base):
+    """Operator-managed alias from a stored model id to the name shown on
+    published share pages.
+
+    Display-only, applied at the public serialization boundary: cost
+    accounting, queue routing, and the authenticated dashboard keep reading
+    ``trials.model``, which this never rewrites. ``deleted_at`` is the
+    live/removed state, and the partial UNIQUE keeps one live row per model
+    so a removed alias can be re-added.
+    """
+
+    __tablename__ = "model_display_names"
+    __table_args__ = (
+        Index(
+            "idx_model_display_names_model_live",
+            "model_name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class PromptModel(TimestampedMixin, Base):
     """A versioned analyzer prompt, one row per kind and optional scope. The highest
     ``prompt_versions.version`` is always the one that runs; editing appends
@@ -2530,6 +2557,7 @@ register_soft_delete_models(
     SkillModel,
     DocumentModel,
     CostExcludedLlmKeyModel,
+    ModelDisplayNameModel,
     PromptModel,
     QAAssignmentModel,
 )
