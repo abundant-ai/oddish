@@ -1,8 +1,9 @@
 "use client";
 
 import { memo, useMemo } from "react";
-import type { Task, Trial } from "@/lib/types";
+import type { Task } from "@/lib/types";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
+import { passAtOneFraction } from "@/lib/pass-at-k";
 import type { AgentSummary } from "./experiment-trials-table";
 import { AGENT_COLORS } from "./pass-at-k-graph";
 import { QueueKeyIcon } from "./queue-key-icon";
@@ -25,14 +26,6 @@ type LeaderboardRow = {
   mean: number;
 };
 
-function getPassAtOneValue(trials: Trial[]): number | null {
-  // Skipped trials are counted as non-passes in the denominator (like a harness
-  // error): a skipped trial did not pass, so it lowers pass@1 accordingly.
-  if (trials.length === 0) return null;
-  const passing = trials.filter((trial) => trial.reward === 1).length;
-  return passing / trials.length;
-}
-
 function calculateRows(
   tasks: Task[],
   agentSummaries: AgentSummary[],
@@ -51,7 +44,7 @@ function calculateRows(
         (trial) =>
           getExperimentAgentKey(trial, modelScopedAgents) === summary.key,
       );
-      const value = getPassAtOneValue(trials);
+      const value = passAtOneFraction(trials);
       if (value !== null) {
         taskValues.push(value);
       }

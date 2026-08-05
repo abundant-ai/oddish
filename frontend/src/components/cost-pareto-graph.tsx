@@ -1,8 +1,9 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import {
   CartesianGrid,
+  Cell,
   ComposedChart,
   LabelList,
   Line,
@@ -27,13 +28,14 @@ import {
   formatDurationSec,
   formatTokenCount,
 } from "@/lib/format";
-import type { AgentSummary } from "./experiment-trials-table";
+import type { ExperimentAgentSummary } from "@/lib/experiment-agent-grouping";
+import { useElementSize } from "@/lib/use-element-size";
 import { AGENT_COLORS } from "./pass-at-k-graph";
 import { AgentLegend } from "@/components/agent-legend";
 
 interface CostParetoGraphProps {
   tasks: Task[];
-  agentSummaries: AgentSummary[];
+  agentSummaries: ExperimentAgentSummary[];
   hiddenAgents: Set<string>;
   onToggleAgent: (agent: string) => void;
   hoverAgent?: string | null;
@@ -57,57 +59,77 @@ type ChartDatum = {
 type TooltipValue = number | string | ReadonlyArray<number | string>;
 type TooltipName = number | string;
 
-const METRIC_LABEL: Record<ParetoMetric, string> = {
-  cost: "cost",
-  tokens: "tokens",
-  time: "time",
-  steps: "steps",
-  tools: "tool calls",
-};
-
-const METRIC_AXIS_LABEL: Record<ParetoMetric, string> = {
-  cost: "avg $ / trial",
-  tokens: "avg tokens / trial",
-  time: "avg time / trial",
-  steps: "avg steps / trial",
-  tools: "avg tool calls / trial",
-};
-
-function formatMetricTick(metric: ParetoMetric, value: number): string {
-  if (metric === "cost") {
-    if (value === 0) return "$0";
-    if (value >= 100) return `$${Math.round(value)}`;
-    if (value >= 10) return `$${value.toFixed(0)}`;
-    if (value >= 1) return `$${value.toFixed(1)}`;
-    return `$${value.toFixed(2)}`;
-  }
-  if (metric === "tokens" || metric === "steps" || metric === "tools") {
-    if (value === 0) return "0";
-    if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
-    if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
-    if (value >= 1e3) return `${(value / 1e3).toFixed(0)}k`;
-    return `${Math.round(value)}`;
-  }
-  if (value === 0) return "0s";
-  if (value < 60) return `${Math.round(value)}s`;
-  if (value < 3600) return `${Math.round(value / 60)}m`;
-  return `${(value / 3600).toFixed(1)}h`;
+function formatCount(value: number): string {
+  if (value === 0) return "0";
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(0)}k`;
+  return `${Math.round(value)}`;
 }
 
-function formatMetricValue(metric: ParetoMetric, value: number): string {
-  if (metric === "cost") {
+function formatMeanCount(value: number, unit: string): string {
+  return `${value < 10 ? value.toFixed(1) : formatCount(value)} ${unit}`;
+}
+
+// One display entry per metric in lib/pareto.ts. The Record type makes every
+// field compiler-enforced, so a newly added metric cannot silently fall
+// through to another metric's labels or formatting.
+const METRIC_DEFS: Record<
+  ParetoMetric,
+  {
+    label: string;
+    axisLabel: string;
+    formatTick: (value: number) => string;
+    formatValue: (value: number) => string;
+  }
+> = {
+  cost: {
+    label: "cost",
+    axisLabel: "avg $ / trial",
+    formatTick: (v) =>
+      v === 0
+        ? "$0"
+        : v >= 10
+          ? `$${v.toFixed(0)}`
+          : v >= 1
+            ? `$${v.toFixed(1)}`
+            : `$${v.toFixed(2)}`,
     // formatCostUsd floors at $0.00; keep sub-cent per-trial means readable.
-    return value > 0 && value < 0.005
-      ? `$${value.toFixed(4)}`
-      : formatCostUsd(value);
-  }
-  if (metric === "tokens") return formatTokenCount(value);
-  if (metric === "steps" || metric === "tools") {
-    const count = value < 10 ? value.toFixed(1) : `${Math.round(value)}`;
-    return `${count} ${metric === "steps" ? "steps" : "tool calls"}`;
-  }
-  return formatDurationSec(value);
-}
+    formatValue: (v) =>
+      v > 0 && v < 0.005 ? `$${v.toFixed(4)}` : formatCostUsd(v),
+  },
+  tokens: {
+    label: "tokens",
+    axisLabel: "avg tokens / trial",
+    formatTick: formatCount,
+    formatValue: formatTokenCount,
+  },
+  time: {
+    label: "time",
+    axisLabel: "avg time / trial",
+    formatTick: (v) =>
+      v === 0
+        ? "0s"
+        : v < 60
+          ? `${Math.round(v)}s`
+          : v < 3600
+            ? `${Math.round(v / 60)}m`
+            : `${(v / 3600).toFixed(1)}h`,
+    formatValue: formatDurationSec,
+  },
+  steps: {
+    label: "steps",
+    axisLabel: "avg steps / trial",
+    formatTick: formatCount,
+    formatValue: (v) => formatMeanCount(v, "steps"),
+  },
+  tools: {
+    label: "tool calls",
+    axisLabel: "avg tool calls / trial",
+    formatTick: formatCount,
+    formatValue: (v) => formatMeanCount(v, "tool calls"),
+  },
+};
 
 function truncateLabel(value: unknown): string {
   const text = String(value ?? "");
@@ -116,8 +138,7 @@ function truncateLabel(value: unknown): string {
 
 function buildDatum(
   point: AgentParetoPoint,
-  metric: ParetoMetric,
-  label: string
+  metric: ParetoMetric
 ): ChartDatum | null {
   const aggregate = point.metrics[metric];
   if (aggregate == null) return null;
@@ -127,7 +148,7 @@ function buildDatum(
       : { prefix: "", suffix: "" };
   return {
     key: point.key,
-    label,
+    label: point.label,
     x: aggregate.perTrial,
     y: point.score,
     taskCount: point.taskCount,
@@ -146,70 +167,37 @@ export const CostParetoGraph = memo(function CostParetoGraph({
   hoverAgent,
   onHoverAgent,
 }: CostParetoGraphProps) {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
+  const { ref: chartContainerRef, size: chartSize } =
+    useElementSize<HTMLDivElement>();
   const [requestedMetric, setRequestedMetric] = useState<ParetoMetric>("cost");
 
-  useEffect(() => {
-    const element = chartContainerRef.current;
-    if (!element) return;
-
-    const updateSize = () => {
-      const rect = element.getBoundingClientRect();
-      setChartSize({
-        width: Math.max(0, Math.floor(rect.width)),
-        height: Math.max(0, Math.floor(rect.height)),
-      });
+  const { points, availableMetrics, agentColorByKey } = useMemo(() => {
+    const colorMap: Record<string, string> = {};
+    for (let i = 0; i < agentSummaries.length; i++) {
+      colorMap[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
+    }
+    const builtPoints = buildAgentParetoPoints(tasks, agentSummaries);
+    return {
+      points: builtPoints,
+      availableMetrics: PARETO_METRICS.filter((metric) =>
+        builtPoints.some((point) => point.metrics[metric] != null)
+      ),
+      agentColorByKey: colorMap,
     };
-
-    updateSize();
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
-  const { pointByKey, availableMetrics, agentColorByKey, agentLabelByKey } =
-    useMemo(() => {
-      const points = buildAgentParetoPoints(tasks, agentSummaries);
-      const byKey = new Map(points.map((point) => [point.key, point]));
-      const available = PARETO_METRICS.filter((metric) =>
-        points.some((point) => point.metrics[metric] != null)
-      );
-
-      const colorMap: Record<string, string> = {};
-      const labelMap: Record<string, string> = {};
-      for (let i = 0; i < agentSummaries.length; i++) {
-        colorMap[agentSummaries[i].key] = AGENT_COLORS[i % AGENT_COLORS.length];
-        labelMap[agentSummaries[i].key] = agentSummaries[i].label;
-      }
-
-      return {
-        pointByKey: byKey,
-        availableMetrics: available,
-        agentColorByKey: colorMap,
-        agentLabelByKey: labelMap,
-      };
-    }, [tasks, agentSummaries]);
+  }, [tasks, agentSummaries]);
 
   const metric = availableMetrics.includes(requestedMetric)
     ? requestedMetric
     : availableMetrics[0];
 
   const { visibleData, frontierData } = useMemo(() => {
-    if (metric == null) {
-      return {
-        visibleData: [] as ChartDatum[],
-        frontierData: [] as ChartDatum[],
-      };
-    }
-    const data: ChartDatum[] = [];
-    for (const summary of agentSummaries) {
-      if (hiddenAgents.has(summary.key)) continue;
-      const point = pointByKey.get(summary.key);
-      if (!point) continue;
-      const datum = buildDatum(point, metric, agentLabelByKey[summary.key]);
-      if (datum) data.push(datum);
-    }
+    const data =
+      metric == null
+        ? []
+        : points
+            .filter((point) => !hiddenAgents.has(point.key))
+            .map((point) => buildDatum(point, metric))
+            .filter((datum): datum is ChartDatum => datum != null);
     return {
       visibleData: data,
       // Frontier over the agents currently shown: hiding one re-derives the
@@ -220,11 +208,24 @@ export const CostParetoGraph = memo(function CostParetoGraph({
         (d) => d.y
       ),
     };
-  }, [metric, agentSummaries, hiddenAgents, pointByKey, agentLabelByKey]);
+  }, [metric, points, hiddenAgents]);
 
   const frontierKeys = useMemo(
     () => new Set(frontierData.map((datum) => datum.key)),
     [frontierData]
+  );
+
+  const legendItems = useMemo(
+    () =>
+      agentSummaries.map((summary) => ({
+        key: summary.key,
+        label: summary.label,
+        color: agentColorByKey[summary.key] ?? AGENT_COLORS[0],
+        queueKey: summary.queueKey,
+        model: summary.model,
+        agent: summary.agent,
+      })),
+    [agentSummaries, agentColorByKey]
   );
 
   const renderTooltip = useCallback(
@@ -289,11 +290,11 @@ export const CostParetoGraph = memo(function CostParetoGraph({
           </div>
           <div style={{ padding: "1px 0" }}>
             <span style={{ color: "var(--paper-ink-2)" }}>
-              {METRIC_AXIS_LABEL[metric]}{" "}
+              {METRIC_DEFS[metric].axisLabel}{" "}
             </span>
             <span style={{ fontWeight: 500 }}>
               {datum.estimatePrefix}
-              {formatMetricValue(metric, datum.x)}
+              {METRIC_DEFS[metric].formatValue(datum.x)}
               {datum.estimateSuffix}
             </span>
             {(datum.estimatePrefix || datum.estimateSuffix) && (
@@ -315,8 +316,7 @@ export const CostParetoGraph = memo(function CostParetoGraph({
   );
 
   // Frontier point labels, flipped near the SVG edges so they never clip:
-  // right-anchored at the right edge, below the point at the top (where the
-  // step line arrives vertically, so below-left stays clear of it).
+  // right-anchored at the right edge, below the point at the top.
   const renderFrontierLabel = useCallback(
     (props: { x?: number | string; y?: number | string; value?: unknown }) => {
       const px = Number(props.x);
@@ -341,7 +341,7 @@ export const CostParetoGraph = memo(function CostParetoGraph({
     [chartSize.width]
   );
 
-  if (metric == null || pointByKey.size === 0) {
+  if (metric == null || points.length === 0) {
     return null;
   }
 
@@ -364,8 +364,8 @@ export const CostParetoGraph = memo(function CostParetoGraph({
                 aria-pressed={isActive}
                 title={
                   enabled
-                    ? `Plot pass@1 against average ${METRIC_LABEL[candidate]} per trial`
-                    : `No ${METRIC_LABEL[candidate]} data reported`
+                    ? `Plot pass@1 against average ${METRIC_DEFS[candidate].label} per trial`
+                    : `No ${METRIC_DEFS[candidate].label} data reported`
                 }
                 className={`rounded-[5px] border px-2 py-0.5 font-mono text-[10.5px] leading-[1.6] transition-colors select-none ${
                   isActive
@@ -375,7 +375,7 @@ export const CostParetoGraph = memo(function CostParetoGraph({
                       : "cursor-default border-[color:var(--paper-line-2)] bg-transparent text-[color:var(--paper-ink-4)]"
                 }`}
               >
-                {METRIC_LABEL[candidate]}
+                {METRIC_DEFS[candidate].label}
               </button>
             );
           })}
@@ -398,7 +398,7 @@ export const CostParetoGraph = memo(function CostParetoGraph({
                 type="number"
                 dataKey="x"
                 domain={[0, "auto"]}
-                tickFormatter={(v) => formatMetricTick(metric, Number(v))}
+                tickFormatter={(v) => METRIC_DEFS[metric].formatTick(Number(v))}
                 tick={{
                   fontSize: 10.5,
                   fill: "var(--paper-ink-2)",
@@ -406,7 +406,7 @@ export const CostParetoGraph = memo(function CostParetoGraph({
                 }}
                 stroke="var(--paper-line)"
                 label={{
-                  value: METRIC_AXIS_LABEL[metric],
+                  value: METRIC_DEFS[metric].axisLabel,
                   position: "insideBottomRight",
                   offset: -5,
                   fontSize: 10,
@@ -453,41 +453,40 @@ export const CostParetoGraph = memo(function CostParetoGraph({
               >
                 <LabelList dataKey="label" content={renderFrontierLabel} />
               </Line>
-              {visibleData.map((datum) => {
-                const color = agentColorByKey[datum.key] ?? AGENT_COLORS[0];
-                const isHovered = hoverAgent === datum.key;
-                const isDimmed = hoverAgent != null && hoverAgent !== datum.key;
-                return (
-                  <Scatter
-                    key={datum.key}
-                    data={[datum]}
-                    fill={color}
-                    fillOpacity={isDimmed ? 0.25 : 1}
-                    stroke="var(--paper-surface)"
-                    strokeWidth={isHovered ? 2.5 : 2}
-                    isAnimationActive={false}
-                    onMouseEnter={() => onHoverAgent?.(datum.key)}
-                    onMouseLeave={() => onHoverAgent?.(null)}
-                    style={{ cursor: "pointer" }}
-                  />
-                );
-              })}
+              <Scatter
+                data={visibleData}
+                isAnimationActive={false}
+                style={{ cursor: "pointer" }}
+                onMouseEnter={(point: unknown) =>
+                  onHoverAgent?.(
+                    (point as { payload?: ChartDatum } | null)?.payload?.key ??
+                      null
+                  )
+                }
+                onMouseLeave={() => onHoverAgent?.(null)}
+              >
+                {visibleData.map((datum) => {
+                  const isHovered = hoverAgent === datum.key;
+                  const isDimmed =
+                    hoverAgent != null && hoverAgent !== datum.key;
+                  return (
+                    <Cell
+                      key={datum.key}
+                      fill={agentColorByKey[datum.key] ?? AGENT_COLORS[0]}
+                      fillOpacity={isDimmed ? 0.25 : 1}
+                      stroke="var(--paper-surface)"
+                      strokeWidth={isHovered ? 2.5 : 2}
+                    />
+                  );
+                })}
+              </Scatter>
             </ComposedChart>
           </ResponsiveContainer>
         ) : null}
       </div>
 
       <AgentLegend
-        items={agentSummaries.map((summary, idx) => ({
-          key: summary.key,
-          label: summary.label,
-          color:
-            agentColorByKey[summary.key] ??
-            AGENT_COLORS[idx % AGENT_COLORS.length],
-          queueKey: summary.queueKey,
-          model: summary.model,
-          agent: summary.agent,
-        }))}
+        items={legendItems}
         hiddenKeys={hiddenAgents}
         onToggle={onToggleAgent}
         hoverKey={hoverAgent ?? null}

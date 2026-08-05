@@ -1,19 +1,36 @@
 import type { Task, Trial } from "@/lib/types";
 import {
   getExperimentAgentKey,
+  getModelScopedAgentsFromSummaries,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
+import { passAtOneFraction } from "@/lib/pass-at-k";
 import { trialDurationSec } from "@/lib/format";
 
-export type ParetoMetric = "cost" | "tokens" | "time" | "steps" | "tools";
+function trialTokens(trial: Trial): number | null {
+  if (trial.input_tokens == null && trial.output_tokens == null) return null;
+  return (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0);
+}
 
-export const PARETO_METRICS: readonly ParetoMetric[] = [
-  "cost",
-  "tokens",
-  "time",
-  "steps",
-  "tools",
-];
+function trialSeconds(trial: Trial): number | null {
+  // Prefer the agent's own trajectory clock; wall clock (started→finished)
+  // is the fallback and folds in environment setup and verification.
+  return trial.trajectory_duration_seconds ?? trialDurationSec(trial);
+}
+
+// Adding a metric is one entry here plus a display entry in the graph's
+// METRIC_DEFS; aggregation, availability, and the toggle row all follow.
+const METRIC_EXTRACTORS = {
+  cost: (trial: Trial) => trial.cost_usd ?? null,
+  tokens: trialTokens,
+  time: trialSeconds,
+  steps: (trial: Trial) => trial.total_steps ?? null,
+  tools: (trial: Trial) => trial.total_tool_calls ?? null,
+} as const;
+
+export type ParetoMetric = keyof typeof METRIC_EXTRACTORS;
+
+export const PARETO_METRICS = Object.keys(METRIC_EXTRACTORS) as ParetoMetric[];
 
 type MetricAggregate = {
   /** Mean of the metric per trial, over the trials that reported it. */
@@ -24,10 +41,10 @@ type MetricAggregate = {
 
 export type AgentParetoPoint = {
   key: string;
+  label: string;
   /**
-   * Mean over tasks of the per-task pass fraction (reward === 1 over all of
-   * the agent's trials for that task, skips counted as non-passes) — the same
-   * pass@1 estimator the leaderboard ranks by, so the y-axis agrees with it.
+   * Mean over tasks of the per-task pass@1 fraction — computed with the same
+   * shared estimator the leaderboard ranks by, so the y-axis agrees with it.
    */
   score: number;
   /** Tasks contributing to the score mean. */
@@ -40,126 +57,73 @@ export type AgentParetoPoint = {
   costHasNative: boolean;
 };
 
-function trialTokens(trial: Trial): number | null {
-  if (trial.input_tokens == null && trial.output_tokens == null) return null;
-  return (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0);
-}
-
-function trialSeconds(trial: Trial): number | null {
-  // Prefer the agent's own trajectory clock; wall clock (started→finished)
-  // is the fallback and folds in environment setup and verification.
-  if (trial.trajectory_duration_seconds != null) {
-    return trial.trajectory_duration_seconds;
-  }
-  return trialDurationSec(trial);
-}
-
 /**
- * One score/cost/tokens/time point per agent, aggregated over every task the
- * agent ran. Trials group by the same experiment agent key as the pass/k
- * graph and leaderboard, so all three cards describe the same cohorts.
+ * One score/cost/tokens/time/steps/tools point per agent, aggregated over
+ * every task the agent ran. Trials group by the same experiment agent key as
+ * the pass/k graph and leaderboard, so all three cards describe the same
+ * cohorts.
  */
 export function buildAgentParetoPoints(
   tasks: Task[],
   agentSummaries: ExperimentAgentSummary[]
 ): AgentParetoPoint[] {
-  const modelScopedAgents = new Set(
-    agentSummaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
-  );
+  const modelScopedAgents = getModelScopedAgentsFromSummaries(agentSummaries);
 
-  const trialsByAgent = new Map<string, { taskId: string; trial: Trial }[]>();
+  // agent key → task id → that agent's trials on that task
+  const trialsByAgent = new Map<string, Map<string, Trial[]>>();
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
       const key = getExperimentAgentKey(trial, modelScopedAgents);
-      const existing = trialsByAgent.get(key) ?? [];
-      existing.push({ taskId: task.id, trial });
-      trialsByAgent.set(key, existing);
+      const perTask = trialsByAgent.get(key) ?? new Map<string, Trial[]>();
+      perTask.set(task.id, [...(perTask.get(task.id) ?? []), trial]);
+      trialsByAgent.set(key, perTask);
     }
   }
 
   const points: AgentParetoPoint[] = [];
   for (const summary of agentSummaries) {
-    const rows = trialsByAgent.get(summary.key) ?? [];
-    if (rows.length === 0) continue;
+    const perTask = trialsByAgent.get(summary.key);
+    if (!perTask) continue;
 
-    const perTask = new Map<string, { n: number; c: number }>();
-    let costSum = 0;
-    let costCount = 0;
+    const sums = {} as Record<ParetoMetric, { sum: number; count: number }>;
+    for (const metric of PARETO_METRICS) sums[metric] = { sum: 0, count: 0 };
     let costHasEstimated = false;
     let costHasNative = false;
-    let tokenSum = 0;
-    let tokenCount = 0;
-    let secondsSum = 0;
-    let secondsCount = 0;
-    let stepsSum = 0;
-    let stepsCount = 0;
-    let toolsSum = 0;
-    let toolsCount = 0;
+    let scoreSum = 0;
+    let trialCount = 0;
 
-    for (const { taskId, trial } of rows) {
-      const bucket = perTask.get(taskId) ?? { n: 0, c: 0 };
-      bucket.n += 1;
-      if (trial.reward === 1) bucket.c += 1;
-      perTask.set(taskId, bucket);
-
-      if (trial.cost_usd != null) {
-        costSum += trial.cost_usd;
-        costCount += 1;
-        if (trial.cost_is_estimated === true) costHasEstimated = true;
-        else costHasNative = true;
-      }
-      const tokens = trialTokens(trial);
-      if (tokens != null) {
-        tokenSum += tokens;
-        tokenCount += 1;
-      }
-      const seconds = trialSeconds(trial);
-      if (seconds != null) {
-        secondsSum += seconds;
-        secondsCount += 1;
-      }
-      if (trial.total_steps != null) {
-        stepsSum += trial.total_steps;
-        stepsCount += 1;
-      }
-      if (trial.total_tool_calls != null) {
-        toolsSum += trial.total_tool_calls;
-        toolsCount += 1;
+    for (const trials of perTask.values()) {
+      // Task buckets are never empty, so the fraction is never null.
+      scoreSum += passAtOneFraction(trials) ?? 0;
+      trialCount += trials.length;
+      for (const trial of trials) {
+        for (const metric of PARETO_METRICS) {
+          const value = METRIC_EXTRACTORS[metric](trial);
+          if (value == null) continue;
+          sums[metric].sum += value;
+          sums[metric].count += 1;
+        }
+        if (trial.cost_usd != null) {
+          if (trial.cost_is_estimated === true) costHasEstimated = true;
+          else costHasNative = true;
+        }
       }
     }
 
-    let scoreSum = 0;
-    for (const { n, c } of perTask.values()) scoreSum += c / n;
+    const metrics = {} as Record<ParetoMetric, MetricAggregate | null>;
+    for (const metric of PARETO_METRICS) {
+      const { sum, count } = sums[metric];
+      metrics[metric] =
+        count > 0 ? { perTrial: sum / count, trialCount: count } : null;
+    }
 
     points.push({
       key: summary.key,
+      label: summary.label,
       score: scoreSum / perTask.size,
       taskCount: perTask.size,
-      trialCount: rows.length,
-      metrics: {
-        cost:
-          costCount > 0
-            ? { perTrial: costSum / costCount, trialCount: costCount }
-            : null,
-        tokens:
-          tokenCount > 0
-            ? { perTrial: tokenSum / tokenCount, trialCount: tokenCount }
-            : null,
-        time:
-          secondsCount > 0
-            ? { perTrial: secondsSum / secondsCount, trialCount: secondsCount }
-            : null,
-        steps:
-          stepsCount > 0
-            ? { perTrial: stepsSum / stepsCount, trialCount: stepsCount }
-            : null,
-        tools:
-          toolsCount > 0
-            ? { perTrial: toolsSum / toolsCount, trialCount: toolsCount }
-            : null,
-      },
+      trialCount,
+      metrics,
       costHasEstimated,
       costHasNative,
     });
@@ -171,7 +135,7 @@ export function buildAgentParetoPoints(
 /**
  * The Pareto frontier for minimize-x / maximize-y: points no other point
  * weakly dominates (lower-or-equal x with higher-or-equal y, one strict).
- * Returned in ascending-x order, ready to draw as a step line.
+ * Returned in ascending-x order, ready to draw as a line.
  */
 export function paretoFrontier<T>(
   points: readonly T[],

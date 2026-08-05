@@ -1780,41 +1780,35 @@ export function ExperimentTrialsTable({
     <TooltipProvider>
       <div className="space-y-4">
         {/* Graphs row: pass/k curve (needs multiple trials per task-agent),
-            cost/token/time Pareto frontier (needs metric data), leaderboard.
-            Each card decides its own visibility by rendering null; empty:hidden
-            collapses the wrapper so the grid reflows around missing cards. */}
+            Pareto frontier (needs cost/token/time/steps/tools data), and
+            leaderboard. A card with nothing to show renders null and
+            contributes no grid cell, so the row reflows around it. */}
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
-            <div className="h-full min-w-0 empty:hidden">
-              <PassAtKGraph
-                tasks={tasks}
-                agentSummaries={sortedAgentSummaries}
-                hiddenAgents={hiddenAgents}
-                onToggleAgent={toggleAgent}
-                hoverAgent={hoverAgent}
-                onHoverAgent={setHoverAgent}
-              />
-            </div>
-            <div className="h-full min-w-0 empty:hidden">
-              <CostParetoGraph
-                tasks={tasks}
-                agentSummaries={sortedAgentSummaries}
-                hiddenAgents={hiddenAgents}
-                onToggleAgent={toggleAgent}
-                hoverAgent={hoverAgent}
-                onHoverAgent={setHoverAgent}
-              />
-            </div>
-            <div className="h-full min-w-0 empty:hidden">
-              <PassAtOneLeaderboard
-                tasks={tasks}
-                agentSummaries={sortedAgentSummaries}
-                hiddenAgents={hiddenAgents}
-                onToggleAgent={toggleAgent}
-                hoverAgent={hoverAgent}
-                onHoverAgent={setHoverAgent}
-              />
-            </div>
+            <PassAtKGraph
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
+            <CostParetoGraph
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
+            <PassAtOneLeaderboard
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
           </div>
         ) : null}
 
