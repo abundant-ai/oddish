@@ -5,12 +5,14 @@ import {
 } from "@/lib/experiment-agent-grouping";
 import { trialDurationSec } from "@/lib/format";
 
-export type ParetoMetric = "cost" | "tokens" | "time";
+export type ParetoMetric = "cost" | "tokens" | "time" | "steps" | "tools";
 
 export const PARETO_METRICS: readonly ParetoMetric[] = [
   "cost",
   "tokens",
   "time",
+  "steps",
+  "tools",
 ];
 
 type MetricAggregate = {
@@ -91,6 +93,10 @@ export function buildAgentParetoPoints(
     let tokenCount = 0;
     let secondsSum = 0;
     let secondsCount = 0;
+    let stepsSum = 0;
+    let stepsCount = 0;
+    let toolsSum = 0;
+    let toolsCount = 0;
 
     for (const { taskId, trial } of rows) {
       const bucket = perTask.get(taskId) ?? { n: 0, c: 0 };
@@ -114,6 +120,14 @@ export function buildAgentParetoPoints(
         secondsSum += seconds;
         secondsCount += 1;
       }
+      if (trial.total_steps != null) {
+        stepsSum += trial.total_steps;
+        stepsCount += 1;
+      }
+      if (trial.total_tool_calls != null) {
+        toolsSum += trial.total_tool_calls;
+        toolsCount += 1;
+      }
     }
 
     let scoreSum = 0;
@@ -136,6 +150,14 @@ export function buildAgentParetoPoints(
         time:
           secondsCount > 0
             ? { perTrial: secondsSum / secondsCount, trialCount: secondsCount }
+            : null,
+        steps:
+          stepsCount > 0
+            ? { perTrial: stepsSum / stepsCount, trialCount: stepsCount }
+            : null,
+        tools:
+          toolsCount > 0
+            ? { perTrial: toolsSum / toolsCount, trialCount: toolsCount }
             : null,
       },
       costHasEstimated,

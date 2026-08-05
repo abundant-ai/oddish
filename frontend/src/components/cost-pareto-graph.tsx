@@ -61,12 +61,16 @@ const METRIC_LABEL: Record<ParetoMetric, string> = {
   cost: "cost",
   tokens: "tokens",
   time: "time",
+  steps: "steps",
+  tools: "tool calls",
 };
 
 const METRIC_AXIS_LABEL: Record<ParetoMetric, string> = {
   cost: "avg $ / trial",
   tokens: "avg tokens / trial",
   time: "avg time / trial",
+  steps: "avg steps / trial",
+  tools: "avg tool calls / trial",
 };
 
 function formatMetricTick(metric: ParetoMetric, value: number): string {
@@ -77,7 +81,7 @@ function formatMetricTick(metric: ParetoMetric, value: number): string {
     if (value >= 1) return `$${value.toFixed(1)}`;
     return `$${value.toFixed(2)}`;
   }
-  if (metric === "tokens") {
+  if (metric === "tokens" || metric === "steps" || metric === "tools") {
     if (value === 0) return "0";
     if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
     if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
@@ -98,6 +102,10 @@ function formatMetricValue(metric: ParetoMetric, value: number): string {
       : formatCostUsd(value);
   }
   if (metric === "tokens") return formatTokenCount(value);
+  if (metric === "steps" || metric === "tools") {
+    const count = value < 10 ? value.toFixed(1) : `${Math.round(value)}`;
+    return `${count} ${metric === "steps" ? "steps" : "tool calls"}`;
+  }
   return formatDurationSec(value);
 }
 
