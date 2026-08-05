@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.endpoints.collections import create_trial_collection_core
+from oddish.core.endpoints.deletion import _combine_idempotency_key
 from oddish.core.endpoints.tasks_query import list_experiment_slim_tasks
 from oddish.db.models import ExperimentModel, TaskModel, TrialModel, generate_id
 
@@ -48,18 +49,21 @@ def _trial(
 
 
 @pytest.mark.asyncio
-async def test_slim_tasks_collapses_gathered_combine_copies(session):
+@pytest.mark.parametrize("source_id", ["source-short", "source-" + "s" * 80])
+async def test_slim_tasks_collapses_gathered_combine_copies(session, source_id):
     task = _task("detail-collection-task-1")
     session.add(task)
     await session.flush()
 
-    home = _experiment("home-detail-1")
-    session.add(home)
+    source_home = _experiment("source-detail-1")
+    copy_home = _experiment("copy-detail-1")
+    session.add_all([source_home, copy_home])
     await session.flush()
 
-    original = _trial(task, home)
-    copy = _trial(task, home)
-    copy.idempotency_key = f"combine:result:{original.id}"
+    original = _trial(task, source_home)
+    original.id = original.name = source_id
+    copy = _trial(task, copy_home)
+    copy.idempotency_key = _combine_idempotency_key(copy_home.id, original.id)
     session.add_all([original, copy])
     await session.flush()
 
