@@ -3,15 +3,17 @@
 import useSWR, { type SWRResponse } from "swr";
 import type { Trial } from "@/lib/types";
 
-/** True while a trial's QA analysis is queued or running server-side. */
+/** Returns true while the trial's analysis is queued or running on the server. */
 export function isAnalysisStatusActive(
   status: Trial["analysis_status"],
 ): boolean {
   return status === "pending" || status === "queued" || status === "running";
 }
 
-// Bounds consumers' loading gates: a hung fetch must reject so they fall
-// back to the slim grid row instead of pinning a skeleton forever.
+// If a fetch hangs forever, the components using this hook would show a
+// loading state forever. This timeout makes a hung fetch fail like a
+// normal error, and the components then fall back to the trial data they
+// already have.
 const TRIAL_FETCH_TIMEOUT_MS = 15_000;
 
 async function trialFetcher(url: string): Promise<Trial> {
@@ -37,14 +39,14 @@ async function trialFetcher(url: string): Promise<Trial> {
 }
 
 /**
- * Subscribe to one trial by id through the shared SWR cache.
+ * Fetches one trial by its id.
  *
- * The cache key is the trial URL, so every view of the same trial (the
- * drawer's full-detail upgrade, the analysis card) shares one request and
- * one copy of the data instead of issuing sibling fetches. While the
- * trial's analysis is queued or running the subscription polls; it stops
- * on terminal states. Pass a null id to subscribe to nothing (drawer
- * closed, public share view).
+ * Every component that calls this hook with the same id shares a single
+ * request and a single copy of the data, instead of each component
+ * fetching the trial on its own. While the trial's analysis is queued or
+ * running, the hook refetches every 5 seconds so the result appears on
+ * its own; the refetching stops once the analysis finishes. Passing null
+ * as the id fetches nothing.
  */
 export function useTrial(
   trialId: string | null | undefined,

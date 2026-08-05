@@ -2,24 +2,26 @@ import { expect, test, type Page } from "@playwright/test";
 import { clerk, setupClerkTestingToken } from "@clerk/testing/playwright";
 
 /**
- * Network-shape invariants for the experiment page. Each assertion encodes a
- * measured production defect as a regression net:
+ * Each test here checks the number and kind of network requests the
+ * experiment page makes. Each assertion encodes a bug that was measured
+ * in production and then fixed:
  *
- *  1. Loading the page issues exactly one task-shells request (the shells
- *     were fetched twice: SSR + a client revalidation of the same URL).
- *  2. Opening a trial issues exactly one GET /api/trials/{id} (the drawer
- *     and the analysis card each ran their own fetch of the same trial).
- *  3. No task-files request carries stream=1 in this flow (opening a trial
- *     streamed the whole task bundle — every file body — behind a pane
- *     showing only the overview), and no body-carrying (stream) listing
- *     of any kind happens until a file view is actually shown.
- *  4. The per-trial subscription polls while analysis_status is active and
- *     stops once it is terminal.
+ *  1. Loading the page issues exactly one task-shells request. The shells
+ *     used to be fetched twice, once during the server render and once
+ *     again on mount.
+ *  2. Opening a trial issues exactly one GET /api/trials/{id}. The drawer
+ *     and the analysis card each used to fetch the same trial separately.
+ *  3. No task-files request uses stream=1 during this flow. Opening a
+ *     trial used to download the task's entire file contents behind a
+ *     pane that showed only the overview. No stream request of any kind
+ *     may happen until a file view is on screen.
+ *  4. The trial refetches every few seconds while its analysis is active
+ *     and stops once it finishes.
  *
- * Like tasks-view.spec.ts this assumes an already-running dev stack and
- * skips without Clerk credentials. The experiment needs at least one
- * non-probe trial; set E2E_EXPERIMENT_ID to pin one, otherwise the first
- * experiment on /experiments is used.
+ * Like tasks-view.spec.ts, this needs a running dev stack and Clerk dev
+ * credentials, and it skips when they are missing. The experiment needs
+ * at least one non-probe trial; set E2E_EXPERIMENT_ID to choose one,
+ * otherwise the first experiment on the dashboard is used.
  */
 
 const CLERK_EMAIL = process.env.E2E_CLERK_EMAIL;
@@ -30,15 +32,16 @@ const EXPERIMENT_ID = process.env.E2E_EXPERIMENT_ID;
 const hasClerkEnv = !!CLERK_EMAIL && !!CLERK_SECRET && !!CLERK_PUBLISHABLE;
 
 const TASK_SHELLS_RE = /\/api\/experiments\/[^/]+\/task-shells/;
-// The trial-detail endpoint only — subpaths (/files, /analysis-log, /live,
-// /trajectory) are separate resources and must not count here.
+// Matches the trial-detail endpoint only. Subpaths like /files,
+// /analysis-log, /live, and /trajectory are separate resources and must
+// not count here.
 const TRIAL_DETAIL_RE = /\/api\/trials\/[^/?]+(\?.*)?$/;
 const TASK_FILES_RE = /\/api\/tasks\/[^/]+\/files\?/;
 const TASK_FILES_STREAM_RE = /\/api\/tasks\/[^/]+\/files\?[^#]*\bstream=1\b/;
-// Any body-carrying listing (stream=1 asks for every file body). Plain
-// listings are cheap and legitimate outside the Files views — e.g. the
-// verifier summary reads the trial-files listing on open — so only the
-// stream form is gated on a file view being shown.
+// Requests with stream=1 return every file's contents. Plain listings are
+// small and are allowed at any time; for example, the verifier badge
+// reads one when a trial opens. Only the stream form has to wait until a
+// file view is on screen.
 const ANY_FILES_STREAM_RE = /\/files\?[^#]*\bstream=1\b/;
 const TRIAL_FILES_STREAM_RE = /\/api\/trials\/[^/]+\/files\?[^#]*\bstream=1\b/;
 
@@ -46,9 +49,9 @@ type LoggedRequest = { url: string; method: string };
 
 function recordRequests(page: Page): LoggedRequest[] {
   const log: LoggedRequest[] = [];
-  // requestfinished, not request: the dev server double-invokes effects
-  // (StrictMode), and the first invocation's aborted fetch is React
-  // hygiene, not a duplicate the invariants care about.
+  // Only finished requests are counted. In development, React StrictMode
+  // runs every effect twice and the first run's fetch gets aborted. Those
+  // aborted requests are not real duplicates, so they must not count.
   page.on("requestfinished", (request) =>
     log.push({ url: request.url(), method: request.method() }),
   );
@@ -83,10 +86,11 @@ test.describe("experiment page network shape", () => {
 
     const log = recordRequests(page);
 
-    // Force the opened trial's analysis to read as active so the polling
-    // half of invariant 4 is reachable on any seed data; flipped to
-    // "success" later to assert the poll stops. Only the detail endpoint
-    // matches the glob — subpath requests fall through untouched.
+    // This rewrites the fetched trial's analysis_status to "running" so
+    // the refetching behavior can be tested on any seed data. It is
+    // flipped to "success" later in the test to check that the refetching
+    // stops. The glob only matches /api/trials/{id} itself, and requests
+    // to subpaths pass through unchanged.
     let analysisStatusOverride: string | null = "running";
     await page.route("**/api/trials/*", async (route) => {
       if (route.request().method() !== "GET" || analysisStatusOverride === null)
@@ -108,12 +112,13 @@ test.describe("experiment page network shape", () => {
     if (EXPERIMENT_ID) {
       await page.goto(`/experiments/${encodeURIComponent(EXPERIMENT_ID)}`);
     } else {
-      // /experiments is a placeholder; the dashboard is the experiment
-      // entrypoint. Discovery is opportunistic: an org with no experiment
-      // to open (e.g. the CI dashboard seed, which provisions one task and
-      // no experiments) skips instead of failing — a hard failure here
-      // would gate PRs on seed contents, not on the network shape under
-      // test. Pin E2E_EXPERIMENT_ID to make this strict.
+      // The /experiments page contains no experiment links; experiments
+      // are opened from the dashboard. If this environment has no
+      // experiment at all, which is the case for the CI seed, the test
+      // skips instead of failing. Failing here would make pull requests
+      // fail because of the seed's contents rather than because of
+      // anything this spec tests. Setting E2E_EXPERIMENT_ID makes the
+      // test strict instead.
       await page.goto("/dashboard");
       const experimentLink = page.locator('a[href^="/experiments/"]').first();
       const hasExperiment = await experimentLink.waitFor({ timeout: 15_000 }).then(
@@ -131,7 +136,8 @@ test.describe("experiment page network shape", () => {
     if (EXPERIMENT_ID) {
       await expect(trialCell).toBeVisible({ timeout: 30_000 });
     } else {
-      // Same opportunism for a discovered experiment with no trial cells.
+      // The same skip rule applies when the discovered experiment has no
+      // trial cells.
       const hasTrialCell = await trialCell.waitFor({ timeout: 30_000 }).then(
         () => true,
         () => false,
@@ -145,9 +151,9 @@ test.describe("experiment page network shape", () => {
     expect(countSince(log, 0, TASK_SHELLS_RE)).toBe(1);
     expect(countSince(log, 0, TRIAL_DETAIL_RE)).toBe(0);
 
-    // Phase 2 — open a trial: exactly one detail fetch (shared by the
-    // drawer and the analysis card), the visible task pane fetches its
-    // plain tree listing, and no trial-files listing yet.
+    // Phase 2 — open a trial. Exactly one detail fetch happens, shared by
+    // the drawer and the analysis card. The visible task pane fetches its
+    // plain tree listing, and nothing downloads file contents.
     const openMark = log.length;
     await trialCell.click();
     await expect(page.getByRole("tab", { name: "Summary" })).toBeVisible({
@@ -158,8 +164,9 @@ test.describe("experiment page network shape", () => {
         timeout: 10_000,
       })
       .toBeGreaterThanOrEqual(1);
-    // Inside the 5s poll tick: anything beyond one request here is a
-    // duplicate subscriber, not polling.
+    // Less than the 5-second refetch interval has passed, so a second
+    // request at this point would mean two components are fetching the
+    // same trial, not that refetching started.
     await page.waitForTimeout(1_500);
     expect(countSince(log, openMark, TRIAL_DETAIL_RE)).toBe(1);
     await expect
@@ -169,7 +176,8 @@ test.describe("experiment page network shape", () => {
       .toBe(1);
     expect(countSince(log, openMark, ANY_FILES_STREAM_RE)).toBe(0);
 
-    // Phase 3 — analysis reads as active, so the subscription must poll.
+    // Phase 3 — the analysis reads as active, so the trial must be
+    // refetched on an interval.
     const pollMark = log.length;
     await expect
       .poll(() => countSince(log, pollMark, TRIAL_DETAIL_RE), {
@@ -177,8 +185,9 @@ test.describe("experiment page network shape", () => {
       })
       .toBeGreaterThanOrEqual(1);
 
-    // Phase 4 — flip to terminal: the next poll delivers it, then polling
-    // must stop (no detail request across a full poll interval).
+    // Phase 4 — flip the analysis to success. The next refetch delivers
+    // it, and after that no detail request may appear for a full refetch
+    // interval.
     analysisStatusOverride = "success";
     const terminalMark = log.length;
     await expect
@@ -190,9 +199,10 @@ test.describe("experiment page network shape", () => {
     await page.waitForTimeout(6_500);
     expect(countSince(log, quietMark, TRIAL_DETAIL_RE)).toBe(0);
 
-    // Phase 5 — the file-view listing (the panel's stream-form request;
-    // the trial-files endpoint ignores the param and answers plain) fires
-    // only once the Files tab is actually shown.
+    // Phase 5 — the file-view listing fires only once the Files tab is
+    // actually shown. The panel sends this listing with stream=1, and the
+    // trial-files endpoint ignores that parameter and answers with a
+    // plain listing.
     const filesMark = log.length;
     await page.getByRole("tab", { name: "Files" }).click();
     await expect
@@ -201,8 +211,8 @@ test.describe("experiment page network shape", () => {
       })
       .toBe(1);
 
-    // Whole journey: the task bundle (tree + every file body) was never
-    // streamed. Task-files listings must all be plain.
+    // Across the whole journey, the task's file contents were never
+    // streamed: every task-files listing must be a plain one.
     expect(countSince(log, 0, TASK_FILES_STREAM_RE)).toBe(0);
   });
 });

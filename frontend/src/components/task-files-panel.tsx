@@ -495,14 +495,15 @@ export function TaskFilesPanel({
   const verdictSource = verdictTask ?? task;
   // The whole tree comes back from one recursive request — task trees are
   // shallow, there's nothing to page or lazy-load. stream=1 asks for
-  // NDJSON (tree first, then every file body); endpoints that don't
-  // stream (trial files) ignore it and answer with plain JSON. Bodies are
-  // only worth prefetching when the pane paints a file immediately (the
-  // file-only view, e.g. the public share): panes that open on the
-  // overview skip stream=1 — the plain listing renders the tree, and the
-  // per-file fetch on click covers bodies. An overview-first open was
-  // otherwise downloading the entire task bundle behind a pane that
-  // showed none of it.
+  // NDJSON (the tree first, then every file's contents); endpoints that
+  // don't stream (trial files) ignore it and answer with plain JSON.
+  // Downloading every file's contents up front is only worth it when the
+  // pane shows a file immediately, which happens in the file-only view
+  // used by the public share page. Panes that open on the overview skip
+  // stream=1, because the plain listing is enough to draw the file tree
+  // and clicking a file downloads just that file. Before this condition
+  // existed, opening a trial downloaded the task's entire file contents
+  // behind a pane that was not showing any of them.
   const buildListingUrl = useCallback(() => {
     const params = new URLSearchParams();
     params.set("recursive", "1");

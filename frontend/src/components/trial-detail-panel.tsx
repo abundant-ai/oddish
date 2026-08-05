@@ -196,20 +196,23 @@ function TrialAnalysisCard({
   apiBaseUrl: string;
   onQueued?: () => void;
 }) {
-  // Live trial state via the shared per-trial subscription — the same SWR
-  // key as the drawer's own full-detail fetch, so the card adds no second
-  // request. While the analysis is active the subscription polls, so the
-  // result appears without reopening the drawer.
+  // The drawer already fetches this trial through useTrial. Calling the
+  // same hook with the same id here reuses that request instead of
+  // creating a second one. While the analysis is running, the hook
+  // refetches every few seconds, so the finished report shows up without
+  // the user having to close and reopen the drawer.
   const {
     data: liveTrial,
     error: liveTrialError,
     mutate: mutateTrial,
   } = useTrial(trialProp.id, { apiBaseUrl });
-  // The parent's snapshot can carry a superseded report (e.g. after a
-  // re-run), so the card holds a loading state until the per-trial fetch
-  // settles instead of painting it and swapping. Data and error are keyed
-  // to the trial id, so the first render after a trial switch is already
-  // unsynced.
+  // The trial object passed in from the parent can contain an outdated
+  // report, for example one from before a re-run. To avoid showing an
+  // outdated report and then swapping it, the card shows a loading state
+  // until the fetch for this trial either returns or fails. The fetched
+  // data and the error both belong to the current trial id only, so
+  // switching to another trial automatically puts the card back into its
+  // loading state.
   const trial = liveTrial ?? trialProp;
   const synced = liveTrial !== undefined || liveTrialError !== undefined;
   const [queuing, setQueuing] = useState(false);
@@ -222,17 +225,18 @@ function TrialAnalysisCard({
   // Guards async completions: a response that lands after a trial switch
   // must not write another trial's state onto the open card.
   const trialIdRef = useRef(trialProp.id);
-  // The parent passes a new onQueued function on every render. Reading it
-  // through a ref keeps the transition effect below from re-subscribing on
-  // every parent re-render.
+  // The parent passes a brand-new onQueued function on every render. The
+  // effect below reads it through this ref so that the effect does not
+  // re-run every time the parent renders.
   const onQueuedRef = useRef(onQueued);
   useEffect(() => {
     onQueuedRef.current = onQueued;
   }, [onQueued]);
 
-  // A different trial means the queue-action state and the fetched log no
-  // longer apply. (The trial data itself is keyed by id in the SWR cache,
-  // so it needs no reset.)
+  // When the user switches to a different trial, the re-run button state
+  // and the fetched log are cleared because they describe the previous
+  // trial. The trial data itself does not need clearing, because the
+  // cache stores it under each trial's id.
   useEffect(() => {
     trialIdRef.current = trialProp.id;
     setQueuing(false);
@@ -242,15 +246,17 @@ function TrialAnalysisCard({
     setQueueError(null);
   }, [trialProp.id]);
 
-  // In progress = the analysis is queued or running server-side. The rerun
-  // endpoint stamps QUEUED before answering, so there is no client-side
-  // "waiting for a worker" gap to bridge.
+  // An analysis counts as in progress when the server says it is queued
+  // or running. The rerun endpoint sets the status to QUEUED before it
+  // responds, so the server's status is always current and the client
+  // does not need to track a run on its own.
   const inProgress = isAnalysisStatusActive(trial.analysis_status);
 
-  // Refresh the parent's lists when a tracked run reaches a terminal
-  // state, so the result survives closing the drawer or switching trials.
-  // Fires only on an observed active→terminal transition of this trial —
-  // never on first paint of an already-terminal one.
+  // When an analysis run that we were watching finishes, this tells the
+  // parent to refresh its lists, so the grid shows the result even after
+  // the drawer is closed. It only fires when this same trial moves from
+  // an active status to success or failed. It never fires when a trial
+  // that already finished is loaded for the first time.
   const lastAnalysisRef = useRef<{
     id: string;
     status: Trial["analysis_status"];
@@ -374,11 +380,14 @@ function TrialAnalysisCard({
       // when the user has switched trials; only the local card state below
       // is scoped to the trial this request was for.
       onQueued?.();
-      // The endpoint stamps analysis_status=queued before answering, so
-      // this optimistic cache write only bridges to the revalidation it
-      // triggers; it flips the shared subscription into its polling state
-      // immediately. A switched-away trial still gets the write — it
-      // describes that trial's true server state.
+      // The server sets analysis_status to queued before it responds, so
+      // by the time this line runs, the queued state is already true on
+      // the server. Writing it into the cache makes the card show it
+      // immediately and starts the refetching, and the refetch then
+      // confirms it from the server. If the user switched to another
+      // trial while the request was in flight, the write still goes to
+      // the cache entry of the trial that was actually queued, which is
+      // correct.
       void mutateTrial(
         {
           ...trial,

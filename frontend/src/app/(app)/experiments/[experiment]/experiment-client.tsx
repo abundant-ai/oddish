@@ -111,9 +111,10 @@ export function ExperimentClientPage({
   experimentId,
 }: ExperimentClientPageProps) {
   return (
-    // The boundary satisfies useSearchParams (inside ExperimentDetailView)
-    // during prerender; the key remounts the content per experiment so no
-    // view state leaks across navigations.
+    // The Suspense boundary is required because ExperimentDetailView uses
+    // useSearchParams, which needs one during prerendering. The key causes
+    // everything inside to remount when the experiment changes, so no
+    // state carries over from one experiment to another.
     <Suspense key={experimentId} fallback={<ExperimentPageSkeleton />}>
       <ExperimentContent experimentId={experimentId} />
     </Suspense>

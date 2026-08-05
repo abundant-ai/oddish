@@ -23,8 +23,9 @@ async function getExperimentName(experimentId: string): Promise<string | null> {
     const response = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
-      // Metadata must not stall the page stream: past the bound the
-      // title falls back to the experiment id.
+      // This gives the title fetch 2.5 seconds. If the backend is slower
+      // than that, the page uses the experiment id as the title instead
+      // of waiting, so a slow backend cannot delay the page.
       signal: AbortSignal.timeout(2500),
     });
     if (!response.ok) {
@@ -79,11 +80,11 @@ export async function generateMetadata({
   };
 }
 
-// No server-side data fetch here on purpose: the client's task-shells
-// request through the API proxy is measurably faster than streaming the
-// same payload through the server render, and a second copy of the data
-// only creates freshness conflicts. The page streams its skeleton
-// immediately and the client fetches once.
+// This page deliberately fetches no data on the server. The browser
+// fetches the same task-shells URL faster than the server render could
+// stream it, and keeping a server copy and a client copy of the same
+// data caused staleness conflicts between them. The page shows its
+// skeleton immediately and the client fetches the data once.
 export default async function ExperimentDetailPage({
   params,
 }: {

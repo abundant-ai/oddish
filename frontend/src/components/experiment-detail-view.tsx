@@ -979,12 +979,13 @@ export function ExperimentDetailView({
     }
     lastDrawerTaskIdRef.current = taskId;
   }, [drawerState?.task.id, handleTaskPaneFileChange]);
-  // When loadFullTrialOnOpen is set, the grid only has slim trials, so
-  // subscribe to the open trial's full detail; the popup renders the slim
-  // trial until it resolves (and keeps it on failure -- the popup just
-  // shows less). The SWR key is shared with TrialAnalysisCard's
-  // subscription, so opening a trial issues one request, not two. Never
-  // fetches on the public share page (loadFullTrialOnOpen stays false).
+  // The grid rows only contain trimmed-down trial data. This fetches the
+  // full record for the trial that is open in the drawer. The drawer
+  // shows the trimmed row until the full record arrives, and keeps
+  // showing it if the fetch fails. TrialAnalysisCard calls useTrial with
+  // the same id, so opening a trial produces one request instead of two.
+  // The public share page passes loadFullTrialOnOpen as false, so it
+  // never fetches.
   const openTrialId =
     drawerState?.mode === "trial" ? (drawerState.trial?.id ?? null) : null;
   const { data: fullTrial } = useTrial(
@@ -1730,9 +1731,10 @@ export function ExperimentDetailView({
           onShowTrialChange={handleShowTrialChange}
           sideBySideLeft={
             <TaskFilesPanel
-              // The pane's real visibility, not a constant: the panel's
-              // fetch effects key on isOpen, so lying here starts the
-              // task-files machinery for a pane that isn't on screen.
+              // This tells the panel whether the pane is actually visible
+              // on screen. The panel starts downloading its files when
+              // isOpen becomes true, so passing a hardcoded true would
+              // download files for a pane the user cannot see.
               isOpen={drawerState.mode === "trial" && showTask}
               onClose={() => {}}
               taskId={null}
