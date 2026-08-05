@@ -116,11 +116,7 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
         sandbox(id="bad", state=SandboxState.ERROR),
         sandbox(id="error", state=SandboxState.ERROR),
         sandbox(id="failed", state=SandboxState.BUILD_FAILED),
-        sandbox(
-            id="failed-naive",
-            state=SandboxState.BUILD_FAILED,
-            created_at=old_naive,
-        ),
+        sandbox(id="naive", state=SandboxState.ERROR, created_at=old_naive),
         sandbox(id="recent", state=SandboxState.ERROR, created_at=recent),
         sandbox(id="updated", state=SandboxState.ERROR, updated_at=recent),
         sandbox(
@@ -155,7 +151,7 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
     calls = _fake_daytona(monkeypatch, sandboxes, {"bad"})
 
     assert asyncio.run(reap_stale_daytona_sandboxes()) == 4
-    assert calls.deleted == ["error", "failed", "failed-naive", "expired-started"]
+    assert calls.deleted == ["error", "failed", "naive", "expired-started"]
     assert calls.closed is True
     assert calls.query.labels == labels
     assert calls.terminal_query["include_errored_deleted"] is True
