@@ -30,14 +30,17 @@ runs the same checks and, when the promote token is set, does the push.
 **Never complete a promotion pull request with the merge button.** The button
 squashes, which puts a new commit on `main` and breaks the fast-forward
 model. Any agent that opens a promotion pull request must start its body
-with this warning, in capitals:
+with this block, marker comment included:
 
-> **DO NOT USE THE MERGE BUTTON ON THIS PULL REQUEST. THE BUTTON CREATES A
-> NEW COMMIT AND BREAKS THE RELEASE MODEL. COMMENT `/promote` TO COMPLETE
-> THE PROMOTION.**
+<!-- promote-warning -->
+> [!CAUTION]
+> **DO NOT USE THE MERGE BUTTON ON THIS PULL REQUEST.**
+> **THE BUTTON CREATES A NEW COMMIT AND BREAKS THE RELEASE MODEL.**
+> **COMMENT `/promote` TO COMPLETE THE PROMOTION.**
 
-The `Promotion warning` workflow adds the same text to a promotion pull
-request that opens without it. Agents use the template at
+The marker comment is what marks the body as warned. The `Promotion warning`
+workflow looks for it, and adds the same block to a promotion pull request
+that opens without it. Agents use the template at
 `.github/PULL_REQUEST_TEMPLATE/promotion.md` as the body skeleton for every
 promotion pull request; humans get it with
 `?quick_pull=1&template=promotion.md` on the compare URL.
