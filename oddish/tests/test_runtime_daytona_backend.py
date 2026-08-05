@@ -66,9 +66,19 @@ def test_daytona_env_kwargs_caller_overrides_win() -> None:
 
 
 def _fake_daytona(monkeypatch, sandboxes, fail_ids=()):
-    calls = SimpleNamespace(deleted=[], closed=False, query=None)
+    calls = SimpleNamespace(deleted=[], closed=False, query=None, terminal_query=None)
+    terminal = {SandboxState.ERROR, SandboxState.BUILD_FAILED}
+
+    async def list_sandboxes(**kwargs):
+        calls.terminal_query = kwargs
+        return SimpleNamespace(
+            items=[sandbox for sandbox in sandboxes if sandbox.state in terminal]
+        )
 
     class Client:
+        def __init__(self):
+            self._sandbox_api = SimpleNamespace(list_sandboxes=list_sandboxes)
+
         async def list(self, query):
             calls.query = query
             for sandbox in sandboxes:
@@ -146,5 +156,8 @@ def test_reap_stale_daytona_sandboxes(monkeypatch) -> None:
         "harbor.managed": "true",
         "oddish.managed": "true",
     }
+    assert calls.terminal_query["include_errored_deleted"] is True
+    assert calls.terminal_query["created_at_before"] < now
+    assert len(calls.terminal_query["states"]) == 2
     assert calls.query.states is None
-    assert calls.query.limit == 50
+    assert calls.terminal_query["limit"] == calls.query.limit == 50

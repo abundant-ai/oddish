@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,24 +25,37 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
         SandboxListSortField,
         SandboxState,
     )
+    import daytona_api_client_async as api
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=stale_after_minutes)
     terminal = {SandboxState.ERROR, SandboxState.BUILD_FAILED}
     inactive = {SandboxState.DESTROYED, SandboxState.DESTROYING}
+    labels = {"harbor.managed": "true", "oddish.managed": "true"}
     client = AsyncDaytona()
     try:
+        terminal_page = await client._sandbox_api.list_sandboxes(
+            limit=50,
+            labels=json.dumps(labels),
+            include_errored_deleted=True,
+            states=[api.SandboxState.ERROR, api.SandboxState.BUILD_FAILED],
+            created_at_before=cutoff,
+            sort=api.SandboxListSortField.CREATEDAT,
+            order=api.SandboxListSortDirection.ASC,
+        )
         query = ListSandboxesQuery(
             limit=50,
-            labels={"harbor.managed": "true", "oddish.managed": "true"},
+            labels=labels,
             created_at_before=now,
             sort=SandboxListSortField.CREATEDAT,
             order=SandboxListSortDirection.ASC,
         )
-        sandboxes = []
+        sandboxes = {sandbox.id: sandbox for sandbox in terminal_page.items}
+        expiry_count = 0
         async for sandbox in client.list(query):
-            sandboxes.append(sandbox)
-            if len(sandboxes) == 50:
+            sandboxes[sandbox.id] = sandbox
+            expiry_count += 1
+            if expiry_count == 50:
                 break
         semaphore = asyncio.Semaphore(10)
 
@@ -80,7 +94,9 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
                 )
                 return 0
 
-        return sum(await asyncio.gather(*(delete(sandbox) for sandbox in sandboxes)))
+        return sum(
+            await asyncio.gather(*(delete(sandbox) for sandbox in sandboxes.values()))
+        )
     finally:
         await client.close()
 
