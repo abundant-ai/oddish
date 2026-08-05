@@ -2409,16 +2409,6 @@ class CostExcludedLlmKeyModel(TimestampedMixin, Base):
 
 
 class ModelDisplayNameModel(TimestampedMixin, Base):
-    """Operator-managed alias from a stored model id to the name shown on
-    published share pages.
-
-    Display-only, applied at the public serialization boundary: cost
-    accounting, queue routing, and the authenticated dashboard keep reading
-    ``trials.model``, which this never rewrites. ``deleted_at`` is the
-    live/removed state, and the partial UNIQUE keeps one live row per model
-    so a removed alias can be re-added.
-    """
-
     __tablename__ = "model_display_names"
     __table_args__ = (
         Index(

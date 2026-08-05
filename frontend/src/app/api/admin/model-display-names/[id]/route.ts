@@ -8,8 +8,7 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const encoded = encodeURIComponent(id);
-  return proxyJsonRequest(request, `${PATH}/${encoded}`, "PUT");
+  return proxyJsonRequest(request, `${PATH}/${encodeURIComponent(id)}`, "PUT");
 }
 
 export async function DELETE(

@@ -11,9 +11,6 @@ type ModelDisplayName = {
   id: string;
   model_name: string;
   display_name: string;
-  created_by: string | null;
-  created_at: string;
-  updated_at: string;
 };
 
 const ENDPOINT = "/api/admin/model-display-names";
@@ -39,7 +36,6 @@ export function ModelDisplayNamesCard() {
   }
 
   async function add() {
-    if (!modelName.trim() || !displayName.trim()) return;
     setBusy(true);
     setFormError(null);
     try {
@@ -64,7 +60,6 @@ export function ModelDisplayNamesCard() {
   }
 
   async function save(id: string) {
-    if (!editValue.trim()) return;
     setBusy(true);
     setFormError(null);
     try {
@@ -134,12 +129,12 @@ export function ModelDisplayNamesCard() {
               : "Failed to load display names."}
           </p>
         )}
-        {data && data.length === 0 && (
+        {data?.length === 0 && (
           <p className="text-muted-foreground text-sm">
             No models are renamed. Published pages show the real model id.
           </p>
         )}
-        {data && data.length > 0 && (
+        {!!data?.length && (
           <div className="space-y-2">
             {data.map((row) => (
               <div

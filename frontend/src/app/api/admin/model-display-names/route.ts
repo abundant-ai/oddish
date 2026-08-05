@@ -3,10 +3,7 @@ import { proxyBackendJson, proxyJsonRequest } from "@/lib/backend-response";
 
 const PATH = "admin/model-display-names";
 
-export async function GET() {
-  return proxyBackendJson({ path: PATH });
-}
+export const GET = () => proxyBackendJson({ path: PATH });
 
-export async function POST(request: NextRequest) {
-  return proxyJsonRequest(request, PATH, "POST");
-}
+export const POST = (request: NextRequest) =>
+  proxyJsonRequest(request, PATH, "POST");
