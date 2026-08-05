@@ -9,8 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.endpoints._common import (
-    get_task_for_org_core,
     _primary_experiment_for_task_model,
+    get_task_for_org_core,
 )
 from oddish.core.harbor_source import (
     HarborSourceError,
@@ -162,6 +162,7 @@ async def _finalize_sweep(
     # to the in-process runner instead of going through the Modal queue.
     if settings.local_mode:
         import asyncio
+
         from oddish.worker.local_runner import run_trial_locally
 
         for trial in new_trials:
@@ -271,7 +272,7 @@ def _infer_tpu_environment(
 
 
 def _reject_tpu_without_gke(
-    harbor: "HarborConfig",
+    harbor: HarborConfig,
     effective_environment: EnvironmentType | None,
 ) -> None:
     """422 when a TPU request resolves to a non-GKE effective environment.
@@ -351,22 +352,21 @@ async def create_task_sweep_core(
     of the *raw* client submission so an honest retry is not spuriously rejected;
     when omitted it is computed from ``submission`` as received here.
     """
+    from oddish.core.quota_admission import admit_trials
     from oddish.core.sweeps import (
-        build_trial_specs_from_sweep,
         build_task_submission_from_sweep,
+        build_trial_specs_from_sweep,
     )
+    from oddish.core.tasks import resolve_task_storage
     from oddish.queue import (
-        _ensure_not_collection_target,
         TrialSupersedeConflict,
+        _ensure_not_collection_target,
         append_trials_to_task,
         create_task,
         get_experiment_by_id_or_name,
         get_or_create_experiment,
     )
-    from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
-    from oddish.core.quota_admission import admit_trials
-    from oddish.core.quotas import acquire_quota_locks
 
     reservation: Reservation | None = None
     if idempotency_store is not None and idempotency_key and org_id:
@@ -458,8 +458,12 @@ async def create_task_sweep_core(
             submission = submission.model_copy(update={"link": github_meta.pr_url})
 
     if submission.append_to_task:
-        if org_id is not None:
-            await acquire_quota_locks(session, org_id, billed_user_id)
+        # Quota locks are taken inside ``admit_trials`` immediately before
+        # the headroom check and held through the trial insert in this same
+        # transaction. Do not acquire them earlier: the reconcile / task load
+        # below can take tens of seconds on large tasks, and holding the
+        # org-wide advisory lock across that window starves every concurrent
+        # submit and quota-enforcement worker (opaque 500s on /tasks/sweep).
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )

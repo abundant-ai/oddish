@@ -15,7 +15,6 @@ from oddish.core.cost_basis import (
 )
 from oddish.core.helpers import HarvestTerminationError, terminate_run_harvest
 from oddish.core.quotas import (
-    acquire_quota_locks,
     get_effective_limit,
     get_effective_org_limit,
     inflight_reserved_usd,
@@ -24,6 +23,7 @@ from oddish.core.quotas import (
     start_of_month_utc,
     sum_cost_usd,
     sum_org_cost_usd,
+    try_acquire_quota_locks,
 )
 from oddish.db import (
     AnalysisStatus,
@@ -61,7 +61,12 @@ async def _quota_scope_reached(
     org_id: str,
     billed_user_id: str | None,
 ) -> str | None:
-    await acquire_quota_locks(session, org_id, billed_user_id)
+    # Non-blocking: many workers call enforcement on cost checkpoints. If
+    # another transaction already holds the org/user quota lock (admission or
+    # an in-flight cancellation), skip this round instead of pile-waiting and
+    # starving /tasks/sweep behind pg_advisory_xact_lock.
+    if not await try_acquire_quota_locks(session, org_id, billed_user_id):
+        return None
     org_limit = await get_effective_org_limit(session, org_id)
     if org_limit is not None:
         org_used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
