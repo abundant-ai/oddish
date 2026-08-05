@@ -181,11 +181,11 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
     # the rate limit because xAI's buckets refill. One resume arm per fallback
     # variant, so the resume replays whichever flag set actually ran.
     assert (
-        "grep -Eqi '(idle timeout|rate limit|rate_limit|too many requests|429)'"
+        f"grep -Eqi {grok_build_module._RESUMABLE_ERROR_PATTERN}"  # noqa: SLF001
         in command
     )
     assert command.count("grok -c -p") == 6
-    assert "resumes -lt 3" in command
+    assert f"resumes -lt {grok_build_module._MAX_RESUMES}" in command  # noqa: SLF001
     # The resume appends to the streamed event log and re-sends a short inline
     # continuation, never the staged instruction.
     assert command.count(">>/logs/agent/grok-build.json") == 6
@@ -326,9 +326,9 @@ async def test_shell_resumes_rate_limit(tmp_path, monkeypatch):
     assert "delay=0;" in command
     rc, calls, _ = _run_in_shell(command, tmp_path, _RATE_LIMIT_STUB)
     assert rc != 0
-    # Initial arm + the three bounded resumes; a stub that is always limited
+    # Initial arm + the bounded resumes; a stub that is always limited
     # exhausts the budget rather than looping forever.
-    assert len(calls) == 4
+    assert len(calls) == 1 + grok_build_module._MAX_RESUMES  # noqa: SLF001
 
 
 @pytest.mark.asyncio
