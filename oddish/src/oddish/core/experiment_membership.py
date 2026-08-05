@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import aliased
 
+from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.db import experiment_trials
 from oddish.db.models import TrialModel
 
@@ -25,9 +27,24 @@ def gathered_trial_ids_select(experiment_id: str) -> Any:
 
 
 def trial_in_experiment(experiment_id: str):
-    """Boolean clause: a trial belongs to ``experiment_id`` either as its home
-    (scalar column) or via a gathered membership row."""
-    return or_(
-        TrialModel.experiment_id == experiment_id,
-        TrialModel.id.in_(gathered_trial_ids_select(experiment_id)),
+    gathered = gathered_trial_ids_select(experiment_id)
+    source = aliased(TrialModel)
+    return and_(
+        or_(
+            TrialModel.experiment_id == experiment_id,
+            TrialModel.id.in_(gathered),
+        ),
+        or_(
+            not_combine_copy_filter(),
+            ~select(1)
+            .where(
+                source.id == func.split_part(TrialModel.idempotency_key, ":", 3),
+                or_(
+                    source.experiment_id == experiment_id,
+                    source.id.in_(gathered),
+                ),
+            )
+            .correlate(TrialModel)
+            .exists(),
+        ),
     )

@@ -48,7 +48,7 @@ def _trial(
 
 
 @pytest.mark.asyncio
-async def test_slim_tasks_returns_gathered_trials(session):
+async def test_slim_tasks_collapses_gathered_combine_copies(session):
     task = _task("detail-collection-task-1")
     session.add(task)
     await session.flush()
@@ -57,20 +57,29 @@ async def test_slim_tasks_returns_gathered_trials(session):
     session.add(home)
     await session.flush()
 
-    t1 = _trial(task, home, org_id="org1")
-    session.add(t1)
+    original = _trial(task, home)
+    copy = _trial(task, home)
+    copy.idempotency_key = f"combine:result:{original.id}"
+    session.add_all([original, copy])
     await session.flush()
 
     coll = await create_trial_collection_core(
-        session, name="c", trial_ids=[t1.id], org_id="org1"
+        session, name="c", trial_ids=[original.id, copy.id], org_id="org1"
     )
-    await session.flush()
+    lone_copy = await create_trial_collection_core(
+        session, name="lone copy", trial_ids=[copy.id], org_id="org1"
+    )
 
     tasks = await list_experiment_slim_tasks(
         session, experiment_id=coll.id, org_id="org1"
     )
-    all_trial_ids = {tr.id for task in tasks for tr in task.trials}
-    assert t1.id in all_trial_ids
+    assert {trial.id for task in tasks for trial in task.trials} == {original.id}
+
+    session.expire_all()
+    tasks = await list_experiment_slim_tasks(
+        session, experiment_id=lone_copy.id, org_id="org1"
+    )
+    assert {trial.id for task in tasks for trial in task.trials} == {copy.id}
 
 
 @pytest.mark.asyncio
