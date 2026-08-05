@@ -1545,7 +1545,7 @@ export function TrialDetailPanel({
               className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
             >
               <FolderOpen className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-              Files
+              Logs
             </TabsTrigger>
             <TabsTrigger
               value="trajectory"
