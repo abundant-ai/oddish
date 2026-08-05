@@ -445,7 +445,7 @@ async def reconcile_queue_state():
             )
 
         try:
-            deleted = await asyncio.wait_for(reap_stale_daytona_sandboxes(), 300)
+            deleted = await asyncio.wait_for(reap_stale_daytona_sandboxes(), 450)
             summary["daytona_terminal_deleted"] = deleted
             if deleted:
                 console.print(f"metric=daytona_terminal_deleted count={deleted}")

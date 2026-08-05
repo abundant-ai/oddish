@@ -75,10 +75,11 @@ async def reap_stale_daytona_sandboxes(stale_after_minutes: int = 15) -> int:
                     if not expired:
                         value = sandbox.updated_at or sandbox.created_at
                         updated_at = datetime.fromisoformat(value) if value else None
+                        if updated_at is not None and updated_at.tzinfo is None:
+                            updated_at = updated_at.replace(tzinfo=timezone.utc)
                         if (
                             sandbox.state not in terminal
                             or updated_at is None
-                            or updated_at.tzinfo is None
                             or updated_at > cutoff
                         ):
                             return 0
