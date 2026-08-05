@@ -1730,7 +1730,10 @@ export function ExperimentDetailView({
           onShowTrialChange={handleShowTrialChange}
           sideBySideLeft={
             <TaskFilesPanel
-              isOpen={true}
+              // The pane's real visibility, not a constant: the panel's
+              // fetch effects key on isOpen, so lying here starts the
+              // task-files machinery for a pane that isn't on screen.
+              isOpen={drawerState.mode === "trial" && showTask}
               onClose={() => {}}
               taskId={null}
               // The task prop scopes the overview's trial aggregation to
@@ -1753,7 +1756,7 @@ export function ExperimentDetailView({
           }
           taskContent={
             <TaskFilesPanel
-              isOpen={true}
+              isOpen={drawerState.mode === "task"}
               onClose={closeDrawer}
               taskId={drawerState.task.id}
               task={drawerState.task}

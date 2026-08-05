@@ -495,17 +495,30 @@ export function TaskFilesPanel({
   const verdictSource = verdictTask ?? task;
   // The whole tree comes back from one recursive request — task trees are
   // shallow, there's nothing to page or lazy-load. stream=1 asks for
-  // NDJSON (tree first, then file bodies); endpoints that don't stream
-  // (trial files) ignore it and answer with plain JSON.
+  // NDJSON (tree first, then every file body); endpoints that don't
+  // stream (trial files) ignore it and answer with plain JSON. Bodies are
+  // only worth prefetching when the pane paints a file immediately (the
+  // file-only view, e.g. the public share): panes that open on the
+  // overview skip stream=1 — the plain listing renders the tree, and the
+  // per-file fetch on click covers bodies. An overview-first open was
+  // otherwise downloading the entire task bundle behind a pane that
+  // showed none of it.
   const buildListingUrl = useCallback(() => {
     const params = new URLSearchParams();
     params.set("recursive", "1");
-    params.set("stream", "1");
+    if (!overviewAvailable) {
+      params.set("stream", "1");
+    }
     if (shouldScopeFilesToVersion && currentVersion != null) {
       params.set("version", String(currentVersion));
     }
     return `${resolvedFilesUrl}?${params.toString()}`;
-  }, [resolvedFilesUrl, shouldScopeFilesToVersion, currentVersion]);
+  }, [
+    resolvedFilesUrl,
+    shouldScopeFilesToVersion,
+    currentVersion,
+    overviewAvailable,
+  ]);
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
   const resolvedIndex =
