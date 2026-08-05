@@ -428,13 +428,13 @@ export const CostParetoGraph = memo(function CostParetoGraph({
                   strokeDasharray: "3 3",
                 }}
               />
-              {/* The frontier itself: a dashed step boundary (not a data
-                  series) — as the budget grows, the best score holds flat
-                  until the next non-dominated agent. */}
+              {/* The frontier itself: a dashed curve through the
+                  non-dominated agents (a derived boundary, not a data
+                  series — hence dashed). */}
               <Line
                 data={frontierData}
                 dataKey="y"
-                type="stepAfter"
+                type="linear"
                 stroke="var(--paper-ink-3)"
                 strokeWidth={1.5}
                 strokeDasharray="5 4"
