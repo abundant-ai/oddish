@@ -10,13 +10,16 @@ const COMPONENT_LABELS: Record<TrajectoryComponentKind, string> = {
   thinking_recall: "Recalling",
   thinking_understand: "Understanding",
   thinking_hypothesize: "Hypothesizing",
-  thinking_diagnose: "Diagnosing",
+  thinking_correction: "Correcting course",
   implementing: "Implementing",
+  implementing_correction: "Correcting implementation",
   writing_tests: "Writing tests",
   testing_public: "Running public tests",
   testing_custom: "Running custom tests",
-  testing_custom_edge_cases: "Testing edge cases",
+  testing_edge_cases: "Testing edge cases",
   debugging: "Debugging",
+  thinking_diagnose: "Diagnosing",
+  testing_custom_edge_cases: "Testing edge cases",
 };
 
 /** Display label for a taxonomy value; unknown values degrade to de-snaked text. */

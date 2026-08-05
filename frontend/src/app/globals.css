@@ -215,8 +215,9 @@
     --tc-thinking-recall: #1baf7a;
     --tc-thinking-understand: #2a78d6;
     --tc-thinking-hypothesize: #a184ea;
-    --tc-thinking-diagnose: #4a3aa7;
+    --tc-thinking-correction: #4a3aa7;
     --tc-implementing: #eb6834;
+    --tc-implementing-correction: #784000;
     --tc-writing-tests: #eda100;
     --tc-testing-public: #e87ba4;
     --tc-testing-custom: #c94592;
@@ -281,8 +282,9 @@
     --tc-thinking-recall: #199e70;
     --tc-thinking-understand: #3987e5;
     --tc-thinking-hypothesize: #9085e9;
-    --tc-thinking-diagnose: #7a68d8;
+    --tc-thinking-correction: #7a68d8;
     --tc-implementing: #d95926;
+    --tc-implementing-correction: #b85850;
     --tc-writing-tests: #c98500;
     --tc-testing-public: #ce6b98;
     --tc-testing-custom: #d55181;
