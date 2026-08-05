@@ -7,7 +7,6 @@ import {
 } from "@/lib/backend-config";
 import { decodeExperimentRouteParam } from "@/lib/utils";
 import { ExperimentClientPage } from "./experiment-client";
-import type { Task } from "@/lib/types";
 
 async function getExperimentName(experimentId: string): Promise<string | null> {
   try {
@@ -24,6 +23,9 @@ async function getExperimentName(experimentId: string): Promise<string | null> {
     const response = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
+      // Metadata must not stall the page stream: past the bound the
+      // title falls back to the experiment id.
+      signal: AbortSignal.timeout(2500),
     });
     if (!response.ok) {
       console.error(
@@ -77,44 +79,11 @@ export async function generateMetadata({
   };
 }
 
-async function getInitialTasks(experimentId: string): Promise<Task[] | null> {
-  try {
-    const authObj = await auth();
-    if (!authObj?.userId) return null;
-
-    const token = await getClerkToken(authObj.getToken);
-    if (!token) return null;
-
-    // Lightweight first-paint shell via the dedicated ``task-shells``
-    // endpoint: skips trial payloads, the per-task ``visible_worker_jobs``
-    // fetch, and the per-task ``experiments`` fan-out on the backend. Trial
-    // data and worker-job badges arrive via the phase-2 batched fetch in
-    // ``experiment-client.tsx``.
-    const url = getBackendUrl(
-      "experiments",
-      `/${encodeURIComponent(experimentId)}/task-shells`,
-      {
-        limit: "2000",
-        offset: "0",
-      }
-    );
-    const response = await fetch(url, {
-      cache: "no-store",
-      headers: getAuthHeaders(token),
-    });
-    if (!response.ok) {
-      console.error(
-        `[experiment/page] Failed initial tasks fetch: ${response.status}`
-      );
-      return null;
-    }
-    return (await response.json()) as Task[];
-  } catch (error) {
-    console.error("[experiment/page] Initial tasks fetch failed", error);
-    return null;
-  }
-}
-
+// No server-side data fetch here on purpose: the client's task-shells
+// request through the API proxy is measurably faster than streaming the
+// same payload through the server render, and a second copy of the data
+// only creates freshness conflicts. The page streams its skeleton
+// immediately and the client fetches once.
 export default async function ExperimentDetailPage({
   params,
 }: {
@@ -122,12 +91,6 @@ export default async function ExperimentDetailPage({
 }) {
   const { experiment } = await params;
   const experimentId = decodeExperimentRouteParam(experiment ?? "");
-  const initialTasksPromise = getInitialTasks(experimentId);
 
-  return (
-    <ExperimentClientPage
-      experimentId={experimentId}
-      initialTasksPromise={initialTasksPromise}
-    />
-  );
+  return <ExperimentClientPage experimentId={experimentId} />;
 }
