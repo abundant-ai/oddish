@@ -48,6 +48,7 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
+import { useTrial } from "@/lib/use-trial";
 import {
   formatLineRange,
   parseLineRange,
@@ -978,36 +979,18 @@ export function ExperimentDetailView({
     }
     lastDrawerTaskIdRef.current = taskId;
   }, [drawerState?.task.id, handleTaskPaneFileChange]);
-  // When loadFullTrialOnOpen is set, the grid only has slim trials, so fetch
-  // the clicked/navigated trial's full detail; the popup renders the slim trial
-  // until this resolves. No-op (and never fetches) on the public share page.
-  const [fullTrial, setFullTrial] = useState<Trial | null>(null);
+  // When loadFullTrialOnOpen is set, the grid only has slim trials, so
+  // subscribe to the open trial's full detail; the popup renders the slim
+  // trial until it resolves (and keeps it on failure -- the popup just
+  // shows less). The SWR key is shared with TrialAnalysisCard's
+  // subscription, so opening a trial issues one request, not two. Never
+  // fetches on the public share page (loadFullTrialOnOpen stays false).
   const openTrialId =
     drawerState?.mode === "trial" ? (drawerState.trial?.id ?? null) : null;
-  useEffect(() => {
-    if (!loadFullTrialOnOpen || !openTrialId) {
-      setFullTrial(null);
-      return;
-    }
-    let cancelled = false;
-    setFullTrial(null);
-    (async () => {
-      try {
-        const res = await fetch(
-          `${apiBaseUrl}/trials/${encodeURIComponent(openTrialId)}`,
-          { cache: "no-store" }
-        );
-        if (!res.ok) return;
-        const data = (await res.json()) as Trial;
-        if (!cancelled) setFullTrial(data);
-      } catch {
-        // Keep the slim trial on failure -- the popup just shows less.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loadFullTrialOnOpen, openTrialId, apiBaseUrl]);
+  const { data: fullTrial } = useTrial(
+    loadFullTrialOnOpen ? openTrialId : null,
+    { apiBaseUrl }
+  );
   // Probe cells open main's sliding ProbeDetailPanel (kept from origin/main).
   // On the slim experiment path the grid has no probe trials to click, so this
   // stays dormant until probes are fed to that path -- the code is retained so
