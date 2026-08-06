@@ -15,7 +15,13 @@ concurrency:
 jobs:
   detect-changes:
     name: Detect preview changes
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    # Promotion pull requests (staging -> main) provision nothing: the staging
+    # environment already serves the exact commit under review, so a per-PR
+    # copy duplicates it. The required gate below still reports for them.
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != 'staging'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -226,6 +232,7 @@ jobs:
       # backend was ever provisioned (frontend-only PRs).
       MODAL_API_URL: ${{ needs.detect-changes.outputs.preview_backend_live == 'true' && needs.detect-changes.outputs.preview_api_url || '' }}
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
+      STAGING_API_URL: ${{ vars.ODDISH_STAGING_API_URL }}
       PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
       PREVIEW_ALIAS_HOSTNAME: pr-${{ github.event.pull_request.number }}.oddish.app
@@ -252,11 +259,44 @@ jobs:
       - update-vercel-preview
     if: always() && github.event.action != 'closed'
     runs-on: ubuntu-latest
-    environment:
-      name: Preview
-      url: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
+    # No job-level `environment:` key here: GitHub attributes that deployment
+    # record to the person who triggered the run, so pull requests showed a
+    # human as the deployer. The steps below create the same Preview record
+    # through the API with the workflow token, so the deployer is
+    # github-actions. The record still satisfies the staging ruleset's
+    # required-deployments rule (same environment, same commit).
+    permissions:
+      deployments: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Same-repository condition included: a fork branch named `staging`
+      # must not short-circuit the gate to success.
+      PROMOTION_PR: ${{ github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository }}
+      DEPLOY_URL: ${{ (github.event.pull_request.head.ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository) && 'https://staging.oddish.app' || needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
     steps:
+      - name: Create the Preview deployment record
+        id: deployment
+        # Fork PRs get a read-only token; skip so the verify step below can
+        # fail with its clearer same-repository message.
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          # The head commit, not GITHUB_SHA: on pull_request events GITHUB_SHA
+          # is the temporary merge commit, and the required-deployments rule
+          # and the pull request page key on the head commit.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          deployment_id=$(jq -n --arg ref "$HEAD_SHA" \
+            '{ref: $ref, environment: "Preview", auto_merge: false,
+              required_contexts: [], transient_environment: true,
+              description: "PR preview gate"}' \
+            | gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq '.id')
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+            -f state=in_progress >/dev/null
+          echo "id=$deployment_id" >> "$GITHUB_OUTPUT"
+
       - name: Verify preview deployment
+        id: verify
         env:
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           DETECT_RESULT: ${{ needs.detect-changes.result }}
@@ -285,6 +325,12 @@ jobs:
             echo "- $1" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
+
+          if [ "$PROMOTION_PR" = "true" ]; then
+            echo "- Promotion pull request: staging is the preview environment." >> "$GITHUB_STEP_SUMMARY"
+            echo "- https://staging.oddish.app runs this commit (see Staging Deploy)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           preview_url="${PREVIEW_ALIAS_URL:-${PREVIEW_URL:-}}"
           backend_required=false
@@ -380,6 +426,22 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Publish the deployment result
+        if: always() && steps.deployment.outputs.id != ''
+        env:
+          DEPLOYMENT_ID: ${{ steps.deployment.outputs.id }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        run: |
+          set -euo pipefail
+          state=failure
+          if [ "$VERIFY_OUTCOME" = "success" ]; then state=success; fi
+          jq -n --arg state "$state" --arg url "${DEPLOY_URL:-}" \
+            '{state: $state}
+             + (if $url != "" then {environment_url: $url} else {} end)' \
+            | gh api "repos/$GITHUB_REPOSITORY/deployments/$DEPLOYMENT_ID/statuses" \
+              --input - >/dev/null
+          echo "deployment $DEPLOYMENT_ID marked $state"
+
   post-preview-links:
     name: Post preview links
     needs:
@@ -418,7 +480,10 @@ jobs:
 
   stop-preview:
     name: Stop preview
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != 'staging'
     runs-on: ubuntu-latest
     permissions:
       contents: read

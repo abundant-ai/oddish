@@ -1571,7 +1571,7 @@ async def run_trial_job(
         stamp = stamp.where(TrialModel.current_worker_id == worker_id)
     async with get_session() as session:
         stamped = await session.execute(stamp.values(llm_key_hash=funding_key_hash))
-    if not stamped.rowcount:
+    if not getattr(stamped, "rowcount", 0):
         return
 
     # Determine task path: download from S3 if needed, or use local path

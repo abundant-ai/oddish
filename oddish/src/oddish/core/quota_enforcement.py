@@ -15,7 +15,6 @@ from oddish.core.cost_basis import (
 )
 from oddish.core.helpers import HarvestTerminationError, terminate_run_harvest
 from oddish.core.quotas import (
-    acquire_quota_locks,
     get_effective_limit,
     get_effective_org_limit,
     inflight_reserved_usd,
@@ -24,6 +23,7 @@ from oddish.core.quotas import (
     start_of_month_utc,
     sum_cost_usd,
     sum_org_cost_usd,
+    try_acquire_quota_locks,
 )
 from oddish.db import (
     AnalysisStatus,
@@ -41,6 +41,17 @@ logger = logging.getLogger(__name__)
 QUOTA_CANCELLED_MESSAGE = "Cancelled because quota was reached"
 _RETRY_INITIAL_SECONDS = 1.0
 _RETRY_MAX_SECONDS = 30.0
+
+
+class QuotaLockBusy(Exception):
+    """Another transaction holds the quota advisory lock.
+
+    Distinct from "under quota": callers that must settle only after a real
+    check (``enforce_trial_quotas_until_checked``, live-tail cost acks) treat
+    this like a failed check and retry, rather than proceeding as if headroom
+    remained.
+    """
+
 
 _ACTIVE_TRIAL_STATUSES = (
     TrialStatus.PENDING,
@@ -61,7 +72,14 @@ async def _quota_scope_reached(
     org_id: str,
     billed_user_id: str | None,
 ) -> str | None:
-    await acquire_quota_locks(session, org_id, billed_user_id)
+    # Non-blocking: many workers call enforcement on cost checkpoints. If
+    # another transaction already holds the org/user quota lock (admission or
+    # an in-flight cancellation), raise instead of pile-waiting and starving
+    # /tasks/sweep — and instead of returning None, which means under-quota.
+    if not await try_acquire_quota_locks(session, org_id, billed_user_id):
+        raise QuotaLockBusy(
+            f"quota lock busy for org_id={org_id} billed_user_id={billed_user_id}"
+        )
     org_limit = await get_effective_org_limit(session, org_id)
     if org_limit is not None:
         org_used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
@@ -399,6 +417,16 @@ async def enforce_trial_quotas(
                 billed_user_id=billed_user_id,
                 caller_trial_id=caller_trial_id,
             )
+    except QuotaLockBusy:
+        # Incomplete check: do not run settlement hooks / ack live-tail cost.
+        # ``enforce_trial_quotas_until_checked`` and live-tail both retry on None.
+        logger.debug(
+            "metric=quota.lock_busy org_id=%s billed_user_id=%s caller_trial_id=%s",
+            org_id,
+            billed_user_id,
+            caller_trial_id,
+        )
+        return None
     except Exception:
         logger.exception(
             "Quota cancellation failed for org_id=%s billed_user_id=%s",

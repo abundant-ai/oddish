@@ -2497,6 +2497,39 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
     assert "OPENAI_API_KEY" not in (agent_config.env or {})
 
 
+def test_build_agent_config_uses_oddish_opencode_wrapper(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="opencode",
+        model="openrouter/tencent/hy3",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
+    )
+    assert agent_config.model_name == "openrouter/tencent/hy3"
+
+
+def test_build_agent_config_preserves_custom_opencode_import(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="opencode",
+        model="openrouter/tencent/hy3",
+        raw_harbor_config={
+            "agent_config": {
+                "name": "opencode",
+                "import_path": "custom.module:CustomOpenCode",
+            }
+        },
+    )
+
+    assert agent_config.import_path == "custom.module:CustomOpenCode"
+
+
 def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
 
@@ -4321,3 +4354,37 @@ def test_claude_code_environment_hosts_follow_routed_base_url():
 
     assert "api.z.ai" in hosts
     assert "api.anthropic.com" not in hosts
+
+
+def test_opencode_environment_hosts_span_install_and_model():
+    """Regression: closed-internet opencode trials died at nvm DNS with 0 tokens.
+
+    opencode installs during agent SETUP, which runs under the environment
+    baseline -- an agent-phase allowlist can never cover it (observed end-to-end
+    on the PR-1030 preview: build-an-evm-assembler-6c7567f6-1059/-1060 died at
+    ``curl: (6) Could not resolve host: raw.githubusercontent.com``). The
+    environment-baseline hosts must cover both the install bootstrap chain and
+    the model transport, exactly like the claude-code arm.
+    """
+    hosts = harbor_runner._opencode_environment_hosts(
+        HarborAgentConfig(name="opencode", model_name="openrouter/tencent/hy3")
+    )
+
+    assert "raw.githubusercontent.com" in hosts  # nvm install.sh
+    assert "registry.npmjs.org" in hosts  # opencode-ai package
+    assert "nodejs.org" in hosts  # Node runtime
+    assert "openrouter.ai" in hosts  # ...and inference still works
+
+
+def test_opencode_environment_hosts_follow_custom_base_url():
+    """A trial pinning ``OPENROUTER_BASE_URL`` allowlists that host instead."""
+    hosts = harbor_runner._opencode_environment_hosts(
+        HarborAgentConfig(
+            name="opencode",
+            model_name="openrouter/tencent/hy3",
+            env={"OPENROUTER_BASE_URL": "https://gateway.internal.example/api"},
+        )
+    )
+
+    assert "gateway.internal.example" in hosts
+    assert "raw.githubusercontent.com" in hosts

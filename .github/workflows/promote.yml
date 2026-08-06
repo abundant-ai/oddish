@@ -1,0 +1,67 @@
+name: Promotion Preflight
+# Read-only: verifies that staging is safe to promote and prints the exact
+# command a maintainer runs. No credential in this repo can push main —
+# promotion is always a human action by a ruleset-bypass maintainer with push access to main.
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Staging commit to promote (default: staging tip)"
+        required: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Verify promotion preconditions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main staging
+          target="${{ inputs.target_sha }}"
+          target="${target:-$(git rev-parse origin/staging)}"
+          target="$(git rev-parse --verify "${target}^{commit}")" \
+            || { echo "::error::target_sha does not resolve to a commit"; exit 1; }
+          git merge-base --is-ancestor "$target" origin/staging \
+            || { echo "::error::$target is not on staging"; exit 1; }
+          git merge-base --is-ancestor origin/main "$target" \
+            || { echo "::error::main is not an ancestor of $target — fast-forward impossible; see the recovery runbook"; exit 1; }
+          pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head staging --state open --json number -q '.[0].number')
+          [ -n "$pr" ] || { echo "::error::no open staging->main promotion PR"; exit 1; }
+          [ "$(gh pr view "$pr" --repo "$GITHUB_REPOSITORY" --json reviewDecision -q .reviewDecision)" = "APPROVED" ] \
+            || { echo "::error::promotion PR #$pr is not APPROVED"; exit 1; }
+          if gh workflow view "Staging Deploy" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow "Staging Deploy" \
+                --branch staging --commit "$target" --json conclusion -q '.[0].conclusion' \
+              | grep -qx success \
+              || {
+                   echo "::error::Staging Deploy is not green on $target"
+                   echo "::notice::A queued deploy is superseded when a newer commit lands (GitHub keeps one pending run per concurrency group), so a commit that staging moved past may never have deployed. A dispatched deploy always runs the tip of staging, not an older commit, so promote the staging tip instead of this sha."
+                   exit 1
+                 }
+          else
+            echo "::warning::Staging Deploy workflow not found — skipping deploy-green precondition (bootstrap)"
+          fi
+          {
+            echo "## Promotion preflight PASSED"
+            echo
+            echo "Release manager: run this to promote (fast-forward only):"
+            echo
+            echo '```'
+            echo "git fetch origin staging"
+            echo "git push origin ${target}:refs/heads/main"
+            echo '```'
+            echo
+            echo "Then verify: git fetch origin main && git rev-parse origin/main  # must print ${target}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "PREFLIGHT PASSED for $target — push command in the step summary."

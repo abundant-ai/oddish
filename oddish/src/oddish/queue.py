@@ -27,6 +27,10 @@ from oddish.core.baseline_gate import (
 from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
+from oddish.core.trial_facets import (
+    facet_rows_for_trial_dicts,
+    record_trial_facets,
+)
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -798,6 +802,9 @@ async def _bulk_insert_trials(
         "billed_user_id": [t.get("billed_user_id") for t in trials],
     }
     await session.execute(_TRIAL_BULK_INSERT_SQL, params)
+    # Write-through vocabulary: the batch's facet values become filterable in
+    # the task browser the moment the trials exist (probes contribute nothing).
+    await record_trial_facets(session, facet_rows_for_trial_dicts(trials))
 
 
 def _submission_gates_llm_trials(submission: TaskSubmission) -> bool:
