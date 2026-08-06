@@ -11,10 +11,12 @@ from datetime import datetime, timezone
 import uuid
 
 import pytest
+from sqlalchemy.exc import ProgrammingError
 
 from oddish.core.helpers import build_trial_response
 from oddish.core.model_display_names import (
     apply_model_display_names,
+    canonical_model_key,
     load_model_display_names,
 )
 from oddish.core.sharing.helpers import (
@@ -115,6 +117,60 @@ def test_alias_does_not_change_resolved_cost():
 
     assert priced.model == "bananas"
     assert priced.cost_usd == before
+
+
+@pytest.mark.parametrize(
+    "typed", ["Spiffy-Balloon", "spiffy-balloon", "  SPIFFY  BALLOON  "]
+)
+def test_writers_canonicalize_to_one_key(typed):
+    """Case/whitespace variants collapse so the live UNIQUE index sees one row,
+    and the collapsed key is one the read side looks up."""
+    assert canonical_model_key(typed) == "spiffy-balloon"
+
+
+class _MissingTableSession:
+    """Session whose only query raises Postgres' undefined-table error."""
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    def begin_nested(self):
+        exc = self._exc
+
+        class _Savepoint:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return False
+
+        return _Savepoint()
+
+    async def scalars(self, *_args, **_kwargs):
+        raise self._exc
+
+
+def _programming_error(sqlstate: str) -> ProgrammingError:
+    orig = Exception("boom")
+    orig.sqlstate = sqlstate
+    return ProgrammingError("SELECT 1", {}, orig)
+
+
+@pytest.mark.asyncio
+async def test_missing_table_degrades_to_real_model_ids():
+    """Deploy-before-migrate must not 500 a share page that worked before."""
+    session = _MissingTableSession(_programming_error("42P01"))
+
+    assert await load_model_display_names(session) == {}
+
+
+@pytest.mark.asyncio
+async def test_other_sql_faults_still_surface():
+    """A broken query must not hide behind the missing-table fallback."""
+    session = _MissingTableSession(_programming_error("42703"))
+
+    with pytest.raises(ProgrammingError):
+        await load_model_display_names(session)
 
 
 @pytest.mark.asyncio

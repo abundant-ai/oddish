@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from auth import AuthContext, can_manage_api_keys, require_admin
 from auth.permissions import require_operator_org
+from oddish.core.model_display_names import canonical_model_key
 from oddish.db import ModelDisplayNameModel, get_session, utcnow
 from pg_errors import is_undefined_table_error
 
@@ -81,7 +82,10 @@ async def set_model_display_name(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ModelDisplayNameResponse:
     _require_manage(auth)
-    model_name = request.model_name.strip()
+    # Store the canonical spelling: the live UNIQUE index is case-sensitive but
+    # the public lookup is not, so raw input would let "Spiffy-Balloon" and
+    # "spiffy-balloon" coexist as two live rows with only one of them applying.
+    model_name = canonical_model_key(request.model_name)
     display_name = request.display_name.strip()
     if not model_name:
         raise HTTPException(400, "model_name must not be empty")
