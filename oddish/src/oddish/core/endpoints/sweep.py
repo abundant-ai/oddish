@@ -627,11 +627,14 @@ async def create_task_sweep_core(
         )
         if len(trials) > len(planned_trials):
             # Rare: deficit grew while we waited (e.g. concurrent failures).
+            # Re-check the *full* final count — admit_trials does not accumulate
+            # the earlier estimate (it only adds ``count`` to current inflight),
+            # so a delta-only top-up would undercount headroom.
             await admit_trials(
                 session,
                 org_id,
                 billed_user_id,
-                count=len(trials) - len(planned_trials),
+                count=len(trials),
             )
 
         append_submission = submission.model_copy(

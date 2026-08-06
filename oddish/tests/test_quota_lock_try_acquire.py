@@ -136,3 +136,8 @@ def test_append_sweep_preserves_quota_then_task_lock_order():
         "expected unlocked plan → admit → FOR UPDATE → locked re-plan; "
         f"got plan@{plan_calls} admit@{admit_at} for_update@{for_update_at}"
     )
+    # Top-up after a larger locked plan must re-admit the full final count
+    # (not a delta): admit_trials adds ``count`` to live inflight only.
+    top_up = append_body[plan_calls[1] :]
+    assert "count=len(trials)" in top_up
+    assert "count=len(trials) - len(planned_trials)" not in top_up
