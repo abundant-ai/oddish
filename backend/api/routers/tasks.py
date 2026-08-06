@@ -29,6 +29,7 @@ from oddish.dispatch.ports import WorkerHandle
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
+    browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
     rerun_pre_trial_audit_core,
@@ -125,6 +126,7 @@ from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentCostTotals,
+    ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
     TaskBrowseFacets,
@@ -385,6 +387,33 @@ async def create_task_sweep(
                 idempotency_store=SubmissionIdempotencyStore(session),
                 request_hash=request_hash,
             )
+        except TimeoutError as exc:
+            # Quota advisory-lock waits (and other DB wait timeouts) surface as
+            # bare TimeoutError from asyncpg. Map to 503 so the CLI retries with
+            # a legible message instead of an opaque "Internal Server Error".
+            logger.error(
+                "create_task_sweep timed out for task_id=%s org_id=%s",
+                submission.task_id,
+                auth.org_id,
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Couldn't submit right now (database lock timeout). Please retry."
+                ),
+            ) from exc
+        except SQLAlchemyError as exc:
+            logger.error(
+                "create_task_sweep failed for task_id=%s org_id=%s",
+                submission.task_id,
+                auth.org_id,
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Couldn't submit right now (database error). Please retry.",
+            ) from exc
         except IdempotencyReplay as replay:
             # Faithful retry of a completed key: return the stored response and
             # skip the owner-stamping / publish side effects below. The image
@@ -992,6 +1021,34 @@ async def browse_task_facets(
     async with get_session() as session:
         await session.connection()
         return await browse_task_facets_core(session, org_id=auth.org_id)
+
+
+@router.get(
+    "/tasks/browse/experiment-options", response_model=ExperimentOptionsResponse
+)
+async def browse_experiment_options(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    query: str | None = Query(None),
+    ids: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> ExperimentOptionsResponse:
+    """Typeahead options for the sidebar experiment filter.
+
+    ``query`` narrows by case-insensitive name substring; ``ids`` (CSV) instead
+    hydrates already-selected filter chips and wins over ``query``. Replaces
+    the deprecated, always-empty ``facets.experiments`` list.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        await session.connection()
+        return await browse_experiment_options_core(
+            session,
+            org_id=auth.org_id,
+            query=query,
+            ids=_split_tag_csv(ids),
+            limit=limit,
+        )
 
 
 @router.post("/experiments/combine", response_model=ExperimentCombineResponse)

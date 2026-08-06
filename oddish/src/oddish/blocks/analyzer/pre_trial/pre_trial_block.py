@@ -119,4 +119,4 @@ class PreTrialBlock(Block):
         defaults to empty) and silently produce zero findings on every run.
         """
         obj = self._normalize(parse_stream_json_result(raw))
-        return self.filter_output(self.output_schema(**obj)).model_dump()
+        return self.filter_output(self.output_schema.model_validate(obj)).model_dump()

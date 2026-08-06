@@ -12,7 +12,7 @@ type BackendJsonResult = {
 
 export async function readBackendJson(
   response: Response,
-  fallbackError: string,
+  fallbackError: string
 ): Promise<BackendJsonResult> {
   const text = await response.text();
   const trimmed = text.trim();
@@ -42,7 +42,7 @@ export async function readBackendJson(
 
 export function backendErrorPayload(
   payload: unknown,
-  fallbackError: string,
+  fallbackError: string
 ): JsonObject {
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     return payload as JsonObject;
@@ -55,14 +55,19 @@ export function backendErrorPayload(
   return { error: fallbackError };
 }
 
+// `signal` propagates client aborts upstream: pass the route's
+// request.signal so a disconnected caller cancels the backend call too,
+// instead of leaving it running for a response nobody will read.
 export async function proxyBackendJson({
   path,
   method = "GET",
   body,
+  signal,
 }: {
   path: string;
   method?: "GET" | "PUT" | "POST" | "DELETE";
   body?: unknown;
+  signal?: AbortSignal;
 }): Promise<NextResponse> {
   try {
     const { getToken } = await auth();
@@ -75,6 +80,7 @@ export async function proxyBackendJson({
     const res = await fetch(getBackendUrl(path), {
       method,
       cache: "no-store",
+      signal,
       headers: sendsBody
         ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
         : getAuthHeaders(token),
@@ -83,7 +89,7 @@ export async function proxyBackendJson({
 
     const { data, parseError, status } = await readBackendJson(
       res,
-      "Upstream error",
+      "Upstream error"
     );
     if (parseError) {
       return NextResponse.json(parseError, { status });
@@ -99,7 +105,7 @@ export async function proxyBackendJson({
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }
@@ -107,7 +113,7 @@ export async function proxyBackendJson({
 export async function proxyJsonRequest(
   request: NextRequest,
   path: string,
-  method: "PUT" | "POST",
+  method: "PUT" | "POST"
 ): Promise<NextResponse> {
   let body: unknown;
   try {

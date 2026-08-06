@@ -1,44 +1,18 @@
-import { Suspense } from "react";
 import { auth } from "@clerk/nextjs/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
-import { TasksToolbar } from "./tasks-client";
+import { TasksPageNumber, TasksToolbar } from "./tasks-client";
 import { TasksFilterSidebar } from "./tasks-filter-sidebar";
 import { SelectionProvider } from "./selection-context";
 import { RecentTasksResults } from "./recent-tasks-results";
-import { TasksGridSkeleton } from "./tasks-grid-skeleton";
 
-// Reads auth + searchParams, so the route is always dynamically rendered.
-// Forcing it also avoids the static-prerender error for the client components
-// that call useSearchParams (sidebar, toolbar).
+// Reads auth, so the route is always dynamically rendered. Forcing it also
+// avoids the static-prerender error for the client components that call
+// useSearchParams (sidebar, toolbar, results grid).
 export const dynamic = "force-dynamic";
 
-type RawSearchParams = Record<string, string | string[] | undefined>;
-
-function first(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function suspenseKeyFor(searchParams: RawSearchParams): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(searchParams)) {
-    const single = first(value);
-    if (single != null) params.set(key, single);
-  }
-  return params.toString();
-}
-
-export default async function TasksPage({
-  searchParams,
-}: {
-  searchParams?: Promise<RawSearchParams>;
-}) {
+export default async function TasksPage() {
   const { orgId } = await auth();
-  const sp = (await searchParams) ?? {};
-
-  const offset = Math.max(Number(first(sp.offset) ?? "0") || 0, 0);
-  const page = Math.floor(offset / TASKS_PAGE_SIZE) + 1;
 
   return (
     <SelectionProvider>
@@ -52,18 +26,13 @@ export default async function TasksPage({
                   <div className="space-y-1">
                     <CardTitle className="text-base">Recent Tasks</CardTitle>
                     <div className="text-muted-foreground text-[11px]">
-                      Page {page}
+                      <TasksPageNumber />
                     </div>
                   </div>
                   <TasksToolbar orgId={orgId ?? null} />
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <Suspense
-                    key={suspenseKeyFor(sp)}
-                    fallback={<TasksGridSkeleton />}
-                  >
-                    <RecentTasksResults searchParams={sp} />
-                  </Suspense>
+                  <RecentTasksResults />
                 </CardContent>
               </Card>
             </div>

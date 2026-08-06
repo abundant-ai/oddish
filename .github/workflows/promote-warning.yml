@@ -1,0 +1,42 @@
+name: Promotion warning
+# Every promotion pull request (staging -> main) must carry the merge-button
+# warning at the top of its body. Agents that author promotion pull requests
+# add it themselves (see CLAUDE.md); this workflow adds it when it is absent,
+# so a promotion opened by a person or an unaware tool gets the warning too.
+# The merge button squashes, which creates a new commit on main and breaks
+# the fast-forward release model — promotion PR #1078 was merged that way
+# and forced a staging rebuild.
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches: [main]
+
+jobs:
+  warn:
+    if: >-
+      github.event.pull_request.head.ref == 'staging' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Prepend the warning to the pull request body
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          if printf '%s' "$body" | grep -qF '<!-- promote-warning -->'; then
+            echo "warning already present"
+            exit 0
+          fi
+          warning=$(printf '%s\n' \
+            '<!-- promote-warning -->' \
+            '> [!CAUTION]' \
+            '> **DO NOT USE THE MERGE BUTTON ON THIS PULL REQUEST.**' \
+            '> **THE BUTTON CREATES A NEW COMMIT AND BREAKS THE RELEASE MODEL.**' \
+            '> **COMMENT `/promote` TO COMPLETE THE PROMOTION.**' \
+            '')
+          printf '%s\n\n%s' "$warning" "$body" | gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --body-file -
+          echo "warning added to #$PR"
