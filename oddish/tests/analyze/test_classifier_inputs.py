@@ -23,6 +23,22 @@ def test_placeholders_render_none_when_absent():
     assert "(none)" in prompt
 
 
+def test_pre_trial_must_fix_requires_causality_to_change_trial_label():
+    prompt = build_classify_prompt(
+        result_str="fail",
+        task_dir="/task",
+        trial_dir="/trial",
+        trial_agent_context="",
+        pre_trial_context="one must_fix finding",
+    )
+
+    assert "does not change the trial label by itself" in prompt
+    assert (
+        "When the agent failed for an independent reason, use GOOD_FAILURE" in prompt
+    )
+    assert "the task verdict evaluates latent defects separately" in prompt
+
+
 def test_write_qa_context_writes_trajectory_components(tmp_path):
     components = [
         {"step_ids": [0, 1], "trajectory_component": "debugging", "summary": "s",
