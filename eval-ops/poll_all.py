@@ -45,8 +45,12 @@ ALL_TASKS = {**NONCUA_TASKS, **CUA_TASKS}
 # N seconds"), not as the exception-class name -- match both or a real timeout
 # gets misfiled as infra and deleted.
 OK_ERR = ("agenttimeouterror", "verifiertimeouterror", "timed out after")
+# "worker heartbeat stalled" is recoverable while status is "retrying" (Oddish
+# re-runs it), but once it lands in a terminal status the trial is genuinely
+# lost and must be deleted + re-run like any other infra failure.
 INFRA_ERR = ("command failed", "exceptiongroup", "no reward file",
-             "ratelimit", "rate limit", "429", "internal server error")
+             "ratelimit", "rate limit", "429", "internal server error",
+             "worker heartbeat stalled")
 # "retrying" is a PENDING state, not a failure: Oddish is re-running the trial
 # itself. It carries an error_message ("Worker heartbeat stalled for over 15
 # minutes"), so leaving it out of this list would classify it OTHER and
