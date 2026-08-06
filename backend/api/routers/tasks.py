@@ -385,6 +385,33 @@ async def create_task_sweep(
                 idempotency_store=SubmissionIdempotencyStore(session),
                 request_hash=request_hash,
             )
+        except TimeoutError as exc:
+            # Quota advisory-lock waits (and other DB wait timeouts) surface as
+            # bare TimeoutError from asyncpg. Map to 503 so the CLI retries with
+            # a legible message instead of an opaque "Internal Server Error".
+            logger.error(
+                "create_task_sweep timed out for task_id=%s org_id=%s",
+                submission.task_id,
+                auth.org_id,
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Couldn't submit right now (database lock timeout). Please retry."
+                ),
+            ) from exc
+        except SQLAlchemyError as exc:
+            logger.error(
+                "create_task_sweep failed for task_id=%s org_id=%s",
+                submission.task_id,
+                auth.org_id,
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Couldn't submit right now (database error). Please retry.",
+            ) from exc
         except IdempotencyReplay as replay:
             # Faithful retry of a completed key: return the stored response and
             # skip the owner-stamping / publish side effects below. The image
