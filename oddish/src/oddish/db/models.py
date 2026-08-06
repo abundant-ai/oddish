@@ -1286,6 +1286,34 @@ class TrialModel(TimestampedMixin, Base):
     )
 
 
+class TrialFacetModel(Base):
+    """Per-org vocabulary of trial facet values for the task browser.
+
+    Derived data, not a source of truth: the task-browser filter dropdowns
+    need the distinct agent/model/provider/... values an org has run, which
+    used to be recomputed from the full ``trials`` table on every facets
+    request. This table holds that vocabulary instead — a few hundred rows
+    per org — written through on trial creation (``oddish.core.trial_facets``)
+    and rebuilt wholesale by a periodic sweep, which is also what removes
+    values whose last trial was deleted, superseded, or version-bumped.
+
+    ``value_2`` is the second half of the ``agent_model`` pair kind (empty
+    string for a NULL model and for every single-valued kind); it is part of
+    the key so the composite PK doubles as the read index. Deliberately no
+    ``TimestampedMixin``: rows are replaced wholesale, never tombstoned, so
+    this model stays outside the soft-delete registry.
+    """
+
+    __tablename__ = "trial_facets"
+
+    org_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[str] = mapped_column(String(160), primary_key=True)
+    value_2: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default="", server_default=""
+    )
+
+
 class AnalysisCostModel(TimestampedMixin, Base):
     """Append-only ledger of analysis-job LLM spend.
 
