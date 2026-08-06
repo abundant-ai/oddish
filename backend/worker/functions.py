@@ -66,6 +66,7 @@ from oddish.config import settings
 from oddish.costs.recorder import WorkerBillingSpec
 from oddish.core.model_concurrency import get_model_concurrency_overrides
 from oddish.db import close_database_connections, get_session, WorkerJobKind
+from oddish.runtime.backends.daytona import reap_stale_daytona_sandboxes
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.concurrency_controller import (
@@ -444,6 +445,15 @@ async def reconcile_queue_state():
             console.print(
                 f"[yellow]Orphaned-state reconciliation skipped: {e}[/yellow]"
             )
+
+        try:
+            deleted = await asyncio.wait_for(reap_stale_daytona_sandboxes(), 450)
+            summary["daytona_terminal_deleted"] = deleted
+            if deleted:
+                console.print(f"metric=daytona_terminal_deleted count={deleted}")
+        except Exception as e:
+            phase_errors.append(f"daytona_terminal_cleanup: {e}")
+            log_exception("reconcile phase failed", phase="daytona_terminal_cleanup")
 
         try:
             backfill_counts = await backfill_experiment_owners()

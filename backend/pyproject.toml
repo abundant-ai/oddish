@@ -54,6 +54,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "pglast==8.4",
     "pytest==9.0.2",
     "pytest-asyncio==1.3.0",
 ]
@@ -74,6 +75,9 @@ override-dependencies = ["harbor==0.16.1"]
 [tool.setuptools]
 py-modules = [
     "backfill_github_id",
+    "carl",
+    "carl_agent",
+    "carl_tools",
     "cloud_policy",
     "crypto",
     "dashboard_attribution",
