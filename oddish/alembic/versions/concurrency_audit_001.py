@@ -1,14 +1,14 @@
 """Add attributed history for model concurrency changes.
 
 Revision ID: concurrency_audit_001
-Revises: trajgraph_002
+Revises: trial_facets_001
 """
 
 from alembic import op
 
 
 revision = "concurrency_audit_001"
-down_revision = "trajgraph_002"
+down_revision = "trial_facets_001"
 branch_labels = depends_on = None
 
 
