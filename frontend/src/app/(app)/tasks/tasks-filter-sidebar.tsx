@@ -7,7 +7,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ChevronDown, FileText, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -116,10 +116,18 @@ function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
 
 const FILTERS_BODY_ID = "tasks-filters-body";
 
+// Facet vocabularies drift as trials introduce new agents, models, and
+// environments, so they're not session-stable — but they needn't be
+// re-asked on every remount either. Remounts inside this window reuse the
+// cache silently; later ones serve it instantly and refresh in the
+// background.
+const FACETS_DEDUPE_MS = 5 * 60_000;
+
 export function TasksFilterSidebar() {
-  // Facets are fetched client-side once so a router.refresh() of the task
-  // results never reloads the filter options. revalidateOnFocus stays off and
-  // there's no interval, so this loads a single time per mount.
+  // Facets load client-side so a task-grid refresh never reloads the
+  // filter options; the dedupe window above keeps remounts from re-asking
+  // (the 2026-08-06 HAR showed this fetch running twice per session,
+  // seconds apart). The Retry below revalidates immediately regardless.
   const {
     data: facetsData,
     error: facetsError,
@@ -127,10 +135,10 @@ export function TasksFilterSidebar() {
     mutate: mutateFacets,
   } = useSWR<TaskBrowseFacets>("/api/tasks/browse/facets", fetcher, {
     revalidateOnFocus: false,
+    dedupingInterval: FACETS_DEDUPE_MS,
   });
   const facets = facetsData ?? null;
 
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
@@ -155,17 +163,25 @@ export function TasksFilterSidebar() {
     }
   }
 
-  // Every URL write goes through here so paramsRef/pendingWrites stay in sync.
+  // Every URL write goes through here so paramsRef/pendingWrites stay in
+  // sync. Writes go through the History API (Next syncs useSearchParams
+  // from it): a filter change only re-keys the grid's client-side browse
+  // fetch, so the dynamic-route RSC re-render that router.replace would
+  // trigger has nothing left to do. replaceState never scrolls, preserving
+  // the old scroll: false behavior.
   const commitParams = (params: string) => {
     pendingWrites.current.push(params);
     paramsRef.current = params;
-    router.replace(params ? `${pathname}?${params}` : pathname, {
-      scroll: false,
-    });
+    window.history.replaceState(
+      null,
+      "",
+      params ? `${pathname}?${params}` : pathname
+    );
   };
 
-  // Filter state lives in the URL so the server-rendered results refetch (and a
-  // Suspense skeleton shows) whenever a filter changes — and links are shareable.
+  // Filter state lives in the URL so the grid's browse key changes (the
+  // previous grid stays on screen while the next state loads) whenever a
+  // filter changes — and links are shareable.
   const values = useMemo(
     () => searchParamsToFilters(new URLSearchParams(searchParams.toString())),
     [searchParams]
@@ -944,10 +960,13 @@ function TagsControl({
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
+  // revalidateIfStale off: the shared "/api/tags" key is asked once per
+  // session across this control and the dashboard's tag dropdown; tag
+  // mutations and the open-gated pickers revalidate it explicitly.
   const { data, error, isLoading, mutate } = useSWR<TagListResponse>(
     "/api/tags",
     fetcher,
-    { revalidateOnFocus: false }
+    { revalidateOnFocus: false, revalidateIfStale: false }
   );
   const tags = useMemo(
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
