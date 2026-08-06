@@ -145,3 +145,83 @@ def test_repair_of_the_whole_reply_beats_a_nested_object():
         expect=dict,
     )
     assert parsed["summary"] == "kept"
+
+
+# ---------------------------------------------------------------------------
+# Bugbot findings on #1103, both High Severity.
+# ---------------------------------------------------------------------------
+
+
+def test_an_empty_fenced_answer_beats_json_quoted_in_the_preamble():
+    """A fence is the model delimiting its own answer, so it wins outright --
+    including when that answer is empty. #950 established this; the leniency
+    merge reintroduced the "keep scanning" fallthrough that breaks it, so a
+    quoted example in the prose was returned as the real result."""
+    text = (
+        'Example error payload looks like {"error": "bad"}. No defects found.\n\n'
+        "```json\n{}\n```\n"
+    )
+    assert _Probe.parse_json(text, expect=dict) == {}
+
+
+def test_an_empty_fenced_array_also_wins():
+    text = 'For reference the shape is [{"step_id": 1}].\n\n```json\n[]\n```\n'
+    assert _Probe.parse_json(text) == []
+
+
+def test_a_broken_prose_wrapped_object_is_repaired_not_mined():
+    """Repair ran only on the fence-stripped whole reply, so a prose-wrapped
+    object missing one delimiter was never mended -- the opener scan decoded
+    past it and returned a nested fragment, which validates as an all-default
+    summary and persists as SUCCESS with every field empty."""
+    text = (
+        "Here is the summary you asked for:\n"
+        '{\n  "summary": "The agent fixed the flaky test.\n\n'
+        '  "highlights": [{"step_id": 4, "title": "Repro"}]\n}\n'
+    )
+    parsed = _Probe.parse_json(text, expect=dict)
+    assert parsed["summary"].startswith("The agent fixed the flaky test.")
+    assert parsed["highlights"][0]["step_id"] == 4
+
+
+def test_a_broken_prose_wrapped_object_survives_the_full_parse():
+    text = (
+        "Findings below.\n"
+        '{\n  "summary": "Reconstructed the workbook formulas.\n\n'
+        '  "highlights": [{"step_id": 9, "title": "Dump structure"}]\n}\n'
+    )
+    out = _Probe().parse(text)
+    assert out.summary.startswith("Reconstructed the workbook formulas.")
+    assert out.highlights[0]["step_id"] == 9
+
+
+def test_a_fragment_is_not_mined_out_of_an_unrepairable_outer_object():
+    """The shape behind all 6 empty-summary recoveries in the prod replay.
+
+    The outer object is broken beyond repair, so the only value that decodes
+    is one nested `highlights` entry. Returning it yields `summary=""` with no
+    highlights and no components, which persists as SUCCESS -- a summary that
+    says nothing, indistinguishable from a real one. Failing is correct.
+
+    Distinct from a `{task_id}` placeholder in a preamble, which is brace-
+    balanced on its own and must not block the real payload after it.
+    """
+    text = (
+        "```json\n"
+        '{\n  "summary": "The agent recovered the missing formulas.\n\n'
+        '  "highlights": [\n'
+        '    {"step_id": 2, "title": "Initial scan", "why": "Listed files."}\n'
+        "  ,\n}\n"
+        "```\n"
+    )
+    with pytest.raises(BlockParseError):
+        _Probe().parse(text)
+
+
+def test_an_unparseable_placeholder_still_does_not_block_the_real_payload():
+    text = (
+        "The runner substitutes {task_id} into the path.\n"
+        '{"summary": "Done.", "highlights": []}'
+    )
+    parsed = _Probe.parse_json(text, expect=dict)
+    assert parsed["summary"] == "Done."

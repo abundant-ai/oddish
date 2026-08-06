@@ -95,12 +95,19 @@ class Block:
             try:
                 value, end = decoder.raw_decode(fence.group(1))
             except ValueError:
-                pass
+                # The fence delimits the answer, so a fence that will not decode
+                # (and that repair could not mend before we got here) means the
+                # answer is broken -- not that the answer is somewhere else.
+                # Scanning on would return a fragment from inside this very
+                # object as though it were the whole reply.
+                return None
             else:
+                # A fence is the model delimiting its own answer, so it wins
+                # outright -- including when that answer is empty. Falling
+                # through to the scan lets a payload quoted in the preamble
+                # replace a legitimately empty result (#950).
                 if expect is None or isinstance(value, expect):
-                    if value:
-                        return fence.group(1)[:end]
-                    empty = fence.group(1)[:end]
+                    return fence.group(1)[:end]
 
         # Every opener is a candidate, in position order: audit prose quotes
         # code constantly, so a brace before the payload is the common case.
@@ -121,6 +128,16 @@ class Block:
             try:
                 value, end = decoder.raw_decode(text[start:])
             except ValueError:
+                # A value that failed to decode still consumes its brackets.
+                # Its children are fragments of a broken payload, not answers:
+                # mining one returns a lone `highlights` entry as the whole
+                # summary, which persists as SUCCESS saying nothing. A
+                # `{task_id}` placeholder closes immediately, so this skips
+                # only itself and the real payload after it still wins.
+                # An unbalanced one cannot be bounded, and the usual reason is
+                # a stray quote inside it -- so everything after is suspect too.
+                extent = Block._balanced_extent(text, start)
+                consumed_until = extent if extent is not None else len(text)
                 continue
             consumed_until = start + end
             if expect is not None and not isinstance(value, expect):
@@ -134,26 +151,74 @@ class Block:
         return empty
 
     @staticmethod
-    def _repair_json(text: str, expect: type | None = None) -> Any:
+    def _balanced_extent(text: str, start: int) -> int | None:
+        """Index just past the bracket matching ``text[start]``, or None.
+
+        Bracket counting, not JSON parsing, so it also measures a value the
+        decoder rejected -- which is the point: it bounds a broken object so
+        its children are not mistaken for values of their own.
+        """
+        opener = text[start]
+        closer = "}" if opener == "{" else "]"
+        depth, in_string, escaped = 0, False, False
+        for index in range(start, len(text)):
+            char = text[index]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = not in_string
+            elif in_string:
+                continue
+            elif char == opener:
+                depth += 1
+            elif char == closer:
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        return None
+
+    @staticmethod
+    def _repair_json(
+        text: str,
+        expect: type | None = None,
+        *,
+        allow_trailing: bool = False,
+        require_repair: bool = False,
+    ) -> Any:
         """Re-insert dropped punctuation, one decode error at a time, or None.
 
-        Last resort, reached only when the text already failed to parse, so it
-        cannot regress a working reply. Each pass fixes exactly the character
-        the decoder names at the position it names; anything the decoder
-        reports differently is left alone rather than guessed at. Replayed over
-        250 failed prod blocks it recovered 38 with zero malformed results.
+        Reached only when the text already failed to parse as-is, so it cannot
+        regress a working reply. Each pass fixes exactly the character the
+        decoder names at the position it names; anything the decoder reports
+        differently is left alone rather than guessed at. Replayed over 250
+        failed prod blocks it recovered 38 with zero malformed results.
+
+        ``allow_trailing`` accepts prose after the value and ``require_repair``
+        declines a value that needed no mending, both for the call that anchors
+        on an opener inside a larger reply: there, a value that parses as-is is
+        just prose punctuation, and ``_embedded_json`` -- which knows to prefer
+        a substantive value over an empty one -- owns that case.
         """
+        decoder = json.JSONDecoder(strict=False)
+        repairs = 0
         for _ in range(_MAX_JSON_REPAIRS):
             try:
-                value = json.loads(text, strict=False)
+                value, end = decoder.raw_decode(text)
             except json.JSONDecodeError as e:
                 for prefix, char in _JSON_REPAIRS.items():
                     if e.msg.startswith(prefix):
                         text = text[: e.pos] + char + text[e.pos :]
+                        repairs += 1
                         break
                 else:
                     return None
                 continue
+            if require_repair and not repairs:
+                return None
+            if not allow_trailing and text[end:].strip():
+                return None
             if expect is not None and not isinstance(value, expect):
                 return None
             return value
@@ -189,6 +254,21 @@ class Block:
         if repaired is not None:
             logger.warning("block parse: recovered JSON after punctuation repair")
             return repaired
+        # Same repair, anchored on the first opener: a prose-wrapped object
+        # missing one delimiter never reaches the branch above, because the
+        # leading prose fails at "Expecting value" long before the real defect.
+        # Without this the scan below decodes straight past the broken value
+        # and returns a fragment nested inside it.
+        opener = min(
+            (i for i in (text.find("{"), text.find("[")) if i != -1), default=-1
+        )
+        if opener != -1:
+            repaired = cls._repair_json(
+                text[opener:], expect, allow_trailing=True, require_repair=True
+            )
+            if repaired is not None:
+                logger.warning("block parse: recovered JSON after punctuation repair")
+                return repaired
         embedded = cls._embedded_json(text, expect)
         if embedded is not None:
             logger.warning("block parse: recovered JSON embedded in prose")
