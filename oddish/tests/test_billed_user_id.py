@@ -98,11 +98,19 @@ def _bulk_insert_trial_row(**overrides):
 
 
 class _CapturingSession:
+    """Spy for ``_bulk_insert_trials``, which issues two statements: the
+    trials bulk insert, then the trial_facets vocabulary upsert. The
+    billed_user_id assertion targets the first."""
+
     def __init__(self):
-        self.captured_params = None
+        self.captured_calls = []
 
     async def execute(self, statement, params=None):
-        self.captured_params = params
+        self.captured_calls.append(params)
+
+    @property
+    def captured_params(self):
+        return self.captured_calls[0]
 
 
 @pytest.mark.asyncio
@@ -118,6 +126,8 @@ async def test_bulk_insert_threads_billed_user_id_into_params():
     )
 
     assert capturing_session.captured_params["billed_user_id"] == ["user-42", None]
+    # Second statement is the write-through facet-vocabulary upsert.
+    assert len(capturing_session.captured_calls) == 2
 
 
 def test_bulk_insert_sql_keeps_billed_user_id_arity_aligned():
