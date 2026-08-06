@@ -75,5 +75,11 @@ export async function GET(request: NextRequest) {
   mergeTags("tags_any", parsed.any);
   mergeTags("tags_none", parsed.none);
 
-  return proxyBackendJson({ path: `tasks/browse?${query.toString()}` });
+  // The request signal rides along so a client abort (superseded filter
+  // state, timeout) cancels the backend query instead of letting it run
+  // for a result nobody will render.
+  return proxyBackendJson({
+    path: `tasks/browse?${query.toString()}`,
+    signal: request.signal,
+  });
 }

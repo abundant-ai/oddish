@@ -9,14 +9,18 @@ import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
 import type { CostLeaderboardResponse } from "@/lib/types";
 
+// Costs settle over time, so the board isn't session-stable — but it
+// needn't be re-asked on every dashboard remount either (2026-08-06 HAR:
+// fetched twice per session at ~2s a call). Remounts inside this window
+// reuse the cache silently; later ones serve it instantly and refresh in
+// the background.
+const LEADERBOARD_DEDUPE_MS = 5 * 60_000;
+
 function useCostLeaderboard(windowDays: number, limit: number) {
-  // Asked once per session: the strip remounts on every dashboard visit, and
-  // the 7d spend board doesn't change enough to re-ask each time (2026-08-06
-  // HAR: fetched twice per session at ~2s a call).
   return useSWR<CostLeaderboardResponse>(
     `/api/leaderboard?window_days=${windowDays}&limit=${limit}`,
     fetcher,
-    { revalidateOnFocus: false, revalidateIfStale: false }
+    { revalidateOnFocus: false, dedupingInterval: LEADERBOARD_DEDUPE_MS }
   );
 }
 

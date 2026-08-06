@@ -55,10 +55,11 @@ export function RecentTasksResults() {
 
   const items = data.items ?? [];
   const hasMore = data.has_more ?? false;
-  // The shown-range label describes the rows actually on screen, so its
-  // offset comes from the response — during a pager transition the URL
-  // already points at the next page while keepPreviousData still shows the
-  // previous one.
+  // The shown-range label and the pager both describe the rows actually on
+  // screen, so their offset comes from the response — during a pager
+  // transition (and after a failed one) the URL already points at the next
+  // page, and pager targets computed from it would let a second click skip
+  // a page keepPreviousData never showed.
   const shownOffset = data.offset ?? offset;
 
   // isLoading while data is present = a different key (filter/pager change)
@@ -117,7 +118,7 @@ export function RecentTasksResults() {
           {shownOffset + 1}-{shownOffset + items.length} shown
         </div>
         <div className="flex items-center gap-2">
-          {offset === 0 ? (
+          {shownOffset === 0 ? (
             <span
               className={cn(
                 pagerClass,
@@ -130,7 +131,7 @@ export function RecentTasksResults() {
             </span>
           ) : (
             <Link
-              href={pageHref(sp, offset - TASKS_PAGE_SIZE)}
+              href={pageHref(sp, shownOffset - TASKS_PAGE_SIZE)}
               scroll={false}
               className={cn(pagerClass, "hover:bg-muted")}
             >
@@ -140,7 +141,7 @@ export function RecentTasksResults() {
           )}
           {hasMore ? (
             <Link
-              href={pageHref(sp, offset + TASKS_PAGE_SIZE)}
+              href={pageHref(sp, shownOffset + TASKS_PAGE_SIZE)}
               scroll={false}
               className={cn(pagerClass, "hover:bg-muted")}
             >

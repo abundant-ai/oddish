@@ -42,26 +42,45 @@ export function browseKey(searchParams: URLSearchParams): string {
 // forever. Generous because this is the page's one data-bearing request.
 const BROWSE_FETCH_TIMEOUT_MS = 30_000;
 
+// Only one browse state is ever meaningful at a time (the grid is a
+// singleton), so starting a fetch aborts the previous one. The abort reaches
+// the backend: the proxy forwards its request signal upstream, so a
+// superseded filter state stops consuming a proxy slot and a backend query
+// instead of running to completion for a result nobody will render.
+let inflight: AbortController | null = null;
+
 async function browseFetcher(key: string): Promise<TaskBrowseResponse> {
-  const res = await fetch(key, {
-    credentials: "include",
-    cache: "no-store",
-    signal: AbortSignal.timeout(BROWSE_FETCH_TIMEOUT_MS),
-  });
-  let data: unknown = null;
+  inflight?.abort();
+  const controller = new AbortController();
+  inflight = controller;
+  const timeout = window.setTimeout(
+    () => controller.abort(),
+    BROWSE_FETCH_TIMEOUT_MS
+  );
   try {
-    data = await res.json();
-  } catch {
-    data = null;
+    const res = await fetch(key, {
+      credentials: "include",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    let data: unknown = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+    if (!res.ok) {
+      const message =
+        typeof data === "object" && data && "error" in data
+          ? String((data as { error?: string }).error)
+          : res.statusText || "Request failed";
+      throw new Error(message);
+    }
+    return data as TaskBrowseResponse;
+  } finally {
+    window.clearTimeout(timeout);
+    if (inflight === controller) inflight = null;
   }
-  if (!res.ok) {
-    const message =
-      typeof data === "object" && data && "error" in data
-        ? String((data as { error?: string }).error)
-        : res.statusText || "Request failed";
-    throw new Error(message);
-  }
-  return data as TaskBrowseResponse;
 }
 
 /**
@@ -82,20 +101,29 @@ export function useTaskBrowse(
     {
       revalidateOnFocus: false,
       keepPreviousData: true,
+      // An aborted request — a superseded filter state or the timeout —
+      // must not burn the global retry budget re-running work nobody is
+      // waiting for; every other error keeps the default retry behavior.
+      shouldRetryOnError: (error) => error.name !== "AbortError",
     }
   );
 }
 
 /**
  * Returns a callback that revalidates the browse state currently in the
- * URL — the client-side equivalent of what router.refresh() did for the
- * grid while it was server-rendered. Used by the toolbar's Refresh button,
- * its auto-refresh interval, and the import dialog.
+ * URL and settles when the fetch does — the toolbar's spinner tracks it.
+ * Failures surface through the hook's error state (the grid's banner), so
+ * the returned promise never rejects. Used by the Refresh button, its
+ * auto-refresh interval, and the import dialog.
  */
-export function useTaskBrowseRevalidate(): () => void {
+export function useTaskBrowseRevalidate(): () => Promise<unknown> {
   const searchParams = useSearchParams();
   const { mutate } = useSWRConfig();
-  return useCallback(() => {
-    void mutate(browseKey(new URLSearchParams(searchParams.toString())));
-  }, [mutate, searchParams]);
+  return useCallback(
+    () =>
+      mutate(browseKey(new URLSearchParams(searchParams.toString()))).catch(
+        () => undefined
+      ),
+    [mutate, searchParams]
+  );
 }
