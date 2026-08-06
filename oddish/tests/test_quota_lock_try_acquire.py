@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from pathlib import Path
+
 import pytest
 
 from oddish.config import QuotaMode, settings
 from oddish.core import quota_enforcement, quotas
-from oddish.core.quota_enforcement import cancel_trials_if_quota_reached
+from oddish.core.quota_enforcement import (
+    QuotaLockBusy,
+    cancel_trials_if_quota_reached,
+    enforce_trial_quotas,
+)
 
 
 @pytest.mark.asyncio
@@ -41,7 +48,8 @@ async def test_try_acquire_quota_locks_requires_user_lock_too():
 
 
 @pytest.mark.asyncio
-async def test_enforcement_skips_when_quota_lock_busy(monkeypatch):
+async def test_cancel_raises_when_quota_lock_busy(monkeypatch):
+    """Lock contention must not look like under-quota (scope=None)."""
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
 
     async def busy(*_args, **_kwargs):
@@ -49,19 +57,49 @@ async def test_enforcement_skips_when_quota_lock_busy(monkeypatch):
 
     monkeypatch.setattr(quota_enforcement, "try_acquire_quota_locks", busy)
 
-    result = await cancel_trials_if_quota_reached(
-        object(),
-        org_id="org-busy",
-        billed_user_id="user-busy",
+    with pytest.raises(QuotaLockBusy):
+        await cancel_trials_if_quota_reached(
+            object(),
+            org_id="org-busy",
+            billed_user_id="user-busy",
+        )
+
+
+@pytest.mark.asyncio
+async def test_enforce_returns_none_on_lock_busy_without_settlement(monkeypatch):
+    """Settlement / live-tail must retry: None means check did not complete."""
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield object()
+
+    async def busy(*_args, **_kwargs):
+        return False
+
+    after_check_calls = 0
+
+    async def after_check():
+        nonlocal after_check_calls
+        after_check_calls += 1
+
+    monkeypatch.setattr(quota_enforcement, "get_session", fake_get_session)
+    monkeypatch.setattr(quota_enforcement, "try_acquire_quota_locks", busy)
+
+    assert (
+        await enforce_trial_quotas(
+            org_id="org-busy",
+            billed_user_id="user-busy",
+            caller_trial_id="trial-1",
+            after_check=after_check,
+        )
+        is None
     )
-    assert result["scope"] is None
-    assert result["trials_cancelled"] == 0
+    assert after_check_calls == 0
 
 
 def test_append_sweep_does_not_hold_quota_locks_across_reconcile():
     """Regression: early org lock on append starved concurrent /tasks/sweep."""
-    from pathlib import Path
-
     from oddish.core.endpoints import sweep as sweep_mod
 
     source = Path(sweep_mod.__file__).read_text(encoding="utf-8")
