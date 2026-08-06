@@ -18,6 +18,7 @@ from harbor.trial.hooks import TrialEvent
 
 from oddish.config import BEDROCK_ENV_VARS, settings
 from oddish.core.harbor_source import harbor_git_requirement
+from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
@@ -110,11 +111,10 @@ def _build_payload(
 ) -> dict[str, Any]:
     daytona_kwargs: dict[str, Any] = {}
     if environment == EnvironmentType.DAYTONA:
-        daytona_kwargs = {
-            "auto_stop_interval_mins": settings.daytona_auto_stop_interval_mins,
-            "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
-            "ephemeral": settings.daytona_ephemeral,
-        }
+        environment_config = raw_harbor_config.get("environment") or {}
+        daytona_kwargs = DaytonaBackend().harbor_env_kwargs(
+            environment_config.get("kwargs") or {}
+        )
     return {
         "task_path": str(task_path),
         "jobs_dir": str(jobs_dir),
