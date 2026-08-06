@@ -53,6 +53,7 @@ from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.workers.jobs.enqueue import (
     EnqueueRequest,
+    _wake_dispatcher,
     bulk_enqueue_worker_jobs,
     enqueue_worker_job,
 )
@@ -549,6 +550,49 @@ async def enqueue_trial_analysis_worker_job(
             org_id=org_id,
         ),
     )
+
+
+async def enqueue_trajectory_summary_worker_job(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None,
+    schema_version: str,
+    triggered_by_user_id: str | None,
+) -> WorkerJobModel:
+    """Insert one active job or atomically return the constraint winner."""
+    active = text(
+        "kind = 'TRAJECTORY_SUMMARY' "
+        "AND status IN ('QUEUED', 'RETRYING', 'RUNNING') "
+        "AND subject_id IS NOT NULL"
+    )
+    insert = pg_insert(WorkerJobModel).values(
+        id=generate_id(),
+        kind=WorkerJobKind.TRAJECTORY_SUMMARY,
+        status=WorkerJobStatus.QUEUED,
+        queue_key=settings.get_qa_queue_key(),
+        subject_table="trials",
+        subject_id=trial_id,
+        payload={
+            "trial_id": trial_id,
+            "schema_version": schema_version,
+            "triggered_by_user_id": triggered_by_user_id,
+        },
+        org_id=org_id,
+        available_after=utcnow(),
+    )
+    job_id = await session.scalar(
+        insert.on_conflict_do_update(
+            index_elements=["kind", "subject_table", "subject_id"],
+            index_where=active,
+            set_={"updated_at": WorkerJobModel.updated_at},
+        ).returning(WorkerJobModel.id)
+    )
+    job = await session.get(WorkerJobModel, job_id)
+    if job is None:
+        raise RuntimeError(f"Failed to load trajectory summary job {job_id}")
+    _wake_dispatcher()
+    return job
 
 
 async def enqueue_pre_trial_worker_job(

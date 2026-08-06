@@ -372,7 +372,9 @@ async def test_get_or_generate_returns_stored_summary_when_fresh():
             new_callable=AsyncMock,
         ) as gen,
     ):
-        result = await get_or_generate_summary(session, trial)
+        result = await get_or_generate_summary(
+            session, trial, triggered_by_user_id="viewer-7"
+        )
     assert result == cached
     load_block.assert_not_awaited()
     gen.assert_not_awaited()
@@ -400,7 +402,9 @@ async def test_get_or_generate_mirrors_fresh_block_on_column_miss():
             new_callable=AsyncMock,
         ) as gen,
     ):
-        result = await get_or_generate_summary(session, trial)
+        result = await get_or_generate_summary(
+            session, trial, triggered_by_user_id="viewer-7"
+        )
     assert result == cached
     gen.assert_not_awaited()
     session.execute.assert_awaited_once()
@@ -491,11 +495,14 @@ async def test_get_or_generate_persists_on_miss():
             return_value=fresh,
         ) as gen,
     ):
-        result = await get_or_generate_summary(session, trial)
+        result = await get_or_generate_summary(
+            session, trial, triggered_by_user_id="viewer-7"
+        )
     assert result == fresh
     session.execute.assert_awaited_once()  # the mirror UPDATE
     session.commit.assert_awaited_once()
     assert gen.await_args.kwargs["prompt_id"] == "prompt-test-id"
+    assert gen.await_args.kwargs["triggered_by_user_id"] == "viewer-7"
 
 
 @pytest.mark.asyncio
@@ -546,7 +553,7 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
             return_value=fresh,
         ),
     ):
-        await get_or_generate_summary(session, trial)
+        await get_or_generate_summary(session, trial, triggered_by_user_id="viewer-7")
 
     assert {started[0], started[1]} == {"trajectory", "context"}
     assert len(finished) == 2
@@ -757,6 +764,7 @@ async def test_load_summary_prompt_recovers_from_lost_seed_race(monkeypatch):
     from oddish.db import PromptKind, PromptModel, get_session
 
     async with get_session() as session:
+        await real_seed_prompts(session)
         await session.execute(
             PromptModel.__table__.delete().where(PromptModel.kind == SUMMARY_PROMPT_KEY)
         )
@@ -933,12 +941,12 @@ async def test_get_or_generate_summary_passes_trial_scope_to_prompt_loader():
             return_value=fresh,
         ),
     ):
-        await get_or_generate_summary(session, trial)
+        await get_or_generate_summary(session, trial, triggered_by_user_id="viewer-7")
 
     load_prompt.assert_awaited_once_with(
         session,
         org_id="org-1",
-        user_id="user-1",
+        user_id="viewer-7",
         experiment_id="exp-1",
         task_id="task-1",
         trial_id="t-scope-1",
@@ -1021,9 +1029,7 @@ async def test_scoped_prompt_block_attributes_usage_to_override_not_global(
             scoped_usage = await get_prompt_usage_core(session, scoped_prompt_id)
             assert scoped_usage["total"] == 1
 
-            global_usage_after = await get_prompt_usage_core(
-                session, global_prompt.id
-            )
+            global_usage_after = await get_prompt_usage_core(session, global_prompt.id)
             assert global_usage_after["total"] == global_usage_before["total"]
     finally:
         async with get_session() as session:

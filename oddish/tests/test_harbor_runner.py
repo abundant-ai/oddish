@@ -719,8 +719,7 @@ def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
         **agent_config.kwargs,
     )
     assert agent.build_cli_flags() == (
-        "--exclude-tools web_search_tool_call "
-        "--exclude-tools web_fetch_tool_call"
+        "--exclude-tools web_search_tool_call --exclude-tools web_fetch_tool_call"
     )
 
 
@@ -1779,13 +1778,9 @@ async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
     async def _post_hooks(_trial_id):
         calls.append("post")
 
-    async def _summary(_trial_id):
-        calls.append("summary")
-
     monkeypatch.setattr(
         "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
     )
-    monkeypatch.setattr(trial_handler, "ensure_trajectory_summary", _summary)
     monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
 
     await trial_handler._finish_trial_settlement(
@@ -1795,7 +1790,7 @@ async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
         run_post_trial_hooks=True,
     )
 
-    assert calls == ["quota", "summary", "post", "teardown"]
+    assert calls == ["quota", "post", "teardown"]
 
 
 @pytest.mark.asyncio
@@ -1814,13 +1809,9 @@ async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkey
     async def _post_hooks(_trial_id):
         calls.append("post")
 
-    async def _summary(_trial_id):
-        calls.append("summary")
-
     monkeypatch.setattr(
         "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
     )
-    monkeypatch.setattr(trial_handler, "ensure_trajectory_summary", _summary)
     monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
 
     settlement = asyncio.create_task(
@@ -1840,7 +1831,14 @@ async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkey
     with pytest.raises(asyncio.CancelledError):
         await settlement
 
-    assert calls == ["quota", "summary", "post", "teardown"]
+    assert calls == ["quota", "post", "teardown"]
+
+
+def test_trial_settlement_does_not_reference_summary_generation():
+    import inspect
+
+    source = inspect.getsource(trial_handler._finish_trial_settlement)
+    assert "trajectory_summary" not in source
 
 
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
@@ -2509,9 +2507,7 @@ def test_build_agent_config_uses_oddish_opencode_wrapper(monkeypatch):
     )
 
     assert agent_config.name is None
-    assert (
-        agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
-    )
+    assert agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
     assert agent_config.model_name == "openrouter/tencent/hy3"
 
 

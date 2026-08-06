@@ -36,6 +36,7 @@ import {
   Gavel,
   Microscope,
   RefreshCw,
+  Sparkles,
   Workflow,
 } from "lucide-react";
 
@@ -51,6 +52,7 @@ const KIND_ORDER: WorkerJobKind[] = [
   "QA",
   "VERDICT",
   "ANALYSIS",
+  "TRAJECTORY_SUMMARY",
   "QA_REVIEW",
 ];
 
@@ -88,6 +90,12 @@ const KIND_DISPLAY: Record<
       "Folded into Task QA — no longer enqueued; drains in-flight rows",
     Icon: Microscope,
     accent: "text-purple-400",
+  },
+  TRAJECTORY_SUMMARY: {
+    label: "Trajectory Summaries",
+    description: "First-view summary generation stored for later reads",
+    Icon: Sparkles,
+    accent: "text-fuchsia-400",
   },
   QA_REVIEW: {
     label: "QA Review",
@@ -165,7 +173,7 @@ function KindRow({
           <Icon className={`mt-0.5 h-4 w-4 ${display.accent}`} />
           <div>
             <div className="font-medium">{display.label}</div>
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-muted-foreground text-[11px]">
               {display.description}
             </div>
           </div>
@@ -203,13 +211,13 @@ function KindStatusMatrix({ data }: { data: WorkerJobsResponse }) {
   const kindsToShow: WorkerJobKind[] = [
     ...KIND_ORDER.filter((k) => knownKinds.has(k)),
     ...Array.from(knownKinds).filter(
-      (k) => !KIND_ORDER.includes(k as WorkerJobKind),
+      (k) => !KIND_ORDER.includes(k as WorkerJobKind)
     ),
   ];
 
   if (kindsToShow.length === 0) {
     return (
-      <div className="py-6 text-center text-sm text-muted-foreground">
+      <div className="text-muted-foreground py-6 text-center text-sm">
         No worker jobs yet. Submit a task to seed the queue.
       </div>
     );
@@ -233,7 +241,7 @@ function KindStatusMatrix({ data }: { data: WorkerJobsResponse }) {
           const row = data.counts[kind] ?? {};
           const total = Object.values(row).reduce<number>(
             (sum, value) => sum + (value ?? 0),
-            0,
+            0
           );
           return <KindRow key={kind} kind={kind} counts={row} total={total} />;
         })}
@@ -283,7 +291,7 @@ function SubjectCell({ sample }: { sample: WorkerJobSample }) {
 function StaleRunningTable({ samples }: { samples: WorkerJobSample[] }) {
   if (samples.length === 0) {
     return (
-      <p className="py-3 text-xs text-muted-foreground">
+      <p className="text-muted-foreground py-3 text-xs">
         No stale RUNNING jobs. Heartbeats are current.
       </p>
     );
@@ -324,7 +332,7 @@ function StaleRunningTable({ samples }: { samples: WorkerJobSample[] }) {
             <TableCell className="text-right font-mono text-[11px] text-amber-400">
               {formatAge(sample.heartbeat_at)}
             </TableCell>
-            <TableCell className="max-w-[280px] truncate text-[11px] text-muted-foreground">
+            <TableCell className="text-muted-foreground max-w-[280px] truncate text-[11px]">
               {sample.heartbeat_failure_count > 0 ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -356,7 +364,7 @@ function StaleRunningTable({ samples }: { samples: WorkerJobSample[] }) {
 function RecentFailuresTable({ samples }: { samples: WorkerJobSample[] }) {
   if (samples.length === 0) {
     return (
-      <p className="py-3 text-xs text-muted-foreground">
+      <p className="text-muted-foreground py-3 text-xs">
         No recent failures or cancellations.
       </p>
     );
@@ -404,10 +412,10 @@ function RecentFailuresTable({ samples }: { samples: WorkerJobSample[] }) {
             <TableCell className="text-right font-mono text-[11px]">
               {sample.attempts}/{sample.max_attempts}
             </TableCell>
-            <TableCell className="text-right font-mono text-[11px] text-muted-foreground">
+            <TableCell className="text-muted-foreground text-right font-mono text-[11px]">
               {formatAge(sample.finished_at)}
             </TableCell>
-            <TableCell className="max-w-[360px] truncate text-[11px] text-muted-foreground">
+            <TableCell className="text-muted-foreground max-w-[360px] truncate text-[11px]">
               {sample.error_message ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -439,7 +447,7 @@ function DurationsTable({
 }) {
   if (durations.length === 0) {
     return (
-      <p className="py-3 text-xs text-muted-foreground">
+      <p className="text-muted-foreground py-3 text-xs">
         No completed jobs in the last hour with enough samples for percentiles.
       </p>
     );
@@ -494,7 +502,7 @@ export function WorkerJobsCard() {
   const { data, error, isLoading, mutate } = useSWR<WorkerJobsResponse>(
     "/api/admin/worker-jobs",
     fetcher,
-    { refreshInterval: 10000 },
+    { refreshInterval: 10000 }
   );
 
   const filterNeedle = kindFilter.trim().toLowerCase();
@@ -505,7 +513,7 @@ export function WorkerJobsCard() {
       (sample) =>
         sample.kind.toLowerCase().includes(filterNeedle) ||
         sample.queue_key.toLowerCase().includes(filterNeedle) ||
-        (sample.subject_id ?? "").toLowerCase().includes(filterNeedle),
+        (sample.subject_id ?? "").toLowerCase().includes(filterNeedle)
     );
   }, [data, filterNeedle]);
   const filteredFailures = useMemo(() => {
@@ -515,7 +523,7 @@ export function WorkerJobsCard() {
       (sample) =>
         sample.kind.toLowerCase().includes(filterNeedle) ||
         sample.queue_key.toLowerCase().includes(filterNeedle) ||
-        (sample.subject_id ?? "").toLowerCase().includes(filterNeedle),
+        (sample.subject_id ?? "").toLowerCase().includes(filterNeedle)
     );
   }, [data, filterNeedle]);
   const filteredDurations = useMemo(() => {
@@ -524,7 +532,7 @@ export function WorkerJobsCard() {
     return data.durations_last_hour.filter(
       (row) =>
         row.kind.toLowerCase().includes(filterNeedle) ||
-        row.queue_key.toLowerCase().includes(filterNeedle),
+        row.queue_key.toLowerCase().includes(filterNeedle)
     );
   }, [data, filterNeedle]);
 
@@ -551,7 +559,7 @@ export function WorkerJobsCard() {
             {totalsByStatus && (
               <div className="flex flex-wrap gap-1">
                 {STATUS_COLUMNS.filter(
-                  (status) => (totalsByStatus[status] ?? 0) > 0,
+                  (status) => (totalsByStatus[status] ?? 0) > 0
                 ).map((status) => (
                   <Badge
                     key={status}
@@ -566,7 +574,7 @@ export function WorkerJobsCard() {
           </div>
           <div className="flex items-center gap-2">
             {data && (
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-muted-foreground text-[10px]">
                 Updated {new Date(data.timestamp).toLocaleTimeString()}
               </span>
             )}
@@ -584,7 +592,7 @@ export function WorkerJobsCard() {
             </Button>
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">
+        <p className="text-muted-foreground text-xs">
           Every trial runs as its own queued worker job, and each task&apos;s
           trajectory QA (classification + verdict) runs as one task-level job.
           Counts below are live from the unified{" "}
@@ -621,7 +629,7 @@ export function WorkerJobsCard() {
             <section className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-medium">Stale RUNNING</h3>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-muted-foreground text-[11px]">
                   Heartbeat older than {data.stale_after_minutes} minutes
                 </span>
               </div>
@@ -638,7 +646,7 @@ export function WorkerJobsCard() {
                 <h3 className="text-sm font-medium">
                   Duration percentiles (last hour)
                 </h3>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-muted-foreground text-[11px]">
                   claimed_at → finished_at, grouped by kind × queue_key
                 </span>
               </div>

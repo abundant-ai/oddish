@@ -42,6 +42,8 @@ def test_worker_job_kind_members():
         "TASK_EXPAND",
         "TAG_PROJECT",
         "ANALYZER",
+        "ANALYZER_BLOCK",
+        "TRAJECTORY_SUMMARY",
     }
 
 
@@ -174,6 +176,7 @@ def test_worker_jobs_has_required_indexes():
         "idx_worker_jobs_parent",
         "idx_worker_jobs_org",
         "uq_worker_jobs_tag_project_active",
+        "uq_worker_jobs_trajectory_summary_active",
     }
     got = {idx.name for idx in WorkerJobModel.__table__.indexes}
     missing = expected - got
@@ -221,6 +224,23 @@ def test_worker_jobs_partial_heartbeat_index_is_scoped():
     )
     where_clause = str(hb_idx.dialect_options["postgresql"]["where"])
     assert "RUNNING" in where_clause
+
+
+def test_worker_jobs_trajectory_summary_active_index_is_unique():
+    idx = next(
+        idx
+        for idx in WorkerJobModel.__table__.indexes
+        if idx.name == "uq_worker_jobs_trajectory_summary_active"
+    )
+    assert idx.unique is True
+    assert [expr.name for expr in idx.expressions] == [
+        "kind",
+        "subject_table",
+        "subject_id",
+    ]
+    where_clause = str(idx.dialect_options["postgresql"]["where"])
+    assert "kind = 'TRAJECTORY_SUMMARY'" in where_clause
+    assert "status IN ('QUEUED', 'RETRYING', 'RUNNING')" in where_clause
 
 
 def test_worker_jobs_enum_names():

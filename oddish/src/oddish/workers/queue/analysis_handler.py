@@ -21,6 +21,9 @@ from oddish.db import (
 from oddish.db.storage import resolve_task_directory, resolve_trial_directory
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
+from oddish.workers.queue.trajectory_summary_handler import (
+    resolve_trajectory_components,
+)
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 ANALYSIS_TIMEOUT = 900  # 15 minutes
@@ -28,10 +31,6 @@ ANALYSIS_TIMEOUT = 900  # 15 minutes
 # slow classification can't drift across the reap threshold mid-run.
 # 30s matches the trial heartbeat interval for consistency.
 ANALYSIS_HEARTBEAT_INTERVAL_SECONDS = 30
-# Wall-clock cap on the trajectory-summary seam. Generation is a single
-# streamed LLM call behind an in-process per-trial lock. Bounded and
-# best-effort: a hung summary cannot strand trial completion or classification.
-TRAJECTORY_SUMMARY_TIMEOUT_SECONDS = 300
 # How long a RUNNING claim is trusted to belong to a live worker. Must exceed
 # the worst-case run: the two bounded phases (``TRAJECTORY_SUMMARY_TIMEOUT_SECONDS``
 # + ``ANALYSIS_TIMEOUT`` = 20 min) plus the S3 task/trial download and sandbox
@@ -40,60 +39,6 @@ TRAJECTORY_SUMMARY_TIMEOUT_SECONDS = 300
 # worker that is merely slow, or a peer retakes the trial and both write
 # ``trial.analysis``.
 ANALYSIS_CLAIM_TTL_MINUTES = 35
-
-
-# The trajectory-summary seam. Building a summary needs the backend-only
-# TrajectoryBlock, which oddish/ can't import, so a hosted implementation is
-# injected here the same way pre-trial synth is. Takes a trial_id, returns the
-# stored summary dict or None when the trial has no trajectory. None until
-# registered -- standalone oddish workers continue without a summary.
-TrajectorySummaryProviderFn = Callable[[str], Awaitable[dict | None]]
-
-_trajectory_summary_provider: TrajectorySummaryProviderFn | None = None
-
-
-def register_trajectory_summary_provider(fn: TrajectorySummaryProviderFn) -> None:
-    """Install the hosted trajectory-summary provider."""
-    global _trajectory_summary_provider
-    _trajectory_summary_provider = fn
-
-
-async def ensure_trajectory_summary(trial_id: str) -> dict | None:
-    """Best-effort worker-side trajectory summary generation.
-
-    With no provider registered (standalone oddish), on timeout, or on any
-    generation failure, returns None so trial completion and classification
-    proceed. The provider owns its session and LLM call, so callers must run it
-    outside row locks.
-    """
-    provider = _trajectory_summary_provider
-    if provider is None:
-        return None
-    try:
-        summary = await asyncio.wait_for(
-            provider(trial_id), timeout=TRAJECTORY_SUMMARY_TIMEOUT_SECONDS
-        )
-    except TimeoutError:
-        console.print(
-            f"[yellow]Trajectory summary for {trial_id} exceeded "
-            f"{TRAJECTORY_SUMMARY_TIMEOUT_SECONDS}s; continuing without it[/yellow]"
-        )
-        return None
-    except Exception as exc:
-        console.print(
-            f"[yellow]Trajectory summary unavailable for {trial_id}; "
-            f"continuing without it: {exc}[/yellow]"
-        )
-        return None
-    return summary or None
-
-
-async def _resolve_trajectory_components(trial_id: str) -> list[dict] | None:
-    """Ensure a summary exists and return its post-trial component map."""
-    summary = await ensure_trajectory_summary(trial_id)
-    if not summary:
-        return None
-    return summary.get("components") or None
 
 
 # A trial whose analysis reached one of these is decided: no claim applies and
@@ -444,7 +389,7 @@ async def classify_trial_and_store(
             # Ensure the trajectory summary exists (generating on miss via the
             # hosted seam) and hand its labeled component map to the classifier.
             # Best-effort: None when unavailable, and never inside the claim lock.
-            trajectory_components = await _resolve_trajectory_components(trial_id)
+            trajectory_components = await resolve_trajectory_components(trial_id)
 
             console.print(f"[cyan]Running classification for {trial_id}...[/cyan]")
             log_lines.append("[worker] classification started")

@@ -312,10 +312,14 @@ class AnalyzerBlock(Block):
         if self.subject_type == "experiment" and self.subject_id:
             return {**blank, "experiment_id": self.subject_id}
 
-        # A post-trial block carries task_id for lineage, but its spend belongs
-        # to the individual trial referenced by analyzer_id, so skip the task
-        # path and fall through to analyzer_id resolution below.
-        if self.task_id and self.analyzer_type is not AnalyzerType.POST_TRIAL:
+        # Post-trial and trajectory-summary blocks may carry task_id for
+        # lineage, but their spend belongs to the individual trial referenced
+        # by analyzer_id. Skip the task path and resolve that trial below.
+        trial_scoped_types = {
+            AnalyzerType.POST_TRIAL,
+            AnalyzerType.TRAJECTORY_SUMMARY,
+        }
+        if self.task_id and self.analyzer_type not in trial_scoped_types:
             return await self._attribute_to_task(session, blank, self.task_id)
         if not self.analyzer_id:
             return blank
@@ -365,9 +369,9 @@ class AnalyzerBlock(Block):
             "trial_id": trial.id,
             "org_id": trial.org_id,
             "experiment_id": trial.experiment_id,
-            # The triggering user wins: they caused the call. Falls back to
-            # the trial's owner for internally-driven runs with no request
-            # behind them (workers, the graph builder).
+            # Viewer-triggered background work carries that viewer through its
+            # queued payload; they caused the call even though a worker runs it
+            # later. Internally-triggered work falls back to the trial owner.
             "billed_user_id": self.triggered_by_user_id or trial.billed_user_id,
         }
 

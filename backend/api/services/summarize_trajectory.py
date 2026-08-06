@@ -173,7 +173,9 @@ async def _load_summary_prompt(
         trial_id=trial_id,
     )
     try:
-        prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
+        prompt, version = await resolve_prompt_core(
+            session, SUMMARY_PROMPT_KEY, **scope
+        )
     except HTTPException:
         try:
             # Keep a lost concurrent-seed race inside a savepoint. Rolling back
@@ -181,7 +183,9 @@ async def _load_summary_prompt(
             async with session.begin_nested():
                 await seed_prompts(session)
             await session.commit()
-            prompt, version = await resolve_prompt_core(session, SUMMARY_PROMPT_KEY, **scope)
+            prompt, version = await resolve_prompt_core(
+                session, SUMMARY_PROMPT_KEY, **scope
+            )
         except Exception as exc:
             # An immediate unique constraint is raised inside the savepoint.
             # Its rollback leaves the outer transaction and loaded ORM state
@@ -379,9 +383,7 @@ async def _load_fresh_summary_block(
     ).scalar_one_or_none()
 
 
-async def _store_summary(
-    session: AsyncSession, trial_id: str, summary: dict
-) -> None:
+async def _store_summary(session: AsyncSession, trial_id: str, summary: dict) -> None:
     """Persist the read-path mirror before returning a worker result."""
     await session.execute(
         update(TrialModel)
@@ -392,7 +394,10 @@ async def _store_summary(
 
 
 async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel
+    session: AsyncSession,
+    trial: TrialModel,
+    *,
+    triggered_by_user_id: str | None = None,
 ) -> dict | None:
     """Ensure the worker-generated trajectory summary is stored.
 
@@ -429,7 +434,7 @@ async def get_or_generate_summary(
         prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
             session,
             org_id=trial.org_id,
-            user_id=trial.billed_user_id,
+            user_id=triggered_by_user_id or trial.billed_user_id,
             experiment_id=trial.experiment_id,
             task_id=trial.task_id,
             trial_id=trial.id,
@@ -449,6 +454,7 @@ async def get_or_generate_summary(
             prompt_template=prompt_template,
             prompt_version=prompt_version,
             prompt_id=prompt_id,
+            triggered_by_user_id=triggered_by_user_id,
         )
 
         # Mirror into the trials column for the graph builder + analyzer-input

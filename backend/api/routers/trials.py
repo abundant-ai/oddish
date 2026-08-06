@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from sqlalchemy import select
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
     delete_trial_core,
@@ -23,6 +24,7 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.core.trial_live import read_trial_live_for_id
+from oddish.core.helpers import _has_fetchable_trajectory
 from oddish.core.ingest.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
@@ -37,8 +39,12 @@ from oddish.db.storage import delete_s3_prefixes
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from oddish.db import (
     TrialModel,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
     get_session,
 )
+from oddish.queue import enqueue_trajectory_summary_worker_job
 from oddish.schemas import TrialRetryRequest
 from oddish.schemas import (
     TrialImportCompleteRequest,
@@ -65,6 +71,17 @@ async def _get_authorized_trial(trial_id: str, auth: AuthContext) -> TrialModel:
         )
         session.expunge(trial)
         return trial
+
+
+def _stored_summary_or_404(trial: TrialModel) -> dict | None:
+    summary = trial.trajectory_summary
+    if isinstance(summary, dict) and summary.get("schema_version") == SCHEMA_VERSION:
+        return summary
+    if not _has_fetchable_trajectory(trial):
+        raise HTTPException(
+            status_code=404, detail="No trajectory available for this trial"
+        )
+    return None
 
 
 @router.get("/tasks/{task_id}/trials/{index}", response_model=TrialResponse)
@@ -398,26 +415,62 @@ async def get_trial_trajectory_summary(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Return the worker-generated trajectory summary without blocking.
-
-    A terminal trial can be visible while its best-effort summary job is still
-    finishing. In that window (or after a generation failure), return a small
-    pending response so page loads never wait on an LLM call.
-    """
+    """Read the stored summary or report its durable worker-job state."""
     auth.require_scope(APIKeyScope.READ)
-    trial = await _get_authorized_trial(trial_id, auth)
-
-    summary = trial.trajectory_summary
-    if isinstance(summary, dict) and summary.get("schema_version") == SCHEMA_VERSION:
-        return summary
-
-    from oddish.core.helpers import _has_fetchable_trajectory
-
-    if not _has_fetchable_trajectory(trial):
-        raise HTTPException(
-            status_code=404, detail="No trajectory available for this trial"
+    async with get_session() as session:
+        trial = await get_trial_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
         )
-    return {"status": "pending"}
+        summary = _stored_summary_or_404(trial)
+        if summary is not None:
+            return summary
+
+        job_status = await session.scalar(
+            select(WorkerJobModel.status)
+            .where(
+                WorkerJobModel.kind == WorkerJobKind.TRAJECTORY_SUMMARY,
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.subject_id == trial_id,
+                WorkerJobModel.payload["schema_version"].astext == SCHEMA_VERSION,
+            )
+            .order_by(WorkerJobModel.created_at.desc())
+            .limit(1)
+        )
+        if job_status is None or job_status in {
+            WorkerJobStatus.QUEUED,
+            WorkerJobStatus.RETRYING,
+            WorkerJobStatus.RUNNING,
+        }:
+            return {"status": "pending"}
+        return {
+            "status": "failed",
+            "detail": "Trajectory summary generation failed. Retry to try again.",
+        }
+
+
+@router.post("/trials/{trial_id}/trajectory/summary")
+async def enqueue_trial_trajectory_summary(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Ensure one durable, viewer-attributed summary job is queued."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        trial = await get_trial_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
+        )
+        summary = _stored_summary_or_404(trial)
+        if summary is not None:
+            return summary
+
+        job = await enqueue_trajectory_summary_worker_job(
+            session,
+            trial_id=trial_id,
+            org_id=trial.org_id,
+            schema_version=SCHEMA_VERSION,
+            triggered_by_user_id=auth.user_id,
+        )
+        return {"status": "pending", "job_id": job.id}
 
 
 @router.get("/trials/{trial_id}/result")

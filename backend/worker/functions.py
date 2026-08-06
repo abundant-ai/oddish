@@ -132,8 +132,8 @@ from api.services.blocks.analyzer import (
 # settings.pre_trial_enabled). Import for the side effect.
 from . import pre_trial_synth as _pre_trial_synth  # noqa: F401
 
-# Register the hosted trajectory-summary provider so post-trial classification
-# can feed a component map to the classifier. Import for the side effect.
+# Register the hosted trajectory-summary provider for the dedicated lazy job
+# and for post-trial QA's best-effort component map. Import for the side effect.
 from . import trajectory_summary_provider as _trajectory_summary_provider  # noqa: F401
 
 

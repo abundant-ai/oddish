@@ -158,3 +158,10 @@ def test_handler_run_returns_job_outcome():
     outcome = asyncio.run(handler.run(object()))  # job stub is opaque in Phase A
     assert isinstance(outcome, JobOutcome)
     assert outcome.success is not None
+
+
+def test_builtin_registration_includes_trajectory_summary():
+    from oddish.workers.jobs import ensure_builtin_handlers_registered
+
+    ensure_builtin_handlers_registered()
+    assert WorkerJobKind.TRAJECTORY_SUMMARY in HANDLERS

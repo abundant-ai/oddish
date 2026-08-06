@@ -45,6 +45,7 @@ const TASK_FILES_STREAM_RE = /\/api\/tasks\/[^/]+\/files\?[^#]*\bstream=1\b/;
 const ANY_FILES_STREAM_RE = /\/files\?[^#]*\bstream=1\b/;
 const TRIAL_FILES_STREAM_RE = /\/api\/trials\/[^/]+\/files\?[^#]*\bstream=1\b/;
 const TRIAL_TRAJECTORY_RE = /\/api\/trials\/[^/?]+\/trajectory(?:\?.*)?$/;
+const TRIAL_SUMMARY_RE = /\/api\/trials\/[^/?]+\/trajectory\/summary(?:\?.*)?$/;
 
 type LoggedRequest = { url: string; method: string };
 
@@ -54,7 +55,7 @@ function recordRequests(page: Page): LoggedRequest[] {
   // runs every effect twice and the first run's fetch gets aborted. Those
   // aborted requests are not real duplicates, so they must not count.
   page.on("requestfinished", (request) =>
-    log.push({ url: request.url(), method: request.method() }),
+    log.push({ url: request.url(), method: request.method() })
   );
   return log;
 }
@@ -63,17 +64,16 @@ function countSince(
   log: LoggedRequest[],
   from: number,
   re: RegExp,
-  method = "GET",
+  method = "GET"
 ): number {
-  return log
-    .slice(from)
-    .filter((r) => r.method === method && re.test(r.url)).length;
+  return log.slice(from).filter((r) => r.method === method && re.test(r.url))
+    .length;
 }
 
 test.describe("experiment page network shape", () => {
   test.skip(
     !hasClerkEnv,
-    "needs E2E_CLERK_EMAIL + CLERK_SECRET_KEY + NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY",
+    "needs E2E_CLERK_EMAIL + CLERK_SECRET_KEY + NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"
   );
 
   test("one fetch per resource, bodies on demand, polling gated on analysis", async ({
@@ -122,13 +122,15 @@ test.describe("experiment page network shape", () => {
       // test strict instead.
       await page.goto("/dashboard");
       const experimentLink = page.locator('a[href^="/experiments/"]').first();
-      const hasExperiment = await experimentLink.waitFor({ timeout: 15_000 }).then(
-        () => true,
-        () => false,
-      );
+      const hasExperiment = await experimentLink
+        .waitFor({ timeout: 15_000 })
+        .then(
+          () => true,
+          () => false
+        );
       test.skip(
         !hasExperiment,
-        "no experiment to open in this environment — set E2E_EXPERIMENT_ID",
+        "no experiment to open in this environment — set E2E_EXPERIMENT_ID"
       );
       await experimentLink.click();
     }
@@ -141,11 +143,11 @@ test.describe("experiment page network shape", () => {
       // trial cells.
       const hasTrialCell = await trialCell.waitFor({ timeout: 30_000 }).then(
         () => true,
-        () => false,
+        () => false
       );
       test.skip(
         !hasTrialCell,
-        "discovered experiment has no non-probe trials — set E2E_EXPERIMENT_ID",
+        "discovered experiment has no non-probe trials — set E2E_EXPERIMENT_ID"
       );
     }
 
@@ -212,13 +214,48 @@ test.describe("experiment page network shape", () => {
       })
       .toBe(1);
 
-    // Phase 6 — opening Trajectory fetches the immutable ATIF resource at
-    // most once. Drawer/layout remounts reuse SWR's cached value.
+    // Phase 6 — first summary view sees pending, queues exactly one durable
+    // job, then polls GET until ready. The immutable ATIF resource still
+    // fetches at most once across drawer/layout remounts.
+    let summaryGets = 0;
+    await page.route("**/api/trials/*/trajectory/summary", async (route) => {
+      if (route.request().method() === "POST") {
+        return route.fulfill({
+          json: { status: "pending", job_id: "summary-1" },
+        });
+      }
+      summaryGets += 1;
+      return route.fulfill({
+        json:
+          summaryGets === 1
+            ? { status: "pending" }
+            : {
+                schema_version: "5",
+                model: "test-model",
+                generated_at: "2026-08-06T00:00:00Z",
+                summary: "Ready",
+                highlights: [],
+                components: [],
+              },
+      });
+    });
     const trajectoryMark = log.length;
     await page.getByRole("tab", { name: "Trajectory" }).click();
-    await page.waitForTimeout(7_000);
+    await expect
+      .poll(() => countSince(log, trajectoryMark, TRIAL_SUMMARY_RE, "POST"), {
+        timeout: 10_000,
+      })
+      .toBe(1);
+    await expect
+      .poll(() => countSince(log, trajectoryMark, TRIAL_SUMMARY_RE), {
+        timeout: 10_000,
+      })
+      .toBe(2);
+    const summarySettledMark = log.length;
+    await page.waitForTimeout(6_500);
+    expect(countSince(log, summarySettledMark, TRIAL_SUMMARY_RE)).toBe(0);
     expect(
-      countSince(log, trajectoryMark, TRIAL_TRAJECTORY_RE),
+      countSince(log, trajectoryMark, TRIAL_TRAJECTORY_RE)
     ).toBeLessThanOrEqual(1);
 
     // Across the whole journey, the task's file contents were never

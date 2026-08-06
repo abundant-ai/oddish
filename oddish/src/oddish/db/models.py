@@ -197,6 +197,9 @@ class WorkerJobKind(str, Enum):
     # Execute one declaratively persisted AnalyzerRunModel. The handler
     # reconstructs an AnalyzerBlock; the block owns its LLM/sandbox lifecycle.
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
+    # Generate and persist one trial's trajectory summary after a viewer asks
+    # for it. The request path only enqueues; the worker owns the LLM call.
+    TRAJECTORY_SUMMARY = "TRAJECTORY_SUMMARY"
 
 
 class WorkerJobStatus(str, Enum):
@@ -1138,9 +1141,10 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
-    # LLM-generated summary of the trajectory; populated best-effort by the
-    # worker when a trial reaches a terminal state. The read endpoint never
-    # generates or probes the retired `agent/trajectory_summary.json` path.
+    # LLM-generated summary of the trajectory. First view enqueues a durable
+    # worker job, which mirrors the successful AnalyzerBlock output here. The
+    # read endpoint never generates or probes the retired
+    # `agent/trajectory_summary.json` path.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Analysis data (LLM analysis of this trial)
@@ -1745,6 +1749,18 @@ class WorkerJobModel(TimestampedMixin, Base):
             postgresql_where=text(
                 "kind = 'TAG_PROJECT' "
                 "AND status IN ('QUEUED', 'RETRYING') "
+                "AND subject_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_worker_jobs_trajectory_summary_active",
+            "kind",
+            "subject_table",
+            "subject_id",
+            unique=True,
+            postgresql_where=text(
+                "kind = 'TRAJECTORY_SUMMARY' "
+                "AND status IN ('QUEUED', 'RETRYING', 'RUNNING') "
                 "AND subject_id IS NOT NULL"
             ),
         ),

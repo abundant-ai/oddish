@@ -192,7 +192,18 @@ High-level flow:
    `oddish.filters.trial_predicates.build_trial_metric_predicate` with an
    injected `EligibleTrialScope` rather than reimplementing Any/All logic.
 
-Trajectory summaries use schema v5. Each taxonomy-valued `components` entry
+Trajectory summaries use schema v5 and are stored in
+`trials.trajectory_summary`. The first trial-page view POSTs an idempotent
+enqueue request for a durable `TRAJECTORY_SUMMARY` worker job; GET only returns
+the stored summary or its pending/failed state and never calls an LLM. A
+partial unique index permits only one QUEUED/RETRYING/RUNNING summary job per
+trial. Normal worker retries handle transient failures, an exhausted job can be
+retried explicitly without changing trial status, and unviewed trials incur no
+summary cost. The triggering viewer ID travels in the job payload and owns the
+AnalyzerBlock cost attribution. Post-trial QA may still generate or reuse a
+summary best-effort for classifier component context.
+
+Each taxonomy-valued `components` entry
 contains its `step_ids`, summary, and deterministic `tool_count` and
 `duration_ms` metadata. Step count is the length of `step_ids`; the other
 analytics are computed from the immutable
@@ -225,7 +236,8 @@ independent overrides for the same kind in multiple organizations.
 - **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
   verdict), `ANALYZER` (cross-experiment report orchestration),
   `ANALYZER_BLOCK` (one declarative `analyzer_runs` execution),
-  `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
+  `TRAJECTORY_SUMMARY` (lazy first-view trial summary), `TASK_EXPAND` (sweep
+  expansion), `TAG_PROJECT` (tag recompute).
 - **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
   is kept only so in-flight rows survive a deploy) and `VERDICT` (enum value only,
   no handler). Nothing enqueues either anymore.
@@ -454,6 +466,7 @@ Behavior:
 | `trial_handler.py` | TRIAL execution body |
 | `qa_handler.py` | Task-level QA job: `run_task_qa_job` classifies every live trial then synthesizes the verdict |
 | `analysis_handler.py` | `classify_trial_and_store` (shared per-trial classifier) + the transitional `run_analysis_job` wrapper for in-flight legacy ANALYSIS rows |
+| `trajectory_summary_handler.py` | Durable first-view summary execution, timeout/heartbeat, and the best-effort QA provider seam |
 | `task_expand_handler.py` / `tag_project_handler.py` | TASK_EXPAND and TAG_PROJECT job bodies |
 | `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, **per-slot** orphaned-slot release (see invariants below) |
 | `slots.py` | `queue_slots` lease acquire/release (`locked_by` / `locked_until` / `locked_at`) |

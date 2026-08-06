@@ -414,10 +414,10 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
     assert seen.get("triggered_by_user_id") == "viewer-7"
 
 
-def test_summary_route_never_enters_the_generation_path():
-    """Viewing a trial must not trigger or attribute an LLM call."""
+def test_summary_route_only_queues_viewer_attribution():
+    """The API may attribute a job, but it must never run generation."""
     from api.routers import trials
 
     src = open(trials.__file__).read()
     assert "get_or_generate_summary" not in src
-    assert "triggered_by_user_id=auth.user_id" not in src
+    assert "triggered_by_user_id=auth.user_id" in src

@@ -46,6 +46,10 @@ from oddish.workers.queue.analyzer_handler import (
 )
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
 from oddish.workers.queue.trial_handler import run_trial_job
+from oddish.workers.queue.trajectory_summary_handler import (
+    TrajectorySummaryUnavailableError,
+    run_trajectory_summary_job,
+)
 from oddish.workers.queue.trial_failures import (
     MODAL_IMAGE_BUILD_FAILED_STAGE,
     is_modal_image_build_failure,
@@ -189,6 +193,37 @@ class AnalysisJobHandler:
                 f"Analysis {trial_id} left in non-terminal status "
                 f"{trial.analysis_status!r}"
             )
+
+
+class TrajectorySummaryJobHandler:
+    """Generate one viewer-requested summary without touching trial status."""
+
+    kind = WorkerJobKind.TRAJECTORY_SUMMARY
+
+    def default_queue_key(self, job: WorkerJobLike) -> str:
+        return job.queue_key or "qa"
+
+    def validate_payload(self, payload: dict) -> dict:
+        payload = dict(payload or {})
+        if not payload.get("trial_id"):
+            raise ValueError("TRAJECTORY_SUMMARY payload missing trial_id")
+        if not payload.get("schema_version"):
+            raise ValueError("TRAJECTORY_SUMMARY payload missing schema_version")
+        return payload
+
+    async def run(self, job: WorkerJobLike) -> JobOutcome:
+        payload = self.validate_payload(job.payload or {})
+        trial_id = job.subject_id or payload["trial_id"]
+        try:
+            summary = await run_trajectory_summary_job(
+                trial_id,
+                schema_version=str(payload["schema_version"]),
+                triggered_by_user_id=payload.get("triggered_by_user_id"),
+                worker_job_id=job.id,
+            )
+        except TrajectorySummaryUnavailableError as exc:
+            return _fail_permanent(str(exc))
+        return JobOutcome.ok({"schema_version": summary["schema_version"]})
 
 
 class QaJobHandler:
@@ -450,6 +485,7 @@ class AnalyzerBlockJobHandler:
 
 __all__ = [
     "AnalysisJobHandler",
+    "TrajectorySummaryJobHandler",
     "QaJobHandler",
     "AnalyzerJobHandler",
     "AnalyzerBlockJobHandler",

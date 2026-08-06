@@ -6,9 +6,10 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
-export async function GET(
+async function proxySummary(
+  method: "GET" | "POST",
   _request: Request,
-  { params }: { params: Promise<{ trial_id: string }> },
+  { params }: { params: Promise<{ trial_id: string }> }
 ) {
   try {
     const { getToken } = await auth();
@@ -18,6 +19,7 @@ export async function GET(
 
     const url = getBackendUrl("trials", `/${trial_id}/trajectory/summary`);
     const res = await fetch(url, {
+      method,
       cache: "no-store",
       headers: getAuthHeaders(token),
     });
@@ -37,7 +39,7 @@ export async function GET(
           error: `Backend returned ${res.status} ${res.statusText}`,
           detail: text.slice(0, 500),
         },
-        { status: res.ok ? 502 : res.status },
+        { status: res.ok ? 502 : res.status }
       );
     }
 
@@ -50,7 +52,21 @@ export async function GET(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
+}
+
+export function GET(
+  request: Request,
+  context: { params: Promise<{ trial_id: string }> }
+) {
+  return proxySummary("GET", request, context);
+}
+
+export function POST(
+  request: Request,
+  context: { params: Promise<{ trial_id: string }> }
+) {
+  return proxySummary("POST", request, context);
 }

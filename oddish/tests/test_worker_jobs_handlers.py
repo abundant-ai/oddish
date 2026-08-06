@@ -31,6 +31,7 @@ from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import (  # noqa: E402
     AnalysisJobHandler,
     QaJobHandler,
+    TrajectorySummaryJobHandler,
     TrialJobHandler,
 )
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
@@ -40,6 +41,9 @@ def _fake_get_session_factory(domain_row):
     """Build a ``get_session``-compatible context manager for tests."""
 
     class _Session:
+        async def scalar(self, _stmt):
+            return None
+
         async def get(self, model, obj_id):
             if domain_row is None:
                 return None
@@ -112,6 +116,27 @@ def _verdict_claim(**overrides) -> ClaimedWorkerJob:
         attempts=1,
         max_attempts=6,
         org_id=None,
+        parent_job_id=None,
+    )
+    defaults.update(overrides)
+    return ClaimedWorkerJob(**defaults)
+
+
+def _summary_claim(**overrides) -> ClaimedWorkerJob:
+    defaults = dict(
+        id="wj-summary-1",
+        kind=WorkerJobKind.TRAJECTORY_SUMMARY,
+        queue_key="qa",
+        subject_table="trials",
+        subject_id="trial-abc",
+        payload={
+            "trial_id": "trial-abc",
+            "schema_version": "5",
+            "triggered_by_user_id": "viewer-7",
+        },
+        attempts=1,
+        max_attempts=6,
+        org_id="org-1",
         parent_job_id=None,
     )
     defaults.update(overrides)
@@ -222,6 +247,45 @@ async def test_trial_handler_rejects_missing_subject_id(monkeypatch):
 # ---------------------------------------------------------------------------
 # AnalysisJobHandler
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_trajectory_summary_handler_runs_dedicated_worker(monkeypatch):
+    called = {}
+
+    async def run(trial_id, **kwargs):
+        called.update(trial_id=trial_id, **kwargs)
+        return {"schema_version": "5", "summary": "stored"}
+
+    monkeypatch.setattr(handlers_module, "run_trajectory_summary_job", run)
+    outcome = await TrajectorySummaryJobHandler().run(_summary_claim())
+    assert outcome.success.result_summary == {"schema_version": "5"}
+    assert called["triggered_by_user_id"] == "viewer-7"
+    assert called["worker_job_id"] == "wj-summary-1"
+
+
+@pytest.mark.asyncio
+async def test_trajectory_summary_handler_marks_missing_trajectory_permanent(
+    monkeypatch,
+):
+    async def run(*_args, **_kwargs):
+        raise handlers_module.TrajectorySummaryUnavailableError("no trajectory")
+
+    monkeypatch.setattr(handlers_module, "run_trajectory_summary_job", run)
+    outcome = await TrajectorySummaryJobHandler().run(_summary_claim())
+    assert outcome.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_trajectory_summary_handler_leaves_transient_failure_to_runner(
+    monkeypatch,
+):
+    async def run(*_args, **_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(handlers_module, "run_trajectory_summary_job", run)
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await TrajectorySummaryJobHandler().run(_summary_claim())
 
 
 @pytest.mark.asyncio
@@ -426,6 +490,7 @@ def test_all_three_handlers_register_against_builtin_registry():
     assert WorkerJobKind.QA in HANDLERS
     # ANALYSIS handler is kept transitionally to drain legacy rows.
     assert WorkerJobKind.ANALYSIS in HANDLERS
+    assert WorkerJobKind.TRAJECTORY_SUMMARY in HANDLERS
 
 
 def test_tag_project_handler_is_registered(monkeypatch):

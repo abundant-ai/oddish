@@ -818,6 +818,7 @@ export type WorkerJobKind =
   | "ANALYSIS"
   | "VERDICT"
   | "QA_REVIEW"
+  | "TRAJECTORY_SUMMARY"
   | (string & {});
 
 export type WorkerJobStatus =

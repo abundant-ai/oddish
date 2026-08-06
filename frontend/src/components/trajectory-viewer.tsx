@@ -764,7 +764,7 @@ export function TrajectoryViewer({
     isLoading: isSummaryLoading,
     isPending: isSummaryPending,
     error: summaryError,
-    mutate: retrySummary,
+    retry: retrySummary,
   } = useTrajectorySummary(trialId, apiBaseUrl, shouldFetch);
   const segments = useMemo(
     () => withOtherSegment(toSegments(summary), trajectory?.steps ?? []),

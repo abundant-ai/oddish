@@ -53,6 +53,7 @@ def ensure_builtin_handlers_registered() -> None:
         WorkerJobKind.TAG_PROJECT,
         WorkerJobKind.ANALYZER,
         WorkerJobKind.ANALYZER_BLOCK,
+        WorkerJobKind.TRAJECTORY_SUMMARY,
     }
     if _BUILTINS_REGISTERED and required_kinds.issubset(HANDLERS):
         return
@@ -67,6 +68,7 @@ def ensure_builtin_handlers_registered() -> None:
         AnalyzerJobHandler,
         TagProjectJobHandler,
         TaskExpandJobHandler,
+        TrajectorySummaryJobHandler,
         TrialJobHandler,
     )
 
@@ -78,6 +80,7 @@ def ensure_builtin_handlers_registered() -> None:
         TagProjectJobHandler(),
         AnalyzerJobHandler(),
         AnalyzerBlockJobHandler(),
+        TrajectorySummaryJobHandler(),
     ):
         try:
             register(handler)
