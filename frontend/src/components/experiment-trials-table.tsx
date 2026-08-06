@@ -115,6 +115,13 @@ const PassAtOneLeaderboard = dynamic(
   },
 );
 
+const CostParetoGraph = dynamic(
+  () => import("./cost-pareto-graph").then((mod) => mod.CostParetoGraph),
+  {
+    ssr: false,
+  },
+);
+
 export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
@@ -124,6 +131,9 @@ type ExperimentTrialsTableProps = {
   isLoading: boolean;
   isLoadingTrials?: boolean;
   showPassAtK?: boolean;
+  // Experimental eval analytics (Pareto frontier, solve grid, agent cards).
+  // The caller owns the feature gate; this only toggles rendering.
+  showEvalGraphs?: boolean;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
@@ -465,6 +475,7 @@ export function ExperimentTrialsTable({
   isLoading,
   isLoadingTrials = false,
   showPassAtK = false,
+  showEvalGraphs = false,
   onTaskUnlink,
   onRerun,
   allowRerun = true,
@@ -1786,6 +1797,21 @@ export function ExperimentTrialsTable({
               onHoverAgent={setHoverAgent}
             />
             <PassAtOneLeaderboard
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
+          </div>
+        ) : null}
+
+        {/* Experimental eval analytics behind the header's Eval toggle
+            (feature-gated by the caller via lib/eval-graphs). */}
+        {showEvalGraphs ? (
+          <div className="grid items-stretch gap-4 xl:grid-cols-2">
+            <CostParetoGraph
               tasks={tasks}
               agentSummaries={sortedAgentSummaries}
               hiddenAgents={hiddenAgents}
