@@ -129,6 +129,13 @@ const TaskSolveHeatmap = dynamic(
   },
 );
 
+const AgentStatRadar = dynamic(
+  () => import("./agent-stat-radar").then((mod) => mod.AgentStatRadar),
+  {
+    ssr: false,
+  },
+);
+
 export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
@@ -1819,6 +1826,14 @@ export function ExperimentTrialsTable({
         {showEvalGraphs ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
             <CostParetoGraph
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
+            <AgentStatRadar
               tasks={tasks}
               agentSummaries={sortedAgentSummaries}
               hiddenAgents={hiddenAgents}
