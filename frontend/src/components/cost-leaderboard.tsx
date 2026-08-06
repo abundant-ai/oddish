@@ -10,9 +10,13 @@ import { formatCostUsd } from "@/lib/format";
 import type { CostLeaderboardResponse } from "@/lib/types";
 
 function useCostLeaderboard(windowDays: number, limit: number) {
+  // Asked once per session: the strip remounts on every dashboard visit, and
+  // the 7d spend board doesn't change enough to re-ask each time (2026-08-06
+  // HAR: fetched twice per session at ~2s a call).
   return useSWR<CostLeaderboardResponse>(
     `/api/leaderboard?window_days=${windowDays}&limit=${limit}`,
-    fetcher
+    fetcher,
+    { revalidateOnFocus: false, revalidateIfStale: false }
   );
 }
 

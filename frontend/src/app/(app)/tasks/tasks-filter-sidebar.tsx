@@ -117,9 +117,12 @@ function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
 const FILTERS_BODY_ID = "tasks-filters-body";
 
 export function TasksFilterSidebar() {
-  // Facets are fetched client-side once so a router.refresh() of the task
-  // results never reloads the filter options. revalidateOnFocus stays off and
-  // there's no interval, so this loads a single time per mount.
+  // Facets are fetched client-side once per session: a task-grid refresh
+  // never reloads the filter options, revalidateOnFocus stays off, there's
+  // no interval, and revalidateIfStale keeps remounts (leave the page, come
+  // back) on the cached copy instead of re-asking — the 2026-08-06 HAR
+  // showed this exact fetch running twice per session. The Retry below
+  // revalidates explicitly.
   const {
     data: facetsData,
     error: facetsError,
@@ -127,6 +130,7 @@ export function TasksFilterSidebar() {
     mutate: mutateFacets,
   } = useSWR<TaskBrowseFacets>("/api/tasks/browse/facets", fetcher, {
     revalidateOnFocus: false,
+    revalidateIfStale: false,
   });
   const facets = facetsData ?? null;
 
@@ -164,8 +168,9 @@ export function TasksFilterSidebar() {
     });
   };
 
-  // Filter state lives in the URL so the server-rendered results refetch (and a
-  // Suspense skeleton shows) whenever a filter changes — and links are shareable.
+  // Filter state lives in the URL so the grid's browse key changes (the
+  // previous grid stays on screen while the next state loads) whenever a
+  // filter changes — and links are shareable.
   const values = useMemo(
     () => searchParamsToFilters(new URLSearchParams(searchParams.toString())),
     [searchParams]
@@ -944,10 +949,13 @@ function TagsControl({
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
+  // revalidateIfStale off: the shared "/api/tags" key is asked once per
+  // session across this control and the dashboard's tag dropdown; tag
+  // mutations and the open-gated pickers revalidate it explicitly.
   const { data, error, isLoading, mutate } = useSWR<TagListResponse>(
     "/api/tags",
     fetcher,
-    { revalidateOnFocus: false }
+    { revalidateOnFocus: false, revalidateIfStale: false }
   );
   const tags = useMemo(
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
