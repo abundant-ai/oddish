@@ -2517,33 +2517,46 @@ async def browse_experiment_options_core(
     ids: Sequence[str] | None = None,
     limit: int = 50,
 ) -> ExperimentOptionsResponse:
-    """Scoped, searchable options for the experiment browse filter.
+    """Option source for the experiment browse filter, with two access modes.
 
-    Replaces the retired ``facets.experiments`` all-org list with at most
-    ``limit`` (capped at ``EXPERIMENT_OPTIONS_MAX_LIMIT``) live experiments
-    ordered by name. ``query`` narrows by case-insensitive substring; ``ids``
-    hydrates known selections (filter chips restored from a URL) and takes
-    precedence over ``query``. The population matches the old facet exactly:
-    every live org experiment, whether or not it currently has browse-visible
-    tasks.
+    Hydration (``ids`` given): a keyed lookup of specific experiments —
+    filter chips restored from a URL or saved filter. The result set is
+    defined by the input ids (deduped, capped at
+    ``EXPERIMENT_OPTIONS_MAX_LIMIT``); ``limit`` and ``query`` are search
+    concepts and do not apply.
+
+    Search (no ``ids``): at most ``limit`` (capped at
+    ``EXPERIMENT_OPTIONS_MAX_LIMIT``) live experiments ordered by name,
+    optionally narrowed by a case-insensitive ``query`` substring. The
+    population matches the retired ``facets.experiments`` exactly: every live
+    org experiment, whether or not it currently has browse-visible tasks.
     """
-    limit = max(1, min(limit, EXPERIMENT_OPTIONS_MAX_LIMIT))
-    stmt = select(ExperimentModel.id, ExperimentModel.name)
+    base = select(ExperimentModel.id, ExperimentModel.name)
     if org_id is not None:
-        stmt = stmt.where(ExperimentModel.org_id == org_id)
+        base = base.where(ExperimentModel.org_id == org_id)
+
     if ids:
-        stmt = stmt.where(
-            ExperimentModel.id.in_(list(ids)[:EXPERIMENT_OPTIONS_MAX_LIMIT])
+        # Keyed lookup: the (deduped, capped) id list is the bound — never a
+        # page size, so a restored selection always hydrates every chip.
+        wanted = list(dict.fromkeys(ids))[:EXPERIMENT_OPTIONS_MAX_LIMIT]
+        stmt = base.where(ExperimentModel.id.in_(wanted)).order_by(
+            ExperimentModel.name, ExperimentModel.id
         )
-    elif query and query.strip():
+        rows = (await session.execute(stmt)).all()
+        return ExperimentOptionsResponse(
+            items=[ExperimentOption(id=row[0], name=row[1]) for row in rows]
+        )
+
+    limit = max(1, min(limit, EXPERIMENT_OPTIONS_MAX_LIMIT))
+    if query and query.strip():
         escaped = (
             query.strip()
             .replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
-        stmt = stmt.where(ExperimentModel.name.ilike(f"%{escaped}%", escape="\\"))
-    stmt = stmt.order_by(ExperimentModel.name, ExperimentModel.id).limit(limit)
+        base = base.where(ExperimentModel.name.ilike(f"%{escaped}%", escape="\\"))
+    stmt = base.order_by(ExperimentModel.name, ExperimentModel.id).limit(limit)
     rows = (await session.execute(stmt)).all()
     return ExperimentOptionsResponse(
         items=[ExperimentOption(id=row[0], name=row[1]) for row in rows]

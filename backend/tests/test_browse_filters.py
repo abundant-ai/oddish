@@ -216,6 +216,25 @@ async def test_experiment_options():
                 ("exp-real", "Real Exp")
             ]
 
+            # Hydration is a keyed lookup, not a paged search: every id
+            # resolves even past the default search page size (a restored
+            # selection of 60 chips must not truncate to 50 names) ...
+            bulk_ids = [f"exp-bulk-{i:03d}" for i in range(1, 61)]
+            resp = await opts(session, org_id=ORG, ids=bulk_ids)
+            assert len(resp.items) == 60
+            # ... duplicate ids don't consume the input cap ...
+            resp = await opts(
+                session, org_id=ORG, ids=["exp-real"] * 250 + ["exp-probe"]
+            )
+            assert {o.id for o in resp.items} == {"exp-real", "exp-probe"}
+            # ... and the only truncation point is the documented input cap.
+            all_ids = [f"exp-bulk-{i:03d}" for i in range(1, 206)] + [
+                "exp-real",
+                "exp-probe",
+            ]
+            resp = await opts(session, org_id=ORG, ids=all_ids)
+            assert len(resp.items) == 200
+
             # The critical isolation property: another org's experiments are
             # invisible both by search and by id hydration.
             resp = await opts(session, org_id=ORG, query="Org Two")
