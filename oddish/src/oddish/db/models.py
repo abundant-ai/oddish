@@ -1312,6 +1312,12 @@ class TrialFacetModel(Base):
     value_2: Mapped[str] = mapped_column(
         String(160), primary_key=True, default="", server_default=""
     )
+    # Last time either writer asserted this row live: write-through inserts
+    # default it to now(); the rebuild refreshes every derived row each cycle
+    # and prunes rows nothing refreshed (see oddish.core.trial_facets).
+    written_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
 
 
 class AnalysisCostModel(TimestampedMixin, Base):

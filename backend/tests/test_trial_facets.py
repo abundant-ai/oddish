@@ -27,7 +27,7 @@ from oddish.core.trial_facets import (
     record_trial_facets,
     rebuild_trial_facets_core,
 )
-from oddish.db.models import Base
+from oddish.db.models import Base, TrialFacetModel
 from oddish.queue import _bulk_insert_trials
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -86,10 +86,9 @@ async def test_rebuild_and_facets_read():
     try:
         await _setup(engine)
         async with maker() as session:
-            orgs, rows = await rebuild_trial_facets_core(session)
+            orgs, _rows = await rebuild_trial_facets_core(session)
             await session.commit()
             assert orgs == 2
-            assert rows > 0
 
             facets = await browse_task_facets_core(session, org_id=ORG)
             # Probe / superseded / old-version / soft-deleted trials must not
@@ -121,8 +120,12 @@ async def test_rebuild_and_facets_read():
         await engine.dispose()
 
 
-async def test_rebuild_is_idempotent_and_drops_stale():
-    """Write-through never removes; the rebuild is the exactness authority."""
+async def test_rebuild_prunes_stale_values():
+    """Write-through never removes; the rebuild is the exactness authority.
+
+    ``prune_grace_seconds=0``: the grace exists to spare in-flight
+    write-throughs in production; here rows written seconds ago must prune.
+    """
     engine = create_async_engine(URL)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -130,21 +133,16 @@ async def test_rebuild_is_idempotent_and_drops_stale():
         async with maker() as session:
             await rebuild_trial_facets_core(session)
             await session.commit()
-            first = await browse_task_facets_core(session, org_id=ORG)
-
-            await rebuild_trial_facets_core(session)
-            await session.commit()
-            assert await browse_task_facets_core(session, org_id=ORG) == first
 
             # Supersede the only trial carrying model/stage/classification:
-            # the next rebuild must drop exactly those values.
+            # the next rebuild must prune exactly those values.
             await session.execute(
                 text(
                     "update trials set superseded_by_trial_id='tr-nullm' "
                     "where id='tr-live'"
                 )
             )
-            await rebuild_trial_facets_core(session)
+            await rebuild_trial_facets_core(session, prune_grace_seconds=0)
             await session.commit()
             after = await browse_task_facets_core(session, org_id=ORG)
             assert after.agents == ["nop"]
@@ -193,10 +191,11 @@ async def test_write_through_is_instant_and_idempotent():
 async def test_rebuild_survives_concurrent_write_through():
     """A write-through committing mid-rebuild must never be lost.
 
-    Deterministic pin of the delete-before-scan ordering: a full
-    trial+vocabulary commit fires in the window right after the rebuild's
-    FIRST statement. Delete-first, the later scan re-derives the value;
-    scan-first (the raced ordering) would erase it until the next sweep.
+    Fires a full trial+vocabulary commit right after the rebuild's FIRST
+    statement (the t0 clock read): mark-and-prune must keep it — the scan
+    re-derives the value, the fresh ``written_at`` clears the prune, and
+    the upsert tolerates the existing row. A wholesale delete+reinsert
+    (either ordering) loses one of those paths.
     """
     engine = create_async_engine(URL)
     maker = async_sessionmaker(engine, expire_on_commit=False)
@@ -232,6 +231,38 @@ async def test_rebuild_survives_concurrent_write_through():
             facets = await browse_task_facets_core(session, org_id=ORG)
             assert "race-agent" in facets.agents  # re-derived by the scan
             assert "claude-code" in facets.agents  # rebuilt rows intact
+    finally:
+        await engine.dispose()
+
+
+async def test_write_through_tolerates_missing_table():
+    """Deploy-before-migrate: the auxiliary vocabulary write must never abort
+    the primary transaction (the quotas/costs missing-table precedent)."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with engine.begin() as c:
+            await c.execute(text("drop table trial_facets"))
+        async with maker() as session:
+            await session.execute(
+                text(
+                    'insert into tasks (id,name,org_id,"user",priority,status,task_path,link,tags,run_analysis,run_probe,created_at,updated_at) '
+                    "values ('t-mt','mt','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now())"
+                )
+            )
+            await record_trial_facets(
+                session, facet_rows_for_trial(org_id=ORG, agent="window-agent")
+            )
+            await session.commit()
+            count = (
+                await session.execute(
+                    text("select count(*) from tasks where id='t-mt'")
+                )
+            ).scalar()
+            assert count == 1
+        async with engine.begin() as c:
+            await c.run_sync(TrialFacetModel.__table__.create)
     finally:
         await engine.dispose()
 

@@ -8,28 +8,38 @@ tiny vocabulary instead. Two writers keep it correct:
 
 * :func:`record_trial_facets` — write-through at trial creation, so a value
   is filterable the moment its first trial is queued or imported. Additive
-  only, idempotent (``ON CONFLICT DO NOTHING``).
-* :func:`rebuild_trial_facets_core` — the periodic sweep's wholesale rebuild
-  from one grouped scan over live trials. This is the exactness authority: it
-  adds anything write-through missed (e.g. ``harbor_stage`` progressing
-  during execution, classifications written by analyzers) and drops values
-  whose last trial was deleted, superseded, or left behind by a version bump.
+  only, idempotent (``ON CONFLICT DO NOTHING``), and best-effort by
+  contract: it must never abort the trial transaction it rides in.
+* :func:`rebuild_trial_facets_core` — the periodic sweep's mark-and-prune
+  reconciliation from one grouped scan over live trials. This is the
+  exactness authority: it adds anything write-through missed (e.g.
+  ``harbor_stage`` progressing during execution, classifications written by
+  analyzers) and prunes values whose last trial was deleted, superseded, or
+  left behind by a version bump — without ever holding locks a trial writer
+  would wait on.
 
 Freshness contract: spec facets (agent/model/pair/provider/environment) are
 instant; stage/classification additions and every removal converge within one
-sweep interval. Between sweeps the vocabulary may over-include — an option
-whose trials just vanished yields an empty (not wrong) filter result.
+sweep interval (plus the prune grace). Between sweeps the vocabulary may
+over-include — an option whose trials just vanished yields an empty (not
+wrong) filter result.
 """
 
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db.models import TaskModel, TrialFacetModel, TrialModel
+from oddish.db.pg_errors import is_missing_table
+
+logger = logging.getLogger(__name__)
 
 # Facet kinds served by ``browse_task_facets_core``. ``agent_model`` is the
 # only pair kind (value=agent, value_2=model-or-''); the rest are scalar.
@@ -103,30 +113,58 @@ def facet_rows_for_trial_dicts(
 async def record_trial_facets(
     session: AsyncSession, rows: Sequence[tuple[str, str, str, str]] | set
 ) -> None:
-    """Idempotently add vocabulary rows in the caller's transaction."""
+    """Idempotently add vocabulary rows in the caller's transaction.
+
+    An auxiliary derived-state write must never abort the primary transaction
+    (trial submission / import). Code deploys and migrations land
+    independently, so a missing ``trial_facets`` table is the realistic
+    deploy-before-migrate window: the savepoint keeps the caller's
+    transaction usable and the migration backfill recovers anything skipped.
+    Every other failure is a real bug and propagates — same shape as the
+    quotas/costs missing-table tolerance.
+    """
     if not rows:
         return
-    await session.execute(
-        pg_insert(TrialFacetModel).on_conflict_do_nothing(),
-        [
-            {"org_id": org, "kind": kind, "value": value, "value_2": value_2}
-            for org, kind, value, value_2 in sorted(rows)
-        ],
-    )
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                pg_insert(TrialFacetModel).on_conflict_do_nothing(),
+                [
+                    {"org_id": org, "kind": kind, "value": value, "value_2": value_2}
+                    for org, kind, value, value_2 in sorted(rows)
+                ],
+            )
+    except ProgrammingError as exc:
+        if not is_missing_table(exc):
+            raise
+        logger.warning(
+            "trial_facets missing (schema not migrated yet); vocabulary "
+            "write-through skipped",
+            exc_info=True,
+        )
 
 
-async def rebuild_trial_facets_core(session: AsyncSession) -> tuple[int, int]:
-    """Rebuild the whole vocabulary from one grouped scan over live trials.
+async def rebuild_trial_facets_core(
+    session: AsyncSession, *, prune_grace_seconds: float = 60.0
+) -> tuple[int, int]:
+    """Reconcile the vocabulary from one grouped scan over live trials.
 
-    Scans the same trial population the browse filters match — non-probe,
-    non-superseded, on each task's current version, org-scoped (the
-    soft-delete listener adds ``deleted_at IS NULL`` for both tables) — as a
-    single ``GROUP BY`` over every facet column, then replaces ``trial_facets``
-    wholesale in the caller's transaction. Readers see the old vocabulary
-    until commit, and concurrent write-throughs are never lost — the delete
-    runs before the scan (see the inline comment for why that ordering is
-    load-bearing). Returns ``(org_count, row_count)``.
+    Mark-and-prune, never wholesale replace, so trial writers never wait on
+    the scan: derive lock-free from the same trial population the browse
+    filters match — non-probe, non-superseded, on each task's current
+    version, org-scoped (the soft-delete listener adds ``deleted_at IS
+    NULL`` for both tables) — then upsert every derived row with a fresh
+    ``written_at`` (row locks held for milliseconds), then prune rows
+    neither this upsert nor a recent write-through asserted alive.
+    ``prune_grace_seconds`` spares write-throughs whose transaction was in
+    flight when the scan-start timestamp ``t0`` was read (their
+    ``written_at`` predates ``t0``).
+
+    Accepted epsilon for zero writer contention: a key that went stale this
+    cycle and is revived by a trial landing mid-scan can be pruned and
+    reappears next cycle. Returns ``(org_count, row_count)``.
     """
+    t0 = (await session.execute(select(func.now()))).scalar_one()
     scan = (
         select(
             TrialModel.org_id,
@@ -149,15 +187,6 @@ async def rebuild_trial_facets_core(session: AsyncSession) -> tuple[int, int]:
         # two different binds ($1 vs $2) and reject the grouping.
         .group_by(*[text(str(i)) for i in range(1, 8)])
     )
-    # Delete on the OLDER snapshot, derive on the NEWER one. With the delete
-    # first, a write-through committing mid-rebuild either lands after it
-    # (its row survives; the insert below tolerates the collision) or before
-    # it (its row dies, but the later scan sees the trials and re-derives the
-    # value). Scan-first would erase any write-through that commits between
-    # the scan and the delete. Statement-level snapshots (READ COMMITTED)
-    # make the ordering sufficient — no lock needed.
-    await session.execute(delete(TrialFacetModel))
-
     rows: set[tuple[str, str, str, str]] = set()
     for org, agent, model, provider, environment, stage, classification in (
         await session.execute(scan)
@@ -174,12 +203,19 @@ async def rebuild_trial_facets_core(session: AsyncSession) -> tuple[int, int]:
             rows.add((org, "analysis_classification", _clip(classification), ""))
 
     if rows:
-        # Tolerate rows a concurrent write-through committed after the delete.
         await session.execute(
-            pg_insert(TrialFacetModel).on_conflict_do_nothing(),
+            pg_insert(TrialFacetModel).on_conflict_do_update(
+                index_elements=["org_id", "kind", "value", "value_2"],
+                set_={"written_at": func.now()},
+            ),
             [
                 {"org_id": org, "kind": kind, "value": value, "value_2": value_2}
                 for org, kind, value, value_2 in sorted(rows)
             ],
         )
+    await session.execute(
+        delete(TrialFacetModel).where(
+            TrialFacetModel.written_at < t0 - timedelta(seconds=prune_grace_seconds)
+        )
+    )
     return len({row[0] for row in rows}), len(rows)

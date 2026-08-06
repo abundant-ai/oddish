@@ -59,6 +59,7 @@ def upgrade() -> None:
             kind VARCHAR(32) NOT NULL,
             value VARCHAR(160) NOT NULL,
             value_2 VARCHAR(160) NOT NULL DEFAULT '',
+            written_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (org_id, kind, value, value_2)
         )
         """
