@@ -1172,8 +1172,3 @@ export interface Report {
   created_at?: string | null;
   finished_at?: string | null;
 }
-
-export interface ExperimentOption {
-  id: string;
-  name: string;
-}

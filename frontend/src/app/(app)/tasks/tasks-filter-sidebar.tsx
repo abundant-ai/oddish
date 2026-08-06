@@ -858,7 +858,9 @@ function ExperimentControl({
         : [...selected, id],
     });
 
-  if (error && !data) return <ControlError onRetry={() => mutate()} />;
+  // With a per-query key, `data` after a failure belongs to the previous
+  // query — error must win or stale results pose as matches for this one.
+  if (error) return <ControlError onRetry={() => mutate()} />;
   if (isLoading && !data) return <ControlSkeleton />;
 
   const results = (data?.items ?? []).filter((o) => !selected.includes(o.id));
