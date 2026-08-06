@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useCallback, useMemo, useState } from "react";
+import { useUser } from "@clerk/nextjs";
 import {
   CartesianGrid,
   Cell,
@@ -59,6 +60,12 @@ type ChartDatum = {
 type TooltipValue = number | string | ReadonlyArray<number | string>;
 type TooltipName = number | string;
 
+// Feature flag: the Pareto frontier card is visible only to these accounts
+// while it bakes (hardcoded-flag convention, like trial-detail-panel's
+// re-run-analysis button). Delete the gate in the component to launch it
+// for everyone, including public share views.
+const PARETO_GRAPH_USER_ALLOWLIST = new Set(["meji@abundant.ai"]);
+
 function formatCount(value: number): string {
   if (value === 0) return "0";
   if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
@@ -69,6 +76,18 @@ function formatCount(value: number): string {
 
 function formatMeanCount(value: number, unit: string): string {
   return `${value < 10 ? value.toFixed(1) : formatCount(value)} ${unit}`;
+}
+
+function formatDollarTick(v: number): string {
+  if (v === 0) return "$0";
+  if (v >= 10) return `$${v.toFixed(0)}`;
+  if (v >= 1) return `$${v.toFixed(1)}`;
+  return `$${v.toFixed(2)}`;
+}
+
+// formatCostUsd floors at $0.00; keep sub-cent per-trial means readable.
+function formatDollarValue(v: number): string {
+  return v > 0 && v < 0.005 ? `$${v.toFixed(4)}` : formatCostUsd(v);
 }
 
 // One display entry per metric in lib/pareto.ts. The Record type makes every
@@ -86,17 +105,14 @@ const METRIC_DEFS: Record<
   cost: {
     label: "cost",
     axisLabel: "avg $ / trial",
-    formatTick: (v) =>
-      v === 0
-        ? "$0"
-        : v >= 10
-          ? `$${v.toFixed(0)}`
-          : v >= 1
-            ? `$${v.toFixed(1)}`
-            : `$${v.toFixed(2)}`,
-    // formatCostUsd floors at $0.00; keep sub-cent per-trial means readable.
-    formatValue: (v) =>
-      v > 0 && v < 0.005 ? `$${v.toFixed(4)}` : formatCostUsd(v),
+    formatTick: formatDollarTick,
+    formatValue: formatDollarValue,
+  },
+  costPerSuccess: {
+    label: "cost / success",
+    axisLabel: "avg $ / success",
+    formatTick: formatDollarTick,
+    formatValue: formatDollarValue,
   },
   tokens: {
     label: "tokens",
@@ -143,13 +159,13 @@ function buildDatum(
   const aggregate = point.metrics[metric];
   if (aggregate == null) return null;
   const marks =
-    metric === "cost"
+    metric === "cost" || metric === "costPerSuccess"
       ? costEstimateMarks(point.costHasEstimated, point.costHasNative)
       : { prefix: "", suffix: "" };
   return {
     key: point.key,
     label: point.label,
-    x: aggregate.perTrial,
+    x: aggregate.value,
     y: point.score,
     taskCount: point.taskCount,
     trialCount: point.trialCount,
@@ -167,6 +183,7 @@ export const CostParetoGraph = memo(function CostParetoGraph({
   hoverAgent,
   onHoverAgent,
 }: CostParetoGraphProps) {
+  const { user } = useUser();
   const { ref: chartContainerRef, size: chartSize } =
     useElementSize<HTMLDivElement>();
   const [requestedMetric, setRequestedMetric] = useState<ParetoMetric>("cost");
@@ -341,7 +358,14 @@ export const CostParetoGraph = memo(function CostParetoGraph({
     [chartSize.width]
   );
 
-  if (metric == null || points.length === 0) {
+  const viewerEmail =
+    user?.primaryEmailAddress?.emailAddress?.toLowerCase() ?? null;
+  if (
+    viewerEmail == null ||
+    !PARETO_GRAPH_USER_ALLOWLIST.has(viewerEmail) ||
+    metric == null ||
+    points.length === 0
+  ) {
     return null;
   }
 

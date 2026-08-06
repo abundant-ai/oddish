@@ -28,14 +28,29 @@ const METRIC_EXTRACTORS = {
   tools: (trial: Trial) => trial.total_tool_calls ?? null,
 } as const;
 
-export type ParetoMetric = keyof typeof METRIC_EXTRACTORS;
+export type ParetoMetric = keyof typeof METRIC_EXTRACTORS | "costPerSuccess";
 
-export const PARETO_METRICS = Object.keys(METRIC_EXTRACTORS) as ParetoMetric[];
+// Display order, with the derived cost-per-success slotted beside cost. The
+// graph's METRIC_DEFS record is keyed on the full union, so a metric missing
+// a display entry fails to compile.
+export const PARETO_METRICS: readonly ParetoMetric[] = [
+  "cost",
+  "costPerSuccess",
+  "tokens",
+  "time",
+  "steps",
+  "tools",
+];
+
+const EXTRACTED_METRICS = Object.keys(
+  METRIC_EXTRACTORS
+) as (keyof typeof METRIC_EXTRACTORS)[];
 
 type MetricAggregate = {
-  /** Mean of the metric per trial, over the trials that reported it. */
-  perTrial: number;
-  /** How many trials reported the metric (the mean's denominator). */
+  /** The plotted value: mean per trial for extracted metrics, dollars per
+   *  passing trial for costPerSuccess. */
+  value: number;
+  /** Trials the value was computed from (drives the coverage note). */
   trialCount: number;
 };
 
@@ -85,10 +100,14 @@ export function buildAgentParetoPoints(
     const perTask = trialsByAgent.get(summary.key);
     if (!perTask) continue;
 
-    const sums = {} as Record<ParetoMetric, { sum: number; count: number }>;
-    for (const metric of PARETO_METRICS) sums[metric] = { sum: 0, count: 0 };
+    const sums = {} as Record<
+      keyof typeof METRIC_EXTRACTORS,
+      { sum: number; count: number }
+    >;
+    for (const metric of EXTRACTED_METRICS) sums[metric] = { sum: 0, count: 0 };
     let costHasEstimated = false;
     let costHasNative = false;
+    let pricedPasses = 0;
     let scoreSum = 0;
     let trialCount = 0;
 
@@ -97,13 +116,14 @@ export function buildAgentParetoPoints(
       scoreSum += passAtOneFraction(trials) ?? 0;
       trialCount += trials.length;
       for (const trial of trials) {
-        for (const metric of PARETO_METRICS) {
+        for (const metric of EXTRACTED_METRICS) {
           const value = METRIC_EXTRACTORS[metric](trial);
           if (value == null) continue;
           sums[metric].sum += value;
           sums[metric].count += 1;
         }
         if (trial.cost_usd != null) {
+          if (trial.reward === 1) pricedPasses += 1;
           if (trial.cost_is_estimated === true) costHasEstimated = true;
           else costHasNative = true;
         }
@@ -111,11 +131,18 @@ export function buildAgentParetoPoints(
     }
 
     const metrics = {} as Record<ParetoMetric, MetricAggregate | null>;
-    for (const metric of PARETO_METRICS) {
+    for (const metric of EXTRACTED_METRICS) {
       const { sum, count } = sums[metric];
       metrics[metric] =
-        count > 0 ? { perTrial: sum / count, trialCount: count } : null;
+        count > 0 ? { value: sum / count, trialCount: count } : null;
     }
+    // Derived: what one solved task costs — total spend over priced trials
+    // divided by the passes among them. Null (toggle disabled) until the
+    // agent has a priced passing trial.
+    metrics.costPerSuccess =
+      pricedPasses > 0
+        ? { value: sums.cost.sum / pricedPasses, trialCount: sums.cost.count }
+        : null;
 
     points.push({
       key: summary.key,
