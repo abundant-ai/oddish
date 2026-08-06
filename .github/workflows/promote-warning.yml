@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
-          if printf '%s' "$body" | grep -q 'promote-warning'; then
+          if printf '%s' "$body" | grep -qF '<!-- promote-warning -->'; then
             echo "warning already present"
             exit 0
           fi
