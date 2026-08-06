@@ -126,6 +126,17 @@ DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS = _env_int(
 DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS = _env_int(
     "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS", 120
 )
+# Facet-vocabulary rebuild (``worker.refresh_trial_facets``): one grouped scan
+# over live trials per interval keeps the task-browser dropdowns exact
+# (removals and stage/classification additions converge here; spec additions
+# are instant via write-through). The timeout bounds one scan; with
+# max_containers=1 it also guards against overlapping runs.
+TRIAL_FACETS_REFRESH_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_INTERVAL_SECONDS", 600
+)
+TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS", 300
+)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(

@@ -57,6 +57,7 @@ from oddish.db import (
     TagState,
     TaskModel,
     TaskVersionModel,
+    TrialFacetModel,
     TrialModel,
     TrialStatus,
     task_experiments,
@@ -2419,10 +2420,13 @@ async def browse_task_facets_core(
 ) -> TaskBrowseFacets:
     """Distinct filter-option values for the task browser.
 
-    Returns the trial-derived facets (agent, model, provider, environment,
-    harbor stage, analysis classification), scoped to the same trials the
-    browse filters match — non-probe, non-superseded, and on each task's
-    CURRENT version — so every option yields at least one task.
+    Served from the ``trial_facets`` vocabulary (``oddish.core.trial_facets``)
+    rather than recomputed from ``trials`` per request: spec facets appear the
+    moment a trial is queued or imported; stage/classification additions and
+    every removal converge within one rebuild-sweep interval. Until the sweep
+    catches up an option may briefly outlive its last trial — filtering on it
+    then yields an empty (not wrong) result. With ``org_id=None`` (no hosted
+    caller does this) the read is the cross-org union of the vocabulary.
 
     ``experiments`` is deprecated and always empty. It used to serialize every
     org experiment (measured 7.7MB / 126k entries on one org), so experiment
@@ -2430,76 +2434,51 @@ async def browse_task_facets_core(
     ``browse_experiment_options_core`` (GET /tasks/browse/experiment-options).
     """
 
-    def _distinct(column: Any) -> Any:
-        stmt = (
-            select(column)
-            .join(TaskModel, TaskModel.id == TrialModel.task_id)
-            .where(
-                column.isnot(None),
-                TrialModel.is_probe.isnot(True),
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.task_version_id == TaskModel.current_version_id,
-            )
-        )
-        if org_id is not None:
-            stmt = stmt.where(TrialModel.org_id == org_id)
-        return stmt.distinct().order_by(column)
-
-    # Each facet is computed independently and a failure in one (e.g. a
-    # data-dependent JSON query) must not 500 the whole endpoint and blank every
-    # filter dropdown. On error we log, roll back the aborted transaction so the
-    # next query runs clean, and return an empty list for just that facet.
-    async def _values(column: Any, name: str) -> list[str]:
-        try:
-            result = await session.execute(_distinct(column))
-            return [v for v in result.scalars().all() if v]
-        except Exception:  # noqa: BLE001 - facets are best-effort
-            logger.exception("browse facets: %s query failed", name)
-            await session.rollback()
-            return []
-
-    classification = TrialModel.analysis["classification"].astext
-
-    agents = await _values(TrialModel.agent, "agent")
-    models = await _values(TrialModel.model, "model")
-    providers = await _values(TrialModel.provider, "provider")
-
-    # Distinct (agent, model) pairs — the meaningful "what was run" unit. A trial
-    # is an agent at a specific model, so this is the primary run-config facet.
+    # One indexed read of the pre-derived vocabulary (``trial_facets``, kept
+    # by ``oddish.core.trial_facets``: write-through at trial creation plus a
+    # periodic exactness rebuild). Replaces seven serial DISTINCT scans over
+    # the org's full trial history per request. Best-effort like before: a
+    # failed read logs, rolls back, and serves empty dropdowns, never a 500.
+    lists: dict[str, list[str]] = {
+        "agent": [],
+        "model": [],
+        "provider": [],
+        "environment": [],
+        "harbor_stage": [],
+        "analysis_classification": [],
+    }
     agent_models: list[AgentModelFacet] = []
     try:
-        pairs_stmt = (
-            select(TrialModel.agent, TrialModel.model)
-            .join(TaskModel, TaskModel.id == TrialModel.task_id)
-            .where(
-                TrialModel.agent.isnot(None),
-                TrialModel.is_probe.isnot(True),
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.task_version_id == TaskModel.current_version_id,
-            )
+        stmt = select(
+            TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2
+        ).order_by(
+            TrialFacetModel.kind, TrialFacetModel.value, TrialFacetModel.value_2
         )
         if org_id is not None:
-            pairs_stmt = pairs_stmt.where(TrialModel.org_id == org_id)
-        pairs_stmt = pairs_stmt.distinct().order_by(TrialModel.agent, TrialModel.model)
-        pair_rows = (await session.execute(pairs_stmt)).all()
-        agent_models = [
-            AgentModelFacet(agent=row[0], model=row[1]) for row in pair_rows
-        ]
+            stmt = stmt.where(TrialFacetModel.org_id == org_id)
+        prev: tuple[str, str, str] | None = None
+        for kind, value, value_2 in (await session.execute(stmt)).all():
+            if (kind, value, value_2) == prev:
+                continue  # an unscoped read spans orgs; collapse their overlap
+            prev = (kind, value, value_2)
+            if kind == "agent_model":
+                agent_models.append(
+                    AgentModelFacet(agent=value, model=value_2 or None)
+                )
+            elif kind in lists:
+                lists[kind].append(value)
     except Exception:  # noqa: BLE001 - facets are best-effort
-        logger.exception("browse facets: agent_models query failed")
+        logger.exception("browse facets: vocabulary read failed")
         await session.rollback()
-    environments = await _values(TrialModel.environment, "environment")
-    harbor_stages = await _values(TrialModel.harbor_stage, "harbor_stage")
-    analysis_classifications = await _values(classification, "analysis_classification")
 
     return TaskBrowseFacets(
-        agents=agents,
-        models=models,
+        agents=lists["agent"],
+        models=lists["model"],
         agent_models=agent_models,
-        providers=providers,
-        environments=environments,
-        harbor_stages=harbor_stages,
-        analysis_classifications=analysis_classifications,
+        providers=lists["provider"],
+        environments=lists["environment"],
+        harbor_stages=lists["harbor_stage"],
+        analysis_classifications=lists["analysis_classification"],
         # Deprecated, always empty — see browse_experiment_options_core.
         experiments=[],
     )
