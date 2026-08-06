@@ -1694,6 +1694,9 @@ async def list_task_files(
     presign: bool = Query(
         True, description="Include presigned URLs for direct S3 access"
     ),
+    inline: bool = Query(
+        True, description="Include eligible text file contents in the listing"
+    ),
     version: int | None = Query(None, description="Task version number"),
     stream: bool = Query(
         False,
@@ -1740,6 +1743,7 @@ async def list_task_files(
         cursor=cursor,
         presign=presign,
         version=version,
+        inline=inline,
     )
 
 

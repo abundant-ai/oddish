@@ -145,6 +145,8 @@ interface TaskFilesPanelProps {
    * This allows reusing the file tree viewer for trial files.
    */
   filesUrl?: string;
+  /** Load only file metadata up front, then fetch bodies or URLs on selection. */
+  loadFilesLazily?: boolean;
   /** Explicit task version for file URLs; null deliberately means unversioned. */
   taskVersion?: number | null;
   /**
@@ -159,6 +161,8 @@ interface TaskFilesPanelProps {
    * "Task definition" pane). Falls back to `taskId` when not set.
    */
   staticChecksTaskId?: string | null;
+  /** Detail already owned by the host page; avoids re-fetching the same key. */
+  taskDetail?: TaskDetailResponse | null;
   /**
    * Open a trial from the overview's aggregated QA in the caller's own
    * context (drawer / panel). Return false when the trial isn't addressable
@@ -198,7 +202,7 @@ function getNodeName(path: string): string {
  *  versions[0]. */
 function pickChecksVersion(
   detail: TaskDetailResponse | undefined,
-  pinnedVersion?: number | null,
+  pinnedVersion?: number | null
 ): TaskVersionSummary | null {
   const versions = detail?.versions;
   if (!versions || versions.length === 0) return null;
@@ -211,6 +215,7 @@ function pickChecksVersion(
 
 // Truncate files larger than 100KB initially
 const TRUNCATE_THRESHOLD = 100 * 1024;
+const FILE_LOAD_ERROR = "Error loading file content";
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -374,9 +379,11 @@ export function TaskFilesPanel({
   onRetryComplete,
   contentOnly = false,
   filesUrl,
+  loadFilesLazily = false,
   taskVersion,
   initialFilePath,
   staticChecksTaskId,
+  taskDetail,
   onOpenTrial,
   overviewTrialsLoading,
   selectedLines,
@@ -399,20 +406,21 @@ export function TaskFilesPanel({
     error: checksLoadError,
     mutate: mutateChecks,
   } = useSWR<TaskDetailResponse>(checksKey, fetcher, {
-      // Poll while the checks run, and while task QA runs: the full QA job
-      // writes fresh findings when it lands, so the pane keeps tracking
-      // until both are terminal.
-      refreshInterval: (data) => {
-        const checksLive =
-          pickChecksVersion(data, taskVersion)?.pre_trial_status ===
-            "running" ||
-          pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
-        const qaLive =
-          data?.task?.verdict_status === "queued" ||
-          data?.task?.verdict_status === "running";
-        return checksLive || qaLive ? 5000 : 0;
-      },
-    });
+    fallbackData: taskDetail ?? undefined,
+    revalidateOnMount: taskDetail == null,
+    // Poll while the checks run, and while task QA runs: the full QA job
+    // writes fresh findings when it lands, so the pane keeps tracking
+    // until both are terminal.
+    refreshInterval: (data) => {
+      const checksLive =
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "running" ||
+        pickChecksVersion(data, taskVersion)?.pre_trial_status === "queued";
+      const qaLive =
+        data?.task?.verdict_status === "queued" ||
+        data?.task?.verdict_status === "running";
+      return checksLive || qaLive ? 5000 : 0;
+    },
+  });
   // Scoped panes (the experiment drawer) pin the version whose files are on
   // screen; the checks must describe that same source.
   const checksVersion = pickChecksVersion(checksDetail, taskVersion);
@@ -454,6 +462,10 @@ export function TaskFilesPanel({
   // overviewSelected stays true but the pane shows a file.
   const overviewShowing = overviewSelected && overviewAvailable;
   const [fileContent, setFileContent] = useState<string | null>(null);
+  const [lazyFileUrl, setLazyFileUrl] = useState<{
+    path: string;
+    url: string;
+  } | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
   const [fullFileSize, setFullFileSize] = useState<number | null>(null);
@@ -507,6 +519,10 @@ export function TaskFilesPanel({
   const buildListingUrl = useCallback(() => {
     const params = new URLSearchParams();
     params.set("recursive", "1");
+    if (loadFilesLazily) {
+      params.set("inline", "0");
+      params.set("presign", "0");
+    }
     if (!overviewAvailable) {
       params.set("stream", "1");
     }
@@ -519,6 +535,7 @@ export function TaskFilesPanel({
     shouldScopeFilesToVersion,
     currentVersion,
     overviewAvailable,
+    loadFilesLazily,
   ]);
 
   const orderedList = useMemo(() => orderedTasks ?? [], [orderedTasks]);
@@ -709,12 +726,12 @@ export function TaskFilesPanel({
     try {
       const res = await fetch(
         `${baseUrl}/tasks/${effectiveChecksTaskId}/qa/pre-trial`,
-        { method: "POST" },
+        { method: "POST" }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue static checks",
+          data.detail || data.error || "Failed to queue static checks"
         );
       }
       await mutateChecks();
@@ -741,6 +758,7 @@ export function TaskFilesPanel({
       setSelectedFile(null);
       setOverviewSelected(true);
       setFileContent(null);
+      setLazyFileUrl(null);
       setExpandedDirs(new Set());
 
       // Once the tree is painted, later stream failures must not replace
@@ -838,7 +856,14 @@ export function TaskFilesPanel({
       cancelled = true;
       controller.abort();
     };
-  }, [isOpen, taskId, filesUrl, resolvedFilesUrl, buildListingUrl, overviewAvailable]);
+  }, [
+    isOpen,
+    taskId,
+    filesUrl,
+    resolvedFilesUrl,
+    buildListingUrl,
+    overviewAvailable,
+  ]);
 
   // Fetch file content when a file is selected
   useEffect(() => {
@@ -850,14 +875,58 @@ export function TaskFilesPanel({
       return;
     }
 
+    const isBinary = isBinaryRendererFile(selectedFile.name);
+
     // Binary renderer types (images, pdf, video, audio, xlsx, docx, archives)
-    // are rendered straight from the URL — don't fetch as text.
-    if (isBinaryRendererFile(selectedFile.name)) {
+    // need a URL rather than text. Tree-only listings omit presigned URLs,
+    // so request one only after the user selects the binary file.
+    if (
+      isBinary &&
+      (!loadFilesLazily ||
+        selectedFile.url ||
+        lazyFileUrl?.path === selectedFile.path)
+    ) {
       setFileContent("");
       setIsTruncated(false);
       setFullFileSize(selectedFile.size || null);
       setFileContentLoading(false);
       return;
+    }
+    if (isBinary) {
+      const fileNode = selectedFile;
+      const encodedPath = encodeURIComponent(fileNode.path);
+      const params = new URLSearchParams({ presign: "1" });
+      if (shouldScopeFilesToVersion && currentVersion != null) {
+        params.set("version", String(currentVersion));
+      }
+      let cancelled = false;
+
+      async function fetchBinaryUrl() {
+        setFileContentLoading(true);
+        setFullFileSize(fileNode.size || null);
+        try {
+          const res = await fetch(
+            `${resolvedFilesUrl}/${encodedPath}?${params.toString()}`
+          );
+          if (!res.ok) throw new Error("Failed to fetch file URL");
+          const data = (await res.json()) as { url?: string };
+          if (!data.url) throw new Error("File URL unavailable");
+          if (!cancelled) {
+            setLazyFileUrl({ path: fileNode.path, url: data.url });
+            setFileContent("");
+            setIsTruncated(false);
+          }
+        } catch {
+          if (!cancelled) setFileContent(FILE_LOAD_ERROR);
+        } finally {
+          if (!cancelled) setFileContentLoading(false);
+        }
+      }
+
+      fetchBinaryUrl();
+      return () => {
+        cancelled = true;
+      };
     }
 
     // If we already have content cached in the node, use it. Clear the
@@ -929,7 +998,7 @@ export function TaskFilesPanel({
           if (!res.ok) {
             throw new Error("Failed to fetch file content");
           }
-          if (filesUrl) {
+          if (filesUrl && !loadFilesLazily) {
             content = await res.text();
           } else {
             const data = await res.json();
@@ -953,7 +1022,7 @@ export function TaskFilesPanel({
             setFileContent(fileNode.content);
             setIsTruncated(fileNode.isTruncated || false);
           } else {
-            setFileContent("Error loading file content");
+            setFileContent(FILE_LOAD_ERROR);
           }
         }
       } finally {
@@ -975,6 +1044,8 @@ export function TaskFilesPanel({
     resolvedFilesUrl,
     shouldScopeFilesToVersion,
     currentVersion,
+    loadFilesLazily,
+    lazyFileUrl,
   ]);
 
   // Load full file content (when user clicks "Load full file")
@@ -1007,7 +1078,7 @@ export function TaskFilesPanel({
       if (!res.ok) {
         return;
       }
-      if (filesUrl) {
+      if (filesUrl && !loadFilesLazily) {
         const content = await res.text();
         setFileContent(content);
       } else {
@@ -1023,6 +1094,7 @@ export function TaskFilesPanel({
   }, [
     selectedFile,
     filesUrl,
+    loadFilesLazily,
     resolvedFilesUrl,
     shouldScopeFilesToVersion,
     currentVersion,
@@ -1221,10 +1293,19 @@ export function TaskFilesPanel({
         </div>
       );
     }
+    if (fileContent === FILE_LOAD_ERROR) {
+      return (
+        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
+          {FILE_LOAD_ERROR}
+        </div>
+      );
+    }
 
     const isBinary = isBinaryRendererFile(selectedFile.name);
 
-    let fileUrl = selectedFile.url ?? null;
+    let fileUrl =
+      selectedFile.url ??
+      (lazyFileUrl?.path === selectedFile.path ? lazyFileUrl.url : null);
     if (!fileUrl && (taskId || filesUrl)) {
       const encodedPath = encodeURIComponent(selectedFile.path);
       const params = new URLSearchParams();

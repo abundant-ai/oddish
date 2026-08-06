@@ -332,9 +332,7 @@ async def test_resolve_trial_directory_prefers_existing_local_path(
 
 
 @pytest.mark.asyncio
-async def test_resolve_trial_directory_missing_everywhere_raises(
-    monkeypatch, tmp_path
-):
+async def test_resolve_trial_directory_missing_everywhere_raises(monkeypatch, tmp_path):
     storage = _FakeStorage(exists=False)
     monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
 
@@ -760,6 +758,50 @@ async def test_list_task_files_uses_expanded_layout_when_available(monkeypatch):
     assert "archive_key" not in listing
     assert "archive_url" not in listing
     assert listing["presigned"] is True
+
+
+@pytest.mark.asyncio
+async def test_expanded_tree_listing_skips_contents_and_urls(monkeypatch):
+    storage = storage_mod.StorageClient()
+    storage._client = object()
+    expanded_prefix = "tasks/task-123/v2-files/"
+
+    async def fake_object_exists(s3_key: str) -> bool:
+        return s3_key == f"{expanded_prefix}.oddish-manifest.json"
+
+    async def fake_list_objects_all(prefix: str) -> list[dict]:
+        assert prefix == expanded_prefix
+        return _expanded_objects(
+            expanded_prefix,
+            {
+                "instruction.md": 12,
+                ".oddish-manifest.json": 99,
+            },
+        )
+
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("tree-only listing must not fetch bodies or URLs")
+
+    monkeypatch.setattr(storage, "object_exists", fake_object_exists)
+    monkeypatch.setattr(storage, "list_objects_all", fake_list_objects_all)
+    monkeypatch.setattr(storage, "download_bytes", unexpected_call)
+    monkeypatch.setattr(storage, "get_presigned_urls_batch", unexpected_call)
+
+    listing = await storage.list_task_files(
+        task_id="task-123",
+        prefix=None,
+        recursive=True,
+        limit=1000,
+        cursor=None,
+        presign=False,
+        version=2,
+        inline=False,
+    )
+
+    assert [entry["path"] for entry in listing["files"]] == ["instruction.md"]
+    assert all("content" not in entry for entry in listing["files"])
+    assert all("url" not in entry for entry in listing["files"])
+    assert listing["presigned"] is False
 
 
 @pytest.mark.asyncio
