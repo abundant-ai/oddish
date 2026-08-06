@@ -97,6 +97,14 @@ def hash_idempotency_key(raw_key: str) -> str:
 
 
 def compute_request_hash(submission: Any) -> str:
+    """Body fingerprint guarding one ``Idempotency-Key`` against reuse.
+
+    Must exclude exactly what ``compute_sweep_idempotency_key`` excludes. The
+    key says "this is the same submission" and the hash then asserts "sent with
+    the same body" -- so a field the key ignores but the hash keeps makes two
+    submissions the client considers identical collide on the key and disagree
+    on the hash, and the conflict guard 409s a sweep it was built to dedupe.
+    """
     payload = submission.model_dump(mode="json")
     # Drop an absent github_id so an honest retry that never sent it hashes the
     # same as the original (linkage idempotency guard).
@@ -111,6 +119,8 @@ def compute_request_hash(submission: Any) -> str:
     # Keep unset github_id stable across the deploy boundary.
     if payload.get("github_id") is None:
         payload.pop("github_id", None)
+    for key in _IDEMPOTENCY_EXCLUDED_KEYS:
+        payload.pop(key, None)
     return _canonical_digest(payload)
 
 

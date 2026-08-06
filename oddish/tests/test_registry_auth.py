@@ -334,6 +334,29 @@ def test_request_hash_fingerprints_registry_auth():
     assert compute_request_hash(with_auth) != compute_request_hash(changed_auth)
 
 
+def test_request_hash_excludes_what_the_idempotency_key_excludes():
+    """Same key + different hash = a 409 on a sweep the key says is identical."""
+    from oddish.core.idempotency import compute_request_hash
+
+    base = dict(
+        task_id="x",
+        configs=[{"agent": "codex", "model": "openai/gpt-5.5", "n_trials": 1}],
+    )
+    plain = TaskSweepSubmission(**base)
+    described = TaskSweepSubmission(
+        **base,
+        provenance={"ci_run_id": "42", "uploader_cli_version": "0.1.14"},
+        task_metadata={"description": "a task", "category": "devops"},
+    )
+
+    # Two CI runs of an identical sweep share a key...
+    assert compute_sweep_idempotency_key(
+        plain.model_dump(mode="json")
+    ) == compute_sweep_idempotency_key(described.model_dump(mode="json"))
+    # ...so they must agree on the body hash guarding that key.
+    assert compute_request_hash(plain) == compute_request_hash(described)
+
+
 def test_submission_masks_token_in_model_dump():
     sub = TaskSweepSubmission(
         task_id="x",
