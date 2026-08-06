@@ -392,8 +392,7 @@ async def classify_trial_and_store(
                                 flushed = pending
                         return
 
-            # Run classification with the packaged classifier prompt
-            # (oddish/analyze/classify_prompt.txt).
+            # Run classification
             classifier = TrialClassifier(
                 model=settings.analysis_model,
                 verbose=True,

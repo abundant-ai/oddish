@@ -39,9 +39,7 @@ TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "5"
 
-# The packaged trajectory-summary template (the DB prompt registry is gone;
-# prompts ship with the oddish package). Must retain the ``{{taxonomy}}``
-# placeholder rendered by ``TrajectoryBlock``.
+# Must retain the ``{{taxonomy}}`` placeholder rendered by ``TrajectoryBlock``.
 _SUMMARY_PROMPT_PATH = (
     Path(_analyze.__file__).resolve().parent / "prompts" / "trajectory_summary.txt"
 )

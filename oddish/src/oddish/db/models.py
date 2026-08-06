@@ -194,8 +194,7 @@ class WorkerJobKind(str, Enum):
     # findings and reduces them into four narrative sections. Runs on the QA
     # queue; handled by AnalyzerJobHandler.
     ANALYZER = "ANALYZER"
-    # Legacy: executed one row of the removed ``analyzer_runs`` table (custom
-    # QA runs / QA assignments, both retired with the DB prompt registry).
+    # Legacy: executed one row of the dropped ``analyzer_runs`` table.
     # Enum value only, no handler; nothing enqueues it anymore.
     ANALYZER_BLOCK = "ANALYZER_BLOCK"
 
@@ -641,9 +640,8 @@ class AnalyzerBlockModel(TimestampedMixin, Base):
     llm_client_type: Mapped[str] = mapped_column(String(64), nullable=False)
 
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Historical lineage stamps from the removed DB prompt registry. New
-    # blocks leave them NULL (prompts now ship as packaged files); the
-    # columns remain so old rows keep their attribution.
+    # Unwritten since the DB prompt registry was dropped; historical rows
+    # keep their stamps.
     prompt_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     prompt_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)

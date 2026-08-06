@@ -44,8 +44,6 @@ from models import OrganizationModel
 
 import oddish.analyze as _analyze
 
-# The packaged pre-trial audit prompt (the DB prompt registry is gone; prompts
-# ship with the package).
 _PRE_TRIAL_PROMPT_PATH = (
     Path(_analyze.__file__).resolve().parent / "prompts" / "pre_trial_qa.txt"
 )
