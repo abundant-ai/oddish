@@ -47,8 +47,12 @@ ALL_TASKS = {**NONCUA_TASKS, **CUA_TASKS}
 OK_ERR = ("agenttimeouterror", "verifiertimeouterror", "timed out after")
 INFRA_ERR = ("command failed", "exceptiongroup", "no reward file",
              "ratelimit", "rate limit", "429", "internal server error")
+# "retrying" is a PENDING state, not a failure: Oddish is re-running the trial
+# itself. It carries an error_message ("Worker heartbeat stalled for over 15
+# minutes"), so leaving it out of this list would classify it OTHER and
+# --delete would destroy trials that were about to succeed on their own.
 PENDING = ("pending", "queued", "running", "blocked", "preparing", "submitted",
-           "claimed", "in_progress", "initializing")
+           "claimed", "in_progress", "initializing", "retrying")
 
 
 def classify(tr):
