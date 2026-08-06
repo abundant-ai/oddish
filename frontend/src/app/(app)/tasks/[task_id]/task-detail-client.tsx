@@ -878,6 +878,20 @@ export function TaskDetailClient({
     [orderedTrials, trialGroups]
   );
 
+  // A trial link from the task overview's aggregated QA. Always opens in
+  // this page's drawer: the overview hands over the full trial row, so a
+  // trial the current version list doesn't carry still renders in place
+  // instead of routing away. The version-list match is preferred so the
+  // per-group trial nav lines up.
+  const handleOpenTrialFromOverview = useCallback(
+    (trial: Trial): boolean => {
+      const match = orderedTrials.find((t) => t.id === trial.id);
+      handleSelectTrial(match ?? trial);
+      return true;
+    },
+    [orderedTrials, handleSelectTrial]
+  );
+
   const handleOpenTaskFiles = useCallback(() => {
     unresolvedTrialParamRef.current = false;
     setDrawer({
@@ -1406,7 +1420,11 @@ export function TaskDetailClient({
                 isOpen={true}
                 onClose={() => {}}
                 taskId={null}
+                // Scopes the overview's trial aggregation; this pane renders
+                // no header, so none of the task-driven header UI appears.
+                task={task}
                 staticChecksTaskId={task.id}
+                onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
@@ -1424,6 +1442,7 @@ export function TaskDetailClient({
                 taskId={task.id}
                 task={task}
                 taskVersion={selectedVersion?.version}
+                onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
                 onSelectLinesChange={setTaskPaneLines}
