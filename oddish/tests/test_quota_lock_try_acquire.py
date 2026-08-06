@@ -104,18 +104,35 @@ def test_append_sweep_preserves_quota_then_task_lock_order():
     Enforcement takes quota advisory first, then task FOR UPDATE. Append must
     do the same (admit_trials → task FOR UPDATE) or concurrent cancel deadlocks.
     Also: no early acquire_quota_locks across reconcile (starves /tasks/sweep).
+    Authoritative reconcile must re-run after the task lock so concurrent
+    appends cannot both insert against the same unlocked deficit.
     """
     from oddish.core.endpoints import sweep as sweep_mod
 
     source = Path(sweep_mod.__file__).read_text(encoding="utf-8")
     assert "await acquire_quota_locks" not in source
     assert "from oddish.core.quotas import acquire_quota_locks" not in source
+    assert "async def _plan_append_trials(" in source
 
     append_start = source.index("if submission.append_to_task:")
-    append_body = source[append_start:]
+    # Limit to the append branch (create mode follows in the same function).
+    append_end = source.index("\n    # Create mode", append_start)
+    append_body = source[append_start:append_end]
     admit_at = append_body.index("await admit_trials(")
     for_update_at = append_body.index("with_for_update=True")
     assert for_update_at > admit_at, (
         "append path must FOR UPDATE the task only after admit_trials "
         f"(admit@{admit_at}, for_update@{for_update_at})"
+    )
+    plan_calls = [
+        i
+        for i in range(len(append_body))
+        if append_body.startswith("await _plan_append_trials(", i)
+    ]
+    assert len(plan_calls) >= 2, (
+        "append must plan once for admit sizing and again under the task lock"
+    )
+    assert plan_calls[0] < admit_at < for_update_at < plan_calls[1], (
+        "expected unlocked plan → admit → FOR UPDATE → locked re-plan; "
+        f"got plan@{plan_calls} admit@{admit_at} for_update@{for_update_at}"
     )

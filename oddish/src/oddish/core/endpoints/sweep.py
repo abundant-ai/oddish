@@ -8,6 +8,7 @@ from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.config import settings
 from oddish.core.endpoints._common import (
     _primary_experiment_for_task_model,
     get_task_for_org_core,
@@ -25,6 +26,7 @@ from oddish.core.idempotency import (
     compute_request_hash,
     reserve_idempotency_slot,
 )
+from oddish.core.sweeps import build_trial_specs_from_sweep
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -37,7 +39,70 @@ from oddish.schemas import (
     TaskResponse,
     TaskSweepBatchItemResult,
     TaskSweepSubmission,
+    TrialSpec,
 )
+
+
+async def _plan_append_trials(
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    submission: TaskSweepSubmission,
+    target_experiment_id: str | None,
+    default_environment: EnvironmentType | None,
+    allowed_environments: Collection[EnvironmentType] | None,
+) -> tuple[list[TrialSpec], list[list[str]]]:
+    """Reconcile declarative N against live trials and attach supersede targets.
+
+    Must be re-run after the task row is locked: an unlocked snapshot can race
+    with a concurrent append and overshoot ``n_trials``.
+    """
+    existing_counts: dict[tuple[str, str | None], int] | None = None
+    failed_trial_ids: dict[tuple[str, str | None], list[str]] = defaultdict(list)
+    if task.current_version_id is not None:
+        reconcile_where = [
+            TrialModel.task_id == task.id,
+            TrialModel.task_version_id == task.current_version_id,
+            TrialModel.is_probe.is_(False),
+            TrialModel.superseded_by_trial_id.is_(None),
+        ]
+        if target_experiment_id is not None:
+            reconcile_where.append(TrialModel.experiment_id == target_experiment_id)
+        existing_trials_result = await session.execute(
+            select(TrialModel).where(*reconcile_where).order_by(TrialModel.id)
+        )
+        existing_counts = defaultdict(int)
+        for existing_trial in existing_trials_result.scalars():
+            key = (existing_trial.agent, existing_trial.model)
+            if existing_trial.status == TrialStatus.FAILED:
+                failed_trial_ids[key].append(existing_trial.id)
+            else:
+                existing_counts[key] += 1
+
+    trials = build_trial_specs_from_sweep(
+        submission,
+        default_environment=default_environment,
+        allowed_environments=allowed_environments,
+        existing_counts=existing_counts,
+    )
+
+    # A failed live attempt does not satisfy the declarative N. The specs
+    # above therefore include replacements for failed slots. Attach every
+    # failed attempt for that agent/model to the replacement rows so old
+    # duplicate failures collapse out of the default UI while remaining
+    # directly inspectable as immutable history.
+    replacement_positions: dict[tuple[str, str | None], list[int]] = defaultdict(list)
+    for index, spec in enumerate(trials):
+        normalized_model = settings.normalize_trial_model(spec.agent, spec.model)
+        replacement_positions[(spec.agent, normalized_model)].append(index)
+    supersede_by_spec: list[list[str]] = [[] for _ in trials]
+    for key, old_ids in failed_trial_ids.items():
+        positions = replacement_positions.get(key, [])
+        if not positions:
+            continue
+        for offset, old_id in enumerate(old_ids):
+            supersede_by_spec[positions[offset % len(positions)]].append(old_id)
+    return trials, supersede_by_spec
 
 
 def build_task_sweep_response(
@@ -517,70 +582,19 @@ async def create_task_sweep_core(
         target_experiment_id = new_experiment_id or (
             primary_experiment.id if primary_experiment else None
         )
-        existing_counts: dict[tuple[str, str | None], int] | None = None
-        failed_trial_ids: dict[tuple[str, str | None], list[str]] = defaultdict(list)
-        if task.current_version_id is not None:
-            reconcile_where = [
-                TrialModel.task_id == task.id,
-                TrialModel.task_version_id == task.current_version_id,
-                TrialModel.is_probe.is_(False),
-                TrialModel.superseded_by_trial_id.is_(None),
-            ]
-            if target_experiment_id is not None:
-                reconcile_where.append(TrialModel.experiment_id == target_experiment_id)
-            existing_trials_result = await session.execute(
-                select(TrialModel).where(*reconcile_where).order_by(TrialModel.id)
-            )
-            existing_counts = defaultdict(int)
-            for existing_trial in existing_trials_result.scalars():
-                key = (existing_trial.agent, existing_trial.model)
-                if existing_trial.status == TrialStatus.FAILED:
-                    failed_trial_ids[key].append(existing_trial.id)
-                else:
-                    existing_counts[key] += 1
-
-        trials = build_trial_specs_from_sweep(
-            submission,
+        # Unlocked estimate for quota admission only. Authoritative plan is
+        # rebuilt under the task row lock below so concurrent appends cannot
+        # both observe the same deficit and overshoot declarative N.
+        planned_trials, _ = await _plan_append_trials(
+            session,
+            task=task,
+            submission=submission,
+            target_experiment_id=target_experiment_id,
             default_environment=effective_default_env,
             allowed_environments=allowed_environments,
-            existing_counts=existing_counts,
-        )
-
-        # A failed live attempt does not satisfy the declarative N. The specs
-        # above therefore include replacements for failed slots. Attach every
-        # failed attempt for that agent/model to the replacement rows so old
-        # duplicate failures collapse out of the default UI while remaining
-        # directly inspectable as immutable history.
-        replacement_positions: dict[tuple[str, str | None], list[int]] = defaultdict(
-            list
-        )
-        for index, spec in enumerate(trials):
-            normalized_model = settings.normalize_trial_model(spec.agent, spec.model)
-            replacement_positions[(spec.agent, normalized_model)].append(index)
-        supersede_by_spec: list[list[str]] = [[] for _ in trials]
-        for key, old_ids in failed_trial_ids.items():
-            positions = replacement_positions.get(key, [])
-            if not positions:
-                continue
-            for offset, old_id in enumerate(old_ids):
-                supersede_by_spec[positions[offset % len(positions)]].append(old_id)
-
-        append_submission = submission.model_copy(
-            update={
-                "name": task.name,
-                "priority": task.priority,
-                "experiment_id": target_experiment_id,
-                "tags": task.tags or {},
-                "run_analysis": want_run_analysis,
-                "run_probe": want_run_probe,
-                "user": task.user,
-            }
-        )
-        expanded = build_task_submission_from_sweep(
-            append_submission, task_path=task.task_path, trials=trials
         )
         # Quota advisory lock is acquired here (and held through commit).
-        await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
+        await admit_trials(session, org_id, billed_user_id, count=len(planned_trials))
         # Task row lock only after quota — same order as enforcement.
         await session.refresh(task, with_for_update=True)
         # Allow flipping task.run_analysis from False to True on append.
@@ -602,6 +616,38 @@ async def create_task_sweep_core(
         # link leaves the existing value untouched rather than clearing it.
         if submission.link:
             task.link = submission.link
+
+        trials, supersede_by_spec = await _plan_append_trials(
+            session,
+            task=task,
+            submission=submission,
+            target_experiment_id=target_experiment_id,
+            default_environment=effective_default_env,
+            allowed_environments=allowed_environments,
+        )
+        if len(trials) > len(planned_trials):
+            # Rare: deficit grew while we waited (e.g. concurrent failures).
+            await admit_trials(
+                session,
+                org_id,
+                billed_user_id,
+                count=len(trials) - len(planned_trials),
+            )
+
+        append_submission = submission.model_copy(
+            update={
+                "name": task.name,
+                "priority": task.priority,
+                "experiment_id": target_experiment_id,
+                "tags": task.tags or {},
+                "run_analysis": want_run_analysis,
+                "run_probe": want_run_probe,
+                "user": task.user,
+            }
+        )
+        expanded = build_task_submission_from_sweep(
+            append_submission, task_path=task.task_path, trials=trials
+        )
         try:
             new_trials = await append_trials_to_task(
                 session,
