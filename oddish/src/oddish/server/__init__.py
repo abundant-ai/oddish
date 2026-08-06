@@ -16,6 +16,7 @@ from rich.console import Console
 
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
+    browse_experiment_options_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -91,6 +92,7 @@ from oddish.db import (
 )
 from oddish.schemas import (
     BackfillQARequest,
+    ExperimentOptionsResponse,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
     ExperimentCombineRequest,
@@ -533,6 +535,29 @@ async def browse_tasks(
             tool_names=metric_filter.tool_names,
             tool_count_mins=metric_filter.tool_count_mins,
             trial_metric_match=metric_filter.match.value,
+        )
+
+
+@api.get(
+    "/tasks/browse/experiment-options", response_model=ExperimentOptionsResponse
+)
+async def browse_experiment_options(
+    query: str | None = Query(None),
+    ids: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> ExperimentOptionsResponse:
+    """Typeahead options for the task-browser experiment filter.
+
+    ``query`` narrows by case-insensitive name substring; ``ids`` (CSV) instead
+    hydrates already-selected filter chips and wins over ``query``. Replaces
+    the deprecated, always-empty ``facets.experiments`` list.
+    """
+    async with get_session() as session:
+        return await browse_experiment_options_core(
+            session,
+            query=query,
+            ids=_split_tag_csv(ids),
+            limit=limit,
         )
 
 
