@@ -96,6 +96,18 @@ function getModelScopedAgents(tasks: Task[]): Set<string> {
   );
 }
 
+// Recover the model-scoped agent set from already-built summaries, for
+// consumers that hold summaries but not the tasks they were derived from.
+export function getModelScopedAgentsFromSummaries(
+  summaries: readonly ExperimentAgentSummary[]
+): Set<string> {
+  return new Set(
+    summaries
+      .filter((summary) => summary.isModelScoped)
+      .map((summary) => summary.agent)
+  );
+}
+
 export function getExperimentAgentKey(
   trial: Pick<Trial, "agent" | "model" | "is_probe">,
   modelScopedAgents: ReadonlySet<string>

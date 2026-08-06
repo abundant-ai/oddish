@@ -30,6 +30,19 @@ function calculatePassAtK(n: number, c: number, k: number): number {
   return 1 - product;
 }
 
+/**
+ * Fraction of trials that passed (reward === 1) — the pass@1 point estimate
+ * for one task. Skipped and errored trials count in the denominator as
+ * non-passes. Null when there is nothing to score. Shared by the leaderboard
+ * and the Pareto frontier card so their scores can never drift apart.
+ */
+export function passAtOneFraction(
+  trials: readonly { reward: number | null }[],
+): number | null {
+  if (trials.length === 0) return null;
+  return trials.filter((trial) => trial.reward === 1).length / trials.length;
+}
+
 interface PassAtKDataPoint {
   k: number;
   [agent: string]: number; // pass@k value for each agent

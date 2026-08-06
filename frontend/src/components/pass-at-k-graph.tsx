@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo } from "react";
 import {
   CartesianGrid,
   Line,
@@ -14,6 +14,7 @@ import type { TooltipContentProps } from "recharts";
 import type { Task, Trial } from "@/lib/types";
 import { calculatePassAtKCurve, type AgentPassAtKStats } from "@/lib/pass-at-k";
 import { getExperimentAgentKey } from "@/lib/experiment-agent-grouping";
+import { useElementSize } from "@/lib/use-element-size";
 import type { AgentSummary } from "./experiment-trials-table";
 import { AgentLegend } from "@/components/agent-legend";
 
@@ -103,30 +104,12 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   hoverAgent,
   onHoverAgent,
 }: PassAtKGraphProps) {
-  const chartContainerRef = useRef<HTMLDivElement>(null);
-  const [chartSize, setChartSize] = useState({ width: 0, height: 0 });
+  const { ref: chartContainerRef, size: chartSize } =
+    useElementSize<HTMLDivElement>();
   const visibleAgentSummaries = useMemo(
     () => agentSummaries.filter((summary) => !hiddenAgents.has(summary.key)),
     [agentSummaries, hiddenAgents],
   );
-
-  useEffect(() => {
-    const element = chartContainerRef.current;
-    if (!element) return;
-
-    const updateSize = () => {
-      const rect = element.getBoundingClientRect();
-      setChartSize({
-        width: Math.max(0, Math.floor(rect.width)),
-        height: Math.max(0, Math.floor(rect.height)),
-      });
-    };
-
-    updateSize();
-    const observer = new ResizeObserver(updateSize);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
 
   const { data, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
     useMemo(() => {

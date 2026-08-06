@@ -1772,29 +1772,27 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        {/* Pass/k Graph - only shows when there are multiple trials per task-agent */}
+        {/* Graphs row: pass/k curve (needs multiple trials per task-agent)
+            and leaderboard. A card with nothing to show renders null and
+            contributes no grid cell, so the row reflows around it. */}
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
-            <div className="h-full min-w-0">
-              <PassAtKGraph
-                tasks={tasks}
-                agentSummaries={sortedAgentSummaries}
-                hiddenAgents={hiddenAgents}
-                onToggleAgent={toggleAgent}
-                hoverAgent={hoverAgent}
-                onHoverAgent={setHoverAgent}
-              />
-            </div>
-            <div className="h-full min-w-0">
-              <PassAtOneLeaderboard
-                tasks={tasks}
-                agentSummaries={sortedAgentSummaries}
-                hiddenAgents={hiddenAgents}
-                onToggleAgent={toggleAgent}
-                hoverAgent={hoverAgent}
-                onHoverAgent={setHoverAgent}
-              />
-            </div>
+            <PassAtKGraph
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
+            <PassAtOneLeaderboard
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
           </div>
         ) : null}
 

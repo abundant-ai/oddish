@@ -44,6 +44,7 @@ import {
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
+  getModelScopedAgentsFromSummaries,
   isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
@@ -139,16 +140,6 @@ interface ExperimentDetailViewProps {
 }
 
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
-
-function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[]
-): Set<string> {
-  return new Set(
-    summaries
-      .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
-  );
-}
 
 type ExperimentSummary = {
   rewardSuccess: number;
