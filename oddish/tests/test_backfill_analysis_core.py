@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,7 +13,7 @@ from fastapi import HTTPException
 
 import oddish.queue as queue_mod
 from oddish.core import endpoints
-from oddish.db import AnalysisStatus, TaskStatus, VerdictStatus
+from oddish.db import AnalysisStatus, TaskStatus, VerdictStatus, utcnow
 
 
 def _trial(trial_id, *, analysis_status=AnalysisStatus.SUCCESS):
@@ -63,8 +64,10 @@ class _FakeSession:
     async def execute(self, _stmt):
         return _Result(self.task)
 
-    async def scalar(self, _stmt):  # _count_active_trials
-        return 0
+    async def scalar(self, stmt):
+        # _count_active_trials wants an int; the worker-job guard queries
+        # want "no such job". Discriminate on the aggregate.
+        return 0 if "count(" in str(stmt).lower() else None
 
     async def commit(self):
         self.committed = True
@@ -169,3 +172,34 @@ async def test_qa_in_progress_400(_stub_enqueue):
             session, task_id="tsk", org_id="org-1"
         )
     assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_live_running_analysis_blocks(_stub_enqueue):
+    running = _trial("tsk-0", analysis_status=AnalysisStatus.RUNNING)
+    running.analysis_started_at = utcnow()
+    task = _task([running], verdict_status=VerdictStatus.SUCCESS)
+    session = _FakeSession(task)
+    with pytest.raises(HTTPException) as exc:
+        await endpoints.backfill_task_analysis_core(
+            session, task_id="tsk", org_id="org-1"
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stale_running_analysis_does_not_block(_stub_enqueue):
+    """A RUNNING claim past its TTL belongs to a dead worker. The backfill
+    is the recovery path, so the stale claim must not block it — the same
+    rule the per-trial rerun applies."""
+    stale = _trial("tsk-0", analysis_status=AnalysisStatus.RUNNING)
+    stale.analysis_started_at = utcnow() - timedelta(hours=2)
+    task = _task([stale], verdict_status=VerdictStatus.SUCCESS)
+    session = _FakeSession(task)
+
+    result = await endpoints.backfill_task_analysis_core(
+        session, task_id="tsk", org_id="org-1"
+    )
+
+    assert result["status"] == "queued"
+    assert _stub_enqueue == [("tsk", "org-1")]

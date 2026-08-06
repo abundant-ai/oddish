@@ -1,29 +1,33 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import shlex
+import tarfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 import logging
 from harbor.models.trial.result import TrialResult
 
 from oddish.config import (
     ANALYSIS_MODEL,
-    BEDROCK_ENV_VARS,
-    looks_like_bedrock_model_id,
     settings,
     to_anthropic_api_model_id,
 )
-from oddish.analyze._sdk_utils import Colors, print_process_stream
-from oddish.analyze.analysis_cost import AnalysisUsage, parse_cli_usage
+from oddish.analyze._sdk_utils import Colors
 
 from .models import (
+    ActionItem,
     BaselineValidation,
     Classification,
     TrialClassification,
     TrialClassificationModel,
 )
+
+if TYPE_CHECKING:
+    from oddish.blocks.analyzer.claude_cli_client import CliConfig
 
 logger = logging.getLogger(__name__)
 
@@ -38,34 +42,36 @@ _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
 
 
-def _resolve_analysis_model_and_env(
-    model: str, base_env: dict[str, str]
-) -> tuple[str, dict[str, str]]:
-    """Pick the ``--model`` id and env for the analysis Claude CLI subprocess.
+_SNAPSHOT_ARCHIVE = "/tmp/oddish-post-trial.tar.gz"
 
-    The Modal image bakes the Bedrock env vars so Claude Code defaults to
-    Bedrock, and the CLI picks its route from the environment (not ``--model``).
-    Two cases route this analysis call to the direct Anthropic API instead:
 
-    * a plain (non-Bedrock) analysis model id, or
-    * the force-direct incident toggle (``settings.claude_code_force_direct_api``,
-      default on; mirrors ``harbor_runner._claude_code_forces_direct_api``) when
-      an ``ANTHROPIC_API_KEY`` is present -- the workers' Bedrock credentials
-      can't run inference (400 "Operation not allowed"), so every Bedrock
-      analysis call fails until that flag is flipped off.
+def _assert_dirs_in_snapshot(
+    extra_dirs: list[Path] | None, *roots: Path
+) -> None:
+    """Fail loudly on context the sandbox snapshot would not carry.
 
-    In both direct-API cases, normalize any Bedrock inference-profile id back to
-    its plain API id and strip the Bedrock signals so the CLI authenticates with
-    ``ANTHROPIC_API_KEY``. Otherwise keep the Bedrock id and env untouched.
+    Only ``roots`` are archived. A dir outside them still reaches claude-code as
+    an ``--add-dir`` path that resolves to nothing in the sandbox, and an empty
+    directory reads as "no evidence" rather than as an error.
     """
-    env = dict(base_env)
-    has_api_key = bool(env.get("ANTHROPIC_API_KEY", "").strip())
-    force_direct = has_api_key and settings.claude_code_force_direct_api
-    if looks_like_bedrock_model_id(model) and not force_direct:
-        return model, env
-    for name in BEDROCK_ENV_VARS:
-        env.pop(name, None)
-    return (to_anthropic_api_model_id(model) or model), env
+    resolved_roots = [root.resolve() for root in roots]
+    for extra in extra_dirs or []:
+        if not any(extra.resolve().is_relative_to(r) for r in resolved_roots):
+            raise ValueError(
+                f"{extra} is outside the post-trial snapshot "
+                f"({', '.join(str(r) for r in resolved_roots)})"
+            )
+
+
+def _classification_schema_json() -> str:
+    """Claude Code ``--json-schema`` payload for the classification output.
+
+    Both classifier backends constrain generation with it: the prompt's example
+    object shows only the five narrative fields, so without the schema the model
+    silently drops ``action_items`` / ``exploitation`` and post-trial linkage
+    comes back empty.
+    """
+    return json.dumps(TrialClassificationModel.model_json_schema())
 
 
 _ORACLE_TRIAL_AGENT_CONTEXT = """
@@ -110,15 +116,22 @@ def _write_qa_context(
     trial_dir: Path,
     pre_trial_items: list[dict] | None,
     file_access: list[dict] | None,
-) -> tuple[Path | None, str | None, str | None]:
+    trajectory_components: list[dict] | None = None,
+) -> tuple[Path | None, str | None, str | None, str | None]:
     """Write post-trial-linkage inputs to ``<trial_dir>/.qa_context/*.json``.
 
-    Returns ``(qa_context_dir, pre_trial_context, file_access_context)``. The
-    dir and each context string are ``None`` when the corresponding input was
-    not provided, so absent inputs never touch disk or the prompt.
+    Returns ``(qa_context_dir, pre_trial_context, file_access_context,
+    trajectory_components_context)``. The dir and each context string are
+    ``None`` when the corresponding input was not provided, so absent inputs
+    never touch disk or the prompt.
+
+    Each context string cites the file by absolute path. The sandbox restores
+    the snapshot at those same paths, so an absolute reference resolves there
+    too -- a relative ``.qa_context/...`` ref would resolve against the
+    sandbox's own cwd, where nothing exists.
     """
-    if pre_trial_items is None and file_access is None:
-        return None, None, None
+    if pre_trial_items is None and file_access is None and trajectory_components is None:
+        return None, None, None, None
 
     qa_context_dir = trial_dir / ".qa_context"
     qa_context_dir.mkdir(parents=True, exist_ok=True)
@@ -128,8 +141,8 @@ def _write_qa_context(
         (qa_context_dir / "pre_trial.json").write_text(json.dumps(pre_trial_items, indent=2))
         pre_trial_context = (
             f"{len(pre_trial_items)} pre-trial action item(s) were identified for this "
-            "task. See .qa_context/pre_trial.json for the full list (id, file, line "
-            "range, title, detail)."
+            f"task. See {qa_context_dir}/pre_trial.json for the full list (id, file, "
+            "line range, title, detail)."
         )
 
     file_access_context = None
@@ -137,11 +150,29 @@ def _write_qa_context(
         (qa_context_dir / "file_access.json").write_text(json.dumps(file_access, indent=2))
         file_access_context = (
             f"File-access metadata for {len(file_access)} trajectory step(s) is "
-            "available. See .qa_context/file_access.json for per-step "
+            f"available. See {qa_context_dir}/file_access.json for per-step "
             "files_read/files_written/commands."
         )
 
-    return qa_context_dir, pre_trial_context, file_access_context
+    trajectory_components_context = None
+    if trajectory_components is not None:
+        (qa_context_dir / "trajectory_components.json").write_text(
+            json.dumps(trajectory_components, indent=2)
+        )
+        trajectory_components_context = (
+            f"A trajectory component map ({len(trajectory_components)} labeled phase "
+            f"segment(s)) is available. See {qa_context_dir}/trajectory_components.json "
+            "for each segment's step_ids, phase label, summary, tool_count, and "
+            "duration_ms -- use it to locate the relevant steps before reading the raw "
+            "trajectory."
+        )
+
+    return (
+        qa_context_dir,
+        pre_trial_context,
+        file_access_context,
+        trajectory_components_context,
+    )
 
 
 def build_classify_prompt(
@@ -152,6 +183,7 @@ def build_classify_prompt(
     trial_agent_context: str,
     pre_trial_context: str | None = None,
     file_access_context: str | None = None,
+    trajectory_components_context: str | None = None,
     template: str | None = None,
 ) -> str:
     """Render the classification prompt.
@@ -159,6 +191,7 @@ def build_classify_prompt(
     Extracted so the pre-trial/file-access placeholder wiring is unit-testable
     without spawning the Claude CLI subprocess. ``template`` overrides the
     packaged prompt (cloud QA passes the latest QA_POST_TRIAL registry version).
+    A registry template that predates a placeholder simply ignores its kwarg.
     """
     return (template or _CLASSIFY_PROMPT).format(
         result=result_str,
@@ -167,6 +200,7 @@ def build_classify_prompt(
         trial_agent_context=trial_agent_context,
         pre_trial_context=pre_trial_context or "(none)",
         file_access_context=file_access_context or "(none)",
+        trajectory_components_context=trajectory_components_context or "(none)",
     )
 
 
@@ -180,6 +214,7 @@ def classify_trial(
     timeout: int = 300,
     pre_trial_items: list[dict] | None = None,
     file_access: list[dict] | None = None,
+    trajectory_components: list[dict] | None = None,
 ) -> TrialClassification:
     """Classify a single trial outcome."""
     classifier = TrialClassifier(model=model, verbose=verbose, timeout=timeout)
@@ -189,6 +224,7 @@ def classify_trial(
         trial_agent=trial_agent,
         pre_trial_items=pre_trial_items,
         file_access=file_access,
+        trajectory_components=trajectory_components,
     )
 
 
@@ -201,6 +237,7 @@ class TrialClassifier:
         verbose: bool = False,
         timeout: int = 300,
         prompt_template: str | None = None,
+        on_chunk: Callable[[str], None] | None = None,
     ):
         self._model = model
         self._verbose = verbose
@@ -208,8 +245,9 @@ class TrialClassifier:
         # Cloud QA supplies the latest QA_POST_TRIAL registry version. Keep the
         # packaged prompt as a fallback for local/library callers without a DB.
         self._prompt_template = prompt_template or _CLASSIFY_PROMPT
-        # Usage/cost of the most recent successful CLI classification, or None.
-        self.last_usage: AnalysisUsage | None = None
+        # Receives each streamed analyzer event; used for the live analysis
+        # log. Only the sandbox path streams during the run.
+        self._on_chunk = on_chunk
         self._setup_authentication()
 
     def _setup_authentication(self) -> None:
@@ -232,6 +270,8 @@ class TrialClassifier:
         trial_agent: str | None = None,
         pre_trial_items: list[dict] | None = None,
         file_access: list[dict] | None = None,
+        trajectory_components: list[dict] | None = None,
+        analyzer_block_context: dict[str, Any] | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
         result_path = trial_dir / "result.json"
@@ -298,8 +338,13 @@ class TrialClassifier:
         else:
             result_str = "unknown"
 
-        qa_context_dir, pre_trial_context, file_access_context = _write_qa_context(
-            trial_dir, pre_trial_items, file_access
+        (
+            qa_context_dir,
+            pre_trial_context,
+            file_access_context,
+            trajectory_components_context,
+        ) = _write_qa_context(
+            trial_dir, pre_trial_items, file_access, trajectory_components
         )
 
         prompt = build_classify_prompt(
@@ -310,6 +355,7 @@ class TrialClassifier:
             trial_agent_context=_get_trial_agent_context(trial_agent),
             pre_trial_context=pre_trial_context,
             file_access_context=file_access_context,
+            trajectory_components_context=trajectory_components_context,
         )
 
         try:
@@ -329,12 +375,22 @@ class TrialClassifier:
                 print("-" * 60, flush=True)
 
             try:
-                structured_output = await self._run_claude_cli(
-                    prompt,
-                    trial_dir,
-                    task_dir,
-                    extra_dirs=[qa_context_dir] if qa_context_dir else None,
-                )
+                extra_dirs = [qa_context_dir] if qa_context_dir else None
+                if analyzer_block_context is None:
+                    structured_output = await self._run_cli_directly(
+                        prompt,
+                        trial_dir,
+                        task_dir,
+                        extra_dirs=extra_dirs,
+                    )
+                else:
+                    structured_output = await self._run_in_analyzer_block(
+                        prompt=prompt,
+                        trial_dir=trial_dir,
+                        task_dir=task_dir,
+                        extra_dirs=extra_dirs,
+                        context=analyzer_block_context,
+                    )
             except TimeoutError:
                 if self._verbose:
                     print(
@@ -376,10 +432,123 @@ class TrialClassifier:
                 reward=reward,
             )
 
-    def _stash_usage(self, payload: dict, model_id: str | None) -> None:
-        self.last_usage = parse_cli_usage(payload, model_id)
+    async def _run_in_analyzer_block(
+        self,
+        *,
+        prompt: str,
+        trial_dir: Path,
+        task_dir: Path,
+        extra_dirs: list[Path] | None,
+        context: dict[str, Any],
+    ) -> Any:
+        """Run the filesystem-aware classifier as a persisted AnalyzerBlock."""
+        from oddish.blocks.analyzer.analyzer_block import (
+            AnalyzerBlock,
+            AnalyzerInput,
+            AnalyzerType,
+            resolve_substrate,
+        )
+        from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
+        from oddish.blocks.analyzer import analyzer_llm_client
+        from oddish.blocks.analyzer.analyzer_llm_client import SandboxConfig
+        from oddish.blocks.analyzer.claude_cli_client import parse_stream_json_result
 
-    async def _run_claude_cli(
+        client_type = resolve_substrate(
+            AnalyzerType.POST_TRIAL,
+            sandbox_available=analyzer_llm_client.sandbox_client_factory_registered(),
+            force_sandbox=settings.post_trial_sandbox_enabled,
+        )
+        use_sandbox = client_type is LLMClientType.SANDBOX
+        sandbox_config = None
+        cli_config = None if use_sandbox else self._cli_config(
+            trial_dir, task_dir, extra_dirs
+        )
+        block_model = self._model
+        if use_sandbox:
+            _assert_dirs_in_snapshot(extra_dirs, task_dir, trial_dir)
+            # Archive members are the worker's own absolute paths minus the
+            # leading slash, so extracting at / restores each dir exactly where
+            # the prompt already says it is. Rewriting host paths into a sandbox
+            # root is what breaks silently: a context file whose path is not in
+            # the substitution list points the agent at an empty tree, and it
+            # answers confidently from nothing.
+            archive = io.BytesIO()
+            with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+                for local_dir in (task_dir, trial_dir):
+                    bundle.add(local_dir, arcname=str(local_dir).lstrip("/"))
+            parents = " ".join(
+                shlex.quote(str(d.parent))
+                for d in dict.fromkeys((task_dir, trial_dir))
+            )
+            # The sandbox authenticates with ANTHROPIC_API_KEY, so it needs the
+            # plain API id -- resolve_analysis_model_and_env does the same
+            # normalization for the local subprocess. An un-normalized Bedrock
+            # inference-profile id reaches claude-code as an unknown model.
+            block_model = to_anthropic_api_model_id(self._model) or self._model
+            sandbox_config = SandboxConfig(
+                session_id="post-trial",
+                files_to_upload={_SNAPSHOT_ARCHIVE: archive.getvalue()},
+                setup_commands=(
+                    f"mkdir -p {parents} && tar -xzf {_SNAPSHOT_ARCHIVE} -C /",
+                ),
+                json_schema=_classification_schema_json(),
+                add_dirs=(str(task_dir), str(trial_dir)),
+            )
+
+        metadata = {
+            "prompt_key": context.get("prompt_key"),
+            "prompt_version": context.get("prompt_version"),
+            "model": block_model,
+        }
+        block = AnalyzerBlock(
+            analyzer_type=AnalyzerType.POST_TRIAL,
+            llm_client_type=client_type,
+            input=AnalyzerInput(
+                input={
+                    "trial_id": context.get("trial_id"),
+                    "task_id": context.get("task_id"),
+                }
+            ),
+            prompt=prompt,
+            analyzer_id=context.get("trial_id"),
+            task_id=context.get("task_id"),
+            block_metadata=metadata,
+            model=block_model,
+            output_transform=parse_stream_json_result,
+            sandbox_config=sandbox_config,
+            cli_config=cli_config,
+            on_chunk=self._on_chunk,
+        )
+        if use_sandbox:
+            # CliConfig.timeout bounds the CLAUDE_CLI path from inside, where it
+            # can also kill the subprocess. The sandbox path has no inner
+            # deadline, so a wedged Daytona session would hold the QA job open
+            # for as long as it stayed alive.
+            output = await asyncio.wait_for(block.run(), timeout=self._timeout)
+        else:
+            output = await block.run()
+        return output.output
+
+    def _cli_config(
+        self, trial_dir: Path, task_dir: Path, extra_dirs: list[Path] | None
+    ) -> CliConfig:
+        """The one place the classifier describes its filesystem to claude-code.
+
+        Both entry points build it from here, so the block path and the local
+        no-DB path cannot drift in what the agent may read or how its output is
+        constrained -- which is how --json-schema ended up on only one of them.
+        """
+        from oddish.blocks.analyzer.claude_cli_client import CliConfig
+
+        return CliConfig(
+            cwd=trial_dir,
+            add_dirs=(task_dir, *(extra_dirs or [])),
+            json_schema=_classification_schema_json(),
+            timeout=self._timeout,
+            verbose=self._verbose,
+        )
+
+    async def _run_cli_directly(
         self,
         prompt: str,
         trial_dir: Path,
@@ -387,98 +556,21 @@ class TrialClassifier:
         *,
         extra_dirs: list[Path] | None = None,
     ) -> Any:
-        """Run Claude Code in print mode and return structured output."""
-        self.last_usage = None
-        schema = json.dumps(TrialClassificationModel.model_json_schema())
-        claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
-        logger.info(f"choosing model: {self._model}")
-        model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))
-        logger.info(f"resolved model_id: {model_id}")
-        command = [
-            claude_bin,
-            "-p",
-            prompt,
-            "--model",
-            model_id,
-            "--output-format",
-            "json",
-            "--json-schema",
-            schema,
-            "--tools",
-            "Read,Glob",
-            "--allowedTools",
-            "Read",
-            "Glob",
-            "--permission-mode",
-            "bypassPermissions",
-            "--dangerously-skip-permissions",
-            "--add-dir",
-            str(task_dir),
-        ]
-        for extra_dir in extra_dirs or []:
-            command += ["--add-dir", str(extra_dir)]
-
-        if self._verbose:
-            print(
-                f"{Colors.CYAN}[Classifier] Claude CLI model={model_id} cwd={trial_dir}{Colors.RESET}",
-                flush=True,
-            )
-
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            cwd=str(trial_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
+        """Classify without a block: local runs have no DB row to persist to."""
+        from oddish.blocks.analyzer.claude_cli_client import (
+            ClaudeCliClient,
+            parse_stream_json_result,
         )
 
+        client = ClaudeCliClient(
+            model=self._model,
+            config=self._cli_config(trial_dir, task_dir, extra_dirs),
+        )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=self._timeout,
-            )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
-            raise TimeoutError from None
-
-        stdout_text = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-
-        if self._verbose:
-            print_process_stream("Claude stderr", stderr_text, Colors.MAGENTA)
-
-        if process.returncode != 0:
-            error_text = (
-                stderr_text.strip() or stdout_text.strip() or "Unknown Claude CLI error"
-            )
-            raise RuntimeError(
-                f"Claude CLI exited with code {process.returncode}: {error_text}"
-            )
-
-        try:
-            payload = json.loads(stdout_text)
-        except json.JSONDecodeError as exc:
-            if self._verbose:
-                print_process_stream("Claude stdout", stdout_text, Colors.BLUE)
-            raise RuntimeError(f"Claude CLI returned invalid JSON: {exc}") from exc
-
-        self._stash_usage(payload, model_id)
-
-        structured_output = payload.get("structured_output")
-        if structured_output is not None:
-            return structured_output
-
-        result = payload.get("result")
-        if isinstance(result, dict):
-            return result
-        if isinstance(result, str):
-            try:
-                return json.loads(result)
-            except json.JSONDecodeError:
-                pass
-
-        raise RuntimeError("Claude CLI JSON response did not contain structured_output")
+            raw = "".join([chunk async for chunk in client.stream(prompt)])
+        finally:
+            await client.aclose()
+        return parse_stream_json_result(raw)
 
     def _parse_trial_classification_structured(
         self,
@@ -538,6 +630,7 @@ class TrialClassifier:
         trial_agent: str | None = None,
         pre_trial_items: list[dict] | None = None,
         file_access: list[dict] | None = None,
+        trajectory_components: list[dict] | None = None,
     ) -> TrialClassification:
         return asyncio.run(
             self.classify_trial(
@@ -546,6 +639,7 @@ class TrialClassifier:
                 trial_agent=trial_agent,
                 pre_trial_items=pre_trial_items,
                 file_access=file_access,
+                trajectory_components=trajectory_components,
             )
         )
 
@@ -554,6 +648,8 @@ def build_verdict_prompt(
     classifications: list[TrialClassification],
     baseline: BaselineValidation | None = None,
     quality_check_passed: bool = True,
+    pre_trial_items: list[ActionItem] | None = None,
+    pre_trial_load_failed: bool = False,
 ) -> str:
     """Render the verdict-synthesis prompt, sent by ``VerdictBlock``."""
     if baseline:
@@ -568,10 +664,40 @@ def build_verdict_prompt(
     else:
         baseline_summary = "Not run"
 
-    quality_check_summary = "✓ Passed" if quality_check_passed else "✗ Failed"
+    if pre_trial_items:
+        # The classify prompt tells trials NOT to repeat a pre-trial item in
+        # their action_items, so an unexploited pre-trial hole reaches the
+        # verdict only through this list. The exploited flags are already
+        # aggregated from the trials (aggregate_exploited_into_pre_trial runs
+        # before the verdict).
+        findings = "\n".join(
+            f"  - [{item.tier.value}/{item.dimension.value}] {item.title}"
+            + (" (a trial exploited it)" if item.exploited else " (no trial used it)")
+            for item in pre_trial_items
+        )
+        quality_check_summary = (
+            f"{len(pre_trial_items)} finding(s) from the audit of the task source:\n"
+            + findings
+        )
+    elif pre_trial_load_failed:
+        # A load failure is not a clean audit. Rendering the pass glyph here
+        # would hide an unexploited must_fix leak from the verdict's rules.
+        quality_check_summary = (
+            "⚠ Unknown — the audit findings are not available. "
+            "Do not read this as a pass."
+        )
+    else:
+        quality_check_summary = "✓ Passed" if quality_check_passed else "✗ Failed"
 
     trial_lines = []
     for i, classification in enumerate(classifications, 1):
+        # Without the action items, a leak that no trial used is invisible
+        # here: every trial can be GOOD_* while a must_fix hole sits in the
+        # items, and the verdict's leak rule keys on exactly that.
+        items = "\n".join(
+            f"    - [{item.tier.value}/{item.dimension.value}] {item.title}"
+            for item in classification.action_items
+        )
         trial_lines.append(
             f"""Trial {i}: {classification.trial_name}
   Classification: {classification.classification.value}
@@ -580,6 +706,8 @@ def build_verdict_prompt(
   Evidence: {classification.evidence}
   Root Cause: {classification.root_cause}
   Recommendation: {classification.recommendation}
+  Action items:
+{items if items else "    (none)"}
 """
         )
     trial_classifications = "\n".join(trial_lines)

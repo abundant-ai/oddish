@@ -29,8 +29,10 @@ from oddish.dispatch.ports import WorkerHandle
 from oddish.filters.trial_metrics import TrialMetricFilter
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
+    browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
+    rerun_pre_trial_audit_core,
     build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
@@ -66,6 +68,8 @@ from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
+    make_task_files_ndjson_response,
+    stream_task_files_s3,
 )
 from oddish.core.idempotency import (
     IdempotencyReplay,
@@ -122,6 +126,7 @@ from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentCostTotals,
+    ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
     TaskBrowseFacets,
@@ -382,6 +387,33 @@ async def create_task_sweep(
                 idempotency_store=SubmissionIdempotencyStore(session),
                 request_hash=request_hash,
             )
+        except TimeoutError as exc:
+            # Quota advisory-lock waits (and other DB wait timeouts) surface as
+            # bare TimeoutError from asyncpg. Map to 503 so the CLI retries with
+            # a legible message instead of an opaque "Internal Server Error".
+            logger.error(
+                "create_task_sweep timed out for task_id=%s org_id=%s",
+                submission.task_id,
+                auth.org_id,
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Couldn't submit right now (database lock timeout). Please retry."
+                ),
+            ) from exc
+        except SQLAlchemyError as exc:
+            logger.error(
+                "create_task_sweep failed for task_id=%s org_id=%s",
+                submission.task_id,
+                auth.org_id,
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Couldn't submit right now (database error). Please retry.",
+            ) from exc
         except IdempotencyReplay as replay:
             # Faithful retry of a completed key: return the stored response and
             # skip the owner-stamping / publish side effects below. The image
@@ -991,6 +1023,34 @@ async def browse_task_facets(
         return await browse_task_facets_core(session, org_id=auth.org_id)
 
 
+@router.get(
+    "/tasks/browse/experiment-options", response_model=ExperimentOptionsResponse
+)
+async def browse_experiment_options(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    query: str | None = Query(None),
+    ids: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> ExperimentOptionsResponse:
+    """Typeahead options for the sidebar experiment filter.
+
+    ``query`` narrows by case-insensitive name substring; ``ids`` (CSV) instead
+    hydrates already-selected filter chips and wins over ``query``. Replaces
+    the deprecated, always-empty ``facets.experiments`` list.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        await session.connection()
+        return await browse_experiment_options_core(
+            session,
+            org_id=auth.org_id,
+            query=query,
+            ids=_split_tag_csv(ids),
+            limit=limit,
+        )
+
+
 @router.post("/experiments/combine", response_model=ExperimentCombineResponse)
 async def combine_experiments(
     payload: ExperimentCombineRequest,
@@ -1478,6 +1538,24 @@ async def backfill_task_qa(
         )
 
 
+@router.post("/tasks/{task_id}/qa/pre-trial")
+async def rerun_pre_trial_audit(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Queue the pre-trial audit for the task's current version.
+
+    Runs only the audit. Does not classify trials and does not synthesize
+    the verdict.
+    """
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+    async with get_session() as session:
+        return await rerun_pre_trial_audit_core(
+            session, task_id=task_id, org_id=auth.org_id
+        )
+
+
 @router.post("/tasks/{task_id}/qa/cancel")
 async def cancel_task_qa(
     task_id: str,
@@ -1617,11 +1695,17 @@ async def list_task_files(
         True, description="Include presigned URLs for direct S3 access"
     ),
     version: int | None = Query(None, description="Task version number"),
-) -> dict:
+    stream: bool = Query(
+        False,
+        description="Stream NDJSON: the file tree first, then file contents",
+    ),
+):
     """List all files in a task's S3 directory.
 
     When presign=True (default), includes presigned URLs for each file,
     allowing clients to fetch content directly from S3 without additional API calls.
+    With stream=True the response is NDJSON: a listing chunk as soon as the
+    tree is known, then per-file content chunks as they load.
     """
     auth.require_scope(APIKeyScope.READ)
 
@@ -1634,6 +1718,19 @@ async def list_task_files(
         )
         if version is None and task.current_version:
             version = task.current_version.version
+
+    if stream:
+        return await make_task_files_ndjson_response(
+            stream_task_files_s3(
+                task_id=task_id,
+                prefix=prefix,
+                recursive=recursive,
+                limit=limit,
+                cursor=cursor,
+                presign=presign,
+                version=version,
+            )
+        )
 
     return await list_task_files_s3(
         task_id=task_id,

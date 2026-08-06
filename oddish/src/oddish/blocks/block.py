@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Callable
 
 from pydantic import BaseModel
@@ -62,9 +63,64 @@ class Block:
             raw = raw.rsplit("```", 1)[0]
         return raw.strip()
 
+    @staticmethod
+    def _embedded_json(text: str) -> str | None:
+        """The first JSON value embedded in prose, or None.
+
+        ``strip_code_fences`` only fires when the fence opens the string, so a
+        model that writes a sentence *before* its fenced block (or emits a bare
+        object after a preamble) reaches ``json.loads`` as prose and dies on
+        "line 1 column 1". Prompts already forbid the preamble; models do it
+        anyway, and a whole audit is too expensive to discard over packaging.
+        """
+        fence = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+        candidates = [fence.group(1)] if fence else []
+        # Ordered by where the value starts, so a bare array is not shadowed by
+        # an object nested inside it.
+        spans: list[tuple[int, str]] = []
+        for opener, closer in (("{", "}"), ("[", "]")):
+            start = text.find(opener)
+            if start == -1:
+                continue
+            depth, in_string, escaped = 0, False, False
+            for index in range(start, len(text)):
+                char = text[index]
+                if escaped:
+                    escaped = False
+                    continue
+                if char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = not in_string
+                elif in_string:
+                    continue
+                elif char == opener:
+                    depth += 1
+                elif char == closer:
+                    depth -= 1
+                    if depth == 0:
+                        spans.append((start, text[start : index + 1]))
+                        break
+        candidates.extend(value for _, value in sorted(spans))
+        for candidate in candidates:
+            try:
+                json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            return candidate
+        return None
+
     @classmethod
     def parse_json(cls, text: str) -> Any:
-        return json.loads(cls.strip_code_fences(text))
+        stripped = cls.strip_code_fences(text)
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            embedded = cls._embedded_json(text)
+            if embedded is None:
+                raise
+            logger.warning("block parse: recovered JSON embedded in prose")
+            return json.loads(embedded)
 
     def parse(self, raw: str) -> BaseModel:
         try:

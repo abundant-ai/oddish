@@ -15,7 +15,7 @@ from auth import AuthContext, require_admin
 from dashboard_attribution import resolve_github_users
 from models import OrganizationModel, UserModel
 from auth.permissions import is_operator_org, require_operator_org
-from pg_errors import is_undefined_table_error
+from pg_errors import is_undefined_column_or_table_error
 from slack_alert_settings import (
     AlertSettings,
     clear_alert_settings,
@@ -41,6 +41,7 @@ from oddish.core.admin import (
     get_worker_jobs_admin_core,
     update_model_concurrency_core,
 )
+from oddish.core.trial_facets import rebuild_trial_facets_core
 from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
 
@@ -331,6 +332,7 @@ async def backfill_task_expansions(
 
 class SlackAlertSettingsResponse(BaseModel):
     trial_escalation_usd: float
+    user_daily_overage_delta_usd: float
     always_ping_emails: list[str]
     # False means nobody has overridden anything and these are the values baked
     # into the deploy, which the UI labels rather than presenting as a choice.
@@ -348,8 +350,31 @@ async def get_operator_access(
     return OperatorAccessResponse(allowed=is_operator_org(auth))
 
 
+class TrialFacetsRefreshResponse(BaseModel):
+    orgs: int
+    rows: int
+
+
+@router.post("/trial-facets/refresh", response_model=TrialFacetsRefreshResponse)
+async def refresh_trial_facets(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> TrialFacetsRefreshResponse:
+    """Rebuild the task-browser facet vocabulary on demand.
+
+    The scheduler-neutral binding of ``oddish.core.trial_facets``: Modal
+    deploys run the same rebuild on a Period schedule
+    (``worker.refresh_trial_facets``); non-Modal deploys (``serve.py``)
+    cron this endpoint instead. Also the manual ops lever after a bulk
+    deletion.
+    """
+    async with get_session() as session:
+        orgs, rows = await rebuild_trial_facets_core(session)
+    return TrialFacetsRefreshResponse(orgs=orgs, rows=rows)
+
+
 class SlackAlertSettingsRequest(BaseModel):
     trial_escalation_usd: float = Field(gt=0)
+    user_daily_overage_delta_usd: float = Field(gt=0)
     always_ping_emails: list[str] = Field(max_length=50)
 
     @field_validator("always_ping_emails")
@@ -369,7 +394,7 @@ def _settings_response(settings: AlertSettings) -> SlackAlertSettingsResponse:
 
 
 def _unavailable(exc: ProgrammingError) -> HTTPException:
-    if not is_undefined_table_error(exc):
+    if not is_undefined_column_or_table_error(exc):
         raise exc
     return HTTPException(
         status_code=503,

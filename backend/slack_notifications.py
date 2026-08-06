@@ -83,6 +83,26 @@ class TrialSpend:
 
 
 @dataclass(frozen=True)
+class LiveTrialSpend:
+    id: str
+    name: str
+    task_id: str
+    experiment_id: str
+    model: str
+    cost_usd: float
+
+
+@dataclass(frozen=True)
+class UserSpend:
+    org_id: str
+    user_id: str
+    label: str
+    spend_24h_usd: float
+    daily_avg_7d_usd: float
+    live_trial_count: int
+
+
+@dataclass(frozen=True)
 class UnpricedModel:
     model: str
     trial_count: int
@@ -155,6 +175,8 @@ class TaskFinished:
 class AlertCandidates:
     experiments: list[ExperimentCandidate] = field(default_factory=list)
     trials: list[TrialSpend] = field(default_factory=list)
+    live_trials: list[LiveTrialSpend] = field(default_factory=list)
+    user_spend: list[UserSpend] = field(default_factory=list)
     unpriced_models: list[UnpricedModel] = field(default_factory=list)
     failed_experiments: list[FailedExperiment] = field(default_factory=list)
     failed_trials: list[FailedTrial] = field(default_factory=list)
@@ -334,24 +356,14 @@ def build_alerts(
             else DEFAULT_TRIAL_PING_USD
         )
         for trial in experiment_trials:
-            # The owner's DM answers to their personal floor and toggle. The
-            # escalation is shared oversight on the global threshold and ignores
-            # both -- so a personal floor set above $1k can't silence the
-            # channel, and a personal mute can't either.
-            escalated = trial.cost_usd > settings.trial_escalation_usd
             wants_dm = (
                 owner_prefs.expensive_trial_enabled and trial.cost_usd > trial_floor
             )
-            if not (escalated or wants_dm):
+            if not wants_dm:
                 continue
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
-            heading = (
-                ":rotating_light: *Very expensive trial*"
-                if escalated
-                else ":warning: *Expensive trial*"
-            )
             text = (
-                f"{heading}\n"
+                ":warning: *Expensive trial*\n"
                 f"Title: `{_escape(trial.name)}`\n"
                 f"Experiment: *{_escape(experiment.name)}*\n"
                 f"Cost in past 24 hours: *${trial.cost_usd:,.2f}*\n"
@@ -359,29 +371,66 @@ def build_alerts(
                 f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
                 f"<{task_url}|open task>"
             )
-            # Keys carry no threshold: interpolating an editable one would mint
-            # fresh keys on every retune and re-alert the whole window. A trial's
-            # cost is settled here, so one alert per trial is right either way.
-            if wants_dm:
-                alerts.append(
-                    SlackAlert(
-                        key=f"trial:{trial.id}",
-                        text=text,
-                        recipient_email=experiment.owner_email,
-                        recipient_clerk_user_id=experiment.owner_clerk_user_id,
-                        dm_only=True,
-                    )
+            alerts.append(
+                SlackAlert(
+                    key=f"trial:{trial.id}",
+                    text=text,
+                    recipient_email=experiment.owner_email,
+                    recipient_clerk_user_id=experiment.owner_clerk_user_id,
+                    dm_only=True,
                 )
-            if escalated:
-                alerts.append(
-                    SlackAlert(
-                        key=f"trial-escalation:{trial.id}",
-                        text=text,
-                        mention_emails=_mention_targets(
-                            experiment.owner_email, *settings.always_ping_emails
-                        ),
-                    )
-                )
+            )
+
+    experiments_by_id = {
+        experiment.id: experiment for experiment in candidates.experiments
+    }
+    for trial in candidates.live_trials:
+        if trial.cost_usd <= settings.trial_escalation_usd:
+            continue
+        experiment = experiments_by_id.get(trial.experiment_id)
+        owner_email = experiment.owner_email if experiment else None
+        task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
+        alerts.append(
+            SlackAlert(
+                key=f"trial-escalation:{trial.id}",
+                text=(
+                    ":rotating_light: *Very expensive running trial*\n"
+                    f"Title: `{_escape(trial.name)}`\n"
+                    f"Experiment: *{_escape(experiment.name if experiment else trial.experiment_id)}*\n"
+                    f"Live cost so far: *${trial.cost_usd:,.2f}*\n"
+                    f"Model: `{_escape(trial.model)}`\n"
+                    f"Author: *{_escape((experiment.owner if experiment else None) or 'Unknown')}*\n"
+                    f"<{task_url}|open task>"
+                ),
+                mention_emails=_mention_targets(
+                    owner_email, *settings.always_ping_emails
+                ),
+            )
+        )
+
+    for user in candidates.user_spend:
+        # Fire when a user's last-24h spend runs ahead of their own trailing
+        # seven-day daily pace by more than the admin margin -- a "spending
+        # unusually fast today" signal, not a comparison against other users.
+        overage_usd = user.spend_24h_usd - user.daily_avg_7d_usd
+        if overage_usd <= settings.user_daily_overage_delta_usd:
+            continue
+        alerts.append(
+            SlackAlert(
+                key=f"user-daily-overage:{user.org_id}:{user.user_id}",
+                text=(
+                    "<!channel>\n"
+                    ":moneybag: *User spend above their 7-day daily average*\n"
+                    f"User: *{_escape(user.label)}*\n"
+                    f"Spend in past 24 hours: *${user.spend_24h_usd:,.2f}*\n"
+                    f"Seven-day daily average: *${user.daily_avg_7d_usd:,.2f}*\n"
+                    f"Above their daily average by: *${overage_usd:,.2f}* "
+                    f"(alert above ${settings.user_daily_overage_delta_usd:,.2f})\n"
+                    f"Running or retrying trials included: {user.live_trial_count}\n"
+                    f"<{dashboard_url}/admin|open admin costs>"
+                ),
+            )
+        )
 
     for failed in candidates.failed_experiments:
         if (
@@ -474,9 +523,7 @@ def build_alerts(
     for task_finished in candidates.tasks_finished:
         if not prefs_for(task_finished.owner_email).task_finished_enabled:
             continue
-        bucket = _version_bucket(
-            task_finished.task_id, task_finished.task_version_id
-        )
+        bucket = _version_bucket(task_finished.task_id, task_finished.task_version_id)
         task_url = _task_url(
             dashboard_url, task_finished.task_id, task_finished.task_version_id
         )
@@ -559,6 +606,7 @@ def _owner_clerk_user_id_by_handle():
 async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     now = now or datetime.now(timezone.utc)
     cost_cutoff = now - timedelta(hours=24)
+    week_cutoff = now - timedelta(days=7)
     failure_cutoff = now - timedelta(hours=2)
     # Per run rather than at import: this is a long-lived container, so a
     # module-scope read would pin whatever was set when it first woke up.
@@ -573,6 +621,11 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     active_trial = and_(
         TrialModel.deleted_at.is_(None),
         TrialModel.status.in_(active_statuses),
+    )
+    live_trial = and_(
+        TrialModel.deleted_at.is_(None),
+        TrialModel.finished_at.is_(None),
+        TrialModel.status.in_([TrialStatus.RUNNING, TrialStatus.RETRYING]),
     )
 
     async with get_session() as session:
@@ -625,6 +678,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         # skip the experiment-scoped trial query.
         experiment_ids = [experiment.id for experiment in experiments]
         trial_rows = []
+        live_trial_rows = []
         if experiment_ids:
             trial_rows = (
                 await session.execute(
@@ -653,6 +707,78 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     .execution_options(include_deleted=True)
                 )
             ).all()
+            live_trial_rows = (
+                await session.execute(
+                    select(
+                        TrialModel.id,
+                        TrialModel.name,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.model,
+                        *settled_cost_columns(),
+                    )
+                    .where(
+                        TrialModel.experiment_id.in_(experiment_ids),
+                        live_trial,
+                        _real_spend_filter(),
+                    )
+                    .group_by(
+                        TrialModel.id,
+                        TrialModel.name,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.model,
+                    )
+                    .execution_options(include_deleted=True)
+                )
+            ).all()
+
+        within_24h = case(
+            (or_(TrialModel.finished_at >= cost_cutoff, live_trial), True), else_=False
+        )
+        user_spend_rows = (
+            await session.execute(
+                select(
+                    TrialModel.org_id,
+                    TrialModel.billed_user_id,
+                    UserModel.name,
+                    UserModel.github_username,
+                    UserModel.email,
+                    TrialModel.model,
+                    func.count(TrialModel.id)
+                    .filter(live_trial)
+                    .label("live_trial_count"),
+                    # Split each model group into its last-24h slice and the
+                    # rest of the seven-day window, so one query yields both the
+                    # daily average (whole window / 7) and today's spend.
+                    within_24h.label("within_24h"),
+                    *settled_cost_columns(),
+                )
+                .join(
+                    UserModel,
+                    and_(
+                        UserModel.id == TrialModel.billed_user_id,
+                        UserModel.org_id == TrialModel.org_id,
+                    ),
+                )
+                .where(
+                    UserModel.is_active.is_(True),
+                    UserModel.deleted_at.is_(None),
+                    _real_spend_filter(),
+                    or_(TrialModel.finished_at >= week_cutoff, live_trial),
+                )
+                .group_by(
+                    TrialModel.org_id,
+                    TrialModel.billed_user_id,
+                    UserModel.name,
+                    UserModel.github_username,
+                    UserModel.email,
+                    TrialModel.model,
+                    within_24h,
+                )
+                .execution_options(include_deleted=True)
+            )
+        ).all()
 
         # Trials that ran (recorded tokens) but settled to NULL cost: no native
         # cost and no token estimate. Grouping by model lets us alert once per
@@ -899,6 +1025,52 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         )
         for row in trial_rows
     ]
+    live_trials = [
+        LiveTrialSpend(
+            id=str(row.id),
+            name=str(row.name),
+            task_id=str(row.task_id),
+            experiment_id=str(row.experiment_id),
+            model=str(row.model),
+            cost_usd=settled_cost_from_row(row),
+        )
+        for row in live_trial_rows
+    ]
+    user_totals: dict[tuple[str, str], dict[str, object]] = {}
+    for row in user_spend_rows:
+        key = (str(row.org_id), str(row.billed_user_id))
+        current = user_totals.setdefault(
+            key,
+            {
+                "label": row.name
+                or (f"@{row.github_username}" if row.github_username else None)
+                or str(row.email).split("@", 1)[0],
+                "spend_7d_usd": 0.0,
+                "spend_24h_usd": 0.0,
+                "live_trial_count": 0,
+            },
+        )
+        row_cost = settled_cost_from_row(row)
+        current["spend_7d_usd"] = float(current["spend_7d_usd"]) + row_cost
+        if row.within_24h:
+            current["spend_24h_usd"] = float(current["spend_24h_usd"]) + row_cost
+        current["live_trial_count"] = int(current["live_trial_count"]) + int(
+            row.live_trial_count or 0
+        )
+    user_spend = [
+        UserSpend(
+            org_id=org_id,
+            user_id=user_id,
+            label=str(values["label"]),
+            spend_24h_usd=float(values["spend_24h_usd"]),
+            # The daily average is the whole rolling-seven-day spend spread over
+            # seven days; today's 24h slice is compared against it.
+            daily_avg_7d_usd=float(values["spend_7d_usd"]) / 7.0,
+            live_trial_count=int(values["live_trial_count"]),
+        )
+        for (org_id, user_id), values in user_totals.items()
+        if float(values["spend_7d_usd"]) > 0
+    ]
     unpriced_models = [
         UnpricedModel(
             model=str(row.model),
@@ -986,6 +1158,8 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         AlertCandidates(
             experiments=experiments,
             trials=trials,
+            live_trials=live_trials,
+            user_spend=user_spend,
             unpriced_models=unpriced_models,
             failed_experiments=failed_experiments,
             failed_trials=failed_trial_records,

@@ -57,6 +57,9 @@ function agentNotice(agent: string | null | undefined): string | null {
   if (name.includes("cursor-cli")) {
     return "Cursor sends messages and tool calls after they finish. Work in progress may not appear right away.";
   }
+  if (name.includes("grok-build")) {
+    return "Grok streams its replies and reasoning. Its tool calls and token usage are not in the live stream — they appear in the trajectory once the run finishes.";
+  }
   return null;
 }
 

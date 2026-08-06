@@ -46,7 +46,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 # Plain Anthropic-style id (no Bedrock inference-profile mapping): the
 # classifier and trajectory analyzers route non-Bedrock Claude ids to the
 # direct Anthropic API.
-ANALYSIS_MODEL = "claude-haiku-4-5"
+ANALYSIS_MODEL = "claude-sonnet-5"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
@@ -54,6 +54,11 @@ ANALYSIS_MODEL = "claude-haiku-4-5"
 # TrialClassifier model. Normalized to a direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
 VERDICT_MODEL = "gpt-5.4"
+# Used only when VERDICT_MODEL's provider returns a permanent error (see
+# provider_failures). Deliberately a different *provider*, not just a different
+# model: the failure mode this exists for is a whole OpenAI/Azure resource
+# going away, which a sibling OpenAI model would share.
+VERDICT_FALLBACK_MODEL = ANALYSIS_MODEL
 PRE_TRIAL_MODEL = ANALYSIS_MODEL
 
 PROBE_MODEL_ROTATION: list[str] = [
@@ -146,8 +151,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# Pin of abundant-ai/harbor@main (upstream-style NetworkPolicy; no fork Modal CIDR stack).
-HARBOR_DEFAULT_SHA = "12929b0ec9386f983ec9243b5daadd6b80d1010a"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #19
+# adds per-model Grok Build context-window overrides.
+HARBOR_DEFAULT_SHA = "4440acb85122d293629f083262c13700f965a867"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -677,6 +683,7 @@ _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Without it, Bedrock rejects every call with "data retention mode
     # 'default' is not available for this model".
     "claude-fable-5": "global.anthropic.claude-fable-5",
+    "claude-opus-5": "global.anthropic.claude-opus-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -945,22 +952,39 @@ def _normalize_model_provider(provider: str) -> str | None:
 
 
 def _get_provider_from_model(model_name: str) -> str | None:
+    """Canonical provider for a model id, or ``None`` when not classifiable.
+
+    Shares the single resolution ladder in ``_infer_provider_prefix`` with
+    ``infer_model_provider_prefix`` so a future provider or alias fix lands in
+    one place. This caller differs only in two explicit policies: it does not
+    apply the bare-id heuristics, and it does not fall back to the raw prefix
+    for a provider the normalizer does not recognise -- an unknown provider must
+    stay ``None`` here rather than leak an unnormalized name to callers.
+    """
     if looks_like_bedrock_model_id(model_name):
         return "bedrock"
-    provider_prefix, _ = split_provider_model_name(model_name)
-    if provider_prefix:
-        return _normalize_model_provider(provider_prefix)
-    try:
-        _, llm_provider, _, _ = get_llm_provider(model=model_name)
-    except Exception:
-        llm_provider = None
-    if llm_provider:
-        return _normalize_model_provider(str(llm_provider))
-    return None
+    prefix = _infer_provider_prefix(model_name, allow_bare_heuristics=False)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix)
 
 
-def _infer_provider_prefix(model_name: str) -> str | None:
-    """Infer a canonical provider prefix for a model name, if possible."""
+def _infer_provider_prefix(
+    model_name: str, *, allow_bare_heuristics: bool = True
+) -> str | None:
+    """Infer a canonical provider prefix for a model name, if possible.
+
+    The single resolution ladder shared by ``infer_model_provider_prefix`` and
+    ``_get_provider_from_model``: explicit ``provider/`` prefix, then litellm,
+    then -- only when *allow_bare_heuristics* -- the bare-id heuristics. Callers
+    that must not guess from an unprefixed id pass ``allow_bare_heuristics=False``.
+
+    Adding a rung ABOVE the ``allow_bare_heuristics`` gate changes both callers,
+    and ``_get_provider_from_model`` decides whether Azure credentials are minted
+    (``_trial_uses_openai_provider``) and which provider key a job-scoped token
+    carries (``job_tokens.scoped_model_env``) -- so a rung meant only for host
+    inference must go BELOW the gate.
+    """
     provider_prefix, _ = split_provider_model_name(model_name)
     if provider_prefix:
         normalized = provider_prefix.strip().lower()
@@ -973,6 +997,9 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     if llm_provider:
         normalized = str(llm_provider).strip().lower()
         return normalized or None
+
+    if not allow_bare_heuristics:
+        return None
 
     # Heuristic fallback for common bare model aliases.
     lowered = model_name.strip().lower()
@@ -994,6 +1021,29 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         return XAI_PROVIDER
 
     return None
+
+
+def infer_model_provider_prefix(model_name: str | None) -> str | None:
+    """Canonical provider for a model id, bare or slash-prefixed.
+
+    Resolves ``openai/gpt-x`` and bare ``gpt-x`` / ``o3`` alike to their provider
+    so transport-key derivation does not depend on the id being slash-prefixed,
+    and normalizes provider aliases (``claude`` -> ``anthropic``, ``vertex_ai`` /
+    ``palm`` -> ``gemini``, ``moonshotai`` -> ``moonshot``, ...) to their canonical
+    name so key/host maps keyed on the canonical provider match. Falls back to the
+    raw prefix when the provider is unknown to the normalizer.
+    """
+    if not model_name:
+        return None
+    # Bare Bedrock ids (e.g. ``global.anthropic.*``) carry no slash prefix and
+    # are not litellm-classifiable, so resolve them explicitly the way
+    # _get_provider_from_model does before falling through to prefix inference.
+    if looks_like_bedrock_model_id(model_name):
+        return "bedrock"
+    prefix = _infer_provider_prefix(model_name)
+    if not prefix:
+        return None
+    return _normalize_model_provider(prefix) or prefix
 
 
 # Canonical deployed-backend API base URLs (single source of truth; the CLI in
@@ -1068,6 +1118,28 @@ class Settings(BaseSettings):
     # stops a start-then-cancel loop from bypassing the cap. A genuinely-$0 row
     # (cost_usd = 0) is always left untouched.
     unpriced_trial_cost_usd: Decimal = Decimal("0.00")
+    # Count analyzer/QA spend (``analysis_costs``) and sandbox compute
+    # (``modal_cost_spans``) toward the quota caps, not just trial inference. Both
+    # tables already carry ``org_id``/``billed_user_id`` and are charged per user
+    # on the cost dashboards, so the caps otherwise sit below real spend. Ships
+    # inert (like ``default_org_monthly_quota_usd``): turning it on lowers every
+    # payer's effective headroom at once, so it is a deliberate operator flip via
+    # ``ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE``.
+    quota_counts_analysis_and_compute: bool = False
+    # Rolling-24h ceiling on an org's POOLED unattributed spend (trials whose
+    # payer could not be resolved). Such a trial has no per-user cap to charge --
+    # ``quotas`` rows are keyed (org_id, user_id) and a pool has no user -- so
+    # this is the only lever that exists for it, and it is deliberately its own
+    # knob rather than reusing ``default_daily_quota_usd`` (which would move
+    # every user in every org). ``None`` means no pooled ceiling (ships inert):
+    # the pool only ever drains by 24h aging, so a too-low value blocks retries
+    # until attribution is repaired.
+    unattributed_pool_limit_usd: Decimal | None = None
+    # Opt in to the old degrade-to-off behaviour when the quota schema is
+    # incomplete at startup. Off by default: under ENFORCE an unmetered billing
+    # system is worse than a down one, so a deploy-before-migrate should fail
+    # loudly rather than serve every request uncapped.
+    allow_quota_schema_degrade: bool = False
     quota_mode: QuotaMode = QuotaMode.ENFORCE
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim
@@ -1107,9 +1179,15 @@ class Settings(BaseSettings):
     live_tail_interval_sec: float = 30.0
 
     harbor_source_repo: str = "abundant-ai/harbor"
-    # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
-    # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "main"
+    # Ref the probe `harbor src` command fetches (a codeload tarball, which takes
+    # a branch, tag, or commit alike). It is HARBOR_DEFAULT_SHA -- the exact
+    # commit baked into the worker image -- and not the floating branch the
+    # dependency source tracks: a branch here would resolve to whatever main is
+    # at request time, so the moment harbor main moved past the lock a probe
+    # would read different code than the trial it is probing. Deriving it from
+    # the constant keeps the two aligned by construction, so a re-pin cannot
+    # move the worker without moving the probe.
+    harbor_source_ref: str = HARBOR_DEFAULT_SHA
 
     registry_auth_key: str | None = None
 
@@ -1129,7 +1207,15 @@ class Settings(BaseSettings):
     # once stopped for ``daytona_auto_delete_interval_mins`` it is deleted.
     # This is the backstop for sandboxes that escape explicit teardown via
     # ``cancel_job_by_worker``; 0 disables auto-stop, so keep it positive.
-    daytona_auto_stop_interval_mins: int = 30
+    # Ephemeral sandboxes (below) force ``auto_delete_interval=0`` harbor-side,
+    # so an auto-stop there is an immediate delete. 30min was short enough
+    # that the idle window during a separate-verifier artifact upload
+    # (GB-scale ``.lake`` payloads on the formal-verification tasks) got the
+    # verifier sandbox reaped mid-upload -- surfacing as ``DaytonaError 404:
+    # not found: sandbox <id> ... (it has been deleted)`` on
+    # ``/toolbox/<id>/files/bulk-upload``. 16 trials in experiment
+    # ``e127df61`` died that way on 2026-07-24.
+    daytona_auto_stop_interval_mins: int = 120
     daytona_auto_delete_interval_mins: int = 60
 
     # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
@@ -1168,7 +1254,27 @@ class Settings(BaseSettings):
 
     # Single source of truth for the pre-trial-synthesis timeout. oddish/ can't
     # import backend/, so this lives here rather than as a shared constant.
-    pre_trial_timeout: float = 180.0
+    # 180s was sized for the old sandbox path and proved to be right at the
+    # edge for the worker-local CLI audit: prod audits that finished took
+    # 108-142s, and the ones that hit the cap died at exactly 180.02s losing
+    # the whole run (the CLI buffers its envelope, so a timeout saves 0 bytes).
+    # The claim lease is pre_trial_timeout + 900 + 60, so it still outlives this.
+    # 600s then reproduced the same shape one notch up, measured over the runs
+    # after #959 unblocked parsing: 46 audits finished (p50 309s, p90 480s, max
+    # 561s) while 13 more died at exactly 600.0s -- 18% of all runs, and 11 of
+    # those 13 tasks never got an audit at all. A cap only 1.25x p90 truncates
+    # the tail of a healthy distribution rather than catching runaways, and a
+    # timed-out audit is a total loss, so this is set clear of the observed max.
+    pre_trial_timeout: float = 1200.0
+
+    # Run post-trial QA classification inside a Daytona sandbox instead of a
+    # worker-local Claude Code subprocess. Off by default: the classifier is
+    # restricted to Read/Glob over two already-downloaded directories, so it
+    # gains no isolation from a sandbox while paying provisioning latency and
+    # compute for every classified trial -- the highest-volume analysis path
+    # there is. Enable only to give the classifier capabilities (shell, the
+    # verifier) that the local subprocess deliberately withholds.
+    post_trial_sandbox_enabled: bool = False
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``
@@ -1246,6 +1352,7 @@ class Settings(BaseSettings):
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
+    verdict_fallback_model: str = VERDICT_FALLBACK_MODEL
     pre_trial_model: str = PRE_TRIAL_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)

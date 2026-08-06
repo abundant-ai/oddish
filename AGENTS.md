@@ -60,7 +60,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
 ├── deploy.py                   # Modal app entrypoint
-├── modal_app.py                # Modal image, volumes, shared runtime, env knobs
+├── modal_app.py                # Modal image, volumes, shared runtime, env knobs; default Harbor provider is Daytona
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
@@ -127,12 +127,21 @@ High-level flow:
    failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Trajectory analysis is **task-scoped**: when every trial of a
+4. Scoped QA assignments enqueue independent `ANALYZER_BLOCK` jobs through
+   `oddish.core.qa_assignments.enqueue_qa_assignment_runs_core`. `pre_trial`
+   fires once per assignment and task version during sweep submission;
+   `post_trial` fires once per assignment and final terminal trial. The
+   `(qa_assignment_id, stage_event_key)` partial unique index makes lifecycle
+   retries idempotent. These jobs are additive and non-blocking: their failure
+   does not change trial state or the built-in task verdict pipeline. API
+   assignments are prompt-only; sandbox assignments may request an
+   authenticated short-lived Oddish CLI.
+5. Trajectory analysis is **task-scoped**: when every trial of a
    `run_analysis` task is terminal, a single `QA` job is enqueued. That one
    job classifies every live trial's trajectory (written to `trials.analysis`)
    and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
    tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
-5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
+6. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
    codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
@@ -150,7 +159,14 @@ High-level flow:
    identifiers. Claude message payloads also carry a `block_index` and
    `text_mode` (`append` or `replace`) so clients can assemble corrected text
    snapshots without concatenating stale content.
-6. Trial completion persists queryable execution metrics on the trial row:
+   Each persisted cost checkpoint re-evaluates enforced quotas. Reaching a
+   payer's rolling-24h cap cancels every quota-counted nonterminal trial billed
+   to that payer; reaching the org's monthly cap cancels every quota-counted
+   nonterminal trial in the org. Final result settlement performs the same
+   check for agents without live usage. Cancellation retires queued, running,
+   blocked, and retrying worker jobs in the database before terminating remote
+   handles; a task is failed only when no other live trial remains.
+7. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
@@ -188,6 +204,12 @@ seed missing built-in kinds at startup without overwriting operator edits. A
 trial classification records the post-trial prompt kind and version in
 `trials.analysis`; local/library classification without a registry row falls
 back to the packaged `analyze/classify_prompt.txt`.
+
+Hosted prompt overrides may be scoped to an org, user, experiment, task, or
+trial. Resolution is trial → task → experiment → user → org → global, and every
+domain-scoped read must first verify that the target belongs to the active org.
+Scoped prompt identity includes `org_id`; in particular, the same user may have
+independent overrides for the same kind in multiple organizations.
 
 ### Worker job kinds
 
@@ -234,6 +256,15 @@ or persisted. The `api` backend is prompt-only and rejects CLI access.
   `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
   the shared `classify_trial_and_store`, then synthesize the task verdict
+- post-trial classification runs through `AnalyzerBlock`. It reads two
+  already-downloaded directories and executes nothing, so `resolve_substrate`
+  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
+  `post_trial_sandbox_enabled` is the operator opt-in that lifts it into a
+  Daytona `SANDBOX`, which restores the task/trial snapshot at the worker's own
+  absolute paths so no prompt rewriting is involved. Its costs use the
+  `post_trial` job kind; the legacy `trial_classifier` cost bucket is retired at
+  this cutover, and every block row carries `block_metadata.cost_status`
+  (`recorded` | `no_usage` | `failed`) so lost spend is queryable.
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over
@@ -480,7 +511,7 @@ extensions) — see `backend/README.md`.
 | Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
 | Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
 | Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
-| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/browse/experiment-options` (typeahead for the experiment filter; `facets.experiments` is deprecated/always empty; the other facet lists are served from the `trial_facets` vocabulary — write-through on trial creation plus a periodic rebuild sweep, see `oddish/src/oddish/core/trial_facets.py`), `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `PUT /tasks/{task_id}/versions/{version}/default`, `POST /tasks/cancel` |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
 | Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
@@ -546,6 +577,12 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`grok_build_session.py`). If the session store is missing it falls back to
   the text-only stdout trajectory. Do not "fix" trajectories by parsing stdout —
   the tool calls are only in the session store.
+- The grok **live** transcript is the one reader that does parse stdout
+  (`GrokBuildFold` in `live_tail.py` tails `/logs/agent/grok-build.json`): the
+  session store is copied into the trial logs only after the run, so it cannot
+  feed a live view. That panel is therefore text and reasoning only, with no
+  tool calls and no running token/cost counters; it is not the trajectory and
+  must not be used to build one.
 
 Storage defaults:
 

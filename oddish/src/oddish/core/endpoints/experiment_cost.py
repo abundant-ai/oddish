@@ -71,6 +71,7 @@ from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.endpoints.qa_cost import get_experiment_qa_cost_totals
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db.models import TrialModel
 from oddish.model_pricing import estimate_cost_usd
@@ -235,8 +236,22 @@ def fold_experiment_cost_groups(rows) -> ExperimentCostTotals:
 async def get_experiment_cost_totals(
     session: AsyncSession, *, experiment_id: str, org_id: str | None = None
 ) -> ExperimentCostTotals:
-    """Cost rollup over every member trial, independent of paging."""
+    """Cost rollup over every member trial, independent of paging.
+
+    QA spend is a second, cheaper aggregate over ``analysis_costs`` rather than
+    a widening of the group-by above: the two ledgers have different grains
+    (one row per trial vs one row per analysis job), so joining them would
+    multiply the trial rows.
+    """
     result = await session.execute(
         experiment_cost_groups_select(experiment_id, org_id=org_id)
     )
-    return fold_experiment_cost_groups(result.all())
+    totals = fold_experiment_cost_groups(result.all())
+
+    qa = await get_experiment_qa_cost_totals(
+        session, experiment_id=experiment_id, org_id=org_id
+    )
+    totals.qa_cost_usd = qa.qa_cost_usd
+    totals.owned_qa_cost_usd = qa.owned_qa_cost_usd
+    totals.qa_has_estimated = qa.qa_has_estimated
+    return totals

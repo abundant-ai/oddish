@@ -9,6 +9,7 @@ from live_tail_fakes import (
     FakeResult,
     b64,
     b64_raw,
+    insert_params,
     make_tailer,
     patch_db,
     update_params,
@@ -18,7 +19,9 @@ from oddish.workers.harbor.live_tail import (
     ClaudeUsageFold,
     CodexUsageFold,
     CursorUsageFold,
+    GrokBuildFold,
     MiniSweUsageFold,
+    TbhFold,
     UsageTotals,
     price_totals,
     split_lines,
@@ -63,6 +66,37 @@ def test_fold_keeps_last_usage_per_message_id():
     assert totals.cache_write_tokens == 20
     assert totals.output_tokens == 50 + 7
     assert totals.model == "claude-opus-4-8"
+
+
+def test_live_tail_exact_redaction_happens_before_event_buffering():
+    runtime_endpoint = "https://private-runtime-route.test/v1"
+    runtime_secret = "private-runtime-secret"
+    tailer = make_tailer(FakeEnv([]))
+    tailer.runtime_redactions = {
+        runtime_endpoint: "https://runtime-model-endpoint.invalid",
+        runtime_secret: "[REDACTED]",
+    }
+    content = [
+        {
+            "type": "text",
+            "text": f"warning={runtime_endpoint} token={runtime_secret}",
+        }
+    ]
+
+    tailer._feed_tail_chunk(
+        assistant_line(
+            "msg_redacted",
+            {"input_tokens": 1, "output_tokens": 1},
+            content=content,
+        )
+        + b"\n"
+    )
+
+    buffered = json.dumps(tailer.pending_events)
+    assert runtime_endpoint not in buffered
+    assert runtime_secret not in buffered
+    assert "runtime-model-endpoint.invalid" in buffered
+    assert "[REDACTED]" in buffered
 
 
 def test_claude_fold_suppresses_exact_duplicate_assistant_content():
@@ -266,6 +300,8 @@ def test_adapter_dispatch():
     assert live_tail.supports("cursor-cli")
     assert live_tail.supports("cursor-cli-api-key-no-search")
     assert live_tail.supports("mini-swe-agent")
+    assert live_tail.supports("grok-build")
+    assert live_tail.supports("grok-build-chat-completions")
     assert not live_tail.supports("gemini-cli")
     assert not live_tail.supports("terminus-2")
     assert not live_tail.supports("")
@@ -288,6 +324,10 @@ def test_adapter_dispatch():
     assert mini.log_path == "/logs/agent/mini-swe-agent.trajectory.json"
     assert mini.snapshot is True
     assert isinstance(mini.make_fold("m"), MiniSweUsageFold)
+    grok = live_tail._adapter_for("grok-build")
+    assert grok.log_path == "/logs/agent/grok-build.json"
+    assert grok.snapshot is False
+    assert isinstance(grok.make_fold("m"), GrokBuildFold)
 
 
 def codex_line(obj) -> bytes:
@@ -478,6 +518,56 @@ async def test_codex_tick_tails_codex_log_and_checkpoints(monkeypatch):
     assert params[-1]["cache_write_tokens"] == 0
     assert params[-1]["output_tokens"] == 3
     assert params[-1]["cost_usd"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_cost_checkpoint_enforces_trial_quota(monkeypatch):
+    from oddish.core import quota_enforcement
+
+    patch_db(monkeypatch, price=0.25)
+    calls = []
+
+    async def record_enforcement(*, org_id, billed_user_id, caller_trial_id):
+        calls.append((org_id, billed_user_id, caller_trial_id))
+        return 0
+
+    monkeypatch.setattr(quota_enforcement, "enforce_trial_quotas", record_enforcement)
+    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
+    tailer = make_tailer(env)
+    tailer.org_id = "org-1"
+    tailer.billed_user_id = "user-1"
+
+    await tailer._tick()
+
+    assert calls == [("org-1", "user-1", "t1")]
+
+
+@pytest.mark.asyncio
+async def test_failed_quota_enforcement_retries_same_cost_checkpoint(monkeypatch):
+    from oddish.core import quota_enforcement
+
+    session = patch_db(monkeypatch, price=0.25)
+    outcomes = [None, 0]
+
+    async def enforce_once_then_succeed(**_kwargs):
+        return outcomes.pop(0)
+
+    monkeypatch.setattr(
+        quota_enforcement, "enforce_trial_quotas", enforce_once_then_succeed
+    )
+    tailer = make_tailer(FakeEnv([]))
+    tailer.org_id = "org-1"
+    tailer.billed_user_id = "user-1"
+    tailer.fold.feed_line(assistant_line("m", {"input_tokens": 1}))
+
+    await tailer._persist_tick()
+    assert tailer._last_written is None
+    assert tailer._last_cost is None
+
+    await tailer._persist_tick()
+    assert len(update_params(session)) == 2
+    assert tailer._last_written is not None
+    assert tailer._last_cost == 0.25
 
 
 @pytest.mark.asyncio
@@ -738,6 +828,159 @@ async def test_cursor_tick_tails_cursor_log_and_checkpoints(monkeypatch):
     assert params[-1]["cache_write_tokens"] == 1
     assert params[-1]["output_tokens"] == 3
     assert params[-1]["cost_usd"] == 0.75
+
+
+def grok_line(obj) -> bytes:
+    return json.dumps(obj).encode()
+
+
+def test_grok_fold_coalesces_chunks_until_the_kind_changes():
+    fold = GrokBuildFold()
+    assert fold.feed_line(grok_line({"type": "thought", "text": "plan"})) == []
+    assert fold.feed_line(grok_line({"type": "thinking", "text": "ning"})) == []
+    # The reasoning run closes only when assistant text starts.
+    assert fold.feed_line(grok_line({"type": "text", "data": "hello "})) == [
+        {"kind": "message", "payload": {"text": "planning"}}
+    ]
+    assert fold.feed_line(grok_line({"type": "end", "sessionId": "s1"})) == [
+        {"kind": "message", "payload": {"text": "hello "}}
+    ]
+
+
+def test_grok_fold_skips_blank_and_unparsable_lines():
+    fold = GrokBuildFold()
+    assert fold.feed_line(b"not json") == []
+    assert fold.feed_line(grok_line({"type": "text", "text": ""})) == []
+    assert fold.feed_line(grok_line({"type": "end"})) == []
+
+
+def test_grok_fold_reads_past_an_empty_alias_to_the_populated_one():
+    fold = GrokBuildFold()
+    fold.feed_line(grok_line({"type": "text", "data": "", "text": "hello"}))
+    assert fold.flush() == [{"kind": "message", "payload": {"text": "hello"}}]
+
+
+def test_grok_fold_flushes_a_long_run_before_it_overflows_the_payload_clip():
+    fold = GrokBuildFold()
+    chunk = "x" * (live_tail.PAYLOAD_CLIP_CHARS // 2 + 1)
+    assert fold.feed_line(grok_line({"type": "text", "text": chunk})) == []
+    # The second chunk would overflow the clip, so the buffered run is emitted
+    # first: no payload is ever built past the clip and truncated.
+    assert fold.feed_line(grok_line({"type": "text", "text": chunk})) == [
+        {"kind": "message", "payload": {"text": chunk}}
+    ]
+    assert fold.flush() == [{"kind": "message", "payload": {"text": chunk}}]
+
+
+def test_grok_fold_splits_one_oversized_stream_chunk_without_losing_text():
+    fold = GrokBuildFold()
+    text = "x" * (live_tail.PAYLOAD_CLIP_CHARS + 952)
+    rendered = fold.feed_line(grok_line({"type": "thought", "data": text}))
+    rendered.extend(fold.flush())
+    assert [event["payload"]["text"] for event in rendered] == [
+        text[: live_tail.PAYLOAD_CLIP_CHARS],
+        text[live_tail.PAYLOAD_CLIP_CHARS :],
+    ]
+    assert "".join(event["payload"]["text"] for event in rendered) == text
+    assert all("truncated" not in event["payload"] for event in rendered)
+
+
+def test_grok_fold_flush_gives_up_a_quiet_partial_run():
+    fold = GrokBuildFold()
+    fold.feed_line(grok_line({"type": "text", "text": "short answer"}))
+    assert fold.flush() == [{"kind": "message", "payload": {"text": "short answer"}}]
+    # The buffer is spent, so a second flush (next tick, or run teardown) is a
+    # no-op rather than a duplicate.
+    assert fold.flush() == []
+
+
+@pytest.mark.parametrize(
+    "fold",
+    [ClaudeUsageFold(), CodexUsageFold(), CursorUsageFold(), MiniSweUsageFold()],
+)
+def test_per_line_folds_have_nothing_to_flush(fold):
+    assert fold.flush() == []
+
+
+def test_grok_fold_drops_the_partial_buffer_on_truncate():
+    fold = GrokBuildFold()
+    fold.feed_line(grok_line({"type": "text", "text": "dead arm"}))
+    fold.on_truncate()
+    assert fold.feed_line(grok_line({"type": "end"})) == []
+
+
+def test_grok_fold_reports_no_usage():
+    fold = GrokBuildFold(model="v9m-rl-learnability-tp8")
+    fold.feed_line(grok_line({"type": "text", "text": "hi"}))
+    assert fold.has_usage is False
+    assert fold.totals() == UsageTotals(model="v9m-rl-learnability-tp8")
+
+
+@pytest.mark.asyncio
+async def test_grok_tick_tails_stdout_and_skips_the_usage_checkpoint(monkeypatch):
+    session = patch_db(monkeypatch, price=0.5)
+    raw = (
+        grok_line({"type": "thought", "text": "think"})
+        + b"\n"
+        + grok_line({"type": "text", "text": "answer"})
+        + b"\n"
+        + grok_line({"type": "end", "sessionId": "s1"})
+        + b"\n"
+    )
+    env = FakeEnv([b64(raw)])
+    tailer = make_tailer(env, agent="grok-build", model="v9m-rl-learnability-tp8")
+    await tailer._tick()
+    assert "'/logs/agent/grok-build.json'" in env.commands[0]
+    assert [row["payload"]["text"] for row in insert_params(session)] == [
+        "think",
+        "answer",
+    ]
+    # Grok's stdout carries no token usage, so the trial row is never updated.
+    assert update_params(session) == []
+
+
+@pytest.mark.asyncio
+async def test_grok_tick_emits_a_partial_run_without_waiting_for_end(monkeypatch):
+    """A quiet same-kind stream must reach the panel on the tick, not at 2048 chars."""
+    session = patch_db(monkeypatch)
+    raw = grok_line({"type": "text", "text": "still working"}) + b"\n"
+    env = FakeEnv([b64(raw)])
+    tailer = make_tailer(env, agent="grok-build")
+    await tailer._tick()
+    assert [row["payload"]["text"] for row in insert_params(session)] == [
+        "still working"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_grok_tick_leaves_the_buffer_alone_once_replaced(monkeypatch):
+    """A replaced tailer shares its fold, so it must not drain what it will drop."""
+    patch_db(monkeypatch)
+    raw = grok_line({"type": "text", "text": "replacement output"}) + b"\n"
+    tailer = make_tailer(FakeEnv([b64(raw)]), agent="grok-build")
+    tailer._feed_tail_chunk(
+        grok_line({"type": "thought", "text": "mid-flight"}) + b"\n"
+    )
+    offset = tailer.offset
+    tailer.replaced = True
+    await tailer._tick()
+    assert tailer.offset == offset
+    assert tailer.fold.flush() == [
+        {"kind": "message", "payload": {"text": "mid-flight"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_grok_run_teardown_emits_the_buffered_tail(monkeypatch):
+    """A run that dies before grok writes ``end`` still persists its last text."""
+    session = patch_db(monkeypatch)
+    # An empty tail reply, so the only text in play is what the fold already
+    # buffered before the run was told to stop.
+    tailer = make_tailer(FakeEnv([]), agent="grok-build")
+    tailer._feed_tail_chunk(grok_line({"type": "text", "text": "last words"}) + b"\n")
+    tailer.request_stop()
+    await tailer.run()
+    assert [row["payload"]["text"] for row in insert_params(session)] == ["last words"]
 
 
 def mini_trajectory(messages, model="anthropic/claude-opus-4-8", cost=None):
@@ -1329,3 +1572,148 @@ async def test_replaced_tailer_skips_checkpoint(monkeypatch):
     tailer.replaced = True
     await tailer._tick()
     assert session.stmts == []
+
+
+def tbh_line(payload_type: str, payload: dict) -> bytes:
+    """One line of tbh's ``exec --json`` stdout: a flat record envelope."""
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "stream": {"kind": "session", "id": "sess-1"},
+            "sequence": 1,
+            "recorded_at": 1785448022061337,
+            "record_type": "event",
+            "durability": "durable",
+            "payload_type": payload_type,
+            "payload": payload,
+        }
+    ).encode()
+
+
+def test_tbh_adapter_is_registered():
+    adapter = live_tail._adapter_for("tbh")
+    assert adapter.log_path == "/logs/agent/tbh.txt"
+    assert adapter.snapshot is False
+    assert isinstance(adapter.make_fold("striking_tomcat172"), TbhFold)
+
+
+def test_tbh_fold_coalesces_output_deltas():
+    fold = TbhFold(model="striking_tomcat172")
+    assert fold.feed_line(tbh_line("run.output.delta", {"text": "Look"})) == []
+    assert fold.feed_line(tbh_line("run.output.delta", {"text": "ing..."})) == []
+    # The terminal record repeats the whole turn; the buffer is given up rather
+    # than emitted twice.
+    events = fold.feed_line(
+        tbh_line(
+            "run.terminal.completed", {"text": "Looking...", "terminal": "completed"}
+        )
+    )
+    assert events == [{"kind": "message", "payload": {"text": "Looking..."}}]
+
+
+def test_tbh_fold_renders_a_tool_call_and_its_result():
+    fold = TbhFold()
+    assert (
+        fold.feed_line(
+            tbh_line(
+                "task.lifecycle.proposed",
+                {"event": {"kind": "proposed", "task_id": "t1", "task_kind": "bash"}},
+            )
+        )
+        == []
+    )
+    started = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.started", {"event": {"kind": "started", "task_id": "t1"}}
+        )
+    )
+    assert started == [{"kind": "tool_use", "payload": {"input": "{}", "name": "bash"}}]
+    done = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.completed",
+            {"event": {"kind": "completed", "task_id": "t1", "output": "1 passed"}},
+        )
+    )
+    assert done == [{"kind": "tool_result", "payload": {"content": "1 passed"}}]
+
+
+def test_tbh_fold_marks_a_failed_tool():
+    fold = TbhFold()
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.proposed",
+            {"event": {"kind": "proposed", "task_id": "t1", "task_kind": "bash"}},
+        )
+    )
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.started", {"event": {"kind": "started", "task_id": "t1"}}
+        )
+    )
+    events = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.failed",
+            {"event": {"kind": "failed", "task_id": "t1", "reason": "exit 1"}},
+        )
+    )
+    assert events == [{"kind": "tool_result", "payload": {"content": "failed: exit 1"}}]
+
+
+def test_tbh_fold_ignores_the_model_turn_scheduled_as_a_task():
+    # The model turn is a task too; it is represented by its streamed text, not
+    # as a tool call.
+    fold = TbhFold()
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.proposed",
+            {
+                "event": {
+                    "kind": "proposed",
+                    "task_id": "t1",
+                    "task_kind": "model.unknown.response",
+                }
+            },
+        )
+    )
+    assert (
+        fold.feed_line(
+            tbh_line(
+                "task.lifecycle.started",
+                {"event": {"kind": "started", "task_id": "t1"}},
+            )
+        )
+        == []
+    )
+
+
+def test_tbh_fold_flushes_buffered_text_before_a_tool_call():
+    fold = TbhFold()
+    fold.feed_line(tbh_line("run.output.delta", {"text": "Running tests"}))
+    fold.feed_line(
+        tbh_line(
+            "task.lifecycle.proposed",
+            {"event": {"kind": "proposed", "task_id": "t1", "task_kind": "bash"}},
+        )
+    )
+    events = fold.feed_line(
+        tbh_line(
+            "task.lifecycle.started", {"event": {"kind": "started", "task_id": "t1"}}
+        )
+    )
+    assert events[0] == {"kind": "message", "payload": {"text": "Running tests"}}
+    assert events[1]["kind"] == "tool_use"
+
+
+def test_tbh_fold_reports_no_usage():
+    # Usage is only in the post-run session export, so the live panel must not
+    # touch the trial's token/cost columns.
+    fold = TbhFold(model="striking_tomcat172")
+    assert fold.has_usage is False
+    assert fold.totals() == UsageTotals(model="striking_tomcat172")
+
+
+def test_tbh_fold_drops_its_buffer_when_the_log_is_re_teed():
+    fold = TbhFold()
+    fold.feed_line(tbh_line("run.output.delta", {"text": "partial"}))
+    fold.on_truncate()
+    assert fold.flush() == []

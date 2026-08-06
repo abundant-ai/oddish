@@ -1,6 +1,16 @@
 import type { Task, Trial } from "@/lib/types";
 
 const DEFAULT_EXPERIMENT_MODEL_KEY = "default";
+const GEMINI_35_DISPLAY_AGENT = "gemini-cli";
+const GEMINI_35_DISPLAY_MODEL = "gemini/gemini-3.5-flash";
+const GEMINI_35_AGENT_ALIASES = new Set([
+  "gemini-cli",
+  "gemini-cli-api-key-no-search",
+]);
+const GEMINI_35_MODEL_ALIASES = new Set([
+  "gemini/gemini-3.5-flash",
+  "google/gemini-3.5-flash",
+]);
 
 export const PROBE_AGENT_KEY = "probe";
 
@@ -43,36 +53,61 @@ function getModelKey(model: string | null | undefined): string {
   return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_EXPERIMENT_MODEL_KEY;
 }
 
+function getDisplayAgentModel(
+  trial: Pick<Trial, "agent" | "model">
+): Pick<Trial, "agent" | "model"> {
+  const agent = trial.agent.trim().toLowerCase();
+  const model = trial.model?.trim().toLowerCase() ?? null;
+
+  // These historical labels represent the same Gemini CLI + Flash 3.5
+  // execution cohort. Canonicalize only the experiment display key; the
+  // underlying trial metadata and provenance remain unchanged.
+  if (
+    GEMINI_35_AGENT_ALIASES.has(agent) &&
+    model !== null &&
+    GEMINI_35_MODEL_ALIASES.has(model)
+  ) {
+    return {
+      agent: GEMINI_35_DISPLAY_AGENT,
+      model: GEMINI_35_DISPLAY_MODEL,
+    };
+  }
+
+  return trial;
+}
+
 function getModelScopedAgents(tasks: Task[]): Set<string> {
   const modelsByAgent = new Map<string, Set<string>>();
 
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
       if (trial.is_probe) continue;
-      const existing = modelsByAgent.get(trial.agent) ?? new Set<string>();
-      existing.add(getModelKey(trial.model));
-      modelsByAgent.set(trial.agent, existing);
+      const display = getDisplayAgentModel(trial);
+      const existing = modelsByAgent.get(display.agent) ?? new Set<string>();
+      existing.add(getModelKey(display.model));
+      modelsByAgent.set(display.agent, existing);
     }
   }
 
   return new Set(
     Array.from(modelsByAgent.entries())
       .filter(([, models]) => models.size > 1)
-      .map(([agent]) => agent),
+      .map(([agent]) => agent)
   );
 }
 
 export function getExperimentAgentKey(
   trial: Pick<Trial, "agent" | "model" | "is_probe">,
-  modelScopedAgents: ReadonlySet<string>,
+  modelScopedAgents: ReadonlySet<string>
 ): string {
   if (trial.is_probe) {
     return PROBE_AGENT_KEY;
   }
-  if (!modelScopedAgents.has(trial.agent)) {
-    return trial.agent;
+  const display = getDisplayAgentModel(trial);
+  if (!modelScopedAgents.has(display.agent)) {
+    return display.agent;
   }
-  return `${trial.agent}/${getModelKey(trial.model)}`;
+  return `${display.agent}/${getModelKey(display.model)}`;
 }
 
 export function buildExperimentAgentSummaries(tasks: Task[]): {
@@ -99,13 +134,14 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
         continue;
       }
 
+      const display = getDisplayAgentModel(trial);
       summaries.set(key, {
         key,
         label: key,
-        agent: trial.agent,
-        model: trial.model,
+        agent: display.agent,
+        model: display.model,
         queueKey: trial.provider ?? null,
-        isModelScoped: modelScopedAgents.has(trial.agent),
+        isModelScoped: modelScopedAgents.has(display.agent),
       });
     }
   }

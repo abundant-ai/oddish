@@ -51,6 +51,7 @@ class _FakeRuntime:
         claude_session_id,
         daytona_session_id,
         system_prompt=None,
+        json_schema=None,
     ):
         if "REDUCE" in content:
             self._fs[REDUCE_PATH] = b'{"bad_failure_content": "## bad\\nmd"}'

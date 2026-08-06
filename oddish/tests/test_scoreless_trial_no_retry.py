@@ -119,6 +119,7 @@ async def test_expected_scoreless_reward_none_terminal_success(monkeypatch, tria
         outcome=_outcome(reward=None),
         trial_s3_key=None,
         execution_error=None,
+        trial_attempt=trial.attempts,
     )
     assert trial.status == TrialStatus.SUCCESS
     # The success explanation is *not* persisted as an error_message: the
@@ -138,6 +139,7 @@ async def test_genuine_missing_reward_still_retries(monkeypatch, agent):
         outcome=_outcome(reward=None),
         trial_s3_key=None,
         execution_error=None,
+        trial_attempt=trial.attempts,
     )
     assert trial.status == TrialStatus.RETRYING
     assert trial.finished_at is None
@@ -157,5 +159,6 @@ async def test_scoreless_with_error_is_not_treated_as_success(monkeypatch):
         outcome=_outcome(reward=None, error="boom"),
         trial_s3_key=None,
         execution_error=None,
+        trial_attempt=trial.attempts,
     )
     assert trial.status == TrialStatus.RETRYING

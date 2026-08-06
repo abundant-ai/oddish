@@ -32,6 +32,7 @@ _XAI_API_KEY_ENV = "XAI_API_KEY"
 # so a pool of keys on one team shares a single bucket and concurrent trials
 # throttle exactly as they do with one key.
 _XAI_API_KEYS_ENV = "XAI_API_KEYS"
+_DEFAULT_CONTEXT_WINDOW = 256000
 
 # Where the grok CLI persists its full session store (tool calls + token usage);
 # the headless stdout does not carry these, so we copy this tree into the trial
@@ -73,13 +74,32 @@ _IDLE_TIMEOUT_ALTERNATIVES = "idle timeout"
 # same failure, which is no worse than failing now.
 _RATE_LIMIT_ALTERNATIVES = "rate limit|rate_limit|too many requests|429"
 _RATE_LIMIT_PATTERN = f"'({_RATE_LIMIT_ALTERNATIVES})'"
-_RESUMABLE_ERROR_PATTERN = (
-    f"'({_IDLE_TIMEOUT_ALTERNATIVES}|{_RATE_LIMIT_ALTERNATIVES})'"
+
+# xAI server-side 5xx / overload ("API error (status 503 Service Unavailable):
+# unavailable: Service temporarily unavailable. The model did not respond to
+# this request.") is the third death that throws away an otherwise healthy run:
+# a single dropped stream on the shared deployment exits the CLI non-zero after
+# however many turns it has completed. Like the idle timeout the cure is landing
+# on a healthy replica, but during a sustained outage an instant replay just
+# re-hits the same dead deployment -- so these join the backoff branch (wait,
+# then resume) rather than resuming immediately. The failed call never committed
+# to the session store, so a resume loses at most one turn.
+_SERVER_ERROR_ALTERNATIVES = (
+    "50[0-9]|service unavailable|service temporarily unavailable|"
+    "temporarily unavailable|overloaded|bad gateway|gateway timeout"
 )
-# First backoff, doubled per resume: 60s, 120s, 240s (7m worst case, against a
-# multi-hour agent timeout).
+# Errors that resume AFTER a backoff (the server/account needs a moment to
+# recover); idle timeouts resume with no delay.
+_BACKOFF_PATTERN = f"'({_RATE_LIMIT_ALTERNATIVES}|{_SERVER_ERROR_ALTERNATIVES})'"
+_RESUMABLE_ERROR_PATTERN = (
+    f"'({_IDLE_TIMEOUT_ALTERNATIVES}|{_RATE_LIMIT_ALTERNATIVES}"
+    f"|{_SERVER_ERROR_ALTERNATIVES})'"
+)
+# First backoff, doubled per resume: 60s, 120s, 240s, 480s, 960s (~28m worst
+# case, against a multi-hour agent timeout). Raised from 3 resumes so a sustained
+# xAI 5xx window can outlast a few refill/recovery cycles rather than dying to it.
 _RATE_LIMIT_BACKOFF_SEC = 60
-_MAX_RESUMES = 3
+_MAX_RESUMES = 5
 _RESUME_PROMPT = (
     "The previous request failed with a transient API error. "
     "Continue the original task from where you left off."
@@ -97,13 +117,18 @@ _RESUME_PROMPT = (
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 
-def _positive_int(name: str, value: int | str | None) -> int | None:
+def _positive_int(name: str, value: int | float | str | None) -> int | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
-    try:
-        parsed = int(str(value).strip())
-    except ValueError:
+    if isinstance(value, bool):
         parsed = 0
+    elif isinstance(value, float):
+        parsed = int(value) if value.is_integer() else 0
+    else:
+        try:
+            parsed = int(str(value).strip())
+        except ValueError:
+            parsed = 0
     if parsed <= 0:
         raise ValueError(
             f"grok-build {name} must be a positive integer, got {value!r}."
@@ -121,6 +146,7 @@ class OddishGrokBuild(BaseInstalledAgent):
         *args: Any,
         reasoning_effort: str | None = "high",
         api_backend: str | None = None,
+        context_window: int | float | str | None = _DEFAULT_CONTEXT_WINDOW,
         max_retries: int | str | None = None,
         inference_idle_timeout_secs: int | str | None = None,
         **kwargs: Any,
@@ -135,6 +161,9 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"expected one of {sorted(_VALID_API_BACKENDS)}."
             )
         self.api_backend = normalized_backend or None
+        self.context_window = (
+            _positive_int("context_window", context_window) or _DEFAULT_CONTEXT_WINDOW
+        )
         # Grok's documented-but-unexplained ``[model.*]`` reliability knobs
         # (the settings reference describes both as just "Reliability."). Left
         # out of the config unless set via ``--agent-kwarg``; whether
@@ -207,8 +236,10 @@ class OddishGrokBuild(BaseInstalledAgent):
         agent kwarg, e.g. ``--agent-kwarg api_backend=chat_completions``), swap
         the transport for every model entry so the trial can reach a model that
         is only served on that endpoint. When unset, the upstream default is
-        preserved verbatim. ``max_retries`` / ``inference_idle_timeout_secs``
-        are likewise appended to every model entry only when set.
+        preserved verbatim. ``context_window`` defaults to the existing 256k
+        profile and can be overridden per trial. ``max_retries`` /
+        ``inference_idle_timeout_secs`` are likewise appended to every model
+        entry only when set.
         """
         model = self._resolve_model()
         quoted_model = self._toml_string(model)
@@ -237,7 +268,7 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"base_url = {quoted_base_url}",
                 f"env_key = {quoted_env_key}",
                 'api_backend = "responses"',
-                "context_window = 256000",
+                f"context_window = {self.context_window}",
                 *reliability,
                 "[model.grok-build]",
                 'name = "grok-build"',
@@ -245,7 +276,7 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"base_url = {quoted_base_url}",
                 f"env_key = {quoted_env_key}",
                 'api_backend = "responses"',
-                "context_window = 256000",
+                f"context_window = {self.context_window}",
                 *reliability,
                 "",
             ]
@@ -431,18 +462,19 @@ class OddishGrokBuild(BaseInstalledAgent):
             "rc=$?; rv=5; "
             "fi; "
             # Resume (rather than fail the trial) when the run died to the
-            # stream watchdog or an xAI rate limit. Appending to stdout keeps
-            # the streamed event log whole; overwriting stderr makes each grep
-            # reflect only the latest attempt, so any other failure (flag error)
-            # still exits the loop. A rate-limited arm waits out the throttle
-            # first -- resuming instantly would just re-hit the same limit and
-            # burn the resume budget in seconds -- while an idle timeout, whose
-            # cure is landing on a fresh replica, resumes with no delay.
+            # stream watchdog, an xAI rate limit, or an xAI 5xx/overload.
+            # Appending to stdout keeps the streamed event log whole; overwriting
+            # stderr makes each grep reflect only the latest attempt, so any other
+            # failure (flag error) still exits the loop. A rate-limited or
+            # server-error arm waits out the backoff first -- resuming instantly
+            # would just re-hit the same throttle or dead deployment and burn the
+            # resume budget in seconds -- while an idle timeout, whose cure is
+            # landing on a fresh replica, resumes with no delay.
             f"resumes=0; delay={_RATE_LIMIT_BACKOFF_SEC}; "
             f"while [ $rc -ne 0 ] && [ $resumes -lt {_MAX_RESUMES} ] "
             f"&& grep -Eqi {_RESUMABLE_ERROR_PATTERN} {stderr_path}; do "
             "resumes=$((resumes+1)); "
-            f"if grep -Eqi {_RATE_LIMIT_PATTERN} {stderr_path}; then "
+            f"if grep -Eqi {_BACKOFF_PATTERN} {stderr_path}; then "
             'sleep "$delay"; delay=$((delay*2)); '
             "fi; "
             'case "$rv" in '

@@ -24,7 +24,8 @@ class AnalysisUsage:
 
 
 def parse_cli_usage(payload: dict, model_id: str | None) -> AnalysisUsage | None:
-    """Extract usage from a Claude Code ``--output-format json`` envelope.
+    """Extract usage from a Claude Code ``result`` envelope (stream-json's
+    final event and ``--output-format json``'s single object share the shape).
 
     Returns ``None`` when the envelope carries no ``total_cost_usd`` — there is
     no cost signal to record, and we never fabricate one.
@@ -81,6 +82,43 @@ def usage_from_api_message(
         output_tokens=output,
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
+        model=model,
+        source="estimated",
+    )
+
+
+def usage_from_openai_completion(
+    usage: object | None, model: str | None
+) -> AnalysisUsage | None:
+    """Extract usage from an OpenAI chat completion's ``usage``.
+
+    Mirrors :func:`usage_from_api_message` for the OpenAI path, with one
+    inverted convention: OpenAI's ``prompt_tokens`` *already includes* the
+    cached tokens that ``prompt_tokens_details.cached_tokens`` reports, whereas
+    Anthropic reports uncached input with its cache counts additive. So the
+    total is taken as-is here -- summing them would double-count the cache and
+    overprice every row. There is no prompt-cache *write* concept on this path.
+    """
+    if usage is None:
+        return None
+
+    def _count(value: object) -> int | None:
+        return int(value) if isinstance(value, (int, float)) else None
+
+    total_input = _count(getattr(usage, "prompt_tokens", None))
+    output = _count(getattr(usage, "completion_tokens", None))
+    cache_read = _count(
+        getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", None)
+    )
+    if total_input is None and output is None:
+        return None
+
+    return AnalysisUsage(
+        cost_usd=estimate_cost_usd(model, total_input, output, cache_read, None),
+        input_tokens=total_input,
+        output_tokens=output,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=None,
         model=model,
         source="estimated",
     )

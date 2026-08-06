@@ -287,11 +287,26 @@ async def resolve_experiment_owner_user_id(
     return None
 
 
-async def _active_user_id(session: AsyncSession, user_id: str | None) -> str | None:
+async def _active_user_id(
+    session: AsyncSession, user_id: str | None, org_id: str | None
+) -> str | None:
     if not user_id:
         return None
     user = await session.get(UserModel, user_id)
-    if user is not None and user.is_active and user.deleted_at is None:
+    if user is None:
+        return None
+    # Quota is keyed (org_id, user_id). A payer from another org would miss its
+    # override and fall back to the default; an admin in this org could never
+    # see or change it. Treat that as unattributed (fail-closed under ENFORCE).
+    if user.org_id != org_id:
+        logger.warning(
+            "payer org mismatch user_id=%s user_org_id=%s request_org_id=%s",
+            user.id,
+            user.org_id,
+            org_id,
+        )
+        return None
+    if user.is_active and user.deleted_at is None:
         return user.id
     return None
 
@@ -317,7 +332,7 @@ async def resolve_billed_user_id(
         if owner_user_id is not None
         else await resolve_created_by_user_id(session, submission, auth)
     )
-    return await _active_user_id(session, billed)
+    return await _active_user_id(session, billed, auth.org_id)
 
 
 def stamp_experiment_owner(

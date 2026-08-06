@@ -3,10 +3,26 @@ from datetime import timedelta
 
 import pytest
 
-from oddish.analyze.models import ActionItem, ActionItemSource, ActionTier, Dimension, ProblemType
-from oddish.core.verdict_sync import build_pre_trial_payload, sync_pre_trial_to_task_version
+from oddish.analyze.models import (
+    ActionItem,
+    ActionItemSource,
+    ActionTier,
+    Dimension,
+    ProblemType,
+)
+from oddish.core.verdict_sync import (
+    build_pre_trial_payload,
+    sync_pre_trial_to_task_version,
+)
 from oddish.db import get_session
-from oddish.db.models import JobStatus, TaskModel, TaskStatus, TaskVersionModel, utcnow
+from oddish.db.models import (
+    JobStatus,
+    TaskModel,
+    TaskStatus,
+    TaskVersionModel,
+    VerdictStatus,
+    utcnow,
+)
 from oddish.workers.queue.qa_handler import (
     PRE_TRIAL_LEASE_MARGIN_SECONDS,
     _claim_pre_trial_version,
@@ -30,7 +46,9 @@ def _item():
     )
 
 
-async def _make_task_with_version(*, with_current_version: bool = True) -> tuple[str, str]:
+async def _make_task_with_version(
+    *, with_current_version: bool = True
+) -> tuple[str, str]:
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     version_id = f"{task_id}-v1"
     async with get_session() as session:
@@ -215,16 +233,20 @@ async def test_release_resets_running_claim_only():
 
 
 @pytest.mark.asyncio
-async def test_store_vetoed_when_version_no_longer_current():
-    # A new upload mid-audit means the pulled source belongs to the NEW
-    # version; findings must not be persisted against the stale claimed row.
+async def test_store_allowed_for_pinned_version_after_reupload():
+    # The audit is pinned to a specific, immutable version, so a re-upload that
+    # makes a newer version current mid-audit must NOT discard its findings --
+    # they are valid for the audited version and are stored on that version row.
+    # (The next QA run audits the new current version separately.)
     task_id, version_id = await _make_task_with_version()
     try:
         v2_id = f"{task_id}-v2"
         async with get_session() as session:
             session.add(
                 TaskVersionModel(
-                    id=v2_id, task_id=task_id, version=2,
+                    id=v2_id,
+                    task_id=task_id,
+                    version=2,
                     task_path="/tmp/does-not-matter",
                 )
             )
@@ -234,28 +256,20 @@ async def test_store_vetoed_when_version_no_longer_current():
             await session.commit()
 
         async with get_session() as session:
-            assert (
-                await _pre_trial_store_allowed(session, None, task_id, version_id)
-                is False
-            )
-            assert (
-                await _pre_trial_store_allowed(session, None, task_id, v2_id)
-                is True
-            )
+            # Still allowed even though version_id is no longer current.
+            assert await _pre_trial_store_allowed(session, None) is True
 
         stored = await sync_pre_trial_to_task_version(
             version_id,
             payload=build_pre_trial_payload([_item()]),
             error=None,
-            should_store=lambda s: _pre_trial_store_allowed(
-                s, None, task_id, version_id
-            ),
+            should_store=lambda s: _pre_trial_store_allowed(s, None),
         )
-        assert stored is None
+        assert stored is not None
         async with get_session() as session:
             version = await session.get(TaskVersionModel, version_id)
-            assert version.pre_trial is None
-            assert version.pre_trial_status is None
+            assert version.pre_trial is not None
+            assert version.pre_trial_status == VerdictStatus.SUCCESS
     finally:
         await _cleanup(task_id)
 
