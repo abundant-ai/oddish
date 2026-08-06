@@ -1,4 +1,4 @@
-import { fmtDurationMs } from "@/lib/trajectory-metrics";
+import { fmtDurationMs, isEmptyStep } from "@/lib/trajectory-metrics";
 import type {
   TrajectoryComponentKind,
   TrajectoryStep,
@@ -92,8 +92,26 @@ export function toSegments(
  * On long runs the model's claims are sparse (e.g. every other id), so a step
  * that sits between two claims of the SAME component is attributed to the
  * earlier one; a gap between differing components stays unclaimed.
+ *
+ * That bridge is a guess, so it is capped at MAX_GAP_FILL_STEPS. Bridging one
+ * skipped step is almost certainly right; bridging two hundred is inventing a
+ * component the model never claimed. Real summaries bear the cutoff out —
+ * across the sampled corpus every bridged gap held either <= 2 real steps or
+ * >= 14, nothing between, and the long ones were pure invention (they inflated
+ * `debugging` by 147%).
+ *
+ * `renderableIds` is the id set the UI actually draws (i.e. minus empty padding
+ * steps). It is used to MEASURE a gap, not to limit what gets filled: a bridge
+ * still claims every id in the span, so a run of padding cannot shatter the
+ * grouped step list into fragments. Omit it and the gap is measured in raw ids,
+ * which is only right when no padding exists.
  */
-export function segmentOwners(segments: Segment[]): Map<number, Segment> {
+export const MAX_GAP_FILL_STEPS = 5;
+
+export function segmentOwners(
+  segments: Segment[],
+  renderableIds?: ReadonlySet<number>
+): Map<number, Segment> {
   const ordered = segments
     .filter((s) => s.stepIds.length > 0)
     .sort((a, b) => Math.min(...a.stepIds) - Math.min(...b.stepIds));
@@ -112,9 +130,24 @@ export function segmentOwners(segments: Segment[]): Map<number, Segment> {
     const next = claimed[i];
     const prevSegment = owner.get(prev)!;
     if (next - prev <= 1 || owner.get(next)!.key !== prevSegment.key) continue;
+
+    let span = 0;
+    for (let id = prev + 1; id < next; id++) {
+      if (!renderableIds || renderableIds.has(id)) span += 1;
+      if (span > MAX_GAP_FILL_STEPS) break;
+    }
+    if (span > MAX_GAP_FILL_STEPS) continue;
+
     for (let id = prev + 1; id < next; id++) owner.set(id, prevSegment);
   }
   return owner;
+}
+
+/** The ids the UI draws: every step that carries content. */
+export function renderableStepIds(steps: TrajectoryStep[]): Set<number> {
+  return new Set(
+    steps.filter((s) => !isEmptyStep(s)).map((s) => Number(s.step_id))
+  );
 }
 
 /** Key of the synthetic segment holding steps no component claims. */
@@ -128,16 +161,18 @@ export const OTHER_SEGMENT_KEY = "other";
  */
 export function withOtherSegment(
   segments: Segment[],
-  steps: TrajectoryStep[]
+  steps: TrajectoryStep[],
+  renderableIds?: ReadonlySet<number>
 ): Segment[] {
   // No segments means there is no usable summary yet (still loading, absent,
   // or failed). Preserve that state instead of presenting every step as Other.
   if (segments.length === 0) return segments;
 
-  const owner = segmentOwners(segments);
-  const unclaimed = steps
-    .map((s) => Number(s.step_id))
-    .filter((id) => !owner.has(id));
+  const ids = renderableIds ?? renderableStepIds(steps);
+  const owner = segmentOwners(segments, ids);
+  const unclaimed = [...ids]
+    .filter((id) => !owner.has(id))
+    .sort((a, b) => a - b);
   if (unclaimed.length === 0) return segments;
   return [
     ...segments,
@@ -157,9 +192,12 @@ export function withOtherSegment(
  */
 export function groupStepsBySegment(
   steps: IndexedStep[],
-  segments: Segment[]
+  segments: Segment[],
+  renderableIds?: ReadonlySet<number>
 ): StepGroup[] {
-  const owner = segmentOwners(segments);
+  // Derived from the caller's full trajectory, never from `steps` -- that list
+  // is search-filtered, and attribution must not shift as the user types.
+  const owner = segmentOwners(segments, renderableIds);
 
   const groups: StepGroup[] = [];
   let current: StepGroup | null = null;

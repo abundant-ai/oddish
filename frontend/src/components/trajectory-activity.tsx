@@ -67,16 +67,17 @@ export function TrajectoryActivity({
   const { data } = useTrajectorySummary(trialId, apiBaseUrl);
 
   // Empty padding steps are dropped up front, so they cannot be counted in a
-  // bar, drawn as a cell, or bridged across by gap-fill further down.
+  // bar, drawn as a cell, or measured as gap-fill distance further down.
   const steps = allSteps.filter((step) => !isEmptyStep(step));
   const emptyCount = allSteps.length - steps.length;
+  const renderableIds = new Set(steps.map((s) => Number(s.step_id)));
 
-  const segments = withOtherSegment(toSegments(data), steps);
+  const segments = withOtherSegment(toSegments(data), steps, renderableIds);
   if (!steps.length || segments.length === 0) return null;
 
   const colorFor = phaseColorVars(segments.map((s) => s.key));
   const labelFor = new Map(segments.map((s) => [s.key, s.label]));
-  const owner = segmentOwners(segments);
+  const owner = segmentOwners(segments, renderableIds);
   // step_id is typed number but arrives as a string from some producers.
   const keyByStep = (stepId: number) => owner.get(Number(stepId))?.key;
   const highlightIds = new Set((data?.highlights ?? []).map((h) => h.step_id));

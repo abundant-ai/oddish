@@ -44,6 +44,7 @@ import {
 import {
   groupStatsLabel,
   groupStepsBySegment,
+  renderableStepIds,
   toSegments,
   withOtherSegment,
 } from "@/lib/trajectory-segments";
@@ -776,9 +777,20 @@ export function TrajectoryViewer({
     apiBaseUrl,
     shouldFetch
   );
+  // Derived from the whole trajectory, so attribution stays put while the user
+  // searches, and shared with the Activity card so both agree on every owner.
+  const renderableIds = useMemo(
+    () => renderableStepIds(trajectory?.steps ?? []),
+    [trajectory]
+  );
   const segments = useMemo(
-    () => withOtherSegment(toSegments(summary), trajectory?.steps ?? []),
-    [summary, trajectory]
+    () =>
+      withOtherSegment(
+        toSegments(summary),
+        trajectory?.steps ?? [],
+        renderableIds
+      ),
+    [summary, trajectory, renderableIds]
   );
   const colorFor = useMemo(
     () => phaseColorVars(segments.map((s) => s.key)),
@@ -787,8 +799,8 @@ export function TrajectoryViewer({
   // Grouping runs over the *filtered* list, so a group whose steps all filtered
   // out is simply never emitted.
   const groups = useMemo(
-    () => groupStepsBySegment(visibleSteps, segments),
-    [visibleSteps, segments]
+    () => groupStepsBySegment(visibleSteps, segments, renderableIds),
+    [visibleSteps, segments, renderableIds]
   );
   // Full-trajectory durations: group steps carry indexes into the full list.
   const stepDurations = useMemo(
@@ -887,6 +899,7 @@ export function TrajectoryViewer({
       <TrajectorySummary
         trialId={trialId}
         apiBaseUrl={apiBaseUrl}
+        renderableIds={renderableIds}
         stepIdToIndex={(stepId) =>
           // step_id is typed number but arrives as a string from some producers;
           // strict === would return -1 and the scroll would silently no-op.
