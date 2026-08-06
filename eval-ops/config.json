@@ -1,0 +1,7 @@
+{
+ "phase": "B",
+ "noncua_target": 10,
+ "cua_target": 10,
+ "cua_cap": 10,
+ "note": "Phase B set 2026-08-05T19:5xZ on Charles's order 'finish the trials off. make everything 10/10'. Non-CUA go 8 -> 10 (+96 trials, dispatch10.sh). CUA go to 10/cell, still throttled to cua_cap concurrent by cua_fill.py -- the cap is a verifier-safety limit, not a target, and does not relax in phase B."
+}
