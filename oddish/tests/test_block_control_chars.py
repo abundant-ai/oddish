@@ -97,3 +97,51 @@ def test_repair_never_invents_an_object_from_prose():
 def test_a_schema_expecting_an_object_never_recovers_a_bare_array():
     with pytest.raises(BlockParseError):
         _Probe().parse('Here are the highlights:\n[{"step_id": 1}]')
+
+
+# ---------------------------------------------------------------------------
+# reconciliation with the prose-recovery scan (#950)
+#
+# Prose recovery walks every opener so a brace quoted in the audit cannot
+# shadow the payload; the leniency work adds a type filter and whole-text
+# repair. The three below pin where those two interact -- each fails against
+# either change on its own.
+# ---------------------------------------------------------------------------
+
+
+def test_prose_punctuation_before_the_payload_is_skipped_under_expect():
+    """The every-opener scan must survive the ``expect`` filter.
+
+    Restricting recovery to the earliest span (the leniency branch's first
+    shape) hands back the quoted ``{}`` and loses the summary.
+    """
+    parsed = _Probe.parse_json(
+        'The runner returns {} on timeout.\n{"summary": "real", "highlights": []}',
+        expect=dict,
+    )
+    assert parsed["summary"] == "real"
+
+
+def test_a_nested_object_is_not_mined_out_of_a_well_formed_array():
+    """A reply of the wrong shape is an error, not a source of fragments.
+
+    The every-opener scan alone walks into the array and returns the inner
+    object, which validates to a summary with every field empty.
+    """
+    with pytest.raises(BlockParseError):
+        _Probe().parse('Here are the highlights:\n[{"step_id": 1}, {"step_id": 2}]')
+
+
+def test_repair_of_the_whole_reply_beats_a_nested_object():
+    """A top-level object missing one delimiter is mended, not abandoned.
+
+    The nesting guard cannot help here: the outer object never decodes, so it
+    marks nothing as consumed and its inner object is reachable. Prose recovery
+    answers with that fragment -- a summary that validates with every field
+    empty -- so repair has to run ahead of it.
+    """
+    parsed = _Probe.parse_json(
+        '{"summary": "kept" "meta": {"model": "opus"}}',
+        expect=dict,
+    )
+    assert parsed["summary"] == "kept"

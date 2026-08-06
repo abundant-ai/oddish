@@ -75,7 +75,7 @@ class Block:
 
     @staticmethod
     def _embedded_json(text: str, expect: type | None = None) -> str | None:
-        """The first JSON value embedded in prose, or None.
+        """The first substantive JSON value embedded in prose, or None.
 
         ``strip_code_fences`` only fires when the fence opens the string, so a
         model that writes a sentence *before* its fenced block (or emits a bare
@@ -83,55 +83,55 @@ class Block:
         "line 1 column 1". Prompts already forbid the preamble; models do it
         anyway, and a whole audit is too expensive to discard over packaging.
 
-        ``expect`` restricts recovery to candidates of that type. Without it a
-        broken top-level object degrades into whichever nested array happens to
-        parse, so the caller sees a type error instead of the real defect.
+        ``expect`` skips candidates of the wrong type, and anything nested
+        inside an already-decoded value is skipped with it, so a bare array of
+        the wrong shape cannot be mined for the object the caller asked for.
         """
+        decoder = json.JSONDecoder(strict=False)
+        empty: str | None = None
+
         fence = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
-        candidates = [fence.group(1)] if fence else []
-        # Ordered by where the value starts, so a bare array is not shadowed by
-        # an object nested inside it.
-        spans: list[tuple[int, str]] = []
-        for opener, closer in (("{", "}"), ("[", "]")):
-            start = text.find(opener)
-            if start == -1:
-                continue
-            depth, in_string, escaped = 0, False, False
-            for index in range(start, len(text)):
-                char = text[index]
-                if escaped:
-                    escaped = False
-                    continue
-                if char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = not in_string
-                elif in_string:
-                    continue
-                elif char == opener:
-                    depth += 1
-                elif char == closer:
-                    depth -= 1
-                    if depth == 0:
-                        spans.append((start, text[start : index + 1]))
-                        break
-        spans.sort()
-        if expect is not None and spans:
-            # Only the outermost value is a legitimate recovery. Digging into it
-            # turns a broken object into whichever nested fragment happens to
-            # match the expected type -- a summary that persists as SUCCESS with
-            # every field empty, which is worse than surfacing the parse error.
-            spans = [s for s in spans if s[0] == spans[0][0]]
-        candidates.extend(value for _, value in spans)
-        for candidate in candidates:
+        if fence:
             try:
-                value = json.loads(candidate, strict=False)
-            except json.JSONDecodeError:
+                value, end = decoder.raw_decode(fence.group(1))
+            except ValueError:
+                pass
+            else:
+                if expect is None or isinstance(value, expect):
+                    if value:
+                        return fence.group(1)[:end]
+                    empty = fence.group(1)[:end]
+
+        # Every opener is a candidate, in position order: audit prose quotes
+        # code constantly, so a brace before the payload is the common case.
+        # Scanning only the first one loses the audit to `{task_id}` and
+        # (worse) silently returns `{}` for "the runner returns {} on timeout".
+        # Ordering by position also keeps a bare array from being shadowed by
+        # an object nested inside it.
+        consumed_until = 0
+        for start, char in enumerate(text):
+            if char not in "{[":
                 continue
+            # An opener inside a value that already decoded is a fragment of it,
+            # not a value in its own right. Mining those turns a well-formed
+            # reply of the wrong shape into whichever inner object matches --
+            # a summary persisted as SUCCESS with every field empty.
+            if start < consumed_until:
+                continue
+            try:
+                value, end = decoder.raw_decode(text[start:])
+            except ValueError:
+                continue
+            consumed_until = start + end
             if expect is not None and not isinstance(value, expect):
                 continue
-            return candidate
-        return None
+            if value:
+                return text[start : start + end]
+            # An empty container is far more likely prose punctuation than the
+            # audit, so keep looking -- but return it if nothing better exists.
+            if empty is None:
+                empty = text[start : start + end]
+        return empty
 
     @staticmethod
     def _repair_json(text: str, expect: type | None = None) -> Any:
@@ -169,6 +169,12 @@ class Block:
         the single largest cause of discarded output: replaying 250 failed
         trajectory-summary blocks from prod (2026-08-05), leniency alone
         recovered 101 and the repair pass below took the total to 139.
+
+        Repair is attempted before prose recovery because it works on the whole
+        reply: a top-level object missing one delimiter should be mended, not
+        abandoned for whichever fragment nested inside it happens to parse. That
+        fallback yields a summary persisted as SUCCESS with every field empty --
+        worse than surfacing the parse error.
         """
         stripped = cls.strip_code_fences(text)
         decode_error: json.JSONDecodeError | None = None
@@ -179,14 +185,14 @@ class Block:
         else:
             if expect is None or isinstance(value, expect):
                 return value
-        embedded = cls._embedded_json(text, expect)
-        if embedded is not None:
-            logger.warning("block parse: recovered JSON embedded in prose")
-            return json.loads(embedded, strict=False)
         repaired = cls._repair_json(stripped, expect)
         if repaired is not None:
             logger.warning("block parse: recovered JSON after punctuation repair")
             return repaired
+        embedded = cls._embedded_json(text, expect)
+        if embedded is not None:
+            logger.warning("block parse: recovered JSON embedded in prose")
+            return json.loads(embedded, strict=False)
         if decode_error is not None:
             raise decode_error
         # Parsed cleanly but as the wrong type: hand it back so the caller

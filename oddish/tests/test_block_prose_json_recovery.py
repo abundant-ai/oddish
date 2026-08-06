@@ -70,6 +70,33 @@ def test_already_clean_output_is_unaffected(clean):
     assert _Probe.parse_json(clean) == {"items": []}
 
 
+def test_an_unparseable_brace_in_the_preamble_does_not_block_recovery():
+    # Audit prose quotes code constantly, so a brace before the payload is the
+    # common case, not the exotic one. Scanning only the first opener would
+    # fail on `{task_id}` and discard the audit.
+    text = (
+        "The verifier interpolates {task_id} into the path, so:\n\n"
+        '{"items": [{"dimension": "verifier", "title": "unquoted path"}]}'
+    )
+    assert _Probe.parse_json(text)["items"][0]["title"] == "unquoted path"
+
+
+def test_an_empty_brace_in_the_preamble_does_not_shadow_the_payload():
+    # `{}` parses, so taking the first opener that decodes would return an
+    # empty object -- which validates cleanly and yields a silently empty
+    # audit, the worst outcome of the three.
+    text = (
+        "The runner returns {} when the trial times out. Findings:\n\n"
+        '{"items": [{"dimension": "oracle", "title": "timeout unreported"}]}'
+    )
+    assert _Probe.parse_json(text)["items"][0]["title"] == "timeout unreported"
+
+
+def test_a_legitimately_empty_result_is_still_returned():
+    # ...but an empty container is the right answer when it is all there is.
+    assert _Probe.parse_json("No defects found.\n\n```json\n{}\n```") == {}
+
+
 def test_genuine_prose_with_no_json_still_raises():
     """Recovery must not invent structure where the model produced none."""
     text = (
