@@ -190,6 +190,52 @@ async def test_write_through_is_instant_and_idempotent():
         await engine.dispose()
 
 
+async def test_rebuild_survives_concurrent_write_through():
+    """A write-through committing mid-rebuild must never be lost.
+
+    Deterministic pin of the delete-before-scan ordering: a full
+    trial+vocabulary commit fires in the window right after the rebuild's
+    FIRST statement. Delete-first, the later scan re-derives the value;
+    scan-first (the raced ordering) would erase it until the next sweep.
+    """
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as sweeper:
+            real_execute = sweeper.execute
+            fired = {"done": False}
+
+            async def execute_with_race(*args, **kwargs):
+                result = await real_execute(*args, **kwargs)
+                if not fired["done"]:
+                    fired["done"] = True
+                    async with maker() as writer:
+                        await writer.execute(
+                            text(
+                                "insert into trials (id,name,task_id,task_version_id,experiment_id,org_id,agent,provider,queue_key,timeout_minutes,environment,harbor_config,analysis,status,origin,is_probe,reward,error_message,input_tokens,output_tokens,cache_tokens,total_steps,has_trajectory,finished_at,attempts,max_attempts,heartbeat_failure_count,created_at,updated_at) "
+                                "values ('tr-race','tr-race','t-1','v-1','exp-1','org1','race-agent','anthropic','q',30,'modal','{}'::jsonb,null,'QUEUED','oddish',false,null,null,100,50,0,10,false,null,0,6,0,now(),now())"
+                            )
+                        )
+                        await record_trial_facets(
+                            writer,
+                            facet_rows_for_trial(org_id=ORG, agent="race-agent"),
+                        )
+                        await writer.commit()
+                return result
+
+            sweeper.execute = execute_with_race
+            await rebuild_trial_facets_core(sweeper)
+            await sweeper.commit()
+
+        async with maker() as session:
+            facets = await browse_task_facets_core(session, org_id=ORG)
+            assert "race-agent" in facets.agents  # re-derived by the scan
+            assert "claude-code" in facets.agents  # rebuilt rows intact
+    finally:
+        await engine.dispose()
+
+
 async def test_bulk_insert_funnel_writes_vocabulary():
     """The queue's bulk-insert chokepoint records vocabulary in-transaction."""
     engine = create_async_engine(URL)

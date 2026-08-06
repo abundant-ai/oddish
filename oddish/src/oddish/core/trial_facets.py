@@ -123,7 +123,9 @@ async def rebuild_trial_facets_core(session: AsyncSession) -> tuple[int, int]:
     soft-delete listener adds ``deleted_at IS NULL`` for both tables) — as a
     single ``GROUP BY`` over every facet column, then replaces ``trial_facets``
     wholesale in the caller's transaction. Readers see the old vocabulary
-    until commit. Returns ``(org_count, row_count)``.
+    until commit, and concurrent write-throughs are never lost — the delete
+    runs before the scan (see the inline comment for why that ordering is
+    load-bearing). Returns ``(org_count, row_count)``.
     """
     scan = (
         select(
@@ -147,6 +149,15 @@ async def rebuild_trial_facets_core(session: AsyncSession) -> tuple[int, int]:
         # two different binds ($1 vs $2) and reject the grouping.
         .group_by(*[text(str(i)) for i in range(1, 8)])
     )
+    # Delete on the OLDER snapshot, derive on the NEWER one. With the delete
+    # first, a write-through committing mid-rebuild either lands after it
+    # (its row survives; the insert below tolerates the collision) or before
+    # it (its row dies, but the later scan sees the trials and re-derives the
+    # value). Scan-first would erase any write-through that commits between
+    # the scan and the delete. Statement-level snapshots (READ COMMITTED)
+    # make the ordering sufficient — no lock needed.
+    await session.execute(delete(TrialFacetModel))
+
     rows: set[tuple[str, str, str, str]] = set()
     for org, agent, model, provider, environment, stage, classification in (
         await session.execute(scan)
@@ -162,10 +173,10 @@ async def rebuild_trial_facets_core(session: AsyncSession) -> tuple[int, int]:
         if classification:
             rows.add((org, "analysis_classification", _clip(classification), ""))
 
-    await session.execute(delete(TrialFacetModel))
     if rows:
+        # Tolerate rows a concurrent write-through committed after the delete.
         await session.execute(
-            pg_insert(TrialFacetModel),
+            pg_insert(TrialFacetModel).on_conflict_do_nothing(),
             [
                 {"org_id": org, "kind": kind, "value": value, "value_2": value_2}
                 for org, kind, value, value_2 in sorted(rows)
