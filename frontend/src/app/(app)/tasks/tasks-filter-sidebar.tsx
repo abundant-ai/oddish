@@ -36,6 +36,7 @@ import { fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
 import { cn } from "@/lib/utils";
 import type {
+  ExperimentOptionsResponse,
   TagListResponse,
   TagSummary,
   TaskBrowseFacets,
@@ -76,6 +77,7 @@ const ARRAY_FIELD: Record<string, keyof FilterValues> = {
   trialStatuses: "trialStatuses",
   origins: "origins",
   analysisClassifications: "analysisClassifications",
+  experiments: "experimentIds",
 };
 
 // numrange filter key -> [min field, max field] on FilterValues.
@@ -665,6 +667,8 @@ function FilterControl({
       return <TagsControl values={values} set={set} />;
     case "agentmodel":
       return <AgentModelControl values={values} set={set} facets={facets} />;
+    case "experiment":
+      return <ExperimentControl values={values} set={set} />;
     default:
       return null;
   }
@@ -794,6 +798,135 @@ function AgentModelControl({
             ))
           )}
         </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// Async experiment filter. Options are fetched per (debounced) search term from
+// /api/tasks/browse/experiment-options instead of arriving in the facets
+// payload — an org can hold 100k+ experiments, so the full list never ships.
+// Selected ids are hydrated to names through the endpoint's `ids=` mode and
+// pinned above the results; an id that no longer resolves (deleted experiment)
+// stays visible as the raw id so it can be unchecked.
+function ExperimentControl({
+  values,
+  set,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const handle = window.setTimeout(() => setDebounced(search.trim()), 300);
+    return () => window.clearTimeout(handle);
+  }, [search]);
+
+  const selected = values.experimentIds;
+  // keepPreviousData: while a narrower search is in flight the previous
+  // results stay rendered, so the list never flashes empty between keystrokes.
+  const { data, error, isLoading, mutate } = useSWR<ExperimentOptionsResponse>(
+    `/api/tasks/browse/experiment-options${
+      debounced ? `?query=${encodeURIComponent(debounced)}` : ""
+    }`,
+    fetcher,
+    { revalidateOnFocus: false, keepPreviousData: true }
+  );
+  const { data: selectedData } = useSWR<ExperimentOptionsResponse>(
+    selected.length
+      ? `/api/tasks/browse/experiment-options?ids=${encodeURIComponent(
+          selected.join(",")
+        )}`
+      : null,
+    fetcher,
+    { revalidateOnFocus: false }
+  );
+
+  const nameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const option of selectedData?.items ?? [])
+      map.set(option.id, option.name);
+    for (const option of data?.items ?? []) map.set(option.id, option.name);
+    return map;
+  }, [data, selectedData]);
+
+  const toggle = (id: string) =>
+    set({
+      experimentIds: selected.includes(id)
+        ? selected.filter((v) => v !== id)
+        : [...selected, id],
+    });
+
+  if (isLoading && !data) return <ControlSkeleton />;
+
+  const results = (data?.items ?? []).filter((o) => !selected.includes(o.id));
+  const label =
+    selected.length === 0
+      ? "Any"
+      : selected.length === 1
+        ? (nameById.get(selected[0]) ?? selected[0])
+        : `${selected.length} selected`;
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 w-full justify-between text-xs font-normal"
+        >
+          <span className="truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="z-30 w-64 p-2">
+        <Input
+          autoFocus
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search experiments…"
+          className="mb-2 h-7 text-xs"
+        />
+        <div className="max-h-56 space-y-0.5 overflow-auto">
+          {selected.map((id) => (
+            <label
+              key={id}
+              className="hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs"
+            >
+              <Checkbox checked onCheckedChange={() => toggle(id)} />
+              <span className="truncate">{nameById.get(id) ?? id}</span>
+            </label>
+          ))}
+          {/* With keepPreviousData, post-failure `data` may belong to the
+              previous query — the error replaces only the results it owns;
+              chips and the input stay live, and typing retries. */}
+          {error ? (
+            <ControlError onRetry={() => mutate()} />
+          ) : results.length === 0 && selected.length === 0 ? (
+            <p className="text-muted-foreground px-1 py-2 text-xs">
+              {debounced ? "No matches" : "No experiments"}
+            </p>
+          ) : (
+            results.map((o) => (
+              <label
+                key={o.id}
+                className="hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs"
+              >
+                <Checkbox
+                  checked={false}
+                  onCheckedChange={() => toggle(o.id)}
+                />
+                <span className="truncate">{o.name}</span>
+              </label>
+            ))
+          )}
+        </div>
+        {!error && (data?.items.length ?? 0) >= 50 ? (
+          <p className="text-muted-foreground px-1 pt-1.5 text-[10px]">
+            First 50 matches — keep typing to narrow
+          </p>
+        ) : null}
       </PopoverContent>
     </Popover>
   );

@@ -29,7 +29,11 @@ from sqlalchemy.ext.asyncio import (  # type: ignore[attr-defined]
 )
 
 import models  # noqa: F401  registers cloud tables on the shared Base
-from oddish.core.endpoints import browse_task_facets_core, browse_tasks_core
+from oddish.core.endpoints import (
+    browse_experiment_options_core,
+    browse_task_facets_core,
+    browse_tasks_core,
+)
 from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -69,7 +73,7 @@ async def _setup(engine):
               ('tr-a','tr-a','t-a','v-a','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,1000,500,0,20,true,now() - interval '1 day',1,6,0,now() - interval '1 day',now()),
               ('tr-b','tr-b','t-b','v-b','exp-real','org1','codex','openai','q',30,'docker','{}'::jsonb,'FAILED','oddish',false,0.0,'boom',200000,100000,0,200,false,now(),3,6,0,now(),now()),
               ('tr-c','tr-c','t-c','v-c','exp-probe','org1','gemini-cli','google','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',true,1.0,null,100,100,0,5,true,now(),1,6,0,now(),now()),
-              ('tr-a-old','tr-a-old','t-a','v-a-old','exp-real','org1','legacy-agent','anthropic','q',30,'modal','{}'::jsonb,'success','oddish',false,1.0,null,100,50,0,10,true,now() - interval '3 day',1,6,0,now() - interval '3 day',now());
+              ('tr-a-old','tr-a-old','t-a','v-a-old','exp-real','org1','legacy-agent','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,100,50,0,10,true,now() - interval '3 day',1,6,0,now() - interval '3 day',now());
             insert into task_experiments (task_id,experiment_id,created_at)
             values ('t-a','exp-real',now()),('t-b','exp-real',now());
         """
@@ -142,6 +146,103 @@ async def test_browse_facets_scope():
         assert set(facets.agents) == {"claude-code", "codex"}
         pairs = {(p.agent, p.model) for p in facets.agent_models}
         assert pairs == {("claude-code", None), ("codex", None)}
+        # The experiments facet is deprecated and must stay empty even though
+        # org1 has experiments — serializing all of them (7.7MB at 126k) is
+        # the payload regression this pins. Options come from
+        # browse_experiment_options_core instead.
+        assert facets.experiments == []
+    finally:
+        await engine.dispose()
+
+
+async def _insert_option_orgs(engine):
+    """Second org, a soft-deleted org1 experiment, and 205 bulk org1
+    experiments so the 200-row cap is exercisable."""
+    stmts = """
+        insert into organizations (id,name,slug,plan,settings,is_active,created_at,updated_at)
+        values ('org2','O2','o2','free','{}'::jsonb,true,now(),now());
+        insert into experiments (id,name,org_id,is_public,created_at,updated_at)
+        values ('exp-org2','Org Two Exp','org2',false,now(),now()),
+               ('exp-del','Deleted Exp','org1',false,now(),now());
+        update experiments set deleted_at=now() where id='exp-del';
+        insert into experiments (id,name,org_id,is_public,created_at,updated_at)
+        select 'exp-bulk-'||lpad(g::text,3,'0'), 'Bulk '||lpad(g::text,3,'0'),
+               'org1', false, now(), now()
+        from generate_series(1,205) as g;
+    """
+    async with engine.begin() as c:
+        for stmt in stmts.split(";"):
+            if stmt.strip():
+                await c.execute(text(stmt))
+
+
+async def test_experiment_options():
+    """Org-scoped typeahead that replaces the retired experiments facet."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_option_orgs(engine)
+        async with maker() as session:
+            opts = browse_experiment_options_core  # keep call sites short
+
+            # Live org rows only, name-ordered, capped at 200 (207 live org1
+            # rows exist). Soft-deleted rows must not appear.
+            resp = await opts(session, org_id=ORG, limit=999)
+            names = [o.name for o in resp.items]
+            assert len(names) == 200
+            assert names == sorted(names)
+            assert "Deleted Exp" not in names
+            assert "Org Two Exp" not in names
+
+            resp = await opts(session, org_id=ORG)
+            assert len(resp.items) == 50  # default page size
+            resp = await opts(session, org_id=ORG, limit=1)
+            assert len(resp.items) == 1
+
+            # Case-insensitive substring search.
+            resp = await opts(session, org_id=ORG, query="real")
+            assert [o.id for o in resp.items] == ["exp-real"]
+
+            # ILIKE metacharacters in user input are literals, not wildcards.
+            resp = await opts(session, org_id=ORG, query="%")
+            assert resp.items == []
+            resp = await opts(session, org_id=ORG, query="_")
+            assert resp.items == []
+
+            # ids= hydration returns named rows and wins over query.
+            resp = await opts(session, org_id=ORG, ids=["exp-real"], query="probe")
+            assert [(o.id, o.name) for o in resp.items] == [
+                ("exp-real", "Real Exp")
+            ]
+
+            # Hydration is a keyed lookup, not a paged search: every id
+            # resolves even past the default search page size (a restored
+            # selection of 60 chips must not truncate to 50 names) ...
+            bulk_ids = [f"exp-bulk-{i:03d}" for i in range(1, 61)]
+            resp = await opts(session, org_id=ORG, ids=bulk_ids)
+            assert len(resp.items) == 60
+            # ... duplicate ids don't consume the input cap ...
+            resp = await opts(
+                session, org_id=ORG, ids=["exp-real"] * 250 + ["exp-probe"]
+            )
+            assert {o.id for o in resp.items} == {"exp-real", "exp-probe"}
+            # ... and the only truncation point is the documented input cap.
+            all_ids = [f"exp-bulk-{i:03d}" for i in range(1, 206)] + [
+                "exp-real",
+                "exp-probe",
+            ]
+            resp = await opts(session, org_id=ORG, ids=all_ids)
+            assert len(resp.items) == 200
+
+            # The critical isolation property: another org's experiments are
+            # invisible both by search and by id hydration.
+            resp = await opts(session, org_id=ORG, query="Org Two")
+            assert resp.items == []
+            resp = await opts(session, org_id=ORG, ids=["exp-org2"])
+            assert resp.items == []
+            resp = await opts(session, org_id="org2")
+            assert [o.id for o in resp.items] == ["exp-org2"]
     finally:
         await engine.dispose()
 

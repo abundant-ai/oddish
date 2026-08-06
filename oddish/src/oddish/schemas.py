@@ -1408,6 +1408,11 @@ class TaskBrowseFacets(BaseModel):
     Trial-derived facets are scoped to the org's non-probe, non-superseded
     trials. Enum-valued filters (task status, priority, trial status, origin)
     are static and supplied client-side, so they are not returned here.
+
+    ``experiments`` is deprecated and always empty; it used to carry every org
+    experiment (7.7MB at 126k experiments). Experiment filter options are
+    served by ``GET /tasks/browse/experiment-options`` instead. The field is
+    kept so the response shape does not break existing consumers.
     """
 
     agents: list[str] = Field(default_factory=list)
@@ -1417,6 +1422,7 @@ class TaskBrowseFacets(BaseModel):
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
+    # Deprecated: always empty — see the class docstring.
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
 
@@ -1962,6 +1968,17 @@ class ReportCreate(BaseModel):
 class ExperimentOption(BaseModel):
     id: str
     name: str
+
+
+class ExperimentOptionsResponse(BaseModel):
+    """Typeahead options for the task-browser experiment filter.
+
+    Served by ``GET /tasks/browse/experiment-options``. Replaces the retired
+    ``TaskBrowseFacets.experiments`` all-org list with a bounded, searchable
+    page, reusing the adjacent ``ExperimentOption`` item shape.
+    """
+
+    items: list[ExperimentOption] = Field(default_factory=list)
 
 
 class ReportResponse(BaseModel):

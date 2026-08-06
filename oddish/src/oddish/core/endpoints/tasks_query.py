@@ -63,6 +63,8 @@ from oddish.db import (
 )
 from oddish.schemas import (
     AgentModelFacet,
+    ExperimentOption,
+    ExperimentOptionsResponse,
     TaskBrowseExperiment,
     TaskBrowseFacets,
     TaskBrowseItem,
@@ -2418,9 +2420,14 @@ async def browse_task_facets_core(
     """Distinct filter-option values for the task browser.
 
     Returns the trial-derived facets (agent, model, provider, environment,
-    harbor stage, analysis classification) plus the org's experiments. Scoped to
-    the same trials the browse filters match — non-probe, non-superseded, and on
-    each task's CURRENT version — so every option yields at least one task.
+    harbor stage, analysis classification), scoped to the same trials the
+    browse filters match — non-probe, non-superseded, and on each task's
+    CURRENT version — so every option yields at least one task.
+
+    ``experiments`` is deprecated and always empty. It used to serialize every
+    org experiment (measured 7.7MB / 126k entries on one org), so experiment
+    filter options now come from the scoped, searchable
+    ``browse_experiment_options_core`` (GET /tasks/browse/experiment-options).
     """
 
     def _distinct(column: Any) -> Any:
@@ -2485,20 +2492,6 @@ async def browse_task_facets_core(
     harbor_stages = await _values(TrialModel.harbor_stage, "harbor_stage")
     analysis_classifications = await _values(classification, "analysis_classification")
 
-    experiments: list[TaskBrowseExperiment] = []
-    try:
-        experiments_stmt = select(ExperimentModel.id, ExperimentModel.name)
-        if org_id is not None:
-            experiments_stmt = experiments_stmt.where(ExperimentModel.org_id == org_id)
-        experiments_stmt = experiments_stmt.order_by(ExperimentModel.name)
-        experiment_rows = (await session.execute(experiments_stmt)).all()
-        experiments = [
-            TaskBrowseExperiment(id=row[0], name=row[1]) for row in experiment_rows
-        ]
-    except Exception:  # noqa: BLE001 - facets are best-effort
-        logger.exception("browse facets: experiments query failed")
-        await session.rollback()
-
     return TaskBrowseFacets(
         agents=agents,
         models=models,
@@ -2507,7 +2500,66 @@ async def browse_task_facets_core(
         environments=environments,
         harbor_stages=harbor_stages,
         analysis_classifications=analysis_classifications,
-        experiments=experiments,
+        # Deprecated, always empty — see browse_experiment_options_core.
+        experiments=[],
+    )
+
+
+# Hard ceiling on experiment options returned (and on ids hydrated) per call.
+EXPERIMENT_OPTIONS_MAX_LIMIT = 200
+
+
+async def browse_experiment_options_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+    query: str | None = None,
+    ids: Sequence[str] | None = None,
+    limit: int = 50,
+) -> ExperimentOptionsResponse:
+    """Option source for the experiment browse filter, with two access modes.
+
+    Hydration (``ids`` given): a keyed lookup of specific experiments —
+    filter chips restored from a URL or saved filter. The result set is
+    defined by the input ids (deduped, capped at
+    ``EXPERIMENT_OPTIONS_MAX_LIMIT``); ``limit`` and ``query`` are search
+    concepts and do not apply.
+
+    Search (no ``ids``): at most ``limit`` (capped at
+    ``EXPERIMENT_OPTIONS_MAX_LIMIT``) live experiments ordered by name,
+    optionally narrowed by a case-insensitive ``query`` substring. The
+    population matches the retired ``facets.experiments`` exactly: every live
+    org experiment, whether or not it currently has browse-visible tasks.
+    """
+    base = select(ExperimentModel.id, ExperimentModel.name)
+    if org_id is not None:
+        base = base.where(ExperimentModel.org_id == org_id)
+
+    if ids:
+        # Keyed lookup: the (deduped, capped) id list is the bound — never a
+        # page size, so a restored selection always hydrates every chip.
+        wanted = list(dict.fromkeys(ids))[:EXPERIMENT_OPTIONS_MAX_LIMIT]
+        stmt = base.where(ExperimentModel.id.in_(wanted)).order_by(
+            ExperimentModel.name, ExperimentModel.id
+        )
+        rows = (await session.execute(stmt)).all()
+        return ExperimentOptionsResponse(
+            items=[ExperimentOption(id=row[0], name=row[1]) for row in rows]
+        )
+
+    limit = max(1, min(limit, EXPERIMENT_OPTIONS_MAX_LIMIT))
+    if query and query.strip():
+        escaped = (
+            query.strip()
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+        base = base.where(ExperimentModel.name.ilike(f"%{escaped}%", escape="\\"))
+    stmt = base.order_by(ExperimentModel.name, ExperimentModel.id).limit(limit)
+    rows = (await session.execute(stmt)).all()
+    return ExperimentOptionsResponse(
+        items=[ExperimentOption(id=row[0], name=row[1]) for row in rows]
     )
 
 
