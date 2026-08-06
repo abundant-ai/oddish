@@ -315,6 +315,9 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// The backend response also carries a deprecated `experiments` field that is
+// always [] (options come from /api/tasks/browse/experiment-options instead);
+// it is deliberately absent here so nothing new codes against it.
 export interface TaskBrowseFacets {
   agents: string[];
   models: string[];
@@ -323,7 +326,17 @@ export interface TaskBrowseFacets {
   environments: string[];
   harbor_stages: string[];
   analysis_classifications: string[];
-  experiments: { id: string; name: string }[];
+}
+
+// GET /api/tasks/browse/experiment-options — async options for the sidebar
+// experiment filter (query= substring search, ids= chip hydration).
+export interface ExperimentOption {
+  id: string;
+  name: string;
+}
+
+export interface ExperimentOptionsResponse {
+  items: ExperimentOption[];
 }
 
 export interface TaskVersionSummary {
@@ -1158,9 +1171,4 @@ export interface Report {
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;
-}
-
-export interface ExperimentOption {
-  id: string;
-  name: string;
 }

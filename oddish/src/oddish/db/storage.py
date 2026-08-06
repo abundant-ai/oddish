@@ -65,8 +65,7 @@ def extract_s3_key_from_path(path: str | None) -> str | None:
 # are rejected outright, and one rejected PUT used to abort the whole trial
 # upload, leaving ``trial_s3_key`` NULL and breaking later QA analysis.
 _S3_KEY_ALLOWED_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
-    "/!-.*'() &$@=;:+,?"
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_/!-.*'() &$@=;:+,?"
 )
 
 
@@ -144,7 +143,8 @@ def _inline_eligible_files(files: list[dict[str, object]]) -> list[dict[str, obj
     budget = _INLINE_CONTENT_MAX_TOTAL_BYTES
     eligible: list[dict[str, object]] = []
     for meta in ordered:
-        size = int(meta.get("size") or 0)
+        raw_size = meta.get("size", 0)
+        size = raw_size if isinstance(raw_size, int) else int(str(raw_size or 0))
         if size > _INLINE_CONTENT_MAX_FILE_BYTES or size > budget:
             continue
         budget -= size
@@ -208,9 +208,11 @@ def _merge_inline_contents(
     if not texts:
         return files
     return [
-        {**meta, "content": texts[str(meta["path"])]}
-        if str(meta["path"]) in texts
-        else meta
+        (
+            {**meta, "content": texts[str(meta["path"])]}
+            if str(meta["path"]) in texts
+            else meta
+        )
         for meta in files
     ]
 
@@ -267,7 +269,7 @@ class StorageClient:
     # decompression. Size-bounded in total byte footprint so a single task
     # doesn't blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = OrderedDict()
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]], dict[str, str]]]" = (OrderedDict())
     _archive_cache_bytes: int = 0
 
     @classmethod
@@ -893,9 +895,11 @@ class StorageClient:
             if recursive:
                 return {
                     "task_id": task_id,
-                    "files": _merge_inline_contents(filtered_files, archive_texts)
-                    if inline
-                    else filtered_files,
+                    "files": (
+                        _merge_inline_contents(filtered_files, archive_texts)
+                        if inline
+                        else filtered_files
+                    ),
                     "dirs": [],
                     "prefix": full_prefix,
                     "recursive": True,
@@ -979,9 +983,7 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": await self._inline_object_contents(files)
-                if inline
-                else files,
+                "files": await self._inline_object_contents(files) if inline else files,
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,
@@ -1092,9 +1094,7 @@ class StorageClient:
 
             return {
                 "task_id": task_id,
-                "files": await self._inline_object_contents(files)
-                if inline
-                else files,
+                "files": await self._inline_object_contents(files) if inline else files,
                 "dirs": [],
                 "prefix": full_prefix,
                 "recursive": True,
