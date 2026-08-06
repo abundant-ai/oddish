@@ -1,11 +1,11 @@
 # Runbook: full vendor-model eval on SWE-Marathon (via Oddish, on Modal)
 
 This is the operational playbook for running a full SWE-Marathon eval (e.g. a
-vendor asks for **5 trials × 20 tasks = 100 trials** on a new/internal model)
+vendor asks for **8 trials × 20 tasks = 160 trials** on a new/internal model)
 end to end on Oddish + Modal. It captures the gotchas learned running xAI
-(`grok-build`) and Meta (`mini-swe-agent`) evals so the next one is fast.
+(`grok-build`), Meta (`mini-swe-agent`), Moonshot (`claude-code`), ZAI (`claude-code`), etc. evals so the next one is fast.
 
-**Target outcome:** ≥5 *valid* trials per task, where **valid = the trial ran to
+**Target outcome:** ≥8 *valid* trials per task, where **valid = the trial ran to
 a real terminal state** — a clean success *or* an `AgentTimeoutError`. Any other
 infra failure (non-zero agent exit like 137/143/1, verifier infra failure, a
 Harbor `ExceptionGroup`) is **not** valid; delete and rerun those.
@@ -38,17 +38,14 @@ Harbor `ExceptionGroup`) is **not** valid; delete and rerun those.
 The current SWE-Marathon v1.1 split, derived from `tasks/dataset.toml`, each
 task's `task.toml`, and `scripts/run-benchmark.sh`, is:
 
-- **Open internet (5):** `excel-clone`, `mastodon-clone`, `s3-clone`,
-  `slack-clone`, `stripe-clone`.
-  - Four use a CUA verifier: `excel-clone`, `mastodon-clone`, `s3-clone`, and
-    `slack-clone` (browser-agent verifier on an Anthropic key).
-  - `stripe-clone` is open but does not use the CUA verifier.
-- **Internet restricted (15):** `biofabric-rust-rewrite`, `embedding-eval`,
+- **Open internet (4):** `excel-clone`, `mastodon-clone`, `s3-clone`, and
+  `slack-clone`. All four use a CUA browser-agent verifier on an Anthropic key.
+- **Internet restricted (16):** `biofabric-rust-rewrite`, `embedding-eval`,
   `find-network-alignments`, `jax-pytorch-rewrite`,
   `kubernetes-rust-rewrite`, `nextjs-vite-rewrite`, `parameter-golf`,
   `post-train-ifeval-gpu`, `ruby-rust-port`, `rust-c-compiler`,
-  `rust-java-lsp`, `trimul-cuda`, `vliw-kernel-optimization`, `wasm-simd`,
-  `zstd-decoder`.
+  `rust-java-lsp`, `stripe-clone`, `trimul-cuda`, `vliw-kernel-optimization`,
+  `wasm-simd`, `zstd-decoder`.
   - Most build in a public environment, then switch the agent to an allowlist
     and the verifier to no network.
   - `ruby-rust-port` and `rust-java-lsp` instead inherit a minimal Cargo/Rust
@@ -75,6 +72,8 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
 
 - Always `-e modal`. First `--experiment <name>` submission creates the
   experiment; reuse the id (e.g. `a52b8b51`) afterwards.
+- Unless the eval request specifies otherwise, use the maximum reasoning effort
+  supported by the selected agent and model.
 - `--ae ODDISH_EVAL_NONCE=$(date +%s%N)` is a harmless distinct env var.
 - Closed-internet tasks are handled automatically: Oddish infers the model
   API host and disables server-side web tools for restricted agent phases.
@@ -103,7 +102,7 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
    OOM-killed. It surfaces as a job `status=success` with `reward=0` and an
    `error_message` of `Command failed (exit 137)`. **Fix:** bump memory, e.g.
    `--override-memory-mb 98304` (96 GB) — this eliminated the 137s. Note a task's
-   own `task.toml` default (even 64 GB) can be too low under `xhigh`.
+   own `task.toml` default (even 64 GB) can be too low under `xhigh`. Only do this if you actually observe OOM due this reason.
 
 4. **Agent self-kill (`exit 143`).** `mini-swe-agent` runs `pkill -f <keyword>`
    to restart servers/processes it launches (`pkill -f vite`, `pkill -f rj-rust`,
@@ -156,15 +155,15 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
 
 ## 4. Workflow (breadth → depth → babysit)
 
-1. **Validate** with 1 trial each on representative classes: open non-CUA
-   (`stripe-clone`), CUA (`slack-clone`), phase-restricted
+1. **Validate** with 1 trial each on representative classes: CUA/open-internet
+   (`slack-clone`), restricted non-CUA (`stripe-clone`), phase-restricted
    (`zstd-decoder`), inherited build-allowlist (`ruby-rust-port`), and GPU
    (`post-train-ifeval-gpu`). Confirm: auth works (tokens climbing),
    trajectory captured, restricted-network setup succeeds, the requested GPU
    is provisioned, and the CUA verifier runs.
 2. **Breadth** across all 20 at a small N.
-3. **Depth:** the per-eval target `N` is usually **5**, but confirm it per
-   request — vendors sometimes ask for more (e.g. this Meta run used **N=8**).
+3. **Depth:** the per-eval target `N` is usually **8**, but confirm it per
+   request because vendor requirements can vary.
    Raise the sweep target to `N` plus a **small** buffer (e.g. `N+1`/`N+2`) to
    absorb the occasional stochastic bad trial without over-provisioning.
 4. **Babysit loop:** audit by underlying error → delete the infra **and
@@ -235,3 +234,64 @@ Bucket `ralphbench-logs` (region `us-west-2`); per task:
   file, verify with `sts get-caller-identity`, and expect to refresh mid-upload
   on large exports. `boto3` is available in the `oddish` venv (no `aws` CLI
   needed).
+
+
+## 7. Reusable background-agent prompt
+
+Customize the placeholders below for the requested agent, model, reasoning
+settings, trial count, and baseline count. The agent should have access to
+`abundant-ai/oddish`, `abundant-ai/harbor`, and `abundant-ai/swe-marathon`.
+
+> Run an evaluation across all 20 tasks in SWE-Marathon using Oddish and Modal.
+> Use:
+>
+> - Agent: `<agent>`
+> - Model: `<provider/model>`
+> - Reasoning settings: `<reasoning-settings>` (default to the maximum supported
+>   effort unless the request specifies otherwise)
+> - Target trials per task: `<N>`
+> - Nop and oracle baselines per task: `<baseline-N>`
+> - Oddish experiment: `<experiment-name-or-ID>`
+>
+> Use Oddish for all submission, monitoring, and retry operations. SWE-Marathon
+> documentation may describe upstream Harbor commands, but Oddish uses its own
+> Harbor fork and CLI workflow. Account for those differences and follow this
+> runbook as the operational source of truth.
+>
+> Submit trials on Modal with a command shaped like:
+>
+> ```bash
+> uv run oddish run -p <task-dir> \
+>   --agent <agent> \
+>   --model <provider/model> \
+>   --n-trials <N> \
+>   --experiment <experiment-name-or-ID> \
+>   -e modal \
+>   --json \
+>   <additional-options>
+> ```
+>
+> Work breadth-first: start with a small number of trials across all 20 tasks,
+> validate each execution class, and only then increase each task to the target
+> depth. Keep every run in one Oddish experiment.
+>
+> Sixteen tasks have restricted internet access. Ensure their model API host is
+> allowlisted and server-side web-search tools are disabled during the agent
+> phase. Oddish should infer both automatically; verify this behavior rather
+> than adding manual overrides by default. Consult the provider documentation
+> if its required API hosts are unclear.
+>
+> The four open-internet tasks use CUA verifiers backed by an Anthropic API key.
+> Keep CUA concurrency at roughly 10 trials or fewer, and confirm an initial CUA
+> verifier completes cleanly before scaling.
+>
+> Monitor trial logs and trajectories throughout the run. Trials should have no
+> infrastructure failures: an `AgentTimeoutError` is an acceptable terminal
+> outcome, but agent process exits, verifier infrastructure failures, missing
+> credentials, rate limits, and Harbor exceptions must be investigated and
+> rerun. Infrastructure problems must not count against the evaluated model.
+>
+> Also run `<baseline-N>` nop trials and `<baseline-N>` oracle trials per task.
+> During this phase, do not prune trials or export artifacts to another bucket.
+> Follow the auditing and rerun guidance in
+> `oddish/docs/swe-marathon-eval-runbook.md`.

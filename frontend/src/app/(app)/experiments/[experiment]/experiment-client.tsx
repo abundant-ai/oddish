@@ -2,7 +2,6 @@
 
 import {
   Suspense,
-  use,
   useCallback,
   useEffect,
   useMemo,
@@ -106,28 +105,23 @@ async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
 
 type ExperimentClientPageProps = {
   experimentId: string;
-  initialTasksPromise: Promise<Task[] | null>;
 };
 
 export function ExperimentClientPage({
   experimentId,
-  initialTasksPromise,
 }: ExperimentClientPageProps) {
   return (
+    // The Suspense boundary is required because ExperimentDetailView uses
+    // useSearchParams, which needs one during prerendering. The key causes
+    // everything inside to remount when the experiment changes, so no
+    // state carries over from one experiment to another.
     <Suspense key={experimentId} fallback={<ExperimentPageSkeleton />}>
-      <ExperimentContent
-        experimentId={experimentId}
-        initialTasksPromise={initialTasksPromise}
-      />
+      <ExperimentContent experimentId={experimentId} />
     </Suspense>
   );
 }
 
-function ExperimentContent({
-  experimentId,
-  initialTasksPromise,
-}: ExperimentClientPageProps) {
-  const initialTasks = use(initialTasksPromise);
+function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
   const { orgRole } = useAuth();
 
   const [isEditingName, setIsEditingName] = useState(false);
@@ -157,11 +151,7 @@ function ExperimentContent({
   } = useSWR<Task[]>(allTasksUrl, fetchExperimentTasksPage, {
     refreshInterval: 0,
     revalidateOnFocus: false,
-    // A client-side revisit can otherwise prefer SWR's old shell over fresh
-    // server fallback data after the task's default version changes.
-    revalidateOnMount: true,
     revalidateIfStale: true,
-    fallbackData: initialTasks ?? undefined,
   });
 
   // Phase 2: Progressively fetch compact trial data in batches.

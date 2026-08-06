@@ -90,6 +90,8 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { useSWRConfig } from "swr";
+import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -195,17 +197,30 @@ function TrialAnalysisCard({
   apiBaseUrl: string;
   onQueued?: () => void;
 }) {
-  const [live, setLive] = useState<Trial | null>(null);
-  // The parent's snapshot can carry a superseded report (e.g. after a
-  // re-run), so the card holds a loading state instead of painting it and
-  // swapping. Holds the id whose per-trial fetch has settled: an id, not a
-  // boolean, so the first render after a trial switch is already unsynced.
-  const [syncedId, setSyncedId] = useState<string | null>(null);
+  // The drawer already fetches this trial through useTrial. Calling the
+  // same hook with the same id here reuses that request instead of
+  // creating a second one. While the analysis is running, the hook
+  // refetches every few seconds, so the finished report shows up without
+  // the user having to close and reopen the drawer.
+  const { data: liveTrial, error: liveTrialError } = useTrial(trialProp.id, {
+    apiBaseUrl,
+  });
+  // The global mutate writes to an explicitly named cache key. The bound
+  // mutate returned by useTrial would write to whichever trial the card
+  // is currently showing, which is the wrong target when the user
+  // switches trials while a rerun request is in flight.
+  const { mutate: mutateByKey } = useSWRConfig();
+  // The trial object passed in from the parent can contain an outdated
+  // report, for example one from before a re-run. To avoid showing an
+  // outdated report and then swapping it, the card shows a loading state
+  // until the fetch for this trial either returns or fails. The fetched
+  // data and the error both belong to the current trial id only, so
+  // switching to another trial automatically puts the card back into its
+  // loading state.
+  const trial = liveTrial ?? trialProp;
+  const synced = liveTrial !== undefined || liveTrialError !== undefined;
   const [queuing, setQueuing] = useState(false);
   const [queueError, setQueueError] = useState<string | null>(null);
-  // Set when WE queued a run. This keeps the card in its progress state
-  // (and polling) across the gap before a worker claims the job.
-  const [queuedAt, setQueuedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [logText, setLogText] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
@@ -214,113 +229,56 @@ function TrialAnalysisCard({
   // Guards async completions: a response that lands after a trial switch
   // must not write another trial's state onto the open card.
   const trialIdRef = useRef(trialProp.id);
-  // The parent passes a new onQueued function on every render. Reading it
-  // through a ref keeps the poll interval alive across parent re-renders.
+  // The parent passes a brand-new onQueued function on every render. The
+  // effect below reads it through this ref so that the effect does not
+  // re-run every time the parent renders.
   const onQueuedRef = useRef(onQueued);
   useEffect(() => {
     onQueuedRef.current = onQueued;
   }, [onQueued]);
 
-  // A different trial means the polled data no longer applies.
+  // When the user switches to a different trial, the re-run button state
+  // and the fetched log are cleared because they describe the previous
+  // trial. The trial data itself does not need clearing, because the
+  // cache stores it under each trial's id.
   useEffect(() => {
     trialIdRef.current = trialProp.id;
-    setLive(null);
     setQueuing(false);
-    setQueuedAt(null);
     setLogText(null);
     setLogOpen(false);
     setQueuePosition(null);
     setQueueError(null);
   }, [trialProp.id]);
 
-  // Fetch fresh state once per shown trial. The parent's trial object is a
-  // snapshot from when the drawer opened; without this, a run that finished
-  // while the user viewed another trial stays hidden until the drawer is
-  // closed and reopened.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // The timeout bounds the synced gate: a hung fetch must fall back
-        // to the parent snapshot, not pin the report skeleton forever.
-        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
-          cache: "no-store",
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!res.ok || cancelled) return;
-        const fresh = (await res.json()) as Trial;
-        if (!cancelled && trialIdRef.current === trialProp.id) setLive(fresh);
-      } catch {
-        // The card falls back to the parent's snapshot.
-      } finally {
-        if (!cancelled && trialIdRef.current === trialProp.id)
-          setSyncedId(trialProp.id);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBaseUrl, trialProp.id]);
+  // An analysis counts as in progress when the server says it is queued
+  // or running. The rerun endpoint sets the status to QUEUED before it
+  // responds, so the server's status is always current and the client
+  // does not need to track a run on its own.
+  const inProgress = isAnalysisStatusActive(trial.analysis_status);
 
-  // The id check covers the first render after a trial switch, before the
-  // reset effect above has cleared the previous trial's polled state.
-  const trial = live && live.id === trialProp.id ? live : trialProp;
-  const synced = syncedId === trialProp.id;
-  const analysisActive =
-    trial.analysis_status === "running" ||
-    trial.analysis_status === "pending" ||
-    trial.analysis_status === "queued";
-  const waitingForWorker = queuedAt !== null && !analysisActive;
-  const inProgress = analysisActive || waitingForWorker;
-
-  // Poll for fresh trial state while analysis is in progress. The
-  // cancelled flag drops in-flight responses on cleanup, so a late poll
-  // cannot overlay another trial's analysis after navigation.
+  // When an analysis run that we were watching finishes, this tells the
+  // parent to refresh its lists, so the grid shows the result even after
+  // the drawer is closed. It only fires when this same trial moves from
+  // an active status to success or failed. It never fires when a trial
+  // that already finished is loaded for the first time.
+  const lastAnalysisRef = useRef<{
+    id: string;
+    status: Trial["analysis_status"];
+  } | null>(null);
   useEffect(() => {
-    if (!inProgress) return;
-    let cancelled = false;
-    const id = window.setInterval(async () => {
-      try {
-        const res = await fetch(`${apiBaseUrl}/trials/${trialProp.id}`, {
-          cache: "no-store",
-        });
-        if (!res.ok || cancelled) return;
-        const fresh = (await res.json()) as Trial;
-        if (cancelled) return;
-        setLive(fresh);
-        // Terminal state ends the waiting phase. Refresh the parent too,
-        // so the result survives closing the drawer or switching trials.
-        if (
-          fresh.analysis_status === "success" ||
-          fresh.analysis_status === "failed"
-        ) {
-          setQueuedAt(null);
-          onQueuedRef.current?.();
-        }
-      } catch {
-        // Transient fetch error; the next tick retries.
-      }
-    }, 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [inProgress, apiBaseUrl, trialProp.id]);
-
-  // Fallback: if no worker picks the job up within 15 minutes, stop
-  // showing progress and fall back to what the server says. Also drop the
-  // optimistic `live` state — it holds the post-reset empty analysis, and
-  // keeping it would shadow every later refresh from the parent. The timer
-  // is disarmed while the analysis is active: a claimed run can honestly
-  // take longer, and clearing then would stop the polling mid-run.
-  useEffect(() => {
-    if (queuedAt === null || analysisActive) return;
-    const id = window.setTimeout(() => {
-      setQueuedAt(null);
-      setLive(null);
-    }, Math.max(0, queuedAt + 15 * 60_000 - Date.now()));
-    return () => window.clearTimeout(id);
-  }, [queuedAt, analysisActive]);
+    const prev = lastAnalysisRef.current;
+    lastAnalysisRef.current = liveTrial
+      ? { id: liveTrial.id, status: liveTrial.analysis_status }
+      : null;
+    if (!liveTrial || !prev || prev.id !== liveTrial.id) return;
+    if (
+      isAnalysisStatusActive(prev.status) &&
+      (liveTrial.analysis_status === "success" ||
+        liveTrial.analysis_status === "failed")
+    ) {
+      onQueuedRef.current?.();
+    }
+  }, [liveTrial]);
 
   // Tick the elapsed timer once a second while in progress.
   useEffect(() => {
@@ -426,22 +384,31 @@ function TrialAnalysisCard({
       // when the user has switched trials; only the local card state below
       // is scoped to the trial this request was for.
       onQueued?.();
+      // The server set analysis_status to queued before it responded, so
+      // the queued state is already true on the server. Writing it into
+      // the cache shows it immediately and starts the refetching, and
+      // the refetch then confirms it from the server. The write is
+      // addressed by the queued trial's own cache key, so it reaches the
+      // right entry even when the user switched to another trial while
+      // the request was in flight.
+      void mutateByKey(
+        trialKey(apiBaseUrl, requestTrialId),
+        {
+          ...trial,
+          analysis_status: "queued",
+          analysis: null,
+          analysis_error: null,
+          analysis_started_at: null,
+        },
+        { revalidate: true },
+      );
       if (trialIdRef.current !== requestTrialId) return;
-      // Show progress immediately; polling takes over from here. The old
-      // run's log is cleared server-side; clear it here too. Open the log
-      // directly: a re-run over a stale RUNNING analysis keeps inProgress
-      // true, so the open-on-start effect does not fire again.
-      setQueuedAt(Date.now());
+      // The old run's log is cleared server-side; clear it here too. Open
+      // the log directly: a re-run over a stale RUNNING analysis keeps
+      // inProgress true, so the open-on-start effect does not fire again.
       setLogText(null);
       setLogOpen(true);
       setQueuePosition(null);
-      setLive({
-        ...trial,
-        analysis_status: "queued",
-        analysis: null,
-        analysis_error: null,
-        analysis_started_at: null,
-      });
     } catch (err) {
       if (trialIdRef.current === requestTrialId) {
         setQueueError(

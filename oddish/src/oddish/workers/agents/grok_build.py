@@ -32,6 +32,7 @@ _XAI_API_KEY_ENV = "XAI_API_KEY"
 # so a pool of keys on one team shares a single bucket and concurrent trials
 # throttle exactly as they do with one key.
 _XAI_API_KEYS_ENV = "XAI_API_KEYS"
+_DEFAULT_CONTEXT_WINDOW = 256000
 
 # Where the grok CLI persists its full session store (tool calls + token usage);
 # the headless stdout does not carry these, so we copy this tree into the trial
@@ -116,13 +117,18 @@ _RESUME_PROMPT = (
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 
-def _positive_int(name: str, value: int | str | None) -> int | None:
+def _positive_int(name: str, value: int | float | str | None) -> int | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
-    try:
-        parsed = int(str(value).strip())
-    except ValueError:
+    if isinstance(value, bool):
         parsed = 0
+    elif isinstance(value, float):
+        parsed = int(value) if value.is_integer() else 0
+    else:
+        try:
+            parsed = int(str(value).strip())
+        except ValueError:
+            parsed = 0
     if parsed <= 0:
         raise ValueError(
             f"grok-build {name} must be a positive integer, got {value!r}."
@@ -140,6 +146,7 @@ class OddishGrokBuild(BaseInstalledAgent):
         *args: Any,
         reasoning_effort: str | None = "high",
         api_backend: str | None = None,
+        context_window: int | float | str | None = _DEFAULT_CONTEXT_WINDOW,
         max_retries: int | str | None = None,
         inference_idle_timeout_secs: int | str | None = None,
         **kwargs: Any,
@@ -154,6 +161,9 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"expected one of {sorted(_VALID_API_BACKENDS)}."
             )
         self.api_backend = normalized_backend or None
+        self.context_window = (
+            _positive_int("context_window", context_window) or _DEFAULT_CONTEXT_WINDOW
+        )
         # Grok's documented-but-unexplained ``[model.*]`` reliability knobs
         # (the settings reference describes both as just "Reliability."). Left
         # out of the config unless set via ``--agent-kwarg``; whether
@@ -226,8 +236,10 @@ class OddishGrokBuild(BaseInstalledAgent):
         agent kwarg, e.g. ``--agent-kwarg api_backend=chat_completions``), swap
         the transport for every model entry so the trial can reach a model that
         is only served on that endpoint. When unset, the upstream default is
-        preserved verbatim. ``max_retries`` / ``inference_idle_timeout_secs``
-        are likewise appended to every model entry only when set.
+        preserved verbatim. ``context_window`` defaults to the existing 256k
+        profile and can be overridden per trial. ``max_retries`` /
+        ``inference_idle_timeout_secs`` are likewise appended to every model
+        entry only when set.
         """
         model = self._resolve_model()
         quoted_model = self._toml_string(model)
@@ -256,7 +268,7 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"base_url = {quoted_base_url}",
                 f"env_key = {quoted_env_key}",
                 'api_backend = "responses"',
-                "context_window = 256000",
+                f"context_window = {self.context_window}",
                 *reliability,
                 "[model.grok-build]",
                 'name = "grok-build"',
@@ -264,7 +276,7 @@ class OddishGrokBuild(BaseInstalledAgent):
                 f"base_url = {quoted_base_url}",
                 f"env_key = {quoted_env_key}",
                 'api_backend = "responses"',
-                "context_window = 256000",
+                f"context_window = {self.context_window}",
                 *reliability,
                 "",
             ]
