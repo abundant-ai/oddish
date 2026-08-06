@@ -1,7 +1,6 @@
 "use client";
 
 import { memo, useCallback, useMemo, useState } from "react";
-import { useUser } from "@clerk/nextjs";
 import {
   CartesianGrid,
   Cell,
@@ -59,12 +58,6 @@ type ChartDatum = {
 
 type TooltipValue = number | string | ReadonlyArray<number | string>;
 type TooltipName = number | string;
-
-// Feature flag: the Pareto frontier card is visible only to these accounts
-// while it bakes (hardcoded-flag convention, like trial-detail-panel's
-// re-run-analysis button). Delete the gate in the component to launch it
-// for everyone, including public share views.
-const PARETO_GRAPH_USER_ALLOWLIST = new Set(["meji@abundant.ai"]);
 
 function formatCount(value: number): string {
   if (value === 0) return "0";
@@ -183,7 +176,6 @@ export const CostParetoGraph = memo(function CostParetoGraph({
   hoverAgent,
   onHoverAgent,
 }: CostParetoGraphProps) {
-  const { user } = useUser();
   const { ref: chartContainerRef, size: chartSize } =
     useElementSize<HTMLDivElement>();
   const [requestedMetric, setRequestedMetric] = useState<ParetoMetric>("cost");
@@ -358,14 +350,7 @@ export const CostParetoGraph = memo(function CostParetoGraph({
     [chartSize.width]
   );
 
-  const viewerEmail =
-    user?.primaryEmailAddress?.emailAddress?.toLowerCase() ?? null;
-  if (
-    viewerEmail == null ||
-    !PARETO_GRAPH_USER_ALLOWLIST.has(viewerEmail) ||
-    metric == null ||
-    points.length === 0
-  ) {
+  if (metric == null || points.length === 0) {
     return null;
   }
 

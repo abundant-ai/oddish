@@ -122,6 +122,20 @@ const CostParetoGraph = dynamic(
   },
 );
 
+const TaskSolveHeatmap = dynamic(
+  () => import("./task-solve-heatmap").then((mod) => mod.TaskSolveHeatmap),
+  {
+    ssr: false,
+  },
+);
+
+const AgentTradingCards = dynamic(
+  () => import("./agent-trading-cards").then((mod) => mod.AgentTradingCards),
+  {
+    ssr: false,
+  },
+);
+
 export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
@@ -131,6 +145,9 @@ type ExperimentTrialsTableProps = {
   isLoading: boolean;
   isLoadingTrials?: boolean;
   showPassAtK?: boolean;
+  // Experimental eval analytics (Pareto frontier, solve grid, agent cards).
+  // The caller owns the feature gate; this only toggles rendering.
+  showEvalGraphs?: boolean;
   onTaskUnlink?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
@@ -472,6 +489,7 @@ export function ExperimentTrialsTable({
   isLoading,
   isLoadingTrials = false,
   showPassAtK = false,
+  showEvalGraphs = false,
   onTaskUnlink,
   onRerun,
   allowRerun = true,
@@ -1779,21 +1797,12 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        {/* Graphs row: pass/k curve (needs multiple trials per task-agent),
-            Pareto frontier (needs cost/token/time/steps/tools data), and
-            leaderboard. A card with nothing to show renders null and
+        {/* Graphs row: pass/k curve (needs multiple trials per task-agent)
+            and leaderboard. A card with nothing to show renders null and
             contributes no grid cell, so the row reflows around it. */}
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
             <PassAtKGraph
-              tasks={tasks}
-              agentSummaries={sortedAgentSummaries}
-              hiddenAgents={hiddenAgents}
-              onToggleAgent={toggleAgent}
-              hoverAgent={hoverAgent}
-              onHoverAgent={setHoverAgent}
-            />
-            <CostParetoGraph
               tasks={tasks}
               agentSummaries={sortedAgentSummaries}
               hiddenAgents={hiddenAgents}
@@ -1810,6 +1819,33 @@ export function ExperimentTrialsTable({
               onHoverAgent={setHoverAgent}
             />
           </div>
+        ) : null}
+
+        {/* Experimental eval analytics behind the header's Eval toggle
+            (feature-gated by the caller via lib/eval-graphs). */}
+        {showEvalGraphs ? (
+          <>
+            <div className="grid items-stretch gap-4 xl:grid-cols-2">
+              <CostParetoGraph
+                tasks={tasks}
+                agentSummaries={sortedAgentSummaries}
+                hiddenAgents={hiddenAgents}
+                onToggleAgent={toggleAgent}
+                hoverAgent={hoverAgent}
+                onHoverAgent={setHoverAgent}
+              />
+              <TaskSolveHeatmap
+                tasks={tasks}
+                agentSummaries={sortedAgentSummaries}
+                hiddenAgents={hiddenAgents}
+              />
+            </div>
+            <AgentTradingCards
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+            />
+          </>
         ) : null}
 
         <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">

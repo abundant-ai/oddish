@@ -34,7 +34,13 @@ import type {
   Trial,
   UserTagRef,
 } from "@/lib/types";
-import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
+import {
+  ExternalLink,
+  FlaskConical,
+  GitPullRequest,
+  Info,
+  Loader2,
+} from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -49,6 +55,7 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
+import { useEvalGraphsEnabled } from "@/lib/eval-graphs";
 import {
   formatLineRange,
   parseLineRange,
@@ -282,6 +289,9 @@ function ExperimentHeaderMeta({
   headerStatus,
   showPassAtK,
   onToggleShowPassAtK,
+  evalGraphsAvailable,
+  showEvalGraphs,
+  onToggleShowEvalGraphs,
   headerRight,
   prLink,
 }: {
@@ -290,6 +300,11 @@ function ExperimentHeaderMeta({
   headerStatus?: React.ReactNode;
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
+  // Experimental analytics toggle; the button only renders for accounts the
+  // eval-graphs feature flag allows.
+  evalGraphsAvailable: boolean;
+  showEvalGraphs: boolean;
+  onToggleShowEvalGraphs: () => void;
   headerRight?: React.ReactNode;
   prLink?: React.ReactNode;
 }) {
@@ -330,6 +345,22 @@ function ExperimentHeaderMeta({
         </svg>
         Graphs
       </Button>
+      {evalGraphsAvailable && (
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onToggleShowEvalGraphs}
+          aria-pressed={showEvalGraphs}
+          className={`h-8 gap-[7px] rounded-[7px] border px-3 text-[12px] leading-none transition-colors select-none ${
+            showEvalGraphs
+              ? "border-[color:var(--paper-ink)] bg-[color:var(--paper-ink)] text-[color:var(--paper-bg)] hover:bg-[color:color-mix(in_oklch,var(--paper-ink),white_12%)]"
+              : "border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] text-[color:var(--paper-ink)] hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+          }`}
+        >
+          <FlaskConical className="h-3.5 w-3.5" aria-hidden />
+          Eval
+        </Button>
+      )}
       {headerRight}
     </div>
   );
@@ -1008,6 +1039,9 @@ export function ExperimentDetailView({
     trialId: string;
   } | null>(null);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
+  // Experimental eval analytics: allowlisted accounts only, off by default.
+  const evalGraphsEnabled = useEvalGraphsEnabled();
+  const [showEvalGraphs, setShowEvalGraphs] = useState(false);
   const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     try {
@@ -1630,6 +1664,11 @@ export function ExperimentDetailView({
                 headerStatus={headerStatus}
                 showPassAtK={showPassAtK}
                 onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
+                evalGraphsAvailable={evalGraphsEnabled}
+                showEvalGraphs={showEvalGraphs}
+                onToggleShowEvalGraphs={() =>
+                  setShowEvalGraphs((prev) => !prev)
+                }
                 headerRight={headerRight}
                 prLink={
                   // The PR chip links into GitHub for the experiment's source
@@ -1676,6 +1715,7 @@ export function ExperimentDetailView({
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
                 showPassAtK={showPassAtK}
+                showEvalGraphs={evalGraphsEnabled && showEvalGraphs}
                 onTaskUnlink={onTaskUnlink}
                 onRerun={onRerun}
                 allowRerun={allowRetry}
