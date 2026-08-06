@@ -55,19 +55,48 @@ export function RecentTasksResults() {
 
   const items = data.items ?? [];
   const hasMore = data.has_more ?? false;
+  // The shown-range label describes the rows actually on screen, so its
+  // offset comes from the response — during a pager transition the URL
+  // already points at the next page while keepPreviousData still shows the
+  // previous one.
+  const shownOffset = data.offset ?? offset;
 
   // isLoading while data is present = a different key (filter/pager change)
   // is in flight and keepPreviousData is showing the previous state, dimmed.
   // Background revalidation of the current key never dims.
+  //
+  // A failed fetch also keeps the previous state on screen — and it may
+  // belong to the previous filter — so it must never pass as current
+  // silently: the banner says so and offers a retry. Cold-load failures
+  // render the full alert above instead.
+  const errorBanner = error ? (
+    <Alert variant="destructive">
+      <AlertTitle>Failed to update tasks</AlertTitle>
+      <AlertDescription>
+        Showing the last loaded results.{" "}
+        <button
+          type="button"
+          onClick={() => void mutate()}
+          className="font-medium underline underline-offset-2"
+        >
+          Retry
+        </button>
+      </AlertDescription>
+    </Alert>
+  ) : null;
+
   if (items.length === 0) {
     return (
-      <div
-        className={cn(
-          "bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm transition-opacity",
-          isLoading && "opacity-60"
-        )}
-      >
-        No tasks match the current filters.
+      <div className="space-y-4">
+        {errorBanner}
+        <div
+          className={cn(
+            "bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm transition-opacity",
+            isLoading && "opacity-60"
+          )}
+        >
+          No tasks match the current filters.
+        </div>
       </div>
     );
   }
@@ -76,6 +105,7 @@ export function RecentTasksResults() {
     <div
       className={cn("space-y-4 transition-opacity", isLoading && "opacity-60")}
     >
+      {errorBanner}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {items.map((task) => (
           <TaskCard key={task.id} task={task} />
@@ -84,7 +114,7 @@ export function RecentTasksResults() {
 
       <div className="flex items-center justify-between gap-2">
         <div className="text-muted-foreground text-xs">
-          {offset + 1}-{offset + items.length} shown
+          {shownOffset + 1}-{shownOffset + items.length} shown
         </div>
         <div className="flex items-center gap-2">
           {offset === 0 ? (
