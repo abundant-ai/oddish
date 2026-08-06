@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.endpoints.collections import create_trial_collection_core
+from oddish.core.endpoints.deletion import _combine_idempotency_key
 from oddish.core.endpoints.tasks_query import list_experiment_slim_tasks
 from oddish.db.models import ExperimentModel, TaskModel, TrialModel, generate_id
 
@@ -48,29 +49,41 @@ def _trial(
 
 
 @pytest.mark.asyncio
-async def test_slim_tasks_returns_gathered_trials(session):
+@pytest.mark.parametrize("source_id", ["source-short", "source-" + "s" * 80])
+async def test_slim_tasks_collapses_gathered_combine_copies(session, source_id):
     task = _task("detail-collection-task-1")
     session.add(task)
     await session.flush()
 
-    home = _experiment("home-detail-1")
-    session.add(home)
+    source_home = _experiment("source-detail-1")
+    copy_home = _experiment("copy-detail-1")
+    session.add_all([source_home, copy_home])
     await session.flush()
 
-    t1 = _trial(task, home, org_id="org1")
-    session.add(t1)
+    original = _trial(task, source_home)
+    original.id = original.name = source_id
+    copy = _trial(task, copy_home)
+    copy.idempotency_key = _combine_idempotency_key(copy_home.id, original.id)
+    session.add_all([original, copy])
     await session.flush()
 
     coll = await create_trial_collection_core(
-        session, name="c", trial_ids=[t1.id], org_id="org1"
+        session, name="c", trial_ids=[original.id, copy.id], org_id="org1"
     )
-    await session.flush()
+    lone_copy = await create_trial_collection_core(
+        session, name="lone copy", trial_ids=[copy.id], org_id="org1"
+    )
 
     tasks = await list_experiment_slim_tasks(
         session, experiment_id=coll.id, org_id="org1"
     )
-    all_trial_ids = {tr.id for task in tasks for tr in task.trials}
-    assert t1.id in all_trial_ids
+    assert {trial.id for task in tasks for trial in task.trials} == {original.id}
+
+    session.expire_all()
+    tasks = await list_experiment_slim_tasks(
+        session, experiment_id=lone_copy.id, org_id="org1"
+    )
+    assert {trial.id for task in tasks for trial in task.trials} == {copy.id}
 
 
 @pytest.mark.asyncio
