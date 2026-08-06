@@ -30,8 +30,11 @@ CUA_TASKS = {
     "s3-clone": "s3-clone-23996371",
     "slack-clone": "slack-clone-b0a98beb",
 }
+# "retrying" is pending, not failed -- Oddish is re-running the trial itself.
+# Omitting it understates in-flight (a retrying trial counts as neither valid
+# nor pending) and so overstates headroom. Same fix as poll_all.py.
 PENDING = ("pending", "queued", "running", "blocked", "preparing", "submitted",
-           "claimed", "in_progress", "initializing")
+           "claimed", "in_progress", "initializing", "retrying")
 OK_ERR = ("agenttimeouterror", "verifiertimeouterror", "timed out after")
 
 
