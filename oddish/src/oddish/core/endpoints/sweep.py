@@ -417,7 +417,9 @@ async def create_task_sweep_core(
     of the *raw* client submission so an honest retry is not spuriously rejected;
     when omitted it is computed from ``submission`` as received here.
     """
+    from oddish.config import QuotaMode
     from oddish.core.quota_admission import admit_trials
+    from oddish.core.quotas import acquire_quota_locks
     from oddish.core.sweeps import (
         build_task_submission_from_sweep,
         build_trial_specs_from_sweep,
@@ -525,17 +527,19 @@ async def create_task_sweep_core(
     if submission.append_to_task:
         # Lock order must stay ``quota advisory → task row`` to match
         # ``cancel_trials_if_quota_reached`` (quota first, then task FOR UPDATE).
-        # Taking the task row before ``admit_trials`` inverted that order and
+        # Taking the task row before the quota lock inverted that order and
         # deadlocked under concurrent over-quota cancellation.
         #
-        # Also do not take the org quota lock across reconcile: that window can
-        # take tens of seconds on large tasks and starves every concurrent
-        # submit / enforcement worker (opaque 500s on /tasks/sweep).
+        # Admit only against the locked plan: an unlocked estimate can still
+        # ``QuotaExceeded`` (402) after a concurrent append already filled the
+        # deficit, even when this request would insert fewer trials or none.
+        # Hold the quota advisory only across the short locked plan + admit +
+        # insert — not across the earlier experiment/setup work.
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
         # Read-only intent from the unlocked snapshot. Applied under FOR UPDATE
-        # after admission (idempotent flips).
+        # after the quota lock (idempotent flips).
         want_run_analysis = bool(task.run_analysis or submission.run_analysis)
         want_run_probe = bool(task.run_probe or submission.run_probe)
 
@@ -582,20 +586,10 @@ async def create_task_sweep_core(
         target_experiment_id = new_experiment_id or (
             primary_experiment.id if primary_experiment else None
         )
-        # Unlocked estimate for quota admission only. Authoritative plan is
-        # rebuilt under the task row lock below so concurrent appends cannot
-        # both observe the same deficit and overshoot declarative N.
-        planned_trials, _ = await _plan_append_trials(
-            session,
-            task=task,
-            submission=submission,
-            target_experiment_id=target_experiment_id,
-            default_environment=effective_default_env,
-            allowed_environments=allowed_environments,
-        )
-        # Quota advisory lock is acquired here (and held through commit).
-        await admit_trials(session, org_id, billed_user_id, count=len(planned_trials))
-        # Task row lock only after quota — same order as enforcement.
+        # Quota advisory before task FOR UPDATE (ENFORCE only; SHADOW/OFF do
+        # not take these locks on admit or cancel either).
+        if settings.quota_mode == QuotaMode.ENFORCE and org_id is not None:
+            await acquire_quota_locks(session, org_id, billed_user_id)
         await session.refresh(task, with_for_update=True)
         # Allow flipping task.run_analysis from False to True on append.
         # ``run_analysis`` runs at trial-completion time, so updating the
@@ -625,17 +619,8 @@ async def create_task_sweep_core(
             default_environment=effective_default_env,
             allowed_environments=allowed_environments,
         )
-        if len(trials) > len(planned_trials):
-            # Rare: deficit grew while we waited (e.g. concurrent failures).
-            # Re-check the *full* final count — admit_trials does not accumulate
-            # the earlier estimate (it only adds ``count`` to current inflight),
-            # so a delta-only top-up would undercount headroom.
-            await admit_trials(
-                session,
-                org_id,
-                billed_user_id,
-                count=len(trials),
-            )
+        # Authoritative count only (no-op when the locked plan is empty).
+        await admit_trials(session, org_id, billed_user_id, count=len(trials))
 
         append_submission = submission.model_copy(
             update={
