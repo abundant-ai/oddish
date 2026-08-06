@@ -381,7 +381,11 @@ async def _load_fresh_summary_block(
 
 
 async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel, triggered_by_user_id: str | None = None
+    session: AsyncSession,
+    trial: TrialModel,
+    triggered_by_user_id: str | None = None,
+    *,
+    refresh: bool = False,
 ) -> dict | None:
     """Return the trajectory summary, generating on miss.
 
@@ -390,8 +394,12 @@ async def get_or_generate_summary(
     ``trials.trajectory_summary`` for the graph builder + analyzer-input readers.
     Returns ``None`` when the trial has no trajectory; raises
     ``SummaryGenerationError`` if generation fails.
+
+    ``refresh`` skips the cache and always generates. The new block is written
+    alongside the old one and wins on ``created_at``, so nothing is deleted and
+    a failed regeneration leaves the previous summary serving.
     """
-    fresh = await _load_fresh_summary_block(session, trial.id)
+    fresh = None if refresh else await _load_fresh_summary_block(session, trial.id)
     if fresh is not None:
         return fresh
 
@@ -406,7 +414,11 @@ async def get_or_generate_summary(
 
     async with _GEN_LOCKS[trial.id]:
         # Re-check inside the lock — another coroutine may have generated one.
-        fresh = await _load_fresh_summary_block(session, trial.id)
+        # A refresh deliberately ignores that: it was asked for a new summary,
+        # and the one waiting in front of it may be the stale block it wants
+        # replaced. Two concurrent refreshes therefore generate twice; that is
+        # an explicit, scoped operation, not something a page view can trigger.
+        fresh = None if refresh else await _load_fresh_summary_block(session, trial.id)
         if fresh is not None:
             return fresh
 
