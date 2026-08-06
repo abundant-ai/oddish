@@ -129,8 +129,8 @@ const TaskSolveHeatmap = dynamic(
   },
 );
 
-const AgentTradingCards = dynamic(
-  () => import("./agent-trading-cards").then((mod) => mod.AgentTradingCards),
+const AgentStatRadar = dynamic(
+  () => import("./agent-stat-radar").then((mod) => mod.AgentStatRadar),
   {
     ssr: false,
   },
@@ -1824,28 +1824,29 @@ export function ExperimentTrialsTable({
         {/* Experimental eval analytics behind the header's Eval toggle
             (feature-gated by the caller via lib/eval-graphs). */}
         {showEvalGraphs ? (
-          <>
-            <div className="grid items-stretch gap-4 xl:grid-cols-2">
-              <CostParetoGraph
-                tasks={tasks}
-                agentSummaries={sortedAgentSummaries}
-                hiddenAgents={hiddenAgents}
-                onToggleAgent={toggleAgent}
-                hoverAgent={hoverAgent}
-                onHoverAgent={setHoverAgent}
-              />
-              <TaskSolveHeatmap
-                tasks={tasks}
-                agentSummaries={sortedAgentSummaries}
-                hiddenAgents={hiddenAgents}
-              />
-            </div>
-            <AgentTradingCards
+          <div className="grid items-stretch gap-4 xl:grid-cols-2">
+            <CostParetoGraph
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
+            <AgentStatRadar
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
+              onToggleAgent={toggleAgent}
+              hoverAgent={hoverAgent}
+              onHoverAgent={setHoverAgent}
+            />
+            <TaskSolveHeatmap
               tasks={tasks}
               agentSummaries={sortedAgentSummaries}
               hiddenAgents={hiddenAgents}
             />
-          </>
+          </div>
         ) : null}
 
         <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
