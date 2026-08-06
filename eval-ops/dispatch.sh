@@ -51,8 +51,10 @@ arm_run() {   # $1=arm label  $2=exp id  $3=reasoning_effort
   echo "=== $ARM done $(date -u +%FT%TZ) ===" >>"$LOG"
 }
 
-arm_run LOW    17b6f7d9 low    &
-arm_run MEDIUM c071229f medium &
-arm_run HIGH   a706e700 high   &
-wait
+# Serial by arm on purpose: concurrent submitters are the documented trigger
+# for HTTP 500s (which commit nothing), and a failing submit returns fast, so
+# parallelism buys little while the backend is unhappy.
+arm_run LOW    17b6f7d9 low
+arm_run MEDIUM c071229f medium
+arm_run HIGH   a706e700 high
 echo "DISPATCH COMPLETE $(date -u +%FT%TZ)" >>$HERE/dispatch-ALL.log

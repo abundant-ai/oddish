@@ -14,8 +14,8 @@ only the babysitting stops.
 cp -r /home/user/oddish/eval-ops/* /home/user/terra-run/     # or git checkout
 cd /home/user/terra-run
 for a in low medium high; do cp -r /home/user/swe-marathon/tasks ds-$a; done
-nohup bash dispatch.sh  > dispatch.out 2>&1 &      # non-CUA -> noncua_target
-nohup bash cua_loop.sh  > cua_loop.log  2>&1 &     # CUA -> cua_target, throttled
+bash cycle.sh   # one idempotent pass: canary -> non-CUA dispatch -> throttled CUA fill
+
 ```
 
 Then re-arm a 30-minute babysit cron (it is session-only and never survives).
