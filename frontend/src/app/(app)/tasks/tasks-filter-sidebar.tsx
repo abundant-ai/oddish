@@ -858,9 +858,6 @@ function ExperimentControl({
         : [...selected, id],
     });
 
-  // With a per-query key, `data` after a failure belongs to the previous
-  // query — error must win or stale results pose as matches for this one.
-  if (error) return <ControlError onRetry={() => mutate()} />;
   if (isLoading && !data) return <ControlSkeleton />;
 
   const results = (data?.items ?? []).filter((o) => !selected.includes(o.id));
@@ -901,7 +898,12 @@ function ExperimentControl({
               <span className="truncate">{nameById.get(id) ?? id}</span>
             </label>
           ))}
-          {results.length === 0 && selected.length === 0 ? (
+          {/* With keepPreviousData, post-failure `data` may belong to the
+              previous query — the error replaces only the results it owns;
+              chips and the input stay live, and typing retries. */}
+          {error ? (
+            <ControlError onRetry={() => mutate()} />
+          ) : results.length === 0 && selected.length === 0 ? (
             <p className="text-muted-foreground px-1 py-2 text-xs">
               {debounced ? "No matches" : "No experiments"}
             </p>
@@ -920,7 +922,7 @@ function ExperimentControl({
             ))
           )}
         </div>
-        {(data?.items.length ?? 0) >= 50 ? (
+        {!error && (data?.items.length ?? 0) >= 50 ? (
           <p className="text-muted-foreground px-1 pt-1.5 text-[10px]">
             First 50 matches — keep typing to narrow
           </p>
