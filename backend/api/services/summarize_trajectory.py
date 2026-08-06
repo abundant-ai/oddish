@@ -13,6 +13,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ from oddish.core.trial_io import (
 )
 from oddish.db.models import PromptKind, TrialModel
 
+logger = logging.getLogger(__name__)
+
 MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
@@ -47,6 +50,53 @@ SUMMARY_PROMPT_KEY = PromptKind.TRAJECTORY_SUMMARY.value
 # Well under the model's own limit, so the binding constraint is the prompt's
 # schema, not this number.
 SUMMARY_MAX_TOKENS = 16384
+
+# ``preprocess`` bounds each text field but nothing bounds the step *count*, so
+# a long agent run still serializes past the model's input limit -- prod has
+# seen 11.2M tokens against a 1M cap. Character count is not a usable preflight
+# (a 588k-char prompt overflowed while a 2.17M-char one fit), so the API is the
+# oracle: send it, and halve the step budget on each "prompt is too long" 400.
+# A rejected request bills no tokens and returns in well under a second, so the
+# ~96% of summaries that already fit pay nothing for this.
+MAX_OVERFLOW_ATTEMPTS = 5
+STEP_OMISSION_MARKER = "[{n} steps omitted to fit the context window]"
+_CONTEXT_OVERFLOW_MARKERS = (
+    "prompt is too long",
+    "context length",
+    "context_length_exceeded",
+)
+
+
+def _is_context_overflow(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS)
+
+
+def clip_trajectory_steps(trajectory: dict, max_steps: int) -> dict:
+    """Keep the first and last ``max_steps`` steps, dropping the middle.
+
+    Head and tail carry the setup and the outcome -- the two things a summary
+    has to get right. The dropped span is replaced by a single marker step with
+    no ``step_id``, so it renders in the prompt but cannot be cited: the model
+    can only reference steps that survive into ``_valid_step_ids``.
+    """
+    steps = trajectory.get("steps") or []
+    if len(steps) <= max_steps:
+        return trajectory
+    head = max_steps // 2
+    tail = max_steps - head
+    omitted = len(steps) - max_steps
+    out = dict(trajectory)
+    out["steps"] = [
+        *steps[:head],
+        {
+            "step_id": None,
+            "source": "system",
+            "message": STEP_OMISSION_MARKER.format(n=omitted),
+        },
+        *steps[len(steps) - tail :],
+    ]
+    return out
 
 
 def _truncate(text: str) -> str:
@@ -276,23 +326,52 @@ async def generate(
     harness), streams it -- the block self-persists to ``analyzer_blocks`` +
     S3 -- and returns the parsed ``schema_version=5`` summary. Raises
     ``SummaryGenerationError`` on any generation/parse failure.
+
+    A trajectory that overflows the model's input limit is retried with half
+    the steps, up to ``MAX_OVERFLOW_ATTEMPTS`` times. Every attempt persists its
+    own ``analyzer_blocks`` row, so the shrink sequence stays auditable.
     """
     model = resolve_summary_model()
-    block = build_summary_block(
-        trajectory,
-        task_context,
-        analyzer_id=analyzer_id,
-        model=model,
-        triggered_by_user_id=triggered_by_user_id,
-        prompt_template=prompt_template,
-        prompt_version=prompt_version,
-        prompt_id=prompt_id,
-    )
-    try:
-        out = await block.run()
-    except Exception as e:
-        raise SummaryGenerationError(f"summary block failed: {e}") from e
-    return out.output
+    total_steps = len(trajectory.get("steps") or [])
+    budget: int | None = None
+
+    for attempt in range(MAX_OVERFLOW_ATTEMPTS):
+        payload = (
+            trajectory if budget is None else clip_trajectory_steps(trajectory, budget)
+        )
+        block = build_summary_block(
+            payload,
+            task_context,
+            analyzer_id=analyzer_id,
+            model=model,
+            triggered_by_user_id=triggered_by_user_id,
+            prompt_template=prompt_template,
+            prompt_version=prompt_version,
+            prompt_id=prompt_id,
+        )
+        try:
+            out = await block.run()
+        except Exception as e:
+            next_budget = max(1, (total_steps if budget is None else budget) // 2)
+            # budget == 1 and still overflowing means the steps are not what is
+            # oversized (a huge instruction or verifier log), so halving again
+            # only burns attempts.
+            exhausted = attempt == MAX_OVERFLOW_ATTEMPTS - 1 or budget == 1
+            if not _is_context_overflow(e) or exhausted:
+                raise SummaryGenerationError(f"summary block failed: {e}") from e
+            logger.warning(
+                "trajectory summary overflowed for analyzer_id=%s; retrying with "
+                "%d of %d steps (attempt %d)",
+                analyzer_id,
+                next_budget,
+                total_steps,
+                attempt + 2,
+            )
+            budget = next_budget
+            continue
+        return out.output
+
+    raise AssertionError("unreachable: the loop returns or raises")  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
