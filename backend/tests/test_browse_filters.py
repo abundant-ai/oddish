@@ -34,6 +34,7 @@ from oddish.core.endpoints import (
     browse_task_facets_core,
     browse_tasks_core,
 )
+from oddish.core.trial_facets import rebuild_trial_facets_core
 from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -139,10 +140,13 @@ async def test_browse_facets_scope():
     try:
         await _setup(engine)
         async with maker() as session:
+            # Facets read the trial_facets vocabulary; the rebuild derives it
+            # from the same trial population the browse filters match.
+            await rebuild_trial_facets_core(session)
             facets = await browse_task_facets_core(session, org_id=ORG)
-        # Facets mirror the browse filters: only current-version, non-probe,
-        # non-superseded trials. So 'gemini-cli' (probe) and 'legacy-agent'
-        # (on an old, non-current version) must NOT appear.
+        # Only current-version, non-probe, non-superseded trials contribute.
+        # So 'gemini-cli' (probe) and 'legacy-agent' (on an old, non-current
+        # version) must NOT appear.
         assert set(facets.agents) == {"claude-code", "codex"}
         pairs = {(p.agent, p.model) for p in facets.agent_models}
         assert pairs == {("claude-code", None), ("codex", None)}
