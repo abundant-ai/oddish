@@ -39,6 +39,16 @@ async function trialFetcher(url: string): Promise<Trial> {
 }
 
 /**
+ * Builds the SWR cache key for one trial. The hook below reads through
+ * this key, and every cache write that targets a trial must build its
+ * key through this same function, so a write can never miss the entry
+ * the hook reads.
+ */
+export function trialKey(apiBaseUrl: string, trialId: string): string {
+  return `${apiBaseUrl}/trials/${encodeURIComponent(trialId)}`;
+}
+
+/**
  * Fetches one trial by its id.
  *
  * Every component that calls this hook with the same id shares a single
@@ -53,7 +63,7 @@ export function useTrial(
   { apiBaseUrl = "/api" }: { apiBaseUrl?: string } = {},
 ): SWRResponse<Trial, Error> {
   return useSWR<Trial>(
-    trialId ? `${apiBaseUrl}/trials/${encodeURIComponent(trialId)}` : null,
+    trialId ? trialKey(apiBaseUrl, trialId) : null,
     trialFetcher,
     {
       revalidateOnFocus: false,

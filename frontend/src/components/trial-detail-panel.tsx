@@ -90,7 +90,8 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
-import { isAnalysisStatusActive, useTrial } from "@/lib/use-trial";
+import { useSWRConfig } from "swr";
+import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -201,11 +202,14 @@ function TrialAnalysisCard({
   // creating a second one. While the analysis is running, the hook
   // refetches every few seconds, so the finished report shows up without
   // the user having to close and reopen the drawer.
-  const {
-    data: liveTrial,
-    error: liveTrialError,
-    mutate: mutateTrial,
-  } = useTrial(trialProp.id, { apiBaseUrl });
+  const { data: liveTrial, error: liveTrialError } = useTrial(trialProp.id, {
+    apiBaseUrl,
+  });
+  // The global mutate writes to an explicitly named cache key. The bound
+  // mutate returned by useTrial would write to whichever trial the card
+  // is currently showing, which is the wrong target when the user
+  // switches trials while a rerun request is in flight.
+  const { mutate: mutateByKey } = useSWRConfig();
   // The trial object passed in from the parent can contain an outdated
   // report, for example one from before a re-run. To avoid showing an
   // outdated report and then swapping it, the card shows a loading state
@@ -380,18 +384,15 @@ function TrialAnalysisCard({
       // when the user has switched trials; only the local card state below
       // is scoped to the trial this request was for.
       onQueued?.();
-      if (trialIdRef.current !== requestTrialId) return;
       // The server set analysis_status to queued before it responded, so
       // the queued state is already true on the server. Writing it into
-      // the cache makes the card show it immediately and starts the
-      // refetching, and the refetch then confirms it from the server.
-      // This write must stay behind the guard above: mutateTrial always
-      // writes to the trial the card is currently showing, so if the
-      // user switched trials during the request, writing here would put
-      // the queued trial's data into the wrong trial's cache entry. A
-      // trial that was queued and then switched away from shows its
-      // queued state through the normal refetch when it is next opened.
-      void mutateTrial(
+      // the cache shows it immediately and starts the refetching, and
+      // the refetch then confirms it from the server. The write is
+      // addressed by the queued trial's own cache key, so it reaches the
+      // right entry even when the user switched to another trial while
+      // the request was in flight.
+      void mutateByKey(
+        trialKey(apiBaseUrl, requestTrialId),
         {
           ...trial,
           analysis_status: "queued",
@@ -401,6 +402,7 @@ function TrialAnalysisCard({
         },
         { revalidate: true },
       );
+      if (trialIdRef.current !== requestTrialId) return;
       // The old run's log is cleared server-side; clear it here too. Open
       // the log directly: a re-run over a stale RUNNING analysis keeps
       // inProgress true, so the open-on-start effect does not fire again.
