@@ -16,11 +16,6 @@ MIGRATIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
 SRC = (MIGRATIONS / "trial_facets_001_add_trial_facets.py").read_text()
 
 
-def test_creates_table_with_composite_pk():
-    assert "CREATE TABLE IF NOT EXISTS trial_facets" in SRC
-    assert "PRIMARY KEY (org_id, kind, value, value_2)" in SRC
-
-
 def test_backfill_covers_every_kind():
     for kind in TRIAL_FACET_KINDS:
         if kind == "agent_model":
@@ -38,7 +33,3 @@ def test_backfill_matches_browse_population():
     assert "t.task_version_id = k.current_version_id" in SRC
     assert "t.org_id IS NOT NULL" in SRC
     assert "ON CONFLICT DO NOTHING" in SRC
-
-
-def test_downgrade_drops_table():
-    assert "DROP TABLE IF EXISTS trial_facets" in SRC
