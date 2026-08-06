@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.services.summarize_trajectory import (
-    SCHEMA_VERSION,
-    SummaryGenerationError,
-)
+from api.services.summarize_trajectory import SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -42,19 +38,15 @@ def client(app_with_stub_auth):
 
 @pytest.fixture
 def fake_trial():
-    return SimpleNamespace(id="t-1", name="trial-0", trial_s3_key="trials/t-1/")
-
-
-def _make_fake_session(fake_trial):
-    """Return a context-manager mock for get_session() that yields a stub session."""
-    mock_session = MagicMock()
-    mock_session.get = AsyncMock(return_value=fake_trial)
-
-    @asynccontextmanager
-    async def _fake_get_session():
-        yield mock_session
-
-    return _fake_get_session
+    return SimpleNamespace(
+        id="t-1",
+        name="trial-0",
+        trial_s3_key="trials/t-1/",
+        trajectory_summary=None,
+        has_trajectory=True,
+        agent="claude-code",
+        finished_at=None,
+    )
 
 
 def test_endpoint_returns_summary_when_present(client, fake_trial):
@@ -68,46 +60,50 @@ def test_endpoint_returns_summary_when_present(client, fake_trial):
     with patch(
         "api.routers.trials._get_authorized_trial",
         new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch(
-        "api.routers.trials.get_or_generate_summary",
-        new=AsyncMock(return_value=summary),
     ):
+        fake_trial.trajectory_summary = summary
         resp = client.get("/trials/t-1/trajectory/summary")
     assert resp.status_code == 200
     assert resp.json() == summary
 
 
-def test_endpoint_returns_404_when_no_trajectory(client, fake_trial):
+def test_endpoint_returns_pending_without_invoking_generator(client, fake_trial):
+    generator = AsyncMock()
+    with (
+        patch(
+            "api.routers.trials._get_authorized_trial",
+            new=AsyncMock(return_value=fake_trial),
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new=generator,
+        ),
+    ):
+        resp = client.get("/trials/t-1/trajectory/summary")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "pending"}
+    generator.assert_not_awaited()
+
+
+def test_endpoint_returns_pending_for_stale_summary(client, fake_trial):
+    fake_trial.trajectory_summary = {
+        "schema_version": "4",
+        "summary": "stale",
+    }
     with patch(
         "api.routers.trials._get_authorized_trial",
         new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch(
-        "api.routers.trials.get_or_generate_summary",
-        new=AsyncMock(return_value=None),
+    ):
+        resp = client.get("/trials/t-1/trajectory/summary")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "pending"}
+
+
+def test_endpoint_returns_404_when_no_trajectory(client, fake_trial):
+    fake_trial.has_trajectory = False
+    with patch(
+        "api.routers.trials._get_authorized_trial",
+        new=AsyncMock(return_value=fake_trial),
     ):
         resp = client.get("/trials/t-1/trajectory/summary")
     assert resp.status_code == 404
-
-
-def test_endpoint_returns_502_on_generation_error(client, fake_trial):
-    async def _raise(_session, _trial, triggered_by_user_id=None):
-        raise SummaryGenerationError("model returned garbage")
-
-    with patch(
-        "api.routers.trials._get_authorized_trial",
-        new=AsyncMock(return_value=fake_trial),
-    ), patch(
-        "api.routers.trials.get_session",
-        new=_make_fake_session(fake_trial),
-    ), patch(
-        "api.routers.trials.get_or_generate_summary", new=_raise
-    ):
-        resp = client.get("/trials/t-1/trajectory/summary")
-    assert resp.status_code == 502
-    assert "Summary generation failed" in resp.json()["detail"]

@@ -5,9 +5,9 @@ Responsibilities:
     so the token cost of the summary call is bounded.
   - ``generate`` runs the summary as an ``AnalyzerBlock`` over a
     ``TrajectoryBlock`` (prompt + parse) and returns a persistable summary dict.
-  - ``get_or_generate_summary`` reads the latest fresh summary block for a trial
-    (source of truth), generating + mirroring into ``trials.trajectory_summary``
-    on a miss.
+  - ``get_or_generate_summary`` is the worker-side write path: it reads the
+    stored summary, repairs it from the latest fresh block when possible, and
+    generates + stores it on a miss.
 """
 
 from __future__ import annotations
@@ -347,10 +347,9 @@ async def build_task_context(trial) -> TaskContext:
 # DB-backed orchestrator
 # ---------------------------------------------------------------------------
 
-# Per-trial-id locks so two concurrent requests don't both kick off
-# generation for the same trial. Process-local (Modal containers each
-# get their own dict) — that's acceptable: cross-container racing
-# results in at most a few duplicate generations, and the writes are idempotent.
+# Per-trial-id locks so trial completion and a concurrent re-analysis do not
+# both generate. Process-local Modal containers can still race, but the writes
+# are idempotent and the durable block lets the loser reuse the winner's output.
 _GEN_LOCKS: MutableMapping[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
@@ -380,19 +379,35 @@ async def _load_fresh_summary_block(
     ).scalar_one_or_none()
 
 
-async def get_or_generate_summary(
-    session: AsyncSession, trial: TrialModel, triggered_by_user_id: str | None = None
-) -> dict | None:
-    """Return the trajectory summary, generating on miss.
+async def _store_summary(
+    session: AsyncSession, trial_id: str, summary: dict
+) -> None:
+    """Persist the read-path mirror before returning a worker result."""
+    await session.execute(
+        update(TrialModel)
+        .where(TrialModel.id == trial_id)
+        .values(trajectory_summary=summary)
+    )
+    await session.commit()
 
-    Source of truth is the latest fresh SUCCESS trajectory_summary
-    ``AnalyzerBlock`` for the trial; the result is mirrored into
-    ``trials.trajectory_summary`` for the graph builder + analyzer-input readers.
-    Returns ``None`` when the trial has no trajectory; raises
-    ``SummaryGenerationError`` if generation fails.
+
+async def get_or_generate_summary(
+    session: AsyncSession, trial: TrialModel
+) -> dict | None:
+    """Ensure the worker-generated trajectory summary is stored.
+
+    The JSONB column is the read-path source of truth. A fresh SUCCESS
+    ``AnalyzerBlock`` can repair a missing/stale mirror without another LLM
+    call. Returns ``None`` when the trial has no trajectory; raises
+    ``SummaryGenerationError`` if worker-side generation fails.
     """
+    stored = getattr(trial, "trajectory_summary", None)
+    if isinstance(stored, dict) and stored.get("schema_version") == SCHEMA_VERSION:
+        return stored
+
     fresh = await _load_fresh_summary_block(session, trial.id)
     if fresh is not None:
+        await _store_summary(session, trial.id, fresh)
         return fresh
 
     # Use the same "has a trajectory" notion as the trajectory endpoint (true
@@ -408,6 +423,7 @@ async def get_or_generate_summary(
         # Re-check inside the lock — another coroutine may have generated one.
         fresh = await _load_fresh_summary_block(session, trial.id)
         if fresh is not None:
+            await _store_summary(session, trial.id, fresh)
             return fresh
 
         prompt_template, prompt_version, prompt_id = await _load_summary_prompt(
@@ -430,7 +446,6 @@ async def get_or_generate_summary(
             trajectory,
             task_context,
             analyzer_id=trial.id,
-            triggered_by_user_id=triggered_by_user_id,
             prompt_template=prompt_template,
             prompt_version=prompt_version,
             prompt_id=prompt_id,
@@ -438,10 +453,5 @@ async def get_or_generate_summary(
 
         # Mirror into the trials column for the graph builder + analyzer-input
         # bundles, which read it synchronously via getattr.
-        await session.execute(
-            update(TrialModel)
-            .where(TrialModel.id == trial.id)
-            .values(trajectory_summary=summary)
-        )
-        await session.commit()
+        await _store_summary(session, trial.id, summary)
         return summary

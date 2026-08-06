@@ -724,6 +724,10 @@ export function TrajectoryViewer({
     fetcher,
     {
       revalidateOnFocus: false,
+      // A terminal trial's trajectory is immutable. Keep the cached response
+      // across drawer/layout remounts instead of issuing the duplicate seen in
+      // the trial-page HAR.
+      revalidateIfStale: false,
     }
   );
 
@@ -755,13 +759,13 @@ export function TrajectoryViewer({
     return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
   }, [trajectory, lowerQuery]);
 
-  // A summary request can trigger paid on-demand generation server-side, so it
-  // must not fire for a trial we already know (via shouldFetch) has no trajectory.
-  const { data: summary } = useTrajectorySummary(
-    trialId,
-    apiBaseUrl,
-    shouldFetch
-  );
+  const {
+    summary,
+    isLoading: isSummaryLoading,
+    isPending: isSummaryPending,
+    error: summaryError,
+    mutate: retrySummary,
+  } = useTrajectorySummary(trialId, apiBaseUrl, shouldFetch);
   const segments = useMemo(
     () => withOtherSegment(toSegments(summary), trajectory?.steps ?? []),
     [summary, trajectory]
@@ -871,8 +875,11 @@ export function TrajectoryViewer({
   return (
     <div className="p-4">
       <TrajectorySummary
-        trialId={trialId}
-        apiBaseUrl={apiBaseUrl}
+        summary={summary}
+        isLoading={isSummaryLoading}
+        isPending={isSummaryPending}
+        error={summaryError}
+        onRetry={() => void retrySummary()}
         stepIdToIndex={(stepId) =>
           // step_id is typed number but arrives as a string from some producers;
           // strict === would return -1 and the scroll would silently no-op.
@@ -883,9 +890,8 @@ export function TrajectoryViewer({
         onStepSelect={handleStepClick}
       />
       <TrajectoryActivity
-        trialId={trialId}
         steps={trajectory.steps}
-        apiBaseUrl={apiBaseUrl}
+        summary={summary}
         stepIdToIndex={(stepId) =>
           // step_id is typed number but arrives as a string from some producers;
           // strict === would return -1 and the scroll would silently no-op.

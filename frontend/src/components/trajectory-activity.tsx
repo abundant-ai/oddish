@@ -15,12 +15,11 @@ import {
   toSegments,
   withOtherSegment,
 } from "@/lib/trajectory-segments";
-import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
+import type { TrajectorySummary } from "@/lib/types";
 
 interface TrajectoryActivityProps {
-  trialId: string;
   steps: TrajectoryStep[];
-  apiBaseUrl?: string;
+  summary: TrajectorySummary | null | undefined;
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
 }
@@ -56,15 +55,12 @@ interface MetricValues {
 }
 
 export function TrajectoryActivity({
-  trialId,
   steps,
-  apiBaseUrl = "/api",
+  summary,
   stepIdToIndex,
   onStepSelect,
 }: TrajectoryActivityProps) {
-  const { data } = useTrajectorySummary(trialId, apiBaseUrl);
-
-  const segments = withOtherSegment(toSegments(data), steps);
+  const segments = withOtherSegment(toSegments(summary), steps);
   if (!steps.length || segments.length === 0) return null;
 
   const colorFor = phaseColorVars(segments.map((s) => s.key));
@@ -72,7 +68,9 @@ export function TrajectoryActivity({
   const owner = segmentOwners(segments);
   // step_id is typed number but arrives as a string from some producers.
   const keyByStep = (stepId: number) => owner.get(Number(stepId))?.key;
-  const highlightIds = new Set((data?.highlights ?? []).map((h) => h.step_id));
+  const highlightIds = new Set(
+    (summary?.highlights ?? []).map((h) => h.step_id)
+  );
 
   const durations = stepDurationsMs(steps);
   const totalMs = durations.reduce((a, b) => a + b, 0);

@@ -236,8 +236,7 @@ async def test_trial_fallback_preserves_explicit_task_link(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_triggering_user_outranks_the_trial_owner(monkeypatch):
-    """A summary generates lazily on view, so the viewer caused the spend --
-    billing the trial's runner would charge the wrong person."""
+    """Explicitly user-triggered analyzer runs charge the initiating user."""
     added: list = []
     _session(monkeypatch, added)
     b = _make_block(triggered_by_user_id="viewer-7")
@@ -380,7 +379,7 @@ def test_summary_block_carries_the_triggering_user():
 @pytest.mark.asyncio
 async def test_generate_forwards_the_triggering_user_to_the_block():
     """generate() is the production entry point; it must not swallow the param
-    between get_or_generate_summary and build_summary_block."""
+    before build_summary_block constructs the attributed block."""
     from api.services import summarize_trajectory
 
     seen = {}
@@ -415,15 +414,10 @@ async def test_generate_forwards_the_triggering_user_to_the_block():
     assert seen.get("triggered_by_user_id") == "viewer-7"
 
 
-def test_summary_routes_pass_the_requesting_user():
-    """The user is only knowable at the route; the whole chain is pointless if
-    the handlers don't hand it over."""
+def test_summary_route_never_enters_the_generation_path():
+    """Viewing a trial must not trigger or attribute an LLM call."""
     from api.routers import trials
 
     src = open(trials.__file__).read()
-    assert src.count("triggered_by_user_id=auth.user_id") == 1, (
-        "the summary route must attribute spend to the caller"
-    )
-    assert "get_or_generate_summary(session, attached_trial)" not in src, (
-        "a bare call site is left, billing the trial owner instead of the viewer"
-    )
+    assert "get_or_generate_summary" not in src
+    assert "triggered_by_user_id=auth.user_id" not in src

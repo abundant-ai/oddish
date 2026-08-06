@@ -175,6 +175,12 @@ High-level flow:
    S3; only counts, the tool name, and the report's trial-relative artifact path
    are stored in `trials.result`. Use the CLI or dashboard to watch progress and
    pull logs/artifacts back locally.
+   Hosted workers also generate `trials.trajectory_summary` best-effort after a
+   terminal result is stored. Summary failure never changes trial status; the
+   post-trial classifier retries the same provider for historical/re-analyzed
+   trials. `GET /trials/{id}/trajectory/summary` never runs an LLM: it returns a
+   current schema summary, `{"status":"pending"}` while one is unavailable, or
+   404 when the trial has no fetchable trajectory.
    It also derives trajectory elapsed time and tool usage directly from ATIF
    steps into `trials.trajectory_duration_seconds`, `trials.total_tool_calls`,
    and `trials.tool_counts`. Task and experiment filters combine model and

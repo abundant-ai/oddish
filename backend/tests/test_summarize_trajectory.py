@@ -340,6 +340,7 @@ def _fake_trial(*, has_trajectory: bool):
         billed_user_id=None,
         experiment_id=None,
         task_id=None,
+        trajectory_summary=None,
     )
 
 
@@ -351,7 +352,35 @@ def _fake_session():
 
 
 @pytest.mark.asyncio
-async def test_get_or_generate_returns_block_when_fresh():
+async def test_get_or_generate_returns_stored_summary_when_fresh():
+    cached = {
+        "schema_version": "5",
+        "summary": "cached",
+        "highlights": [],
+        "components": [],
+    }
+    trial = _fake_trial(has_trajectory=True)
+    trial.trajectory_summary = cached
+    session = _fake_session()
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+        ) as load_block,
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+        ) as gen,
+    ):
+        result = await get_or_generate_summary(session, trial)
+    assert result == cached
+    load_block.assert_not_awaited()
+    gen.assert_not_awaited()
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_mirrors_fresh_block_on_column_miss():
     cached = {
         "schema_version": "5",
         "summary": "cached",
@@ -374,7 +403,36 @@ async def test_get_or_generate_returns_block_when_fresh():
         result = await get_or_generate_summary(session, trial)
     assert result == cached
     gen.assert_not_awaited()
-    session.execute.assert_not_awaited()
+    session.execute.assert_awaited_once()
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_or_generate_mirrors_block_created_while_waiting_for_lock():
+    cached = {
+        "schema_version": "5",
+        "summary": "cached",
+        "highlights": [],
+        "components": [],
+    }
+    trial = _fake_trial(has_trajectory=True)
+    session = _fake_session()
+    with (
+        patch(
+            "api.services.summarize_trajectory._load_fresh_summary_block",
+            new_callable=AsyncMock,
+            side_effect=[None, cached],
+        ),
+        patch(
+            "api.services.summarize_trajectory.generate",
+            new_callable=AsyncMock,
+        ) as gen,
+    ):
+        result = await get_or_generate_summary(session, trial)
+    assert result == cached
+    gen.assert_not_awaited()
+    session.execute.assert_awaited_once()
+    session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -1138,9 +1138,9 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
-    # LLM-generated summary of the trajectory; populated lazily on first
-    # request to GET /trials/{id}/trajectory/summary. Replaces the prior
-    # S3-cached `agent/trajectory_summary.json` sibling file.
+    # LLM-generated summary of the trajectory; populated best-effort by the
+    # worker when a trial reaches a terminal state. The read endpoint never
+    # generates or probes the retired `agent/trajectory_summary.json` path.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Analysis data (LLM analysis of this trial)

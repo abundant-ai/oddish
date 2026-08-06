@@ -31,6 +31,18 @@ async def test_provider_components_extracted():
 
 
 @pytest.mark.asyncio
+async def test_completion_can_ensure_summary_without_reading_components():
+    summary = {"summary": "done", "components": []}
+
+    async def fake(trial_id):
+        assert trial_id == "t1"
+        return summary
+
+    ah.register_trajectory_summary_provider(fake)
+    assert await ah.ensure_trajectory_summary("t1") == summary
+
+
+@pytest.mark.asyncio
 async def test_provider_failure_is_best_effort():
     async def boom(trial_id):
         raise RuntimeError("gen failed")

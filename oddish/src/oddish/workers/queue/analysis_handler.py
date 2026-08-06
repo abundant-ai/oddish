@@ -29,10 +29,8 @@ ANALYSIS_TIMEOUT = 900  # 15 minutes
 # 30s matches the trial heartbeat interval for consistency.
 ANALYSIS_HEARTBEAT_INTERVAL_SECONDS = 30
 # Wall-clock cap on the trajectory-summary seam. Generation is a single
-# unbounded streamed LLM call behind an in-process per-trial lock, so without a
-# cap here one hung summary spends the whole claim TTL before classification
-# even starts. Bounded and best-effort: on expiry the trial classifies without
-# a component map, which is the same outcome as an unregistered provider.
+# streamed LLM call behind an in-process per-trial lock. Bounded and
+# best-effort: a hung summary cannot strand trial completion or classification.
 TRAJECTORY_SUMMARY_TIMEOUT_SECONDS = 300
 # How long a RUNNING claim is trusted to belong to a live worker. Must exceed
 # the worst-case run: the two bounded phases (``TRAJECTORY_SUMMARY_TIMEOUT_SECONDS``
@@ -45,12 +43,10 @@ ANALYSIS_CLAIM_TTL_MINUTES = 35
 
 
 # The trajectory-summary seam. Building a summary needs the backend-only
-# TrajectoryBlock, which oddish/ can't import, so a hosted implementation
-# (read-through cache over get_or_generate_summary) is injected here the same
-# way pre-trial synth is. Takes a trial_id, returns the summary dict (whose
-# ``components`` feed the post-trial classifier) or None when the trial has no
-# trajectory. None until registered -- standalone oddish workers classify
-# without a component map.
+# TrajectoryBlock, which oddish/ can't import, so a hosted implementation is
+# injected here the same way pre-trial synth is. Takes a trial_id, returns the
+# stored summary dict or None when the trial has no trajectory. None until
+# registered -- standalone oddish workers continue without a summary.
 TrajectorySummaryProviderFn = Callable[[str], Awaitable[dict | None]]
 
 _trajectory_summary_provider: TrajectorySummaryProviderFn | None = None
@@ -62,14 +58,13 @@ def register_trajectory_summary_provider(fn: TrajectorySummaryProviderFn) -> Non
     _trajectory_summary_provider = fn
 
 
-async def _resolve_trajectory_components(trial_id: str) -> list[dict] | None:
-    """Ensure a trajectory summary exists and return its component map.
+async def ensure_trajectory_summary(trial_id: str) -> dict | None:
+    """Best-effort worker-side trajectory summary generation.
 
-    Best-effort: with no provider registered (standalone oddish), on timeout,
-    or on any generation failure, returns None so classification proceeds
-    exactly as it did before components existed. The provider owns its own
-    session and the summary LLM call, so this must run outside the trial
-    claim's row lock -- and under a timeout, so it cannot outlive the claim.
+    With no provider registered (standalone oddish), on timeout, or on any
+    generation failure, returns None so trial completion and classification
+    proceed. The provider owns its session and LLM call, so callers must run it
+    outside row locks.
     """
     provider = _trajectory_summary_provider
     if provider is None:
@@ -81,19 +76,25 @@ async def _resolve_trajectory_components(trial_id: str) -> list[dict] | None:
     except TimeoutError:
         console.print(
             f"[yellow]Trajectory summary for {trial_id} exceeded "
-            f"{TRAJECTORY_SUMMARY_TIMEOUT_SECONDS}s; classifying without a "
-            f"component map[/yellow]"
+            f"{TRAJECTORY_SUMMARY_TIMEOUT_SECONDS}s; continuing without it[/yellow]"
         )
         return None
     except Exception as exc:
         console.print(
-            f"[yellow]Trajectory summary unavailable for {trial_id}; classifying "
-            f"without a component map: {exc}[/yellow]"
+            f"[yellow]Trajectory summary unavailable for {trial_id}; "
+            f"continuing without it: {exc}[/yellow]"
         )
         return None
+    return summary or None
+
+
+async def _resolve_trajectory_components(trial_id: str) -> list[dict] | None:
+    """Ensure a summary exists and return its post-trial component map."""
+    summary = await ensure_trajectory_summary(trial_id)
     if not summary:
         return None
     return summary.get("components") or None
+
 
 # A trial whose analysis reached one of these is decided: no claim applies and
 # no caller should wait on it.

@@ -44,6 +44,7 @@ const TASK_FILES_STREAM_RE = /\/api\/tasks\/[^/]+\/files\?[^#]*\bstream=1\b/;
 // file view is on screen.
 const ANY_FILES_STREAM_RE = /\/files\?[^#]*\bstream=1\b/;
 const TRIAL_FILES_STREAM_RE = /\/api\/trials\/[^/]+\/files\?[^#]*\bstream=1\b/;
+const TRIAL_TRAJECTORY_RE = /\/api\/trials\/[^/?]+\/trajectory(?:\?.*)?$/;
 
 type LoggedRequest = { url: string; method: string };
 
@@ -210,6 +211,15 @@ test.describe("experiment page network shape", () => {
         timeout: 10_000,
       })
       .toBe(1);
+
+    // Phase 6 — opening Trajectory fetches the immutable ATIF resource at
+    // most once. Drawer/layout remounts reuse SWR's cached value.
+    const trajectoryMark = log.length;
+    await page.getByRole("tab", { name: "Trajectory" }).click();
+    await page.waitForTimeout(7_000);
+    expect(
+      countSince(log, trajectoryMark, TRIAL_TRAJECTORY_RE),
+    ).toBeLessThanOrEqual(1);
 
     // Across the whole journey, the task's file contents were never
     // streamed: every task-files listing must be a plain one.

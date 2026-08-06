@@ -1779,9 +1779,13 @@ async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
     async def _post_hooks(_trial_id):
         calls.append("post")
 
+    async def _summary(_trial_id):
+        calls.append("summary")
+
     monkeypatch.setattr(
         "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
     )
+    monkeypatch.setattr(trial_handler, "ensure_trajectory_summary", _summary)
     monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
 
     await trial_handler._finish_trial_settlement(
@@ -1791,7 +1795,7 @@ async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
         run_post_trial_hooks=True,
     )
 
-    assert calls == ["quota", "post", "teardown"]
+    assert calls == ["quota", "summary", "post", "teardown"]
 
 
 @pytest.mark.asyncio
@@ -1810,9 +1814,13 @@ async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkey
     async def _post_hooks(_trial_id):
         calls.append("post")
 
+    async def _summary(_trial_id):
+        calls.append("summary")
+
     monkeypatch.setattr(
         "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
     )
+    monkeypatch.setattr(trial_handler, "ensure_trajectory_summary", _summary)
     monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
 
     settlement = asyncio.create_task(
@@ -1832,7 +1840,7 @@ async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkey
     with pytest.raises(asyncio.CancelledError):
         await settlement
 
-    assert calls == ["quota", "post", "teardown"]
+    assert calls == ["quota", "summary", "post", "teardown"]
 
 
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(

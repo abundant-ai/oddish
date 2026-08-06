@@ -1,15 +1,11 @@
-"use client";
-
-import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Sparkles, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
 import { phaseColorVars } from "@/lib/trajectory-metrics";
 import { segmentOwners, toSegments } from "@/lib/trajectory-segments";
-import { useTrajectorySummary } from "@/lib/use-trajectory-summary";
+import type { TrajectorySummary as TrajectorySummaryData } from "@/lib/types";
 
 interface TrajectorySummaryProps {
-  trialId: string;
   /**
    * Map a step_id from the summary to the array index used by the
    * accordion in TrajectoryViewer. Returns -1 if the step_id is unknown
@@ -17,29 +13,22 @@ interface TrajectorySummaryProps {
    */
   stepIdToIndex: (stepId: number) => number;
   onStepSelect: (index: number) => void;
-  apiBaseUrl?: string;
+  summary: TrajectorySummaryData | null | undefined;
+  isLoading: boolean;
+  isPending: boolean;
+  error: (Error & { status?: number }) | undefined;
+  onRetry: () => void;
 }
 
 export function TrajectorySummary({
-  trialId,
   stepIdToIndex,
   onStepSelect,
-  apiBaseUrl = "/api",
+  summary,
+  isLoading,
+  isPending,
+  error,
+  onRetry,
 }: TrajectorySummaryProps) {
-  const { data, error, isLoading, mutate } = useTrajectorySummary(trialId, apiBaseUrl);
-
-  // A stored summary returns in well under a second; only a long in-flight
-  // request means the backend is actually generating one (~30s).
-  const [slow, setSlow] = useState(false);
-  useEffect(() => {
-    if (!isLoading) {
-      setSlow(false);
-      return;
-    }
-    const timer = setTimeout(() => setSlow(true), 4000);
-    return () => clearTimeout(timer);
-  }, [isLoading]);
-
   if (isLoading) {
     return (
       <Card className="my-3">
@@ -51,14 +40,30 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          {slow ? "Generating summary… (first view can take ~30s)" : "Retrieving summary…"}
+          Retrieving summary…
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isPending) {
+    return (
+      <Card className="my-3">
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+            <Sparkles className="h-4 w-4" />
+            Summary
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          Summarizing…
         </CardContent>
       </Card>
     );
   }
 
   if (error) {
-    if ((error as { status?: number }).status === 404) return null;
+    if (error.status === 404) return null;
     return (
       <Card className="my-3 border-red-200">
         <CardHeader className="pb-2">
@@ -69,7 +74,7 @@ export function TrajectorySummary({
         </CardHeader>
         <CardContent className="space-y-2">
           <p className="text-xs text-muted-foreground">{error.message}</p>
-          <Button size="sm" variant="outline" onClick={() => mutate()}>
+          <Button size="sm" variant="outline" onClick={onRetry}>
             Retry
           </Button>
         </CardContent>
@@ -77,11 +82,11 @@ export function TrajectorySummary({
     );
   }
 
-  if (!data) return null;
+  if (!summary) return null;
 
   // Same segment → color assignment as the Activity card and step groups, so
   // a highlight's underline matches its component everywhere.
-  const segments = toSegments(data);
+  const segments = toSegments(summary);
   const colorFor = phaseColorVars(segments.map((s) => s.key));
   const owner = segmentOwners(segments);
 
@@ -94,14 +99,14 @@ export function TrajectorySummary({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {data.summary && (
+        {summary.summary && (
           <p className="text-sm leading-relaxed text-foreground">
-            {data.summary}
+            {summary.summary}
           </p>
         )}
-        {data.highlights.length > 0 && (
+        {summary.highlights.length > 0 && (
           <ul className="space-y-1">
-            {data.highlights.map((h) => {
+            {summary.highlights.map((h) => {
               const index = stepIdToIndex(h.step_id);
               const disabled = index < 0;
               const componentKey = owner.get(Number(h.step_id))?.key;

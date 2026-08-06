@@ -169,8 +169,8 @@ class AnalyzerBlock(Block):
         self.analyzer_id = analyzer_id
         self.task_id = task_id
         # Who caused this spend, when that differs from who owns the subject.
-        # A trajectory summary generates lazily on view, so the requesting user
-        # -- not the trial's runner -- is the one who triggered the LLM call.
+        # Worker-triggered trajectory summaries leave this unset and cost
+        # attribution falls back to the trial's billed user.
         self.triggered_by_user_id = triggered_by_user_id
         if input.files_to_download and llm_client_type == LLMClientType.API:
             raise ValueError(

@@ -69,6 +69,7 @@ from oddish.workers.harbor.runner import (
 )
 from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
+from oddish.workers.queue.analysis_handler import ensure_trajectory_summary
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
     MODAL_IMAGE_BUILD_FAILED_STAGE,
@@ -985,6 +986,7 @@ async def _finish_trial_settlement(
 
         async def after_check() -> None:
             if run_post_trial_hooks:
+                await ensure_trajectory_summary(trial_id)
                 await _run_post_trial_hooks(trial_id)
 
         await enforce_trial_quotas_until_checked(
