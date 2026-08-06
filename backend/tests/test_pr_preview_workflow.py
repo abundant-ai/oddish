@@ -478,7 +478,6 @@ def _branch(name, days_old, *, persistent=False, created_at=None):
         "id": f"id-{name}",
         "name": name,
         "persistent": persistent,
-        "status": "MIGRATIONS_PASSED",
         "created_at": created_at,
     }
 

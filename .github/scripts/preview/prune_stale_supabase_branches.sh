@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Delete Supabase preview branches created more than MAX_AGE_DAYS ago. The
 # project caps active branch projects at 50 and a PR that is abandoned or
-# force-closed never runs the teardown that frees its branch, so the pool
-# drains until new PRs cannot provision a preview database at all. Deleting a
-# branch is recoverable: the PR's next preview run rebuilds it from the prod
+# force-closed never runs the teardown that frees its branch, so the pool drains
+# until new PRs cannot provision a preview database at all. Deletion is
+# recoverable: the PR's next preview run rebuilds the branch from the prod
 # schema snapshot.
 set -euo pipefail
 
