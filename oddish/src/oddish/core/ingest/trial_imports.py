@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.harbor_artifacts import build_trial_result
+from oddish.core.trial_facets import facet_rows_for_trial, record_trial_facets
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -307,6 +308,21 @@ async def initialize_trial_import(
             imported_at=_parse_datetime(trial_spec.imported_at),
         )
         session.add(trial_row)
+
+        # Write-through vocabulary: imports can introduce brand-new facet
+        # values (external agents/models), and land terminal with a stage.
+        await record_trial_facets(
+            session,
+            facet_rows_for_trial(
+                org_id=trial_row.org_id,
+                agent=trial_row.agent,
+                model=trial_row.model,
+                provider=trial_row.provider,
+                environment=trial_row.environment,
+                harbor_stage=trial_row.harbor_stage,
+                is_probe=trial_row.is_probe,
+            ),
+        )
 
         # Keep the task ↔ experiment association in sync. Imports can
         # attach a task that already belongs to other experiments to an
