@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -30,9 +31,8 @@ from oddish.blocks.analyzer.analyzer_llm_client import LLMClientType
 from oddish.blocks.analyzer.claude_cli_client import CliConfig
 from oddish.blocks.analyzer.pre_trial.pre_trial_block import PreTrialBlock
 from oddish.config import settings
-from oddish.core.prompts import resolve_prompt_core
 from oddish.core.task_source import resolve_task_source_location
-from oddish.db import PromptKind, get_session
+from oddish.db import get_session
 from oddish.db.models import TaskModel
 from oddish.db.storage import resolve_task_directory
 from oddish.workers.queue.qa_handler import (
@@ -41,6 +41,14 @@ from oddish.workers.queue.qa_handler import (
     register_pre_trial_synth,
 )
 from models import OrganizationModel
+
+import oddish.analyze as _analyze
+
+# The packaged pre-trial audit prompt (the DB prompt registry is gone; prompts
+# ship with the package).
+_PRE_TRIAL_PROMPT_PATH = (
+    Path(_analyze.__file__).resolve().parent / "prompts" / "pre_trial_qa.txt"
+)
 
 
 _PRE_TRIAL_ANALYSIS_SETTING = "pre_trial_analysis_enabled"
@@ -90,24 +98,10 @@ async def synthesize_task_pre_trial(
     if org_id is None:
         raise RuntimeError(f"Cannot resolve org_id for task {task_id}")
 
-    async with get_session() as session:
-        # Pre-trial audits a task version, not a single trial or user, so only
-        # org/task scope is meaningful here.
-        prompt, ver = await resolve_prompt_core(
-            session,
-            PromptKind.QA_PRE_TRIAL.value,
-            org_id=org_id,
-            user_id=None,
-            experiment_id=None,
-            task_id=task_id,
-            trial_id=None,
-        )
-        prompt_template = ver.content
-        prompt_version = ver.version
-        prompt_id = prompt.id
-
     block_obj = PreTrialBlock(
-        task_id=task_id, trial_ids=trial_ids, prompt_template=prompt_template
+        task_id=task_id,
+        trial_ids=trial_ids,
+        prompt_template=_PRE_TRIAL_PROMPT_PATH.read_text(),
     )
 
     task_s3_key, task_path = await resolve_task_source_location(
@@ -144,11 +138,6 @@ async def synthesize_task_pre_trial(
                 ),
                 timeout=timeout or settings.pre_trial_timeout,
             ),
-            block_metadata={
-                "prompt_key": PromptKind.QA_PRE_TRIAL.value,
-                "prompt_version": prompt_version,
-                "prompt_id": prompt_id,
-            },
         )
         # CliConfig.timeout (set above) is the sole deadline: it bounds the
         # claude subprocess from inside and kills it cleanly on expiry. An outer
