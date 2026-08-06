@@ -36,7 +36,11 @@ import type {
   ObservationContent,
   ContentPart,
 } from "@/lib/types";
-import { phaseColorVars, stepDurationsMs } from "@/lib/trajectory-metrics";
+import {
+  isEmptyStep,
+  phaseColorVars,
+  stepDurationsMs,
+} from "@/lib/trajectory-metrics";
 import {
   groupStatsLabel,
   groupStepsBySegment,
@@ -282,6 +286,8 @@ function ContentRenderer({
 
 interface StepDurationInfo {
   stepId: number;
+  /** Index into the full step list, which is what onStepClick expects. */
+  index: number;
   durationMs: number;
   elapsedMs: number;
 }
@@ -295,26 +301,34 @@ function StepDurationBar({
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-  if (steps.length === 0) return null;
+  // Empty padding steps hold no time and no work; a run of them would otherwise
+  // render as hundreds of min-width slices that mean nothing.
+  const timed = steps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => !isEmptyStep(step));
+  if (timed.length === 0) return null;
 
-  const startTime = steps[0].timestamp
-    ? new Date(steps[0].timestamp).getTime()
+  const startTime = timed[0].step.timestamp
+    ? new Date(timed[0].step.timestamp).getTime()
     : 0;
 
   // Calculate durations: each step's duration is time since previous step
-  const stepDurations: StepDurationInfo[] = steps.map((step, idx) => {
-    const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-    const prevStep = idx > 0 ? steps[idx - 1] : null;
-    const prevTime = prevStep?.timestamp
-      ? new Date(prevStep.timestamp).getTime()
-      : stepTime;
+  const stepDurations: StepDurationInfo[] = timed.map(
+    ({ step, index }, idx) => {
+      const stepTime = step.timestamp ? new Date(step.timestamp).getTime() : 0;
+      const prevStep = idx > 0 ? timed[idx - 1].step : null;
+      const prevTime = prevStep?.timestamp
+        ? new Date(prevStep.timestamp).getTime()
+        : stepTime;
 
-    return {
-      stepId: step.step_id,
-      durationMs: Math.max(0, stepTime - prevTime),
-      elapsedMs: stepTime - startTime,
-    };
-  });
+      return {
+        stepId: step.step_id,
+        index,
+        durationMs: Math.max(0, stepTime - prevTime),
+        elapsedMs: stepTime - startTime,
+      };
+    }
+  );
 
   const totalMs = stepDurations.reduce((sum, s) => sum + s.durationMs, 0);
 
@@ -363,7 +377,7 @@ function StepDurationBar({
                       }}
                       onMouseEnter={() => setHoveredIndex(idx)}
                       onMouseLeave={() => setHoveredIndex(null)}
-                      onClick={() => onStepClick(idx)}
+                      onClick={() => onStepClick(step.index)}
                     />
                   </TooltipTrigger>
                   <TooltipContent side="top">

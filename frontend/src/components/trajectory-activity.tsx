@@ -5,11 +5,13 @@ import { Activity, Star } from "lucide-react";
 import type { TrajectoryStep } from "@/lib/types";
 import {
   fmtDurationMs,
+  isEmptyStep,
   phaseColorVars,
   stepDurationsMs,
   stepTokens,
 } from "@/lib/trajectory-metrics";
 import {
+  type Segment,
   segmentOwners,
   stepIdsLabel,
   toSegments,
@@ -57,12 +59,17 @@ interface MetricValues {
 
 export function TrajectoryActivity({
   trialId,
-  steps,
+  steps: allSteps,
   apiBaseUrl = "/api",
   stepIdToIndex,
   onStepSelect,
 }: TrajectoryActivityProps) {
   const { data } = useTrajectorySummary(trialId, apiBaseUrl);
+
+  // Empty padding steps are dropped up front, so they cannot be counted in a
+  // bar, drawn as a cell, or bridged across by gap-fill further down.
+  const steps = allSteps.filter((step) => !isEmptyStep(step));
+  const emptyCount = allSteps.length - steps.length;
 
   const segments = withOtherSegment(toSegments(data), steps);
   if (!steps.length || segments.length === 0) return null;
@@ -83,37 +90,44 @@ export function TrajectoryActivity({
     (sum, step) => sum + (step.tool_calls?.length ?? 0),
     0
   );
-  const stepById = new Map(
-    steps.map((step, index) => [Number(step.step_id), index])
-  );
+  // Every metric is derived from `owner` — the same attribution the timeline
+  // paints with — so the bars and the strip are one partition by construction
+  // and the per-kind step counts sum to steps.length. Raw stepIds cannot be
+  // used: the model routinely leaves steps unclaimed despite being told to
+  // cover them all, so gap-fill grants a component steps it never claimed
+  // (seen inflating a single kind by >2x on sparse summaries), and the backend
+  // permits one step in two components. The summary's persisted
+  // tool_count/duration_ms are computed off the same raw claims, so they go too.
+  const ownedIndexes = new Map<Segment, number[]>();
+  steps.forEach((_, index) => {
+    const segment = owner.get(Number(steps[index].step_id));
+    if (!segment) return;
+    const owned = ownedIndexes.get(segment);
+    if (owned) owned.push(index);
+    else ownedIndexes.set(segment, [index]);
+  });
 
-  // step_ids is the component-membership contract and therefore owns both the
-  // label and step count. Loaded steps supply details only: they are used to
-  // derive tools and duration for pre-v5 summaries that lack persisted values.
-  const instances: InstanceStat[] = segments.map((segment) => {
-    const ids = segment.stepIds.map(Number);
-    const indexes = ids
-      .map((id) => stepById.get(Number(id)))
-      .filter((index): index is number => index !== undefined);
-    return {
-      key: segment.key,
-      label: segment.label,
-      firstStepId: ids[0],
-      rangeLabel: stepIdsLabel(ids),
-      stepCount: ids.length,
-      toolCount:
-        segment.toolCount ??
-        indexes.reduce(
+  const instances: InstanceStat[] = segments
+    .map((segment) => {
+      // Ascending, since steps are walked in trajectory order.
+      const indexes = ownedIndexes.get(segment) ?? [];
+      const ids = indexes.map((index) => Number(steps[index].step_id));
+      return {
+        key: segment.key,
+        label: segment.label,
+        firstStepId: ids[0],
+        rangeLabel: stepIdsLabel(ids),
+        stepCount: ids.length,
+        toolCount: indexes.reduce(
           (sum, index) => sum + (steps[index].tool_calls?.length ?? 0),
           0
         ),
-      // `||` not `??`: v5 summaries persist 0 when the trajectory has no
-      // timestamps (e.g. codex), so 0 must also fall back to live derivation.
-      durationMs:
-        segment.durationMs ||
-        indexes.reduce((sum, index) => sum + durations[index], 0),
-    };
-  });
+        durationMs: indexes.reduce((sum, index) => sum + durations[index], 0),
+      };
+    })
+    // A component whose every claim was won by an earlier one owns no step and
+    // has nothing to show in the legend.
+    .filter((instance) => instance.stepCount > 0);
 
   // Instances rolled up by taxonomy kind, in first-appearance order (matching
   // color assignment); a kind's instances stay chronological within its bar.
@@ -142,10 +156,6 @@ export function TrajectoryActivity({
     kind.instances.sort((a, b) => a.firstStepId - b.firstStepId);
   }
 
-  // Prefer live-derived total, else the summary's persisted per-component sums.
-  const componentMs = instances.reduce((sum, i) => sum + i.durationMs, 0);
-  const timeTotal = totalMs || componentMs;
-
   const sections = [
     {
       name: "Steps",
@@ -161,7 +171,7 @@ export function TrajectoryActivity({
     },
     {
       name: "Time",
-      totalLabel: timeTotal > 0 ? fmtDurationMs(timeTotal) : "—",
+      totalLabel: totalMs > 0 ? fmtDurationMs(totalMs) : "—",
       value: (m: MetricValues) => m.durationMs,
       fmt: (n: number) => (n > 0 ? fmtDurationMs(n) : "—"),
     },
@@ -208,61 +218,62 @@ export function TrajectoryActivity({
             (a, b) => section.value(b) - section.value(a)
           );
           return (
-          <div key={section.name}>
-            <div className="flex items-baseline justify-between">
-              <span className="text-xs font-medium">{section.name}</span>
-              <span className="text-muted-foreground font-mono text-xs">
-                {section.totalLabel} total
-              </span>
-            </div>
-            <div className="mt-1.5 space-y-1">
-              {ranked.map((kind) => (
-                <div key={kind.key} className="flex items-center gap-2">
-                  <span
-                    className="flex w-36 shrink-0 items-center gap-1.5 text-xs"
-                    title={kind.label}
-                  >
+            <div key={section.name}>
+              <div className="flex items-baseline justify-between">
+                <span className="text-xs font-medium">{section.name}</span>
+                <span className="text-muted-foreground font-mono text-xs">
+                  {section.totalLabel} total
+                </span>
+              </div>
+              <div className="mt-1.5 space-y-1">
+                {ranked.map((kind) => (
+                  <div key={kind.key} className="flex items-center gap-2">
                     <span
-                      className="h-3 w-1 shrink-0 rounded-sm"
-                      style={{
-                        background:
-                          colorFor.get(kind.key) ?? "var(--phase-other)",
-                      }}
-                    />
-                    <span className="truncate">{kind.label}</span>
-                  </span>
-                  {/* gap between segments = the split between instances */}
-                  <div className="bg-muted/40 flex h-2 flex-1 gap-0.5 overflow-hidden rounded-sm">
-                    {denom > 0 &&
-                      kind.instances.map((instance, i) => {
-                        const pct = Math.min(
-                          100,
-                          (section.value(instance) / denom) * 100
-                        );
-                        if (pct <= 0) return null;
-                        return (
-                          <button
-                            key={`${instance.firstStepId}-${i}`}
-                            type="button"
-                            title={instanceTitle(instance)}
-                            onClick={() => select(instance.firstStepId)}
-                            style={{
-                              width: `${pct}%`,
-                              background:
-                                colorFor.get(kind.key) ?? "var(--phase-other)",
-                            }}
-                            className="h-full min-w-[3px] shrink-0 rounded-sm transition hover:brightness-110"
-                          />
-                        );
-                      })}
+                      className="flex w-36 shrink-0 items-center gap-1.5 text-xs"
+                      title={kind.label}
+                    >
+                      <span
+                        className="h-3 w-1 shrink-0 rounded-sm"
+                        style={{
+                          background:
+                            colorFor.get(kind.key) ?? "var(--phase-other)",
+                        }}
+                      />
+                      <span className="truncate">{kind.label}</span>
+                    </span>
+                    {/* gap between segments = the split between instances */}
+                    <div className="bg-muted/40 flex h-2 flex-1 gap-0.5 overflow-hidden rounded-sm">
+                      {denom > 0 &&
+                        kind.instances.map((instance, i) => {
+                          const pct = Math.min(
+                            100,
+                            (section.value(instance) / denom) * 100
+                          );
+                          if (pct <= 0) return null;
+                          return (
+                            <button
+                              key={`${instance.firstStepId}-${i}`}
+                              type="button"
+                              title={instanceTitle(instance)}
+                              onClick={() => select(instance.firstStepId)}
+                              style={{
+                                width: `${pct}%`,
+                                background:
+                                  colorFor.get(kind.key) ??
+                                  "var(--phase-other)",
+                              }}
+                              className="h-full min-w-[3px] shrink-0 rounded-sm transition hover:brightness-110"
+                            />
+                          );
+                        })}
+                    </div>
+                    <span className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs">
+                      {section.fmt(section.value(kind))}
+                    </span>
                   </div>
-                  <span className="text-muted-foreground w-16 shrink-0 text-right font-mono text-xs">
-                    {section.fmt(section.value(kind))}
-                  </span>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
           );
         })}
 
@@ -319,6 +330,16 @@ export function TrajectoryActivity({
             )}
           </div>
         </div>
+
+        {/* Without this the totals here silently disagree with the step count
+            shown for the same trial everywhere else. */}
+        {emptyCount > 0 && (
+          <p className="text-muted-foreground font-mono text-[10.5px]">
+            {emptyCount.toLocaleString()} empty{" "}
+            {emptyCount === 1 ? "step" : "steps"} excluded — no message,
+            reasoning, tool call, or output
+          </p>
+        )}
       </CardContent>
     </Card>
   );

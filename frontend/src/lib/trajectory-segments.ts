@@ -39,8 +39,6 @@ export interface Segment {
   label: string;
   gist: string;
   stepIds: number[];
-  toolCount?: number;
-  durationMs?: number;
 }
 
 /** A step paired with its index in the *full* trajectory, which search must not disturb. */
@@ -70,8 +68,6 @@ export function toSegments(
         label: componentLabel(c.trajectory_component),
         gist: c.summary ?? "",
         stepIds: sorted(c.step_ids),
-        toolCount: c.tool_count,
-        durationMs: c.duration_ms,
       }));
   }
   return (summary.phases ?? [])

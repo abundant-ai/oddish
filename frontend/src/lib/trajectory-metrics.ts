@@ -1,4 +1,34 @@
-import type { TrajectoryStep } from "@/lib/types";
+import type {
+  ContentPart,
+  MessageContent,
+  ObservationContent,
+  TrajectoryStep,
+} from "@/lib/types";
+
+function hasContent(content: MessageContent | ObservationContent): boolean {
+  if (content == null) return false;
+  if (typeof content === "string") return content.trim().length > 0;
+  // An image part carries content even though it holds no text.
+  return content.some((part: ContentPart) =>
+    part.type === "text" ? (part.text ?? "").trim().length > 0 : true
+  );
+}
+
+/**
+ * A step the producer emitted but never filled in: no message, no reasoning, no
+ * tool call, no observation. Some ATIF writers pad a trajectory with long runs
+ * of these — one gemini-cli export was 87% empty, alternating agent/user at the
+ * same millisecond — and they represent no work at all. Anything that counts,
+ * measures or colors steps must drop them first, or empty padding shows up as
+ * activity.
+ */
+export function isEmptyStep(step: TrajectoryStep): boolean {
+  if (step.tool_calls?.length) return false;
+  if (step.observation?.results?.some((r) => hasContent(r.content)))
+    return false;
+  if ((step.reasoning_content ?? "").trim().length > 0) return false;
+  return !hasContent(step.message);
+}
 
 /**
  * Per-step duration in ms, derived from timestamps (time since the previous
