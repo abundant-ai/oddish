@@ -122,6 +122,13 @@ const CostParetoGraph = dynamic(
   },
 );
 
+const TaskSolveHeatmap = dynamic(
+  () => import("./task-solve-heatmap").then((mod) => mod.TaskSolveHeatmap),
+  {
+    ssr: false,
+  },
+);
+
 export type AgentSummary = ExperimentAgentSummary;
 
 type ExperimentTrialsTableProps = {
@@ -1818,6 +1825,11 @@ export function ExperimentTrialsTable({
               onToggleAgent={toggleAgent}
               hoverAgent={hoverAgent}
               onHoverAgent={setHoverAgent}
+            />
+            <TaskSolveHeatmap
+              tasks={tasks}
+              agentSummaries={sortedAgentSummaries}
+              hiddenAgents={hiddenAgents}
             />
           </div>
         ) : null}
