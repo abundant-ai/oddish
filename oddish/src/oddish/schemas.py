@@ -861,6 +861,9 @@ class TaskVersionSummary(BaseModel):
     pre_trial_findings: list[dict] = Field(default_factory=list)
     pre_trial_status: str | None = None
     pre_trial_error: str | None = None
+    # What this audit cost. Captured at write time; absent on audits that
+    # predate that (analysis_costs has no version reference to recover it from).
+    pre_trial_cost_usd: float | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
@@ -971,6 +974,13 @@ class TrialResponse(BaseModel):
     task_path: str
     task_version: int | None = None
     task_version_id: str | None = None
+    # Pre-trial source audit of the exact version THIS trial ran against.
+    # Populated only on the single-trial detail fetch: the grid's slim payload
+    # carries hundreds of trials and must not haul findings for each one.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
+    pre_trial_cost_usd: float | None = None
     experiment_id: str | None = None
     agent: str
     provider: str
@@ -1096,6 +1106,14 @@ class TrialResponse(BaseModel):
     analysis_error: str | None = Field(
         None,
         description="Error message if analysis failed",
+    )
+    analysis_started_at: datetime | None = Field(
+        None,
+        description="When the current analysis run started; None until a worker picks it up",
+    )
+    analysis_finished_at: datetime | None = Field(
+        None,
+        description="When the analysis reached a terminal state",
     )
     superseded_by_trial_id: str | None = Field(
         None,
@@ -1390,6 +1408,11 @@ class TaskBrowseFacets(BaseModel):
     Trial-derived facets are scoped to the org's non-probe, non-superseded
     trials. Enum-valued filters (task status, priority, trial status, origin)
     are static and supplied client-side, so they are not returned here.
+
+    ``experiments`` is deprecated and always empty; it used to carry every org
+    experiment (7.7MB at 126k experiments). Experiment filter options are
+    served by ``GET /tasks/browse/experiment-options`` instead. The field is
+    kept so the response shape does not break existing consumers.
     """
 
     agents: list[str] = Field(default_factory=list)
@@ -1399,6 +1422,7 @@ class TaskBrowseFacets(BaseModel):
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
+    # Deprecated: always empty — see the class docstring.
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
 
@@ -1944,6 +1968,17 @@ class ReportCreate(BaseModel):
 class ExperimentOption(BaseModel):
     id: str
     name: str
+
+
+class ExperimentOptionsResponse(BaseModel):
+    """Typeahead options for the task-browser experiment filter.
+
+    Served by ``GET /tasks/browse/experiment-options``. Replaces the retired
+    ``TaskBrowseFacets.experiments`` all-org list with a bounded, searchable
+    page, reusing the adjacent ``ExperimentOption`` item shape.
+    """
+
+    items: list[ExperimentOption] = Field(default_factory=list)
 
 
 class ReportResponse(BaseModel):

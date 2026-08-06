@@ -1272,13 +1272,20 @@ async def test_run_task_qa_job_threads_synthesis_args_and_stores_output(monkeypa
     captured: dict = {}
 
     async def stub_verdict_synth(
-        classifications, baseline, quality_check_passed, timeout, task_id=None
+        classifications,
+        baseline,
+        quality_check_passed,
+        timeout,
+        task_id=None,
+        pre_trial_items=None,
+        pre_trial_load_failed=False,
     ):
         captured["classifications"] = classifications
         captured["baseline"] = baseline
         captured["quality_check_passed"] = quality_check_passed
         captured["timeout"] = timeout
         captured["task_id"] = task_id
+        captured["pre_trial_items"] = pre_trial_items
         return SimpleNamespace(
             is_good=True,
             confidence="stub-confidence",

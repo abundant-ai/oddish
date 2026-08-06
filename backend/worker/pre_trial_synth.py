@@ -15,11 +15,12 @@ the caller's version claim.
 
 from __future__ import annotations
 
+import json
 import shutil
 
 from sqlalchemy import select
 
-from oddish.analyze.models import ActionItem
+from oddish.analyze.models import ActionItem, PreTrialActionItems
 from oddish.blocks.analyzer.analyzer_block import (
     AnalyzerBlock,
     AnalyzerInput,
@@ -35,6 +36,7 @@ from oddish.db import PromptKind, get_session
 from oddish.db.models import TaskModel
 from oddish.db.storage import resolve_task_directory
 from oddish.workers.queue.qa_handler import (
+    PreTrialSynthResult,
     register_pre_trial_enabled_check,
     register_pre_trial_synth,
 )
@@ -67,7 +69,7 @@ async def _resolve_org_pre_trial(task_id: str) -> tuple[str | None, bool]:
 
 async def synthesize_task_pre_trial(
     task_id: str, task_version_id: str, trial_ids: list[str], timeout: float
-) -> list[ActionItem] | None:
+) -> PreTrialSynthResult | None:
     """PreTrialSynthFn implementation backed by PreTrialBlock/AnalyzerBlock.
 
     Downloads the audited task version's source to a temp directory and runs the
@@ -77,9 +79,10 @@ async def synthesize_task_pre_trial(
     so the snapshot the auditor reads matches the version the findings are
     stored against. Never completes the task and never touches verdict state --
     that boundary lives in ``sync_pre_trial_to_task_version``, which the caller
-    (``run_task_qa_job``) invokes with these items. Returns ``None`` (skip; the
-    caller releases its claim) when the task's org has opted out of pre-trial
-    analysis.
+    (``run_task_qa_job``) invokes with these items. The block's spend and id ride
+    back on the result because they are knowable only here, where the block that
+    ran is still in scope. Returns ``None`` (skip; the caller releases its claim)
+    when the task's org has opted out of pre-trial analysis.
     """
     org_id, enabled = await _resolve_org_pre_trial(task_id)
     if not enabled:
@@ -127,11 +130,18 @@ async def synthesize_task_pre_trial(
             task_id=task_id,
             prompt=block_obj.build_prompt(),
             model=settings.pre_trial_model,
-            # The CLI yields a --output-format json envelope, not the model's
-            # bare answer; this unwraps it before schema validation.
+            # The CLI yields stream-json events, not the model's bare answer;
+            # this pulls the result payload out before schema validation.
             output_transform=block_obj.to_action_items_from_cli,
             cli_config=CliConfig(
                 cwd=task_dir,
+                # Validate the answer inside Claude Code. Otherwise it arrives
+                # as free text in ``result`` and one unescaped quote can make
+                # the entire audit fail during json.loads.
+                json_schema=json.dumps(
+                    PreTrialActionItems.model_json_schema(),
+                    separators=(",", ":"),
+                ),
                 timeout=timeout or settings.pre_trial_timeout,
             ),
             block_metadata={
@@ -154,7 +164,11 @@ async def synthesize_task_pre_trial(
             shutil.rmtree(temp_task_dir, ignore_errors=True)
 
     data = result.output or {"items": []}
-    return [ActionItem(**it) for it in data.get("items", [])]
+    return PreTrialSynthResult(
+        items=[ActionItem(**it) for it in data.get("items", [])],
+        cost_usd=block.usage.cost_usd if block.usage else None,
+        block_id=block.id,
+    )
 
 
 async def _pre_trial_enabled(task_id: str) -> bool:

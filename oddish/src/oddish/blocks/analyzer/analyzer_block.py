@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import json
 import logging
+from collections.abc import MutableMapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -102,7 +105,9 @@ def block_key_prefix(analyzer_type: AnalyzerType) -> str:
 
 
 class _PrefixAdapter(logging.LoggerAdapter):
-    def process(self, msg: str, kwargs: dict) -> tuple[str, dict]:
+    def process(
+        self, msg: str, kwargs: MutableMapping[str, Any]
+    ) -> tuple[str, MutableMapping[str, Any]]:
         return f"[{self.extra['prefix']}] {msg}", kwargs
 
 
@@ -143,6 +148,7 @@ class AnalyzerBlock(Block):
         model: str | None = None,
         max_tokens: int | None = None,
         response_format: Any | None = None,
+        output_schema: dict | None = None,
         output_transform: Callable[[str], Any] | None = None,
         api_key: str | None = None,
         triggered_by_user_id: str | None = None,
@@ -153,6 +159,7 @@ class AnalyzerBlock(Block):
         subject_id: str | None = None,
         cli_config: CliConfig | None = None,
         client_close_timeout: float | None = _CLIENT_CLOSE_TIMEOUT,
+        on_chunk: Callable[[str], None] | None = None,
     ) -> None:
         self.id = generate_id()
         self.analyzer_type = analyzer_type
@@ -177,11 +184,14 @@ class AnalyzerBlock(Block):
         self.block_metadata = block_metadata
         self._output_transform = output_transform
         # Only used when self-provisioning (client is None). api_key: None -> the
-        # analyzer key / provider default. response_format is OpenAI-only; the
-        # other backends ignore it.
+        # analyzer key / provider default. response_format is OpenAI-only and
+        # output_schema is Anthropic-only -- the same structured-output intent
+        # expressed per provider, so a caller that may run on either passes
+        # both. The other backends ignore both.
         self._api_key = api_key
         self._max_tokens = max_tokens
         self._response_format = response_format
+        self._output_schema = output_schema
         self._sandbox_config = sandbox_config
         self._client_creation_timeout = client_creation_timeout
         self._active_client: AnalyzerLLMClient | None = None
@@ -194,6 +204,10 @@ class AnalyzerBlock(Block):
         self.subject_id = subject_id
         self._cli_config = cli_config
         self._client_close_timeout = client_close_timeout
+        # Called with each streamed chunk as it arrives, so callers can show
+        # live progress (for example the trial analysis log). Failures in the
+        # hook are logged and never fail the block.
+        self._on_chunk = on_chunk
 
         self.key_prefix = block_key_prefix(analyzer_type)
         self.log = block_logger(self.key_prefix)
@@ -201,8 +215,8 @@ class AnalyzerBlock(Block):
         self.status: JobStatus = JobStatus.PENDING
         self.output: AnalyzerOutput | None = None
         self.error: str | None = None
-        self.job_started_at = None
-        self.job_ended_at = None
+        self.job_started_at: datetime | None = None
+        self.job_ended_at: datetime | None = None
         self.job_duration_seconds: float | None = None
         self._chunks: list[str] = []
         self.usage: AnalysisUsage | None = None
@@ -428,6 +442,7 @@ class AnalyzerBlock(Block):
             api_key=self._api_key,
             max_tokens=self._max_tokens,
             response_format=self._response_format,
+            output_schema=self._output_schema,
             sandbox_config=self._sandbox_config,
             cli_config=self._cli_config,
         )
@@ -443,6 +458,11 @@ class AnalyzerBlock(Block):
         async for chunk in client.stream(self.prompt, system_prompt=self.system_prompt):
             self._chunks.append(chunk)
             self.log.debug("chunk %d (len=%d)", len(self._chunks), len(chunk))
+            if self._on_chunk is not None:
+                try:
+                    self._on_chunk(chunk)
+                except Exception:  # noqa: BLE001
+                    self.log.exception("on_chunk hook failed")
             yield chunk
 
     async def _download_requested_files(self) -> dict[str, str]:
@@ -469,6 +489,16 @@ class AnalyzerBlock(Block):
         self.log.info("block starting (llm_client_type=%s)", self.llm_client_type.value)
         try:
             self._active_client = await self._create_client()
+            sandbox_id = getattr(self._active_client, "sandbox_id", None)
+            if sandbox_id and self._on_chunk is not None:
+                # Tell the progress hook which sandbox this block runs in,
+                # in the same shape as the streamed events.
+                try:
+                    self._on_chunk(
+                        json.dumps({"type": "sandbox_info", "sandbox_id": sandbox_id})
+                    )
+                except Exception:  # noqa: BLE001
+                    self.log.exception("on_chunk hook failed")
             async for _ in self.stream_output():
                 pass
             if self.input.files_to_download:
@@ -478,9 +508,9 @@ class AnalyzerBlock(Block):
             else:
                 raw = "".join(self._chunks)
                 self.output = AnalyzerOutput(
-                    output=self._output_transform(raw)
-                    if self._output_transform
-                    else raw
+                    output=(
+                        self._output_transform(raw) if self._output_transform else raw
+                    )
                 )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))

@@ -130,6 +130,17 @@ DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS = _env_int(
 DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS = _env_int(
     "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS", 120
 )
+# Facet-vocabulary rebuild (``worker.refresh_trial_facets``): one grouped scan
+# over live trials per interval keeps the task-browser dropdowns exact
+# (removals and stage/classification additions converge here; spec additions
+# are instant via write-through). The timeout bounds one scan; with
+# max_containers=1 it also guards against overlapping runs.
+TRIAL_FACETS_REFRESH_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_INTERVAL_SECONDS", 600
+)
+TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS", 300
+)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -451,7 +462,9 @@ runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
-if MODAL_APP_NAME.startswith("oddish-pr-"):
+# Per-app DB override: per-PR previews and the persistent staging app both
+# borrow every other secret from env "main" and rebind only the database.
+if MODAL_APP_NAME.startswith("oddish-pr-") or MODAL_APP_NAME == "oddish-staging":
     runtime_secrets.append(
         modal.Secret.from_name(
             f"{MODAL_APP_NAME}-db",

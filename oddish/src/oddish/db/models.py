@@ -1143,11 +1143,6 @@ class TrialModel(TimestampedMixin, Base):
     # S3-cached `agent/trajectory_summary.json` sibling file.
     trajectory_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Condensed agent step-graph of the trajectory (general phases + terminal
-    # outcome node), populated on explicit request to
-    # POST /trials/{id}/trajectory/graph. Reuses trajectory_summary's components.
-    trajectory_graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
     # Analysis data (LLM analysis of this trial)
     analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     analysis_status: Mapped[AnalysisStatus | None] = mapped_column(
@@ -1160,6 +1155,10 @@ class TrialModel(TimestampedMixin, Base):
     analysis_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # The analyzer's live event log for the current/most recent analysis
+    # run. Written by the QA worker every few seconds so the UI can show
+    # what the analyzer is doing. One short line per event, so it stays small.
+    analysis_log: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Immutable-trial rerun pointer. When a user retries a trial we
     # don't reset this row; instead we insert a fresh trial that copies
@@ -1284,6 +1283,40 @@ class TrialModel(TimestampedMixin, Base):
             text("created_at DESC"),
             postgresql_where=text("is_probe"),
         ),
+    )
+
+
+class TrialFacetModel(Base):
+    """Per-org vocabulary of trial facet values for the task browser.
+
+    Derived data, not a source of truth: the task-browser filter dropdowns
+    need the distinct agent/model/provider/... values an org has run, which
+    used to be recomputed from the full ``trials`` table on every facets
+    request. This table holds that vocabulary instead — a few hundred rows
+    per org — written through on trial creation (``oddish.core.trial_facets``)
+    and rebuilt wholesale by a periodic sweep, which is also what removes
+    values whose last trial was deleted, superseded, or version-bumped.
+
+    ``value_2`` is the second half of the ``agent_model`` pair kind (empty
+    string for a NULL model and for every single-valued kind); it is part of
+    the key so the composite PK doubles as the read index. Deliberately no
+    ``TimestampedMixin``: rows are replaced wholesale, never tombstoned, so
+    this model stays outside the soft-delete registry.
+    """
+
+    __tablename__ = "trial_facets"
+
+    org_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[str] = mapped_column(String(160), primary_key=True)
+    value_2: Mapped[str] = mapped_column(
+        String(160), primary_key=True, default="", server_default=""
+    )
+    # Last time either writer asserted this row live: write-through inserts
+    # default it to now(); the rebuild refreshes every derived row each cycle
+    # and prunes rows nothing refreshed (see oddish.core.trial_facets).
+    written_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
 
 

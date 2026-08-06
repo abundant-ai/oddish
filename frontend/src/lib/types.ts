@@ -93,6 +93,14 @@ export interface TagListResponse {
   items: TagSummary[];
 }
 
+/** Whether this trial exploited a pre-trial finding, by finding id. */
+interface TrialExploitation {
+  links_to?: string | null;
+  exploited?: boolean | null;
+  exploit_evidence?: string | null;
+  causal?: boolean | null;
+}
+
 interface TrialAnalysis {
   trial_name?: string;
   classification: AnalysisClassification;
@@ -100,6 +108,10 @@ interface TrialAnalysis {
   evidence?: string;
   root_cause?: string;
   recommendation?: string;
+  /** Task weaknesses this trial revealed; same shape as pre-trial findings. */
+  action_items?: PreTrialFinding[];
+  /** Per pre-trial finding assessments — the trial↔audit finding join. */
+  exploitation?: TrialExploitation[];
   reward?: number | null;
   prompt_kind?: string;
   prompt_version?: number;
@@ -138,11 +150,22 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
+  analysis_error?: string | null;
+  analysis_started_at?: string | null;
+  analysis_finished_at?: string | null;
   superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
   task_version?: number | null;
   task_version_id?: string | null;
+  /** Pre-trial audit of the version this trial ran on. Single-trial fetch only
+   *  (`GET /trials/{id}`); the grid's slim payload omits these. */
+  pre_trial_findings?: PreTrialFinding[];
+  pre_trial_status?: string | null;
+  pre_trial_error?: string | null;
+  /** What the audit cost. Absent on audits predating cost capture — not zero,
+   *  which would claim it was free. */
+  pre_trial_cost_usd?: number | null;
   input_tokens?: number | null;
   cache_tokens?: number | null;
   output_tokens?: number | null;
@@ -292,6 +315,9 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+// The backend response also carries a deprecated `experiments` field that is
+// always [] (options come from /api/tasks/browse/experiment-options instead);
+// it is deliberately absent here so nothing new codes against it.
 export interface TaskBrowseFacets {
   agents: string[];
   models: string[];
@@ -300,7 +326,17 @@ export interface TaskBrowseFacets {
   environments: string[];
   harbor_stages: string[];
   analysis_classifications: string[];
-  experiments: { id: string; name: string }[];
+}
+
+// GET /api/tasks/browse/experiment-options — async options for the sidebar
+// experiment filter (query= substring search, ids= chip hydration).
+export interface ExperimentOption {
+  id: string;
+  name: string;
+}
+
+export interface ExperimentOptionsResponse {
+  items: ExperimentOption[];
 }
 
 export interface TaskVersionSummary {
@@ -333,6 +369,9 @@ export interface TaskVersionSummary {
    *  findings mean something different for each, so never infer from the list. */
   pre_trial_status?: string | null;
   pre_trial_error?: string | null;
+  /** What the audit cost. Absent on audits predating cost capture — not zero,
+   *  which would claim it was free. */
+  pre_trial_cost_usd?: number | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
 }
@@ -350,6 +389,8 @@ export interface PreTrialFinding {
   detail?: string | null;
   recommendation?: string | null;
   exploited?: boolean | null;
+  /** On post-trial items: the pre-trial finding id this one relates to. */
+  links_to?: string | null;
 }
 
 interface TaskCostTotals {
@@ -652,45 +693,6 @@ export interface TrajectoryHighlight {
   why: string;
 }
 
-// Condensed agent-graph summary of a trajectory (GET /trials/{id}/trajectory/graph).
-export type TrajectoryGraphStepStatus = "ok" | "warn" | "error";
-
-export type TrajectoryGraphOutcome =
-  | "success"
-  | "partial"
-  | "failure"
-  | "timeout"
-  | "error"
-  | "scoreless"
-  | "skipped"
-  | "running"
-  | "queued"
-  | "pending";
-
-export interface TrajectoryGraphStep {
-  id: string;
-  title: string;
-  detail: string;
-  status: TrajectoryGraphStepStatus;
-}
-
-export interface TrajectoryGraphTerminal {
-  outcome: TrajectoryGraphOutcome;
-  last_action: string;
-  reason: string;
-}
-
-export interface TrajectoryGraph {
-  headline: string;
-  steps: TrajectoryGraphStep[];
-  terminal: TrajectoryGraphTerminal;
-  source: "summary" | "llm" | "heuristic";
-  model: string | null;
-  num_steps: number | null;
-  schema_version?: string;
-  generated_at?: string;
-}
-
 /** Pre-v4 segmentation. Still present on summaries generated before #790. */
 export interface TrajectoryPhase {
   label: string;
@@ -704,13 +706,17 @@ export type TrajectoryComponentKind =
   | "thinking_recall"
   | "thinking_understand"
   | "thinking_hypothesize"
-  | "thinking_diagnose"
+  | "thinking_correction"
   | "implementing"
+  | "implementing_correction"
   | "writing_tests"
   | "testing_public"
   | "testing_custom"
-  | "testing_custom_edge_cases"
-  | "debugging";
+  | "testing_edge_cases"
+  | "debugging"
+  // Retired from the backend enum, but stored summaries still carry them.
+  | "thinking_diagnose"
+  | "testing_custom_edge_cases";
 
 export interface TrajectoryComponent {
   step_ids: number[];
@@ -1165,9 +1171,4 @@ export interface Report {
   experiment_ids: string[];
   created_at?: string | null;
   finished_at?: string | null;
-}
-
-export interface ExperimentOption {
-  id: string;
-  name: string;
 }

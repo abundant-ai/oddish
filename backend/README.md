@@ -184,7 +184,7 @@ Common optional settings:
 - provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
-- `SLACK_ALERT_BOT_TOKEN` (scopes `chat:write`, `im:write`, `users:read.email`) for deterministic cost alerts, which DM an experiment's owner: a milestone for each $1,000 spent in the past 24 hours, and any trial over $200 that finished in that window. The same token delivers the other DM-only alerts -- trial failed, QA failed, experiment failed -- and resolves in-channel mentions by account email. The email delivery channel has been removed entirely. `SLACK_EXPENSE_WEBHOOK_URL` carries what is left in-channel: unpriceable-model alerts from the past 24 hours, and the escalation a trial over $1,000 raises alongside its owner's DM, which `<@...>`-mentions the owner plus the always-ping list. The channel escalation floor and that ping list are set by an admin on the Costs tab of `/admin` and stored in `slack_alert_settings`; the constants in `slack_alert_settings.py` are the defaults they override, and no setting here is environment-configurable. The per-user DM cutoffs (the milestone and trial floor) are separate deploy-time constants in `user_alert_prefs.py` that each person tunes in their own notification settings, not admin-editable here. Notifications are on by default for the production app; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only notification secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`.
+- `SLACK_ALERT_BOT_TOKEN` (scopes `chat:write`, `im:write`, `users:read.email`) for deterministic cost alerts, which DM an experiment's owner: a milestone for each $1,000 spent in the past 24 hours, and any trial over $200 that finished in that window. The same token delivers the other DM-only alerts -- trial failed, QA failed, experiment failed -- and resolves in-channel mentions by account email. The email delivery channel has been removed entirely. `SLACK_EXPENSE_WEBHOOK_URL` carries what is left in-channel: unpriceable-model alerts from the past 24 hours; an escalation when a running or retrying trial's live cost rises above the configured floor, which `<@...>`-mentions its owner plus the always-ping list; and a `<!channel>` alert when a user's rolling seven-day spend, including live running-trial checkpoints, rises more than the configured dollar delta above their workspace's average spender. The two channel escalation thresholds and the ping list are set by an admin on the Costs tab of `/admin` and stored in `slack_alert_settings`; the constants in `slack_alert_settings.py` are the defaults they override, and no setting here is environment-configurable. Weekly user alerts re-arm after spend drops back below the threshold. The per-user DM cutoffs (the milestone and completed-trial floor) are separate deploy-time constants in `user_alert_prefs.py` that each person tunes in their own notification settings, not admin-editable here. Notifications are on by default for the production app; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only notification secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`.
 - `ODDISH_SLACK_UNFURL_*` for a lean, single-workspace Slack app that unfurls Oddish task, experiment, and public-share links. It requires `links:read` and `links:write`, a `link_shared` event subscription pointed at `/webhooks/slack/events`, a signing secret, bot token, and bound Oddish org. Optional team/channel allowlists add defense in depth. This is separate from the expense notifications above.
 - `ODDISH_CARL_*`, `ODDISH_API_KEY`, and `ODDISH_DATABASE_URL_RO` extend that same Slack app with read-only answers to permitted `app_mention` events. Carl keeps the existing `/webhooks/slack/events` URL and `link_shared` subscription; add `app_mentions:read` and subscribe the installed app to `app_mention`. The SQL DSN must use a dedicated non-superuser role restricted to the analytics table allow-list. See `slackbot/README.md`.
 
@@ -388,29 +388,45 @@ curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq
 ## User quotas — enforcement rollout (`ODDISH_QUOTA_MODE`)
 
 Per-user dollar budgets use a rolling 24-hour window. Spend counts until 24h
-after the trial finished. The operator toggle is `shadow` (default) → `enforce`
-via the `ODDISH_QUOTA_MODE` env var; each stage is a config flip, no redeploy of
-code (`off` stays available as a full no-op opt-out, and is also the
-schema-guard fail-safe below):
+after the trial finished. Caps count trial inference spend only unless
+`ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE=1`, which additionally folds
+analyzer/QA (`analysis_costs`) and sandbox compute (`modal_costs`) into both
+windows; it is off by default because turning it on lowers every payer's
+headroom at once. The operator toggle is `ODDISH_QUOTA_MODE` (`enforce` by
+default; `shadow` observes without blocking). Each stage is a config flip, no
+redeploy of code (`off` stays available as a full no-op opt-out):
 
-1. **`shadow`** (default) — compute the check and emit a structured
+1. **`shadow`** — compute the check and emit a structured
    `quota.would_block` event (`metric=quota.would_block reason=… org_id=…
    billed_user_id=… used=… limit=…`) but never raise. Scrape those logs to
    enumerate who *would* be blocked and which submissions have an unresolved
    payer (`billed_user_id` None — an unlinked GitHub author); notify those users
    to link at oddish.app. `billed_user_id` is stamped at trial creation, so the
    usage data accrues before any enforcement.
-2. **`enforce`** — over-budget submissions get HTTP **402** with
+2. **`enforce`** (default) — over-budget submissions get HTTP **402** with
    `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
    unattributable run gets **403**.
+
+An unattributable run is *retried* rather than submitted fresh (`POST
+/trials/{id}/retry`) it cannot 403 — there is no payer to bill and refusing
+would strand the run. That spend instead pools per org, logged as
+`metric=quota.admitted reason=unattributed_admitted`. Set
+`ODDISH_UNATTRIBUTED_POOL_LIMIT_USD` to cap that pool over the rolling 24h
+(unset = uncapped). Cap it deliberately: the pool drains only by aging, since a
+retry copies the NULL payer and re-enters it, and **no per-user override can
+raise it** — the fix for a full pool is repairing attribution.
 
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
 API startup verifies `trials.billed_user_id` and the `quotas` + `quota_bumps` +
-`org_quotas`
-tables exist and otherwise forces `off` (fail-safe, never a silent SUM
-fail-open). Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
+`org_quotas` tables exist. Under `enforce` a missing object **fails startup**,
+naming what is absent: `oddish/` and `backend/` migrate on separate alembic
+trees, so deploy-before-migrate is a real window, and serving every request
+uncapped is worse than being down. Set
+`ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE=1` to opt into the older behaviour (log and
+force `off`) instead. Under `shadow` it always degrades rather than failing —
+nothing is relying on enforcement. Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
 `ODDISH_PENDING_TRIAL_RESERVATION_USD` without a code change.
 
 **Temporary quota bumps.** `POST /quotas/{user_id}/bumps` grants `+amount_usd`
@@ -436,5 +452,5 @@ HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
 snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
-org → payer → row locks (ENFORCE-only, and the org lock is taken only when a cap
-is actually configured).
+org → payer → row locks (ENFORCE-only on admission; the org lock is always
+taken first, even when no org cap is configured).

@@ -20,10 +20,24 @@ export async function GET(
       return NextResponse.json(error, { status: res.status });
     }
 
+    const cacheControl = "public, max-age=600, stale-while-revalidate=60";
+
+    // Streamed listings (stream=1) are NDJSON — pass the body through so the
+    // client can paint the tree before the file contents finish loading.
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/x-ndjson")) {
+      return new NextResponse(res.body, {
+        headers: {
+          "Content-Type": "application/x-ndjson",
+          "Cache-Control": cacheControl,
+        },
+      });
+    }
+
     const data = await res.json();
     return NextResponse.json(data, {
       headers: {
-        "Cache-Control": "public, max-age=600, stale-while-revalidate=60",
+        "Cache-Control": cacheControl,
       },
     });
   } catch (error) {

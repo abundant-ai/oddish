@@ -105,6 +105,33 @@ _XAI_HOSTS = ("api.x.ai",)
 # api5), and the installer is intentionally unpinned. Use Cursor's official
 # domain boundary instead of encoding ephemeral transport hostnames.
 _CURSOR_RUNTIME_HOSTS = ("*.cursor.sh",)
+# tbh (published as ``muse``) reaches Meta through its own service rather than
+# the OpenAI-compatible model API, so its host does not follow from the model
+# id the way every other agent's does: a ``meta/`` model resolves
+# ``api.ai.meta.com`` while the harness dials ``api.meta.ai`` for its model
+# catalog and inference. Keyed on the AGENT, unlike the cursor arm below, which
+# is keyed on a ``cursor/`` model prefix.
+TBH_BASE_URL_KEYS = ("TBH_BASE_URL",)
+_TBH_RUNTIME_HOSTS = ("api.meta.ai",)
+# opencode has no pre-baked worker image: Harbor's ``OpenCode.install``
+# bootstraps nvm, a Node runtime, and the ``opencode-ai`` npm package during
+# agent SETUP -- which runs under the ENVIRONMENT baseline, before the
+# agent-phase allowlist ever applies. The runner's opencode arm therefore
+# merges these hosts into the environment baseline (mirroring the claude-code
+# installer arm), NOT into ``_AGENT_RUNTIME_HOSTS`` -- an agent-phase
+# registration could never cover the setup-phase install, and would widen the
+# agent-run phase of modern swe-marathon-shaped tasks for no benefit. This is
+# the narrowest set that lets the documented install script complete; the
+# model transport host comes from ``outbound_hosts_for_model`` as usual.
+OPENCODE_INSTALL_HOSTS: tuple[str, ...] = (
+    "raw.githubusercontent.com",  # nvm install.sh
+    "github.com",  # nvm git source + opencode-ai release redirect
+    "objects.githubusercontent.com",  # GitHub release-asset CDN
+    "codeload.github.com",  # GitHub tarball fetch
+    "nodejs.org",  # Node runtime downloaded by nvm
+    "registry.npmjs.org",  # npm metadata + package tarballs
+)
+_AGENT_RUNTIME_HOSTS: dict[str, tuple[str, ...]] = {"tbh": _TBH_RUNTIME_HOSTS}
 
 _DEFAULT_BEDROCK_REGION = "us-east-1"
 _BEDROCK_STS_DOMAINS = ("sts.amazonaws.com",)
@@ -175,6 +202,50 @@ def _hosts_from_env(
 
 def _default_host(url: str) -> str | None:
     return _host_from_url(url)
+
+
+def agent_runtime_hosts(
+    *,
+    agent_name: str | None,
+    import_path: str | None = None,
+    agent_kwargs: Mapping[str, Any] | None = None,
+    agent_env: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Hosts an agent's OWN service needs, independent of the model provider.
+
+    Model-derived hosts cover every agent that talks to the provider endpoint
+    the model id names. An agent that fronts its own service needs its host
+    added on top, or a restricted trial's allowlist is missing the only host
+    the harness actually dials. A caller-supplied endpoint (the ``base_url``
+    kwarg or ``TBH_BASE_URL``) is added alongside rather than replacing the
+    default, so pointing at a staging endpoint cannot silently drop the
+    production one a fallback might still use.
+    """
+    key = (agent_name or "").strip().lower()
+    if not key and import_path:
+        # Oddish wrappers null the name and set an import path instead.
+        key = import_path.rsplit(":", 1)[-1].strip().lower()
+    hosts = list(_AGENT_RUNTIME_HOSTS.get(key, ()))
+    if not hosts:
+        return []
+
+    override: Any = None
+    if isinstance(agent_kwargs, Mapping):
+        override = agent_kwargs.get("base_url")
+        extra_env = agent_kwargs.get("extra_env")
+        if not override and isinstance(extra_env, Mapping):
+            override = next(
+                (extra_env.get(k) for k in TBH_BASE_URL_KEYS if extra_env.get(k)), None
+            )
+    if not override and isinstance(agent_env, Mapping):
+        override = next(
+            (agent_env.get(k) for k in TBH_BASE_URL_KEYS if agent_env.get(k)), None
+        )
+    if isinstance(override, str):
+        host = _host_from_url(override)
+        if host:
+            hosts.append(host)
+    return list(dict.fromkeys(hosts))
 
 
 def outbound_hosts_for_model(

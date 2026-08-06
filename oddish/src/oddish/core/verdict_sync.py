@@ -95,16 +95,31 @@ async def sync_verdict_to_task(
         return task.verdict_status.value
 
 
-def build_pre_trial_payload(items: list) -> dict:
+def build_pre_trial_payload(
+    items: list, *, cost_usd: float | None = None, block_id: str | None = None
+) -> dict:
     """Render the dict stored on ``task_versions.pre_trial``. Computes each
-    item's stable id server-side (the LLM output omits it)."""
+    item's stable id server-side (the LLM output omits it).
+
+    ``cost_usd``/``block_id`` are recorded here because they are only knowable
+    at write time: ``analysis_costs`` rows carry no block or version reference,
+    so an audit's spend cannot be re-derived per version afterwards (a task with
+    several audits has several cost rows and no way to tell them apart). Omitted
+    keys mean "not captured", which is how the rows backfilled before this
+    existed read.
+    """
     from oddish.analyze.models import compute_action_item_id
 
     out = []
     for item in items:
         item.id = item.id or compute_action_item_id(item)
         out.append(item.model_dump(mode="json"))
-    return {"items": out}
+    payload: dict = {"items": out}
+    if cost_usd is not None:
+        payload["cost_usd"] = cost_usd
+    if block_id is not None:
+        payload["block_id"] = block_id
+    return payload
 
 
 async def sync_pre_trial_to_task_version(

@@ -54,6 +54,11 @@ ANALYSIS_MODEL = "claude-sonnet-5"
 # TrialClassifier model. Normalized to a direct-API id at call time.
 PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
 VERDICT_MODEL = "gpt-5.4"
+# Used only when VERDICT_MODEL's provider returns a permanent error (see
+# provider_failures). Deliberately a different *provider*, not just a different
+# model: the failure mode this exists for is a whole OpenAI/Azure resource
+# going away, which a sibling OpenAI model would share.
+VERDICT_FALLBACK_MODEL = ANALYSIS_MODEL
 PRE_TRIAL_MODEL = ANALYSIS_MODEL
 
 PROBE_MODEL_ROTATION: list[str] = [
@@ -146,9 +151,9 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
 # (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor"
-# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #8
-# (fail-closed Compose DinD egress) merged as this commit.
-HARBOR_DEFAULT_SHA = "4d3c4790fdb81d099200fa031ec798213b363dc0"
+# abundant-ai/harbor main, as resolved into both uv.lock files. Harbor PR #19
+# adds per-model Grok Build context-window overrides.
+HARBOR_DEFAULT_SHA = "4440acb85122d293629f083262c13700f965a867"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -1113,6 +1118,28 @@ class Settings(BaseSettings):
     # stops a start-then-cancel loop from bypassing the cap. A genuinely-$0 row
     # (cost_usd = 0) is always left untouched.
     unpriced_trial_cost_usd: Decimal = Decimal("0.00")
+    # Count analyzer/QA spend (``analysis_costs``) and sandbox compute
+    # (``modal_cost_spans``) toward the quota caps, not just trial inference. Both
+    # tables already carry ``org_id``/``billed_user_id`` and are charged per user
+    # on the cost dashboards, so the caps otherwise sit below real spend. Ships
+    # inert (like ``default_org_monthly_quota_usd``): turning it on lowers every
+    # payer's effective headroom at once, so it is a deliberate operator flip via
+    # ``ODDISH_QUOTA_COUNTS_ANALYSIS_AND_COMPUTE``.
+    quota_counts_analysis_and_compute: bool = False
+    # Rolling-24h ceiling on an org's POOLED unattributed spend (trials whose
+    # payer could not be resolved). Such a trial has no per-user cap to charge --
+    # ``quotas`` rows are keyed (org_id, user_id) and a pool has no user -- so
+    # this is the only lever that exists for it, and it is deliberately its own
+    # knob rather than reusing ``default_daily_quota_usd`` (which would move
+    # every user in every org). ``None`` means no pooled ceiling (ships inert):
+    # the pool only ever drains by 24h aging, so a too-low value blocks retries
+    # until attribution is repaired.
+    unattributed_pool_limit_usd: Decimal | None = None
+    # Opt in to the old degrade-to-off behaviour when the quota schema is
+    # incomplete at startup. Off by default: under ENFORCE an unmetered billing
+    # system is worse than a down one, so a deploy-before-migrate should fail
+    # loudly rather than serve every request uncapped.
+    allow_quota_schema_degrade: bool = False
     quota_mode: QuotaMode = QuotaMode.ENFORCE
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim
@@ -1232,7 +1259,13 @@ class Settings(BaseSettings):
     # 108-142s, and the ones that hit the cap died at exactly 180.02s losing
     # the whole run (the CLI buffers its envelope, so a timeout saves 0 bytes).
     # The claim lease is pre_trial_timeout + 900 + 60, so it still outlives this.
-    pre_trial_timeout: float = 600.0
+    # 600s then reproduced the same shape one notch up, measured over the runs
+    # after #959 unblocked parsing: 46 audits finished (p50 309s, p90 480s, max
+    # 561s) while 13 more died at exactly 600.0s -- 18% of all runs, and 11 of
+    # those 13 tasks never got an audit at all. A cap only 1.25x p90 truncates
+    # the tail of a healthy distribution rather than catching runaways, and a
+    # timed-out audit is a total loss, so this is set clear of the observed max.
+    pre_trial_timeout: float = 1200.0
 
     # Run post-trial QA classification inside a Daytona sandbox instead of a
     # worker-local Claude Code subprocess. Off by default: the classifier is
@@ -1319,6 +1352,7 @@ class Settings(BaseSettings):
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
+    verdict_fallback_model: str = VERDICT_FALLBACK_MODEL
     pre_trial_model: str = PRE_TRIAL_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)

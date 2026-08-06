@@ -20,15 +20,16 @@ class ExploreTrajectoryBlockTaxonomy(str, enum.Enum):
     THINKING_RECALL = "thinking_recall"
     THINKING_UNDERSTAND = "thinking_understand"
     THINKING_HYPOTHESIZE = "thinking_hypothesize"
-    THINKING_DIAGNOSE = "thinking_diagnose"
+    THINKING_CORRECTION = "thinking_correction"
 
 
 class ImplementTrajectoryBlockTaxonomy(str, enum.Enum):
     IMPLEMENTING = "implementing"
+    IMPLEMENTING_CORRECTION = "implementing_correction"
     WRITING_TESTS = "writing_tests"
     TESTING_PUBLIC = "testing_public"
     TESTING_CUSTOM = "testing_custom"
-    TESTING_CUSTOM_EDGE_CASES = "testing_custom_edge_cases"
+    TESTING_EDGE_CASES = "testing_edge_cases"
     DEBUGGING = "debugging"
 
 
@@ -84,8 +85,12 @@ class TrajectoryOutput(BaseModel):
             return data
         data = dict(data)
         data["summary"] = str(data.get("summary") or "")
-        data["highlights"] = [h for h in (data.get("highlights") or []) if isinstance(h, dict)]
-        data["components"] = [c for c in (data.get("components") or []) if isinstance(c, dict)]
+        data["highlights"] = [
+            h for h in (data.get("highlights") or []) if isinstance(h, dict)
+        ]
+        data["components"] = [
+            c for c in (data.get("components") or []) if isinstance(c, dict)
+        ]
         return data
 
 
@@ -134,7 +139,9 @@ class TrajectoryBlock(Block):
 
     output_schema = TrajectoryOutput
 
-    def __init__(self, trajectory_input: TrajectoryInput, *, instructions_template: str) -> None:
+    def __init__(
+        self, trajectory_input: TrajectoryInput, *, instructions_template: str
+    ) -> None:
         self.trajectory_input = trajectory_input
         self._instructions_template = instructions_template
 
@@ -143,37 +150,66 @@ class TrajectoryBlock(Block):
         ti = self.trajectory_input
         taxonomy_values = [m.value for m in TrajectoryBlockTaxonomy]
         return [
-            {"name": "preamble", "raw_input": {}, "schema": _PreambleIn,
-             "formatter": lambda _d: tp.PREAMBLE},
-            {"name": "task",
-             "raw_input": {"task_name": ti.task_name, "instruction": ti.instruction},
-             "schema": _TaskIn, "formatter": self._fmt_task},
-            {"name": "outcome",
-             "raw_input": {"final_reward": ti.final_reward, "model_used": ti.model_used,
-                           "verifier_output": ti.verifier_output},
-             "schema": _OutcomeIn, "formatter": self._fmt_outcome},
-            {"name": "instructions", "raw_input": {}, "schema": _InstructionsIn,
-             "formatter": lambda _d: tp.instructions_section(
-                 self._instructions_template, taxonomy_values)},
-            {"name": "trajectory", "raw_input": {"trajectory": ti.trajectory},
-             "schema": _TrajectoryIn, "formatter": self._fmt_trajectory},
+            {
+                "name": "preamble",
+                "raw_input": {},
+                "schema": _PreambleIn,
+                "formatter": lambda _d: tp.PREAMBLE,
+            },
+            {
+                "name": "task",
+                "raw_input": {"task_name": ti.task_name, "instruction": ti.instruction},
+                "schema": _TaskIn,
+                "formatter": self._fmt_task,
+            },
+            {
+                "name": "outcome",
+                "raw_input": {
+                    "final_reward": ti.final_reward,
+                    "model_used": ti.model_used,
+                    "verifier_output": ti.verifier_output,
+                },
+                "schema": _OutcomeIn,
+                "formatter": self._fmt_outcome,
+            },
+            {
+                "name": "instructions",
+                "raw_input": {},
+                "schema": _InstructionsIn,
+                "formatter": lambda _d: tp.instructions_section(
+                    self._instructions_template, taxonomy_values
+                ),
+            },
+            {
+                "name": "trajectory",
+                "raw_input": {"trajectory": ti.trajectory},
+                "schema": _TrajectoryIn,
+                "formatter": self._fmt_trajectory,
+            },
         ]
 
     @staticmethod
     def _fmt_task(d: _TaskIn) -> str:
-        instruction = _truncate(d.instruction) if d.instruction is not None else "[unavailable]"
+        instruction = (
+            _truncate(d.instruction) if d.instruction is not None else "[unavailable]"
+        )
         return tp.task_section(d.task_name, instruction)
 
     @staticmethod
     def _fmt_outcome(d: _OutcomeIn) -> str:
         reward = f"{d.final_reward}" if d.final_reward is not None else "[unavailable]"
-        verifier = _truncate(d.verifier_output) if d.verifier_output is not None else "[unavailable]"
+        verifier = (
+            _truncate(d.verifier_output)
+            if d.verifier_output is not None
+            else "[unavailable]"
+        )
         model = d.model_used or "[unavailable]"
         return tp.outcome_section(reward, verifier, model)
 
     @staticmethod
     def _fmt_trajectory(d: _TrajectoryIn) -> str:
         from api.services.summarize_trajectory import preprocess
+
         return tp.trajectory_section(json.dumps(preprocess(d.trajectory)))
 
     # ---- parsing (parse is inherited; this filters elements) ----
@@ -187,10 +223,15 @@ class TrajectoryBlock(Block):
     def filter_output(self, parsed: TrajectoryOutput) -> TrajectoryOutput:
         valid = self._valid_step_ids()
         highlights = [
-            {"step_id": h["step_id"], "title": str(h.get("title") or "").strip(),
-             "why": str(h.get("why") or "").strip()}
+            {
+                "step_id": h["step_id"],
+                "title": str(h.get("title") or "").strip(),
+                "why": str(h.get("why") or "").strip(),
+            }
             for h in parsed.highlights
-            if isinstance(h, dict) and isinstance(h.get("step_id"), int) and h["step_id"] in valid
+            if isinstance(h, dict)
+            and isinstance(h.get("step_id"), int)
+            and h["step_id"] in valid
         ]
         components: list[dict] = []
         for c in parsed.components:
@@ -202,11 +243,13 @@ class TrajectoryBlock(Block):
             ids = [s for s in m.step_ids if s in valid]
             if not ids:
                 continue
-            components.append({
-                "step_ids": ids,
-                "trajectory_component": m.trajectory_component.value,
-                "summary": m.summary,
-            })
+            components.append(
+                {
+                    "step_ids": ids,
+                    "trajectory_component": m.trajectory_component.value,
+                    "summary": m.summary,
+                }
+            )
         return TrajectoryOutput(
             summary=str(parsed.summary or "").strip(),
             highlights=highlights,
@@ -227,7 +270,10 @@ class TrajectoryBlock(Block):
             if not isinstance(value, str):
                 return None
             try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000
+                return (
+                    datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+                    * 1000
+                )
             except ValueError:
                 return None
 
@@ -235,7 +281,11 @@ class TrajectoryBlock(Block):
             if index == 0:
                 return 0
             current = timestamp_ms(step)
-            previous = timestamp_ms(steps[index - 1]) if isinstance(steps[index - 1], dict) else None
+            previous = (
+                timestamp_ms(steps[index - 1])
+                if isinstance(steps[index - 1], dict)
+                else None
+            )
             if current is None or previous is None:
                 return 0
             return max(0, round(current - previous))
@@ -247,17 +297,21 @@ class TrajectoryBlock(Block):
                 for step_id in component["step_ids"]
                 if step_id in step_by_id
             ]
-            components.append({
-                **component,
-                # These fields are derived from the immutable trajectory rather
-                # than supplied by the LLM, so consumers can safely aggregate them.
-                "tool_count": sum(
-                    len(step.get("tool_calls") or [])
-                    for _, step in component_steps
-                    if isinstance(step.get("tool_calls"), list)
-                ),
-                "duration_ms": sum(duration_ms(index, step) for index, step in component_steps),
-            })
+            components.append(
+                {
+                    **component,
+                    # These fields are derived from the immutable trajectory rather
+                    # than supplied by the LLM, so consumers can safely aggregate them.
+                    "tool_count": sum(
+                        len(step.get("tool_calls") or [])
+                        for _, step in component_steps
+                        if isinstance(step.get("tool_calls"), list)
+                    ),
+                    "duration_ms": sum(
+                        duration_ms(index, step) for index, step in component_steps
+                    ),
+                }
+            )
         return {
             "schema_version": "5",
             "model": model,

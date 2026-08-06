@@ -52,6 +52,7 @@ from .agent_config import (
     _build_agent_config,
     _claude_code_forces_direct_api,
     _apply_gemini_cli_oddish_wrapper,
+    _apply_cursor_cli_oddish_wrapper,
     _resolve_anthropic_hdo_api_key,
     _temporary_env,
     _trial_requested_model,
@@ -60,6 +61,8 @@ from .agent_config import (
 from .model_hosts import (
     GEMINI_BASE_URL_KEYS,
     GEMINI_OAUTH_ENV_KEYS,
+    OPENCODE_INSTALL_HOSTS,
+    agent_runtime_hosts,
     outbound_hosts_for_model,
 )
 from .redaction import redact_exact_text, redact_exact_value
@@ -973,11 +976,22 @@ def _inject_restricted_agent_model_hosts(
     if resolved_env:
         agent_kwargs["extra_env"] = resolved_env
     inferred_hosts = normalize_allowed_hosts(
-        outbound_hosts_for_model(
-            agent_config.model_name,
-            agent_env=resolved_env,
-            agent_kwargs=agent_kwargs,
-        )
+        [
+            *outbound_hosts_for_model(
+                agent_config.model_name,
+                agent_env=resolved_env,
+                agent_kwargs=agent_kwargs,
+            ),
+            # An agent that fronts its own service dials a host the model id
+            # does not name; without this the allowlist holds only the model
+            # API and the harness cannot reach its own endpoint.
+            *agent_runtime_hosts(
+                agent_name=agent_config.name,
+                import_path=agent_config.import_path,
+                agent_kwargs=agent_kwargs,
+                agent_env=resolved_env,
+            ),
+        ]
     )
     agent_config.extra_allowed_hosts = list(
         dict.fromkeys([*agent_config.extra_allowed_hosts, *inferred_hosts])
@@ -999,10 +1013,10 @@ def _apply_daytona_compose_restricted_network_profile(
     ):
         return None
 
-    # The Gemini wrapper exists solely to remove provider-side web tools in
-    # this restricted Compose phase. Public and non-Compose trials retain the
-    # stock Harbor agent class.
+    # These wrappers exist solely to enforce restricted-Compose capabilities.
+    # Public and non-Compose trials retain the stock Harbor agent classes.
     _apply_gemini_cli_oddish_wrapper(agent_config)
+    _apply_cursor_cli_oddish_wrapper(agent_config)
     # Drop non-consumed routes only once the EFFECTIVE class is final. The
     # wrapper above swaps stock ``GeminiCli`` -- which is absent from the
     # compatibility registry, so consumption resolves to ``None`` and the drop
@@ -1069,6 +1083,26 @@ def _claude_code_environment_hosts(agent_config: HarborAgentConfig) -> list[str]
     """
     return [
         *_CLAUDE_CODE_INSTALLER_HOSTS,
+        *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
+    ]
+
+
+def _opencode_environment_hosts(agent_config: HarborAgentConfig) -> list[str]:
+    """Hosts the opencode CLI needs across install *and* run.
+
+    opencode self-installs (nvm, a Node runtime, the ``opencode-ai`` npm
+    package) during agent SETUP, which runs under the ENVIRONMENT baseline --
+    the agent-phase allowlist (``extra_allowed_hosts`` / runtime-host merges)
+    only takes effect around ``agent.run()``. Install hosts must therefore ride
+    the environment baseline, exactly like the claude-code arm above. On a
+    legacy closed task (``[environment] allow_internet=false`` -> a no-network
+    baseline for every phase, no dynamic restricted agent phase) this is also
+    the only channel that grants the model transport host, so resolve it here
+    too (``outbound_hosts_for_model`` maps ``openrouter/<model>`` ->
+    ``openrouter.ai`` alongside every other routed provider).
+    """
+    return [
+        *OPENCODE_INSTALL_HOSTS,
         *outbound_hosts_for_model(agent_config.model_name, agent_env=agent_config.env),
     ]
 
@@ -1507,6 +1541,25 @@ async def run_harbor_trial_async(
             )
         ):
             hosts = _claude_code_environment_hosts(agent_config)
+            env_config.extra_allowed_hosts = [
+                *env_config.extra_allowed_hosts,
+                *[h for h in hosts if h not in env_config.extra_allowed_hosts],
+            ]
+
+        # opencode self-installs (nvm/Node/opencode-ai) at agent-setup, which
+        # runs under the environment baseline -- same lifecycle problem as the
+        # claude-code arm above, same solution: allow install + model hosts via
+        # the environment baseline, which spans install and run. On a public
+        # baseline the merge is a no-op (harbor ignores extras there), so
+        # modern swe-marathon-shaped tasks (public setup -> restricted agent)
+        # keep their agent phase free of the install hosts.
+        if (agent or "").strip().lower() == "opencode" and not (
+            _supports_daytona_compose_restricted_agent_network(
+                task_path=effective_task_path,
+                environment_config=env_config,
+            )
+        ):
+            hosts = _opencode_environment_hosts(agent_config)
             env_config.extra_allowed_hosts = [
                 *env_config.extra_allowed_hosts,
                 *[h for h in hosts if h not in env_config.extra_allowed_hosts],

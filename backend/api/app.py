@@ -79,29 +79,55 @@ async def _assert_quota_schema_or_force_off() -> None:
 
     if settings.quota_mode == QuotaMode.OFF:
         return
+
+    # Named so a deploy-before-migrate failure can say exactly what is absent.
+    # oddish/ and backend/ migrate independently, so this window is real.
+    schema_objects = (
+        (
+            "trials.billed_user_id",
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'trials'
+                  AND column_name = 'billed_user_id'
+            )
+            """,
+        ),
+        (
+            "quotas",
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'quotas'
+            )
+            """,
+        ),
+        (
+            "quota_bumps",
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'quota_bumps'
+            )
+            """,
+        ),
+        (
+            "org_quotas",
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'org_quotas'
+            )
+            """,
+        ),
+    )
+
+    missing: list[str] = []
     try:
         async with get_session() as session:
-            if await session.scalar(
-                text(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'trials'
-                          AND column_name = 'billed_user_id'
-                    ) AND EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_name = 'quotas'
-                    ) AND EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_name = 'quota_bumps'
-                    ) AND EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_name = 'org_quotas'
-                    )
-                    """
-                )
-            ):
-                return
+            for name, sql in schema_objects:
+                if not await session.scalar(text(sql)):
+                    missing.append(name)
     except Exception:
         logger.warning(
             "quota schema check skipped (DB unavailable at startup); "
@@ -109,13 +135,30 @@ async def _assert_quota_schema_or_force_off() -> None:
             settings.quota_mode,
         )
         return
+
+    if not missing:
+        return
+
+    missing_csv = ", ".join(missing)
+
+    # Unmetered ENFORCE is worse than a down API. Fail closed unless the
+    # operator opts into the old force-off degrade.
+    if settings.quota_mode == QuotaMode.ENFORCE and not (
+        settings.allow_quota_schema_degrade
+    ):
+        raise RuntimeError(
+            "quota schema is incomplete "
+            f"(missing: {missing_csv}); run the oddish and backend alembic "
+            "migrations, or set ODDISH_ALLOW_QUOTA_SCHEMA_DEGRADE=1 to start "
+            "with quota_mode=off"
+        )
+
     logger.error(
-        "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
-        "column or the backend quotas / quota_bumps / org_quotas tables are "
-        "missing -- the "
-        "oddish and backend alembic trees migrate separately); forcing "
-        "quota_mode=off to avoid a fail-open SUM or a 500 on every admission",
+        "metric=quota.schema_incomplete quota_mode=%s missing=%s "
+        "forcing quota_mode=off; unmetered billing is disabled for this "
+        "process (oddish and backend alembic trees migrate separately)",
         settings.quota_mode,
+        missing_csv,
     )
     settings.quota_mode = QuotaMode.OFF
 

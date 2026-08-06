@@ -110,6 +110,8 @@ async def test_post_trial_run_reaches_the_block_with_its_trial_subject(monkeypat
             captured.update(kwargs)
             self.id = "block_pt"
             self.error = None
+            # Real AnalyzerBlock always sets this in __init__.
+            self.usage = None
 
         async def run(self):
             return SimpleNamespace(output={"ok": True})
@@ -178,6 +180,8 @@ async def test_pre_trial_assignment_runs_worker_local_not_sandbox(
             captured.update(kwargs)
             self.id = "block_pre"
             self.error = None
+            # Real AnalyzerBlock always sets this in __init__.
+            self.usage = None
 
         async def run(self):
             return SimpleNamespace(output={"items": []})
@@ -261,6 +265,8 @@ async def test_analyzer_block_finalizes_with_a_fresh_session(monkeypatch):
         def __init__(self, **kwargs):
             self.id = "block_1"
             self.error = None
+            # Real AnalyzerBlock always sets this in __init__.
+            self.usage = None
             self.kwargs = kwargs
             blocks.append(self)
 
@@ -357,3 +363,108 @@ async def test_missing_prompt_version_is_a_permanent_job_failure(monkeypatch):
     assert outcome.failure is not None
     assert outcome.failure.retryable is False
     assert outcome.failure.error_message == "Prompt version missing"
+
+
+@pytest.mark.asyncio
+async def test_pre_trial_run_mirrors_findings_onto_its_task_version(
+    monkeypatch, tmp_path
+):
+    """An assignment-driven pre-trial audit must land on `task_versions.pre_trial`.
+
+    That column is post-trial's only source for `{pre_trial_context}`, and only
+    the built-in audit ever wrote it -- so every assignment-driven finding was
+    invisible to post-trial no matter how good it was.
+    """
+    run = SimpleNamespace(
+        id="run_pre",
+        org_id="org_1",
+        prompt_version_id="version_pre",
+        triggered_by_user_id="user_1",
+        model="claude-haiku-4-5",
+        reasoning_effort=None,
+        llm_client_type=LLMClientType.SANDBOX.value,
+        scope_id="task_3",
+        run_config={
+            "automatic": True,
+            "stage": "pre_trial",
+            "scope": {"type": "task", "id": "task_3"},
+            "task_id": "task_3",
+            "task_version_id": "task_3-v1",
+        },
+        analyzer_block_id=None,
+        status=JobStatus.QUEUED,
+        output=None,
+        error=None,
+    )
+    version = SimpleNamespace(id="version_pre", content="Audit the source at cwd.")
+    finding = {
+        "source": "pre_trial",
+        "problem_type": "incompleteness",
+        "dimension": "verifier",
+        "file": "tests/verify.py",
+        "line_start": 10,
+        "line_end": 12,
+        "title": "Verifier ignores stderr",
+        "detail": "Only stdout is asserted.",
+        "recommendation": "Assert stderr too.",
+        "tier": "must_fix",
+    }
+    synced: dict = {}
+
+    class FakeSession:
+        async def get(self, model, row_id, **kwargs):
+            if model is AnalyzerRunModel:
+                return run
+            if model is PromptVersionModel:
+                return version
+            return None
+
+    @asynccontextmanager
+    async def get_session():
+        yield FakeSession()
+
+    class FakeBlock:
+        def __init__(self, **kwargs):
+            self.id = "block_pre"
+            self.error = None
+            self.usage = SimpleNamespace(cost_usd=0.146)
+
+        async def run(self):
+            return SimpleNamespace(output={"items": [finding]})
+
+    async def fake_resolve_task_source_location(task_id, task_version_id=None):
+        return "s3://task_3/key", None
+
+    async def fake_resolve_task_directory(task_id, *, task_s3_key, task_path):
+        return tmp_path, None, task_s3_key
+
+    async def fake_sync(task_version_id, *, payload, error, should_store=None):
+        synced["version_id"] = task_version_id
+        synced["payload"] = payload
+        synced["error"] = error
+        return "SUCCESS"
+
+    monkeypatch.setattr(handler, "get_session", get_session)
+    monkeypatch.setattr(handler, "AnalyzerBlock", FakeBlock)
+    monkeypatch.setattr(
+        handler, "resolve_task_source_location", fake_resolve_task_source_location
+    )
+    monkeypatch.setattr(handler, "resolve_task_directory", fake_resolve_task_directory)
+    monkeypatch.setattr(handler, "sync_pre_trial_to_task_version", fake_sync)
+
+    await handler.run_analyzer_block_job(run.id)
+
+    assert run.status == JobStatus.SUCCESS
+    # Pinned to the version the run audited, not the task's current version.
+    assert synced["version_id"] == "task_3-v1"
+    assert synced["error"] is None
+    items = synced["payload"]["items"]
+    assert len(items) == 1
+    assert items[0]["title"] == "Verifier ignores stderr"
+    # build_pre_trial_payload computes the stable id the exploited-aggregation
+    # step later matches on; without it every item is unlinkable.
+    assert items[0]["id"]
+    # The audit's spend rides on the payload: analysis_costs has no version
+    # reference, so this is the only place it can be attached to the version.
+    assert synced["payload"]["cost_usd"] == 0.146
+    assert synced["payload"]["block_id"] == "block_pre"

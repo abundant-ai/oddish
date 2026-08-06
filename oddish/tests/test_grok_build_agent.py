@@ -34,6 +34,7 @@ def test_build_config_toml_defaults_to_responses_backend(tmp_path):
     config = agent.build_config_toml()
     assert 'api_backend = "responses"' in config
     assert "chat_completions" not in config
+    assert config.count("context_window = 256000") == 2
 
 
 def test_build_config_toml_applies_api_backend_override(tmp_path):
@@ -49,6 +50,25 @@ def test_build_config_toml_applies_api_backend_override(tmp_path):
     assert 'api_backend = "responses"' not in config
     # The requested model still routes through, untouched by the rewrite.
     assert "v9-stickynote" in config
+
+
+@pytest.mark.parametrize("value", ["500000", 500000.0, 5e5])
+def test_build_config_toml_applies_context_window_override(tmp_path, value):
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path,
+        model_name="xai/v9m-0804-row11-45p2m-api",
+        context_window=value,
+    )
+    parsed = tomllib.loads(agent.build_config_toml())
+
+    for table in ("v9m-0804-row11-45p2m-api", "grok-build"):
+        assert parsed["model"][table]["context_window"] == 500000
+
+
+@pytest.mark.parametrize("value", ["invalid", "0", -1, 500000.5, True])
+def test_invalid_context_window_rejected(tmp_path, value):
+    with pytest.raises(ValueError, match="context_window"):
+        OddishGrokBuild(logs_dir=tmp_path, context_window=value)
 
 
 def test_invalid_api_backend_rejected(tmp_path):
@@ -161,11 +181,11 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
     # the rate limit because xAI's buckets refill. One resume arm per fallback
     # variant, so the resume replays whichever flag set actually ran.
     assert (
-        "grep -Eqi '(idle timeout|rate limit|rate_limit|too many requests|429)'"
+        f"grep -Eqi {grok_build_module._RESUMABLE_ERROR_PATTERN}"  # noqa: SLF001
         in command
     )
     assert command.count("grok -c -p") == 6
-    assert "resumes -lt 3" in command
+    assert f"resumes -lt {grok_build_module._MAX_RESUMES}" in command  # noqa: SLF001
     # The resume appends to the streamed event log and re-sends a short inline
     # continuation, never the staged instruction.
     assert command.count(">>/logs/agent/grok-build.json") == 6
@@ -306,9 +326,9 @@ async def test_shell_resumes_rate_limit(tmp_path, monkeypatch):
     assert "delay=0;" in command
     rc, calls, _ = _run_in_shell(command, tmp_path, _RATE_LIMIT_STUB)
     assert rc != 0
-    # Initial arm + the three bounded resumes; a stub that is always limited
+    # Initial arm + the bounded resumes; a stub that is always limited
     # exhausts the budget rather than looping forever.
-    assert len(calls) == 4
+    assert len(calls) == 1 + grok_build_module._MAX_RESUMES  # noqa: SLF001
 
 
 @pytest.mark.asyncio

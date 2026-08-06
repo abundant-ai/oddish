@@ -22,6 +22,7 @@ from harbor.models.trial.config import (  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.agents.cursor_cli import OddishCursorCli  # noqa: E402
 from oddish.workers.agents.grok_build import OddishGrokBuild  # noqa: E402
 from oddish.workers.agents.grok_build_trajectory import (  # noqa: E402
     convert_grok_build_json_text_to_trajectory,
@@ -216,7 +217,10 @@ def test_compose_transport_drops_unconsumed_openai_route_for_cursor(tmp_path):
         match="does not consume",
     ):
         restricted_network_profile_for_config(
-            HarborAgentConfig(name="cursor-cli", model_name="openai/gpt-5"),
+            HarborAgentConfig(
+                import_path="oddish.workers.agents.cursor_cli:OddishCursorCli",
+                model_name="openai/gpt-5",
+            ),
             resolved_env={"OPENAI_BASE_URL": "https://azure-openai.test/v1"},
         )
 
@@ -702,10 +706,57 @@ def test_restricted_cursor_gets_transport_hosts_and_web_hardening(tmp_path):
 
     assert agent_config.extra_allowed_hosts == []
     assert getattr(agent_config, RUNTIME_ALLOWED_HOSTS_ATTR) == ("*.cursor.sh",)
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS"] == "1"
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_ALLOW_WEB_TOOLS"] == "0"
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_NETWORK_DEFAULT"] == "allow"
-    assert agent_config.env["CURSOR_FORCED_SHELL_EGRESS_WRITABLE_PATHS"] == "/"
+    assert agent_config.import_path == (
+        "oddish.workers.agents.cursor_cli:OddishCursorCli"
+    )
+    assert agent_config.kwargs["disable_web_tools"] is True
+    assert not {
+        key for key in agent_config.env if key.startswith("CURSOR_FORCED_SHELL_EGRESS")
+    }
+    agent = OddishCursorCli(
+        logs_dir=tmp_path,
+        model_name="cursor/composer",
+        **agent_config.kwargs,
+    )
+    assert agent.build_cli_flags() == (
+        "--exclude-tools web_search_tool_call "
+        "--exclude-tools web_fetch_tool_call"
+    )
+
+
+@pytest.mark.parametrize("shape", ["public-compose", "restricted-kube"])
+def test_cursor_wrapper_does_not_touch_public_or_kube_trials(tmp_path, shape):
+    if shape == "public-compose":
+        task_path = _write_network_policy_task(
+            tmp_path,
+            environment_mode="public",
+            agent_mode="public",
+            compose=True,
+        )
+    else:
+        task_path = _write_network_policy_task(tmp_path, compose=True)
+        chart = task_path / "environment" / "chart"
+        chart.mkdir()
+        (chart / "Chart.yaml").write_text(
+            "apiVersion: v2\nname: test\nversion: 0.1.0\n",
+            encoding="utf-8",
+        )
+
+    agent_config = HarborAgentConfig(
+        name="cursor-cli",
+        model_name="cursor/composer",
+    )
+    profile = harbor_runner._apply_restricted_agent_network_defaults(
+        task_path=task_path,
+        environment_config=HarborEnvironmentConfig(type=EnvironmentType.DAYTONA),
+        agent_config=agent_config,
+    )
+
+    assert profile is None
+    assert agent_config.name == "cursor-cli"
+    assert agent_config.import_path is None
+    assert agent_config.kwargs == {}
+    assert agent_config.env == {}
 
 
 def test_restricted_cursor_does_not_allow_underlying_model_provider(tmp_path):
@@ -1238,6 +1289,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1314,12 +1366,13 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
         has_trajectory=True,
     )
 
-    asyncio.run(
+    stored = asyncio.run(
         trial_handler._store_trial_results(
             trial_id="trial-1",
             outcome=outcome,
             trial_s3_key="tasks/task-1/trials/trial-1/",
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1330,6 +1383,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
     assert trial.total_steps == 7
     assert trial.cost_usd == 0.12
     assert trial.has_trajectory is True
+    assert stored == (True, True)
 
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
@@ -1396,6 +1450,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1433,9 +1488,13 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     )
     original_finished_at = trial.finished_at
 
+    class _Result:
+        def one_or_none(self):
+            return trial_handler.WorkerJobStatus.CANCELLED, None
+
     class _Session:
-        async def get(self, model, obj_id):
-            return None
+        async def execute(self, _query):
+            return _Result()
 
     @asynccontextmanager
     async def _fake_trial_session(
@@ -1454,12 +1513,15 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
         job_dir=None,
     )
 
-    asyncio.run(
+    stored = asyncio.run(
         trial_handler._store_trial_results(
             trial_id="trial-1",
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            worker_id="worker-1",
+            worker_job_id="job-1",
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -1467,6 +1529,310 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     assert trial.harbor_stage == "cancelled"
     assert trial.error_message == "Cancelled by user"
     assert trial.finished_at is original_finished_at
+    assert stored == (True, False)
+
+
+def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
+    finished_at = object()
+    cancelled_result = {"state": "cancelled"}
+    cancelled_analysis = {"state": "cancelled"}
+    trial = SimpleNamespace(
+        id="trial-1",
+        task_id="task-1",
+        model="gpt-5",
+        agent="codex",
+        status=trial_handler.TrialStatus.FAILED,
+        attempts=1,
+        max_attempts=1,
+        error_message="Cancelled because quota was reached",
+        harbor_stage="cancelled",
+        reward=None,
+        result=cancelled_result,
+        analysis=cancelled_analysis,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        cache_write_tokens=None,
+        output_tokens=None,
+        cost_usd=0.25,
+        llm_key_hash=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id=None,
+        current_queue_slot=None,
+        heartbeat_at=None,
+        finished_at=finished_at,
+        superseded_by_trial_id=None,
+        deleted_at=None,
+    )
+
+    @asynccontextmanager
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
+        yield SimpleNamespace(), trial
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        trial_handler,
+        "trial_llm_key_hash",
+        lambda *_args: "settled-key-hash",
+    )
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        input_tokens=100,
+        cache_tokens=25,
+        cache_write_tokens=10,
+        output_tokens=50,
+        cost_usd=0.12,
+        has_trajectory=True,
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key="tasks/task-1/trials/trial-1/",
+            execution_error=None,
+            worker_id="worker-1",
+            worker_job_id="job-1",
+            trial_attempt=trial.attempts,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.FAILED
+    assert trial.harbor_stage == "cancelled"
+    assert trial.finished_at is finished_at
+    assert trial.reward is None
+    assert trial.result is cancelled_result
+    assert trial.analysis is cancelled_analysis
+    assert trial.harbor_result_path is None
+    assert trial.trial_s3_key is None
+    assert trial.input_tokens == 100
+    assert trial.cache_tokens == 25
+    assert trial.cache_write_tokens == 10
+    assert trial.output_tokens == 50
+    assert trial.cost_usd == 0.25
+    assert trial.llm_key_hash == "settled-key-hash"
+    assert stored == (True, False)
+
+
+def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
+    trial = SimpleNamespace(
+        id="trial-1",
+        attempts=2,
+        finished_at=object(),
+        superseded_by_trial_id=None,
+        input_tokens=7,
+        cost_usd=0.25,
+        llm_key_hash="current-key",
+    )
+
+    @asynccontextmanager
+    async def _fake_trial_session(*_args, **_kwargs):
+        yield SimpleNamespace(), trial
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=None,
+        job_dir=None,
+        input_tokens=100,
+        cost_usd=0.12,
+    )
+
+    stored = asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key=None,
+            execution_error=None,
+            trial_attempt=1,
+        )
+    )
+
+    assert stored == (True, False)
+    assert (trial.input_tokens, trial.cost_usd, trial.llm_key_hash) == (
+        7,
+        0.25,
+        "current-key",
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
+    trial = SimpleNamespace(
+        id="trial-1",
+        task_id="task-1",
+        status=trial_handler.TrialStatus.FAILED,
+        harbor_stage="cancelled",
+    )
+    calls = []
+
+    class _Session:
+        async def scalar(self, _stmt):
+            return "task-1"
+
+        async def get(self, model, _obj_id, with_for_update=False):
+            assert with_for_update is True
+            if model is trial_handler.TaskModel:
+                return SimpleNamespace(status=trial_handler.TaskStatus.RUNNING)
+            assert model is trial_handler.TrialModel
+            return trial
+
+    @asynccontextmanager
+    async def _fake_get_session():
+        yield _Session()
+
+    async def _called(*_args, **_kwargs):
+        calls.append(True)
+
+    monkeypatch.setattr(trial_handler, "get_session", _fake_get_session)
+    monkeypatch.setattr(
+        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _called
+    )
+    monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _called)
+    monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _called)
+
+    await trial_handler._run_post_trial_hooks("trial-1")
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
+    trial = SimpleNamespace(
+        id="trial-1",
+        task_id="task-1",
+        experiment_id="exp-1",
+        org_id="org-1",
+        billed_user_id="user-1",
+        status=trial_handler.TrialStatus.SUCCESS,
+        harbor_stage="completed",
+        # An LLM agent: baselines take the skip path (test_qa_skips_baselines).
+        agent="claude-code",
+    )
+    calls = []
+
+    class _Session:
+        async def scalar(self, _stmt):
+            return "task-1"
+
+        @asynccontextmanager
+        async def begin_nested(self):
+            yield
+
+        async def get(self, model, obj_id, with_for_update=False):
+            assert with_for_update is True
+            if model is trial_handler.TaskModel:
+                assert obj_id == "task-1"
+                return SimpleNamespace(status=trial_handler.TaskStatus.RUNNING)
+            assert model is trial_handler.TrialModel
+            assert obj_id == "trial-1"
+            return trial
+
+    @asynccontextmanager
+    async def _fake_get_session():
+        yield _Session()
+
+    async def _assignment(*_args, **_kwargs):
+        calls.append("assignment")
+
+    async def _gate(*_args, **_kwargs):
+        calls.append("gate")
+
+    async def _qa(*_args, **_kwargs):
+        calls.append("qa")
+        return False
+
+    monkeypatch.setattr(trial_handler, "get_session", _fake_get_session)
+    monkeypatch.setattr(
+        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _assignment
+    )
+    monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _gate)
+    monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _qa)
+
+    await trial_handler._run_post_trial_hooks("trial-1")
+
+    assert calls == ["assignment", "gate", "qa"]
+
+
+@pytest.mark.asyncio
+async def test_finish_trial_settlement_enforces_before_post_hooks(monkeypatch):
+    calls = []
+
+    async def _enforce(**_kwargs):
+        calls.append("quota")
+        await _kwargs["after_check"]()
+        calls.append("teardown")
+
+    async def _post_hooks(_trial_id):
+        calls.append("post")
+
+    monkeypatch.setattr(
+        "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
+    )
+    monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
+
+    await trial_handler._finish_trial_settlement(
+        trial_id="trial-1",
+        org_id="org-1",
+        billed_user_id="user-1",
+        run_post_trial_hooks=True,
+    )
+
+    assert calls == ["quota", "post", "teardown"]
+
+
+@pytest.mark.asyncio
+async def test_finish_trial_settlement_completes_when_caller_is_cancelled(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def _enforce(**_kwargs):
+        calls.append("quota")
+        await _kwargs["after_check"]()
+        started.set()
+        await release.wait()
+        calls.append("teardown")
+
+    async def _post_hooks(_trial_id):
+        calls.append("post")
+
+    monkeypatch.setattr(
+        "oddish.core.quota_enforcement.enforce_trial_quotas_until_checked", _enforce
+    )
+    monkeypatch.setattr(trial_handler, "_run_post_trial_hooks", _post_hooks)
+
+    settlement = asyncio.create_task(
+        trial_handler._finish_trial_settlement(
+            trial_id="trial-1",
+            org_id="org-1",
+            billed_user_id="user-1",
+            run_post_trial_hooks=True,
+        )
+    )
+    await started.wait()
+    settlement.cancel()
+    await asyncio.sleep(0)
+    assert not settlement.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await settlement
+
+    assert calls == ["quota", "post", "teardown"]
 
 
 def test_run_harbor_trial_async_skips_temp_root_preflight_without_task_patch(
@@ -2123,6 +2489,39 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
     assert "XAI_API_KEY" not in (agent_config.env or {})
     assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
     assert "OPENAI_API_KEY" not in (agent_config.env or {})
+
+
+def test_build_agent_config_uses_oddish_opencode_wrapper(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="opencode",
+        model="openrouter/tencent/hy3",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path == "oddish.workers.agents.opencode:OddishOpenCode"
+    )
+    assert agent_config.model_name == "openrouter/tencent/hy3"
+
+
+def test_build_agent_config_preserves_custom_opencode_import(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="opencode",
+        model="openrouter/tencent/hy3",
+        raw_harbor_config={
+            "agent_config": {
+                "name": "opencode",
+                "import_path": "custom.module:CustomOpenCode",
+            }
+        },
+    )
+
+    assert agent_config.import_path == "custom.module:CustomOpenCode"
 
 
 def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
@@ -3105,6 +3504,7 @@ def test_store_trial_results_skips_retry_for_non_retryable_exception(monkeypatch
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -3138,6 +3538,7 @@ def test_store_trial_results_still_retries_unknown_exception(monkeypatch):
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -3170,6 +3571,7 @@ def test_store_trial_results_retries_when_exception_type_is_missing(monkeypatch)
             outcome=outcome,
             trial_s3_key=None,
             execution_error=None,
+            trial_attempt=trial.attempts,
         )
     )
 
@@ -3946,3 +4348,37 @@ def test_claude_code_environment_hosts_follow_routed_base_url():
 
     assert "api.z.ai" in hosts
     assert "api.anthropic.com" not in hosts
+
+
+def test_opencode_environment_hosts_span_install_and_model():
+    """Regression: closed-internet opencode trials died at nvm DNS with 0 tokens.
+
+    opencode installs during agent SETUP, which runs under the environment
+    baseline -- an agent-phase allowlist can never cover it (observed end-to-end
+    on the PR-1030 preview: build-an-evm-assembler-6c7567f6-1059/-1060 died at
+    ``curl: (6) Could not resolve host: raw.githubusercontent.com``). The
+    environment-baseline hosts must cover both the install bootstrap chain and
+    the model transport, exactly like the claude-code arm.
+    """
+    hosts = harbor_runner._opencode_environment_hosts(
+        HarborAgentConfig(name="opencode", model_name="openrouter/tencent/hy3")
+    )
+
+    assert "raw.githubusercontent.com" in hosts  # nvm install.sh
+    assert "registry.npmjs.org" in hosts  # opencode-ai package
+    assert "nodejs.org" in hosts  # Node runtime
+    assert "openrouter.ai" in hosts  # ...and inference still works
+
+
+def test_opencode_environment_hosts_follow_custom_base_url():
+    """A trial pinning ``OPENROUTER_BASE_URL`` allowlists that host instead."""
+    hosts = harbor_runner._opencode_environment_hosts(
+        HarborAgentConfig(
+            name="opencode",
+            model_name="openrouter/tencent/hy3",
+            env={"OPENROUTER_BASE_URL": "https://gateway.internal.example/api"},
+        )
+    )
+
+    assert "gateway.internal.example" in hosts
+    assert "raw.githubusercontent.com" in hosts

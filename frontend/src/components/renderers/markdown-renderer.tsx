@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -18,9 +18,88 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useIsDark } from "./use-is-dark";
+import {
+  lineRangesIntersect,
+  type LineRange,
+} from "@/lib/line-range";
 
 interface MarkdownRendererProps {
   content: string;
+  /**
+   * Identity of the rendered document. Keys the once-only deep-link scroll:
+   * a new file re-arms it, while a same-file content update (e.g. loading
+   * the untruncated version) must not scroll the reader back to the anchor.
+   * Callers without a file identity fall back to keying on content.
+   */
+  fileName?: string;
+  /**
+   * Source-line range to highlight (the ``?lines=L12-L20`` anchor). The
+   * grammar is source lines of the .md file — the same address the raw
+   * view uses — mapped onto rendered blocks via remark position data.
+   */
+  selectedLines?: LineRange | null;
+  onSelectLines?: (range: LineRange | null) => void;
+}
+
+/** Position payload remark attaches to every node it parsed from source. */
+interface MdNode {
+  position?: {
+    start?: { line?: number; column?: number };
+    end?: { line?: number; column?: number };
+  };
+  properties?: Record<string, unknown>;
+}
+
+function nodeLineRange(node: MdNode | undefined): LineRange | null {
+  const start = node?.position?.start?.line;
+  if (!start) return null;
+  let end = node?.position?.end?.line ?? start;
+  // unist end points are exclusive: an end at column 1 means the block
+  // ended with the previous line's newline (common for lists), so the
+  // block does not actually cover this line. Treating it as covered made
+  // adjacent blocks overlap by one line.
+  if (end > start && node?.position?.end?.column === 1) end -= 1;
+  return { start, end: Math.max(start, end) };
+}
+
+/**
+ * Marks the document root's direct children so ``isRootBlock`` can tell
+ * them apart from nested content at render time (hast nodes carry no
+ * parent pointers). A column-1 heuristic breaks on CommonMark's optional
+ * 1-3 space indent, which would leave validly indented root blocks
+ * without anchors.
+ */
+type HastChild = MdNode & {
+  type?: string;
+  tagName?: string;
+  children?: HastChild[];
+};
+
+function rehypeMarkRootBlocks() {
+  return (tree: { children?: HastChild[] }) => {
+    for (const child of tree.children ?? []) {
+      if (child.type !== "element") continue;
+      child.properties = { ...child.properties, dataMdRoot: "" };
+      // Fenced code anchors on the code element nested inside the root
+      // pre (the pre component just unwraps to its children), so the
+      // mark has to reach through.
+      if (child.tagName === "pre") {
+        for (const nested of child.children ?? []) {
+          if (nested.type === "element" && nested.tagName === "code") {
+            nested.properties = { ...nested.properties, dataMdRoot: "" };
+          }
+        }
+      }
+    }
+  };
+}
+
+/**
+ * Only root-level blocks get anchors; nested content (list items' bodies,
+ * blockquote children) is covered by its parent's range.
+ */
+function isRootBlock(node: MdNode | undefined): boolean {
+  return node?.properties?.dataMdRoot !== undefined;
 }
 
 const LANGUAGE_MAP: Record<string, string> = {
@@ -150,47 +229,182 @@ function CodeBlock({
   );
 }
 
-export function MarkdownRenderer({ content }: MarkdownRendererProps) {
+export function MarkdownRenderer({
+  content,
+  fileName,
+  selectedLines,
+  onSelectLines,
+}: MarkdownRendererProps) {
+  const anchorsEnabled = onSelectLines !== undefined || selectedLines != null;
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Scroll the deep-linked range into view once: find the first block whose
+  // source range intersects the selection. Later clicks must not yank the
+  // viewport — the user is already there.
+  const didScrollRef = useRef(false);
+  // A new document re-arms the once-only scroll, so a deep-linked range in
+  // the next file scrolls into view too. Keyed on the file identity when
+  // the caller provides one — a same-file content update (e.g. loading the
+  // untruncated version) must not re-arm and yank the reader back to the
+  // anchor. Same rule as code-renderer.
+  const scrollKey = fileName ?? content;
+  useEffect(() => {
+    didScrollRef.current = false;
+  }, [scrollKey]);
+  useEffect(() => {
+    if (didScrollRef.current || !selectedLines) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const blocks = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-md-start]")
+    );
+    const target = blocks.find((el) =>
+      lineRangesIntersect(selectedLines, {
+        start: Number(el.dataset.mdStart),
+        end: Number(el.dataset.mdEnd),
+      })
+    );
+    // The one attempt is only consumed when the target actually renders.
+    // Until then the scroll stays armed: the document may still be loading,
+    // or a truncated preview may not reach the range yet — the full
+    // content re-fires this effect via the ``content`` dependency.
+    if (!target) return;
+    didScrollRef.current = true;
+    target.scrollIntoView({ block: "center" });
+  }, [selectedLines, content]);
+
+  const handleBlockClick = (range: LineRange, shiftKey: boolean) => {
+    if (!onSelectLines) return;
+    // A user-driven selection means the user is already looking at the
+    // block — disarm the deep-link scroll so it never yanks the view.
+    didScrollRef.current = true;
+    if (shiftKey && selectedLines) {
+      // Shift-click merges the block into the selection.
+      onSelectLines({
+        start: Math.min(selectedLines.start, range.start),
+        end: Math.max(selectedLines.end, range.end),
+      });
+      return;
+    }
+    // Plain click selects the block; clicking a block that already shows
+    // as selected clears. The clear test matches the highlight test
+    // (intersection, not equality) so a deep-linked partial range inside
+    // a block clears on the first click instead of re-selecting.
+    onSelectLines(
+      lineRangesIntersect(selectedLines ?? null, range) ? null : range
+    );
+  };
+
+  // Wrap a root-level block so it carries its source-line range: a faint
+  // line number in the left gutter (hover-revealed) selects the block, and
+  // the block highlights when the selection intersects it. Non-root nodes
+  // and renderers without the feature wired render unchanged.
+  const anchored = (node: MdNode | undefined, element: React.ReactNode) => {
+    const range = anchorsEnabled ? nodeLineRange(node) : null;
+    if (!range || !isRootBlock(node)) return <>{element}</>;
+    const selected = lineRangesIntersect(selectedLines ?? null, range);
+    return (
+      <div
+        // The wrapper takes over first/last-child duty from the block
+        // elements' own first:mt-0 / last:mb-0 (they're no longer direct
+        // children of the body): the leading gutter button makes every
+        // wrapped element :last-child, so without the higher-specificity
+        // [&:not(:last-child)>p] rule every root paragraph would match its
+        // own last:mb-0 and inter-paragraph spacing would collapse.
+        data-md-start={range.start}
+        data-md-end={range.end}
+        // The first-child rule replaces the heading elements' own
+        // first:mt-0 (they're no longer direct children of the body); it
+        // targets headings only so leading blockquotes/code keep their
+        // normal top margin, same as non-anchored markdown.
+        className={`group/md-block relative [&:first-child>:is(h1,h2,h3,h4,h5,h6)]:mt-0 [&:not(:last-child)>p]:mb-3 ${
+          selected ? "rounded bg-amber-400/15 dark:bg-amber-300/10" : ""
+        }`}
+      >
+        {onSelectLines ? (
+          // The gutter button only renders when selection is wired —
+          // highlight-only usage (selectedLines without onSelectLines)
+          // must not show controls that do nothing.
+          <button
+            type="button"
+            onClick={(event) => handleBlockClick(range, event.shiftKey)}
+            onMouseDown={(event) => {
+              if (event.shiftKey) event.preventDefault();
+            }}
+            className={`absolute -left-8 top-0.5 w-7 select-none pr-1 text-right font-mono text-[10px] leading-6 transition-opacity hover:text-foreground focus-visible:opacity-100 ${
+              selected
+                ? "text-amber-700 opacity-100 dark:text-amber-300"
+                : "text-muted-foreground/50 opacity-0 group-hover/md-block:opacity-100"
+            }`}
+            title={`Select lines ${range.start}${range.end !== range.start ? `-${range.end}` : ""}`}
+            aria-label={`Select source lines ${range.start} to ${range.end}`}
+          >
+            {range.start}
+          </button>
+        ) : null}
+        {element}
+      </div>
+    );
+  };
+
   return (
-    <div className="markdown-body max-w-none p-4 text-sm">
+    <div
+      ref={containerRef}
+      className={`markdown-body max-w-none p-4 text-sm ${anchorsEnabled ? "pl-10" : ""}`}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkBreaks]}
+        rehypePlugins={[rehypeMarkRootBlocks]}
         components={{
-          h1: ({ children }) => (
-            <h1 className="mb-2 mt-5 border-b border-border pb-1 text-xl font-semibold text-foreground first:mt-0">
-              {children}
-            </h1>
-          ),
-          h2: ({ children }) => (
-            <h2 className="mb-2 mt-5 border-b border-border/50 pb-1 text-lg font-semibold text-foreground first:mt-0">
-              {children}
-            </h2>
-          ),
-          h3: ({ children }) => (
-            <h3 className="mb-1.5 mt-4 text-base font-semibold text-foreground first:mt-0">
-              {children}
-            </h3>
-          ),
-          h4: ({ children }) => (
-            <h4 className="mb-1.5 mt-3 text-sm font-semibold text-foreground first:mt-0">
-              {children}
-            </h4>
-          ),
-          h5: ({ children }) => (
-            <h5 className="mb-1.5 mt-3 text-xs font-semibold text-foreground first:mt-0">
-              {children}
-            </h5>
-          ),
-          h6: ({ children }) => (
-            <h6 className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-0">
-              {children}
-            </h6>
-          ),
-          p: ({ children }) => (
-            <p className="mb-3 leading-6 text-foreground/90 last:mb-0">
-              {children}
-            </p>
-          ),
+          h1: ({ node, children }) =>
+            anchored(
+              node,
+              <h1 className="mb-2 mt-5 border-b border-border pb-1 text-xl font-semibold text-foreground first:mt-0">
+                {children}
+              </h1>
+            ),
+          h2: ({ node, children }) =>
+            anchored(
+              node,
+              <h2 className="mb-2 mt-5 border-b border-border/50 pb-1 text-lg font-semibold text-foreground first:mt-0">
+                {children}
+              </h2>
+            ),
+          h3: ({ node, children }) =>
+            anchored(
+              node,
+              <h3 className="mb-1.5 mt-4 text-base font-semibold text-foreground first:mt-0">
+                {children}
+              </h3>
+            ),
+          h4: ({ node, children }) =>
+            anchored(
+              node,
+              <h4 className="mb-1.5 mt-3 text-sm font-semibold text-foreground first:mt-0">
+                {children}
+              </h4>
+            ),
+          h5: ({ node, children }) =>
+            anchored(
+              node,
+              <h5 className="mb-1.5 mt-3 text-xs font-semibold text-foreground first:mt-0">
+                {children}
+              </h5>
+            ),
+          h6: ({ node, children }) =>
+            anchored(
+              node,
+              <h6 className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-0">
+                {children}
+              </h6>
+            ),
+          p: ({ node, children }) =>
+            anchored(
+              node,
+              <p className="mb-3 leading-6 text-foreground/90 last:mb-0">
+                {children}
+              </p>
+            ),
           a: ({ href, children }) => (
             <a
               href={href}
@@ -201,16 +415,20 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               {children}
             </a>
           ),
-          ul: ({ children }) => (
-            <ul className="mb-3 ml-5 list-outside list-disc space-y-1 text-foreground/90">
-              {children}
-            </ul>
-          ),
-          ol: ({ children }) => (
-            <ol className="mb-3 ml-5 list-outside list-decimal space-y-1 text-foreground/90">
-              {children}
-            </ol>
-          ),
+          ul: ({ node, children }) =>
+            anchored(
+              node,
+              <ul className="mb-3 ml-5 list-outside list-disc space-y-1 text-foreground/90">
+                {children}
+              </ul>
+            ),
+          ol: ({ node, children }) =>
+            anchored(
+              node,
+              <ol className="mb-3 ml-5 list-outside list-decimal space-y-1 text-foreground/90">
+                {children}
+              </ol>
+            ),
           li: ({ children, className }) => {
             const isTaskItem = className?.includes("task-list-item");
             return (
@@ -240,13 +458,16 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               />
             );
           },
-          blockquote: ({ children }) => (
-            <blockquote className="my-3 rounded-r border-l-2 border-primary/50 bg-muted/20 py-0.5 pl-3 italic text-muted-foreground">
-              {children}
-            </blockquote>
-          ),
-          hr: () => <hr className="my-6 border-border" />,
-          code: ({ className, children }) => {
+          blockquote: ({ node, children }) =>
+            anchored(
+              node,
+              <blockquote className="my-3 rounded-r border-l-2 border-primary/50 bg-muted/20 py-0.5 pl-3 italic text-muted-foreground">
+                {children}
+              </blockquote>
+            ),
+          hr: ({ node }) =>
+            anchored(node, <hr className="my-6 border-border" />),
+          code: ({ node, className, children }) => {
             const match = /language-(\w+)/.exec(className || "");
             const isInline =
               !className &&
@@ -261,18 +482,21 @@ export function MarkdownRenderer({ content }: MarkdownRendererProps) {
               );
             }
 
-            return (
+            return anchored(
+              node,
               <CodeBlock language={match?.[1] || ""}>
                 {String(children)}
               </CodeBlock>
             );
           },
           pre: ({ children }) => <>{children}</>,
-          table: ({ children }) => (
-            <Table className="my-3 rounded border border-border text-xs">
-              {children}
-            </Table>
-          ),
+          table: ({ node, children }) =>
+            anchored(
+              node,
+              <Table className="my-3 rounded border border-border text-xs">
+                {children}
+              </Table>
+            ),
           thead: ({ children }) => (
             <TableHeader className="border-b border-border bg-muted/50">
               {children}

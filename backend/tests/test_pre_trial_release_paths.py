@@ -37,6 +37,37 @@ async def test_global_flag_skips_registered_synth_before_claim(monkeypatch):
     await qa._run_pre_trial_audit("task1", "job1", ["t1"])
 
 
+@pytest.mark.asyncio
+async def test_org_opt_in_enables_audit_when_global_default_is_off(monkeypatch):
+    """An explicit org opt-in must be able to ENABLE, not just disable.
+
+    ``settings.pre_trial_enabled`` is the default the org check falls back to,
+    not a master switch: the orgs API lets an admin set
+    ``pre_trial_analysis_enabled`` true, and that has to mean something with the
+    default off (which is how prod ships).
+    """
+    claimed: list[str] = []
+
+    async def fake_claim(task_id):
+        claimed.append(task_id)
+        return None
+
+    async def org_says_yes(task_id):
+        return True
+
+    async def fake_synth(task_id, version_id, trial_ids, timeout):  # pragma: no cover
+        raise AssertionError("no claim, so synthesis must not run")
+
+    monkeypatch.setattr(qa.settings, "pre_trial_enabled", False)
+    monkeypatch.setattr(qa, "_pre_trial_synth_fn", fake_synth)
+    monkeypatch.setattr(qa, "_pre_trial_enabled_fn", org_says_yes)
+    monkeypatch.setattr(qa, "_claim_pre_trial_version", fake_claim)
+
+    await qa._run_pre_trial_audit("task1", "job1", ["t1"])
+
+    assert claimed == ["task1"]
+
+
 @pytest.fixture
 def wired(monkeypatch):
     """Wire a claimed version + enabled pre-trial; return the release recorder."""

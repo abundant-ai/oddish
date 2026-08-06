@@ -34,6 +34,7 @@ from oddish.core.endpoints.deletion import (
 from oddish.core.endpoints.qa import (
     backfill_task_analysis_core,
     cancel_task_qa_core,
+    rerun_pre_trial_audit_core,
     rerun_task_qa_core,
 )
 from oddish.core.endpoints.sweep import (
@@ -60,6 +61,7 @@ from oddish.core.endpoints.qa_cost import (
 from oddish.core.endpoints.tasks_query import (
     _build_browse_author_filter,
     _task_freetext_match,
+    browse_experiment_options_core,
     browse_task_facets_core,
     browse_tasks_core,
     get_task_status_core,
@@ -71,9 +73,11 @@ from oddish.core.endpoints.trials import (
     get_trial_by_index_core,
     get_trial_logs_core,
     get_trial_logs_structured_core,
+    get_trial_analysis_log_core,
     get_trial_response_for_org_core,
     get_trial_result_core,
     get_trial_trajectory_core,
+    rerun_trial_analysis_core,
     retry_trial_core,
 )
 
@@ -88,6 +92,7 @@ __all__ = [
     "_reset_task_verdict",
     "_task_freetext_match",
     "backfill_task_analysis_core",
+    "browse_experiment_options_core",
     "browse_task_facets_core",
     "browse_tasks_core",
     "build_task_sweep_response",
@@ -110,6 +115,7 @@ __all__ = [
     "get_trial_logs_core",
     "get_trial_logs_structured_core",
     "get_trial_qa_costs",
+    "get_trial_analysis_log_core",
     "get_trial_response_for_org_core",
     "get_trial_result_core",
     "get_trial_trajectory_core",
@@ -117,7 +123,9 @@ __all__ = [
     "list_experiment_task_shells_core",
     "list_task_versions_core",
     "list_tasks_core",
+    "rerun_pre_trial_audit_core",
     "rerun_task_qa_core",
+    "rerun_trial_analysis_core",
     "replay_has_retryable_failed_trials",
     "retry_trial_core",
     "set_task_default_version_core",

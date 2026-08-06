@@ -45,12 +45,33 @@ async def test_post_trial_classifier_runs_and_stamps_analyzer_block(
     captured = {}
     classifier = TrialClassifier(model="anthropic/test")
 
-    class _FakeProcess:
-        returncode = 0
+    class _FakeStdout:
+        def __init__(self):
+            envelope = {
+                "type": "result",
+                "structured_output": {"classification": "GOOD_SUCCESS"},
+            }
+            self._lines = [json.dumps(envelope).encode() + b"\n"]
 
-        async def communicate(self):
-            envelope = {"structured_output": {"classification": "GOOD_SUCCESS"}}
-            return json.dumps(envelope).encode(), b""
+        async def readline(self):
+            return self._lines.pop(0) if self._lines else b""
+
+    class _FakeStderr:
+        async def read(self):
+            return b""
+
+    class _FakeProcess:
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self.stderr = _FakeStderr()
+            self.returncode = None
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            pass
 
     async def fake_exec(*command, **kwargs):
         captured["command"] = list(command)
@@ -794,17 +815,39 @@ async def test_block_provisions_the_cli_backend_from_config(monkeypatch, tmp_pat
     """CLAUDE_CLI is provisioned by the block like SANDBOX and API are. No
     caller-supplied factory, no context smuggled in through a closure."""
     from oddish.blocks.analyzer import claude_cli_client
-    from oddish.blocks.analyzer.claude_cli_client import CliConfig, parse_cli_envelope
+    from oddish.blocks.analyzer.claude_cli_client import (
+        CliConfig,
+        parse_stream_json_result,
+    )
 
     saved = _patch_persistence(monkeypatch)
+    envelope = json.dumps(
+        {"type": "result", "structured_output": {"classification": "GOOD_SUCCESS"}}
+    )
+
+    class _FakeStdout:
+        def __init__(self):
+            self._lines = [envelope.encode() + b"\n"]
+
+        async def readline(self):
+            return self._lines.pop(0) if self._lines else b""
+
+    class _FakeStderr:
+        async def read(self):
+            return b""
 
     class _FakeProcess:
-        returncode = 0
+        def __init__(self):
+            self.stdout = _FakeStdout()
+            self.stderr = _FakeStderr()
+            self.returncode = None
 
-        async def communicate(self):
-            return (
-                json.dumps({"structured_output": {"classification": "GOOD_SUCCESS"}})
-            ).encode(), b""
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            pass
 
     async def _exec(*command, **kwargs):
         return _FakeProcess()
@@ -817,7 +860,7 @@ async def test_block_provisions_the_cli_backend_from_config(monkeypatch, tmp_pat
         input=AnalyzerInput(input={}),
         prompt="classify",
         cli_config=CliConfig(cwd=tmp_path),
-        output_transform=parse_cli_envelope,
+        output_transform=parse_stream_json_result,
     )
     output = await block.run()
 

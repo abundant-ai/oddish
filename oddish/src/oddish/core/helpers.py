@@ -469,6 +469,8 @@ def build_trial_response(
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
+        analysis_started_at=trial.analysis_started_at,
+        analysis_finished_at=trial.analysis_finished_at,
         superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
@@ -547,6 +549,8 @@ def build_compact_trial_response(
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
+        analysis_started_at=trial.analysis_started_at,
+        analysis_finished_at=trial.analysis_finished_at,
         superseded_by_trial_id=trial.superseded_by_trial_id,
         jobs=list(jobs or []),
         queue_info=queue_info,
@@ -1110,6 +1114,8 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.is_probe,
     TrialModel.analysis,
     TrialModel.analysis_status,
+    TrialModel.analysis_started_at,
+    TrialModel.analysis_finished_at,
     TrialModel.input_tokens,
     TrialModel.cache_tokens,
     TrialModel.cache_write_tokens,
@@ -1170,6 +1176,8 @@ def build_slim_trial_response(
         is_billed=trial.billed_user_id is not None,
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
+        analysis_started_at=trial.analysis_started_at,
+        analysis_finished_at=trial.analysis_finished_at,
         superseded_by_trial_id=trial.superseded_by_trial_id,
         created_at=trial.created_at,
         started_at=trial.started_at,
@@ -1452,7 +1460,18 @@ async def cancel_job_by_worker(
     return await backend.teardown(external_id)
 
 
-async def terminate_run_harvest(result: dict) -> int:
+class HarvestTerminationError(RuntimeError):
+    def __init__(
+        self,
+        modal_function_call_ids: list[str],
+        worker_targets: list[tuple[str, str]],
+    ) -> None:
+        super().__init__("Remote teardown failed")
+        self.modal_function_call_ids = modal_function_call_ids
+        self.worker_targets = worker_targets
+
+
+async def terminate_run_harvest(result: dict, *, strict: bool = False) -> int:
     """Terminate the remote handles a cancel/delete core harvested.
 
     Cores that cancel or tombstone runs RETURN ``modal_function_call_ids`` and
@@ -1472,16 +1491,34 @@ async def terminate_run_harvest(result: dict) -> int:
         for fc_id in result.pop("modal_function_call_ids", [])
         if fc_id
     ]
-    modal_cancelled = await ModalDispatcher().cancel(handles) if handles else 0
-
     targets = result.pop("worker_targets", [])
-    if targets:
-        await asyncio.gather(
-            *(
-                cancel_job_by_worker(provider, external_id)
-                for provider, external_id in targets
-            )
+    if strict:
+        dispatcher = ModalDispatcher()
+        modal_results = await asyncio.gather(
+            *(dispatcher.cancel([handle]) for handle in handles),
+            return_exceptions=True,
         )
+        target_results = await asyncio.gather(
+            *(cancel_job_by_worker(*target) for target in targets),
+            return_exceptions=True,
+        )
+        failed_modal_ids = [
+            handle.id
+            for handle, outcome in zip(handles, modal_results, strict=True)
+            if outcome != 1
+        ]
+        failed_targets = [
+            target
+            for target, outcome in zip(targets, target_results, strict=True)
+            if outcome is not True
+        ]
+        if failed_modal_ids or failed_targets:
+            raise HarvestTerminationError(failed_modal_ids, failed_targets)
+        return len(handles)
+
+    modal_cancelled = await ModalDispatcher().cancel(handles) if handles else 0
+    if targets:
+        await asyncio.gather(*(cancel_job_by_worker(*target) for target in targets))
     return modal_cancelled
 
 

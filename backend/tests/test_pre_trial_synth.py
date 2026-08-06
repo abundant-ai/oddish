@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -78,6 +80,10 @@ class _FakeAnalyzerBlock:
 
     def __init__(self, **kwargs) -> None:
         type(self).last_kwargs = kwargs
+        # Real AnalyzerBlock sets both in __init__; the synth reads them to
+        # attach the audit's spend to the version it audited.
+        self.id = "block_pre_synth"
+        self.usage = SimpleNamespace(cost_usd=0.146)
 
     async def run(self) -> _FakeAnalyzerResult:
         return _FakeAnalyzerResult(
@@ -107,11 +113,11 @@ async def _fake_session_ctx():
 
 @pytest.mark.asyncio
 async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
-    """Pure test of synthesize_task_pre_trial's two load-bearing behaviors: it
+    """Pure test of synthesize_task_pre_trial's load-bearing behaviors: it
     substitutes {task_id}/{trial_ids} into the DB-registry prompt template
-    before handing it to AnalyzerBlock, and it maps `result.output["items"]`
-    into a list of `ActionItem`. The block/client/session are all faked --
-    no real sandbox, LLM, or DB."""
+    before handing it to AnalyzerBlock, maps `result.output["items"]` into a
+    list of `ActionItem`, and carries the block's spend/id back out. The
+    block/client/session are all faked -- no real sandbox, LLM, or DB."""
 
     async def fake_resolve_prompt_core(session, kind, **scope):
         assert kind == "QA_PRE_TRIAL"
@@ -133,7 +139,7 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     monkeypatch.setattr(mod, "AnalyzerBlock", _FakeAnalyzerBlock)
     _wire_task_source(monkeypatch)
 
-    items = await synthesize_task_pre_trial(
+    result = await synthesize_task_pre_trial(
         "task_xyz", "task_xyz-v1", ["t1", "t2"], timeout=30.0
     )
 
@@ -155,10 +161,20 @@ async def test_synth_substitutes_prompt_and_maps_action_items(monkeypatch):
     assert (
         str(_FakeAnalyzerBlock.last_kwargs["cli_config"].cwd) == "/fake/task_xyz/path"
     )
+    output_schema = json.loads(
+        _FakeAnalyzerBlock.last_kwargs["cli_config"].json_schema
+    )
+    assert output_schema["type"] == "object"
+    assert "items" in output_schema["properties"]
 
-    assert len(items) == 1
-    assert items[0].file == "verifier.py"
-    assert items[0].line_start == 3
+    assert len(result.items) == 1
+    assert result.items[0].file == "verifier.py"
+    assert result.items[0].line_start == 3
+    # The audit's spend and the handle for its raw S3 output ride back with the
+    # findings -- analysis_costs rows carry no version reference, so this is the
+    # only place they can be tied to the version being audited.
+    assert result.cost_usd == 0.146
+    assert result.block_id == "block_pre_synth"
 
 
 @pytest.mark.asyncio
@@ -179,8 +195,10 @@ async def test_synth_maps_empty_items_to_empty_list(monkeypatch):
     monkeypatch.setattr(mod, "AnalyzerBlock", _EmptyAnalyzerBlock)
     _wire_task_source(monkeypatch)
 
-    items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=30.0)
-    assert items == []
+    result = await synthesize_task_pre_trial(
+        "task_xyz", "task_xyz-v1", [], timeout=30.0
+    )
+    assert result.items == []
 
 
 @pytest.mark.asyncio
@@ -209,8 +227,10 @@ async def test_synth_imposes_no_outer_deadline_around_the_block(monkeypatch):
     monkeypatch.setattr(mod, "AnalyzerBlock", _SlowAnalyzerBlock)
     _wire_task_source(monkeypatch)
 
-    items = await synthesize_task_pre_trial("task_xyz", "task_xyz-v1", [], timeout=0.01)
-    assert items == []
+    result = await synthesize_task_pre_trial(
+        "task_xyz", "task_xyz-v1", [], timeout=0.01
+    )
+    assert result.items == []
 
 
 @pytest.mark.asyncio

@@ -30,11 +30,16 @@ async def test_seed_is_idempotent_and_populates_content():
         content = await get_latest_prompt_content(
             session, PromptKind.QA_PRE_TRIAL.value
         )
-        assert "VERIFIER COMPLETENESS" in content
-        assert 'source="pre_trial"' in content
-        assert '`dimension="oracle"`' in content
-        assert "`incompleteness`" in content
-        assert "`must_fix`" in content
+        # The taxonomy has to be taught in the JSON spellings the model must
+        # emit. Teaching it as prose headings instead ("SEVERITY", "VERIFIER
+        # COMPLETENESS") is what produced items keyed `severity` and
+        # dimension="verifier_completeness" -- each one failing a whole audit.
+        assert '"source": "pre_trial"' in content
+        assert '"dimension": "verifier"' in content
+        assert '"tier": "must_fix"' in content
+        assert '`"oracle"`' in content
+        assert '`"incompleteness"`' in content
+        assert '`"should_fix"`' in content
 
         post_trial = await get_latest_prompt_content(
             session, PromptKind.QA_POST_TRIAL.value
@@ -42,7 +47,7 @@ async def test_seed_is_idempotent_and_populates_content():
         from oddish.analyze.classifier import _CLASSIFY_PROMPT
 
         assert post_trial == _CLASSIFY_PROMPT
-        assert "exactly\none entry per item" in post_trial
+        assert "exactly one entry per pre-trial action item" in post_trial
         assert '"action_items": [' in post_trial
         assert '"exploitation": [' in post_trial
 
@@ -111,15 +116,7 @@ async def test_seed_upgrades_known_pre_trial_v1_but_not_operator_edits():
     # content hash, not a loose prefix that could overwrite an operator edit.
     from pathlib import Path
 
-    v1 = (
-        Path(__file__).parents[2]
-        / "oddish"
-        / "src"
-        / "oddish"
-        / "analyze"
-        / "prompts"
-        / "pre_trial_qa.v1.txt"
-    ).read_text()
+    v1 = (Path(__file__).parent / "fixtures" / "pre_trial_qa_v1.txt").read_text()
 
     async with get_session() as session:
         await session.execute(
@@ -136,7 +133,7 @@ async def test_seed_upgrades_known_pre_trial_v1_but_not_operator_edits():
     async with get_session() as session:
         content = await get_latest_prompt_content(session, kind)
         assert content == PROMPT_SEEDS[kind][1]
-        assert 'source="pre_trial"' in content
+        assert '"source": "pre_trial"' in content
 
         await set_prompt_core(session, kind=kind, content="my taxonomy override")
         await session.commit()
