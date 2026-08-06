@@ -1050,6 +1050,60 @@ def test_clip_trajectory_steps_marks_the_omission():
     assert "14 steps omitted" in markers[0]["message"]
 
 
+def test_clip_trajectory_steps_marker_carries_last_dropped_timestamp():
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    steps = [
+        _make_step(i, timestamp=f"2026-04-30T12:{i:02d}:00Z") for i in range(1, 21)
+    ]
+    clipped = clip_trajectory_steps({"steps": steps}, 6)
+    marker = next(s for s in clipped["steps"] if s.get("step_id") is None)
+    # Tail is steps 18-20, so step 17 is the last one dropped.
+    assert marker["timestamp"] == "2026-04-30T12:17:00Z"
+
+
+def test_clipped_tail_duration_measures_against_the_dropped_predecessor():
+    """A clipped summary must not report the first tail step as taking 0ms."""
+    from pathlib import Path
+
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryInput,
+    )
+    from api.services.summarize_trajectory import clip_trajectory_steps
+
+    template = (
+        Path(__file__).resolve().parents[2]
+        / "oddish" / "src" / "oddish" / "analyze" / "prompts" / "trajectory_summary.txt"
+    ).read_text()
+    steps = [
+        _make_step(i, timestamp=f"2026-04-30T12:{i:02d}:00Z") for i in range(1, 21)
+    ]
+    clipped = clip_trajectory_steps({"steps": steps}, 6)
+    raw = json.dumps({
+        "summary": "s",
+        "highlights": [],
+        "components": [
+            {"step_ids": [18], "trajectory_component": "debugging", "summary": "y"}
+        ],
+    })
+    block = TrajectoryBlock(
+        TrajectoryInput(
+            task_name="t",
+            instruction=None,
+            final_reward=None,
+            model_used=None,
+            verifier_output=None,
+            trajectory=clipped,
+        ),
+        instructions_template=template,
+    )
+    out = block.to_summary(raw, model="claude-x")
+    # Step 18 follows step 17 by one minute; the omission marker between them
+    # must not flatten that to 0.
+    assert out["components"][0]["duration_ms"] == 60_000
+
+
 def test_clip_trajectory_steps_is_a_noop_under_budget():
     from api.services.summarize_trajectory import clip_trajectory_steps
 

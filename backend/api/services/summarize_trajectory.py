@@ -79,6 +79,12 @@ def clip_trajectory_steps(trajectory: dict, max_steps: int) -> dict:
     has to get right. The dropped span is replaced by a single marker step with
     no ``step_id``, so it renders in the prompt but cannot be cited: the model
     can only reference steps that survive into ``_valid_step_ids``.
+
+    The marker inherits the timestamp of the last dropped step. ``to_summary``
+    derives each step's ``duration_ms`` from its predecessor in the list it is
+    given, so without this the first retained tail step measures against a
+    timestampless marker and contributes 0 to its component -- silently
+    undercounting a duration the callers are told is safe to aggregate.
     """
     steps = trajectory.get("steps") or []
     if len(steps) <= max_steps:
@@ -86,6 +92,7 @@ def clip_trajectory_steps(trajectory: dict, max_steps: int) -> dict:
     head = max_steps // 2
     tail = max_steps - head
     omitted = len(steps) - max_steps
+    last_dropped = steps[len(steps) - tail - 1]
     out = dict(trajectory)
     out["steps"] = [
         *steps[:head],
@@ -93,6 +100,11 @@ def clip_trajectory_steps(trajectory: dict, max_steps: int) -> dict:
             "step_id": None,
             "source": "system",
             "message": STEP_OMISSION_MARKER.format(n=omitted),
+            "timestamp": (
+                last_dropped.get("timestamp")
+                if isinstance(last_dropped, dict)
+                else None
+            ),
         },
         *steps[len(steps) - tail :],
     ]
