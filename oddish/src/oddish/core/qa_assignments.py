@@ -114,7 +114,9 @@ def _scope_matches(scope_type: str, scope_id: str | None):
     )
 
 
-async def _select_assignments(session: AsyncSession, where) -> list[tuple]:
+async def _select_assignments(
+    session: AsyncSession, where
+) -> list[tuple[QAAssignmentModel, PromptModel]]:
     """Assignments joined to their prompt. The join is required, not an
     optimization: the override key is the *referenced prompt's kind*."""
     result = await session.execute(
@@ -122,7 +124,7 @@ async def _select_assignments(session: AsyncSession, where) -> list[tuple]:
         .join(PromptModel, PromptModel.id == QAAssignmentModel.prompt_id)
         .where(where)
     )
-    return list(result.all())
+    return [(row[0], row[1]) for row in result.all()]
 
 
 async def resolve_qa_assignments_core(
@@ -339,9 +341,11 @@ async def qa_assignment_status_core(
             )
             .where(
                 AnalyzerRunModel.qa_assignment_id.in_(assignment_ids),
-                AnalyzerRunModel.org_id.is_(None)
-                if org_id is None
-                else AnalyzerRunModel.org_id == org_id,
+                (
+                    AnalyzerRunModel.org_id.is_(None)
+                    if org_id is None
+                    else AnalyzerRunModel.org_id == org_id
+                ),
             )
             .group_by(AnalyzerRunModel.qa_assignment_id, AnalyzerRunModel.status)
         )

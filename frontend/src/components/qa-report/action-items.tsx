@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import { cn } from "@/lib/utils";
 import { AnalysisProse } from "@/components/analysis-prose";
 import type { PreTrialFinding } from "@/lib/types";
@@ -17,10 +19,12 @@ function ActionItemDetail({
   item,
   itemKey,
   onFeedback,
+  renderItemFooter,
 }: {
   item: PreTrialFinding;
   itemKey: string;
   onFeedback?: (r: FeedbackRecord) => void;
+  renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
   const where = findingLocation(item);
   return (
@@ -75,6 +79,8 @@ function ActionItemDetail({
         </div>
       ) : null}
 
+      {renderItemFooter?.(item, itemKey)}
+
       {onFeedback ? (
         <FeedbackControl
           label={`action item: ${item.title ?? itemKey}`}
@@ -101,12 +107,15 @@ export function SeverityGroups({
   onFeedback,
   className,
   tierEffects,
+  renderItemFooter,
 }: {
   items: PreTrialFinding[];
   onFeedback?: (r: FeedbackRecord) => void;
   className?: string;
   /** Per-tier effect line; the default narrates trial classification. */
   tierEffects?: Partial<Record<string, string>>;
+  /** Extra content under an item — e.g. links to the trials that surfaced it. */
+  renderItemFooter?: (item: PreTrialFinding, itemKey: string) => ReactNode;
 }) {
   const groups = TIER_ORDER.map((tier) => ({
     tier,
@@ -155,6 +164,7 @@ export function SeverityGroups({
                     item={item}
                     itemKey={key}
                     onFeedback={onFeedback}
+                    renderItemFooter={renderItemFooter}
                   />
                 </li>
               );

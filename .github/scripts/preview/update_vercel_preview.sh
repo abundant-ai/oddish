@@ -10,13 +10,19 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 github_output="${GITHUB_OUTPUT:-}"
 preview_url=""
 preview_alias_url=""
-backend_api_url="${MODAL_API_URL:-${PROD_API_URL:-}}"
+# Fallback order for PRs with no preview backend (frontend-only changes):
+# staging before prod. PRs target the staging branch, so a frontend-only PR is
+# written against staging's API contract — and preview traffic must not reach
+# production. PROD_API_URL remains the last resort for a repo with no staging.
+backend_api_url="${MODAL_API_URL:-${STAGING_API_URL:-${PROD_API_URL:-}}}"
 backend_label="${PREVIEW_BACKEND_LABEL:-}"
 database_label="${PREVIEW_DATABASE_LABEL:-}"
 
 if [ -z "$backend_label" ]; then
   if [ -n "${MODAL_API_URL:-}" ]; then
     backend_label="${MODAL_APP_NAME:-preview Modal backend}"
+  elif [ -n "${STAGING_API_URL:-}" ]; then
+    backend_label="staging"
   else
     backend_label="production"
   fi
@@ -27,6 +33,8 @@ if [ -z "$database_label" ]; then
     database_label="project ${SUPABASE_BRANCH_REF}"
   elif [ -n "${MODAL_API_URL:-}" ]; then
     database_label="preview Supabase"
+  elif [ -n "${STAGING_API_URL:-}" ]; then
+    database_label="staging branch"
   else
     database_label="production"
   fi

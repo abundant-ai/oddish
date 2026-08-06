@@ -4,7 +4,9 @@ import asyncio
 import enum
 import json
 import logging
+from collections.abc import MutableMapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -103,7 +105,9 @@ def block_key_prefix(analyzer_type: AnalyzerType) -> str:
 
 
 class _PrefixAdapter(logging.LoggerAdapter):
-    def process(self, msg: str, kwargs: dict) -> tuple[str, dict]:
+    def process(
+        self, msg: str, kwargs: MutableMapping[str, Any]
+    ) -> tuple[str, MutableMapping[str, Any]]:
         return f"[{self.extra['prefix']}] {msg}", kwargs
 
 
@@ -211,8 +215,8 @@ class AnalyzerBlock(Block):
         self.status: JobStatus = JobStatus.PENDING
         self.output: AnalyzerOutput | None = None
         self.error: str | None = None
-        self.job_started_at = None
-        self.job_ended_at = None
+        self.job_started_at: datetime | None = None
+        self.job_ended_at: datetime | None = None
         self.job_duration_seconds: float | None = None
         self._chunks: list[str] = []
         self.usage: AnalysisUsage | None = None
@@ -491,9 +495,7 @@ class AnalyzerBlock(Block):
                 # in the same shape as the streamed events.
                 try:
                     self._on_chunk(
-                        json.dumps(
-                            {"type": "sandbox_info", "sandbox_id": sandbox_id}
-                        )
+                        json.dumps({"type": "sandbox_info", "sandbox_id": sandbox_id})
                     )
                 except Exception:  # noqa: BLE001
                     self.log.exception("on_chunk hook failed")
@@ -506,9 +508,9 @@ class AnalyzerBlock(Block):
             else:
                 raw = "".join(self._chunks)
                 self.output = AnalyzerOutput(
-                    output=self._output_transform(raw)
-                    if self._output_transform
-                    else raw
+                    output=(
+                        self._output_transform(raw) if self._output_transform else raw
+                    )
                 )
             self.status = JobStatus.SUCCESS
             self.log.info("block succeeded (%d chunk(s))", len(self._chunks))
