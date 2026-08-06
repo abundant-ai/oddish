@@ -48,6 +48,7 @@ import {
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import { resolveExperimentTaskVersion } from "@/lib/experiment-task-version";
+import { useTrial } from "@/lib/use-trial";
 import {
   formatLineRange,
   parseLineRange,
@@ -978,36 +979,19 @@ export function ExperimentDetailView({
     }
     lastDrawerTaskIdRef.current = taskId;
   }, [drawerState?.task.id, handleTaskPaneFileChange]);
-  // When loadFullTrialOnOpen is set, the grid only has slim trials, so fetch
-  // the clicked/navigated trial's full detail; the popup renders the slim trial
-  // until this resolves. No-op (and never fetches) on the public share page.
-  const [fullTrial, setFullTrial] = useState<Trial | null>(null);
+  // The grid rows only contain trimmed-down trial data. This fetches the
+  // full record for the trial that is open in the drawer. The drawer
+  // shows the trimmed row until the full record arrives, and keeps
+  // showing it if the fetch fails. TrialAnalysisCard calls useTrial with
+  // the same id, so opening a trial produces one request instead of two.
+  // The public share page passes loadFullTrialOnOpen as false, so it
+  // never fetches.
   const openTrialId =
     drawerState?.mode === "trial" ? (drawerState.trial?.id ?? null) : null;
-  useEffect(() => {
-    if (!loadFullTrialOnOpen || !openTrialId) {
-      setFullTrial(null);
-      return;
-    }
-    let cancelled = false;
-    setFullTrial(null);
-    (async () => {
-      try {
-        const res = await fetch(
-          `${apiBaseUrl}/trials/${encodeURIComponent(openTrialId)}`,
-          { cache: "no-store" }
-        );
-        if (!res.ok) return;
-        const data = (await res.json()) as Trial;
-        if (!cancelled) setFullTrial(data);
-      } catch {
-        // Keep the slim trial on failure -- the popup just shows less.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [loadFullTrialOnOpen, openTrialId, apiBaseUrl]);
+  const { data: fullTrial } = useTrial(
+    loadFullTrialOnOpen ? openTrialId : null,
+    { apiBaseUrl }
+  );
   // Probe cells open main's sliding ProbeDetailPanel (kept from origin/main).
   // On the slim experiment path the grid has no probe trials to click, so this
   // stays dormant until probes are fed to that path -- the code is retained so
@@ -1747,7 +1731,11 @@ export function ExperimentDetailView({
           onShowTrialChange={handleShowTrialChange}
           sideBySideLeft={
             <TaskFilesPanel
-              isOpen={true}
+              // This tells the panel whether the pane is actually visible
+              // on screen. The panel starts downloading its files when
+              // isOpen becomes true, so passing a hardcoded true would
+              // download files for a pane the user cannot see.
+              isOpen={drawerState.mode === "trial" && showTask}
               onClose={() => {}}
               taskId={null}
               // The task prop scopes the overview's trial aggregation to
@@ -1770,7 +1758,7 @@ export function ExperimentDetailView({
           }
           taskContent={
             <TaskFilesPanel
-              isOpen={true}
+              isOpen={drawerState.mode === "task"}
               onClose={closeDrawer}
               taskId={drawerState.task.id}
               task={drawerState.task}

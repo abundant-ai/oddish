@@ -44,6 +44,7 @@ from oddish.core.admin import (
     list_model_concurrency_audit_core,
     update_model_concurrency_core,
 )
+from oddish.core.trial_facets import rebuild_trial_facets_core
 from oddish.db import TaskModel, TaskVersionModel, get_session
 from oddish.queue import enqueue_task_expand_worker_job
 
@@ -388,6 +389,28 @@ async def get_operator_access(
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> OperatorAccessResponse:
     return OperatorAccessResponse(allowed=is_operator_org(auth))
+
+
+class TrialFacetsRefreshResponse(BaseModel):
+    orgs: int
+    rows: int
+
+
+@router.post("/trial-facets/refresh", response_model=TrialFacetsRefreshResponse)
+async def refresh_trial_facets(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> TrialFacetsRefreshResponse:
+    """Rebuild the task-browser facet vocabulary on demand.
+
+    The scheduler-neutral binding of ``oddish.core.trial_facets``: Modal
+    deploys run the same rebuild on a Period schedule
+    (``worker.refresh_trial_facets``); non-Modal deploys (``serve.py``)
+    cron this endpoint instead. Also the manual ops lever after a bulk
+    deletion.
+    """
+    async with get_session() as session:
+        orgs, rows = await rebuild_trial_facets_core(session)
+    return TrialFacetsRefreshResponse(orgs=orgs, rows=rows)
 
 
 class SlackAlertSettingsRequest(BaseModel):
