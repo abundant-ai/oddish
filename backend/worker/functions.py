@@ -44,6 +44,8 @@ from modal_app import (
     POLL_INTERVAL_SECONDS,
     RECONCILER_CPU,
     RECONCILER_MEMORY_MB,
+    TRIAL_FACETS_REFRESH_INTERVAL_SECONDS,
+    TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS,
     WORKER_BATCH_BUDGET_SECONDS,
     WORKER_BUFFER_CONTAINERS,
     WORKER_CPU,
@@ -130,6 +132,10 @@ from api.services.blocks.analyzer import (
 # Register the hosted pre-trial synth hook (invoked by qa_handler only when
 # settings.pre_trial_enabled). Import for the side effect.
 from . import pre_trial_synth as _pre_trial_synth  # noqa: F401
+
+# Register the hosted trajectory-summary provider so post-trial classification
+# can feed a component map to the classifier. Import for the side effect.
+from . import trajectory_summary_provider as _trajectory_summary_provider  # noqa: F401
 
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
@@ -614,6 +620,46 @@ async def precompute_dashboard_stats():
             cycle_span.__exit__(*_sys.exc_info())
         except Exception:
             pass
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    timeout=TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS,
+    cpu=RECONCILER_CPU,
+    memory=RECONCILER_MEMORY_MB,
+    min_containers=0,  # Background refresh; tolerate a cold start each run.
+    max_containers=1,  # Singleton: never run two rebuild scans at once.
+    schedule=modal.Period(seconds=TRIAL_FACETS_REFRESH_INTERVAL_SECONDS),
+    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
+)
+async def refresh_trial_facets():
+    """Rebuild the task-browser facet vocabulary from one grouped trials scan.
+
+    The exactness half of ``oddish.core.trial_facets``: write-through keeps
+    spec-facet additions instant, this rebuild converges stage/classification
+    additions and every removal (deleted / superseded / version-bumped
+    trials). One scan per interval instead of seven per ``/tasks`` visit.
+
+    Best-effort like the dashboard precompute: failures are logged and
+    swallowed; the browser serves the previous vocabulary until the next run.
+    """
+    started = time.monotonic()
+    try:
+        from oddish.core.trial_facets import rebuild_trial_facets_core
+
+        with _otel_span("worker.refresh_trial_facets"):
+            async with get_session() as session:
+                orgs, rows = await rebuild_trial_facets_core(session)
+        console.print(
+            f"metric=trial_facets_refresh orgs={orgs} rows={rows} "
+            f"duration_seconds={round(time.monotonic() - started, 2)}"
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort background refresh
+        console.print(f"[yellow]Trial facets refresh skipped: {e}[/yellow]")
+    finally:
+        await close_database_connections()
 
 
 # Blessed Harbor variants get their own image-bound single-job Function so the

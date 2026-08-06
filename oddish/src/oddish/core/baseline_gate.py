@@ -31,6 +31,7 @@ from collections.abc import Iterable
 from enum import Enum
 
 from harbor.models.agent.name import AgentName
+from sqlalchemy import func, or_
 
 from oddish.config import nop_oracle_kind
 
@@ -89,9 +90,29 @@ def evaluate_baseline_gate(
     return GateOutcome.VALID, "baselines validated (all oracle passed, all nop failed)"
 
 
+def baseline_agent_clause(agent_column):
+    """SQL counterpart to :func:`oddish.config.is_nop_oracle_agent`.
+
+    Callers that must filter baselines in the database share this one clause so
+    the SQL and the Python predicate can't drift -- the config module's prefix
+    lists, the frontend's ``isBaselineAgentName``, and this all have to agree on
+    what counts as a baseline.
+    """
+    agent_lower = func.lower(func.coalesce(agent_column, ""))
+    return or_(
+        agent_lower == AgentName.NOP.value,
+        agent_lower == AgentName.ORACLE.value,
+        agent_lower.like("nop-%"),
+        agent_lower.like("oracle-%"),
+        agent_lower.like("agent-nop%"),
+        agent_lower.like("agent-oracle%"),
+    )
+
+
 __all__ = [
     "GATE_SKIP_MESSAGE",
     "GATE_SKIP_PREFIX",
     "GateOutcome",
+    "baseline_agent_clause",
     "evaluate_baseline_gate",
 ]

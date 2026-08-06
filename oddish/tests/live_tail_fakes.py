@@ -92,3 +92,24 @@ def update_params(session):
     return [
         dict(s.compile().params) for s in session.stmts if not isinstance(s, PGInsert)
     ]
+
+
+def insert_params(session):
+    """The event rows written by each insert, in the order they were bound.
+
+    A multi-row ``VALUES`` compiles to flat ``<column>_m<row>`` parameters, so
+    regroup them back into one dict per row (a single-row insert keeps bare
+    column names).
+    """
+    rows = []
+    for stmt in session.stmts:
+        if not isinstance(stmt, PGInsert):
+            continue
+        grouped: dict[int, dict] = {}
+        for key, value in stmt.compile().params.items():
+            column, _, index = key.rpartition("_m")
+            grouped.setdefault(int(index) if index.isdigit() else 0, {})[
+                column or key
+            ] = value
+        rows.extend(grouped[index] for index in sorted(grouped))
+    return rows

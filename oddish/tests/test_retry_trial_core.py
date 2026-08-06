@@ -29,6 +29,9 @@ class _Result:
     def scalar_one_or_none(self):
         return self._scalar
 
+    def all(self):
+        return list(self._rows)
+
     def __iter__(self):
         return iter(self._rows)
 
@@ -443,6 +446,7 @@ async def test_store_trial_results_ignores_superseded_trial(monkeypatch):
         ),
         trial_s3_key="new-key",
         execution_error=None,
+        trial_attempt=trial.attempts,
     )
 
     assert trial.status == TrialStatus.RUNNING

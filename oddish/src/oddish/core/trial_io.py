@@ -6,15 +6,12 @@ import logging
 import mimetypes
 import re
 import time
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import MutableMapping, TypeVar
 
 from fastapi import HTTPException
 from harbor.models.trial.paths import TrialPaths
 from harbor.viewer.scanner import JobScanner
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import TrialModel, get_storage_client
@@ -36,10 +33,6 @@ _PROBE_ARTIFACTS_CACHE: dict[str, tuple[float, dict]] = {}
 _STRUCTURED_LOGS_LOCKS: dict[str, asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[str, asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[str, asyncio.Lock] = {}
-# Per-trial generation lock so two concurrent POSTs don't both compute the same
-# graph. Process-local (each Modal container has its own) — a cross-container
-# race just costs a duplicate build; the JSONB write is idempotent.
-_TRAJECTORY_GRAPH_LOCKS: dict[str, asyncio.Lock] = {}
 _T = TypeVar("_T")
 
 _EMPTY_PROBE_ARTIFACTS: dict = {
@@ -668,118 +661,6 @@ async def read_trial_trajectory(trial: TrialModel) -> dict | None:
         if _should_cache_trial(trial):
             _cache_set(_TRAJECTORY_CACHE, cache_key, result)
         return result
-
-
-def _trial_graph_ctx(trial: TrialModel) -> dict:
-    """Authoritative trial fields the agent-graph summarizer grounds its
-    terminal node in (never taken from the LLM)."""
-    status = getattr(trial.status, "value", trial.status)
-    return {
-        "status": str(status) if status is not None else None,
-        "reward": trial.reward,
-        "error_message": trial.error_message,
-        "task_name": trial.name or trial.task_id,
-        "agent_name": trial.agent,
-    }
-
-
-def _graph_is_fresh(graph: dict | None) -> bool:
-    from oddish.analyze.trajectory_graph import GRAPH_SCHEMA_VERSION
-
-    return (
-        isinstance(graph, dict)
-        and graph.get("schema_version") == GRAPH_SCHEMA_VERSION
-    )
-
-
-# Keep in sync with backend api.services.summarize_trajectory.SCHEMA_VERSION: a
-# persisted trajectory_summary from an OLDER schema must not drive the graph's
-# components (its shape may differ), so we only reuse a fresh one as the fallback.
-_SUMMARY_SCHEMA_VERSION = "5"
-
-
-def _fresh_persisted_summary(trial: TrialModel) -> dict | None:
-    summary = getattr(trial, "trajectory_summary", None)
-    if (
-        isinstance(summary, dict)
-        and summary.get("schema_version") == _SUMMARY_SCHEMA_VERSION
-    ):
-        return summary
-    return None
-
-
-def read_persisted_trajectory_graph(trial: TrialModel) -> dict | None:
-    """Return the stored agent graph for a trial, or None if absent/stale.
-
-    Pure read of ``trials.trajectory_graph`` — never generates. The GET endpoint
-    uses this so viewing the tab has no LLM cost; generation is an explicit POST.
-    """
-    graph = trial.trajectory_graph
-    return graph if _graph_is_fresh(graph) else None
-
-
-async def generate_and_store_trajectory_graph(
-    session: AsyncSession,
-    trial: TrialModel,
-    *,
-    refresh: bool = False,
-    summary: dict | None = None,
-) -> dict:
-    """Generate the condensed agent step-graph and persist it on the trial.
-
-    Reads the trajectory (S3 or local fallback) and distills it into a handful
-    of general phases plus a terminal node whose outcome is computed from the
-    trial's own status/reward/error (see ``analyze.trajectory_graph``). When a
-    ``summary`` (the shipped ``trajectory_summary`` dict) is supplied, its phase
-    segmentation is reused as the graph's steps; otherwise a dedicated
-    ``settings.analysis_model`` pass (or a heuristic) segments the run. The
-    result is written to ``trials.trajectory_graph`` and returned. ``refresh``
-    forces regeneration even when a fresh graph is already stored.
-    """
-    from oddish.analyze.trajectory_graph import build_trajectory_graph
-
-    lock = _get_lock(_TRAJECTORY_GRAPH_LOCKS, trial.id)
-    async with lock:
-        # Re-check inside the lock — another coroutine (this container or, via
-        # the committed column, another) may have populated it. Reload the
-        # column from the DB first so we don't rebuild over a fresh write.
-        if not refresh:
-            try:
-                await session.refresh(trial, attribute_names=["trajectory_graph"])
-            except Exception:
-                pass  # detached/expired instance — fall through to rebuild
-            if _graph_is_fresh(trial.trajectory_graph):
-                return trial.trajectory_graph  # type: ignore[return-value]
-
-        # Fetch the trajectory alongside the goal (instruction) and the grader
-        # output (verifier stdout) so the graph can judge phases against the
-        # goal and name the failing check — not just describe the commands run.
-        trajectory, instruction, verifier_output = await asyncio.gather(
-            read_trial_trajectory(trial),
-            read_trial_instruction(trial),
-            read_trial_verifier_output(trial),
-        )
-        ctx = _trial_graph_ctx(trial)
-        ctx["task_instruction"] = instruction
-        ctx["verifier_output"] = verifier_output
-        # Reuse the trial's own persisted summary phases when the caller didn't
-        # supply a fresher one (e.g. the self-hosted server passes none), so the
-        # graph stays consistent with the Summary tab instead of re-segmenting.
-        graph = await build_trajectory_graph(
-            trajectory,
-            ctx,
-            model=settings.analysis_model,
-            summary=summary if summary is not None else _fresh_persisted_summary(trial),
-        )
-        graph["generated_at"] = datetime.now(timezone.utc).isoformat()
-
-        await session.execute(
-            update(TrialModel)
-            .where(TrialModel.id == trial.id)
-            .values(trajectory_graph=graph)
-        )
-        await session.commit()
-        return graph
 
 
 async def read_trial_instruction(trial: TrialModel) -> str | None:

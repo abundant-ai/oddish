@@ -139,7 +139,7 @@ class _FakeStorage:
         self.upload_calls.append((s3_key, data, content_type))
 
     async def _load_task_archive(self, archive_key: str):
-        return (self._objects[archive_key], [])
+        return (self._objects[archive_key], [], {})
 
     async def list_objects_all(self, prefix: str) -> list[dict]:
         return [

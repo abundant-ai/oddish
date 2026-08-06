@@ -41,6 +41,7 @@ from oddish.db import (
     JobStatus,
     TaskModel,
     TaskStatus,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     VerdictStatus,
@@ -407,6 +408,33 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         return None
 
     if kind == "QA":
+        payload = (row.get("payload") or {}) or {}
+        if payload.get("mode") == "pre_trial":
+            # Audit-only job: it never touches the verdict or trial
+            # classifications, so mirror the failure onto the version's
+            # audit state instead. The job pins the version it audits;
+            # jobs from before the field existed fall back to current.
+            task = await _locked_or_missing(session, TaskModel, str(subject_id))
+            if task is None:
+                return None
+            version_id = payload.get("task_version_id") or task.current_version_id
+            if not version_id:
+                return None
+            version = await session.get(
+                TaskVersionModel, version_id, with_for_update=True
+            )
+            if version is not None and version.pre_trial_status in (
+                VerdictStatus.PENDING,
+                VerdictStatus.QUEUED,
+                VerdictStatus.RUNNING,
+            ):
+                if row["new_status"] == "FAILED":
+                    version.pre_trial_status = VerdictStatus.FAILED
+                    version.pre_trial_finished_at = utcnow()
+                else:
+                    version.pre_trial_status = VerdictStatus.QUEUED
+                version.pre_trial_error = row["error_message"]
+            return None
         task = await _locked_or_missing(session, TaskModel, str(subject_id))
         if task is None:
             return None
@@ -504,6 +532,10 @@ async def cleanup_orphaned_queue_state(
         ) = await _reap_stale_worker_jobs(
             session, stale_after_minutes=stale_after_minutes
         )
+
+    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
+
+    async with get_session() as session:
         tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
             session, reaped_trial_ids
         )
@@ -541,7 +573,6 @@ async def cleanup_orphaned_queue_state(
     # These run AFTER the outer commit so a rolled-back sweep never tears down
     # remote handles / claim metadata the DB still points at. Best-effort; the
     # provider TTL and the next sweep are the backstops.
-    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
     stale_trial_events_purged = await purge_stale_trial_events()
 
@@ -745,6 +776,7 @@ async def _reap_stale_worker_jobs(
                               status::text AS new_status,
                               subject_table,
                               subject_id,
+                              payload,
                               attempts,
                               max_attempts,
                               error_message,

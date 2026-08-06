@@ -126,6 +126,17 @@ DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS = _env_int(
 DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS = _env_int(
     "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS", 120
 )
+# Facet-vocabulary rebuild (``worker.refresh_trial_facets``): one grouped scan
+# over live trials per interval keeps the task-browser dropdowns exact
+# (removals and stage/classification additions converge here; spec additions
+# are instant via write-through). The timeout bounds one scan; with
+# max_containers=1 it also guards against overlapping runs.
+TRIAL_FACETS_REFRESH_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_INTERVAL_SECONDS", 600
+)
+TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_TRIAL_FACETS_REFRESH_TIMEOUT_SECONDS", 300
+)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -451,7 +462,9 @@ runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
-if MODAL_APP_NAME.startswith("oddish-pr-"):
+# Per-app DB override: per-PR previews and the persistent staging app both
+# borrow every other secret from env "main" and rebind only the database.
+if MODAL_APP_NAME.startswith("oddish-pr-") or MODAL_APP_NAME == "oddish-staging":
     runtime_secrets.append(
         modal.Secret.from_name(
             f"{MODAL_APP_NAME}-db",
@@ -521,7 +534,7 @@ ENV_VARS = {
         or (LOCAL_DOTENV_VARS.get("ODDISH_OPERATOR_ORG_ID") or "").strip()
         or DEFAULT_OPERATOR_ORG_ID
     ),
-    "ODDISH_HARBOR_ENVIRONMENT": "modal",
+    "ODDISH_HARBOR_ENVIRONMENT": "daytona",
     "ODDISH_AUTO_START_WORKERS": "false",
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
@@ -533,6 +546,18 @@ ENV_VARS = {
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
+    # Pre-trial task-source audit. This is the ONLY writer of
+    # task_versions.pre_trial, which is in turn the only source of the
+    # post-trial classifier's {pre_trial_context} -- so with it off, post-trial
+    # never sees pre-trial findings no matter how many audits the QA-job
+    # assignment path (which this flag does not gate) has run.
+    #
+    # Enabling is deployment-wide on purpose: qa_handler checks this flag
+    # BEFORE the per-org pre_trial_analysis_enabled setting, so while it is off
+    # an org cannot opt itself in -- the org setting can only ever opt OUT.
+    # Post-trial runs for task versions with no audit are unaffected:
+    # pre_trial_items stays None and {pre_trial_context} renders "(none)".
+    "ODDISH_PRE_TRIAL_ENABLED": os.environ.get("ODDISH_PRE_TRIAL_ENABLED", "1"),
     # GKE coordinates resolved at deploy time (process env wins over
     # backend/.env, mirroring _effective_gke_cluster_name), baked into the
     # image like MODAL_APP_NAME above. The oddish-gcp secret gate and the

@@ -12,6 +12,8 @@ the queue execution code.
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
 from oddish.db import (
     AnalysisStatus,
     AnalyzerRunModel,
@@ -20,6 +22,8 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
     WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
     get_session,
 )
 from oddish.db.models import JobStatus, AnalyzerModel
@@ -34,6 +38,7 @@ from oddish.workers.queue.analyzer_block_handler import (
     MissingPromptVersionError,
     run_analyzer_block_job,
 )
+from oddish.workers.queue.provider_failures import is_permanent_provider_failure
 from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.analyzer_handler import (
     default_eval_rows,
@@ -123,11 +128,12 @@ class TrialJobHandler:
 
 
 class AnalysisJobHandler:
-    """Transitional handler for legacy per-trial ANALYSIS rows.
+    """Per-trial analysis: classify one trial, touch nothing else.
 
-    Nothing enqueues ANALYSIS jobs anymore -- trajectory analysis is the
-    single task-level ``QA`` job (:class:`QaJobHandler`). This handler is kept
-    only so any ANALYSIS rows still in flight across a deploy can drain.
+    The task-level ``QA`` job (:class:`QaJobHandler`) classifies every trial
+    and synthesizes the verdict. This handler serves the independent
+    trial-level trigger (``enqueue_trial_analysis_worker_job``, used by the
+    trial card's run/re-run button) and drains any legacy ANALYSIS rows.
     """
 
     kind = WorkerJobKind.ANALYSIS
@@ -146,6 +152,14 @@ class AnalysisJobHandler:
             )
 
         async with get_session() as session:
+            # A cancel can land between the claim and this point. It marks
+            # the job CANCELLED and the trial FAILED; reviving the trial
+            # here would undo the cancel and classify anyway.
+            current_job_status = await session.scalar(
+                select(WorkerJobModel.status).where(WorkerJobModel.id == job.id)
+            )
+            if current_job_status == WorkerJobStatus.CANCELLED:
+                return JobOutcome.ok()
             trial = await session.get(TrialModel, trial_id)
             if trial is None:
                 return _fail_permanent(f"Trial {trial_id} vanished before analysis")
@@ -178,8 +192,13 @@ class AnalysisJobHandler:
 
 
 class QaJobHandler:
-    """The single task-level QA job: classify every trial, then synthesize
-    the task verdict. Backed by ``run_task_qa_job``."""
+    """The task-level QA job: classify every trial, then synthesize the
+    task verdict. Backed by ``run_task_qa_job``.
+
+    ``payload.mode == "pre_trial"`` selects the audit-only path: run the
+    pre-trial audit for the current version and stop. No classification,
+    no verdict, no change to task state.
+    """
 
     kind = WorkerJobKind.QA
 
@@ -193,6 +212,27 @@ class QaJobHandler:
         task_id = job.subject_id or (job.payload or {}).get("task_id")
         if not task_id:
             raise ValueError("QA worker_job missing subject_id / payload.task_id")
+
+        if (job.payload or {}).get("mode") == "pre_trial":
+            from oddish.workers.queue.qa_handler import run_pre_trial_only_job
+
+            async with get_session() as session:
+                # A cancel can land between the claim and this point. It
+                # marks the job CANCELLED and clears the audit state;
+                # running the audit here would undo the cancel and spend a
+                # sandbox on it.
+                current_job_status = await session.scalar(
+                    select(WorkerJobModel.status).where(WorkerJobModel.id == job.id)
+                )
+            if current_job_status == WorkerJobStatus.CANCELLED:
+                return JobOutcome.ok()
+
+            await run_pre_trial_only_job(
+                task_id,
+                worker_job_id=job.id,
+                task_version_id=(job.payload or {}).get("task_version_id"),
+            )
+            return JobOutcome.ok()
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)
@@ -217,7 +257,13 @@ class QaJobHandler:
             if task.verdict_status == VerdictStatus.SUCCESS:
                 return JobOutcome.ok()
             if task.verdict_status == VerdictStatus.FAILED:
-                return _fail_retryable(task.verdict_error or f"QA {task_id} FAILED")
+                error_message = task.verdict_error or f"QA {task_id} FAILED"
+                # Re-running the whole QA job cannot clear a provider
+                # permission block, and each attempt re-hits the blocked
+                # endpoint -- which is what abuse monitoring is watching for.
+                if is_permanent_provider_failure(task.verdict_error):
+                    return _fail_permanent(error_message)
+                return _fail_retryable(error_message)
             return _fail_retryable(
                 f"QA {task_id} left in non-terminal status {task.verdict_status!r}"
             )

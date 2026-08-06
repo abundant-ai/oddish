@@ -99,6 +99,7 @@ class _FakeRuntime:
         claude_session_id,
         daytona_session_id,
         system_prompt=None,
+        json_schema=None,
     ):
         for path, body in self._files.items():
             await client.upload_file(sandbox, dest_path=path, content=body)
@@ -124,6 +125,7 @@ class _SlowRuntime(_FakeRuntime):
         claude_session_id,
         daytona_session_id,
         system_prompt=None,
+        json_schema=None,
     ):
         for path, body in self._files.items():
             await client.upload_file(sandbox, dest_path=path, content=body)
@@ -339,6 +341,7 @@ class _CountingRuntime(_FakeRuntime):
         claude_session_id,
         daytona_session_id,
         system_prompt=None,
+        json_schema=None,
     ):
         self.prompts.append(content)
         self.system_prompts.append(system_prompt)

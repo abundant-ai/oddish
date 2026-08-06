@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
   DrawerHeader,
@@ -39,14 +38,31 @@ import {
   Microscope,
   CheckCircle2,
   XCircle,
-  AlertTriangle,
   ExternalLink,
   Route,
   Package,
   Trash2,
-  GitBranch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  formatLineRange,
+  parseLineRange,
+  type LineRange,
+} from "@/lib/line-range";
+import { sameFilePath } from "@/lib/file-path";
+
+/**
+ * Read a query param from the live URL. The panel keeps the URL current
+ * via replaceState, which never refreshes Next's useSearchParams hook —
+ * so live reads must come straight from location.
+ */
+function getLiveParam(name: string): string | null {
+  if (typeof window === "undefined") return null;
+  return new URLSearchParams(window.location.search).get(name);
+}
+import { Skeleton } from "@/components/ui/skeleton";
+import { QaAssessmentReport } from "@/components/qa-report/qa-assessment-report";
+import { QaReportSkeleton } from "@/components/qa-report/skeleton";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -54,6 +70,7 @@ import {
   costEstimateMarks,
   formatCostUsd,
   formatTokenCount,
+  hasDisplayableCostUsd,
   sumTaskTrialCost,
 } from "@/lib/format";
 import {
@@ -72,6 +89,9 @@ import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
+import { QaCostSuffix } from "@/components/qa-cost-suffix";
+import { useSWRConfig } from "swr";
+import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -102,23 +122,16 @@ const TrajectoryViewer = dynamic(
   },
 );
 
-const TrajectoryGraphView = dynamic(
-  () =>
-    import("@/components/trajectory-graph").then(
-      (mod) => mod.TrajectoryGraphView,
-    ),
-  {
-    ssr: false,
-    loading: () => <DrawerPanelLoading label="Loading agent graph..." />,
-  },
-);
-
 
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
-    <div className="text-muted-foreground flex h-full min-h-[160px] items-center justify-center gap-2 text-sm">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span>{label}</span>
+    <div className="flex min-h-[160px] flex-col gap-2 p-4">
+      <span className="sr-only">{label}</span>
+      <Skeleton className="h-4 w-1/3" />
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-11/12" />
+      <Skeleton className="h-3 w-4/5" />
+      <Skeleton className="mt-2 h-24 w-full rounded-lg" />
     </div>
   );
 }
@@ -153,6 +166,10 @@ interface TrialDetailPanelProps {
   paneAction?: React.ReactNode;
 }
 
+// Hardcoded feature flag: shows the per-trial "Re-run analysis" button on the
+// QA card. Testing-only for now — flip to false to hide it.
+const ENABLE_RERUN_ANALYSIS_BUTTON = true;
+
 const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   pass: "border-emerald-500/30 bg-emerald-500/10",
   partial: "border-amber-500/30 bg-amber-500/10",
@@ -164,6 +181,437 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
 };
+
+// The QA assessment card. It renders before any analysis exists, so the
+// run button is reachable. It shows queued/running state with elapsed
+// time. While analysis is active it polls the trial, so the result
+// appears without reopening the drawer.
+function TrialAnalysisCard({
+  trial: trialProp,
+  task,
+  apiBaseUrl,
+  onQueued,
+}: {
+  trial: Trial;
+  task: Task | null;
+  apiBaseUrl: string;
+  onQueued?: () => void;
+}) {
+  // The drawer already fetches this trial through useTrial. Calling the
+  // same hook with the same id here reuses that request instead of
+  // creating a second one. While the analysis is running, the hook
+  // refetches every few seconds, so the finished report shows up without
+  // the user having to close and reopen the drawer.
+  const { data: liveTrial, error: liveTrialError } = useTrial(trialProp.id, {
+    apiBaseUrl,
+  });
+  // The global mutate writes to an explicitly named cache key. The bound
+  // mutate returned by useTrial would write to whichever trial the card
+  // is currently showing, which is the wrong target when the user
+  // switches trials while a rerun request is in flight.
+  const { mutate: mutateByKey } = useSWRConfig();
+  // The trial object passed in from the parent can contain an outdated
+  // report, for example one from before a re-run. To avoid showing an
+  // outdated report and then swapping it, the card shows a loading state
+  // until the fetch for this trial either returns or fails. The fetched
+  // data and the error both belong to the current trial id only, so
+  // switching to another trial automatically puts the card back into its
+  // loading state.
+  const trial = liveTrial ?? trialProp;
+  const synced = liveTrial !== undefined || liveTrialError !== undefined;
+  const [queuing, setQueuing] = useState(false);
+  const [queueError, setQueueError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [logText, setLogText] = useState<string | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  const logRef = useRef<HTMLPreElement | null>(null);
+  // Guards async completions: a response that lands after a trial switch
+  // must not write another trial's state onto the open card.
+  const trialIdRef = useRef(trialProp.id);
+  // The parent passes a brand-new onQueued function on every render. The
+  // effect below reads it through this ref so that the effect does not
+  // re-run every time the parent renders.
+  const onQueuedRef = useRef(onQueued);
+  useEffect(() => {
+    onQueuedRef.current = onQueued;
+  }, [onQueued]);
+
+  // When the user switches to a different trial, the re-run button state
+  // and the fetched log are cleared because they describe the previous
+  // trial. The trial data itself does not need clearing, because the
+  // cache stores it under each trial's id.
+  useEffect(() => {
+    trialIdRef.current = trialProp.id;
+    setQueuing(false);
+    setLogText(null);
+    setLogOpen(false);
+    setQueuePosition(null);
+    setQueueError(null);
+  }, [trialProp.id]);
+
+  // An analysis counts as in progress when the server says it is queued
+  // or running. The rerun endpoint sets the status to QUEUED before it
+  // responds, so the server's status is always current and the client
+  // does not need to track a run on its own.
+  const inProgress = isAnalysisStatusActive(trial.analysis_status);
+
+  // When an analysis run that we were watching finishes, this tells the
+  // parent to refresh its lists, so the grid shows the result even after
+  // the drawer is closed. It only fires when this same trial moves from
+  // an active status to success or failed. It never fires when a trial
+  // that already finished is loaded for the first time.
+  const lastAnalysisRef = useRef<{
+    id: string;
+    status: Trial["analysis_status"];
+  } | null>(null);
+  useEffect(() => {
+    const prev = lastAnalysisRef.current;
+    lastAnalysisRef.current = liveTrial
+      ? { id: liveTrial.id, status: liveTrial.analysis_status }
+      : null;
+    if (!liveTrial || !prev || prev.id !== liveTrial.id) return;
+    if (
+      isAnalysisStatusActive(prev.status) &&
+      (liveTrial.analysis_status === "success" ||
+        liveTrial.analysis_status === "failed")
+    ) {
+      onQueuedRef.current?.();
+    }
+  }, [liveTrial]);
+
+  // Tick the elapsed timer once a second while in progress.
+  useEffect(() => {
+    if (!inProgress) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [inProgress]);
+
+  // Load the analysis log and queue position: once on open, and on every
+  // poll tick while the analysis is in progress. The cleanup always runs so
+  // a response that lands after a trial switch cannot write stale state.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchLog = async () => {
+      try {
+        const res = await fetch(
+          `${apiBaseUrl}/trials/${trialProp.id}/analysis-log`,
+          { cache: "no-store" },
+        );
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as {
+          log?: string | null;
+          queue_position?: number | null;
+        };
+        if (!cancelled) {
+          setLogText(data.log ?? null);
+          setQueuePosition(data.queue_position ?? null);
+        }
+      } catch {
+        // Transient fetch error; the next tick retries.
+      }
+    };
+    void fetchLog();
+    const id = inProgress ? window.setInterval(fetchLog, 5000) : null;
+    return () => {
+      cancelled = true;
+      if (id !== null) window.clearInterval(id);
+    };
+  }, [apiBaseUrl, trialProp.id, inProgress]);
+
+  // Keep the newest log lines in view while the analysis runs.
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [logText]);
+
+  // Open the log panel when a run starts. The user can close and reopen it
+  // at any time; renders never force it shut.
+  useEffect(() => {
+    if (inProgress) setLogOpen(true);
+  }, [inProgress]);
+
+  const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
+  // Always SHOW the button when the feature is on. Disable it (with the
+  // reason) when a run cannot be queued right now — a hidden button with
+  // no explanation is impossible to debug from the UI. The trigger is
+  // trial-level: only this trial's own active analysis blocks it.
+  const showQueueButton = ENABLE_RERUN_ANALYSIS_BUTTON;
+  // Mirrors _ANALYSIS_CLAIM_TTL_MINUTES: past the lease the backend treats
+  // the worker as dead and allows a re-run, so the button must too. A
+  // running row with no start time has no live lease, and the backend
+  // allows a re-run there as well.
+  const runStale =
+    trial.analysis_status === "running" &&
+    (trial.analysis_started_at == null ||
+      now - new Date(trial.analysis_started_at).getTime() > 35 * 60_000);
+  // Mirror the backend guards, so the button is disabled with the reason
+  // instead of failing the request. The backend refuses only while a full
+  // QA job RUNS — a queued one classifies this trial itself when it
+  // starts. The task's verdict status is the view this card has of that
+  // job.
+  const taskQaActive = task?.verdict_status === "running";
+  const queueBlockedReason =
+    inProgress && !runStale
+      ? trial.analysis_status === "running"
+        ? "Analysis is already running for this trial"
+        : "Analysis is already queued for this trial"
+      : trial.status !== "success" && trial.status !== "failed"
+        ? "The trial must finish before analysis can run"
+        : taskQaActive
+          ? "Task-level QA is running; wait for it to finish"
+          : null;
+
+  if (!hasAnalysis && !showQueueButton) return null;
+
+  const queueRun = async () => {
+    if (queuing) return;
+    const requestTrialId = trial.id;
+    setQueuing(true);
+    setQueueError(null);
+    try {
+      const res = await fetch(
+        `${apiBaseUrl}/trials/${requestTrialId}/analysis/rerun`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to queue analysis",
+        );
+      }
+      // The server queued the run, so the parent list must refresh even
+      // when the user has switched trials; only the local card state below
+      // is scoped to the trial this request was for.
+      onQueued?.();
+      // The server set analysis_status to queued before it responded, so
+      // the queued state is already true on the server. Writing it into
+      // the cache shows it immediately and starts the refetching, and
+      // the refetch then confirms it from the server. The write is
+      // addressed by the queued trial's own cache key, so it reaches the
+      // right entry even when the user switched to another trial while
+      // the request was in flight.
+      void mutateByKey(
+        trialKey(apiBaseUrl, requestTrialId),
+        {
+          ...trial,
+          analysis_status: "queued",
+          analysis: null,
+          analysis_error: null,
+          analysis_started_at: null,
+        },
+        { revalidate: true },
+      );
+      if (trialIdRef.current !== requestTrialId) return;
+      // The old run's log is cleared server-side; clear it here too. Open
+      // the log directly: a re-run over a stale RUNNING analysis keeps
+      // inProgress true, so the open-on-start effect does not fire again.
+      setLogText(null);
+      setLogOpen(true);
+      setQueuePosition(null);
+    } catch (err) {
+      if (trialIdRef.current === requestTrialId) {
+        setQueueError(
+          err instanceof Error ? err.message : "Failed to queue analysis",
+        );
+      }
+    } finally {
+      if (trialIdRef.current === requestTrialId) {
+        setQueuing(false);
+      }
+    }
+  };
+
+  // Progress line: elapsed time while running, queue position while queued.
+  // No narration — the log below shows what the analyzer is doing.
+  let progressLine: string | null = null;
+  if (inProgress) {
+    if (trial.analysis_status === "running") {
+      if (trial.analysis_started_at) {
+        const secs = Math.max(
+          0,
+          Math.floor(
+            (now - new Date(trial.analysis_started_at).getTime()) / 1000,
+          ),
+        );
+        progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
+      }
+    } else {
+      progressLine =
+        queuePosition !== null
+          ? `Position ${queuePosition} in the QA queue.`
+          : "Waiting for a QA worker.";
+    }
+  }
+
+  // Analysis wall-clock, shown in the report header.
+  let analysisDuration: string | null = null;
+  if (trial.analysis_started_at && trial.analysis_finished_at) {
+    const secs = Math.round(
+      (new Date(trial.analysis_finished_at).getTime() -
+        new Date(trial.analysis_started_at).getTime()) /
+        1000,
+    );
+    if (Number.isFinite(secs) && secs >= 0) {
+      analysisDuration =
+        secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`;
+    }
+  }
+
+  const showReport =
+    synced && hasAnalysis && !inProgress && !!trial.analysis?.classification;
+
+  return (
+    <Card
+      className={
+        inProgress
+          ? "border-blue-500/30 bg-blue-500/5"
+          : showReport
+            ? // The report card carries the verdict tint itself.
+              "border-border/60"
+            : "border-slate-500/30 bg-slate-500/5"
+      }
+    >
+      <CardContent className="px-4 py-3">
+        {showQueueButton && (
+          <div className="mb-2 flex justify-end">
+            <button
+              type="button"
+              disabled={queuing || queueBlockedReason !== null}
+              onClick={queueRun}
+              className="text-muted-foreground hover:text-foreground rounded border px-1.5 py-0.5 text-[10px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+              title={
+                queueBlockedReason ??
+                (hasAnalysis
+                  ? "Reset this trial's analysis and re-run it with the latest prompt"
+                  : "Analyze this trial with the latest prompt")
+              }
+            >
+              {queuing
+                ? "Queuing…"
+                : hasAnalysis
+                  ? "Re-run analysis"
+                  : "Run analysis"}
+            </button>
+          </div>
+        )}
+        {queueError && (
+          <p className="mb-2 text-[11px] text-red-500">{queueError}</p>
+        )}
+        {/* Disabled buttons swallow hover, so the title alone never shows.
+            While a run is in progress the card body already says so. */}
+        {queueBlockedReason && !inProgress && (
+          <p className="text-muted-foreground mb-2 text-[11px]">
+            {queueBlockedReason}
+          </p>
+        )}
+        {!synced && !inProgress ? (
+          // The snapshot can carry a superseded report; hold the card's
+          // shape until the fresh fetch settles instead of painting it and
+          // swapping.
+          <QaReportSkeleton />
+        ) : showReport ? (
+          <>
+            {trial.analysis_status === "failed" && trial.analysis_error && (
+              <p className="mb-2 text-xs text-red-500">
+                Analysis failed: {trial.analysis_error}
+              </p>
+            )}
+            <QaAssessmentReport
+              classification={trial.analysis!.classification!}
+              subtype={trial.analysis?.subtype}
+              rootCause={trial.analysis?.root_cause || trial.analysis?.evidence}
+              recommendation={trial.analysis?.recommendation}
+              evidence={
+                // Without a root cause the evidence IS the lead text above;
+                // passing it again would render the same prose twice.
+                trial.analysis?.root_cause &&
+                trial.analysis?.evidence &&
+                trial.analysis.evidence !== trial.analysis.root_cause
+                  ? trial.analysis.evidence
+                  : null
+              }
+              actionItems={trial.analysis?.action_items}
+              log={logText}
+              logOpen={logOpen}
+              onLogToggle={setLogOpen}
+              duration={analysisDuration}
+              raw={trial.analysis}
+            />
+          </>
+        ) : (
+          <div className="flex items-start gap-3">
+            {inProgress ? (
+              <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
+            ) : hasAnalysis ? (
+              <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
+            ) : (
+              <Microscope className="mt-0.5 h-5 w-5 text-slate-400" />
+            )}
+            <div className="min-w-0 flex-1">
+              {inProgress ? (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    {trial.analysis_status === "running"
+                      ? "Analyzing"
+                      : "Analysis queued"}
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    {progressLine}
+                  </span>
+                </div>
+              ) : hasAnalysis ? (
+                // Analysis state exists but produced no report (e.g. failed
+                // before the classifier returned).
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">Analysis</span>
+                  {trial.analysis_status === "failed" &&
+                  trial.analysis_error ? (
+                    <span className="text-xs text-red-500">
+                      Analysis failed: {trial.analysis_error}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground text-xs">
+                      No report was produced.
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  <span className="font-mono text-sm font-bold">
+                    No analysis yet
+                  </span>
+                  <span className="text-muted-foreground text-xs">
+                    This trial has not been analyzed.
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        {logText && !showReport && (
+          <details
+            className="mt-3"
+            open={logOpen}
+            onToggle={(event) =>
+              setLogOpen((event.target as HTMLDetailsElement).open)
+            }
+          >
+            <summary className="text-muted-foreground cursor-pointer text-[11px] font-medium select-none">
+              Analysis log
+            </summary>
+            <pre
+              ref={logRef}
+              className="bg-muted/40 mt-1 max-h-48 overflow-auto rounded p-2 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap"
+            >
+              {logText}
+            </pre>
+          </details>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function buildOddishRunCommand(trial: Trial, task: Task): string {
   const parts: string[] = ["oddish run"];
@@ -358,28 +806,15 @@ export function TrialDetailPanel({
   contentOnly = false,
   paneAction,
 }: TrialDetailPanelProps) {
-  const searchParams = useSearchParams();
-
   const verifierSummary = useVerifierSummary(trial, apiBaseUrl, isOpen);
 
   const validTabs = useMemo(
-    () =>
-      new Set([
-        "summary",
-        "live",
-        "files",
-        "trajectory",
-        // Only a valid target when the Agent Graph tab is actually rendered;
-        // otherwise a ?tab=agent-graph link (e.g. public share) would select a
-        // panel that doesn't exist and leave the drawer body blank.
-        ...(showAnalysis ? ["agent-graph"] : []),
-        "artifacts",
-      ]),
-    [showAnalysis],
+    () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
+    [],
   );
 
   const [activeTab, setActiveTab] = useState(() => {
-    const urlTab = searchParams.get("tab");
+    const urlTab = getLiveParam("tab");
     return urlTab && validTabs.has(urlTab) ? urlTab : "summary";
   });
   const [showFullError, setShowFullError] = useState(false);
@@ -388,47 +823,162 @@ export function TrialDetailPanel({
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // ``?file=`` / ``?lines=`` are scoped by ``?tab=``: on the artifacts tab
+  // they address the artifact browser, otherwise the files tab. Each tab
+  // keeps its own state; the URL carries the active tab's pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    searchParams.get("file"),
+    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file"),
+  );
+  // Line-anchor range within the selected file (``?lines=L12-L20``).
+  const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
+    getLiveParam("tab") === "artifacts"
+      ? null
+      : parseLineRange(getLiveParam("lines")),
+  );
+  const [artifactsTargetPath, setArtifactsTargetPath] = useState<
+    string | null
+  >(() => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null));
+  const [artifactsLines, setArtifactsLines] = useState<LineRange | null>(() =>
+    getLiveParam("tab") === "artifacts"
+      ? parseLineRange(getLiveParam("lines"))
+      : null,
   );
 
   const hydratedFromUrl = useRef(false);
 
-  // Hydrate from URL on first open
+  // Hydrate from the URL on first open. Reads the live URL, not the
+  // useSearchParams snapshot: replaceState never refreshes that hook, so on
+  // a remount (e.g. the drawer's pane layout changing) the snapshot is the
+  // stale page-load query and would reset the panel to where the user
+  // started instead of where they are.
   useEffect(() => {
     if (!isOpen || hydratedFromUrl.current) return;
     hydratedFromUrl.current = true;
-    const urlTab = searchParams.get("tab");
-    const urlFile = searchParams.get("file");
+    const urlTab = getLiveParam("tab");
+    const urlFile = getLiveParam("file");
+    const urlLines = parseLineRange(getLiveParam("lines"));
     if (urlTab && validTabs.has(urlTab)) setActiveTab(urlTab);
+    if (urlTab === "artifacts") {
+      // ?file=/?lines= address the artifact browser while tab=artifacts.
+      if (urlFile) {
+        setArtifactsTargetPath(urlFile);
+        artifactsTargetPathRef.current = urlFile;
+      }
+      if (urlLines) setArtifactsLines(urlLines);
+      return;
+    }
     if (urlFile) {
       setFilesTargetPath(urlFile);
+      filesTargetPathRef.current = urlFile;
       if (!urlTab) setActiveTab("files");
     }
-  }, [isOpen, searchParams, validTabs]);
+    if (urlLines) setSelectedLines(urlLines);
+  }, [isOpen, validTabs]);
 
-  // Sync tab & file to URL (without triggering Next.js router navigation)
+  // The file viewer reports every selection change (tree clicks and
+  // auto-selects alike): the ?file= param stays live, and switching to a
+  // different file drops the line anchor — the old range would otherwise
+  // highlight arbitrary lines of the new file. The ref mirrors the state
+  // so the comparison doesn't need an impure setState updater.
+  const filesTargetPathRef = useRef<string | null>(filesTargetPath);
+  const handleSelectedFileChange = useCallback((path: string | null) => {
+    if (!sameFilePath(filesTargetPathRef.current, path)) setSelectedLines(null);
+    filesTargetPathRef.current = path;
+    setFilesTargetPath(path);
+  }, []);
+
+  // Same shape for the artifacts tab: its browser reports selections the
+  // same way, and a different file drops the artifact line anchor. The
+  // comparison also accepts the file's storage path — a deep link can
+  // address a multi-step artifact by storage path, and the browser echoes
+  // back the relativized tree path, which is not a suffix match of it.
+  const artifactsTargetPathRef = useRef<string | null>(artifactsTargetPath);
+  const handleArtifactsFileChange = useCallback(
+    (path: string | null, fullPath?: string) => {
+      const prev = artifactsTargetPathRef.current;
+      const same =
+        sameFilePath(prev, path) ||
+        (fullPath !== undefined && sameFilePath(prev, fullPath));
+      if (!same) setArtifactsLines(null);
+      artifactsTargetPathRef.current = path;
+      setArtifactsTargetPath(path);
+    },
+    []
+  );
+
+  // Navigating to a different trial keeps the file paths (attempts share
+  // layouts, and comparing the same file across attempts is the point) but
+  // drops the line anchors — they addressed the previous trial's content
+  // and would highlight arbitrary lines here.
+  const lastTrialIdRef = useRef<string | null>(trial?.id ?? null);
+  useEffect(() => {
+    const id = trial?.id ?? null;
+    if (id && lastTrialIdRef.current && id !== lastTrialIdRef.current) {
+      setSelectedLines(null);
+      setArtifactsLines(null);
+    }
+    lastTrialIdRef.current = id;
+  }, [trial?.id]);
+
+  // Sync tab, file & lines to URL (without triggering router navigation).
+  // Based on the live URL rather than the useSearchParams snapshot:
+  // replaceState doesn't refresh that hook, and the experiment view writes
+  // its own params (task/trial/taskFile/taskLines) the same way — a stale
+  // base would silently wipe them. The tab is written explicitly even for
+  // summary, so every tab is its own address and every tab click visibly
+  // updates the URL.
   useEffect(() => {
     if (!isOpen || !hydratedFromUrl.current) return;
-    const next = new URLSearchParams(searchParams.toString());
+    const current = new URLSearchParams(window.location.search);
+    const next = new URLSearchParams(window.location.search);
 
-    if (activeTab && activeTab !== "summary") {
+    if (activeTab) {
       next.set("tab", activeTab);
     } else {
       next.delete("tab");
     }
 
-    if (filesTargetPath) {
-      next.set("file", filesTargetPath);
+    // ?file=/?lines= describe the active tab's view: the files tab's pair
+    // or the artifacts tab's pair. On tabs with no file view (summary,
+    // live, trajectory) they drop out of the URL — the tab states stay in
+    // React, so flipping back restores and re-writes them.
+    const paneFile =
+      activeTab === "artifacts"
+        ? artifactsTargetPath
+        : activeTab === "files"
+          ? filesTargetPath
+          : null;
+    const paneLines =
+      activeTab === "artifacts"
+        ? artifactsLines
+        : activeTab === "files"
+          ? selectedLines
+          : null;
+
+    if (paneFile) {
+      next.set("file", paneFile);
     } else {
       next.delete("file");
     }
 
-    if (next.toString() !== searchParams.toString()) {
+    if (paneLines) {
+      next.set("lines", formatLineRange(paneLines));
+    } else {
+      next.delete("lines");
+    }
+
+    if (next.toString() !== current.toString()) {
       const url = `${window.location.pathname}${next.toString() ? `?${next.toString()}` : ""}`;
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [isOpen, activeTab, filesTargetPath, searchParams]);
+  }, [
+    isOpen,
+    activeTab,
+    filesTargetPath,
+    selectedLines,
+    artifactsTargetPath,
+    artifactsLines,
+  ]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
@@ -487,7 +1037,10 @@ export function TrialDetailPanel({
   const handleTimelineStageClick = (stageId: string) => {
     const filePath = STAGE_FILE_MAP[stageId] ?? null;
     setActiveTab("files");
-    setFilesTargetPath(filePath);
+    // Through the shared handler so a file change drops the old line
+    // anchor and the path ref stays in sync — a bare setFilesTargetPath
+    // would let the previous ?lines= range land on the new file.
+    handleSelectedFileChange(filePath);
   };
 
   // Reset state when panel closes
@@ -807,7 +1360,10 @@ export function TrialDetailPanel({
             </Card>
             {(trial.cost_usd != null ||
               trial.input_tokens != null ||
-              trial.output_tokens != null) && (
+              trial.output_tokens != null ||
+              // A trial can be QA'd without the agent ever reporting a cost;
+              // keep the card so its QA sidecar isn't hidden.
+              hasDisplayableCostUsd(trial.qa_cost_usd)) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -816,7 +1372,7 @@ export function TrialDetailPanel({
                     </div>
                     <div className="mt-1 flex items-baseline gap-1">
                       <span className="font-mono text-sm leading-none font-bold tabular-nums">
-                        {trial.cost_usd != null ? (
+                        {hasDisplayableCostUsd(trial.cost_usd) ? (
                           <>
                             {trial.cost_is_estimated ? "~" : ""}
                             {formatCostUsd(trial.cost_usd)}
@@ -825,8 +1381,9 @@ export function TrialDetailPanel({
                           "—"
                         )}
                       </span>
-                      {trial.cost_usd != null &&
+                      {hasDisplayableCostUsd(trial.cost_usd) &&
                         taskCost.pricedCount > 1 &&
+                        hasDisplayableCostUsd(taskCost.costUsd) &&
                         (() => {
                           const marks = costEstimateMarks(
                             taskCost.hasEstimated,
@@ -840,6 +1397,10 @@ export function TrialDetailPanel({
                             </span>
                           );
                         })()}
+                      <QaCostSuffix
+                        costUsd={trial.qa_cost_usd}
+                        title="QA/analysis spend for this trial. Not included in the cost figure."
+                      />
                     </div>
                     {(trial.input_tokens != null ||
                       trial.output_tokens != null) && (
@@ -960,15 +1521,6 @@ export function TrialDetailPanel({
               <Route className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Trajectory
             </TabsTrigger>
-            {showAnalysis && (
-              <TabsTrigger
-                value="agent-graph"
-                className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
-              >
-                <GitBranch className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-                Agent Graph
-              </TabsTrigger>
-            )}
             <TabsTrigger
               value="artifacts"
               className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
@@ -1020,78 +1572,17 @@ export function TrialDetailPanel({
                   tests passed
                 </div>
               )}
-              {/* Analysis Card - only show if analysis is enabled/running/complete */}
-              {showAnalysis && (trial.analysis_status || trial.analysis) && (
-                <Card
-                  className={
-                    trial.analysis_status === "running" ||
-                    trial.analysis_status === "pending" ||
-                    trial.analysis_status === "queued"
-                      ? "border-blue-500/30 bg-blue-500/5"
-                      : trial.analysis?.classification?.startsWith("GOOD")
-                        ? "border-emerald-500/30 bg-emerald-500/5"
-                        : trial.analysis?.classification?.startsWith("BAD")
-                          ? "border-amber-500/30 bg-amber-500/5"
-                          : "border-slate-500/30 bg-slate-500/5"
-                  }
-                >
-                  <CardContent className="px-4 py-3">
-                    <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
-                      QA Assessment
-                    </div>
-                    <div className="flex items-start gap-3">
-                      {trial.analysis_status === "running" ||
-                      trial.analysis_status === "pending" ||
-                      trial.analysis_status === "queued" ? (
-                        <Microscope className="mt-0.5 h-5 w-5 animate-pulse text-blue-500" />
-                      ) : trial.analysis?.classification?.startsWith("GOOD") ? (
-                        <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-500" />
-                      ) : trial.analysis?.classification?.startsWith("BAD") ? (
-                        <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-500" />
-                      ) : (
-                        <XCircle className="mt-0.5 h-5 w-5 text-slate-500" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-col gap-1">
-                          <span className="font-mono text-sm font-bold">
-                            {trial.analysis_status === "running" ||
-                            trial.analysis_status === "pending" ||
-                            trial.analysis_status === "queued"
-                              ? "Analyzing..."
-                              : trial.analysis?.classification?.replace(
-                                  "_",
-                                  " ",
-                                ) || "Analysis"}
-                          </span>
-                          {trial.analysis?.subtype && (
-                            <span className="text-muted-foreground text-xs">
-                              Reason: {trial.analysis.subtype}
-                            </span>
-                          )}
-                        </div>
-                        {trial.analysis?.evidence && (
-                          <p className="text-muted-foreground/90 mt-2 text-xs leading-relaxed">
-                            {trial.analysis.evidence}
-                          </p>
-                        )}
-                        {trial.analysis?.root_cause &&
-                          trial.analysis.root_cause !==
-                            trial.analysis.evidence && (
-                            <p className="text-muted-foreground mt-1 text-xs">
-                              {trial.analysis.root_cause}
-                            </p>
-                          )}
-                        {trial.analysis?.recommendation &&
-                          trial.analysis.recommendation !== "N/A" && (
-                            <p className="text-muted-foreground/80 mt-1 text-xs italic">
-                              💡 {trial.analysis.recommendation}
-                            </p>
-                          )}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+              {/* Analysis card: self-updating; also hosts the run/re-run
+                  button so analysis can be started even when it never ran. */}
+              {showAnalysis && (
+                <TrialAnalysisCard
+                  trial={trial}
+                  task={task}
+                  apiBaseUrl={apiBaseUrl}
+                  onQueued={() => onRetry?.(task ? [task.id] : undefined)}
+                />
               )}
+
 
               {/* Execution Timeline - shows progress during running trials */}
               {trial.harbor_stage && (
@@ -1224,6 +1715,9 @@ export function TrialDetailPanel({
               taskId={null}
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
               initialFilePath={filesTargetPath}
+              selectedLines={selectedLines}
+              onSelectLinesChange={setSelectedLines}
+              onSelectedFileChange={handleSelectedFileChange}
               contentOnly
             />
           </TabsContent>
@@ -1231,6 +1725,10 @@ export function TrialDetailPanel({
           <TabsContent value="artifacts" className="m-0 h-full p-0">
             <ArtifactsViewer
               filesUrl={`${apiBaseUrl}/trials/${trial.id}/files`}
+              initialFilePath={artifactsTargetPath}
+              selectedLines={artifactsLines}
+              onSelectLinesChange={setArtifactsLines}
+              onSelectedFileChange={handleArtifactsFileChange}
             />
           </TabsContent>
 
@@ -1244,19 +1742,6 @@ export function TrialDetailPanel({
               apiBaseUrl={apiBaseUrl}
             />
           </TabsContent>
-
-          {showAnalysis && (
-            <TabsContent
-              value="agent-graph"
-              className="m-0 h-full overflow-auto p-0"
-            >
-              <TrajectoryGraphView
-                trialId={trial.id}
-                hasTrajectory={trial.has_trajectory}
-                apiBaseUrl={apiBaseUrl}
-              />
-            </TabsContent>
-          )}
         </div>
       </Tabs>
     </>

@@ -430,7 +430,7 @@ async def run_task_expand_job(
 
         # Load the archive once (goes through the Phase-0 cache so a
         # later read doesn't re-download).
-        archive_bytes, _members = await storage._load_task_archive(archive_key)
+        archive_bytes, _members, _texts = await storage._load_task_archive(archive_key)
 
         max_member = int(settings.tasks_expand_max_member_bytes)
         extracted_members = _extract_regular_members(

@@ -818,6 +818,12 @@ class TaskVersionResponse(BaseModel):
     message: str | None = None
     created_by_user_id: str | None = None
     created_at: datetime
+    # The pre-trial source audit for this exact snapshot: ``{"items": [...]}``
+    # once one has succeeded. Status is carried separately so a version that was
+    # audited and came back clean is distinguishable from one never audited.
+    pre_trial: dict | None = None
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -849,6 +855,15 @@ class TaskVersionSummary(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     last_run_at: datetime | None = None
+    # Pre-trial source audit for this version, flattened to the items the task
+    # page renders. Empty list + null status means never audited; empty list +
+    # SUCCESS means audited and clean.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
+    # What this audit cost. Captured at write time; absent on audits that
+    # predate that (analysis_costs has no version reference to recover it from).
+    pre_trial_cost_usd: float | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
@@ -870,6 +885,9 @@ class TaskCostTotals(BaseModel):
     billed_has_estimated: bool = False
     billed_has_native: bool = False
     total_trials: int = 0
+    # QA/analysis spend for this task's trials, joined through ``trials``
+    # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
+    qa_cost_usd: float = 0.0
 
 
 class ExperimentCostTotals(BaseModel):
@@ -913,6 +931,14 @@ class ExperimentCostTotals(BaseModel):
     billed_token_trial_count: int = 0
     total_trials: int = 0
 
+    # QA/analysis spend (``analysis_costs``), scoped exactly like the agent
+    # figures above: ``qa_cost_usd`` over every member trial, ``owned_*`` over
+    # homed trials only. Never folded into ``cost_usd`` -- the UI renders it as
+    # a separate muted figure so the headline number keeps its meaning.
+    qa_cost_usd: float = 0.0
+    owned_qa_cost_usd: float = 0.0
+    qa_has_estimated: bool = False
+
 
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
@@ -948,6 +974,13 @@ class TrialResponse(BaseModel):
     task_path: str
     task_version: int | None = None
     task_version_id: str | None = None
+    # Pre-trial source audit of the exact version THIS trial ran against.
+    # Populated only on the single-trial detail fetch: the grid's slim payload
+    # carries hundreds of trials and must not haul findings for each one.
+    pre_trial_findings: list[dict] = Field(default_factory=list)
+    pre_trial_status: str | None = None
+    pre_trial_error: str | None = None
+    pre_trial_cost_usd: float | None = None
     experiment_id: str | None = None
     agent: str
     provider: str
@@ -1049,6 +1082,10 @@ class TrialResponse(BaseModel):
             "billed spend and quota usage."
         ),
     )
+    # QA/analysis spend for this trial. None when no QA ran -- distinct from
+    # 0.0, so the UI can render nothing rather than "+$0.00 QA". None also
+    # means "not resolved by this caller": most builders never populate it.
+    qa_cost_usd: float | None = None
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(
@@ -1069,6 +1106,14 @@ class TrialResponse(BaseModel):
     analysis_error: str | None = Field(
         None,
         description="Error message if analysis failed",
+    )
+    analysis_started_at: datetime | None = Field(
+        None,
+        description="When the current analysis run started; None until a worker picks it up",
+    )
+    analysis_finished_at: datetime | None = Field(
+        None,
+        description="When the analysis reached a terminal state",
     )
     superseded_by_trial_id: str | None = Field(
         None,
@@ -1334,6 +1379,9 @@ class TaskBrowseItem(BaseModel):
     billed_trial_count: int = 0
     billed_has_estimated: bool = False
     billed_has_native: bool = False
+    # QA/analysis spend for this task's trials, joined through ``trials``
+    # because ``analysis_costs.task_id`` is NULL on trial-scoped QA rows.
+    qa_cost_usd: float = 0.0
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
@@ -1360,6 +1408,11 @@ class TaskBrowseFacets(BaseModel):
     Trial-derived facets are scoped to the org's non-probe, non-superseded
     trials. Enum-valued filters (task status, priority, trial status, origin)
     are static and supplied client-side, so they are not returned here.
+
+    ``experiments`` is deprecated and always empty; it used to carry every org
+    experiment (7.7MB at 126k experiments). Experiment filter options are
+    served by ``GET /tasks/browse/experiment-options`` instead. The field is
+    kept so the response shape does not break existing consumers.
     """
 
     agents: list[str] = Field(default_factory=list)
@@ -1369,6 +1422,7 @@ class TaskBrowseFacets(BaseModel):
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
+    # Deprecated: always empty — see the class docstring.
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
 
@@ -1916,6 +1970,17 @@ class ExperimentOption(BaseModel):
     name: str
 
 
+class ExperimentOptionsResponse(BaseModel):
+    """Typeahead options for the task-browser experiment filter.
+
+    Served by ``GET /tasks/browse/experiment-options``. Replaces the retired
+    ``TaskBrowseFacets.experiments`` all-org list with a bounded, searchable
+    page, reusing the adjacent ``ExperimentOption`` item shape.
+    """
+
+    items: list[ExperimentOption] = Field(default_factory=list)
+
+
 class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -1967,6 +2032,59 @@ class CustomQARunResponse(BaseModel):
     output: Any | None = None
     error: str | None = None
     run_config: dict
+
+
+class QAJobAssignRequest(BaseModel):
+    """Create or update one QA job assignment at a scope.
+
+    ``model`` and ``backend`` are optional because they have per-stage
+    deployment defaults (``settings.pre_trial_model`` / ``analysis_model``),
+    which is also what makes a bare ``qa-jobs disable`` possible -- a
+    suppression row still has to satisfy the NOT NULL columns.
+    """
+
+    prompt: str = Field(min_length=1, description="Prompt kind, or prompt id.")
+    stage: Literal["pre_trial", "post_trial"]
+    prompt_version: int | None = Field(default=None, ge=1)
+    model: str | None = None
+    reasoning_effort: Literal["low", "medium", "high"] | None = None
+    backend: Literal["api", "sandbox"] | None = None
+    # None (field omitted) means "don't touch runner config" on an update, as a
+    # bare `qa-jobs disable` does; a create still lands False.
+    allow_oddish_cli: bool | None = None
+    enabled: bool = True
+
+
+class QAJobResponse(BaseModel):
+    id: str
+    stage: str
+    prompt_id: str
+    prompt_kind: str
+    prompt_version: int | None = None  # pinned version, NULL = latest-wins
+    effective_version: int | None = None  # what would actually run
+    scope_type: str
+    scope_id: str
+    org_id: str | None = None
+    model: str
+    reasoning_effort: str | None = None
+    backend: str
+    allow_oddish_cli: bool
+    enabled: bool
+    inherited_from: str
+
+
+class QAJobStatusRow(BaseModel):
+    assignment_id: str
+    stage: str
+    prompt_kind: str
+    inherited_from: str
+    total: int
+    counts: dict[str, int] = {}
+
+
+class QAJobStatusResponse(BaseModel):
+    scope: str
+    jobs: list[QAJobStatusRow] = []
 
 
 # ---------------------------------------------------------------------------
@@ -2058,6 +2176,9 @@ class PromptResponse(BaseModel):
     id: str
     kind: str
     description: str
+    scope_type: str | None = None
+    scope_id: str | None = None
+    org_id: str | None = None
     latest_version: int | None = None  # populated by the router, not the ORM
     version: int | None = None  # the resolved version content belongs to
     created_at: datetime

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-08-05]
+
+### Added
+
+- `opencode` trials can now run on closed-internet tasks. Stock opencode self-installs (nvm/Node/`opencode-ai`) during agent SETUP, which runs under the ENVIRONMENT baseline network policy — the agent-phase allowlist (`extra_allowed_hosts`, runtime-host merges) only applies around `agent.run()`, so no agent-phase declaration can save a self-installing agent: the trial died at DNS during setup (`curl: (6) Could not resolve host: raw.githubusercontent.com`) before the model was ever reached. The fix mirrors the existing claude-code installer arm in `run_harbor_trial_async`: `-a opencode` now merges `OPENCODE_INSTALL_HOSTS` plus the model transport host (via `outbound_hosts_for_model`, which resolves `openrouter/tencent/hy3` → `openrouter.ai`) into `env_config.extra_allowed_hosts`, which harbor folds into the environment baseline so the allowlist spans install *and* run. On legacy closed tasks (`[environment] allow_internet=false` → no-network baseline for every phase, e.g. the GDM SWE-Marathon samples) this is the only channel that works at all; on modern swe-marathon-shaped tasks (public setup → restricted agent) harbor ignores baseline extras on the public baseline and the agent phase keeps its model-host-only allowlist, so no install hosts leak into agent run there. `_build_agent_config` still routes `-a opencode` through the `OddishOpenCode` wrapper. Note: `required_outbound_domains` — the hook two earlier revisions of this change relied on, and which several wrapper docstrings describe as "Harbor builds the Modal egress allowlist from this hook" — has **no consumer** in oddish or harbor; it is kept declarative-only for interface parity (both failed approaches were validated end-to-end on the PR preview backend before landing on this one).
+
+---
+
+## [2026-07-27]
+
+### Changed
+
+- Enforced quotas now cancel every quota-counted nonterminal trial as soon as live or settled spend reaches the payer's rolling 24-hour cap or the organization's monthly cap. User caps stop that payer's trials; org caps stop all trials in the org, including queued and retrying work, and remote workers are terminated after the cancellation transaction commits.
+
+---
+
 ## [2026-07-20]
 
 ### Changed

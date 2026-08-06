@@ -29,6 +29,25 @@ async def test_stream_chat_bypasses_permissions():
     assert _BYPASS in await _last_command(fake, sbx)
 
 
+async def test_stream_chat_adds_external_read_directories():
+    fake = FakeDaytonaClient()
+    sbx = await fake.create_sandbox(
+        env_vars={}, auto_stop_minutes=30, auto_delete_minutes=60, labels={}
+    )
+    agen = ClaudeCodeRuntime().stream_chat(
+        fake,
+        sbx,
+        content="hi",
+        claude_session_id=None,
+        add_dirs=("/tmp/task with spaces", "/tmp/trial"),
+    )
+    async for _ in agen:
+        pass
+    command = await _last_command(fake, sbx)
+    assert "--add-dir '/tmp/task with spaces'" in command
+    assert "--add-dir /tmp/trial" in command
+
+
 async def test_run_once_bypasses_permissions():
     fake = FakeDaytonaClient()
     sbx = await fake.create_sandbox(

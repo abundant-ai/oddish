@@ -41,6 +41,7 @@ from oddish.config import (
     zai_bare_model_id,
 )
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
+from .restricted_network import agent_keeps_public_model_identity
 
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
@@ -48,7 +49,10 @@ _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaud
 _ODDISH_PROBE_CLAUDE_CODE_IMPORT_PATH = (
     "oddish.workers.agents.claude_code:OddishProbeClaudeCode"
 )
+_ODDISH_CURSOR_CLI_IMPORT_PATH = "oddish.workers.agents.cursor_cli:OddishCursorCli"
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
+_ODDISH_OPENCODE_IMPORT_PATH = "oddish.workers.agents.opencode:OddishOpenCode"
+_ODDISH_GEMINI_CLI_IMPORT_PATH = "oddish.workers.agents.gemini_cli:OddishGeminiCli"
 _ODDISH_MINI_SWE_IMPORT_PATH = "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
@@ -368,6 +372,45 @@ def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.kwargs = kwargs
 
 
+def _apply_opencode_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route opencode through the wrapper that declares its egress allowlist.
+
+    Stock opencode self-installs (nvm/Node/opencode-ai) at trial start and has no
+    Oddish egress declaration, so on a closed-internet trial Harbor's Modal
+    firewall blocks its install and model calls alike. The wrapper implements
+    ``required_outbound_domains`` so those hosts are allowlisted.
+    """
+    if agent_config.import_path is not None:
+        return
+    if (agent_config.name or "").strip().lower() != "opencode":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_OPENCODE_IMPORT_PATH
+
+
+def _apply_gemini_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Gemini CLI through the wrapper that can disable remote web tools."""
+    if agent_config.import_path is not None:
+        return
+    if (agent_config.name or "").strip().lower() != "gemini-cli":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_GEMINI_CLI_IMPORT_PATH
+
+
+def _apply_cursor_cli_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Cursor through the restricted-Compose compatibility wrapper."""
+    if agent_config.import_path is not None:
+        return
+    if (agent_config.name or "").strip().lower() != "cursor-cli":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CURSOR_CLI_IMPORT_PATH
+
+
 def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
     """Route Meta model evals through mini-swe-agent with Meta API settings."""
     if agent_config.import_path is not None:
@@ -582,7 +625,19 @@ def _build_agent_config(
     _apply_claude_code_moonshot_env(agent_config)
     _apply_claude_code_probe_subagent_model(agent_config, is_probe)
 
-    if _agent_uses_openai_provider(agent_config):
+    # Gate on agent_keeps_public_model_identity: a harness that routes the model
+    # through its own service (Cursor) or pins its egress to one provider
+    # (gemini-cli -> Gemini, grok-build -> xAI) never talks to the OpenAI/Azure
+    # endpoint, so its model must NOT be rewritten to the private Azure
+    # deployment id -- it needs the public model identity, and a pinned
+    # transport could never resolve a worker-private deployment id anyway.
+    # Agents that talk to OpenAI directly (codex, mini-swe on an openai model --
+    # prefixed or bare) still get the rewrite. This is the source the runner's
+    # runtime-model swap later undoes for serialization/redaction; both gate the
+    # same way.
+    if _agent_uses_openai_provider(
+        agent_config
+    ) and not agent_keeps_public_model_identity(agent_config):
         if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
             warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
         else:
@@ -593,6 +648,7 @@ def _build_agent_config(
 
     _apply_codex_oddish_wrapper(agent_config)
     _apply_grok_build_oddish_wrapper(agent_config)
+    _apply_opencode_oddish_wrapper(agent_config)
     _apply_meta_mini_swe_agent(agent_config)
     _apply_mini_swe_agent(agent_config)
     _apply_claude_code_oddish_wrapper(agent_config, is_probe)

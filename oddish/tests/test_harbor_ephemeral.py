@@ -160,6 +160,74 @@ def test_build_payload_carries_extra_agent_env():
     assert payload["extra_agent_env"] == {"ODDISH_API_KEY": "secret-mint"}
 
 
+def test_build_payload_carries_agent_config():
+    agent_config = {
+        "env": {"UV_HTTP_RETRIES": "8"},
+        "extra_allowed_hosts": ["astral.sh", "pypi.org"],
+        "override_setup_timeout_sec": 1800,
+    }
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="mini-swe-agent",
+        model="openrouter/tencent/hy3",
+        environment=EnvironmentType.MODAL,
+        raw_harbor_config={"agent_config": agent_config},
+        is_probe=False,
+    )
+    assert payload["agent_config"] == agent_config
+
+
+def test_child_applies_submitted_agent_config(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "mini-swe-agent",
+            "model": "openrouter/tencent/hy3",
+            "environment": "modal",
+            "environment_config": {},
+            "agent_config": {
+                "env": {"UV_HTTP_RETRIES": "8"},
+                "extra_allowed_hosts": ["astral.sh", "pypi.org"],
+                "override_setup_timeout_sec": 1800,
+            },
+            "verifier": {},
+            "artifacts": [],
+        }
+    )
+    agent_config = config.agents[0]
+    assert agent_config.name == "mini-swe-agent"
+    assert agent_config.model_name == "openrouter/tencent/hy3"
+    assert agent_config.env == {"UV_HTTP_RETRIES": "8"}
+    assert agent_config.extra_allowed_hosts == ["astral.sh", "pypi.org"]
+    assert agent_config.override_setup_timeout_sec == 1800
+
+
+def test_child_preserves_submitted_agent_import_path(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "ignored-built-in-name",
+            "model": "custom/model",
+            "environment": "docker",
+            "environment_config": {},
+            "agent_config": {"import_path": "custom.module:CustomAgent"},
+            "verifier": {},
+            "artifacts": [],
+        }
+    )
+    assert config.agents[0].name is None
+    assert config.agents[0].import_path == "custom.module:CustomAgent"
+    assert config.agents[0].model_name == "custom/model"
+
+
 def test_child_applies_extra_agent_env_to_agent_config(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -177,6 +245,37 @@ def test_child_applies_extra_agent_env_to_agent_config(tmp_path):
         }
     )
     assert config.agents[0].env.get("ODDISH_API_KEY") == "secret-mint"
+
+
+def test_child_merges_worker_env_over_submitted_env(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "mini-swe-agent",
+            "model": "openrouter/tencent/hy3",
+            "environment": "modal",
+            "environment_config": {},
+            "agent_config": {
+                "env": {
+                    "UV_HTTP_RETRIES": "8",
+                    "OPENAI_BASE_URL": "https://stale.invalid",
+                    "ODDISH_API_KEY": "stale",
+                }
+            },
+            "verifier": {},
+            "artifacts": [],
+            "runtime_env": {"OPENAI_BASE_URL": "https://worker.example/v1"},
+            "extra_agent_env": {"ODDISH_API_KEY": "secret-mint"},
+        }
+    )
+    assert config.agents[0].env == {
+        "UV_HTTP_RETRIES": "8",
+        "OPENAI_BASE_URL": "https://worker.example/v1",
+        "ODDISH_API_KEY": "secret-mint",
+    }
 
 
 _SOURCE = "https://github.com/dot-agi/harbor"
@@ -384,6 +483,41 @@ def test_spawn_args_defaults_to_docker_no_extra():
     args = harbor_ephemeral._spawn_args(_SOURCE, _SHA)
     req = args[args.index("--with") + 1]
     assert req == harbor_git_requirement(_SOURCE, _SHA)
+
+
+def test_child_process_env_exposes_existing_parent_site_packages(monkeypatch, tmp_path):
+    first = tmp_path / "site-a"
+    second = tmp_path / "site-b"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(
+        harbor_ephemeral.site,
+        "getsitepackages",
+        lambda: [str(first), str(tmp_path / "missing"), str(second)],
+    )
+
+    env = harbor_ephemeral._child_process_env()
+
+    assert env["ODDISH_PARENT_SITE_PACKAGES"].split(os.pathsep) == [
+        str(first.resolve()),
+        str(second.resolve()),
+    ]
+
+
+def test_child_process_env_fails_loudly_without_parent_site_packages(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        harbor_ephemeral.site,
+        "getsitepackages",
+        lambda: [str(tmp_path / "missing")],
+    )
+
+    with pytest.raises(
+        HarborOverrideImportError,
+        match="cannot locate parent site-packages",
+    ):
+        harbor_ephemeral._child_process_env()
 
 
 _FAKE_CHILD = textwrap.dedent(
