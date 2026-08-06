@@ -1,8 +1,10 @@
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,10 +13,12 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github/workflows/pr-preview.yml"
 RESET_WORKFLOW = REPO / ".github/workflows/preview-reset.yml"
+PRUNE_WORKFLOW = REPO / ".github/workflows/preview-prune.yml"
 PREVIEW = REPO / ".github/scripts/preview"
 PREPARE = PREVIEW / "prepare_preview_database.sh"
 COMPUTE_PLAN = PREVIEW / "compute_deployment_plan.sh"
 DEPLOY = PREVIEW / "deploy_preview_backend.sh"
+PRUNE = PREVIEW / "prune_stale_supabase_branches.sh"
 MODAL_APP = REPO / "backend/modal_app.py"
 
 URL_FRAGMENT = "abundant-ai-preview--oddish-pr-{0}-api.modal.run"
@@ -437,3 +441,166 @@ def test_reset_reuses_preview_scripts():
     )
     assert prepare_step["env"]["DEPLOY_BACKEND"] == "true"
     assert prepare_step["env"]["RUN_MIGRATIONS"] == "true"
+
+
+def _prune_wf():
+    return yaml.safe_load(PRUNE_WORKFLOW.read_text())
+
+
+def test_prune_runs_on_a_schedule():
+    on = _on(_prune_wf())
+    assert on["schedule"], "prune must run unattended, not only on dispatch"
+    assert "workflow_dispatch" in on
+    assert on["workflow_dispatch"]["inputs"]["max_age_days"]["default"] == "7"
+
+
+def test_prune_workflow_invokes_the_script():
+    job = _prune_wf()["jobs"]["prune"]
+    steps = job["steps"]
+    assert any("prune_stale_supabase_branches.sh" in s.get("run", "") for s in steps)
+    for key in ("SUPABASE_ACCESS_TOKEN", "SUPABASE_PROJECT_REF", "MAX_AGE_DAYS"):
+        assert key in job["env"]
+    # Dispatch inputs reach the script through env, never interpolated into a
+    # run: body where they would be shell injection.
+    assert not any("${{" in s.get("run", "") for s in steps)
+
+
+def test_prune_script_is_executable():
+    # The workflow runs it by path, so a lost exec bit is a broken cron.
+    assert os.access(PRUNE, os.X_OK)
+
+
+def _branch(name, days_old, *, persistent=False, created_at=None):
+    if created_at is None:
+        stamp = datetime.now(timezone.utc) - timedelta(days=days_old)
+        created_at = stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "id": f"id-{name}",
+        "name": name,
+        "persistent": persistent,
+        "status": "MIGRATIONS_PASSED",
+        "created_at": created_at,
+    }
+
+
+def _run_prune(branches, *, env=None, fail_delete=""):
+    tmp = Path(tempfile.mkdtemp())
+    bins = tmp / "bin"
+    bins.mkdir()
+    listing = tmp / "branches.json"
+    listing.write_text(json.dumps(branches))
+    deleted = tmp / "deleted"
+    deleted.write_text("")
+    fake = bins / "supabase"
+    # `delete` drains stdin the way the real interactive CLI does, so a script
+    # that fed it the branch list would only ever delete the first branch.
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$2" in\n'
+        f'  list) cat "{listing}" ;;\n'
+        "  delete)\n"
+        "    cat >/dev/null\n"
+        f'    echo "$3" >> "{deleted}"\n'
+        f'    [ "$3" = "{fail_delete}" ] && exit 1\n'
+        "    ;;\n"
+        "esac\n"
+        "exit 0\n"
+    )
+    fake.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", str(PRUNE)],
+        env={
+            **os.environ,
+            "PATH": f"{bins}:{os.environ['PATH']}",
+            "SUPABASE_ACCESS_TOKEN": "token",
+            "SUPABASE_PROJECT_REF": "ref",
+            **(env or {}),
+        },
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    return proc, deleted.read_text().split()
+
+
+@needs_bash
+def test_prune_deletes_only_stale_pr_branches():
+    proc, deleted = _run_prune(
+        [
+            _branch("pr-1", 10),
+            _branch("pr-2", 2),
+            _branch("pr-3", 30, persistent=True),
+            _branch("main", 99, persistent=True),
+            _branch("staging-preview", 99),
+        ]
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == ["id-pr-1"]
+
+
+@needs_bash
+def test_prune_honours_max_age_days():
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 10), _branch("pr-2", 2)],
+        env={"MAX_AGE_DAYS": "1"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert sorted(deleted) == ["id-pr-1", "id-pr-2"]
+
+
+@needs_bash
+def test_prune_dry_run_deletes_nothing():
+    proc, deleted = _run_prune([_branch("pr-1", 10)], env={"DRY_RUN": "true"})
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == []
+    assert "would delete pr-1" in proc.stdout
+
+
+@needs_bash
+def test_prune_deletes_every_stale_branch():
+    # Regression: the delete CLI must not consume the loop's branch list.
+    proc, deleted = _run_prune([_branch(f"pr-{n}", 10) for n in (1, 2, 3)])
+    assert proc.returncode == 0, proc.stderr
+    assert sorted(deleted) == ["id-pr-1", "id-pr-2", "id-pr-3"]
+
+
+@needs_bash
+def test_prune_accepts_fractional_second_timestamps():
+    stamp = datetime.now(timezone.utc) - timedelta(days=10)
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 0, created_at=stamp.strftime("%Y-%m-%dT%H:%M:%S.123456Z"))]
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == ["id-pr-1"]
+
+
+@needs_bash
+def test_prune_fails_closed_on_unreadable_timestamp():
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 10), _branch("pr-2", 0, created_at="whenever")]
+    )
+    assert proc.returncode != 0
+    assert deleted == []
+
+
+@needs_bash
+def test_prune_reports_a_failed_delete_and_keeps_going():
+    proc, deleted = _run_prune(
+        [_branch("pr-1", 10), _branch("pr-2", 10)], fail_delete="id-pr-1"
+    )
+    assert proc.returncode == 1
+    assert sorted(deleted) == ["id-pr-1", "id-pr-2"]
+
+
+@needs_bash
+def test_prune_rejects_a_non_numeric_age():
+    proc, deleted = _run_prune([_branch("pr-1", 10)], env={"MAX_AGE_DAYS": "7 days"})
+    assert proc.returncode == 1
+    assert deleted == []
+
+
+@needs_bash
+def test_prune_is_quiet_when_nothing_is_stale():
+    proc, deleted = _run_prune([_branch("pr-1", 2)])
+    assert proc.returncode == 0, proc.stderr
+    assert deleted == []
