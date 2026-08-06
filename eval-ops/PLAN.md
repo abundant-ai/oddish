@@ -1,11 +1,17 @@
 # Standing orders — SWE-Marathon gpt-5.6-terra effort sweep
 
-**Read this first after any container restart.** This has now happened twice
-(2026-08-05 ~00:40Z and ~19:50Z): `/home/user/terra-run` is wiped entirely —
-scripts, state, dataset copies — along with the babysit cron. The first wipe
-cost ~17 h of unattended running, the second ~6 h. The repos and
-`/home/user/oddish/.env` survive. Server-side trials keep running throughout;
-only the babysitting stops.
+**Read this first after any container restart.** This happened three times
+(2026-08-05 ~00:40Z, ~19:50Z, 2026-08-06 ~02:29Z), wiping `/home/user/terra-run`
+entirely — scripts, state, dataset copies — along with the babysit cron.
+
+**Root cause: the container is reclaimed on INACTIVITY.** Polling every 30
+minutes left gaps long enough to be reclaimed mid-run. The fix is a **20-minute
+heartbeat cron** that outputs a single letter and nothing else; with it, ordinary
+long-running loops survive and `run_forever.sh` can drive the whole fill. Keep
+that heartbeat alive — it is load-bearing, not cosmetic.
+
+The repos and `/home/user/oddish/.env` survive a wipe. Server-side trials keep
+running throughout; only the babysitting stops.
 
 **Recovery is a single command** — this whole directory is committed to the
 `oddish` repo, branch `claude/oddish-api-env-setup-f76jpp`, under `eval-ops/`:
@@ -82,7 +88,16 @@ phase change needs no relaunch.
 - Don't `pkill -f` on a pattern that also matches the calling shell's own
   command line. It kills the caller. (Learned the hard way.)
 
-## CUA throttle, specifically
+## CUA concurrency — SUPERSEDED, cap is now 25
+
+Charles, 2026-08-06: *"the concurrency can go up to 25. just queue up all of the
+trials for the cua. trust me."* The wave-by-wave filler is retired; `cua_dispatch.sh`
+queues every CUA cell straight to target and Oddish's own queue does the
+throttling. Do **not** re-impose the ≤10 waves. The original rationale is kept
+below for context, since it explains what the failure mode looks like if it ever
+does appear.
+
+## CUA throttle, original rationale (historical)
 
 The browser verifier runs on the shared platform `ANTHROPIC_API_KEY`, and each
 CUA `task.toml` hard-fails (no reward file → the trial *errors* rather than

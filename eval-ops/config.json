@@ -2,6 +2,6 @@
  "phase": "B",
  "noncua_target": 10,
  "cua_target": 10,
- "cua_cap": 10,
- "note": "Phase B set 2026-08-05T19:5xZ on Charles's order 'finish the trials off. make everything 10/10'. Non-CUA go 8 -> 10 (+96 trials, dispatch10.sh). CUA go to 10/cell, still throttled to cua_cap concurrent by cua_fill.py -- the cap is a verifier-safety limit, not a target, and does not relax in phase B."
+ "cua_cap": 25,
+ "note": "Phase B. Charles 2026-08-06T03:0xZ: 'the concurrency can go up to 25. just queue up all of the trials for the cua. trust me.' -- cap raised 10 -> 25 on his explicit call, and the remaining CUA trials are queued outright to target rather than filled in waves. Oddish's own queue is the throttle now."
 }
