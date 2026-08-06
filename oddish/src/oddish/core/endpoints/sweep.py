@@ -458,35 +458,21 @@ async def create_task_sweep_core(
             submission = submission.model_copy(update={"link": github_meta.pr_url})
 
     if submission.append_to_task:
-        # Quota locks are taken inside ``admit_trials`` immediately before
-        # the headroom check and held through the trial insert in this same
-        # transaction. Do not acquire them earlier: the reconcile / task load
-        # below can take tens of seconds on large tasks, and holding the
-        # org-wide advisory lock across that window starves every concurrent
-        # submit and quota-enforcement worker (opaque 500s on /tasks/sweep).
+        # Lock order must stay ``quota advisory → task row`` to match
+        # ``cancel_trials_if_quota_reached`` (quota first, then task FOR UPDATE).
+        # Taking the task row before ``admit_trials`` inverted that order and
+        # deadlocked under concurrent over-quota cancellation.
+        #
+        # Also do not take the org quota lock across reconcile: that window can
+        # take tens of seconds on large tasks and starves every concurrent
+        # submit / enforcement worker (opaque 500s on /tasks/sweep).
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
-        await session.refresh(task, with_for_update=True)
-        # Allow flipping task.run_analysis from False to True on append.
-        # ``run_analysis`` runs at trial-completion time, so updating the
-        # task-level flag does not retroactively analyze pre-existing
-        # trials, but new trials submitted with ``--run-analysis`` will be
-        # analyzed as the caller requested. This matches the documented
-        # purpose of ``--force-new-version`` (see ``TaskUploadInitRequest``)
-        # and lets a task that was first registered without analysis later
-        # opt in without manual intervention.
-        if submission.run_analysis and not task.run_analysis:
-            task.run_analysis = True
-        # Same opt-in flip for auto-probe: a task first run without probes can
-        # later opt in on append. Off by default (probes are opt-in).
-        if submission.run_probe and not task.run_probe:
-            task.run_probe = True
-        # Update the link whenever a new submission carries one (explicit
-        # --link or derived from --github-meta above). A submission with no
-        # link leaves the existing value untouched rather than clearing it.
-        if submission.link:
-            task.link = submission.link
+        # Read-only intent from the unlocked snapshot. Applied under FOR UPDATE
+        # after admission (idempotent flips).
+        want_run_analysis = bool(task.run_analysis or submission.run_analysis)
+        want_run_probe = bool(task.run_probe or submission.run_probe)
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None
@@ -585,15 +571,37 @@ async def create_task_sweep_core(
                 "priority": task.priority,
                 "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
-                "run_analysis": task.run_analysis,
-                "run_probe": task.run_probe,
+                "run_analysis": want_run_analysis,
+                "run_probe": want_run_probe,
                 "user": task.user,
             }
         )
         expanded = build_task_submission_from_sweep(
             append_submission, task_path=task.task_path, trials=trials
         )
+        # Quota advisory lock is acquired here (and held through commit).
         await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
+        # Task row lock only after quota — same order as enforcement.
+        await session.refresh(task, with_for_update=True)
+        # Allow flipping task.run_analysis from False to True on append.
+        # ``run_analysis`` runs at trial-completion time, so updating the
+        # task-level flag does not retroactively analyze pre-existing
+        # trials, but new trials submitted with ``--run-analysis`` will be
+        # analyzed as the caller requested. This matches the documented
+        # purpose of ``--force-new-version`` (see ``TaskUploadInitRequest``)
+        # and lets a task that was first registered without analysis later
+        # opt in without manual intervention.
+        if want_run_analysis and not task.run_analysis:
+            task.run_analysis = True
+        # Same opt-in flip for auto-probe: a task first run without probes can
+        # later opt in on append. Off by default (probes are opt-in).
+        if want_run_probe and not task.run_probe:
+            task.run_probe = True
+        # Update the link whenever a new submission carries one (explicit
+        # --link or derived from --github-meta above). A submission with no
+        # link leaves the existing value untouched rather than clearing it.
+        if submission.link:
+            task.link = submission.link
         try:
             new_trials = await append_trials_to_task(
                 session,

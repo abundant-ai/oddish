@@ -98,10 +98,24 @@ async def test_enforce_returns_none_on_lock_busy_without_settlement(monkeypatch)
     assert after_check_calls == 0
 
 
-def test_append_sweep_does_not_hold_quota_locks_across_reconcile():
-    """Regression: early org lock on append starved concurrent /tasks/sweep."""
+def test_append_sweep_preserves_quota_then_task_lock_order():
+    """Regression: task FOR UPDATE before admit inverted lock order vs cancel.
+
+    Enforcement takes quota advisory first, then task FOR UPDATE. Append must
+    do the same (admit_trials → task FOR UPDATE) or concurrent cancel deadlocks.
+    Also: no early acquire_quota_locks across reconcile (starves /tasks/sweep).
+    """
     from oddish.core.endpoints import sweep as sweep_mod
 
     source = Path(sweep_mod.__file__).read_text(encoding="utf-8")
     assert "await acquire_quota_locks" not in source
     assert "from oddish.core.quotas import acquire_quota_locks" not in source
+
+    append_start = source.index("if submission.append_to_task:")
+    append_body = source[append_start:]
+    admit_at = append_body.index("await admit_trials(")
+    for_update_at = append_body.index("with_for_update=True")
+    assert for_update_at > admit_at, (
+        "append path must FOR UPDATE the task only after admit_trials "
+        f"(admit@{admit_at}, for_update@{for_update_at})"
+    )
