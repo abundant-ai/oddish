@@ -380,14 +380,17 @@ function TrialAnalysisCard({
       // when the user has switched trials; only the local card state below
       // is scoped to the trial this request was for.
       onQueued?.();
-      // The server sets analysis_status to queued before it responds, so
-      // by the time this line runs, the queued state is already true on
-      // the server. Writing it into the cache makes the card show it
-      // immediately and starts the refetching, and the refetch then
-      // confirms it from the server. If the user switched to another
-      // trial while the request was in flight, the write still goes to
-      // the cache entry of the trial that was actually queued, which is
-      // correct.
+      if (trialIdRef.current !== requestTrialId) return;
+      // The server set analysis_status to queued before it responded, so
+      // the queued state is already true on the server. Writing it into
+      // the cache makes the card show it immediately and starts the
+      // refetching, and the refetch then confirms it from the server.
+      // This write must stay behind the guard above: mutateTrial always
+      // writes to the trial the card is currently showing, so if the
+      // user switched trials during the request, writing here would put
+      // the queued trial's data into the wrong trial's cache entry. A
+      // trial that was queued and then switched away from shows its
+      // queued state through the normal refetch when it is next opened.
       void mutateTrial(
         {
           ...trial,
@@ -398,7 +401,6 @@ function TrialAnalysisCard({
         },
         { revalidate: true },
       );
-      if (trialIdRef.current !== requestTrialId) return;
       // The old run's log is cleared server-side; clear it here too. Open
       // the log directly: a re-run over a stale RUNNING analysis keeps
       // inProgress true, so the open-on-start effect does not fire again.
