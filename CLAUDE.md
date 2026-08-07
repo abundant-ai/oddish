@@ -21,11 +21,12 @@ Never directly commit or push to `main` or `staging`. Check out a feature
 branch, commit there, push that branch, and open a PR for review — PRs target
 `staging` (the default branch). `main` is release-only: it advances solely via
 fast-forward promotion by a maintainer with push access to `main`, who runs
-the `Promotion Preflight` workflow (it verifies the approved promotion PR, the staging deploy, and the
+the `Promotion Preflight` workflow (it verifies the promotion PR, the staging deploy, and the
 fast-forward condition, then prints the push command) and executes that push
 themselves; never merge, squash, or push to `main` directly. A maintainer
-can instead comment `/promote` on the promotion pull request; the workflow
-runs the same checks and, when the promote token is set, does the push.
+with `write`, `maintain`, or `admin` access can instead comment `/promote` on
+the promotion pull request; the workflow runs the same checks and, when the
+promote token is set, does the push.
 
 **Never complete a promotion pull request with the merge button.** The button
 squashes, which puts a new commit on `main` and breaks the fast-forward
