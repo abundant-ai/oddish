@@ -589,7 +589,6 @@ async def retry_trial_core(
     ):
         task.status = TaskStatus.RUNNING
         task.finished_at = None
-    # A terminal verdict stays until the replacement QA pass overwrites it.
     clear_inflight_verdict(task)
     await session.execute(
         text(

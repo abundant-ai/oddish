@@ -1102,9 +1102,7 @@ export function TaskDetailClient({
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
     setJudgeError(null);
-    // One task-level QA job, tightly scoped: trials with a stored analysis
-    // keep it, only missing ones are classified, and the verdict is
-    // synthesized fresh. Full re-classification stays on POST qa/retry.
+    // force:false keeps stored trial analyses; only the verdict is redone.
     try {
       const res = await fetch(`/api/tasks/${task.id}/qa/backfill`, {
         method: "POST",

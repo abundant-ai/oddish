@@ -32,8 +32,7 @@ def build_verdict_payload(
     """
     return {
         "verdict": "accept" if verdict.is_good else "reject",
-        # Kept alongside the label: stored rows, dashboard SQL, and Slack
-        # alerts key off verdict->>'is_good'.
+        # Old rows and the SQL readers use is_good; keep it next to the label.
         "is_good": verdict.is_good,
         "confidence": verdict.confidence,
         "primary_issue": verdict.primary_issue,
@@ -99,13 +98,11 @@ async def sync_verdict_to_task(
 
 
 def clear_inflight_verdict(task: Any) -> None:
-    """Drop verdict pipeline state unless a result already exists.
+    """Keep a finished verdict; clear a queued or running one.
 
-    Appending or retrying trials cancels the task's QA job, so a QUEUED or
-    RUNNING ``verdict_status`` would dangle with no job behind it. A terminal
-    verdict stays: it remains the task's verdict until the fresh QA pass
-    overwrites it (``maybe_start_qa_stage`` re-queues the status before the
-    replacement job runs, so the stale-verdict skip guard never fires).
+    Callers cancel the task's QA job right after this, so a queued or
+    running status would point at a job that no longer exists. A finished
+    verdict stays until the next QA pass writes over it.
     """
     if getattr(task, "verdict_status", None) in (
         VerdictStatus.SUCCESS,

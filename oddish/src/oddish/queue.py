@@ -1314,9 +1314,6 @@ async def append_trials_to_task(
         task.finished_at = None
 
     if new_trials and task.run_analysis:
-        # A terminal verdict stays until the fresh QA pass replaces it; only
-        # in-flight pipeline state is cleared, since its job is cancelled
-        # just below.
         clear_inflight_verdict(task)
         # Cancel any in-flight QA worker_job for this task so a worker
         # that's already claimed (or about to claim) the old row doesn't

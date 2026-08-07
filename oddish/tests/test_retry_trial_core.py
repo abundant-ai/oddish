@@ -316,8 +316,6 @@ async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retry_keeps_a_terminal_verdict_until_qa_replaces_it(monkeypatch):
-    """A retry must not blank an existing verdict: the old one stays visible
-    while the new trial runs, and the fresh QA pass overwrites it."""
     from oddish.db import VerdictStatus
 
     events = []
@@ -356,8 +354,6 @@ async def test_retry_keeps_a_terminal_verdict_until_qa_replaces_it(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retry_clears_an_inflight_verdict_whose_job_it_cancels(monkeypatch):
-    """The retry cancels the task's QA job, so a QUEUED/RUNNING verdict_status
-    would dangle with no job behind it. Only that in-flight state is cleared."""
     from oddish.db import VerdictStatus
 
     events = []

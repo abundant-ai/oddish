@@ -121,14 +121,9 @@ export function TaskOverviewPanel({
    *  aggregates every trial, and undefined means still resolving — the
    *  trial aggregation waits instead of briefly spanning all versions. */
   version?: number | null;
-  /** The host's trial set for this context — the experiment drawer passes
-   *  its own trials; the task page passes the version's trials. These rows
-   *  mark what is "in context": the panel still surfaces every trial of the
-   *  version (the verdict is computed task-wide, so its evidence can live in
-   *  another experiment), and rows outside this set render marked as from
-   *  elsewhere. The fetch enriches host rows with what the compact payload
-   *  omits (action items, exploitation). Null/undefined = no host scope:
-   *  the fetched, version-scoped set is used as-is, nothing marked. */
+  /** The trials that belong to the host's context (an experiment drawer
+   *  passes its own; the task page passes the version's). Trials outside
+   *  this set still render, marked as from elsewhere. Null = no context. */
   scopeTrials?: Trial[] | null;
   /** The host is still streaming its trial rows — an empty scope renders
    *  as loading, not as "no trials". */
@@ -180,9 +175,7 @@ export function TaskOverviewPanel({
     },
   });
 
-  // The host's rows mark what belongs to this context — the experiment
-  // drawer passes its own trials. They can include probes, so apply the
-  // same filters here.
+  // Host rows can include probes and superseded trials; filter them here too.
   const scoped = useMemo(() => {
     if (scopeTrials == null) return null;
     return scopeTrials.filter(
@@ -193,11 +186,8 @@ export function TaskOverviewPanel({
     () => new Map((trials ?? []).map((trial) => [trial.id, trial])),
     [trials],
   );
-  // Every trial of the version is shown, host context or not: the verdict
-  // and the exploited stamps are computed task-wide, so a narrower list
-  // hides the evidence behind them. Host rows come first (enriched by the
-  // fetch); rows from outside the host's context follow and are marked
-  // through foreignIds rather than hidden.
+  // Show every trial of the version. The verdict is computed over all of
+  // them, so a shorter list can hide the evidence behind it.
   const displayTrials = useMemo(() => {
     if (scoped == null) return trials ?? null;
     const inScope = new Set(scoped.map((trial) => trial.id));
@@ -209,8 +199,7 @@ export function TaskOverviewPanel({
       ...elsewhere,
     ];
   }, [scoped, fetchedById, trials]);
-  // Null while the host is still streaming its rows — nothing is marked
-  // "elsewhere" until the context set is actually known.
+  // Null until the host's rows have loaded, so nothing is marked too early.
   const foreignIds = useMemo(() => {
     if (scoped == null || scopeLoading) return null;
     const inScope = new Set(scoped.map((trial) => trial.id));
@@ -339,9 +328,7 @@ export function TaskOverviewPanel({
   };
 
   const openTrial = (trial: Trial) => {
-    // A trial from outside this context opens on its task page in a new
-    // tab: rendering it in the host drawer would swap the drawer's own
-    // context out from under the reader.
+    // Trials from elsewhere open in a new tab; the drawer keeps its context.
     if (foreignIds?.has(trial.id)) {
       const href = taskTrialHref(trial);
       if (href) window.open(href, "_blank", "noopener,noreferrer");
@@ -675,7 +662,7 @@ function TrialQaRow({
   onOpen,
 }: {
   trial: Trial;
-  /** Runs outside the host's context (another experiment, a gathered run). */
+  /** From outside the host's context. */
   foreign?: boolean;
   onOpen: () => void;
 }) {

@@ -1,8 +1,5 @@
-from types import SimpleNamespace
-
 from oddish.analyze import Classification, TrialClassification
-from oddish.core.verdict_sync import build_verdict_payload, clear_inflight_verdict
-from oddish.db import VerdictStatus
+from oddish.core.verdict_sync import build_verdict_payload
 
 
 class _Verdict:
@@ -67,37 +64,3 @@ def test_counts_ignore_model_supplied_values():
 
     payload = build_verdict_payload(_Lying(), [_c(Classification.GOOD_SUCCESS)])
     assert payload["task_problem_count"] == 0
-
-
-def _task(verdict_status, verdict=None):
-    return SimpleNamespace(
-        verdict=verdict,
-        verdict_status=verdict_status,
-        verdict_error="err" if verdict_status == VerdictStatus.FAILED else None,
-        verdict_started_at=object(),
-    )
-
-
-def test_clear_inflight_verdict_keeps_terminal_results():
-    """New trials on a task with a verdict must not blank it: the old verdict
-    stands until the fresh QA pass overwrites it."""
-    for status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-        task = _task(status, verdict={"verdict": "reject"})
-        clear_inflight_verdict(task)
-        assert task.verdict_status == status
-        assert task.verdict == {"verdict": "reject"}
-
-
-def test_clear_inflight_verdict_clears_pipeline_state():
-    """A QUEUED/RUNNING status would dangle once its QA job is cancelled."""
-    for status in (
-        VerdictStatus.PENDING,
-        VerdictStatus.QUEUED,
-        VerdictStatus.RUNNING,
-        None,
-    ):
-        task = _task(status)
-        clear_inflight_verdict(task)
-        assert task.verdict_status is None
-        assert task.verdict_error is None
-        assert task.verdict_started_at is None
