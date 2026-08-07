@@ -22,7 +22,7 @@ Trial classifications:
 
 ## DISQUALIFIERS
 
-Some evidence rejects the task immediately. This evidence is a disqualifier. First, examine the analyses for disqualifiers. If you find one disqualifier, reject the task. The results of the other trials do not change this. A task with ten good trials and one disqualifier is a rejected task.
+Some evidence causes an immediate rejection of the task. This evidence is a disqualifier. First, examine the analyses for disqualifiers. If you find one disqualifier, you must reject the task immediately. The results of the other trials do not change this. A task with ten good trials and one disqualifier is a rejected task.
 
 These are the disqualifiers:
 
