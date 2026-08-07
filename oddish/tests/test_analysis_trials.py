@@ -84,6 +84,9 @@ def test_the_overlay_replaces_the_verifier_with_the_artifact_check(tmp_path):
     assert "/logs/qa_result.json" in test_sh
     assert "exit 1" in test_sh
     assert 'cp "$SRC" "$OUT/qa_result.json"' in test_sh
+    # An empty JSON object must not earn reward: the verifier requires the
+    # keys the importer reads.
+    assert 'KEYS="trials verdict"' in test_sh
 
 
 def test_a_correct_analysis_is_accepted():

@@ -46,13 +46,17 @@ def stage_query_cli(work_task_dir: Path) -> None:
 # The analysis verifier. The agent's artifact under /logs is the whole
 # deliverable, but harbor only collects the agent/ and verifier/ subtrees --
 # a loose file at the /logs root never reaches storage. So the verifier
-# stages the artifact into the collected verifier dir and grades only its
-# presence and validity. Missing or invalid exits nonzero, which fails the
-# verifier and lets the normal trial retries re-run the agent.
+# stages the artifact into the collected verifier dir and grades its
+# presence, that it parses, and that the required top-level keys exist.
+# Missing or invalid exits nonzero, which fails the verifier and lets the
+# normal trial retries re-run the agent. Full schema validation stays
+# host-side in the importer: the sandbox check must run on any task image,
+# so it uses whatever runtime is present and installs nothing.
 _ANALYSIS_TEST_SH = """#!/bin/sh
 OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
 mkdir -p "$OUT"
 SRC="/logs/{artifact}"
+KEYS="{required_keys}"
 if [ ! -s "$SRC" ]; then
   echo "the agent did not write /logs/{artifact}" | tee "$OUT/error.txt" >&2
   exit 1
@@ -62,17 +66,31 @@ case "{artifact}" in
   *.jsonl) ;;
   *)
     if command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$SRC" \\
-        2>"$OUT/error.txt" || exit 1
+      python3 -c 'import json,sys
+data = json.load(open(sys.argv[1]))
+missing = [k for k in sys.argv[2].split() if k not in data]
+if missing:
+    raise SystemExit("missing required keys: %s" % " ".join(missing))
+' "$SRC" "$KEYS" 2>"$OUT/error.txt" || exit 1
     elif command -v node >/dev/null 2>&1; then
-      node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' \\
-        "$SRC" 2>"$OUT/error.txt" || exit 1
+      node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+const missing = process.argv[2].split(" ").filter(Boolean).filter(k => !(k in d));
+if (missing.length) {{ console.error("missing required keys: " + missing.join(" ")); process.exit(1); }}
+' "$SRC" "$KEYS" 2>"$OUT/error.txt" || exit 1
     fi
     ;;
 esac
 echo "1.0" > "$OUT/reward.txt"
 exit 0
 """
+
+# Top-level keys the artifact must carry to be worth importing. Kept
+# minimal on purpose: the importer's Pydantic models are the authority,
+# this only stops an empty or wrong-shaped file from earning reward 1.0.
+_REQUIRED_KEYS = {
+    "qa_result.json": "trials verdict",
+    "audit_result.json": "items",
+}
 
 
 def apply_analysis_overlay(work_task_dir: Path, *, brief: str, artifact: str) -> None:
@@ -88,7 +106,12 @@ def apply_analysis_overlay(work_task_dir: Path, *, brief: str, artifact: str) ->
     shutil.rmtree(tests_dir, ignore_errors=True)
     tests_dir.mkdir(parents=True)
     test_sh = tests_dir / "test.sh"
-    test_sh.write_text(_ANALYSIS_TEST_SH.format(artifact=artifact))
+    test_sh.write_text(
+        _ANALYSIS_TEST_SH.format(
+            artifact=artifact,
+            required_keys=_REQUIRED_KEYS.get(artifact, ""),
+        )
+    )
     test_sh.chmod(0o755)
 
 
