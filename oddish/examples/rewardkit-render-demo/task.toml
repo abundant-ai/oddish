@@ -1,0 +1,18 @@
+schema_version = "1.4"
+
+[metadata]
+name = "rewardkit-render-demo"
+description = "Demo task that exercises oddish's RewardKit reward rendering: passing, failing, and partial-credit dimensions with reward.toml aggregates."
+
+[agent]
+timeout_sec = 600
+
+[verifier]
+timeout_sec = 300
+
+[environment]
+network_mode = "no-network"
+build_timeout_sec = 600
+cpus = 2
+memory_mb = 2048
+storage_mb = 10240
