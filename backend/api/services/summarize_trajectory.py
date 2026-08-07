@@ -295,6 +295,14 @@ async def generate(
     own ``analyzer_blocks`` row, so the shrink sequence stays auditable.
     """
     model = resolve_summary_model()
+    if prompt_template is None:
+        # Read here rather than inside build_summary_block: callers of
+        # generate() only handle SummaryGenerationError, so a missing or
+        # unreadable packaged file must not escape as a raw OSError.
+        try:
+            prompt_template = load_summary_prompt_template()
+        except OSError as e:
+            raise SummaryGenerationError(f"summary template unavailable: {e}") from e
     total_steps = len(trajectory.get("steps") or [])
     budget: int | None = None
 

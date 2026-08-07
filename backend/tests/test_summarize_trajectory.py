@@ -287,6 +287,22 @@ async def test_generate_wraps_client_errors(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_generate_wraps_template_read_errors(monkeypatch, tmp_path):
+    """Block construction reads the packaged template from disk; a missing or
+    unreadable file must surface as SummaryGenerationError, not raw OSError —
+    callers (the trials summary route) only handle the former."""
+    from api.services import summarize_trajectory
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
+
+    _patch_block_persistence(monkeypatch)
+    monkeypatch.setattr(
+        summarize_trajectory, "_SUMMARY_PROMPT_PATH", tmp_path / "missing.txt"
+    )
+    with pytest.raises(SummaryGenerationError):
+        await generate(_trajectory_with_steps([1]), _minimal_ctx())
+
+
+@pytest.mark.asyncio
 async def test_generate_returns_components(monkeypatch):
     from api.services.summarize_trajectory import generate
 
