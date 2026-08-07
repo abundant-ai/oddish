@@ -279,7 +279,6 @@ def create_app() -> FastAPI:
         load,
         notifications,
         orgs,
-        reports,
         skills,
         public,
         slack,
@@ -307,6 +306,5 @@ def create_app() -> FastAPI:
     api.include_router(admin.router)
     api.include_router(cost_excluded_keys.router)
     api.include_router(tags.router)
-    api.include_router(reports.router)
 
     return api

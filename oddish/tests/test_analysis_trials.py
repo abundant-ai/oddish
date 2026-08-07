@@ -18,7 +18,6 @@ from oddish.workers.analysis_trials import (
     build_qa_brief,
     is_analysis_kind,
 )
-from oddish.workers.analyzer_trials import _batches, _finding_from
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
 
@@ -35,9 +34,9 @@ GOOD_ANALYSIS = {
 }
 
 
-def test_the_four_analysis_kinds_are_known():
-    """qa, audit, and the two analyzer kinds are analysis kinds. agent is not."""
-    for kind in ("qa", "audit", "analyzer_map", "analyzer_reduce"):
+def test_the_analysis_kinds_are_known():
+    """qa and audit are analysis kinds. agent is not."""
+    for kind in ("qa", "audit"):
         assert is_analysis_kind(kind)
     assert not is_analysis_kind("agent")
     assert not is_analysis_kind(None)
@@ -120,50 +119,6 @@ def test_a_broken_analysis_is_rejected_not_stored(broken):
     assert _classification_from_analysis(broken) is None
 
 
-def test_a_finding_for_an_unknown_trial_is_dropped():
-    """The agent can only report on trials the host gave it. Anything else
-    is dropped."""
-    host = {
-        "t-1": {
-            "trajectory_link": "/tasks/x/probe/t-1",
-            "model": "m",
-            "classification": "BAD_FAILURE",
-            "subtype": "s",
-            "task_id": "x",
-            "task_path": "p",
-        }
-    }
-    assert _finding_from({"trial_id": "t-9"}, "bad", host) is None
-
-
-def test_host_facts_overwrite_what_the_agent_wrote():
-    """The link and the bucket come from the host, never from the agent.
-    An agent cannot forge them."""
-    host = {
-        "t-1": {
-            "trajectory_link": "/tasks/x/probe/t-1",
-            "model": "m",
-            "classification": "BAD_FAILURE",
-            "subtype": "s",
-            "task_id": "x",
-            "task_path": "p",
-        }
-    }
-    finding = _finding_from(
-        {"trial_id": "t-1", "bucket": "good", "trajectory_link": "/fake"},
-        "bad",
-        host,
-    )
-    assert finding.bucket == "bad"
-    assert finding.trajectory_link == "/tasks/x/probe/t-1"
-
-
-def test_big_cohorts_split_into_batches_of_ten():
-    """One map agent gets at most ten trials. A small cohort stays whole."""
-    assert _batches(list(range(5))) == [[0, 1, 2, 3, 4]]
-    assert [len(b) for b in _batches(list(range(25)))] == [10, 10, 5]
-
-
 def test_trial_filters_hide_analysis_trials_by_default():
     """Every surface that uses the shared filter sees agent trials only,
     unless it opts in."""
@@ -178,7 +133,7 @@ def test_browse_filters_never_learn_analysis_trial_values():
     kwargs = dict(org_id="org", agent="claude-code", model="m")
     assert facet_rows_for_trial(**kwargs)
     assert facet_rows_for_trial(**kwargs, trial_kind="qa") == set()
-    assert facet_rows_for_trial(**kwargs, trial_kind="analyzer_map") == set()
+    assert facet_rows_for_trial(**kwargs, trial_kind="audit") == set()
 
 
 @pytest.mark.asyncio

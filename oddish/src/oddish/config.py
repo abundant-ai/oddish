@@ -1395,11 +1395,6 @@ class Settings(BaseSettings):
 
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
-    # Optional separate Anthropic key for analyzer blocks (summary + trajectory
-    # analysis). When unset, analyzer blocks fall back to anthropic_api_key.
-    analyzer_anthropic_api_key: str | None = Field(
-        default=None, alias="ANALYZER_ANTHROPIC_API_KEY"
-    )
     # Separate Anthropic key for ``anthropic-hdo/<model>`` trials. Injected as
     # ``ANTHROPIC_API_KEY`` (overwriting the platform key) so Claude Code talks
     # to the direct Anthropic API with this credential instead of Bedrock /
@@ -1653,9 +1648,9 @@ class Settings(BaseSettings):
     def get_qa_queue_key(self) -> str:
         """Concurrency bucket for the task-level QA job.
 
-        Keyed off ``analysis_model``: QA, audit, and analyzer trials all run
-        the analysis model, so they lease slots from its concurrency bucket
-        (and existing per-model concurrency overrides keep applying).
+        Keyed off ``analysis_model``: QA and audit trials run the analysis
+        model, so they lease slots from its concurrency bucket (and existing
+        per-model concurrency overrides keep applying).
         """
         return self.normalize_queue_key(self.analysis_model)
 

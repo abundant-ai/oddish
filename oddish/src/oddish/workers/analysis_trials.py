@@ -1,11 +1,11 @@
 """Analysis trials: the platform's own agents, run through the trial pipeline.
 
-QA, the pre-trial audit, and analyzer report generation are trials with a
-non-'agent' ``kind``. Each runs claude-code on the analysis model inside the
-task's own Harbor environment, reads peer data through the oddish-query CLI,
-and writes one JSON artifact. When the trial settles, the importer for its
-kind parses that artifact into the same columns the old block-based path
-wrote, so nothing downstream changes.
+The pre-trial audit and QA are trials with a non-'agent' ``kind``. Each runs
+claude-code on the analysis model in its own analysis sandbox, reads the
+audited task's data through the oddish-query CLI, and writes one JSON
+artifact. When the trial settles, the importer for its kind parses that
+artifact into the same columns the old block-based path wrote, so nothing
+downstream changes.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ from oddish.workers.queue.shared import console
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_TRIAL_KINDS = ("qa", "audit", "analyzer_map", "analyzer_reduce")
+ANALYSIS_TRIAL_KINDS = ("qa", "audit")
 QA_RESULT_FILENAME = "qa_result.json"
 AUDIT_RESULT_FILENAME = "audit_result.json"
 
@@ -53,8 +53,6 @@ AUDIT_RESULT_FILENAME = "audit_result.json"
 ANALYSIS_ARTIFACTS = {
     "qa": QA_RESULT_FILENAME,
     "audit": AUDIT_RESULT_FILENAME,
-    "analyzer_map": "findings.jsonl",
-    "analyzer_reduce": "reduce.json",
 }
 
 
@@ -633,7 +631,3 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
         await _fire_qa_imported(trial.task_id)
     elif kind == "audit":
         await _import_audit_result(trial)
-    elif kind in ("analyzer_map", "analyzer_reduce"):
-        from oddish.workers.analyzer_trials import advance_analyzer_pipeline
-
-        await advance_analyzer_pipeline(trial)

@@ -26,7 +26,6 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import {
   BookOpen,
   ChevronDown,
-  FileBarChart,
   FileText,
   LogOut,
   Menu,
@@ -107,12 +106,6 @@ const PRIMARY_NAV_LINKS: NavLink[] = [
           href: "/qa",
           label: "Agents",
           icon: <SearchCheck className="h-4 w-4" />,
-          prefix: true,
-        },
-        {
-          href: "/analyzers",
-          label: "Analyzers",
-          icon: <FileBarChart className="h-4 w-4" />,
           prefix: true,
         },
       ]

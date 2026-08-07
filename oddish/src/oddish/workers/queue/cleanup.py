@@ -49,7 +49,6 @@ from oddish.db import (
     get_session,
     utcnow,
 )
-from oddish.db.models import AnalyzerModel
 from oddish.workers.queue.worker_job_single_job import (
     calculate_trial_retry_delay_seconds,
     classify_retry_reason,
@@ -460,19 +459,6 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             # The VERDICT_PENDING healer creates a fresh QA trial next sweep.
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = row["error_message"]
-        return None
-
-    if kind == "ANALYZER":
-        analyzer = await _locked_or_missing(session, AnalyzerModel, str(subject_id))
-        if analyzer is None:
-            return None
-        if row["new_status"] == "FAILED":
-            analyzer.status = JobStatus.FAILED
-            analyzer.error = row["error_message"]
-            analyzer.finished_at = utcnow()
-        else:
-            analyzer.status = JobStatus.QUEUED
-            analyzer.error = row["error_message"]
         return None
 
     return None
