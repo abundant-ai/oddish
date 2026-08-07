@@ -42,7 +42,7 @@ Reject when most trials show the same task problem, with clear evidence. Accept 
 ## CONFIDENCE
 
 * If you reject the task immediately, set the confidence to high. There is one exception: if the only evidence is one trial that showed weak tests, with no matching `must_fix` `verifier` finding, set it to medium.
-* If you reject because most trials show the same problem, set the confidence to medium. If all trials show the problem, set it to high.
+* If you reject because most trials show the same problem, with clear evidence, set the confidence to high.
 * If you accept and the trials agree, set the confidence to high. If the trials disagree, or if all trials are harness errors, set it to low.
 
 ## OUTPUT
