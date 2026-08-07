@@ -191,14 +191,18 @@ export function TaskOverviewPanel({
   const displayTrials = useMemo(() => {
     if (scoped == null) return trials ?? null;
     const inScope = new Set(scoped.map((trial) => trial.id));
-    const elsewhere = (trials ?? []).filter(
-      (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id,
-    );
+    // Until the host's rows have loaded, rows from elsewhere would render
+    // without their mark -- hold them back.
+    const elsewhere = scopeLoading
+      ? []
+      : (trials ?? []).filter(
+          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id,
+        );
     return [
       ...scoped.map((trial) => fetchedById.get(trial.id) ?? trial),
       ...elsewhere,
     ];
-  }, [scoped, fetchedById, trials]);
+  }, [scoped, scopeLoading, fetchedById, trials]);
   // Null until the host's rows have loaded, so nothing is marked too early.
   const foreignIds = useMemo(() => {
     if (scoped == null || scopeLoading) return null;
