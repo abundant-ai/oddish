@@ -78,13 +78,8 @@ async def _make_billed_task(cleanup_task_ids, *, n_trials, billed_user, org_id):
 
 @pytest.mark.asyncio
 async def test_enforced_admission_takes_no_quota_locks(monkeypatch):
-    """Admission is optimistic: no advisory locks, only the budget checks.
-
-    A ``fake_session`` with no ``execute``/``scalar`` proves admission issues
-    no SQL of its own once the checks are stubbed — a blocking advisory lock
-    here serialized every submission in an org and starved them into 30s
-    lock timeouts (the enforcement sweep reconciles concurrent overshoot).
-    """
+    """A session with no ``execute``/``scalar`` proves admission runs no SQL
+    of its own (no advisory locks) once the budget checks are stubbed."""
     from oddish.core import quota_admission
 
     checks = []

@@ -65,16 +65,10 @@ async def try_acquire_quota_locks(
 ) -> bool:
     """Try to take the org (and optional user) quota advisory locks, never wait.
 
-    Only the enforcement/cancellation sweep takes these locks, purely as mutual
-    exclusion between concurrent sweeps of the same scope. Admission is
-    deliberately lock-free (see :func:`~oddish.core.quota_admission.admit_trials`):
-    a blocking submit-time lock serialized every submission in an org behind
-    one advisory lock and turned any long holder into org-wide 503s.
-
-    Returns ``False`` when another transaction already holds the org or user
-    quota lock. Callers should treat that as "someone else is cancelling" and
-    skip rather than wait — under an over-quota storm, blocking here serializes
-    every worker behind one org-wide lock.
+    Only the enforcement/cancellation sweep takes these locks, as mutual
+    exclusion between concurrent sweeps of the same scope; admission is
+    lock-free. ``False`` means another transaction holds the org or user
+    lock — treat it as "someone else is cancelling" and skip rather than wait.
     """
     org_locked = await session.scalar(
         text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),

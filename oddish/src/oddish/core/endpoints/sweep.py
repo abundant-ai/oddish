@@ -526,11 +526,6 @@ async def create_task_sweep_core(
         # Admit only against the locked plan: an unlocked estimate can still
         # ``QuotaExceeded`` (402) after a concurrent append already filled the
         # deficit, even when this request would insert fewer trials or none.
-        # Admission itself takes no quota advisory lock (see ``admit_trials``),
-        # so only the task row serializes appends — and only per task. That
-        # also removes the old quota→task lock-order constraint against
-        # ``cancel_trials_if_quota_reached``: a deadlock needs both sides to
-        # take both locks, and submission no longer takes the advisory at all.
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )

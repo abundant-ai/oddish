@@ -451,10 +451,8 @@ or globally via the env default. Under `enforce`, an over-cap submission gets
 HTTP **402** (`"Your organization is over its monthly budget …"`); under
 `shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
 month-to-date org usage on `GET /quotas`; any member can read the org budget
-snapshot + adaptive daily goal on `GET /quotas/org`. Admission is optimistic
-and takes no locks: concurrent submissions racing the same headroom can
-briefly overshoot, and the enforcement sweep cancels the overage at the next
-cost checkpoint. Only that sweep takes the quota advisory locks (org → payer,
-non-blocking `pg_try_advisory_xact_lock`) as mutual exclusion between
-concurrent sweeps — a blocking submit-time lock serialized every submission
-in an org and starved them into 30s lock timeouts.
+snapshot + adaptive daily goal on `GET /quotas/org`. Admission is lock-free:
+concurrent submissions racing the same headroom can briefly overshoot, and
+the enforcement sweep cancels the overage at the next cost checkpoint. Only
+that sweep takes the quota advisory locks (org → payer, non-blocking
+`pg_try_advisory_xact_lock`) as mutual exclusion between concurrent sweeps.

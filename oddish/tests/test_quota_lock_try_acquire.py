@@ -99,14 +99,7 @@ async def test_enforce_returns_none_on_lock_busy_without_settlement(monkeypatch)
 
 
 def test_submission_paths_take_no_quota_advisory_locks():
-    """Regression: submission must never block on the org quota advisory lock.
-
-    Blocking admission held the org-wide advisory until the whole submission
-    transaction committed (a batch held it across every item), serializing all
-    of an org's submits and starving them into 30s lock timeouts. Admission is
-    optimistic: the enforcement sweep cancels any overshoot from concurrent
-    admissions, and it alone takes the advisory locks (non-blocking).
-    """
+    """Admission is lock-free; only the enforcement sweep takes quota locks."""
     from oddish.core import quota_admission
     from oddish.core.endpoints import sweep as sweep_mod
 
@@ -115,17 +108,11 @@ def test_submission_paths_take_no_quota_advisory_locks():
         assert "acquire_quota_locks" not in source.replace(
             "try_acquire_quota_locks", ""
         ), f"{module.__name__} must not take blocking quota advisory locks"
-    assert not hasattr(quotas, "acquire_quota_locks"), (
-        "blocking quota lock helper was removed; only try_acquire remains"
-    )
+    assert not hasattr(quotas, "acquire_quota_locks")
 
 
 def test_append_sweep_admits_against_the_locked_plan():
-    """Regression: admit must use the plan computed under the task row lock.
-
-    An unlocked estimate can 402 after a concurrent append already filled the
-    deficit, even when this request would insert fewer trials or none.
-    """
+    """An unlocked estimate can 402 after a concurrent append filled the deficit."""
     from oddish.core.endpoints import sweep as sweep_mod
 
     source = Path(sweep_mod.__file__).read_text(encoding="utf-8")

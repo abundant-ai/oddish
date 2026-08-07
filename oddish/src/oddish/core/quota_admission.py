@@ -235,14 +235,9 @@ async def admit_trials(
 ) -> None:
     """Reject the submission when the payer / org is over budget (402/403).
 
-    Optimistic by design: no locks are taken, so concurrent admissions against
-    the same headroom can both pass. That overshoot is bounded (submissions
-    racing one window × their reservation estimate) and smaller than the noise
-    already in the numbers — in-flight spend is a flat per-trial estimate — and
-    ``cancel_trials_if_quota_reached`` cancels it at the next cost checkpoint.
-    Serializing admissions on an advisory lock instead held the lock until the
-    whole submission transaction committed (a batch holds it for every item),
-    which starved every other submitter in the org into 30s lock timeouts.
+    Lock-free by design: concurrent admissions against the same headroom can
+    briefly overshoot the cap, and ``cancel_trials_if_quota_reached`` cancels
+    the overage at the next cost checkpoint.
     """
     mode = settings.quota_mode
     if mode == QuotaMode.OFF or org_id is None or count <= 0:
