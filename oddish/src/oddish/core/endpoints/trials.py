@@ -412,6 +412,13 @@ async def retry_trial_core(
             ),
         )
 
+    # The task row lock serializes ``{task_id}-{N}`` allocation with sweep
+    # appends and other retries of the same task (Task → Trial → WorkerJob
+    # lock order). Column-only select: locking via ``session.get`` would
+    # refresh-and-expire the identity-map instance.
+    await session.execute(
+        select(TaskModel.id).where(TaskModel.id == old_trial.task_id).with_for_update()
+    )
     task = await session.get(TaskModel, old_trial.task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
