@@ -111,6 +111,22 @@ def test_submission_paths_take_no_quota_advisory_locks():
     assert not hasattr(quotas, "acquire_quota_locks")
 
 
+def test_retry_reserves_trial_index_under_the_task_lock():
+    """Concurrent retries/appends must not mint the same ``{task_id}-{N}``."""
+    from oddish.core.endpoints import trials as trials_mod
+
+    source = Path(trials_mod.__file__).read_text(encoding="utf-8")
+    start = source.index("async def retry_trial_core(")
+    end = source.index("\nasync def ", start + 1)
+    body = source[start:end]
+
+    lock_at = body.index("with_for_update")
+    reserve_at = body.index("await reserve_next_trial_index(")
+    assert lock_at < reserve_at, (
+        "retry must lock the task row before reserving the trial index"
+    )
+
+
 def test_append_sweep_admits_against_the_locked_plan():
     """An unlocked estimate can 402 after a concurrent append filled the deficit."""
     from oddish.core.endpoints import sweep as sweep_mod
