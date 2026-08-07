@@ -6,7 +6,9 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 import types
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -272,6 +274,23 @@ def test_ec2_backend_materializes_namespaced_aws_credentials_as_a_0600_profile(
         backend.remove_materialized_worker_credentials()
 
     assert not profile_path.exists()
+    assert os.environ["AWS_SHARED_CREDENTIALS_FILE"] == "/existing/credentials"
+
+    backend.remove_materialized_worker_credentials()
+    assert os.environ["AWS_SHARED_CREDENTIALS_FILE"] == "/existing/credentials"
+
+
+def test_ec2_credential_cleanup_preserves_existing_profile_after_validation_failure(
+    monkeypatch,
+) -> None:
+    _install_complete_ec2_settings(monkeypatch, ec2_aws_access_key_id=None)
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/existing/credentials")
+    backend = Ec2Backend()
+
+    with pytest.raises(RuntimeError, match="ODDISH_EC2_AWS_ACCESS_KEY_ID"):
+        backend.materialize_aws_profile()
+
+    backend.remove_materialized_worker_credentials()
     assert os.environ["AWS_SHARED_CREDENTIALS_FILE"] == "/existing/credentials"
 
 
@@ -576,7 +595,7 @@ def test_ec2_runner_removes_materialized_key_for_every_ephemeral_exit(
 def _install_fake_boto3(monkeypatch, **clients: MagicMock) -> MagicMock:
     module = types.ModuleType("boto3")
     session = MagicMock()
-    session.client.side_effect = lambda service: clients[service]
+    session.client.side_effect = lambda service, **_kwargs: clients[service]
     module.Session = MagicMock(return_value=session)
     monkeypatch.setitem(sys.modules, "boto3", module)
     return module.Session
@@ -617,7 +636,7 @@ def _owned_instance_description(
 
 
 def test_ec2_teardown_terminates_an_instance_only_after_both_ownership_tags_match(
-    monkeypatch,
+    monkeypatch, caplog
 ) -> None:
     _install_complete_ec2_settings(monkeypatch)
     monkeypatch.setenv("MODAL_APP_NAME", "oddish")
@@ -625,13 +644,15 @@ def test_ec2_teardown_terminates_an_instance_only_after_both_ownership_tags_matc
     client.describe_instances.return_value = _owned_instance_description()
     client_factory = _install_fake_boto3(monkeypatch, ec2=client)
 
-    result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+    with caplog.at_level("INFO"):
+        result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
 
     assert result is True
     client_factory.assert_called_once_with(
         profile_name="oddish-ec2", region_name="us-east-1"
     )
     client.terminate_instances.assert_called_once_with(InstanceIds=["i-owned"])
+    assert "metric=ec2_teardown outcome=terminated" in caplog.text
 
 
 @pytest.mark.parametrize("state", ["shutting-down", "terminated"])
@@ -663,7 +684,7 @@ def test_ec2_teardown_treats_already_terminating_instance_as_success_without_sec
     ],
 )
 def test_ec2_teardown_refuses_missing_or_wrongly_owned_instances(
-    monkeypatch, description: dict
+    monkeypatch, caplog, description: dict
 ) -> None:
     _install_complete_ec2_settings(monkeypatch)
     monkeypatch.setenv("MODAL_APP_NAME", "oddish")
@@ -671,19 +692,350 @@ def test_ec2_teardown_refuses_missing_or_wrongly_owned_instances(
     client.describe_instances.return_value = description
     _install_fake_boto3(monkeypatch, ec2=client)
 
-    result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
+    with caplog.at_level("WARNING"):
+        result = asyncio.run(Ec2Backend().teardown(_ec2_handle()))
 
     assert result is False
     client.terminate_instances.assert_not_called()
+    assert "metric=ec2_teardown outcome=refused" in caplog.text
 
 
-def test_ec2_teardown_logs_and_returns_false_when_aws_raises(monkeypatch) -> None:
+def test_ec2_teardown_logs_and_returns_false_when_aws_raises(
+    monkeypatch, caplog
+) -> None:
     _install_complete_ec2_settings(monkeypatch)
     client = MagicMock()
     client.describe_instances.side_effect = RuntimeError("aws unavailable")
     _install_fake_boto3(monkeypatch, ec2=client)
 
-    assert asyncio.run(Ec2Backend().teardown(_ec2_handle())) is False
+    with caplog.at_level("ERROR"):
+        assert asyncio.run(Ec2Backend().teardown(_ec2_handle())) is False
+    assert "metric=ec2_teardown outcome=error" in caplog.text
+
+
+class _FakeDescribeInstancesPaginator:
+    def __init__(self, pages: list[dict] | None = None, error: Exception | None = None):
+        self.pages = pages or []
+        self.error = error
+        self.paginate = MagicMock(side_effect=self._paginate)
+
+    def _paginate(self, **_kwargs):
+        if self.error is not None:
+            raise self.error
+        return iter(self.pages)
+
+
+def _inventory_instance(
+    instance_id: str,
+    *,
+    state: str = "running",
+    deployment: str = "oddish-pr-42",
+    account_id: str = AWS_ACCOUNT_ID,
+    launch_time: datetime | None = None,
+    extra_tags: list[dict] | None = None,
+) -> dict:
+    return {
+        "InstanceId": instance_id,
+        "State": {"Name": state},
+        "LaunchTime": launch_time or datetime(2026, 8, 7, 12, 30),
+        "Tags": [
+            {"Key": MANAGED_TAG_KEY, "Value": "true"},
+            {"Key": DEPLOYMENT_TAG_KEY, "Value": deployment},
+            {"Key": AWS_ACCOUNT_ID_TAG_KEY, "Value": account_id},
+            {"Key": TRIAL_ID_TAG_KEY, "Value": "trial-1"},
+            {"Key": WORKER_JOB_ID_TAG_KEY, "Value": "job-1"},
+            *(extra_tags or []),
+        ],
+    }
+
+
+def test_ec2_inventory_paginates_with_current_deployment_and_active_state_filters(
+    monkeypatch,
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-42")
+    paginator = _FakeDescribeInstancesPaginator(
+        [
+            {
+                "Reservations": [
+                    {"Instances": [_inventory_instance("i-pending", state="pending")]}
+                ]
+            },
+            {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            _inventory_instance(
+                                "i-stopped",
+                                state="stopped",
+                                launch_time=datetime(
+                                    2026, 8, 7, 13, 30, tzinfo=timezone.utc
+                                ),
+                                extra_tags=[{"Key": "team", "Value": "evals"}],
+                            )
+                        ]
+                    }
+                ]
+            },
+        ]
+    )
+    ec2 = MagicMock()
+    ec2.get_paginator.return_value = paginator
+    session_factory = _install_fake_boto3(monkeypatch, ec2=ec2)
+    backend = Ec2Backend()
+
+    inventory = asyncio.run(backend.snapshot_managed_instances())
+    snapshots = inventory.instances
+
+    assert [snapshot.instance_id for snapshot in snapshots] == [
+        "i-pending",
+        "i-stopped",
+    ]
+    assert snapshots[0].state == "pending"
+    assert snapshots[0].launch_time == datetime(
+        2026, 8, 7, 12, 30, tzinfo=timezone.utc
+    )
+    assert snapshots[1].state == "stopped"
+    assert snapshots[1].managed_tag == "true"
+    assert snapshots[1].deployment_tag == "oddish-pr-42"
+    assert snapshots[1].account_id_tag == AWS_ACCOUNT_ID
+    assert snapshots[1].trial_id_tag == "trial-1"
+    assert snapshots[1].worker_job_id_tag == "job-1"
+    assert all(snapshot.region == "us-east-1" for snapshot in snapshots)
+    assert inventory.expected_account_id == AWS_ACCOUNT_ID
+    assert inventory.expected_deployment == "oddish-pr-42"
+    session_factory.assert_called_once_with(
+        profile_name="oddish-ec2", region_name="us-east-1"
+    )
+    client_call = session_factory.return_value.client.call_args
+    client_config = client_call.kwargs["config"]
+    assert client_config.connect_timeout == 5
+    assert client_config.read_timeout == 10
+    assert client_config.retries == {"max_attempts": 3, "mode": "standard"}
+    ec2.get_paginator.assert_called_once_with("describe_instances")
+    paginator.paginate.assert_called_once_with(
+        Filters=[
+            {"Name": f"tag:{MANAGED_TAG_KEY}", "Values": ["true"]},
+            {
+                "Name": f"tag:{DEPLOYMENT_TAG_KEY}",
+                "Values": ["oddish-pr-42"],
+            },
+            {
+                "Name": "instance-state-name",
+                "Values": [
+                    "pending",
+                    "running",
+                    "stopping",
+                    "stopped",
+                    "shutting-down",
+                ],
+            },
+        ]
+    )
+    profile_path = backend._aws_profile_path
+    assert profile_path is not None and profile_path.exists()
+    backend.remove_materialized_worker_credentials()
+    assert backend._aws_profile_path is None
+    assert not profile_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("raw_state", "normalized_state"),
+    [
+        ("pending", "pending"),
+        ("RUNNING", "running"),
+        (" stopping ", "stopping"),
+        ("stopped", "stopped"),
+        ("shutting-down", "shutting-down"),
+    ],
+)
+def test_ec2_inventory_normalizes_every_active_state(
+    monkeypatch, raw_state: str, normalized_state: str
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-42")
+    paginator = _FakeDescribeInstancesPaginator(
+        [
+            {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            _inventory_instance("i-state", state=raw_state)
+                        ]
+                    }
+                ]
+            }
+        ]
+    )
+    ec2 = MagicMock()
+    ec2.get_paginator.return_value = paginator
+    _install_fake_boto3(monkeypatch, ec2=ec2)
+    backend = Ec2Backend()
+
+    try:
+        inventory = asyncio.run(backend.snapshot_managed_instances())
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert len(inventory.instances) == 1
+    assert inventory.instances[0].state == normalized_state
+
+
+def test_ec2_inventory_defensively_refuses_wrong_tags_and_inactive_states(
+    monkeypatch, caplog
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-42")
+    paginator = _FakeDescribeInstancesPaginator(
+        [
+            {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            _inventory_instance(
+                                "i-wrong-deployment", deployment="oddish-production"
+                            ),
+                            _inventory_instance(
+                                "i-wrong-account", account_id="999999999999"
+                            ),
+                            _inventory_instance("i-terminated", state="terminated"),
+                            _inventory_instance("i-running"),
+                        ]
+                    }
+                ]
+            }
+        ]
+    )
+    ec2 = MagicMock()
+    ec2.get_paginator.return_value = paginator
+    _install_fake_boto3(monkeypatch, ec2=ec2)
+    backend = Ec2Backend()
+
+    try:
+        with caplog.at_level("WARNING"):
+            inventory = asyncio.run(backend.snapshot_managed_instances())
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert [snapshot.instance_id for snapshot in inventory.instances] == ["i-running"]
+    assert "metric=ec2_inventory_ownership_refusal" in caplog.text
+    assert "metric=ec2_inventory_state_refusal" in caplog.text
+
+
+def test_ec2_inventory_logs_metric_and_raises_when_aws_listing_fails(
+    monkeypatch, caplog
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    paginator = _FakeDescribeInstancesPaginator(error=RuntimeError("aws unavailable"))
+    ec2 = MagicMock()
+    ec2.get_paginator.return_value = paginator
+    _install_fake_boto3(monkeypatch, ec2=ec2)
+    backend = Ec2Backend()
+
+    try:
+        with caplog.at_level("ERROR"), pytest.raises(
+            RuntimeError, match="Unable to snapshot Oddish-managed EC2 instances"
+        ):
+            asyncio.run(backend.snapshot_managed_instances())
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert "metric=ec2_inventory_error" in caplog.text
+
+
+def test_ec2_inventory_runs_account_and_pagination_aws_calls_off_event_loop(
+    monkeypatch,
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    main_thread_id = threading.get_ident()
+    aws_thread_ids: list[int] = []
+    paginator = _FakeDescribeInstancesPaginator([{"Reservations": []}])
+    original_paginate = paginator._paginate
+
+    def resolve_account(_self) -> str:
+        aws_thread_ids.append(threading.get_ident())
+        return AWS_ACCOUNT_ID
+
+    def paginate(**kwargs):
+        aws_thread_ids.append(threading.get_ident())
+        return original_paginate(**kwargs)
+
+    monkeypatch.setattr(Ec2Backend, "_resolve_aws_account_id", resolve_account)
+    paginator.paginate.side_effect = paginate
+    ec2 = MagicMock()
+    ec2.get_paginator.return_value = paginator
+    _install_fake_boto3(monkeypatch, ec2=ec2)
+    backend = Ec2Backend()
+
+    try:
+        asyncio.run(backend.snapshot_managed_instances())
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert len(aws_thread_ids) == 2
+    assert all(thread_id != main_thread_id for thread_id in aws_thread_ids)
+
+
+def test_ec2_inventory_times_out_and_logs_instead_of_blocking_reconciliation(
+    monkeypatch, caplog
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    import oddish.runtime.backends.ec2 as ec2_module
+
+    monkeypatch.setattr(ec2_module, "_EC2_INVENTORY_TIMEOUT_SECONDS", 0.01)
+
+    async def never_finishes(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(ec2_module.asyncio, "to_thread", never_finishes)
+    backend = Ec2Backend()
+
+    with caplog.at_level("ERROR"), pytest.raises(
+        RuntimeError, match="Unable to snapshot Oddish-managed EC2 instances"
+    ) as error:
+        asyncio.run(backend.snapshot_managed_instances())
+
+    assert isinstance(error.value.__cause__, TimeoutError)
+    assert "metric=ec2_inventory_error" in caplog.text
+
+
+def test_ec2_inventory_refuses_missing_or_non_datetime_launch_time(
+    monkeypatch, caplog
+) -> None:
+    _install_complete_ec2_settings(monkeypatch)
+    monkeypatch.setenv("MODAL_APP_NAME", "oddish-pr-42")
+    missing = _inventory_instance("i-missing-time")
+    missing.pop("LaunchTime")
+    invalid = _inventory_instance("i-invalid-time")
+    invalid["LaunchTime"] = "2026-08-07T12:30:00Z"
+    paginator = _FakeDescribeInstancesPaginator(
+        [
+            {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            missing,
+                            invalid,
+                            _inventory_instance("i-valid-time"),
+                        ]
+                    }
+                ]
+            }
+        ]
+    )
+    ec2 = MagicMock()
+    ec2.get_paginator.return_value = paginator
+    _install_fake_boto3(monkeypatch, ec2=ec2)
+    backend = Ec2Backend()
+
+    try:
+        with caplog.at_level("WARNING"):
+            inventory = asyncio.run(backend.snapshot_managed_instances())
+    finally:
+        backend.remove_materialized_worker_credentials()
+
+    assert [item.instance_id for item in inventory.instances] == ["i-valid-time"]
+    assert caplog.text.count("metric=ec2_inventory_launch_time_refusal") == 2
 
 
 def test_ec2_backend_resolves_the_current_sts_account_on_every_check(

@@ -528,7 +528,14 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   deployment, task/trial, worker-job, and Harbor-session tags. Normal teardown,
   cancellation, stale-heartbeat cleanup, and the orphan reconciler all terminate
   through the registered EC2 backend after ownership verification.
-- Claude trials run through AWS Bedrock by default. `CLAUDE_CODE_USE_BEDROCK=1` is
+- EC2 orphan reconciliation snapshots deployment-tagged instances before the
+  shared cleanup transaction, evaluates worker liveness using the database clock,
+  and terminates only after the transaction commits. It preserves live linked
+  jobs and conservatively preserves unlinked trial startup for 30 minutes, then
+  reaps missing, terminal, stale, and mismatched owners. The protected 14-hour
+  hard maximum age overrides worker liveness. Inventory and termination failures
+  must stay visible in logs/metrics while the rest of queue cleanup continues.
+- Claude trials run through AWS Bedrock only. `CLAUDE_CODE_USE_BEDROCK=1` is
   baked into the Modal image, and Claude model aliases must normalize to an
   invokable inference profile (`global.` / `us.` / ARN) via
   `to_bedrock_model_id`. Opt into the direct Anthropic API with a separate key

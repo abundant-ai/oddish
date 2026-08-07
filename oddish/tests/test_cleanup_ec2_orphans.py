@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from oddish.runtime.ec2_orphans import Ec2InstanceSnapshot, Ec2InventorySnapshot
+from oddish.workers.queue import cleanup
+
+
+NOW = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
+ACCOUNT_ID = "123456789012"
+DEPLOYMENT = "oddish-test"
+
+
+class _MappingsResult:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> _MappingsResult:
+        return self
+
+    def all(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _LivenessSession:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.execute_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, statement, params: dict[str, Any]):
+        self.execute_calls.append((str(statement), params))
+        return _MappingsResult(self.rows)
+
+
+def _snapshot(
+    *,
+    age: timedelta,
+    worker_job_id: str | None = "job-1",
+    trial_id: str | None = "trial-1",
+    deployment: str = DEPLOYMENT,
+) -> Ec2InstanceSnapshot:
+    return Ec2InstanceSnapshot(
+        instance_id="i-0123456789abcdef0",
+        region="us-east-1",
+        state="running",
+        launch_time=NOW - age,
+        managed_tag="true",
+        deployment_tag=deployment,
+        account_id_tag=ACCOUNT_ID,
+        trial_id_tag=trial_id,
+        worker_job_id_tag=worker_job_id,
+    )
+
+
+def _worker(
+    *,
+    worker_job_id: str = "job-1",
+    trial_id: str = "trial-1",
+    status: str = "RUNNING",
+    provider: str | None = "ec2",
+    external_id: str | None = None,
+    heartbeat_fresh: bool = True,
+) -> dict[str, Any]:
+    return {
+        "id": worker_job_id,
+        "subject_id": trial_id,
+        "status": status,
+        "provider": provider,
+        "external_id": external_id,
+        "heartbeat_fresh": heartbeat_fresh,
+    }
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "workers", "expected_target", "expected_reason"),
+    [
+        (
+            _snapshot(age=timedelta(hours=1)),
+            [_worker(external_id=f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0")],
+            False,
+            "linked_live_worker",
+        ),
+        (
+            _snapshot(age=timedelta(hours=1), worker_job_id="launching-job"),
+            [_worker(worker_job_id="other-job", provider=None, external_id=None)],
+            False,
+            "unlinked_live_trial",
+        ),
+        (
+            _snapshot(age=timedelta(minutes=31)),
+            [_worker(status="SUCCESS")],
+            True,
+            "terminal_owner",
+        ),
+        (
+            _snapshot(age=timedelta(minutes=31)),
+            [],
+            True,
+            "missing_owner",
+        ),
+        (
+            _snapshot(age=timedelta(minutes=31)),
+            [
+                _worker(
+                    external_id=(
+                        f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0"
+                    ),
+                    heartbeat_fresh=False,
+                )
+            ],
+            True,
+            "stale_owner",
+        ),
+        (
+            _snapshot(age=timedelta(days=1), deployment="another-deployment"),
+            [],
+            False,
+            "wrong_deployment",
+        ),
+        (
+            _snapshot(age=timedelta(minutes=30)),
+            [],
+            False,
+            "within_grace",
+        ),
+        (
+            _snapshot(age=timedelta(hours=14)),
+            [_worker(external_id=f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0")],
+            True,
+            "hard_max_age",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ec2_orphan_liveness_batch_drives_expected_verdicts(
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot: Ec2InstanceSnapshot,
+    workers: list[dict[str, Any]],
+    expected_target: bool,
+    expected_reason: str,
+) -> None:
+    session = _LivenessSession(workers)
+    lines: list[str] = []
+    monkeypatch.setattr(cleanup.console, "print", lines.append)
+
+    targets, counts = await cleanup._decide_ec2_orphan_targets(
+        session,
+        (snapshot,),
+        expected_deployment=DEPLOYMENT,
+        expected_account_id=ACCOUNT_ID,
+        now=NOW,
+        stale_after_minutes=15,
+    )
+
+    expected_handle = (
+        "ec2",
+        f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0",
+    )
+    assert (expected_handle in targets) is expected_target
+    assert counts.by_reason[expected_reason] == 1
+    assert len(session.execute_calls) == 1
+    statement, params = session.execute_calls[0]
+    assert "deleted_at IS NULL" in statement
+    assert "kind = 'TRIAL'" in statement
+    assert "subject_table = 'trials'" in statement
+    assert "heartbeat_at >= NOW() - make_interval" in statement
+    assert params == {
+        "worker_job_ids": [snapshot.worker_job_id_tag]
+        if snapshot.worker_job_id_tag
+        else [],
+        "trial_ids": [snapshot.trial_id_tag] if snapshot.trial_id_tag else [],
+        "external_ids": [snapshot.external_id],
+        "stale_after_minutes": 15,
+    }
+    assert any(
+        "metric=ec2_orphan_verdict" in line and f"reason={expected_reason}" in line
+        for line in lines
+    )
+
+
+@pytest.mark.asyncio
+async def test_ec2_liveness_uses_database_freshness_despite_worker_clock_skew() -> None:
+    snapshot = _snapshot(age=timedelta(hours=1))
+    session = _LivenessSession(
+        [
+            _worker(
+                external_id=snapshot.external_id,
+                heartbeat_fresh=True,
+            )
+        ]
+    )
+
+    targets, counts = await cleanup._decide_ec2_orphan_targets(
+        session,
+        (snapshot,),
+        expected_deployment=DEPLOYMENT,
+        expected_account_id=ACCOUNT_ID,
+        now=NOW + timedelta(minutes=20),
+        stale_after_minutes=15,
+    )
+
+    assert targets == set()
+    assert counts.by_reason == {"linked_live_worker": 1}
+
+
+def _patch_unrelated_cleanup_phases(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    events: list[str],
+    session: object,
+    termination_result: int = 0,
+    stale_targets: set[tuple[str, str]] | None = None,
+) -> list[set[tuple[str, str]]]:
+    @asynccontextmanager
+    async def fake_get_session():
+        events.append("db_open")
+        yield session
+        events.append("db_commit")
+
+    async def zero(*_args, **_kwargs):
+        return 0
+
+    async def reap(*_args, **_kwargs):
+        events.append("stale_reap")
+        return 0, 0, [], set(stale_targets or ())
+
+    async def unwedge(*_args, **_kwargs):
+        return 0, 0, 0
+
+    terminated_targets: list[set[tuple[str, str]]] = []
+
+    async def terminate(targets: set[tuple[str, str]]) -> int:
+        events.append("terminate")
+        terminated_targets.append(set(targets))
+        return termination_result
+
+    monkeypatch.setattr(cleanup, "get_session", fake_get_session)
+    monkeypatch.setattr(cleanup, "reap_idle_in_transaction_zombies", zero)
+    monkeypatch.setattr(cleanup, "_reap_stale_worker_jobs", reap)
+    monkeypatch.setattr(cleanup, "_advance_running_tasks_to_analysis", zero)
+    monkeypatch.setattr(cleanup, "_advance_legacy_analyzing_tasks", zero)
+    monkeypatch.setattr(cleanup, "_heal_stale_verdict_pending", zero)
+    monkeypatch.setattr(cleanup, "_unwedge_stuck_analyzing", unwedge)
+    monkeypatch.setattr(cleanup, "_release_orphaned_slots", zero)
+    monkeypatch.setattr(cleanup, "_reconcile_experiment_last_activity", zero)
+    monkeypatch.setattr(cleanup, "_maybe_reconcile_tag_projections", zero)
+    monkeypatch.setattr(cleanup, "sweep_orphaned_tag_owners", zero)
+    monkeypatch.setattr(cleanup, "_terminate_orphaned_sandboxes", terminate)
+    monkeypatch.setattr(cleanup, "clear_terminal_trial_runtime_refs", zero)
+    monkeypatch.setattr(cleanup, "purge_stale_trial_events", zero)
+    return terminated_targets
+
+
+@pytest.mark.asyncio
+async def test_ec2_snapshot_failure_does_not_block_database_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class Backend:
+        async def snapshot_managed_instances(self):
+            events.append("snapshot")
+            raise RuntimeError("AWS unavailable")
+
+        def remove_materialized_worker_credentials(self) -> None:
+            events.append("credentials_cleanup")
+
+    lines: list[str] = []
+    session = _LivenessSession([])
+    terminated_targets = _patch_unrelated_cleanup_phases(
+        monkeypatch, events=events, session=session
+    )
+    monkeypatch.setattr(cleanup.settings, "ec2_enabled", True)
+    monkeypatch.setattr(cleanup, "get_backend", lambda _name: Backend())
+    monkeypatch.setattr(cleanup.console, "print", lines.append)
+
+    result = await cleanup.cleanup_orphaned_queue_state()
+
+    assert events.index("snapshot") < events.index("db_open")
+    assert "stale_reap" in events
+    assert events[-1] == "credentials_cleanup"
+    assert terminated_targets == [set()]
+    assert result["ec2_orphan_snapshot_errors"] == 1
+    assert any("metric=ec2_orphan_snapshot_error" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_ec2_orphan_target_is_terminated_only_after_commit_and_profile_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    instance = _snapshot(age=timedelta(minutes=31))
+    expected = {("ec2", instance.external_id)}
+
+    class Backend:
+        async def snapshot_managed_instances(self):
+            events.append("snapshot")
+            return Ec2InventorySnapshot(
+                expected_account_id=ACCOUNT_ID,
+                expected_deployment=DEPLOYMENT,
+                instances=(instance,),
+            )
+
+        def resolve_aws_account_id(self) -> str:
+            raise AssertionError("cleanup must reuse the inventory account")
+
+        def deployment_name(self) -> str:
+            raise AssertionError("cleanup must reuse the inventory deployment")
+
+        def remove_materialized_worker_credentials(self) -> None:
+            events.append("credentials_cleanup")
+
+    session = _LivenessSession([])
+    terminated_targets = _patch_unrelated_cleanup_phases(
+        monkeypatch,
+        events=events,
+        session=session,
+        termination_result=0,
+        stale_targets=expected,
+    )
+    monkeypatch.setattr(cleanup.settings, "ec2_enabled", True)
+    monkeypatch.setattr(cleanup, "get_backend", lambda _name: Backend())
+
+    result = await cleanup.cleanup_orphaned_queue_state()
+
+    # Stale reap and the inventory decision identified the same instance. The
+    # shared set must send exactly one post-commit target to teardown.
+    assert terminated_targets == [expected]
+    assert events.index("snapshot") < events.index("db_open")
+    assert events.index("db_commit") < events.index("terminate")
+    assert events.index("terminate") < events.index("credentials_cleanup")
+    assert result["ec2_orphan_terminate_candidates"] == 1
+    assert result["worker_sandboxes_terminated"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ec2_teardown_error_is_logged_without_aborting_other_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines: list[str] = []
+
+    async def fail_teardown(_provider: str, _external_id: str) -> bool:
+        raise RuntimeError("AWS terminate failed")
+
+    monkeypatch.setattr(cleanup, "cancel_job_by_worker", fail_teardown)
+    monkeypatch.setattr(cleanup.console, "print", lines.append)
+
+    terminated = await cleanup._terminate_orphaned_sandboxes(
+        {("ec2", f"ec2://{ACCOUNT_ID}/us-east-1/i-0123456789abcdef0")}
+    )
+
+    assert terminated == 0
+    assert any(
+        "metric=orphaned_sandbox_termination outcome=error" in line
+        and "error_type=RuntimeError" in line
+        for line in lines
+    )

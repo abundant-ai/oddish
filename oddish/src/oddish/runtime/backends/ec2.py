@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
@@ -16,11 +17,14 @@ from oddish.runtime.ec2_policy import (
     DEPLOYMENT_TAG_KEY,
     MANAGED_TAG_KEY,
     PROTECTED_EC2_KWARGS,
+    TRIAL_ID_TAG_KEY,
+    WORKER_JOB_ID_TAG_KEY,
     validate_ec2_user_tags,
 )
 from oddish.runtime.ports import Capabilities
 
 if TYPE_CHECKING:
+    from oddish.runtime.ec2_orphans import Ec2InventorySnapshot
     from oddish.runtime.ports import ExecutionBackend
 
 logger = logging.getLogger(__name__)
@@ -31,6 +35,15 @@ _EC2_HANDLE_PATTERN = re.compile(
 )
 _AWS_PROFILE_NAME = "oddish-ec2"
 _AWS_SHARED_CREDENTIALS_FILE = "AWS_SHARED_CREDENTIALS_FILE"
+_EC2_INVENTORY_TIMEOUT_SECONDS = 60.0
+_EC2_INVENTORY_STATES = (
+    "pending",
+    "running",
+    "stopping",
+    "stopped",
+    "shutting-down",
+)
+
 
 class Ec2Backend:
     name = "ec2"
@@ -40,6 +53,7 @@ class Ec2Backend:
         self._aws_profile_path: Path | None = None
         self._previous_aws_credentials_file: str | None = None
         self._had_aws_credentials_file = False
+        self._aws_profile_replacement_active = False
         self._cleanup_registered = False
 
     def capabilities(self) -> Capabilities:
@@ -114,6 +128,7 @@ class Ec2Backend:
         )
         os.environ[_AWS_SHARED_CREDENTIALS_FILE] = str(path)
         self._aws_profile_path = path
+        self._aws_profile_replacement_active = True
         self._register_cleanup()
         return path
 
@@ -130,18 +145,23 @@ class Ec2Backend:
 
     def remove_materialized_worker_credentials(self) -> None:
         self.remove_materialized_ssh_private_key()
-        if self._aws_profile_path is not None:
-            self._aws_profile_path.unlink(missing_ok=True)
+        if not self._aws_profile_replacement_active:
+            return
+        try:
+            if self._aws_profile_path is not None:
+                self._aws_profile_path.unlink(missing_ok=True)
+        finally:
             self._aws_profile_path = None
-        if self._had_aws_credentials_file:
-            assert self._previous_aws_credentials_file is not None
-            os.environ[_AWS_SHARED_CREDENTIALS_FILE] = (
-                self._previous_aws_credentials_file
-            )
-        else:
-            os.environ.pop(_AWS_SHARED_CREDENTIALS_FILE, None)
-        self._previous_aws_credentials_file = None
-        self._had_aws_credentials_file = False
+            if self._had_aws_credentials_file:
+                assert self._previous_aws_credentials_file is not None
+                os.environ[_AWS_SHARED_CREDENTIALS_FILE] = (
+                    self._previous_aws_credentials_file
+                )
+            else:
+                os.environ.pop(_AWS_SHARED_CREDENTIALS_FILE, None)
+            self._previous_aws_credentials_file = None
+            self._had_aws_credentials_file = False
+            self._aws_profile_replacement_active = False
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
         protected_overrides = sorted(PROTECTED_EC2_KWARGS.intersection(base_kwargs))
@@ -162,8 +182,8 @@ class Ec2Backend:
         tags = {
             **raw_tags,
             MANAGED_TAG_KEY: "true",
-            DEPLOYMENT_TAG_KEY: self._deployment_name(),
-            AWS_ACCOUNT_ID_TAG_KEY: self._resolve_aws_account_id(),
+            DEPLOYMENT_TAG_KEY: self.deployment_name(),
+            AWS_ACCOUNT_ID_TAG_KEY: self.resolve_aws_account_id(),
         }
         return {
             **passthrough,
@@ -185,12 +205,15 @@ class Ec2Backend:
 
     async def teardown(self, external_id: str) -> bool:
         if not external_id:
+            logger.warning(
+                "metric=ec2_teardown outcome=refused reason=empty_external_id"
+            )
             return False
         match = _EC2_HANDLE_PATTERN.fullmatch(external_id)
         if match is None:
             logger.error(
-                "Ec2Backend.teardown: refusing malformed or legacy EC2 handle %r; "
-                "expected ec2://<account>/<region>/<instance>",
+                "metric=ec2_teardown outcome=refused reason=malformed_handle "
+                "external_id=%r expected=ec2://<account>/<region>/<instance>",
                 external_id,
             )
             return False
@@ -200,11 +223,11 @@ class Ec2Backend:
         try:
             import boto3
 
-            current_account_id = self._resolve_aws_account_id()
+            current_account_id = self.resolve_aws_account_id()
             if current_account_id != account_id:
                 logger.error(
-                    "Ec2Backend.teardown: refusing handle for AWS account %s; "
-                    "current credentials are for %s",
+                    "metric=ec2_teardown outcome=refused reason=account_mismatch "
+                    "handle_account_id=%s current_account_id=%s",
                     account_id,
                     current_account_id,
                 )
@@ -212,7 +235,7 @@ class Ec2Backend:
             self.materialize_aws_profile()
             client = boto3.Session(
                 profile_name=_AWS_PROFILE_NAME, region_name=region
-            ).client("ec2")
+            ).client("ec2", config=_aws_control_client_config())
             response = await asyncio.to_thread(
                 client.describe_instances, InstanceIds=[instance_id]
             )
@@ -224,7 +247,8 @@ class Ec2Backend:
             ]
             if len(instances) != 1:
                 logger.warning(
-                    "Ec2Backend.teardown: refusing missing or ambiguous instance %s",
+                    "metric=ec2_teardown outcome=refused "
+                    "reason=missing_or_ambiguous instance_id=%s",
                     instance_id,
                 )
                 return False
@@ -235,20 +259,21 @@ class Ec2Backend:
             }
             expected = {
                 MANAGED_TAG_KEY: "true",
-                DEPLOYMENT_TAG_KEY: self._deployment_name(),
+                DEPLOYMENT_TAG_KEY: self.deployment_name(),
                 AWS_ACCOUNT_ID_TAG_KEY: account_id,
             }
             if any(tags.get(key) != value for key, value in expected.items()):
                 logger.warning(
-                    "Ec2Backend.teardown: refusing instance %s without matching "
-                    "ownership tags",
+                    "metric=ec2_teardown outcome=refused "
+                    "reason=ownership_tags instance_id=%s",
                     instance_id,
                 )
                 return False
             state = str((instances[0].get("State") or {}).get("Name") or "")
             if state in {"shutting-down", "terminated"}:
                 logger.info(
-                    "Ec2Backend.teardown: instance %s is already %s",
+                    "metric=ec2_teardown outcome=already_terminal "
+                    "instance_id=%s state=%s",
                     instance_id,
                     state,
                 )
@@ -257,10 +282,165 @@ class Ec2Backend:
                 client.terminate_instances, InstanceIds=[instance_id]
             )
         except Exception:
-            logger.exception("Ec2Backend.teardown: failed to terminate %s", external_id)
+            logger.exception(
+                "metric=ec2_teardown outcome=error external_id=%s", external_id
+            )
             return False
-        logger.info("Ec2Backend.teardown: terminated %s", instance_id)
+        logger.info(
+            "metric=ec2_teardown outcome=terminated instance_id=%s", instance_id
+        )
         return True
+
+    async def snapshot_managed_instances(self) -> Ec2InventorySnapshot:
+        """List active instances owned by this Oddish deployment."""
+        from oddish.runtime.ec2_orphans import (
+            Ec2InstanceSnapshot,
+            Ec2InventorySnapshot,
+        )
+
+        deployment = self.deployment_name()
+        region = settings.ec2_region
+        try:
+            def _list_inventory() -> tuple[str, list[dict[str, Any]]]:
+                self.materialize_aws_profile()
+                account_id = self.resolve_aws_account_id()
+                import boto3
+
+                client = boto3.Session(
+                    profile_name=_AWS_PROFILE_NAME, region_name=region
+                ).client("ec2", config=_aws_control_client_config())
+                paginator = client.get_paginator("describe_instances")
+                pages = list(
+                    paginator.paginate(
+                        Filters=[
+                            {
+                                "Name": f"tag:{MANAGED_TAG_KEY}",
+                                "Values": ["true"],
+                            },
+                            {
+                                "Name": f"tag:{DEPLOYMENT_TAG_KEY}",
+                                "Values": [deployment],
+                            },
+                            {
+                                "Name": "instance-state-name",
+                                "Values": list(_EC2_INVENTORY_STATES),
+                            },
+                        ]
+                    )
+                )
+                return account_id, pages
+
+            account_id, pages = await asyncio.wait_for(
+                asyncio.to_thread(_list_inventory),
+                timeout=_EC2_INVENTORY_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.exception(
+                "metric=ec2_inventory_error deployment=%s region=%s",
+                deployment,
+                region,
+            )
+            raise RuntimeError(
+                "Unable to snapshot Oddish-managed EC2 instances"
+            ) from exc
+
+        snapshots: list[Ec2InstanceSnapshot] = []
+        expected_tags = {
+            MANAGED_TAG_KEY: "true",
+            DEPLOYMENT_TAG_KEY: deployment,
+            AWS_ACCOUNT_ID_TAG_KEY: account_id,
+        }
+        for page in pages:
+            for reservation in page.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+                    instance_id = str(instance.get("InstanceId") or "").strip()
+                    tags = {
+                        str(tag.get("Key")): str(tag.get("Value"))
+                        for tag in instance.get("Tags", [])
+                        if tag.get("Key") is not None and tag.get("Value") is not None
+                    }
+                    if any(
+                        tags.get(key) != value
+                        for key, value in expected_tags.items()
+                    ):
+                        logger.warning(
+                            "metric=ec2_inventory_ownership_refusal "
+                            "instance_id=%s deployment=%s region=%s",
+                            instance_id or "missing",
+                            deployment,
+                            region,
+                        )
+                        continue
+                    state = (
+                        str((instance.get("State") or {}).get("Name") or "")
+                        .strip()
+                        .lower()
+                    )
+                    if state not in _EC2_INVENTORY_STATES:
+                        logger.warning(
+                            "metric=ec2_inventory_state_refusal "
+                            "instance_id=%s state=%s",
+                            instance_id or "missing",
+                            state or "missing",
+                        )
+                        continue
+                    if not _EC2_HANDLE_PATTERN.fullmatch(
+                        f"ec2://{account_id}/{region}/{instance_id}"
+                    ):
+                        logger.warning(
+                            "metric=ec2_inventory_instance_refusal "
+                            "reason=invalid_instance_id instance_id=%r",
+                            instance_id,
+                        )
+                        continue
+                    raw_launch_time = instance.get("LaunchTime")
+                    launch_time = _normalize_launch_time(raw_launch_time)
+                    if launch_time is None:
+                        logger.warning(
+                            "metric=ec2_inventory_launch_time_refusal "
+                            "instance_id=%s reason=%s",
+                            instance_id,
+                            (
+                                "missing"
+                                if raw_launch_time is None
+                                else "invalid_type"
+                            ),
+                        )
+                        continue
+                    snapshots.append(
+                        Ec2InstanceSnapshot(
+                            instance_id=instance_id,
+                            region=region,
+                            state=state,
+                            launch_time=launch_time,
+                            managed_tag=tags.get(MANAGED_TAG_KEY),
+                            deployment_tag=tags.get(DEPLOYMENT_TAG_KEY),
+                            account_id_tag=tags.get(AWS_ACCOUNT_ID_TAG_KEY),
+                            trial_id_tag=tags.get(TRIAL_ID_TAG_KEY),
+                            worker_job_id_tag=tags.get(WORKER_JOB_ID_TAG_KEY),
+                        )
+                    )
+        logger.info(
+            "metric=ec2_inventory_snapshot outcome=success deployment=%s "
+            "account_id=%s region=%s instances=%d",
+            deployment,
+            account_id,
+            region,
+            len(snapshots),
+        )
+        return Ec2InventorySnapshot(
+            expected_account_id=account_id,
+            expected_deployment=deployment,
+            instances=tuple(snapshots),
+        )
+
+    def resolve_aws_account_id(self) -> str:
+        """Resolve the account used by the namespaced EC2 control profile."""
+        return self._resolve_aws_account_id()
+
+    def deployment_name(self) -> str:
+        """Return the deployment ownership namespace used in protected tags."""
+        return self._deployment_name()
 
     def _resolve_aws_account_id(self) -> str:
         try:
@@ -270,7 +450,9 @@ class Ec2Backend:
             response = boto3.Session(
                 profile_name=_AWS_PROFILE_NAME,
                 region_name=settings.ec2_region,
-            ).client("sts").get_caller_identity()
+            ).client(
+                "sts", config=_aws_control_client_config()
+            ).get_caller_identity()
         except Exception as exc:
             raise RuntimeError(
                 "Unable to resolve the AWS account for the EC2 backend"
@@ -289,6 +471,24 @@ class Ec2Backend:
     @staticmethod
     def _deployment_name() -> str:
         return os.environ.get("MODAL_APP_NAME", "oddish")
+
+
+def _normalize_launch_time(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _aws_control_client_config() -> Any:
+    from botocore.config import Config
+
+    return Config(
+        connect_timeout=5,
+        read_timeout=10,
+        retries={"max_attempts": 3, "mode": "standard"},
+    )
 
 
 if TYPE_CHECKING:
