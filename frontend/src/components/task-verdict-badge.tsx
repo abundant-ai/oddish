@@ -69,14 +69,14 @@ function presentVerdict(
     icon = (
       <CheckCircle2 className={`${iconSizeClass} shrink-0 text-emerald-500`} />
     );
-    title = "Task is good";
+    title = "Accepted";
     toneCard = "border-emerald-500/30 bg-emerald-500/5";
     toneInline = "border-emerald-500/40 bg-emerald-500/[0.04]";
   } else if (isGood === false) {
     icon = (
       <AlertTriangle className={`${iconSizeClass} shrink-0 text-amber-500`} />
     );
-    title = "Needs review";
+    title = "Rejected";
     toneCard = "border-amber-500/30 bg-amber-500/5";
     toneInline = "border-amber-500/40 bg-amber-500/[0.04]";
   } else {

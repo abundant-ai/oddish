@@ -31,6 +31,9 @@ def build_verdict_payload(
     is what lets the legacy and AnalyzerBlock paths share one writer.
     """
     return {
+        "verdict": "accept" if verdict.is_good else "reject",
+        # Kept alongside the label: stored rows, dashboard SQL, and Slack
+        # alerts key off verdict->>'is_good'.
         "is_good": verdict.is_good,
         "confidence": verdict.confidence,
         "primary_issue": verdict.primary_issue,

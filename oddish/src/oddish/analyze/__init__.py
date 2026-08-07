@@ -11,7 +11,6 @@ from oddish.analyze.classifier import (
     build_verdict_prompt,
     classify_trial,
 )
-from oddish.analyze.verdict_rules import enforce_verdict_guardrails
 
 __all__ = [
     "BaselineResult",
@@ -23,5 +22,4 @@ __all__ = [
     "TrialClassifier",
     "build_verdict_prompt",
     "classify_trial",
-    "enforce_verdict_guardrails",
 ]
