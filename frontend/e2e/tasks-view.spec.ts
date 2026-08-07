@@ -32,8 +32,10 @@ test.describe("authenticated task view", () => {
       await page.goto(`/tasks/${TASK_ID}`);
     } else {
       await page.goto("/tasks");
+      // CardTitle renders a styled <div>, not an <h*>, so this is text — not a
+      // heading role.
       await expect(
-        page.getByRole("heading", { name: "Recent Tasks" })
+        page.getByText("Recent Tasks", { exact: true }),
       ).toBeVisible();
       await page.locator('a[href^="/tasks/"]').first().click();
     }
