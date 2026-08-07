@@ -235,7 +235,7 @@
     --tc-testing-public: #e87ba4;
     --tc-testing-custom: #c94592;
     --tc-testing-edge: #852c5e;
-    --tc-debugging: #7e22ce;
+    --tc-debugging: #eb6834;
   }
 
   .dark {
@@ -302,7 +302,7 @@
     --tc-testing-public: #ce6b98;
     --tc-testing-custom: #d55181;
     --tc-testing-edge: #9d3973;
-    --tc-debugging: #a855f7;
+    --tc-debugging: #d95926;
   }
 
   /*
