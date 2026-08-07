@@ -606,6 +606,7 @@ export interface DashboardExperiment {
   last_pr_url: string | null;
   last_pr_title: string | null;
   last_pr_number: string | null;
+  qa_report_experiment_id?: string | null;
 }
 
 export interface DashboardResponse {

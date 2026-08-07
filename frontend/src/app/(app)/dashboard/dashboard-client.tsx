@@ -396,6 +396,17 @@ function ExperimentsTableBody({
                             aria-label="Published experiment"
                           />
                         )}
+                        {experiment.qa_report_experiment_id && (
+                          <Link
+                            href={`/experiments/${encodeExperimentRouteParam(
+                              experiment.qa_report_experiment_id
+                            )}`}
+                            className="text-muted-foreground rounded border border-amber-500/30 px-1 py-px text-[10px] leading-none whitespace-nowrap hover:border-amber-500/60 hover:underline"
+                            title="Open this experiment's QA report"
+                          >
+                            qa report
+                          </Link>
+                        )}
                       </div>
                       {(experiment.user_tags?.length ?? 0) > 0 && (
                         <div className="mt-0.5 flex flex-wrap items-center gap-1">

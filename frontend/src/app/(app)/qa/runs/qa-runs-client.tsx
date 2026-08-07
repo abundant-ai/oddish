@@ -24,7 +24,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { fetcher } from "@/lib/api";
-import { encodeExperimentRouteParam } from "@/lib/utils";
 
 type ProbeRow = {
   task_id: string;
@@ -34,69 +33,6 @@ type ProbeRow = {
   last_status: string;
   probe_names: string[];
 };
-
-type QaReportRow = {
-  experiment_id: string;
-  name: string;
-  graded_experiment_id: string;
-  graded_experiment_name: string | null;
-  last_activity_at: string | null;
-};
-
-function QaReportsCard() {
-  const { data } = useSWR<QaReportRow[]>("/api/qa-reports", fetcher);
-  if (!data || data.length === 0) return null;
-
-  return (
-    <Card className="border-[#6f88b4]/20 shadow-xs">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">QA reports</CardTitle>
-        <p className="text-muted-foreground text-[11px]">
-          Each report is an experiment that holds the QA and audit runs for
-          the experiment it grades.
-        </p>
-      </CardHeader>
-      <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Report</TableHead>
-              <TableHead>Grades</TableHead>
-              <TableHead className="w-[200px]">Last activity</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.map((row) => (
-              <TableRow key={row.experiment_id}>
-                <TableCell className="text-xs font-medium">
-                  <Link
-                    href={`/experiments/${encodeExperimentRouteParam(row.experiment_id)}`}
-                    className="hover:underline"
-                  >
-                    {row.name}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-xs">
-                  <Link
-                    href={`/experiments/${encodeExperimentRouteParam(row.graded_experiment_id)}`}
-                    className="text-muted-foreground hover:underline"
-                  >
-                    {row.graded_experiment_name ?? row.graded_experiment_id}
-                  </Link>
-                </TableCell>
-                <TableCell className="text-muted-foreground text-[11px]">
-                  {row.last_activity_at
-                    ? new Date(row.last_activity_at).toLocaleString()
-                    : "—"}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
-  );
-}
 
 const PAGE_SIZE = 25;
 
@@ -219,7 +155,6 @@ export function QaRunsClient() {
 
   return (
     <div className="space-y-6">
-      <QaReportsCard />
       <Card className="border-[#6f88b4]/20 shadow-xs">
         <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">

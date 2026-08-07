@@ -1900,16 +1900,6 @@ class OrgProbeRow(BaseModel):
     probe_names: list[str] = Field(default_factory=list)
 
 
-class QaReportRow(BaseModel):
-    """One qa-report shadow experiment and the experiment it grades."""
-
-    experiment_id: str
-    name: str
-    graded_experiment_id: str
-    graded_experiment_name: str | None = None
-    last_activity_at: datetime | None = None
-
-
 # Skills — custom agent skill bundles.
 # ---------------------------------------------------------------------------
 class SkillFile(BaseModel):

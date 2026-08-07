@@ -1434,6 +1434,18 @@ async def load_dashboard_experiments(
 
     aggregates_by_id = {str(row["experiment_id"]): row for row in agg_rows}
 
+    # QA-report shadows for this page, so each row can link to its report.
+    qa_report_by_parent = {
+        str(parent): str(shadow)
+        for parent, shadow in (
+            await session.execute(
+                select(ExperimentModel.shadow_of, ExperimentModel.id).where(
+                    ExperimentModel.shadow_of.in_(experiment_ids)
+                )
+            )
+        ).all()
+    }
+
     # ------------------------------------------------------------------
     # Step 3: stitch + post-filter, preserving page order.
     # ------------------------------------------------------------------
@@ -1603,6 +1615,7 @@ async def load_dashboard_experiments(
                     else None
                 ),
                 "last_pr_number": last_pr_number,
+                "qa_report_experiment_id": qa_report_by_parent.get(exp_id),
             }
         )
 

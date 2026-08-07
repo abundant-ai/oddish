@@ -63,7 +63,6 @@ from oddish.core.dashboard import (
 from oddish.core.experiments import (
     list_experiment_probes_core,
     list_org_probes_core,
-    list_qa_reports_core,
 )
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
@@ -130,7 +129,6 @@ from oddish.schemas import (
     ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
-    QaReportRow,
     TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
@@ -1465,16 +1463,6 @@ async def list_org_probes(
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
         return await list_org_probes_core(session, org_id=auth.org_id)
-
-
-@router.get("/qa/reports", response_model=list[QaReportRow])
-async def list_qa_reports(
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> list[QaReportRow]:
-    """List the org's qa-report experiments, most recent first."""
-    auth.require_scope(APIKeyScope.READ)
-    async with get_session() as session:
-        return await list_qa_reports_core(session, org_id=auth.org_id)
 
 
 @router.post("/tasks/cancel")

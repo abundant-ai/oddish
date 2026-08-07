@@ -9,16 +9,13 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy.orm import aliased
-
 from oddish.db import (
-    ExperimentModel,
     TaskModel,
     TaskVersionModel,
     TrialModel,
     task_experiments,
 )
-from oddish.schemas import ExperimentProbeRow, OrgProbeRow, QaReportRow
+from oddish.schemas import ExperimentProbeRow, OrgProbeRow
 
 
 async def list_experiment_probes_core(
@@ -155,47 +152,6 @@ async def list_org_probes_core(
             last_run_at=row.last_run_at,
             last_status=getattr(row.last_status, "value", row.last_status),
             probe_names=sorted(set(row.probe_names or [])),
-        )
-        for row in result.all()
-    ]
-
-
-async def list_qa_reports_core(
-    session: AsyncSession,
-    *,
-    org_id: str | None,
-    limit: int = 200,
-) -> list[QaReportRow]:
-    """Return the org's qa-report shadow experiments, most recent first.
-
-    Each row links the shadow (where the analysis trials live) to the
-    experiment it grades.
-    """
-    parent = aliased(ExperimentModel)
-    stmt = (
-        select(
-            ExperimentModel.id.label("experiment_id"),
-            ExperimentModel.name.label("name"),
-            ExperimentModel.shadow_of.label("graded_experiment_id"),
-            parent.name.label("graded_experiment_name"),
-            ExperimentModel.last_activity_at.label("last_activity_at"),
-        )
-        .join(parent, parent.id == ExperimentModel.shadow_of, isouter=True)
-        .where(ExperimentModel.shadow_of.isnot(None))
-        .order_by(ExperimentModel.last_activity_at.desc().nulls_last())
-        .limit(limit)
-    )
-    if org_id is not None:
-        stmt = stmt.where(ExperimentModel.org_id == org_id)
-
-    result = await session.execute(stmt)
-    return [
-        QaReportRow(
-            experiment_id=row.experiment_id,
-            name=row.name,
-            graded_experiment_id=row.graded_experiment_id,
-            graded_experiment_name=row.graded_experiment_name,
-            last_activity_at=row.last_activity_at,
         )
         for row in result.all()
     ]
