@@ -502,8 +502,23 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
 # ---------------------------------------------------------------------------
 
 
+class _FakeAwaitableAttrs:
+    """Mirror of SQLAlchemy's ``awaitable_attrs``: each attribute awaits to
+    the underlying object's attribute (``build_task_context`` loads
+    ``trial.task`` through it)."""
+
+    def __init__(self, obj):
+        self._obj = obj
+
+    def __getattr__(self, name):
+        async def _get():
+            return getattr(self._obj, name)
+
+        return _get()
+
+
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
-    return SimpleNamespace(
+    trial = SimpleNamespace(
         id="t-1",
         name="trial-0",
         trial_s3_key="trials/t-1/",
@@ -512,6 +527,8 @@ def _trial_with_task(*, task_name, reward, model, harbor_config=None):
         harbor_config=harbor_config,
         task=SimpleNamespace(name=task_name),
     )
+    trial.awaitable_attrs = _FakeAwaitableAttrs(trial)
+    return trial
 
 
 @pytest.mark.asyncio
