@@ -164,7 +164,7 @@ def format_task_comment(
 
     if task.verdict_status == "success" and task.verdict:
         verdict_emoji = "\u2705" if task.verdict.get("is_good") else "\u26a0\ufe0f"
-        verdict_text = "GOOD" if task.verdict.get("is_good") else "NEEDS REVIEW"
+        verdict_text = "ACCEPTED" if task.verdict.get("is_good") else "REJECTED"
         lines.append(f"### {verdict_emoji} Verdict: **{verdict_text}**")
         if task.verdict.get("primary_issue"):
             lines.append(f"> {task.verdict['primary_issue']}")
@@ -354,7 +354,7 @@ def format_experiment_comment(
                 verdict_emoji = (
                     "\u2705" if task.verdict.get("is_good") else "\u26a0\ufe0f"
                 )
-                verdict_str = f"{verdict_emoji} {'Good' if task.verdict.get('is_good') else 'Review'}"
+                verdict_str = f"{verdict_emoji} {'Accept' if task.verdict.get('is_good') else 'Reject'}"
                 if task.verdict.get("primary_issue"):
                     verdict_str += f" \u2014 {task.verdict['primary_issue']}"
             elif task.verdict_status == "running":

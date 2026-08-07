@@ -1,8 +1,6 @@
-You combine several independent trial analyses of one benchmark task into a final verdict on the task's quality. Each trial ran the same task and got a separate analysis. Decide if the task is good, or if it needs a fix.
+One benchmark task ran {num_trials} times. Each run is a trial, and each trial has an analysis below. Read the analyses and decide: accept the task or reject it. Accept means the task works and can stay in the benchmark. Reject means the task has a problem that a person must fix first.
 
 ## INPUTS
-
-{num_trials} trial runs of the same task.
 
 Baseline validation:
 {baseline_summary}
@@ -10,52 +8,63 @@ Baseline validation:
 Static quality check:
 {quality_check_summary}
 
-Individual trial classifications:
+Trial classifications:
 
 {trial_classifications}
 
-## HOW TO READ THE CLASSIFICATIONS
+## THE LABELS
 
-* GOOD_SUCCESS — the agent solved it fairly. The task works.
-* GOOD_FAILURE — the agent failed a fair task. The task works.
-* BAD_SUCCESS — the agent passed but did not solve the task (reward hacking, or tests too weak). That is a task problem.
-* BAD_FAILURE — the task was broken in this run: a defect caused the failure, or the task leaked hidden files and the agent used them. That is a task problem.
-* HARNESS_ERROR — the infrastructure broke the run. It says nothing about the task. There is one exception: the subtype `hidden_file_leak` means that the task exposed hidden files. That is a task problem.
+Each analysis gives its trial one label. A label is a claim from that analysis, not a verified fact.
 
-## RULES
+* GOOD_SUCCESS — the agent solved the task fairly. The task is good.
+* GOOD_FAILURE — the agent failed a fair task. The task is good.
+* BAD_SUCCESS — the agent passed, but the pass does not count. The agent cheated, or it went against the intent of the task, or the tests were too weak to notice a bad solution. The task has a problem.
+* BAD_FAILURE — a task problem caused the failure, or the task leaked hidden files. The task has a problem.
+* HARNESS_ERROR — the infrastructure broke the run, so the run says nothing about the task. One exception: the subtype `hidden_file_leak` means the task exposed hidden files, and that is a task problem.
 
-1. Hard tasks are good. A 10-40% pass rate is ideal for a benchmark. Never mark a task bad because it is difficult. Failures are expected.
-2. One success proves that the task is solvable.
-3. One trial that reports an issue can be noise. The same issue in most trials is a signal. There is one exception: a proven leak is a fact, not noise. One trial that read the hidden tests, the solution, or other blocked access proves that the hole exists. A `must_fix` item with the dimension `info_leakage` in any trial's action items proves the hole in the same way, even when every trial passed. A `must_fix` finding with the dimension `info_leakage` in the static quality check also proves the hole, even when no trial used it.
-4. A baseline failure decides the verdict by itself. A nop baseline that passed means that the task is possibly pre-solved. An oracle baseline that failed means that the reference solution does not work. Either one -> is_good=false, high confidence.
-5. Do not trust "underspecified instruction" claims easily. Ask this question: could the agent find the missing detail in the codebase? If yes, that trial's classification is not correct. Give it less weight.
+## STEP 1: LOOK FOR AN IMMEDIATE REJECTION
 
-## VERDICT
+Four kinds of evidence reject the task on their own. Look for them first. If you find one, reject the task. Good results from the other trials do not cancel it.
 
-* A baseline failure (rule 4) -> is_good=false, high confidence.
-* Any trial proves a leak or an access hole (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`) -> is_good=false, even when only one trial shows it (rule 3). A `must_fix` item with the dimension `info_leakage` proves the hole in the same way, whether it sits in a trial's action items or in the static quality check -> is_good=false.
-* Most trials show the SAME task problem, with clear evidence -> is_good=false. Medium confidence; high when all trials agree.
-* Everything else -> is_good=true. A run with only GOOD_FAILURE results, a mixed run, and one isolated BAD classification are all normal for a hard task.
+* A used leak. A trial read the hidden tests, the solution, or other files the task must keep hidden (subtype `hidden_file_leak`, `test_inspection`, `oracle_copying`, or `unintended_access`).
+* A found leak. A `must_fix` finding with the dimension `info_leakage`, from the static quality check or from a trial. The finding counts even if no trial used the leak.
+* Weak tests. A trial measured that the tests also pass work that does not solve the task. Example: the untouched base model already scores above the pass threshold. Weak tests make every pass meaningless, including the ones labeled GOOD_SUCCESS.
+* A failed baseline. The nop baseline changes nothing, so if it passed, the task was already solved. The oracle baseline applies the reference solution, so if it failed, the reference solution is broken.
 
-Confidence is high when the trials agree, or when a baseline failure decides the verdict. It is medium for a majority pattern. It is low when the trials disagree, or when there are only harness errors.
+## STEP 2: JUDGE THE REST
+
+If step 1 found nothing, the remaining evidence is opinion — claims like "the instruction is unclear" or "the tests are too strict". One trial's opinion can simply be wrong. Trust an opinion only when most trials agree on it. Harness errors say nothing, so leave them out when you decide what "most trials" means.
+
+Three rules:
+
+1. A difficult task is not a bad task. A benchmark works best when only 10-40% of trials pass, so failures are expected.
+2. One fair success proves the task can be solved.
+3. When a trial claims the instruction is missing information, check: could the agent have found that information in the code? If yes, ignore the claim.
+
+The decision: reject if most trials show the same task problem, with clear evidence. Accept in every other case. A run where every trial fails, a mixed run, or a single BAD label — all of that is normal for a difficult task.
+
+## STEP 3: SET THE CONFIDENCE
+
+* An immediate rejection is high confidence. One exception: if the only evidence is a single trial claiming weak tests, and the static quality check has no matching `must_fix` `verifier` finding, use medium.
+* A rejection because most trials show the same problem is high confidence.
+* An accept is high confidence when the trials agree, and low when they disagree or every trial is a harness error.
 
 ## OUTPUT
 
 Return ONLY valid JSON (no markdown, no code blocks, no explanation):
 
 {{
-  "is_good": true/false,
+  "verdict": "accept" | "reject",
   "confidence": "high" | "medium" | "low",
   "primary_issue": "the main problem" or null,
   "recommendations": ["concrete fix 1", "concrete fix 2"],
-  "reasoning": "1-3 sentences on the trial pattern"
+  "reasoning": "1-3 sentences about what the trials show"
 }}
 
-Field rules:
+How to write the fields:
 
-* Write all prose fields in ASD-STE100 Simplified Technical English. Write short sentences of no more than 20 words. Use the active voice. Give one fact in each sentence. Use the same name for the same thing every time. Use simple, common words. Do not use idioms.
-* In all prose fields, wrap every code name in backticks: files, tests, functions, variables, and config keys. The card renders backticks as code. Use no other Markdown.
-* Write full sentences in all prose fields. Keep the small words: the, a, that, is. Do not compress a sentence into a headline.
-* `primary_issue` — null when is_good=true. Otherwise name the pattern with counts: "3/4 trials fail on an error string the instruction never states". Start with "CRITICAL:" for baseline failures.
-* `recommendations` — for good tasks, empty or at most two small suggestions. For bad tasks, 3-5 concrete fixes, most frequent problem first, duplicates across trials merged. "Add the file path to instruction.md line 15", not "improve instructions".
-* `reasoning` — write for a task author who has not seen the trial analyses or this prompt. Use well-known terms only. Do not use internal labels or ids. If your verdict disagrees with a trial classification (for example a trial says BAD_FAILURE but you say is_good=true), name that trial. Say in plain words why you gave it less weight. Silent disagreement is not permitted. The reader sees both outputs side by side.
+* Write for the task's author, who reads this once and has seen none of the analyses. Use short sentences, plain words, and no jargon.
+* Wrap every code name in backticks: files, tests, functions, variables, config keys. Use no other formatting.
+* `primary_issue` — null when you accept. When you reject, state the problem with a count: "3/4 trials fail on an error string the instruction never states". Start with "CRITICAL:" when a baseline failed.
+* `recommendations` — at most two small suggestions when you accept. When you reject, three to five specific fixes, most common problem first, no duplicates. "Add the file path to instruction.md line 15" is a fix; "improve the instructions" is not.
+* `reasoning` — what the trials showed. If you rejected immediately, name the evidence. If you disagree with a trial's label, name the trial and say why.

@@ -31,6 +31,7 @@ from oddish.core.trial_facets import (
     facet_rows_for_trial_dicts,
     record_trial_facets,
 )
+from oddish.core.verdict_sync import cancel_verdict, clear_inflight_verdict
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -274,18 +275,23 @@ async def cancel_tasks_runs(
     tasks_cancelled = 0
     for task in tasks:
         task_updated = False
+        failed_by_this_cancel = False
         if task.status in ACTIVE_TASK_STATUSES:
             task.status = TaskStatus.FAILED
             task.finished_at = now
             task_updated = True
+            failed_by_this_cancel = True
         if (
             task.id in canceled_verdict_task_ids
             or task.verdict_status in ACTIVE_PIPELINE_STATUSES
         ):
-            task.verdict_status = VerdictStatus.FAILED
-            task.verdict_error = USER_CANCELLED_MESSAGE
-            task.verdict_finished_at = now
+            cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now)
             task_updated = True
+        # A task that still holds a successful verdict is judged. Cancelling
+        # its extra trials completes it; it must not read as a failed task
+        # with an accepted verdict (same rule as the QA cancel endpoint).
+        if failed_by_this_cancel and task.verdict_status == VerdictStatus.SUCCESS:
+            task.status = TaskStatus.COMPLETED
         if task_updated:
             tasks_cancelled += 1
 
@@ -1313,11 +1319,7 @@ async def append_trials_to_task(
         task.finished_at = None
 
     if new_trials and task.run_analysis:
-        task.verdict = None
-        task.verdict_status = None
-        task.verdict_error = None
-        task.verdict_started_at = None
-        task.verdict_finished_at = None
+        clear_inflight_verdict(task)
         # Cancel any in-flight QA worker_job for this task so a worker
         # that's already claimed (or about to claim) the old row doesn't
         # overwrite the new verdict with stale data. The dispatcher
@@ -1467,13 +1469,10 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
-        # No QA job runs for this task (analysis off, or nothing QA-eligible),
-        # so clear any verdict bookkeeping left over from an earlier
-        # VERDICT_PENDING pass -- otherwise the task can end COMPLETED while
-        # verdict_status still reads QUEUED (e.g. a task bounced back to RUNNING
-        # by a late-arriving trial, then completed here with no eligible trials).
-        task.verdict_status = None
-        task.verdict_error = None
+        # No QA job will run, so clear queued or running verdict bookkeeping
+        # -- otherwise the task ends COMPLETED while verdict_status still
+        # reads QUEUED. A finished verdict stays, together with its payload.
+        clear_inflight_verdict(task)
 
     await session.flush()
     return True
