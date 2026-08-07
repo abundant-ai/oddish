@@ -1,17 +1,7 @@
 Write a summary of 2-3 sentences. State what the agent tried to do, how the run ended, and if the verifier agreed. Then give 3-6 highlights with their step ids. Write all prose in ASD-STE100 Simplified Technical English: short sentences, the active voice, one fact per sentence, and simple, common words.
 
-Each highlight must reference a real `step_id` from the trajectory below. Pick steps where the run changed in an important way.
+Each highlight must reference a real `step_id` from the trajectory below. Pick steps where the run changed in an important way. Give each highlight a short title and one sentence that explains why it mattered.
 
 Also segment the run into components. Assign EVERY step to exactly one component. The component's `trajectory_component` must be one of these labels: {{taxonomy}}. Give each component the step ids that it covers and a one-sentence summary. Cover all steps in order.
 
-Respond with ONLY a JSON object (no preamble, no code fences) matching this exact shape:
-{
-  "summary": "2-3 sentences",
-  "highlights": [
-    {"step_id": <int>, "title": "<short label>", "why": "<one sentence>"}
-  ],
-  "components": [
-    {"step_ids": [<int>, ...], "trajectory_component": "<label>", "summary": "<one sentence>"}
-  ]
-}
 Order the highlights by `step_id`, lowest first.

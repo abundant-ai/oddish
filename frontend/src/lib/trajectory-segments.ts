@@ -11,6 +11,7 @@ const COMPONENT_LABELS: Record<TrajectoryComponentKind, string> = {
   thinking_understand: "Understanding",
   thinking_hypothesize: "Hypothesizing",
   thinking_correction: "Correcting course",
+  writing_plan: "Planning",
   implementing: "Implementing",
   implementing_correction: "Correcting implementation",
   writing_tests: "Writing tests",

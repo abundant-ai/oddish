@@ -702,6 +702,7 @@ export type TrajectoryComponentKind =
   | "thinking_understand"
   | "thinking_hypothesize"
   | "thinking_correction"
+  | "writing_plan"
   | "implementing"
   | "implementing_correction"
   | "writing_tests"

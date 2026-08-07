@@ -97,6 +97,7 @@ const COMPONENT_COLOR_VARS: Record<string, string> = {
   thinking_understand: "var(--tc-thinking-understand)",
   thinking_hypothesize: "var(--tc-thinking-hypothesize)",
   thinking_correction: "var(--tc-thinking-correction)",
+  writing_plan: "var(--tc-writing-plan)",
   implementing: "var(--tc-implementing)",
   implementing_correction: "var(--tc-implementing-correction)",
   writing_tests: "var(--tc-writing-tests)",

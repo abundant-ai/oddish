@@ -241,18 +241,18 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_strips_code_fences_around_json(monkeypatch):
-    from api.services.summarize_trajectory import generate
+async def test_generate_rejects_code_fences_outside_structured_output(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
 
     _patch_block_persistence(monkeypatch)
     body = json.dumps({"summary": "ok", "highlights": [], "components": []})
     _install_fake_llm(monkeypatch, _fake_llm(f"```json\n{body}\n```"))
-    result = await generate(
-        _trajectory_with_steps([1]),
-        _minimal_ctx(),
-        **_PROMPT_KWARGS,
-    )
-    assert result["summary"] == "ok"
+    with pytest.raises(SummaryGenerationError):
+        await generate(
+            _trajectory_with_steps([1]),
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
 
 
 @pytest.mark.asyncio
@@ -766,6 +766,25 @@ def test_packaged_summary_prompt_template_has_taxonomy_placeholder():
 
     content = load_summary_prompt_template()
     assert "{{taxonomy}}" in content
+
+
+def test_build_summary_block_wires_structured_output_for_both_provider_paths():
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryOutput,
+    )
+    from api.services.summarize_trajectory import build_summary_block
+
+    block = build_summary_block(
+        _trajectory_with_steps([1]),
+        _minimal_ctx(),
+        analyzer_id="tr_structured",
+        model="claude-sonnet-4-6",
+    )
+
+    assert TrajectoryBlock.output_schema is TrajectoryOutput
+    assert block._response_format is TrajectoryBlock.output_schema
+    assert block._output_schema == TrajectoryBlock.output_schema.model_json_schema()
 
 
 @pytest.mark.asyncio

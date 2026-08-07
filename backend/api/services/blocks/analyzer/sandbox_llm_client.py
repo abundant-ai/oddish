@@ -1,7 +1,7 @@
 """The Daytona-sandbox AnalyzerLLMClient backend.
 
 Lives in backend/ rather than beside the API/OpenAI clients in
-``oddish.blocks.analyzer.analyzer_llm_client`` because it needs cc_chat's
+``oddish.blocks.analyzer.analyzer_llm_client`` because it needs the sandbox
 provisioner and Daytona client, which are hosted-layer only. Core reaches it
 through the factory hook it registers on import, so a backend-free worker
 still runs every non-sandbox block.
@@ -27,13 +27,13 @@ from oddish.core.api_keys import mint_internal_api_key
 from oddish.db import generate_id, get_session
 from oddish.db.models import APIKeyModel, APIKeyScope
 
-from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
-from api.services.cc_chat.daytona_client import (
+from api.services.sandbox.claude_code_runtime import ClaudeCodeRuntime
+from api.services.sandbox.daytona_client import (
     CreatedSandbox,
     DaytonaClient,
     RealDaytonaClient,
 )
-from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
+from api.services.sandbox.provisioner import Provisioner, delete_sandbox_quietly
 
 _DAYTONA_SESSION_ID = "analyzer"
 _AUTO_STOP_MINUTES = 15
