@@ -161,7 +161,13 @@ async def get_task_status_counts(
     join_experiment: bool = False,
 ) -> TaskStatusResponse:
     """Get task status with aggregated trial counts."""
-    query = select(TaskModel).where(TaskModel.id == task_id)
+    # ``build_task_status_responses_from_counts`` aggregates trials in SQL
+    # but its response builder still reads ``task.experiments``.
+    query = (
+        select(TaskModel)
+        .options(selectinload(TaskModel.experiments))
+        .where(TaskModel.id == task_id)
+    )
     if join_experiment:
         query = query.join(
             task_experiments, task_experiments.c.task_id == TaskModel.id

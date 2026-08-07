@@ -96,20 +96,24 @@ class TrialClassificationModel(BaseModel):
 class TaskVerdictModel(BaseModel):
     """Pydantic model for task-level structured output."""
 
-    is_good: bool = Field(
-        description="Whether the task is good (true) or needs review (false)"
+    verdict: Literal["accept", "reject"] = Field(
+        description="accept: the task works. reject: the task needs a fix."
     )
     confidence: Literal["high", "medium", "low"] = Field(description="Confidence level")
     primary_issue: str | None = Field(
-        default=None, description="Primary issue if task needs review, else null"
+        default=None, description="Primary issue if the task is rejected, else null"
     )
     recommendations: list[str] = Field(
         default_factory=list,
-        description="Actionable recommendations (3-5 for bad tasks)",
+        description="Actionable recommendations (3-5 for rejected tasks)",
     )
     reasoning: str | None = Field(
         default=None, description="1-2 sentence explanation of the verdict (optional)"
     )
+
+    @property
+    def is_good(self) -> bool:
+        return self.verdict == "accept"
 
 
 @dataclass

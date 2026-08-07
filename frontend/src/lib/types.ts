@@ -213,6 +213,8 @@ export interface Trial {
 }
 
 interface TaskVerdict {
+  /** Absent on rows stored before the accept/reject label existed. */
+  verdict?: "accept" | "reject";
   is_good: boolean;
   confidence: "high" | "medium" | "low";
   primary_issue?: string | null;

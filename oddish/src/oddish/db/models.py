@@ -661,6 +661,11 @@ class TaskModel(TimestampedMixin, Base):
     )
 
     # Relationships
+    # ``lazy="select"`` (the default): a mapper-level selectin here made
+    # every ``select(TaskModel)`` fan out into the join table on paths
+    # that never read the relationship (org checks, file serving).
+    # Callers that need it add ``selectinload(TaskModel.experiments)``
+    # or go through ``awaitable_attrs``.
     experiments: Mapped[list["ExperimentModel"]] = relationship(  # type: ignore[assignment]
         "ExperimentModel",
         secondary=task_experiments,
@@ -670,12 +675,16 @@ class TaskModel(TimestampedMixin, Base):
         ),
         secondaryjoin=lambda: ExperimentModel.id == task_experiments.c.experiment_id,
         back_populates="tasks",
-        lazy="selectin",
     )
+    # ``lazy="select"``: this collection is unbounded (hundreds of trials
+    # per task) and each row carries wide JSONB columns, so an implicit
+    # selectin charged every TaskModel load -- including the 404/org
+    # checks that load a task only to inspect ``org_id`` -- for the full
+    # trial set. Callers that actually render trials already add
+    # ``selectinload(TaskModel.trials)`` (often filtered) themselves.
     trials: Mapped[list["TrialModel"]] = relationship(  # type: ignore[assignment]
         "TrialModel",
         back_populates="task",
-        lazy="selectin",
         passive_deletes=True,
     )
     # ``lazy="select"``: only the explicit ``list_task_versions_core``
@@ -763,11 +772,13 @@ class TaskVersionModel(TimestampedMixin, Base):
     )
 
     # Relationships
+    # ``lazy="select"``: no read path consumes ``task_version.task``, so
+    # the previous selectin bought an extra round trip per version load
+    # for nothing.
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
         "TaskModel",
         back_populates="versions",
         foreign_keys=[task_id],
-        lazy="selectin",
     )
 
 
@@ -991,8 +1002,13 @@ class TrialModel(TimestampedMixin, Base):
     orig_s3_src: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
+    # ``lazy="select"``: a mapper-level selectin here cascaded -- loading
+    # one trial pulled its task, whose own eager relationships then
+    # pulled every sibling trial at full width. Callers that read
+    # ``trial.task`` add ``selectinload(TrialModel.task)`` or use
+    # ``awaitable_attrs`` (see ``build_task_context``).
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]
-        "TaskModel", back_populates="trials", lazy="selectin"
+        "TaskModel", back_populates="trials"
     )
 
     __table_args__ = (

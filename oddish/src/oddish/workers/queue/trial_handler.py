@@ -409,7 +409,10 @@ async def _heartbeat_trial_execution(
     The unified stale-reap in ``cleanup.py`` reads only ``worker_jobs``,
     so missing the worker_jobs write would cause long-running trials
     (Harbor can run for hours) to get falsely reaped after the 15-minute
-    threshold. Kept as two separate writes rather than a single txn
+    threshold. For the same reason the worker_jobs write runs on every
+    tick even once the trial row is finished: the worker is still
+    uploading and settling results, and ``heartbeat_worker_job`` itself
+    ignores rows this worker no longer holds. Kept as two separate writes rather than a single txn
     because a pooler blip on one shouldn't silence heartbeats on the
     other; the failure-folding behavior below applies uniformly.
 
@@ -436,7 +439,7 @@ async def _heartbeat_trial_execution(
             return
 
         try:
-            owns_trial = await _touch_trial_execution(
+            await _touch_trial_execution(
                 trial_id=trial_id,
                 worker_id=worker_id,
                 queue_slot=queue_slot,
@@ -444,7 +447,7 @@ async def _heartbeat_trial_execution(
                 pending_last_error=pending_last_error,
                 pending_last_error_at=pending_last_error_at,
             )
-            if worker_job_id and owns_trial:
+            if worker_job_id:
                 await heartbeat_worker_job(
                     worker_job_id,
                     current_worker_id=worker_id,
@@ -1295,7 +1298,6 @@ async def _execute_trial(
     temp_task_dir: Path | None,
     prepared_trial: PreparedTrialRun,
     worker_id: str | None,
-    queue_slot: int | None,
     worker_job_id: str | None = None,
     worker_job_attempt: int | None = None,
     cost_state: SandboxCostState | None = None,
@@ -1303,16 +1305,6 @@ async def _execute_trial(
 ) -> TrialExecutionResult:
     execution_error: str | None = None
     tailed_attempt: int | None = None
-    heartbeat_stop = asyncio.Event()
-    heartbeat_task = asyncio.create_task(
-        _heartbeat_trial_execution(
-            trial_id=trial_id,
-            worker_id=worker_id,
-            queue_slot=queue_slot,
-            stop_event=heartbeat_stop,
-            worker_job_id=worker_job_id,
-        )
-    )
     try:
         try:
             env_type = EnvironmentType(
@@ -1368,8 +1360,6 @@ async def _execute_trial(
         console.print(f"[red]Trial {trial_id} execution error: {execution_error}[/red]")
         outcome = None
     finally:
-        heartbeat_stop.set()
-        await asyncio.gather(heartbeat_task, return_exceptions=True)
         # Stop the tailer (final flush + checkpoint) here, but defer the event
         # purge to run_trial_job after the trial row is marked terminal. Purging
         # now -- before _store_trial_results sets finished_at -- would blank the
@@ -1646,6 +1636,16 @@ async def run_trial_job(
 
     execution: TrialExecutionResult | None = None
     trial_terminal = False
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_trial_execution(
+            trial_id=trial_id,
+            worker_id=worker_id,
+            queue_slot=queue_slot,
+            stop_event=heartbeat_stop,
+            worker_job_id=worker_job_id,
+        )
+    )
     try:
         # Issue a job-scoped credential bundle (least-privilege model key(s) + S3
         # write prefix) and inject its scoped model env into the agent, replacing
@@ -1666,7 +1666,6 @@ async def run_trial_job(
             temp_task_dir=temp_task_dir,
             prepared_trial=prepared_trial,
             worker_id=worker_id,
-            queue_slot=queue_slot,
             worker_job_id=worker_job_id,
             worker_job_attempt=worker_job_attempt,
             cost_state=cost_state,
@@ -1769,6 +1768,8 @@ async def run_trial_job(
             run_post_trial_hooks=run_post_trial_hooks,
         )
     finally:
+        heartbeat_stop.set()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
         # Purge the live transcript only once the trial is terminal. Doing it
         # inside _execute_trial's finally would race the S3 upload/store window
         # and blank the transcript while clients still see the trial running;

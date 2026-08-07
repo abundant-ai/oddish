@@ -58,40 +58,15 @@ def _quota_user_lock_key(org_id: str, billed_user_id: str) -> str:
     return f"quota:user:{org_id}:{billed_user_id}"
 
 
-async def acquire_quota_locks(
-    session: AsyncSession,
-    org_id: str,
-    billed_user_id: str | None,
-) -> None:
-    """Block until the org (and optional user) quota advisory locks are held.
-
-    Used by admission / sweep so two concurrent submits cannot both observe
-    headroom and oversubscribe. Prefer :func:`try_acquire_quota_locks` on the
-    high-frequency enforcement path so workers that lose the race exit instead
-    of queueing behind a long cancellation transaction.
-    """
-    await session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-        {"key": _quota_org_lock_key(org_id)},
-    )
-    if billed_user_id is not None:
-        await session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
-            {"key": _quota_user_lock_key(org_id, billed_user_id)},
-        )
-
-
 async def try_acquire_quota_locks(
     session: AsyncSession,
     org_id: str,
     billed_user_id: str | None,
 ) -> bool:
-    """Non-blocking sibling of :func:`acquire_quota_locks`.
+    """Take the org (and optional user) quota advisory locks without waiting.
 
-    Returns ``False`` when another transaction already holds the org or user
-    quota lock. Callers should treat that as "someone else is checking /
-    cancelling" and skip rather than wait — under an over-quota storm, blocking
-    here serializes every worker behind one org-wide lock and starves sweeps.
+    Only the enforcement sweep uses these. ``False`` means another sweep
+    holds them; skip instead of waiting.
     """
     org_locked = await session.scalar(
         text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),

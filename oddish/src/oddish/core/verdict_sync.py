@@ -31,6 +31,8 @@ def build_verdict_payload(
     is what lets the legacy and AnalyzerBlock paths share one writer.
     """
     return {
+        "verdict": "accept" if verdict.is_good else "reject",
+        # Old rows and the SQL readers use is_good; keep it next to the label.
         "is_good": verdict.is_good,
         "confidence": verdict.confidence,
         "primary_issue": verdict.primary_issue,
@@ -84,6 +86,9 @@ async def sync_verdict_to_task(
             task.verdict_status = VerdictStatus.SUCCESS
             task.verdict_error = None
         else:
+            # A payload only ever pairs with SUCCESS. A verdict kept through
+            # an append must not outlive the failed pass that replaced it.
+            task.verdict = None
             task.verdict_status = VerdictStatus.FAILED
             task.verdict_error = error or "Verdict synthesis failed with exception"
 
@@ -93,6 +98,37 @@ async def sync_verdict_to_task(
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
         return task.verdict_status.value
+
+
+def clear_inflight_verdict(task: Any) -> None:
+    """Keep a successful verdict; clear everything else.
+
+    Callers cancel the task's QA job right after this, so a queued or
+    running status would point at a job that no longer exists. A FAILED
+    status holds no verdict, only an old error, so it clears too. A
+    successful verdict stays until the next QA pass writes over it.
+    """
+    if getattr(task, "verdict_status", None) == VerdictStatus.SUCCESS:
+        return
+    task.verdict_status = None
+    task.verdict_error = None
+    task.verdict_started_at = None
+
+
+def cancel_verdict(task: Any, *, error: str, now: Any) -> None:
+    """A cancelled QA run puts a kept verdict back; without one, it fails.
+
+    A payload on the task is a successful verdict that the cancelled run
+    never replaced. Its SUCCESS status returns and its timestamps stay.
+    """
+    if getattr(task, "verdict", None):
+        task.verdict_status = VerdictStatus.SUCCESS
+        task.verdict_error = None
+        task.verdict_started_at = None
+        return
+    task.verdict_status = VerdictStatus.FAILED
+    task.verdict_error = error
+    task.verdict_finished_at = now
 
 
 def build_pre_trial_payload(

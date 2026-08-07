@@ -11,31 +11,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - Every analysis job now runs as a trial, distinguished by `trials.kind`:
-  one `qa` trial per task (classification + trajectory summaries + verdict),
-  one `audit` trial per task version at sweep time, and `analyzer_map` /
-  `analyzer_reduce` trials for reports. Settlement importers write the same
-  columns as before, so dashboards, GitHub comments, and alerts are unchanged.
-  Non-'agent' kinds are excluded from quotas, the leaderboard, alerts, facets,
-  queue scans, and public shares; their spend stays visible in admin views.
+  one `qa` trial per task (classification + trajectory summaries + verdict)
+  and one `audit` trial per task version at sweep time. Analysis trials run
+  on their own task image, produce a JSON artifact that a verifier checks,
+  and live in a per-experiment "(qa report)" shadow experiment linked from
+  the dashboard. Settlement importers write the same columns as before, so
+  dashboards, GitHub comments, and alerts are unchanged. Non-'agent' kinds
+  are excluded from quotas, the leaderboard, alerts, facets, queue scans,
+  and public shares; their spend stays visible in admin views.
+- The verdict now says `accept` or `reject` instead of `is_good: true/false`. Stored payloads keep `is_good` too, so old rows, the dashboard queries, and the Slack alert still work. The badge shows "Accepted" or "Rejected".
+- The verdict judge used to bury its hard rules inside exceptions, and it accepted a task whose own audit had found a `must_fix` leak — on tests the untouched base model already passed (0.96 against a 0.25 threshold). The prompt (`verdict_prompt.txt`) is rewritten as two steps: first look for evidence that rejects the task by itself (a leak, weak tests, a failed baseline), and only then weigh the trials' opinions, which need agreement.
+- The task overview panel used to list only the current experiment's trials, but the verdict is computed over every trial of the task — so the panel could show a verdict whose deciding trial it refused to list. It now shows every trial of the version. Trials from other experiments carry a dashed "elsewhere" chip and open in a new tab. Long subtypes also stopped pushing the "View trial" button out of its row.
+- The verdict badge used to hide its rerun button once a verdict existed, and the button that did exist re-classified every trial from scratch. Tasks with a verdict now show "Rerun verdict" (`qa/backfill` with `force: false`), which keeps the stored trial analyses and redoes only the verdict. The full re-classify stays on `qa/retry`.
+- Submitting new trials used to delete the task's verdict immediately, and the task had no verdict until QA finished the new trials. The old verdict now stays until the new QA run replaces it.
 
 ### Removed
 
+- The analyzer reports feature is gone: the `analyzers` / `analyzer_blocks` /
+  `analyzer_experiments` tables (dropped by migration `drop_analyzers_001`),
+  the reports REST endpoints and ops scripts, the dashboard Analyzers tab,
+  and the report evals package. Nobody used it.
 - The block framework, worker-local classifier/verdict/pre-trial/summary
   execution, the Daytona sandbox runtime, the QA/ANALYZER/ANALYSIS handlers,
   and the QA orphan-recovery subsystem. Workers no longer hold LLM keys.
   Removed settings: `ODDISH_VERDICT_MODEL`, `ODDISH_VERDICT_FALLBACK_MODEL`,
   `ODDISH_PRE_TRIAL_MODEL`, `ODDISH_PRE_TRIAL_TIMEOUT`,
   `ODDISH_AGENT_DAYTONA_SNAPSHOT`, `ODDISH_ANALYZER_SANDBOX_ENABLED`,
-  `ODDISH_POST_TRIAL_SANDBOX_ENABLED`. `analyzer_blocks` / `analysis_costs`
-  become read-only history. `GET /trials/{id}/trajectory/summary` serves the
-  stored summary only.
-
----
-
-## [2026-08-07]
-
-### Removed
-
+  `ODDISH_POST_TRIAL_SANDBOX_ENABLED`. `analysis_costs` becomes read-only
+  history. `GET /trials/{id}/trajectory/summary` serves the stored summary
+  only.
 - The cc_chat dashboard chat feature is gone end to end: the `/chat-sessions`
   backend router and orchestrator, the chat drawer/button UI and its
   `/api/chat-sessions` proxies in the frontend, the `ChatSession` /
@@ -53,6 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to `backend/api/services/sandbox/`, and the analyzer cohort modules
   (`analyzer_block_runner`, `analyzer_parse`, `analyzer_prompt`) moved to
   `backend/api/services/blocks/analyzer/`.
+
+### Fixed
+
+- Worker heartbeats used to stop as soon as the agent finished, but the worker still had to upload and save the results. When that took over 15 minutes, the cleanup sweep marked the trial "Worker heartbeat stalled for over 15 minutes", threw away the finished result, and re-ran the whole trial. The heartbeat now runs until the results are saved and settled.
 
 ---
 

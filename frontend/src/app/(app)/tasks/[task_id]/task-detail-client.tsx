@@ -1121,11 +1121,12 @@ export function TaskDetailClient({
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
     setJudgeError(null);
-    // One task-level QA job: classify every trial, then synthesize the
-    // task verdict.
+    // force:false keeps stored trial analyses; only the verdict is redone.
     try {
-      const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
+      const res = await fetch(`/api/tasks/${task.id}/qa/backfill`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: false, enable_analysis: true }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

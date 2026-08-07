@@ -122,12 +122,9 @@ export function TaskOverviewPanel({
    *  aggregates every trial, and undefined means still resolving — the
    *  trial aggregation waits instead of briefly spanning all versions. */
   version?: number | null;
-  /** The host's authoritative trial set for this context — the experiment
-   *  drawer passes its own trials so the aggregation never widens to other
-   *  experiments; the task page passes the version's trials. The fetch
-   *  then only enriches these rows with what the compact payload omits
-   *  (action items, exploitation). Null/undefined = no host scope: the
-   *  fetched, version-scoped set is used as-is. */
+  /** The trials that belong to the host's context (an experiment drawer
+   *  passes its own; the task page passes the version's). Trials outside
+   *  this set still render, marked as from elsewhere. Null = no context. */
   scopeTrials?: Trial[] | null;
   /** The host is still streaming its trial rows — an empty scope renders
    *  as loading, not as "no trials". */
@@ -179,9 +176,7 @@ export function TaskOverviewPanel({
     },
   });
 
-  // The host's rows define the set — the experiment drawer must never
-  // surface another experiment's trials just because they share the task.
-  // They can include probes, so apply the same filters here.
+  // Host rows can include probes and superseded trials; filter them here too.
   const scoped = useMemo(() => {
     if (scopeTrials == null) return null;
     return scopeTrials.filter(
@@ -193,15 +188,35 @@ export function TaskOverviewPanel({
     () => new Map((trials ?? []).map((trial) => [trial.id, trial])),
     [trials],
   );
+  // Show every trial of the version. The verdict is computed over all of
+  // them, so a shorter list can hide the evidence behind it.
   const displayTrials = useMemo(() => {
-    if (scoped != null) {
-      // The fetch only enriches the host's rows with the fields the
-      // compact payload omits; a row the fetch doesn't know keeps its
-      // compact self.
-      return scoped.map((trial) => fetchedById.get(trial.id) ?? trial);
-    }
-    return trials ?? null;
-  }, [scoped, fetchedById, trials]);
+    if (scoped == null) return trials ?? null;
+    const inScope = new Set(scoped.map((trial) => trial.id));
+    // Until the host's rows have loaded, rows from elsewhere would render
+    // without their mark -- hold them back.
+    const elsewhere = scopeLoading
+      ? []
+      : (trials ?? []).filter(
+          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id,
+        );
+    return [
+      ...scoped.map((trial) => fetchedById.get(trial.id) ?? trial),
+      ...elsewhere,
+    ];
+  }, [scoped, scopeLoading, fetchedById, trials]);
+  // Null until the host's rows have loaded, so nothing is marked too early.
+  const foreignIds = useMemo(() => {
+    if (scoped == null || scopeLoading) return null;
+    const inScope = new Set(scoped.map((trial) => trial.id));
+    return new Set(
+      (trials ?? [])
+        .filter(
+          (trial) => !inScope.has(trial.id) && !trial.superseded_by_trial_id,
+        )
+        .map((trial) => trial.id),
+    );
+  }, [scoped, scopeLoading, trials]);
   const versionTrials = useMemo(() => {
     if (version === undefined) return [];
     const all = displayTrials ?? [];
@@ -273,6 +288,8 @@ export function TaskOverviewPanel({
     withQa.sort(
       (a, b) =>
         classificationRank(a) - classificationRank(b) ||
+        Number(foreignIds?.has(a.id) ?? false) -
+          Number(foreignIds?.has(b.id) ?? false) ||
         a.created_at.localeCompare(b.created_at),
     );
     return {
@@ -282,7 +299,7 @@ export function TaskOverviewPanel({
       mergedFindings: Array.from(byKey.values()),
       qaTrials: withQa,
     };
-  }, [versionTrials, checksFindings]);
+  }, [versionTrials, checksFindings, foreignIds]);
 
   // The rows handed to SeverityGroups carry only copy-safe fields — its
   // per-item copy button serializes the row as-is, so the trial objects
@@ -300,14 +317,32 @@ export function TaskOverviewPanel({
     () => new Map(mergedFindings.map((f) => [f.id ?? "", f])),
     [mergedFindings],
   );
+  const foreignShownCount = useMemo(
+    () =>
+      foreignIds
+        ? versionTrials.filter((trial) => foreignIds.has(trial.id)).length
+        : 0,
+    [foreignIds, versionTrials],
+  );
 
-  const openTrial = (trial: Trial) => {
-    if (onOpenTrial?.(trial)) return;
-    if (!taskId) return;
+  const taskTrialHref = (trial: Trial): string | null => {
+    if (!taskId) return null;
     const params = new URLSearchParams();
     if (trial.task_version_id) params.set("version", trial.task_version_id);
     params.set("trial", trial.id);
-    router.push(`/tasks/${taskId}?${params.toString()}`);
+    return `/tasks/${taskId}?${params.toString()}`;
+  };
+
+  const openTrial = (trial: Trial) => {
+    // Trials from elsewhere open in a new tab; the drawer keeps its context.
+    if (foreignIds?.has(trial.id)) {
+      const href = taskTrialHref(trial);
+      if (href) window.open(href, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (onOpenTrial?.(trial)) return;
+    const href = taskTrialHref(trial);
+    if (href) router.push(href);
   };
 
   const renderFindingSources = (item: PreTrialFinding) => {
@@ -328,18 +363,28 @@ export function TaskOverviewPanel({
             Source audit
           </span>
         ) : null}
-        {(sourced.trials ?? []).map((trial) => (
-          <button
-            key={trial.id}
-            type="button"
-            onClick={() => openTrial(trial)}
-            className="border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors"
-            title={`Open trial ${trial.name}`}
-          >
-            <span className="truncate">{trialLabel(trial)}</span>
-            <ArrowUpRight className="h-3 w-3 shrink-0" aria-hidden="true" />
-          </button>
-        ))}
+        {(sourced.trials ?? []).map((trial) => {
+          const foreign = foreignIds?.has(trial.id) ?? false;
+          return (
+            <button
+              key={trial.id}
+              type="button"
+              onClick={() => openTrial(trial)}
+              className={cn(
+                "border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 inline-flex min-w-0 max-w-full items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors",
+                foreign && "border-dashed",
+              )}
+              title={
+                foreign
+                  ? `Open trial ${trial.name} in a new tab — ran outside this experiment`
+                  : `Open trial ${trial.name}`
+              }
+            >
+              <span className="min-w-0 truncate">{trialLabel(trial)}</span>
+              <ArrowUpRight className="h-3 w-3 shrink-0" aria-hidden="true" />
+            </button>
+          );
+        })}
       </div>
     );
   };
@@ -528,6 +573,7 @@ export function TaskOverviewPanel({
             <TrialQaRow
               key={trial.id}
               trial={trial}
+              foreign={foreignIds?.has(trial.id) ?? false}
               onOpen={() => openTrial(trial)}
             />
           ))}
@@ -603,7 +649,11 @@ export function TaskOverviewPanel({
                   ? "Loading…"
                   : `${analyzedCount}/${versionTrials.length} trial${
                       versionTrials.length === 1 ? "" : "s"
-                    } analyzed${version != null ? ` · v${version}` : ""}`}
+                    } analyzed${version != null ? ` · v${version}` : ""}${
+                      foreignShownCount > 0
+                        ? ` · ${foreignShownCount} from outside this experiment`
+                        : ""
+                    }`}
           </span>
         </div>
         {trialQaBody()}
@@ -612,7 +662,16 @@ export function TaskOverviewPanel({
   );
 }
 
-function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
+function TrialQaRow({
+  trial,
+  foreign,
+  onOpen,
+}: {
+  trial: Trial;
+  /** From outside the host's context. */
+  foreign?: boolean;
+  onOpen: () => void;
+}) {
   const analysis = trial.analysis;
   const running = isActivePipelineStatus(trial.analysis_status);
   const failed = !analysis && trial.analysis_status === "failed";
@@ -655,13 +714,24 @@ function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
               : "PENDING"}
       </span>
       {analysis?.subtype ? (
-        <span className="text-muted-foreground shrink-0 font-mono text-[10px]">
+        <span
+          className="text-muted-foreground min-w-0 truncate font-mono text-[10px]"
+          title={analysis.subtype}
+        >
           {analysis.subtype}
         </span>
       ) : null}
       <span className="text-muted-foreground min-w-0 flex-1 truncate text-[11px]">
         {trialLabel(trial)}
       </span>
+      {foreign ? (
+        <span
+          className="border-border text-muted-foreground shrink-0 rounded border border-dashed px-1.5 py-0.5 font-mono text-[9.5px]"
+          title="This trial ran outside this experiment"
+        >
+          elsewhere
+        </span>
+      ) : null}
       <button
         type="button"
         onClick={(event) => {
@@ -670,7 +740,11 @@ function TrialQaRow({ trial, onOpen }: { trial: Trial; onOpen: () => void }) {
           onOpen();
         }}
         className="border-border text-muted-foreground hover:text-foreground hover:border-foreground/40 inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors"
-        title={`Open trial ${trial.name}`}
+        title={
+          foreign
+            ? `Open trial ${trial.name} in a new tab`
+            : `Open trial ${trial.name}`
+        }
       >
         View trial
         <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
