@@ -1,4 +1,3 @@
-from oddish.workers.queue.analysis_handler import run_analysis_job
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
 from oddish.workers.queue.queue_manager import run_polling_worker
 from oddish.workers.queue.slots import (
@@ -8,7 +7,6 @@ from oddish.workers.queue.slots import (
     release_queue_slot,
 )
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
-from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.worker import run_worker
 from oddish.workers.queue.worker_job_dispatcher import (
@@ -27,9 +25,7 @@ from oddish.workers.queue.worker_job_single_job import (
 __all__ = [
     "run_polling_worker",
     "cleanup_orphaned_queue_state",
-    "run_analysis_job",
     "run_task_expand_job",
-    "run_task_qa_job",
     "run_trial_job",
     "run_worker",
     "acquire_queue_slot",

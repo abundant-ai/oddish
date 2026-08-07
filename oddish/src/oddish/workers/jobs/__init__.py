@@ -8,10 +8,10 @@ state. This package is the seam: it owns
   ``JobOutcome`` result type that handlers return.
 - ``enqueue``: ``EnqueueRequest`` plus ``enqueue_worker_job`` which
   writes a ``worker_jobs`` row inside the caller's session.
-- ``handlers``: per-kind adapters (``TrialJobHandler`` / ``QaJobHandler`` /
-  ``TaskExpandJobHandler`` / ``TagProjectJobHandler`` / ``AnalyzerJobHandler``,
-  plus the transitional ``AnalysisJobHandler``) that delegate to the existing
-  ``run_*_job`` bodies and map terminal domain state back onto a ``JobOutcome``.
+- ``handlers``: per-kind adapters (``TrialJobHandler`` /
+  ``TaskExpandJobHandler`` / ``TagProjectJobHandler``) that delegate to the
+  existing ``run_*_job`` bodies and map terminal domain state back onto a
+  ``JobOutcome``. QA, audits, and analyzer reports run as trials.
 
 ``ensure_builtin_handlers_registered()`` wires every built-in handler
 into the global registry. Both the standalone worker and the backend
@@ -47,22 +47,15 @@ def ensure_builtin_handlers_registered() -> None:
     global _BUILTINS_REGISTERED
     required_kinds = {
         WorkerJobKind.TRIAL,
-        WorkerJobKind.QA,
-        WorkerJobKind.ANALYSIS,
         WorkerJobKind.TASK_EXPAND,
         WorkerJobKind.TAG_PROJECT,
-        WorkerJobKind.ANALYZER,
     }
     if _BUILTINS_REGISTERED and required_kinds.issubset(HANDLERS):
         return
 
     # Lazy imports keep ``oddish.workers.queue`` off the critical
     # import path for code that only needs ``enqueue_worker_job``.
-    # ``AnalysisJobHandler`` is transitional (drains legacy ANALYSIS rows).
     from oddish.workers.jobs.handlers import (
-        AnalysisJobHandler,
-        QaJobHandler,
-        AnalyzerJobHandler,
         TagProjectJobHandler,
         TaskExpandJobHandler,
         TrialJobHandler,
@@ -70,11 +63,8 @@ def ensure_builtin_handlers_registered() -> None:
 
     for handler in (
         TrialJobHandler(),
-        QaJobHandler(),
-        AnalysisJobHandler(),
         TaskExpandJobHandler(),
         TagProjectJobHandler(),
-        AnalyzerJobHandler(),
     ):
         try:
             register(handler)

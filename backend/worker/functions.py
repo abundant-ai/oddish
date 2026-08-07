@@ -98,10 +98,15 @@ from oddish.workers.queue.worker_job_single_job import (
 )
 from oddish.core.harbor_source import harbor_variant_function_name
 
-from .github import notify_github_analysis, notify_github_qa, notify_github_trial
+from oddish.workers.analysis_trials import (
+    register_audit_enabled_check,
+    register_qa_imported_hook,
+)
+
+from .github import notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
 
-# Register TRIAL / ANALYSIS / VERDICT handlers against the unified
+# Register TRIAL / TASK_EXPAND / TAG_PROJECT handlers against the unified
 # registry as soon as this module loads in a worker container. The
 # dispatcher and single-job runner also call this defensively, but
 # doing it here makes the startup order explicit for readers.
@@ -114,27 +119,13 @@ from .byok_resolver import install_byok_resolver
 
 install_byok_resolver()
 
-# Swap the core ANALYZER handler for the multi-block sandbox runner. Each map
-# batch gets an independent AnalyzerBlock/sandbox, bounded by map_concurrency,
-# followed by a reduce block.
-from .analyzer_sandbox import install_sandbox_analyzer_handler
+# QA import writes the verdict; the hook refreshes the whole PR comment.
+register_qa_imported_hook(notify_github_qa)
 
-if install_sandbox_analyzer_handler():
-    console.print("[dim]analyzer: multi-block sandbox handler registered[/dim]")
+# Org-level pre-trial audit opt-in, resolved from organizations.settings.
+from .audit_opt_in import org_audit_enabled
 
-# Register the Daytona-sandbox analyzer backend into core's client factory.
-# Import for the side effect; core runs every non-sandbox block without it.
-from api.services.blocks.analyzer import (
-    sandbox_llm_client as _sandbox_llm_client,
-)  # noqa: F401
-
-# Register the hosted pre-trial synth hook (invoked by qa_handler only when
-# settings.pre_trial_enabled). Import for the side effect.
-from . import pre_trial_synth as _pre_trial_synth  # noqa: F401
-
-# Register the hosted trajectory-summary provider so post-trial classification
-# can feed a component map to the classifier. Import for the side effect.
-from . import trajectory_summary_provider as _trajectory_summary_provider  # noqa: F401
+register_audit_enabled_check(org_audit_enabled)
 
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
@@ -145,8 +136,6 @@ from . import trajectory_summary_provider as _trajectory_summary_provider  # noq
 # state.
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
-    WorkerJobKind.QA: notify_github_qa,
-    WorkerJobKind.ANALYSIS: notify_github_analysis,
 }
 
 

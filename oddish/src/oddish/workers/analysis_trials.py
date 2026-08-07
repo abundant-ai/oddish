@@ -64,6 +64,24 @@ def register_audit_enabled_check(fn: Callable[[str], Awaitable[bool]]) -> None:
     _audit_enabled_fn = fn
 
 
+# Fired after a QA import writes the task verdict (hosted GitHub PR refresh).
+_qa_imported_fn: Callable[[str], Awaitable[None]] | None = None
+
+
+def register_qa_imported_hook(fn: Callable[[str], Awaitable[None]]) -> None:
+    global _qa_imported_fn
+    _qa_imported_fn = fn
+
+
+async def _fire_qa_imported(task_id: str) -> None:
+    if _qa_imported_fn is None:
+        return
+    try:
+        await _qa_imported_fn(task_id)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]QA imported hook failed for {task_id}: {exc}[/yellow]")
+
+
 def _prompt(name: str) -> str:
     return resources.files("oddish.analyze").joinpath(name).read_text()
 
@@ -301,6 +319,29 @@ def _classification_from_analysis(analysis: dict) -> TrialClassification | None:
         return None
 
 
+async def _qa_import_still_current(session, task_id: str) -> bool:
+    """A stale QA import (trials appended after this QA trial started) must
+    not complete the task out from under the fresh set."""
+    pending = await session.scalar(
+        select(TrialModel.id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.kind == "agent",
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(
+                [
+                    TrialStatus.PENDING,
+                    TrialStatus.QUEUED,
+                    TrialStatus.RUNNING,
+                    TrialStatus.RETRYING,
+                ]
+            ),
+        )
+        .limit(1)
+    )
+    return pending is None
+
+
 async def _import_qa_result(trial: TrialModel) -> None:
     task_id = trial.task_id
     artifact = None
@@ -310,6 +351,7 @@ async def _import_qa_result(trial: TrialModel) -> None:
         await sync_verdict_to_task(
             task_id,
             payload=None,
+            should_store=lambda s: _qa_import_still_current(s, task_id),
             error=(
                 f"QA trial {trial.id} "
                 + (
@@ -359,6 +401,7 @@ async def _import_qa_result(trial: TrialModel) -> None:
         await sync_verdict_to_task(
             task_id,
             payload=None,
+            should_store=lambda s: _qa_import_still_current(s, task_id),
             error=f"QA trial {trial.id} artifact contained no valid classifications",
         )
         return
@@ -368,12 +411,14 @@ async def _import_qa_result(trial: TrialModel) -> None:
         await sync_verdict_to_task(
             task_id,
             payload=None,
+            should_store=lambda s: _qa_import_still_current(s, task_id),
             error=f"QA trial {trial.id} verdict failed validation: {exc}",
         )
         return
     await sync_verdict_to_task(
         task_id,
         payload=build_verdict_payload(verdict, classifications),
+        should_store=lambda s: _qa_import_still_current(s, task_id),
         error=None,
     )
 
@@ -418,15 +463,18 @@ async def handle_analysis_trial_settled(trial_id: str) -> None:
     same columns, so a double-fire re-imports the same artifact."""
     async with get_session() as session:
         trial = await session.get(TrialModel, trial_id)
-        if trial is None or trial.status not in (
-            TrialStatus.SUCCESS,
-            TrialStatus.FAILED,
-            TrialStatus.SKIPPED,
+        if (
+            trial is None
+            or trial.superseded_by_trial_id is not None
+            or trial.harbor_stage == "cancelled"
+            or trial.status
+            not in (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
         ):
             return
         kind = trial.kind
     if kind == "qa":
         await _import_qa_result(trial)
+        await _fire_qa_imported(trial.task_id)
     elif kind == "audit":
         await _import_audit_result(trial)
     elif kind in ("analyzer_map", "analyzer_reduce"):

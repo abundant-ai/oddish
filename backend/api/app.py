@@ -288,10 +288,6 @@ def create_app() -> FastAPI:
         trials,
     )
 
-    # Import registers the hosted Daytona backend with core's client factory,
-    # so API-side sandbox AnalyzerBlocks (hosted failure analysis) resolve it.
-    from api.services.blocks.analyzer import sandbox_llm_client as _sandbox  # noqa: F401
-
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
     api.include_router(notifications.router)

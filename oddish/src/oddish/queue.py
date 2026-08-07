@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oddish.config import (
     ANALYSIS_PIPELINE_QUEUE_KEY,
     NOP_ORACLE_QUEUE_KEY,
-    ORPHANED_ANALYSIS_ERROR_PREFIX,
     VERDICT_PIPELINE_QUEUE_KEY,
     is_nop_oracle_agent,
     settings,
@@ -446,60 +445,6 @@ async def enqueue_trial_worker_job(
         ),
     )
 
-
-async def requeue_inflight_trial_analysis(
-    session: AsyncSession, *, task_id: str
-) -> None:
-    """Reopen analyses a dead or cancelled QA attempt left behind.
-
-    RUNNING rows go back to QUEUED (the next QA pass re-classifies anything
-    non-terminal), and FAILED rows stamped with the orphaned-analysis sentinel
-    (finalized by cleanup while no QA attempt existed) are reopened too --
-    they mean "never classified", not "classification ran and failed", so a
-    resurrected task must not carry them into its verdict as permanent gaps.
-
-    Rows a QA pass would never classify (superseded, bulk-imported, SKIPPED,
-    gate-skipped) are left alone so the orphan sweep's FAILED finalization
-    doesn't oscillate with this reset. The id-selection takes its row locks
-    with SKIP LOCKED so this never *waits* on a trial row another writer
-    holds -- callers may hold the task row lock, and blocking here inverts
-    the trials-then-task order ``cancel_tasks_runs`` documents (deadlock).
-    Contended rows are healed by the next sweep instead. Raw SQL: the
-    soft-delete filter is explicit.
-    """
-    await session.execute(
-        text(
-            """
-            UPDATE trials
-            SET    analysis_status = 'QUEUED',
-                   analysis_error = NULL,
-                   analysis_finished_at = NULL
-            WHERE  id IN (
-                SELECT id
-                FROM   trials
-                WHERE  task_id = :task_id
-                  AND  deleted_at IS NULL
-                  AND  superseded_by_trial_id IS NULL
-                  AND  imported_at IS NULL
-                  AND  status <> 'SKIPPED'
-                  AND  COALESCE(error_message, '') NOT LIKE :gate_skip_pattern
-                  AND  (
-                      analysis_status = 'RUNNING'
-                      OR (
-                          analysis_status = 'FAILED'
-                          AND analysis_error LIKE :orphan_pattern
-                      )
-                  )
-                FOR UPDATE SKIP LOCKED
-            )
-            """
-        ),
-        {
-            "task_id": task_id,
-            "gate_skip_pattern": f"{GATE_SKIP_PREFIX}%",
-            "orphan_pattern": f"{ORPHANED_ANALYSIS_ERROR_PREFIX}%",
-        },
-    )
 
 
 async def enqueue_qa_worker_job(
@@ -1330,11 +1275,10 @@ async def append_trials_to_task(
         task.verdict_error = None
         task.verdict_started_at = None
         task.verdict_finished_at = None
-        # Cancel any in-flight QA worker_job for this task so a worker
-        # that's already claimed (or about to claim) the old row doesn't
-        # overwrite the new verdict with stale data. The dispatcher
-        # re-enqueues a fresh QA row once all trials for the new set
-        # complete.
+        # Cancel any in-flight QA trial for the old trial set so its late
+        # import can't overwrite the new set's verdict. A fresh QA trial is
+        # created once every trial of the new set settles. The cancelled
+        # harbor_stage is what the settlement path and importer skip on.
         await session.execute(
             text(
                 """
@@ -1345,22 +1289,34 @@ async def append_trials_to_task(
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
-                WHERE  kind::text = 'QA'
-                  AND  subject_table = 'tasks'
-                  AND  subject_id = :task_id
+                WHERE  kind::text = 'TRIAL'
+                  AND  subject_table = 'trials'
+                  AND  subject_id IN (
+                      SELECT id FROM trials
+                      WHERE task_id = :task_id AND kind = 'qa'
+                        AND deleted_at IS NULL
+                        AND status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+                  )
                   AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
                 """
             ),
             {"task_id": task.id},
         )
-        # A classification the cancelled job had mid-flight skips its store
-        # (``should_store`` sees the job is no longer RUNNING), which would
-        # leave that trial's ``analysis_status`` stuck on RUNNING until the
-        # replacement QA job re-claims it. Requeue it now -- and reopen any
-        # orphan-finalized FAILED rows, since this append resurrects the task
-        # and the fresh QA pass must classify them rather than inherit a
-        # permanent gap.
-        await requeue_inflight_trial_analysis(session, task_id=task.id)
+        await session.execute(
+            text(
+                """
+                UPDATE trials
+                SET    status = 'FAILED',
+                       harbor_stage = 'cancelled',
+                       error_message = 'Superseded by appended trials',
+                       finished_at = COALESCE(finished_at, NOW())
+                WHERE  task_id = :task_id AND kind = 'qa'
+                  AND  deleted_at IS NULL
+                  AND  status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
+                """
+            ),
+            {"task_id": task.id},
+        )
 
     # Gate the appended LLM trials on this scope's baselines (the just-added
     # ones and any that already exist), blocking/releasing/cancelling under the
