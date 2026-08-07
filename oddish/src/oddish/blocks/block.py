@@ -74,12 +74,23 @@ class Block:
         return raw.strip()
 
     @staticmethod
+    def _fence_body(text: str) -> str | None:
+        """The body of the first ``` fence, or None if the reply has none.
+
+        Separate from ``strip_code_fences`` because that one only fires when the
+        fence opens the string; this finds one that follows a preamble.
+        """
+        fence = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+        return fence.group(1) if fence else None
+
+    @staticmethod
     def _embedded_json(text: str, expect: type | None = None) -> str | None:
         """The first substantive JSON value embedded in prose, or None.
 
-        ``strip_code_fences`` only fires when the fence opens the string, so a
-        model that writes a sentence *before* its fenced block (or emits a bare
-        object after a preamble) reaches ``json.loads`` as prose and dies on
+        Reached only for a reply with no fence at all -- ``parse_json`` resolves
+        a fenced answer itself, because a fence outranks anything scanned out of
+        the surrounding prose. This is the bare-object case: a model that emits
+        its payload after a preamble reaches ``json.loads`` as prose and dies on
         "line 1 column 1". Prompts already forbid the preamble; models do it
         anyway, and a whole audit is too expensive to discard over packaging.
 
@@ -89,25 +100,6 @@ class Block:
         """
         decoder = json.JSONDecoder(strict=False)
         empty: str | None = None
-
-        fence = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
-        if fence:
-            try:
-                value, end = decoder.raw_decode(fence.group(1))
-            except ValueError:
-                # The fence delimits the answer, so a fence that will not decode
-                # (and that repair could not mend before we got here) means the
-                # answer is broken -- not that the answer is somewhere else.
-                # Scanning on would return a fragment from inside this very
-                # object as though it were the whole reply.
-                return None
-            else:
-                # A fence is the model delimiting its own answer, so it wins
-                # outright -- including when that answer is empty. Falling
-                # through to the scan lets a payload quoted in the preamble
-                # replace a legitimately empty result (#950).
-                if expect is None or isinstance(value, expect):
-                    return fence.group(1)[:end]
 
         # Every opener is a candidate, in position order: audit prose quotes
         # code constantly, so a brace before the payload is the common case.
@@ -254,6 +246,27 @@ class Block:
         if repaired is not None:
             logger.warning("block parse: recovered JSON after punctuation repair")
             return repaired
+        # A fence is the model delimiting its own answer, so it settles the reply
+        # before anything is scanned or mended out of the surrounding prose --
+        # otherwise an example the model quoted while explaining itself outranks
+        # what it actually fenced. ``strip_code_fences`` above only fires when
+        # the fence opens the string, so one that follows a preamble lands here.
+        body = cls._fence_body(text)
+        if body is not None:
+            try:
+                value = json.loads(body, strict=False)
+            except json.JSONDecodeError as fence_error:
+                mended = cls._repair_json(body, expect, allow_trailing=True)
+                if mended is not None:
+                    logger.warning("block parse: recovered fenced JSON after repair")
+                    return mended
+                # The fence bounds the answer, so a body that will not mend means
+                # the answer is broken -- not that it is somewhere else in the
+                # prose. Scanning on would return a fragment of this very object.
+                raise fence_error
+            # Returned even when it is the wrong type, so the caller reports the
+            # mismatch; falling through would mine an example from the preamble.
+            return value
         # Same repair, anchored on the first opener: a prose-wrapped object
         # missing one delimiter never reaches the branch above, because the
         # leading prose fails at "Expecting value" long before the real defect.
