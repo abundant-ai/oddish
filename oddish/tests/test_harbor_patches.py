@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import importlib
 import json
 import logging
@@ -102,6 +103,24 @@ def test_runtime_fields_survive_job_to_trial_config_without_serializing(tmp_path
     serialized = trial_cfg.model_dump_json()
     assert "runtime-relay.test" not in serialized
     assert "private-deployment" not in serialized
+
+
+def test_patches_module_loads_without_importing_oddish(monkeypatch):
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "oddish" or name.startswith("oddish."):
+            raise AssertionError(f"standalone patches imported {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    module_name = "_standalone_oddish_harbor_patches_test"
+    spec = importlib.util.spec_from_file_location(module_name, harbor_patches.__file__)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert callable(module.apply_harbor_patches)
 
 
 class _FakeStrategy:

@@ -11,12 +11,17 @@ import os
 import re
 import shlex
 import tempfile
+from weakref import WeakSet
 from functools import partial
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
+_EC2_PATCHED_CLASSES: WeakSet[type[Any]] = WeakSet()
+
+_EC2_MANAGED_TAG_KEY = "oddish:managed"
+_EC2_AWS_ACCOUNT_ID_TAG_KEY = "oddish:aws-account-id"
 
 _MIRROR_URL = "https://mirror.gcr.io"
 _MIRROR_HOST = "mirror.gcr.io"
@@ -52,6 +57,7 @@ def apply_harbor_patches() -> None:
     _patch_restricted_network_runtime_fields()
     _patch_daytona_dind()
     _patch_modal_dind()
+    _patch_ec2_lifecycle()
     _PATCHED = True
 
 
@@ -139,6 +145,15 @@ def _patch_restricted_network_runtime_fields() -> None:
 
         AgentFactory.create_agent_from_config = classmethod(create_agent_from_config)
         AgentFactory._oddish_runtime_fields_wrapped = True
+
+
+def _ec2_enabled() -> bool:
+    return os.environ.get("ODDISH_EC2_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 async def _collect_dockerd_diagnostics(strategy: Any) -> str:
@@ -448,3 +463,67 @@ def _patch_modal_dind() -> None:
         marker="_oddish_wrapped",
         label="registry-mirror+registry-login",
     )
+
+
+def _patch_ec2_lifecycle() -> None:
+    try:
+        module = importlib.import_module("harbor.environments.ec2")
+    except Exception as exc:
+        if _ec2_enabled():
+            raise RuntimeError(
+                "EC2 is enabled but Harbor's EC2 environment is unavailable"
+            ) from exc
+        logger.debug("Harbor EC2 environment unavailable; skipping EC2 lifecycle patch")
+        return
+    cls = getattr(module, "EC2Environment", None)
+    if cls is None:
+        if _ec2_enabled():
+            raise RuntimeError(
+                "EC2 is enabled but Harbor does not expose EC2Environment"
+            )
+        logger.warning("Harbor EC2Environment not found; EC2 lifecycle patch skipped")
+        return
+    if cls in _EC2_PATCHED_CLASSES:
+        return
+    original_run_instances_kwargs = getattr(cls, "_run_instances_kwargs", None)
+    if original_run_instances_kwargs is None:
+        if _ec2_enabled():
+            raise RuntimeError(
+                "EC2 is enabled but Harbor EC2Environment lacks "
+                "_run_instances_kwargs"
+            )
+        logger.warning(
+            "Harbor EC2Environment._run_instances_kwargs not found; EC2 launch patch skipped"
+        )
+        return
+
+    def get_sandbox_id(self: Any) -> str | None:
+        instance_id = getattr(self, "instance_id", None)
+        user_tags = getattr(self, "user_tags", None)
+        if not isinstance(user_tags, dict) or user_tags.get(
+            _EC2_MANAGED_TAG_KEY
+        ) != "true":
+            return instance_id
+        account_id = user_tags.get(_EC2_AWS_ACCOUNT_ID_TAG_KEY)
+        region = getattr(self, "region", None)
+        if not all(
+            isinstance(value, str) and value
+            for value in (account_id, region, instance_id)
+        ):
+            raise RuntimeError(
+                "Oddish-managed EC2 environment is missing account, region, "
+                "or instance identity"
+            )
+        return f"ec2://{account_id}/{region}/{instance_id}"
+
+    def run_instances_kwargs(self: Any) -> dict[str, Any]:
+        kwargs = original_run_instances_kwargs(self)
+        if kwargs.get("IamInstanceProfile"):
+            raise RuntimeError("EC2 instance profiles are forbidden for Oddish sandboxes")
+        kwargs["MetadataOptions"] = {"HttpEndpoint": "disabled"}
+        return kwargs
+
+    cls.provider_name = "ec2"
+    cls.get_sandbox_id = get_sandbox_id
+    cls._run_instances_kwargs = run_instances_kwargs
+    _EC2_PATCHED_CLASSES.add(cls)

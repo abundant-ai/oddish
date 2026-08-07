@@ -44,6 +44,7 @@ from oddish.costs.modal_cost import (
     normalize_gpu_type,
     provider_default_request,
 )
+from oddish.runtime.ec2_policy import validate_ec2_environment_config
 from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
@@ -1235,9 +1236,56 @@ async def run_harbor_trial_async(
     trajectory presence, and artifact paths.
     """
     apply_harbor_patches()
-
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
+    if environment == EnvironmentType.EC2:
+        validate_ec2_environment_config(hc.environment)
+    backend = get_backend(environment.value)
+    if environment == EnvironmentType.EC2 and backend is None:
+        raise RuntimeError(
+            "EC2 environment requested but the EC2 backend is not enabled or "
+            "registered; set ODDISH_EC2_ENABLED=true with complete EC2 settings"
+        )
+    try:
+        return await _run_harbor_trial_async_impl(
+            task_path=task_path,
+            agent=agent,
+            jobs_dir=jobs_dir,
+            model=model,
+            environment=environment,
+            hook_callback=hook_callback,
+            trial_id=trial_id,
+            harbor_config=harbor_config,
+            org_id=org_id,
+            extra_agent_env=extra_agent_env,
+            raw=raw,
+            hc=hc,
+            backend=backend,
+        )
+    finally:
+        if environment == EnvironmentType.EC2 and backend is not None:
+            remove_key = getattr(
+                backend, "remove_materialized_ssh_private_key", None
+            )
+            if callable(remove_key):
+                remove_key()
+
+
+async def _run_harbor_trial_async_impl(
+    task_path: Path,
+    agent: str,
+    jobs_dir: Path,
+    model: str | None,
+    environment: EnvironmentType,
+    hook_callback: HookCallback | None,
+    trial_id: str | None,
+    harbor_config: dict[str, Any] | None,
+    org_id: str | None,
+    extra_agent_env: dict[str, str] | None,
+    raw: dict[str, Any],
+    hc: HarborConfig,
+    backend: Any,
+) -> HarborOutcome:
 
     # Size the environment-build timeout multiplier BEFORE the dispatch fork so
     # EVERY path that runs a GKE environment carries it -- the in-process blessed
@@ -1261,7 +1309,7 @@ async def run_harbor_trial_async(
     # backend would otherwise skip it entirely.
     _assert_tpu_backend(
         environment,
-        get_backend(environment.value),
+        backend,
         getattr(hc.environment, "override_tpu", None),
     )
 
@@ -1377,7 +1425,6 @@ async def run_harbor_trial_async(
         env_config = hc.environment.model_copy()
         env_config.type = environment
 
-        backend = get_backend(environment.value)
         if backend is not None:
             env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
         probe_modal = _probe_modal_kwargs(is_probe, environment)
