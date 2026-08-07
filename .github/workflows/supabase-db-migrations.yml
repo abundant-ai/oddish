@@ -68,6 +68,11 @@ jobs:
           UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
         run: uv run alembic upgrade head
 
+      - name: Dry-run copied-experiment model relabel
+        working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+        run: uv run python ops_relabel_experiment_model.py
       - name: Summarize migration run
         if: ${{ always() }}
         run: |
