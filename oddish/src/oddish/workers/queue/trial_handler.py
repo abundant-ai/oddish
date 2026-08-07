@@ -428,7 +428,7 @@ async def _heartbeat_trial_execution(
             return
 
         try:
-            owns_trial = await _touch_trial_execution(
+            await _touch_trial_execution(
                 trial_id=trial_id,
                 worker_id=worker_id,
                 queue_slot=queue_slot,
@@ -436,7 +436,11 @@ async def _heartbeat_trial_execution(
                 pending_last_error=pending_last_error,
                 pending_last_error_at=pending_last_error_at,
             )
-            if worker_job_id and owns_trial:
+            # Not gated on trial ownership: the trial row goes terminal in
+            # _store_trial_results while settlement still runs under this
+            # RUNNING job; heartbeat_worker_job's own guards skip
+            # reaped/reassigned rows.
+            if worker_job_id:
                 await heartbeat_worker_job(
                     worker_job_id,
                     current_worker_id=worker_id,

@@ -79,6 +79,54 @@ async def test_heartbeat_also_writes_worker_jobs_when_job_id_provided(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_writes_worker_jobs_after_trial_goes_terminal(monkeypatch):
+    """The job heartbeat must not stop when the trial row leaves RUNNING.
+
+    ``_store_trial_results`` moves the trial off RUNNING while settlement
+    (quota enforcement, post-trial hooks) still runs under the RUNNING
+    worker_jobs row. Gating the worker_jobs write on trial ownership froze
+    ``worker_jobs.heartbeat_at`` for that window, so a slow settlement got
+    stale-reaped and the finished trial re-queued.
+    """
+
+    async def fake_touch(**kwargs):
+        # Trial is terminal -- the touch reports "not ours" every tick.
+        return False
+
+    wj_calls: list[str] = []
+
+    async def fake_heartbeat_worker_job(job_id, **kwargs):
+        wj_calls.append(job_id)
+
+    monkeypatch.setattr(trial_handler, "_touch_trial_execution", fake_touch)
+    monkeypatch.setattr(
+        trial_handler, "heartbeat_worker_job", fake_heartbeat_worker_job
+    )
+    monkeypatch.setattr(trial_handler, "TRIAL_HEARTBEAT_INTERVAL_SECONDS", 0)
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        trial_handler._heartbeat_trial_execution(
+            trial_id="trial-1",
+            worker_id="worker-1",
+            queue_slot=3,
+            stop_event=stop_event,
+            worker_job_id="wj-1",
+        )
+    )
+
+    for _ in range(200):
+        if len(wj_calls) >= 1:
+            break
+        await asyncio.sleep(0)
+
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert wj_calls and wj_calls[0] == "wj-1"
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_skips_worker_jobs_write_when_job_id_absent(monkeypatch):
     """Legacy callers (no worker_job_id) should still work without worker_jobs."""
 
