@@ -5,6 +5,7 @@ import type { Trial } from "@/lib/types";
 import {
   embeddedRewardBreakdown,
   embeddedRewardsMap,
+  meaningfulRewardsMap,
   parseRewardDetailsDocument,
   parseRewardsMap,
   type RewardBreakdown,
@@ -111,7 +112,11 @@ export function useRewardBreakdown(
             { signal: controller.signal }
           );
           if (response.ok) {
-            rewards = parseRewardsMap(await response.json());
+            // A plain scalar verifier's {"reward": N} is not RewardKit
+            // output — same rule the backend applies before embedding.
+            rewards = meaningfulRewardsMap(
+              parseRewardsMap(await response.json())
+            );
           }
         }
       } catch {

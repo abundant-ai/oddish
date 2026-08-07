@@ -58,6 +58,20 @@ export function embeddedRewardsMap(
   return parseRewardsMap(result?._rewards);
 }
 
+/**
+ * Mirrors the backend's `extract_rewards_map` rule: a map holding only the
+ * headline `reward` key is an ordinary scalar verifier, not RewardKit output,
+ * and adds nothing over `trial.reward`. Without this, the drawer's artifact
+ * fallback would grow a Rewards tab on every plain Harbor trial.
+ */
+export function meaningfulRewardsMap(
+  map: RewardsMap | null
+): RewardsMap | null {
+  if (!map) return null;
+  const keys = Object.keys(map);
+  return keys.length === 1 && keys[0] === "reward" ? null : map;
+}
+
 /** Named rewards that are aggregates vs. dimensions, for display grouping. */
 export function splitRewardsMap(
   rewards: RewardsMap,

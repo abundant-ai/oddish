@@ -510,15 +510,31 @@ export function TaskFilesPanel({
   // so ordinary tasks never grow the entry.
   const [rewardSelected, setRewardSelected] = useState(false);
   const rewardDesignAvailable = useMemo(() => {
-    const hasTestToml = (nodes: TreeNode[]): boolean =>
-      nodes.some(
-        (node) =>
-          (node.type === "file" &&
-            node.path.startsWith("tests/") &&
-            node.path.endsWith(".toml")) ||
-          (node.children ? hasTestToml(node.children) : false)
-      );
-    return hasTestToml(fileTree);
+    // tests/reward.toml is definitive; any other tests TOML is treated as a
+    // judge config unless it is a well-known tool config. buildRewardDesign
+    // still verifies the content, so a stray TOML lands on the empty state
+    // rather than a phantom design.
+    const TOOL_CONFIG_TOMLS = new Set([
+      "pyproject.toml",
+      "cargo.toml",
+      "poetry.toml",
+      "uv.toml",
+      "ruff.toml",
+      "tox.toml",
+    ]);
+    const hasDesignToml = (nodes: TreeNode[]): boolean =>
+      nodes.some((node) => {
+        if (node.children && hasDesignToml(node.children)) return true;
+        if (node.type !== "file" || !node.path.startsWith("tests/")) {
+          return false;
+        }
+        if (node.path === "tests/reward.toml") return true;
+        return (
+          node.path.endsWith(".toml") &&
+          !TOOL_CONFIG_TOMLS.has(node.name.toLowerCase())
+        );
+      });
+    return hasDesignToml(fileTree);
   }, [fileTree]);
   const rewardShowing = rewardSelected && rewardDesignAvailable;
   const [loadingFullFile, setLoadingFullFile] = useState(false);
