@@ -1620,13 +1620,8 @@ async def run_trial_job(
 
     execution: TrialExecutionResult | None = None
     trial_terminal = False
-    # The heartbeat must outlive Harbor execution: the S3 upload, sauron
-    # mirror, inline probe summary, and result store below all run before the
-    # trial turns terminal, and the stale-reap sweep only reads
-    # worker_jobs.heartbeat_at. If the heartbeat stopped when Harbor returned,
-    # a slow post-execution tail would get reaped as "Worker heartbeat
-    # stalled" and _store_trial_results would then discard the finished
-    # result on its ownership check.
+    # Must stay alive through the upload/settle tail below, or the stale-reap
+    # sweep kills the job mid-settle and the finished result is discarded.
     heartbeat_stop = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_trial_execution(
