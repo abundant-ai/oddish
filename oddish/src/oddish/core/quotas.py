@@ -63,12 +63,10 @@ async def try_acquire_quota_locks(
     org_id: str,
     billed_user_id: str | None,
 ) -> bool:
-    """Try to take the org (and optional user) quota advisory locks, never wait.
+    """Take the org (and optional user) quota advisory locks without waiting.
 
-    Only the enforcement/cancellation sweep takes these locks, as mutual
-    exclusion between concurrent sweeps of the same scope; admission is
-    lock-free. ``False`` means another transaction holds the org or user
-    lock — treat it as "someone else is cancelling" and skip rather than wait.
+    Only the enforcement sweep uses these. ``False`` means another sweep
+    holds them; skip instead of waiting.
     """
     org_locked = await session.scalar(
         text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),

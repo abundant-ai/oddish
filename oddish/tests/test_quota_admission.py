@@ -78,8 +78,7 @@ async def _make_billed_task(cleanup_task_ids, *, n_trials, billed_user, org_id):
 
 @pytest.mark.asyncio
 async def test_enforced_admission_takes_no_quota_locks(monkeypatch):
-    """A session with no ``execute``/``scalar`` proves admission runs no SQL
-    of its own (no advisory locks) once the budget checks are stubbed."""
+    """Admission runs no SQL of its own: the bare session would raise if it did."""
     from oddish.core import quota_admission
 
     checks = []

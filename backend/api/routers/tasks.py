@@ -388,9 +388,7 @@ async def create_task_sweep(
                 request_hash=request_hash,
             )
         except TimeoutError as exc:
-            # DB wait timeouts (e.g. a row-lock wait exceeding asyncpg's
-            # command_timeout) surface as bare TimeoutError. Map to 503 so the
-            # CLI gets a legible message instead of "Internal Server Error".
+            # asyncpg raises bare TimeoutError on DB wait timeouts.
             logger.error(
                 "create_task_sweep timed out for task_id=%s org_id=%s",
                 submission.task_id,

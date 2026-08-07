@@ -233,11 +233,10 @@ async def admit_trials(
     *,
     allow_unattributed: bool = False,
 ) -> None:
-    """Reject the submission when the payer / org is over budget (402/403).
+    """Reject over-budget submissions (402/403).
 
-    Lock-free by design: concurrent admissions against the same headroom can
-    briefly overshoot the cap, and ``cancel_trials_if_quota_reached`` cancels
-    the overage at the next cost checkpoint.
+    Takes no locks: concurrent admissions can briefly overshoot a cap, and
+    the enforcement sweep cancels the overage.
     """
     mode = settings.quota_mode
     if mode == QuotaMode.OFF or org_id is None or count <= 0:
