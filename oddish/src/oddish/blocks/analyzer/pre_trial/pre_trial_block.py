@@ -103,7 +103,10 @@ class PreTrialBlock(Block):
         return {**data, "items": kept}
 
     @classmethod
-    def parse_json(cls, text: str):
+    def parse_json(cls, text: str, *, expect: type | None = None):
+        # Deliberately drops ``expect``: a bare array is a valid answer here
+        # (``_normalize`` wraps it), so this block opts out of the object-only
+        # recovery ``Block.parse`` asks for.
         return cls._normalize(super().parse_json(text))
 
     def to_action_items(self, raw: str) -> dict:
