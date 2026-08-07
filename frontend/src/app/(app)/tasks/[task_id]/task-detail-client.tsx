@@ -70,6 +70,7 @@ import {
   Loader2,
   Star,
 } from "lucide-react";
+import { RewardDesignCard } from "@/components/reward-design-card";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -1372,6 +1373,14 @@ export function TaskDetailClient({
           isRunning={isRunningJudge}
           isCancelling={isCancellingJudge}
           error={judgeError}
+        />
+
+        {/* RewardKit tasks get their reward program rendered as an
+            explorable design; other tasks render nothing here. */}
+        <RewardDesignCard
+          taskId={task.id}
+          taskVersion={selectedVersion?.version}
+          trials={trialsForVersion}
         />
 
         <div className="space-y-3">

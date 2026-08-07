@@ -54,6 +54,11 @@ const JsonRenderer = dynamic(
   { ssr: false, loading: () => <LoadingStub label="Rendering JSON..." /> }
 );
 
+const RewardJsonRenderer = dynamic(
+  () => import("./reward-json-renderer").then((m) => m.RewardJsonRenderer),
+  { ssr: false, loading: () => <LoadingStub label="Rendering rewards..." /> }
+);
+
 function LoadingStub({ label }: { label: string }) {
   return (
     <div className="text-muted-foreground flex h-full items-center justify-center gap-2 p-8">
@@ -75,6 +80,7 @@ type FileRendererKind =
   | "json"
   | "config-json"
   | "result-json"
+  | "reward-json"
   | "diff"
   | "csv"
   | "log"
@@ -154,6 +160,16 @@ function getFileRendererKind(fileName: string): FileRendererKind {
   }
   if (lower.endsWith("/result.json") || lower === "result.json") {
     return "result-json";
+  }
+  // RewardKit verifier output (also copied into task artifacts by some
+  // tasks): render as a reward tree rather than raw JSON.
+  if (
+    lower.endsWith("/reward.json") ||
+    lower === "reward.json" ||
+    lower.endsWith("/reward-details.json") ||
+    lower === "reward-details.json"
+  ) {
+    return "reward-json";
   }
   if (ext === "json") return "json";
   if (ext === "diff" || ext === "patch") return "diff";
@@ -269,6 +285,8 @@ export function FileRenderer({
       return <ConfigJsonRenderer content={content ?? ""} />;
     case "result-json":
       return <ResultJsonRenderer content={content ?? ""} />;
+    case "reward-json":
+      return <RewardJsonRenderer content={content ?? ""} />;
     case "diff":
       return <DiffRenderer content={content ?? ""} fileName={fileName} />;
     case "csv": {

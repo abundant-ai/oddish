@@ -985,6 +985,16 @@ trials without a persisted `_verifier` summary lazily discover and parse their
 `verifier/ctrf.json` artifact through the already-scoped trial files API; do
 not add an unscoped artifact lookup for this fallback.
 
+RewardKit output follows the same pattern: the drawer renders the reward
+breakdown from the embedded `_rewards` / `_reward_details` summaries in
+`trial.result` (written by `harbor_artifacts.py`), falling back to the scoped
+trial files API for `verifier/reward.json` / `verifier/reward-details.json`
+when the embedded copies are missing (imports) or truncated. The task page's
+Reward design section (`reward-design-card.tsx`) reconstructs the reward
+program client-side from the task's `tests/` TOMLs plus a best-effort static
+scan of Python criteria, enriched with criteria observed in a completed
+trial's breakdown — it executes nothing.
+
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
 experiment membership and its scoped trials without deleting the task, even

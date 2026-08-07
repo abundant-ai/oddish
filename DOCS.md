@@ -782,3 +782,42 @@ dashboard shows those counts as a small passed/total line in the trial
 drawer's summary. Missing, malformed, or oversized CTRF reports are ignored
 and never change the settled `reward`; verifiers without a test report simply
 show no test line.
+
+## Reward Kit rewards (reward.json + reward-details.json)
+
+Tasks whose verifier uses [Harbor's RewardKit](https://www.harborframework.com/docs/rewardkit)
+(`harbor-rewardkit`) report **multiple named rewards** — one score per
+dimension (`tests/<dimension>/`) plus the aggregates defined in
+`tests/reward.toml` — in `/logs/verifier/reward.json`, and a per-criterion
+breakdown (scores, weights, judge reasoning, errors) in
+`/logs/verifier/reward-details.json`.
+
+Oddish captures both:
+
+- The trial's headline scalar (`trial.reward`) stays exactly as before: the
+  `"reward"` key of `reward.json`, or the sole value when only one is
+  reported. **Name your strict aggregate `reward`** in `reward.toml` so
+  pass@k, baseline gates, and the matrix keep working — other names are
+  treated as extra dimensions.
+- The full named-rewards map is persisted under the reserved
+  `trial.result._rewards` key.
+- A bounded summary of the breakdown (long judge reasoning truncated,
+  criterion lists capped) is persisted under `trial.result._reward_details`,
+  with the artifact path of the full document. The complete
+  `reward-details.json` stays with the trial artifacts.
+
+The dashboard renders these in the trial drawer as a reward breakdown —
+each dimension with its criteria, the judge's raw answer and reasoning, and
+the files the judge read — and renders `reward.json` /
+`reward-details.json` as reward trees in the Files and Artifacts tabs. On
+the task page, RewardKit tasks additionally get a **Reward design** section
+reconstructed from `tests/reward.toml`, the judge TOMLs, and a static scan
+of Python criteria files, including a what-if mode that simulates how
+criterion outcomes flow through each aggregation into the final rewards.
+
+Both keys follow the metrics.json rules: `_rewards` and `_reward_details`
+are Oddish-owned (task-authored keys of the same name are dropped), and a
+missing, malformed, or oversized details file is ignored — it never changes
+the settled `reward`. Imported trials rely on the artifact fallback: the
+drawer lazy-loads `verifier/reward.json` and `verifier/reward-details.json`
+through the scoped trial files API when the embedded copies are absent.

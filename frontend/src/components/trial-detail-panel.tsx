@@ -89,6 +89,7 @@ import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 import { useVerifierSummary } from "@/components/use-verifier-summary";
+import { TrialRewardsCard } from "@/components/trial-rewards-card";
 import { QaCostSuffix } from "@/components/qa-cost-suffix";
 import { useSWRConfig } from "swr";
 import { isAnalysisStatusActive, trialKey, useTrial } from "@/lib/use-trial";
@@ -99,7 +100,7 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading files..." />,
-  },
+  }
 );
 
 const ArtifactsViewer = dynamic(
@@ -108,20 +109,19 @@ const ArtifactsViewer = dynamic(
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading artifacts..." />,
-  },
+  }
 );
 
 const TrajectoryViewer = dynamic(
   () =>
     import("@/components/trajectory-viewer").then(
-      (mod) => mod.TrajectoryViewer,
+      (mod) => mod.TrajectoryViewer
     ),
   {
     ssr: false,
     loading: () => <DrawerPanelLoading label="Loading trajectory..." />,
-  },
+  }
 );
-
 
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
@@ -296,7 +296,7 @@ function TrialAnalysisCard({
       try {
         const res = await fetch(
           `${apiBaseUrl}/trials/${trialProp.id}/analysis-log`,
-          { cache: "no-store" },
+          { cache: "no-store" }
         );
         if (!res.ok || cancelled) return;
         const data = (await res.json()) as {
@@ -331,7 +331,8 @@ function TrialAnalysisCard({
     if (inProgress) setLogOpen(true);
   }, [inProgress]);
 
-  const hasAnalysis = Boolean(trial.analysis_status || trial.analysis) || inProgress;
+  const hasAnalysis =
+    Boolean(trial.analysis_status || trial.analysis) || inProgress;
   // Always SHOW the button when the feature is on. Disable it (with the
   // reason) when a run cannot be queued right now — a hidden button with
   // no explanation is impossible to debug from the UI. The trigger is
@@ -372,12 +373,12 @@ function TrialAnalysisCard({
     try {
       const res = await fetch(
         `${apiBaseUrl}/trials/${requestTrialId}/analysis/rerun`,
-        { method: "POST" },
+        { method: "POST" }
       );
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(
-          data.detail || data.error || "Failed to queue analysis",
+          data.detail || data.error || "Failed to queue analysis"
         );
       }
       // The server queued the run, so the parent list must refresh even
@@ -400,7 +401,7 @@ function TrialAnalysisCard({
           analysis_error: null,
           analysis_started_at: null,
         },
-        { revalidate: true },
+        { revalidate: true }
       );
       if (trialIdRef.current !== requestTrialId) return;
       // The old run's log is cleared server-side; clear it here too. Open
@@ -412,7 +413,7 @@ function TrialAnalysisCard({
     } catch (err) {
       if (trialIdRef.current === requestTrialId) {
         setQueueError(
-          err instanceof Error ? err.message : "Failed to queue analysis",
+          err instanceof Error ? err.message : "Failed to queue analysis"
         );
       }
     } finally {
@@ -431,8 +432,8 @@ function TrialAnalysisCard({
         const secs = Math.max(
           0,
           Math.floor(
-            (now - new Date(trial.analysis_started_at).getTime()) / 1000,
-          ),
+            (now - new Date(trial.analysis_started_at).getTime()) / 1000
+          )
         );
         progressLine = `Running for ${Math.floor(secs / 60)}m ${secs % 60}s.`;
       }
@@ -450,7 +451,7 @@ function TrialAnalysisCard({
     const secs = Math.round(
       (new Date(trial.analysis_finished_at).getTime() -
         new Date(trial.analysis_started_at).getTime()) /
-        1000,
+        1000
     );
     if (Number.isFinite(secs) && secs >= 0) {
       analysisDuration =
@@ -697,7 +698,7 @@ const SANDBOX_BACKENDS: Record<
 };
 
 function normalizeSandboxBackend(
-  provider: string | null | undefined,
+  provider: string | null | undefined
 ): SandboxBackendId | null {
   const normalized = provider?.trim().toLowerCase();
   if (normalized === "daytona" || normalized === "modal") {
@@ -709,7 +710,7 @@ function normalizeSandboxBackend(
 function getSandboxBackend(trial: Trial): SandboxBackend | null {
   const trialBackendId = normalizeSandboxBackend(trial.environment);
   const sandboxJob = trial.jobs?.find((job) =>
-    Boolean(normalizeSandboxBackend(job.provider)),
+    Boolean(normalizeSandboxBackend(job.provider))
   );
   const backendId =
     trialBackendId ?? normalizeSandboxBackend(sandboxJob?.provider);
@@ -720,7 +721,7 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
     return {
       ...backend,
       href: `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
-        sandboxJob.external_id,
+        sandboxJob.external_id
       )}`,
     };
   }
@@ -810,7 +811,7 @@ export function TrialDetailPanel({
 
   const validTabs = useMemo(
     () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
-    [],
+    []
   );
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -827,21 +828,21 @@ export function TrialDetailPanel({
   // they address the artifact browser, otherwise the files tab. Each tab
   // keeps its own state; the URL carries the active tab's pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file"),
+    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file")
   );
   // Line-anchor range within the selected file (``?lines=L12-L20``).
   const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
     getLiveParam("tab") === "artifacts"
       ? null
-      : parseLineRange(getLiveParam("lines")),
+      : parseLineRange(getLiveParam("lines"))
   );
-  const [artifactsTargetPath, setArtifactsTargetPath] = useState<
-    string | null
-  >(() => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null));
+  const [artifactsTargetPath, setArtifactsTargetPath] = useState<string | null>(
+    () => (getLiveParam("tab") === "artifacts" ? getLiveParam("file") : null)
+  );
   const [artifactsLines, setArtifactsLines] = useState<LineRange | null>(() =>
     getLiveParam("tab") === "artifacts"
       ? parseLineRange(getLiveParam("lines"))
-      : null,
+      : null
   );
 
   const hydratedFromUrl = useRef(false);
@@ -1018,7 +1019,7 @@ export function TrialDetailPanel({
       onClose();
     } catch (err) {
       setDeleteError(
-        err instanceof Error ? err.message : "Failed to delete trial",
+        err instanceof Error ? err.message : "Failed to delete trial"
       );
     } finally {
       setDeleting(false);
@@ -1060,7 +1061,7 @@ export function TrialDetailPanel({
 
   const orderedList = useMemo(
     () => orderedTrials ?? task?.trials ?? [],
-    [orderedTrials, task?.trials],
+    [orderedTrials, task?.trials]
   );
   const resolvedIndex =
     typeof trialIndex === "number" && trialIndex >= 0
@@ -1092,7 +1093,7 @@ export function TrialDetailPanel({
       if (!nextTrial) return;
       onNavigate(nextTrial, nextIndex);
     },
-    [onNavigate, orderedList],
+    [onNavigate, orderedList]
   );
 
   useEffect(() => {
@@ -1133,7 +1134,7 @@ export function TrialDetailPanel({
   const trialStatus = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message,
+    trial.error_message
   );
   const showLive =
     showAnalysis && (trial.status === "running" || trial.status === "retrying");
@@ -1161,13 +1162,13 @@ export function TrialDetailPanel({
           },
         ];
   const currentGroupIndex = resolvedGroups.findIndex((group) =>
-    group.trials.some((groupTrial) => groupTrial.id === trial.id),
+    group.trials.some((groupTrial) => groupTrial.id === trial.id)
   );
   const currentGroup =
     currentGroupIndex >= 0 ? resolvedGroups[currentGroupIndex] : null;
   const currentGroupTrials = currentGroup?.trials ?? [];
   const currentGroupTrialIndex = currentGroupTrials.findIndex(
-    (groupTrial) => groupTrial.id === trial.id,
+    (groupTrial) => groupTrial.id === trial.id
   );
 
   const navigateToGroupTrial = (groupIndex: number) => {
@@ -1252,7 +1253,7 @@ export function TrialDetailPanel({
                   const groupStatus = getMatrixStatus(
                     groupTrial.status,
                     groupTrial.reward,
-                    groupTrial.error_message,
+                    groupTrial.error_message
                   );
                   const groupConfig = STATUS_CONFIG[groupStatus];
                   const isPartial = groupStatus === "partial";
@@ -1276,7 +1277,7 @@ export function TrialDetailPanel({
                           : "",
                         isActive
                           ? "ring-primary/60 ring-offset-background ring-2 ring-offset-1"
-                          : "",
+                          : ""
                       )}
                       style={getRewardStyle(groupTrial.reward)}
                       aria-label={`Trial ${index + 1} ${groupConfig.shortLabel}`}
@@ -1309,7 +1310,7 @@ export function TrialDetailPanel({
             <Card
               className={cn(
                 "min-w-[145px] border",
-                OUTCOME_CARD_TONE[trialStatus],
+                OUTCOME_CARD_TONE[trialStatus]
               )}
               style={getRewardStyle(trial.reward, "panel")}
             >
@@ -1334,7 +1335,7 @@ export function TrialDetailPanel({
                       (trialStatus === "pending" ||
                         trialStatus === "queued" ||
                         trialStatus === "running") &&
-                        "animate-spin",
+                        "animate-spin"
                     )}
                   />
                   <div className="min-w-0">
@@ -1387,7 +1388,7 @@ export function TrialDetailPanel({
                         (() => {
                           const marks = costEstimateMarks(
                             taskCost.hasEstimated,
-                            taskCost.hasNative,
+                            taskCost.hasNative
                           );
                           return (
                             <span className="text-muted-foreground text-[9px] leading-none">
@@ -1406,8 +1407,7 @@ export function TrialDetailPanel({
                       trial.output_tokens != null) && (
                       <div className="text-muted-foreground mt-1 font-mono text-[9px] leading-none">
                         {formatTokenCount(
-                          (trial.input_tokens ?? 0) +
-                            (trial.output_tokens ?? 0),
+                          (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0)
                         )}
                       </div>
                     )}
@@ -1572,6 +1572,14 @@ export function TrialDetailPanel({
                   tests passed
                 </div>
               )}
+              {/* RewardKit breakdown: named rewards + per-criterion results
+                  with judge reasoning. Renders nothing for scalar-reward
+                  tasks. */}
+              <TrialRewardsCard
+                trial={trial}
+                apiBaseUrl={apiBaseUrl}
+                enabled={isOpen}
+              />
               {/* Analysis card: self-updating; also hosts the run/re-run
                   button so analysis can be started even when it never ran. */}
               {showAnalysis && (
@@ -1582,7 +1590,6 @@ export function TrialDetailPanel({
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
                 />
               )}
-
 
               {/* Execution Timeline - shows progress during running trials */}
               {trial.harbor_stage && (
