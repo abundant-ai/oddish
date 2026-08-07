@@ -1230,6 +1230,7 @@ def test_format_exception_message_includes_exception_group_children():
 
 def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1301,6 +1302,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
 
 def test_store_trial_results_persists_total_steps(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1388,6 +1390,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1462,6 +1465,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
 
 def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1537,6 +1541,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
     cancelled_result = {"state": "cancelled"}
     cancelled_analysis = {"state": "cancelled"}
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         model="gpt-5",
@@ -1626,6 +1631,7 @@ def test_store_trial_results_settles_metering_after_quota_cancel(monkeypatch):
 
 def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         attempts=2,
         finished_at=object(),
@@ -1672,6 +1678,7 @@ def test_store_trial_results_ignores_stale_cancelled_attempt(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         status=trial_handler.TrialStatus.FAILED,
@@ -1709,6 +1716,7 @@ async def test_post_trial_hooks_skip_cancelled_trial(monkeypatch):
 @pytest.mark.asyncio
 async def test_post_trial_hooks_run_for_completed_trial(monkeypatch):
     trial = SimpleNamespace(
+        kind="agent",
         id="trial-1",
         task_id="task-1",
         experiment_id="exp-1",

@@ -80,6 +80,7 @@ def test_trial_response_exposes_is_probe():
     _now = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
     trial = SimpleNamespace(
+        kind="agent",
         id="t-1",
         name="t-1",
         task_id="task-1",
@@ -221,6 +222,7 @@ async def test_retry_preserves_is_probe(monkeypatch):
 
         def __init__(self):
             self._superseded_by_trial_id = None
+            self.kind = "agent"
             self.id = "task-probe-0"
             self.name = "task-probe-0"
             self.task_id = "task-probe"

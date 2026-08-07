@@ -453,7 +453,7 @@ async def retry_trial_core(
         environment=old_trial.environment,
         harbor_config=old_trial.harbor_config,
         is_probe=old_trial.is_probe,
-        kind=old_trial.kind,
+        kind=old_trial.kind or "agent",
         max_attempts=old_trial.max_attempts,
         status=TrialStatus.QUEUED,
     )

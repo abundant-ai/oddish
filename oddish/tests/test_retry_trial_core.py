@@ -41,6 +41,7 @@ class _RecordingTrial:
         self._events = events
         self._superseded_by_trial_id = None
         self.id = "task-1-0"
+        self.kind = "agent"
         self.name = "task-1-0"
         self.task_id = "task-1"
         self.task_version_id = "task-1-v1"

@@ -989,7 +989,7 @@ class TrialModel(TimestampedMixin, Base):
     # 'agent' | 'qa' | 'audit' | 'analyzer_map' | 'analyzer_reduce'. Non-agent
     # kinds must stay out of cost/quota/leaderboard/facet/public surfaces.
     kind: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default=text("'agent'")
+        String(32), nullable=False, default="agent", server_default=text("'agent'")
     )
 
     # Status

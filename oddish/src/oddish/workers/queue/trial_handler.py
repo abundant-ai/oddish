@@ -946,7 +946,7 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
             or trial.harbor_stage == "cancelled"
         ):
             return
-        trial_kind = trial.kind
+        trial_kind = trial.kind or "agent"
         if trial_kind == "agent":
             if task is None or task.status == TaskStatus.FAILED:
                 return

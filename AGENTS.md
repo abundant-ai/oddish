@@ -29,7 +29,6 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
 │   ├── analyze/                # QA prompts and analysis helpers
-│   ├── blocks/                 # Block/AnalyzerBlock primitive + LLM backends
 │   ├── cli/                    # oddish run/upload/ls/status/cancel/pull/collect/...
 │   ├── core/                   # shared endpoint/service logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
@@ -53,7 +52,7 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── api/
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
-│   ├── services/               # hosted services (sandbox runtime, analyzer blocks, …)
+│   ├── services/               # hosted services (Slack unfurls, helpers)
 │   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
 │                               # admin, orgs, api_keys, imports, load, webhooks
 ├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
@@ -128,11 +127,18 @@ High-level flow:
    failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
-4. Trajectory analysis is **task-scoped**: when every trial of a
-   `run_analysis` task is terminal, a single `QA` job is enqueued. That one
-   job classifies every live trial's trajectory (written to `trials.analysis`)
-   and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
-   tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
+4. Trajectory analysis is **task-scoped** and runs as a trial: when every
+   agent trial of a `run_analysis` task is terminal, one QA trial
+   (`trials.kind = 'qa'`) is created on the same task. Its agent classifies
+   every live trial, writes per-trial trajectory summaries, and synthesizes
+   the task verdict into one artifact (`qa_result.json`); on settlement an
+   importer writes `trials.analysis`, `trials.trajectory_summary`, and
+   `tasks.verdict`. A sweep of `T` tasks × `N` trials therefore creates `T`
+   QA trials, not `T × (N + 1)`. The pre-trial audit is an `audit`-kind trial
+   created once per task version at sweep time (org opt-in); analyzer reports
+   run as `analyzer_map` / `analyzer_reduce` trials on a generated host task.
+   Non-'agent' kinds are excluded from cost, quota, leaderboard, facet, and
+   public surfaces (see `oddish.filters.EligibleTrialScope`).
 5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
    on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
    agent's log file inside the sandbox for supported agents (claude-code,
@@ -191,8 +197,9 @@ files under `oddish/src/oddish/analyze/`: `prompts/pre_trial_qa.txt` drives the
 source audit, `classify_prompt.txt` drives the per-trial log classifier,
 `verdict_prompt.txt` drives verdict synthesis, and
 `prompts/trajectory_summary.txt` drives schema-v5 trajectory summaries; the
-summary template must retain the `{{taxonomy}}` placeholder rendered by the
-block. Editing a prompt is a code change that ships with a deploy.
+summary template must retain the `{{taxonomy}}` placeholder, rendered by the
+QA-trial brief builder (`oddish.workers.analysis_trials`). Editing a prompt is
+a code change that ships with a deploy.
 
 ### Worker job kinds
 
@@ -214,19 +221,13 @@ block. Editing a prompt is a code change that ships with a deploy.
 
 - core models and migrations, including `worker_jobs` and `queue_slots`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
-  handler registry (`TrialJobHandler`, `QaJobHandler`, `TaskExpandJobHandler`,
-  `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
-- the task-level QA job (`run_task_qa_job`): classify every live trial via
-  the shared `classify_trial_and_store`, then synthesize the task verdict
-- post-trial classification runs through `AnalyzerBlock`. It reads two
-  already-downloaded directories and executes nothing, so `resolve_substrate`
-  keeps it on the worker-local Claude Code client (`CLAUDE_CLI`) everywhere;
-  `post_trial_sandbox_enabled` is the operator opt-in that lifts it into a
-  Daytona `SANDBOX`, which restores the task/trial snapshot at the worker's own
-  absolute paths so no prompt rewriting is involved. Its costs use the
-  `post_trial` job kind; the legacy `trial_classifier` cost bucket is retired at
-  this cutover, and every block row carries `block_metadata.cost_status`
-  (`recorded` | `no_usage` | `failed`) so lost spend is queryable.
+  handler registry (`TrialJobHandler`, `TaskExpandJobHandler`,
+  `TagProjectJobHandler`)
+- analysis trials (`oddish.workers.analysis_trials` / `analyzer_trials`):
+  brief builders, settlement importers, and the audit/QA/analyzer pipeline
+  edges. Workers execute no LLM calls of their own (the one exception is the
+  probe transcript summarizer in `oddish/worker/probe_analysis.py`); every
+  analysis agent runs as a trial on the analysis model's queue key
 - shared queue-slot leasing, per-queue-key concurrency limits, and
   per-user fairness on `TRIAL` claims
 - database-backed admin concurrency overrides; these take precedence over
@@ -241,26 +242,15 @@ block. Editing a prompt is a code change that ships with a deploy.
 - soft-delete semantics on domain rows via the `deleted_at` column and
   a session-level filter (`oddish.db.soft_delete`)
 
-`oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
-building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
-backends, so verdict synthesis runs in a backend-free worker. The Daytona
-sandbox backend needs the hosted sandbox runtime
-(`backend/api/services/sandbox/` — Daytona client, provisioner, Claude Code
-runtime) and stays in
-`backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
-itself into core's client factory on import. `AnalyzerBlock` owns a
-self-provisioned client's complete lifecycle, including sandbox file downloads
-before close. Hosted callers request sandbox capabilities declaratively; the
-registered Daytona factory owns runtime/CLI installation, short-lived internal
-key minting, and key/sandbox cleanup. Callers must not provision and inject a
-one-off sandbox client for those capabilities.
-
-Hosted failure analysis uses
-`backend/api/services/blocks/analyzer/analyzer_block_runner.py`: it partitions a bucket
-into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
-up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
-host-side, and supplies those artifacts declaratively to a separate reduce
-block. Map/reduce blocks never share or receive a live runtime/client.
+Hosted failure analysis (the Reports page) runs as trials. Report creation
+gathers the linked experiments' analyzed trials, buckets the failures, mints a
+tiny generated host task, and creates one `analyzer_map` trial per batch
+(`oddish.workers.analyzer_trials`). When a bucket's maps settle, the pipeline
+creates that bucket's `analyzer_reduce` trial with the collected findings
+inlined; when the reduces settle, a host-side import fills the `analyzers`
+columns the rollup and report UI read. Host-owned facts on findings
+(trajectory links, classifier columns) are stamped at import so agent output
+cannot forge them.
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.
@@ -409,8 +399,6 @@ Behavior:
 | `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
 | `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
 | `trial_handler.py` | TRIAL execution body |
-| `qa_handler.py` | Task-level QA job: `run_task_qa_job` classifies every live trial then synthesizes the verdict |
-| `analysis_handler.py` | `classify_trial_and_store` (shared per-trial classifier) + the transitional `run_analysis_job` wrapper for in-flight legacy ANALYSIS rows |
 | `task_expand_handler.py` / `tag_project_handler.py` | TASK_EXPAND and TAG_PROJECT job bodies |
 | `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, **per-slot** orphaned-slot release (see invariants below) |
 | `slots.py` | `queue_slots` lease acquire/release (`locked_by` / `locked_until` / `locked_at`) |
@@ -629,20 +617,17 @@ pipeline counts off the analysis/verdict *model*'s queue key: that folds
 pipeline state into a real model's bucket — an incident rendered 4k+ trials
 mid-classification as "running workers" under one model's queue while that
 model's actual trials were routed into the "analyses" pipeline. These are
-presentation buckets only; the task-level QA worker job still enqueues under
-`get_qa_queue_key()` (the analysis model's concurrency bucket).
+presentation buckets only; QA/audit/analyzer trials queue under
+`get_qa_queue_key()` (the analysis model's concurrency bucket) and are
+excluded from the per-queue trial scans by `kind = 'agent'`.
 
-Related invariant: a QA job that dies or is cancelled mid-classification must
-not strand its trials in a non-terminal `analysis_status`. The stale-heartbeat
-QA mirror resets them (RETRYING → `QUEUED`, FAILED → `FAILED` with the
-`ORPHANED_ANALYSIS_ERROR_PREFIX` sentinel), the append-supersede cancel path
-requeues in-flight rows via `requeue_inflight_trial_analysis` (which also
-reopens sentinel-FAILED rows when an append resurrects the task), and
-`_reset_orphaned_trial_analysis` in the cleanup sweep is the backstop. If you
-add a new way to kill or cancel a QA job, reset its task's in-flight
-`analysis_status` the same way — and select the trial rows `FOR UPDATE SKIP
-LOCKED`: these writers may hold the task row lock, and *waiting* on trial rows
-inverts the trials-then-task lock order `cancel_tasks_runs` takes (deadlock).
+Related invariant: a QA trial that dies retries like any trial; a terminal QA
+trial whose import never landed is re-imported by the VERDICT_PENDING healer
+in the cleanup sweep, which also creates a fresh QA trial when none exists.
+Appending trials to a task cancels its in-flight QA trial (stamped with the
+cancelled harbor_stage) so a stale import can't overwrite the new set's
+verdict; the importer additionally refuses to store a verdict while any live
+agent trial is non-terminal.
 
 ---
 
