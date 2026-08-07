@@ -1205,7 +1205,7 @@ async def append_trials_to_task(
     # Pick the target experiment: explicit argument wins, otherwise fall back
     # to the first linked experiment (the task's "primary" association).
     if experiment_id is None:
-        primary = list(task.experiments or [])
+        primary = list(await task.awaitable_attrs.experiments or [])
         if not primary:
             raise ValueError(
                 f"Task {task.id} has no linked experiments; cannot append trials"

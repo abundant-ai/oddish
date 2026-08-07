@@ -231,6 +231,17 @@ def _publish_probe(monkeypatch):
     )
     task = SimpleNamespace(experiments=[SimpleNamespace(id="exp-1")])
 
+    class _FakeAwaitableAttrs:
+        # Mirrors SQLAlchemy's ``awaitable_attrs``, which
+        # maybe_publish_experiment uses to load ``task.experiments``.
+        def __getattr__(self, name):
+            async def _get():
+                return getattr(task, name)
+
+            return _get()
+
+    task.awaitable_attrs = _FakeAwaitableAttrs()
+
     def run(submission):
         asyncio.run(
             task_submission.maybe_publish_experiment(object(), task, submission, auth)
