@@ -189,7 +189,8 @@ async def test_resolve_cohort_task_scope_resolves_by_name_via_join():
 
     assert [t.id for t in result] == ["tr-x"]
     # Task 3 reads trials after the session (and engine) is gone; `.task` must
-    # already be populated via the mapper-level selectin eager load, not lazy.
+    # already be populated via resolve_cohort's explicit
+    # ``selectinload(TrialModel.task)``, not lazy.
     assert result[0].task.name == "task-x-name"
 
 
