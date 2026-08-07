@@ -1104,11 +1104,14 @@ export function TaskDetailClient({
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
     setJudgeError(null);
-    // One task-level QA job: classify every trial, then synthesize the
-    // task verdict.
+    // One task-level QA job, tightly scoped: trials with a stored analysis
+    // keep it, only missing ones are classified, and the verdict is
+    // synthesized fresh. Full re-classification stays on POST qa/retry.
     try {
-      const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
+      const res = await fetch(`/api/tasks/${task.id}/qa/backfill`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: false, enable_analysis: true }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));

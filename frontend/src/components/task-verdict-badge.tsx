@@ -126,10 +126,10 @@ export function TaskVerdictBadge({
   const iconSize = variant === "card" ? "h-5 w-5 mt-0.5" : "h-4 w-4";
   const p = presentVerdict(task, iconSize);
   const verdict = task.verdict ?? null;
-  const showRunButton =
-    onRunJudge != null && !p.pending && !isRunning && verdict?.is_good == null;
+  const showRunButton = onRunJudge != null && !p.pending && !isRunning;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel = task.verdict_status || task.verdict ? "Rerun QA" : "Run QA";
+  const runLabel =
+    task.verdict_status || task.verdict ? "Rerun verdict" : "Run QA";
 
   if (variant === "inline") {
     return (
