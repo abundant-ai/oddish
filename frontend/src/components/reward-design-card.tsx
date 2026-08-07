@@ -358,11 +358,23 @@ export function RewardDesignCard({
         const listing = (await listingResponse.json()) as {
           files?: { path?: string; content?: string }[];
         };
+        // reward.toml and test.sh anchor RewardKit detection and the
+        // aggregates; TOML judge configs carry full rubrics. Fetch those
+        // before python criteria so the cap can never drop the anchors.
+        const designPriority = (path: string): number =>
+          path === "tests/reward.toml"
+            ? 0
+            : path === "tests/test.sh"
+              ? 1
+              : path.endsWith(".toml")
+                ? 2
+                : 3;
         const candidates = (listing.files ?? [])
           .filter(
             (f): f is { path: string; content?: string } =>
               typeof f.path === "string" && isDesignFile(f.path)
           )
+          .sort((a, b) => designPriority(a.path) - designPriority(b.path))
           .slice(0, MAX_DESIGN_FILES);
         if (candidates.length === 0) return;
 

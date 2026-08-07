@@ -253,11 +253,15 @@ def _compact_reward_dimension(
         # The exact inputs the judge read — the drawer's "Judge read" chips.
         files = judge.get("files")
         if isinstance(files, (list, tuple)):
-            judge_files = [
-                f[:200]
-                for f in files[:REWARD_DETAILS_MAX_JUDGE_FILES]
-                if isinstance(f, str) and f
-            ]
+            if len(files) > REWARD_DETAILS_MAX_JUDGE_FILES:
+                clip.mark()
+            judge_files: list[str] = []
+            for f in files[:REWARD_DETAILS_MAX_JUDGE_FILES]:
+                if not isinstance(f, str) or not f:
+                    continue
+                if len(f) > 200:
+                    clip.mark()
+                judge_files.append(f[:200])
             if judge_files:
                 compact["judge_files"] = judge_files
         trajectory = judge.get("atif_trajectory")

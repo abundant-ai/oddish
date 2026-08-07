@@ -261,6 +261,28 @@ def test_details_summary_tightens_until_it_fits(tmp_path, monkeypatch):
     assert len(criterion.get("reasoning", "")) <= 120
 
 
+def test_details_summary_marks_capped_judge_files_as_truncated(tmp_path):
+    _write_details(
+        tmp_path,
+        {
+            "llmj": {
+                "score": 1.0,
+                "kind": "llm",
+                "judge": {
+                    "model": "anthropic/claude-sonnet-4-6",
+                    "files": [f"/app/f{i}" for i in range(10)],
+                },
+                "criteria": [],
+            }
+        },
+    )
+    summary = extract_reward_details_summary(tmp_path)
+    dim = summary["dimensions"][0]
+    assert len(dim["judge_files"]) == 8
+    # Dropped inputs are data loss like any other clip.
+    assert summary["truncated"] is True
+
+
 def test_details_summary_rejects_malformed_candidates(tmp_path):
     _write_details(tmp_path, "{broken")
     assert extract_reward_details_summary(tmp_path) is None

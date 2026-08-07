@@ -550,10 +550,14 @@ export function buildRewardDesign(
   // judge's aggregation to the programmatic checks and change what-if math.
   const byDimension = new Map<string, RewardDesignDimension>();
 
+  // `group` is "programmatic" (one group per directory, like rewardkit's
+  // merged python checks) or a per-file judge key — rewardkit builds one
+  // Reward per judge config, so two judge TOMLs in one directory must not
+  // merge into a single card with the last file's settings.
   const ensureDimension = (
     name: string,
     source: string,
-    group: "judge" | "programmatic"
+    group: string
   ): RewardDesignDimension => {
     const key = `${group}\u0000${name}`;
     let dimension = byDimension.get(key);
@@ -581,7 +585,7 @@ export function buildRewardDesign(
       if (!judge) continue;
       sources.push(file.path);
       const name = dimensionNameFor(file.path, testsPrefix);
-      const dimension = ensureDimension(name, file.path, "judge");
+      const dimension = ensureDimension(name, file.path, `judge:${file.path}`);
       dimension.kind = judge.kind;
       dimension.aggregation = judge.aggregation;
       dimension.threshold = judge.threshold;
