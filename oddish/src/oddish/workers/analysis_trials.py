@@ -176,6 +176,10 @@ async def create_analysis_trial(
     harbor_config: dict = {"mode": kind, "extra_instructions": brief}
     if payload:
         harbor_config["analysis_payload"] = payload
+    # Same normalize/provider/queue trio as agent-trial creation. The worker
+    # re-normalizes strictly at pickup, so an unmapped model must fail here,
+    # at create, not there.
+    model = settings.normalize_trial_model("claude-code", settings.analysis_model)
     trial = TrialModel(
         id=trial_id,
         name=f"{task.name}-{kind}-{next_index}",
@@ -185,9 +189,9 @@ async def create_analysis_trial(
         org_id=task.org_id,
         billed_user_id=None,
         agent="claude-code",
-        provider="anthropic",
-        queue_key=settings.get_qa_queue_key(),
-        model=settings.analysis_model,
+        provider=settings.get_provider_for_trial("claude-code", model),
+        queue_key=settings.get_queue_key_for_trial("claude-code", model),
+        model=model,
         timeout_minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES,
         harbor_config=harbor_config,
         is_probe=False,

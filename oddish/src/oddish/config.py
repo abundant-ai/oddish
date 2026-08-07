@@ -43,10 +43,10 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
     "default",
 }
 
-# Plain Anthropic-style id (no Bedrock inference-profile mapping): the
-# classifier and trajectory analyzers route non-Bedrock Claude ids to the
-# direct Anthropic API.
-ANALYSIS_MODEL = "claude-sonnet-5"
+# QA, audit, and analyzer runs are trials now, and trials run Claude through
+# Bedrock — so this id MUST have an entry in _ANTHROPIC_TO_BEDROCK_MODEL_IDS.
+# An unmapped id makes every analysis trial fail at pickup.
+ANALYSIS_MODEL = "claude-sonnet-4-6"
 # Model for the probe transcript summarizer. Deliberately larger than
 # ANALYSIS_MODEL: it reads the agent's full transcript (including the final
 # synthesis / audit JSON) and must summarize it reliably. Kept separate from
