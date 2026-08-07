@@ -36,12 +36,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from pydantic import BaseModel
-from sqlalchemy import case, func, or_, select, tuple_
+from sqlalchemy import case, func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.cost_basis import not_combine_copy_filter
 from oddish.core.experiment_membership import trial_in_experiment
-from oddish.db.models import AnalysisCostModel, TrialModel
+from oddish.db.models import (
+    AnalysisCostModel,
+    ExperimentModel,
+    TrialModel,
+    task_experiments,
+)
 
 
 class QaCostTotals(BaseModel):
@@ -189,6 +194,21 @@ async def get_task_qa_costs(
         .join(TrialModel, TrialModel.id == AnalysisCostModel.trial_id)
         .where(_LIVE, TrialModel.task_id.in_(ids))
     )
+    # QA/audit run as trials now; their spend sits on the trial row, not in
+    # the ledger. Like task-level ledger rows they are not version-scoped.
+    # The row_id prefix keeps them from colliding with ledger ids in the
+    # UNION. Reruns and deletes do not refund spend, so no superseded or
+    # soft-delete filters.
+    analysis_trials = select(
+        func.concat("trial:", TrialModel.id).label("row_id"),
+        func.coalesce(TrialModel.cost_usd, 0.0).label("cost_usd"),
+        literal("native").label("cost_source"),
+        TrialModel.task_id.label("task_id"),
+    ).where(
+        TrialModel.task_id.in_(ids),
+        TrialModel.kind != "agent",
+        TrialModel.cost_usd.isnot(None),
+    )
     if scoped:
         via_trials = via_trials.where(
             TrialModel.superseded_by_trial_id.is_(None),
@@ -201,8 +221,9 @@ async def get_task_qa_costs(
     if org_id is not None:
         direct = direct.where(AnalysisCostModel.org_id == org_id)
         via_trials = via_trials.where(AnalysisCostModel.org_id == org_id)
+        analysis_trials = analysis_trials.where(TrialModel.org_id == org_id)
 
-    u = direct.union(via_trials).subquery()
+    u = direct.union(via_trials, analysis_trials).subquery()
     query = select(
         u.c.task_id,
         func.sum(u.c.cost_usd).label("cost_usd"),
@@ -269,6 +290,42 @@ async def get_experiment_qa_cost_totals(
     rows = (await session.execute(query)).all()
     base = _fold(rows)
     owned_totals = _fold([row for row in rows if row.owned])
+
+    # QA/audit trial spend. Member scope: analysis trials of any task with
+    # live membership here. Owned: the ones homed in this experiment's
+    # qa-report shadow (a task in two experiments has its QA in the first
+    # one's shadow only).
+    shadow_ids = (
+        select(ExperimentModel.id)
+        .where(ExperimentModel.shadow_of == experiment_id)
+        .scalar_subquery()
+    )
+    trial_query = (
+        select(
+            TrialModel.experiment_id.in_(shadow_ids).label("owned"),
+            func.sum(func.coalesce(TrialModel.cost_usd, 0.0)).label("cost_usd"),
+            func.count().label("job_count"),
+        )
+        .select_from(TrialModel)
+        .join(
+            task_experiments,
+            (task_experiments.c.task_id == TrialModel.task_id)
+            & (task_experiments.c.experiment_id == experiment_id)
+            & task_experiments.c.deleted_at.is_(None),
+        )
+        .where(TrialModel.kind != "agent", TrialModel.cost_usd.isnot(None))
+        .group_by("owned")
+        .execution_options(include_deleted=True)
+    )
+    if org_id is not None:
+        trial_query = trial_query.where(TrialModel.org_id == org_id)
+    for row in (await session.execute(trial_query)).all():
+        base.qa_cost_usd += float(row.cost_usd)
+        base.qa_job_count += row.job_count
+        base.qa_has_native = True
+        if row.owned:
+            owned_totals.qa_cost_usd += float(row.cost_usd)
+            owned_totals.qa_job_count += row.job_count
 
     return ExperimentQaCostTotals(
         **base.model_dump(),
