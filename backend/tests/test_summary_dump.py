@@ -94,19 +94,6 @@ URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not URL, reason="ODDISH_DATABASE_URL not set")
 
 
-@pytest.fixture(autouse=True)
-def _stub_prompt_registry(monkeypatch):
-    """summarize_trial fetches the registry template on every call (its own
-    session, not the caller's) -- stub it so these tests don't need a live
-    Postgres just to exercise the summary path."""
-    from unittest.mock import AsyncMock
-
-    monkeypatch.setattr(
-        "api.services.summarize_trajectory._load_summary_prompt",
-        AsyncMock(return_value=("TEMPLATE", 1, "prompt-test-id")),
-    )
-
-
 @asynccontextmanager
 async def _fresh_db():
     engine = create_async_engine(URL)
@@ -467,41 +454,6 @@ async def test_summarize_trial_returns_full_record(monkeypatch):
     assert "my-task" in record["prompt"]
     assert record["raw"] == _payload()
     assert record["summary"]["summary"] == "Fixed it."
-
-
-@pytest.mark.asyncio
-async def test_summarize_trial_resolves_prompt_with_full_trial_scope(monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from oddish.blocks.analyzer.analyzer_llm_client import FakeAnalyzerLLMClient
-    from api.services.summary_dump import summarize_trial
-
-    load_prompt = AsyncMock(return_value=("TEMPLATE", 1, "prompt-test-id"))
-    monkeypatch.setattr(
-        "api.services.summarize_trajectory._load_summary_prompt", load_prompt
-    )
-    _install_summary_client(monkeypatch, FakeAnalyzerLLMClient(chunks=[_payload()]))
-    trial = SimpleNamespace(
-        id="trial_1",
-        reward=1.0,
-        org_id="org_1",
-        billed_user_id="user_1",
-        experiment_id="experiment_1",
-        task_id="task_1",
-    )
-
-    await summarize_trial(
-        trial, _traj(), _ctx(), model="claude-opus-4-8", persist=False
-    )
-
-    load_prompt.assert_awaited_once()
-    assert load_prompt.await_args.kwargs == {
-        "org_id": "org_1",
-        "user_id": "user_1",
-        "experiment_id": "experiment_1",
-        "task_id": "task_1",
-        "trial_id": "trial_1",
-    }
 
 
 @pytest.mark.asyncio
@@ -938,8 +890,6 @@ async def test_prod_and_harness_use_the_same_output_cap(monkeypatch):
         ctx,
         analyzer_id="tr_x",
         prompt_template="TEMPLATE",
-        prompt_version=1,
-        prompt_id="prompt-test-id",
     )
     prod_kwargs = _CapturingClient.last_kwargs
 

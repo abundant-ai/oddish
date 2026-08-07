@@ -333,9 +333,6 @@ def create_app() -> FastAPI:
         load,
         notifications,
         orgs,
-        prompts,
-        qa,
-        qa_jobs,
         reports,
         skills,
         public,
@@ -344,6 +341,10 @@ def create_app() -> FastAPI:
         tasks,
         trials,
     )
+
+    # Import registers the hosted Daytona backend with core's client factory,
+    # so API-side sandbox AnalyzerBlocks (cc_chat failure analysis) resolve it.
+    from api.services.blocks.analyzer import sandbox_llm_client as _sandbox  # noqa: F401
 
     api.include_router(cc_chat.router)
     api.include_router(dashboard.router)
@@ -359,7 +360,6 @@ def create_app() -> FastAPI:
     api.include_router(imports.router)
     api.include_router(load.router)
     api.include_router(skills.router)
-    api.include_router(prompts.router)
     api.include_router(documents.router)
     api.include_router(public.router)
     api.include_router(slack.router)
@@ -367,7 +367,5 @@ def create_app() -> FastAPI:
     api.include_router(cost_excluded_keys.router)
     api.include_router(tags.router)
     api.include_router(reports.router)
-    api.include_router(qa.router)
-    api.include_router(qa_jobs.router)
 
     return api

@@ -18,7 +18,7 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
-from oddish.config import is_nop_oracle_agent, settings
+from oddish.config import settings
 from oddish.costs.modal_cost import SpanResources
 from oddish.costs.recorder import (
     close_agent_sandboxes,
@@ -924,7 +924,6 @@ async def _store_trial_results(
 
 
 async def _run_post_trial_hooks(trial_id: str) -> None:
-    from oddish.core.qa_assignments import enqueue_qa_assignment_runs_core
     from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
 
     async with get_session() as session:
@@ -944,29 +943,6 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
             return
         if task is None or task.status == TaskStatus.FAILED:
             return
-        # nop/oracle are deterministic scaffolding checks, not agent attempts:
-        # there is no trajectory to critique, so post-trial QA on them buys
-        # nothing. The gate and stage transition below still need the trial.
-        if not is_nop_oracle_agent(trial.agent):
-            try:
-                async with session.begin_nested():
-                    await enqueue_qa_assignment_runs_core(
-                        session,
-                        stage="post_trial",
-                        stage_event_key=f"trial:{trial.id}",
-                        org_id=trial.org_id,
-                        user_id=trial.billed_user_id,
-                        experiment_id=trial.experiment_id,
-                        task_id=trial.task_id,
-                        trial_id=trial.id,
-                        run_scope_type="trial",
-                        run_scope_id=trial.id,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                console.print(
-                    f"[red]Post-trial assignment enqueue failed for {trial.id}: "
-                    f"{type(exc).__name__}: {exc}[/red]"
-                )
 
         await maybe_gate_llm_trials(session, trial_id)
         if await maybe_start_qa_stage(session, trial_id):
