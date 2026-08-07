@@ -46,10 +46,14 @@ function timestampMs(ts: string | null | undefined): number | null {
  *
  * Empty padding is worth 0 and "previous" skips it, so the span it covers is
  * charged to the next step that did work — including a padding run at the head,
- * which is measured from the trajectory's first stamp rather than dropped. That
- * is what keeps the total honest and the measure caller-independent: pass the
- * full trajectory and the durations of the steps that survive filtering are the
- * same numbers either way.
+ * which is measured from the trajectory's first stamp rather than dropped.
+ *
+ * That makes the total honest only if callers measure the FULL trajectory and
+ * narrow afterwards by original index. Filtering padding out first and measuring
+ * the remainder is not equivalent: the head run has no successor left to charge,
+ * so its span is silently dropped and the caller under-reports. Every caller
+ * measures full and narrows, which is what keeps the duration bar, the group
+ * headers and the Activity card reporting one number per component.
  */
 export function stepDurationsMs(steps: TrajectoryStep[]): number[] {
   let prevMs = timestampMs(steps.find((s) => s.timestamp)?.timestamp);
