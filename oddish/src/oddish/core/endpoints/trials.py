@@ -23,7 +23,6 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.db import (
-    AnalysisStatus,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -32,7 +31,6 @@ from oddish.db import (
     WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
-    utcnow,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
@@ -97,12 +95,6 @@ async def get_trial_by_index_core(
         qa_cost_usd=qa_costs.get(trial.id),
     )
     return await _attach_pre_trial_audit(session, response, trial.task_version_id)
-
-
-# Mirrors ANALYSIS_CLAIM_TTL_MINUTES in workers/queue/analysis_handler.py.
-# Copied, not imported: importing the worker module here would pull the
-# whole analyzer stack into the API process.
-_ANALYSIS_CLAIM_TTL_MINUTES = 35
 
 
 async def rerun_trial_analysis_core(

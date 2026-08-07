@@ -156,45 +156,32 @@ async def cancel_task_qa_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     now_value = utcnow()
-    rows = await _cancel_worker_jobs_for_kind(
-        session,
-        kind="QA",
-        subject_table="tasks",
-        subject_ids=[task_id],
-        reason=USER_CANCELLED_MESSAGE,
-    )
-    # Also cancel per-trial ANALYSIS jobs (the trial re-run button enqueues
-    # these). Left alive, one would flip the cancelled analysis back to
-    # QUEUED on claim and overwrite the cancelled state.
-    live_trial_ids = [
-        trial.id
+    # QA and audit run as trials. Cancel their TRIAL worker jobs and mark
+    # the trial rows failed, the same way the append path supersedes an
+    # in-flight qa trial. The settlement path and importer skip on the
+    # cancelled harbor_stage.
+    analysis_trials = [
+        trial
         for trial in task.trials or []
         if trial.superseded_by_trial_id is None
+        and (trial.kind or "agent") in ("qa", "audit")
+        and trial.status
+        not in (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
     ]
-    analysis_rows = await _cancel_worker_jobs_for_kind(
+    rows = await _cancel_worker_jobs_for_kind(
         session,
-        kind="ANALYSIS",
+        kind="TRIAL",
         subject_table="trials",
-        subject_ids=live_trial_ids,
+        subject_ids=[trial.id for trial in analysis_trials],
         reason=USER_CANCELLED_MESSAGE,
     )
-    if analysis_rows:
-        cancelled_trial_ids = {str(row.get("subject_id")) for row in analysis_rows}
-        for trial in task.trials or []:
-            if trial.id in cancelled_trial_ids and _has_active_analysis(trial):
-                trial.analysis_status = AnalysisStatus.FAILED
-                trial.analysis_error = USER_CANCELLED_MESSAGE
-                trial.analysis_finished_at = now_value
-    # An audit-only job (payload mode "pre_trial") never touches the verdict
-    # or trial classifications, so cancelling one must not wipe them. The two
-    # extra conditions cover orphaned state: a verdict left active with no
-    # live full QA job behind it (a live one would be in ``rows``, since the
-    # cancel above takes every QA-kind job). Cancel is the recovery for that.
-    full_qa_cancelled = any(
-        ((row.get("payload") or {}) or {}).get("mode") != "pre_trial" for row in rows
-    )
+    for trial in analysis_trials:
+        trial.status = TrialStatus.FAILED
+        trial.harbor_stage = "cancelled"
+        trial.error_message = USER_CANCELLED_MESSAGE
+        trial.finished_at = trial.finished_at or now_value
     if (
-        full_qa_cancelled
+        analysis_trials
         or _has_active_verdict(task)
         or task.status == TaskStatus.VERDICT_PENDING
     ):
@@ -211,18 +198,16 @@ async def cancel_task_qa_core(
         if task.status == TaskStatus.VERDICT_PENDING:
             task.status = TaskStatus.FAILED
             task.finished_at = now_value
-    # The pre-trial audit runs inside a QA job (full or audit-only). A request
-    # left QUEUED (or a claim left RUNNING) with no job behind it would keep
-    # the card in a running state forever, so cancel always clears it. An
-    # audit-only job pins the version it audits, and that version can be
+    # A pre-trial status left QUEUED/RUNNING with nothing behind it would
+    # keep the card in a running state forever, so cancel always clears it.
+    # An audit trial pins the version it audits, and that version can be
     # older than the current one after a re-upload — clear it as well.
     version_ids: set[str] = set()
     if task.current_version_id:
         version_ids.add(str(task.current_version_id))
-    for row in rows:
-        pinned = ((row.get("payload") or {}) or {}).get("task_version_id")
-        if pinned:
-            version_ids.add(str(pinned))
+    for trial in analysis_trials:
+        if trial.kind == "audit" and trial.task_version_id:
+            version_ids.add(str(trial.task_version_id))
     for version_id in version_ids:
         version = await session.get(
             TaskVersionModel, version_id, with_for_update=True
@@ -240,8 +225,8 @@ async def cancel_task_qa_core(
     return {
         "status": "cancelled",
         "task_id": task_id,
-        "qa_jobs_cancelled": len(rows) + len(analysis_rows),
-        **_collect_cancel_metadata([*rows, *analysis_rows]),
+        "qa_jobs_cancelled": len(rows),
+        **_collect_cancel_metadata(rows),
     }
 
 
@@ -258,7 +243,7 @@ def _reset_trial_analysis(trial: TrialModel) -> None:
 
 
 async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
-    """Count non-terminal, non-superseded trials for a task."""
+    """Count non-terminal, non-superseded agent trials for a task."""
     active_statuses = [
         TrialStatus.PENDING,
         TrialStatus.QUEUED,
@@ -268,6 +253,7 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     count = await session.scalar(
         select(func.count(TrialModel.id)).where(
             TrialModel.task_id == task_id,
+            TrialModel.kind == "agent",
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.status.in_(active_statuses),
         )
@@ -341,7 +327,9 @@ async def backfill_task_analysis_core(
         raise HTTPException(status_code=400, detail="Task has no trials to QA")
 
     live_trials = [
-        trial for trial in task.trials if trial.superseded_by_trial_id is None
+        trial
+        for trial in task.trials
+        if trial.superseded_by_trial_id is None and (trial.kind or "agent") == "agent"
     ]
     if not live_trials:
         raise HTTPException(status_code=400, detail="Task has no live trials to QA")
@@ -353,35 +341,27 @@ async def backfill_task_analysis_core(
             detail="Can only run QA after all trials finish",
         )
 
-    # PENDING/QUEUED always block: that job will run soon and would collide.
-    # A RUNNING claim blocks only inside its TTL — past it the worker is
-    # presumed dead, and this backfill is the recovery path (the same rule
-    # the per-trial rerun applies).
-    from datetime import timedelta
-
-    from oddish.core.endpoints.trials import _ANALYSIS_CLAIM_TTL_MINUTES
-
-    claim_ttl = timedelta(minutes=_ANALYSIS_CLAIM_TTL_MINUTES)
-
-    def _analysis_in_progress(trial: TrialModel) -> bool:
-        if trial.analysis_status in (AnalysisStatus.PENDING, AnalysisStatus.QUEUED):
-            return True
-        if trial.analysis_status is not AnalysisStatus.RUNNING:
-            return False
-        started = trial.analysis_started_at
-        return started is not None and utcnow() - started < claim_ttl
-
-    if any(_analysis_in_progress(trial) for trial in live_trials):
-        raise HTTPException(
-            status_code=400,
-            detail="QA is already in progress for this task",
+    # The live qa trial IS the in-progress marker. Old status flags
+    # (verdict_status, per-trial analysis_status) can be stale after a
+    # crash and must not wedge the rerun button.
+    live_qa = await session.scalar(
+        select(TrialModel.id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.kind == "qa",
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(
+                [
+                    TrialStatus.PENDING,
+                    TrialStatus.QUEUED,
+                    TrialStatus.RUNNING,
+                    TrialStatus.RETRYING,
+                ]
+            ),
         )
-
-    if task.verdict_status in (
-        VerdictStatus.PENDING,
-        VerdictStatus.QUEUED,
-        VerdictStatus.RUNNING,
-    ):
+        .limit(1)
+    )
+    if live_qa is not None:
         raise HTTPException(
             status_code=400,
             detail="QA is already in progress for this task",
@@ -447,7 +427,6 @@ async def rerun_pre_trial_audit_core(
     """
     from datetime import timedelta
 
-    from oddish.config import settings
 
     # The task row lock serializes this check-and-enqueue against the QA
     # backfill (which takes the same lock): without it, two concurrent

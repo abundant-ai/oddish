@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import and_, func, not_, or_, select, text, update
+from sqlalchemy import and_, func, not_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
