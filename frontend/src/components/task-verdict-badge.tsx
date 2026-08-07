@@ -42,8 +42,14 @@ function presentVerdict(
     !failed &&
     isGood == null &&
     (task.status === "analyzing" ||
-      (task.trials ?? []).some((t) =>
-        isActivePipelineStatus(t.analysis_status),
+      (task.trials ?? []).some(
+        (t) =>
+          isActivePipelineStatus(t.analysis_status) ||
+          (t.kind === "qa" &&
+            !t.superseded_by_trial_id &&
+            !["success", "failed", "skipped"].includes(
+              (t.status ?? "").toLowerCase(),
+            )),
       ));
   const pending = verdictPending || analysesInFlight;
 

@@ -1,4 +1,4 @@
-import type { Task, Trial } from "@/lib/types";
+import { isAgentTrial, type Task, type Trial } from "@/lib/types";
 
 const DEFAULT_EXPERIMENT_MODEL_KEY = "default";
 const GEMINI_35_DISPLAY_AGENT = "gemini-cli";
@@ -81,7 +81,7 @@ function getModelScopedAgents(tasks: Task[]): Set<string> {
 
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
-      if (trial.is_probe) continue;
+      if (trial.is_probe || !isAgentTrial(trial)) continue;
       const display = getDisplayAgentModel(trial);
       const existing = modelsByAgent.get(display.agent) ?? new Set<string>();
       existing.add(getModelKey(display.model));

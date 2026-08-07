@@ -172,14 +172,7 @@ async def test_list_analyzers_core_does_not_load_findings(session):
 
 
 @pytest.mark.asyncio
-async def test_create_analyzer_persists_save_trial_analyses(session, monkeypatch):
-    import oddish.core.analyzers as mod
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        pass
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
+async def test_create_analyzer_persists_save_trial_analyses(session):
     e1 = ExperimentModel(name="exp-1", org_id="org_1")
     session.add(e1)
     await session.flush()
@@ -202,15 +195,8 @@ async def test_create_analyzer_persists_save_trial_analyses(session, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_auto_names_report_when_name_omitted(session, monkeypatch):
+async def test_auto_names_report_when_name_omitted(session):
     """No name -> report_<N>_<slug(exp)>, N incrementing per experiment."""
-    import oddish.core.analyzers as mod
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        pass
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
     foo = ExperimentModel(name="Card Demo", org_id="org_1")
     bar = ExperimentModel(name="airflow", org_id="org_1")
     session.add_all([foo, bar])
@@ -241,13 +227,6 @@ async def test_auto_names_report_when_name_omitted(session, monkeypatch):
 async def test_auto_name_takes_advisory_lock_before_reading_names(session, monkeypatch):
     """Auto-naming reads existing names then inserts; without a lock two concurrent
     creates pick the same index. The lock must be held before the read to help."""
-    import oddish.core.analyzers as mod
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        pass
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
     e1 = ExperimentModel(name="Card Demo", org_id="org_1")
     session.add(e1)
     await session.flush()
@@ -281,16 +260,9 @@ async def test_auto_name_takes_advisory_lock_before_reading_names(session, monke
 
 
 @pytest.mark.asyncio
-async def test_auto_name_fits_name_column_for_long_experiment(session, monkeypatch):
+async def test_auto_name_fits_name_column_for_long_experiment(session):
     """experiments.name and analyzers.name are both String(255), so an untruncated
     slug plus the 'report_<N>_' prefix would overflow on insert."""
-    import oddish.core.analyzers as mod
-
-    async def _fake_enqueue(session, *, analyzer_id, org_id):
-        pass
-
-    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
-
     long_exp = ExperimentModel(name="e" * 255, org_id="org_1")
     session.add(long_exp)
     await session.flush()

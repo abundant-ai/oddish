@@ -123,6 +123,17 @@ interface TrialQueueInfo {
   concurrency_limit: number;
 }
 
+export type TrialKind =
+  | "agent"
+  | "qa"
+  | "audit"
+  | "analyzer_map"
+  | "analyzer_reduce";
+
+export function isAgentTrial(t: { kind?: TrialKind }): boolean {
+  return (t.kind ?? "agent") === "agent";
+}
+
 export interface Trial {
   id: string;
   name: string;
@@ -177,6 +188,7 @@ export interface Trial {
   is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
+  kind?: TrialKind;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;

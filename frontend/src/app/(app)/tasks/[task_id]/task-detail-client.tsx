@@ -47,6 +47,7 @@ import {
   STATUS_CONFIG,
 } from "@/lib/status-config";
 import { summarizeTrials, type TrialAggregate } from "@/lib/trial-aggregation";
+import { isAgentTrial } from "@/lib/types";
 import type {
   Task,
   TaskDetailResponse,
@@ -738,7 +739,19 @@ export function TaskDetailClient({
 
   const trialsForVersion = useMemo(() => {
     if (!task?.trials || selectedVersionId == null) return [] as Trial[];
-    return task.trials.filter((t) => t.task_version_id === selectedVersionId);
+    return task.trials.filter(
+      (t) => t.task_version_id === selectedVersionId && isAgentTrial(t),
+    );
+  }, [task?.trials, selectedVersionId]);
+
+  const analysisTrialsForVersion = useMemo(() => {
+    if (!task?.trials || selectedVersionId == null) return [] as Trial[];
+    return task.trials.filter(
+      (t) =>
+        t.task_version_id === selectedVersionId &&
+        !isAgentTrial(t) &&
+        !t.superseded_by_trial_id,
+    );
   }, [task?.trials, selectedVersionId]);
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
@@ -1404,6 +1417,21 @@ export function TaskDetailClient({
                 />
               );
             })
+          )}
+          {analysisTrialsForVersion.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <span className="text-[11px] uppercase tracking-wide text-[color:var(--paper-ink-3)]">
+                Analysis
+              </span>
+              {analysisTrialsForVersion.map((t) => (
+                <div key={t.id} className="flex items-center gap-1">
+                  <span className="text-[11px] text-[color:var(--paper-ink-3)]">
+                    {t.kind}
+                  </span>
+                  <TrialChip trial={t} onClick={() => handleSelectTrial(t)} />
+                </div>
+              ))}
+            </div>
           )}
         </div>
 

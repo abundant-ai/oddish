@@ -1184,6 +1184,11 @@ export function TrialDetailPanel({
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
+          {(trial.kind ?? "agent") !== "agent" && (
+            <span className="inline-flex shrink-0 items-center rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-amber-700 dark:text-amber-400">
+              {trial.kind}
+            </span>
+          )}
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}

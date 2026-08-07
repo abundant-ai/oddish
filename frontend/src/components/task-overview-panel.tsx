@@ -15,6 +15,7 @@ import { FALLBACK_TOKEN, VERDICT_TOKENS } from "@/components/qa-report/tokens";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { isActivePipelineStatus } from "@/lib/job-status";
 import { formatCostUsd, hasDisplayableCostUsd } from "@/lib/format";
+import { isAgentTrial } from "@/lib/types";
 import type {
   AnalysisClassification,
   PreTrialFinding,
@@ -184,7 +185,8 @@ export function TaskOverviewPanel({
   const scoped = useMemo(() => {
     if (scopeTrials == null) return null;
     return scopeTrials.filter(
-      (trial) => !trial.is_probe && !trial.superseded_by_trial_id,
+      (trial) =>
+        !trial.is_probe && isAgentTrial(trial) && !trial.superseded_by_trial_id,
     );
   }, [scopeTrials]);
   const fetchedById = useMemo(
