@@ -851,6 +851,7 @@ async def list_task_files(
     limit: int = Query(1000, ge=1, le=1000),
     cursor: str | None = Query(None),
     presign: bool = Query(True),
+    inline: bool = Query(True),
     version: int | None = Query(None, description="Task version number"),
     stream: bool = Query(
         False,
@@ -892,6 +893,7 @@ async def list_task_files(
         cursor=cursor,
         presign=presign,
         version=version,
+        inline=inline,
     )
 
 
@@ -901,6 +903,7 @@ async def get_task_file_content(
     file_path: str,
     presign: bool = Query(False),
     version: int | None = Query(None, description="Task version number"),
+    max_bytes: int | None = Query(None, ge=1),
 ) -> dict:
     """Get content of a specific task file from S3."""
     async with get_session() as session:
@@ -921,6 +924,7 @@ async def get_task_file_content(
         file_path=file_path,
         presign=presign,
         version=version,
+        max_bytes=max_bytes,
     )
 
 
