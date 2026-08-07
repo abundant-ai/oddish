@@ -117,10 +117,15 @@ def build_task_sweep_response(
     the response stored for replay is identical to the one a fresh submission
     returns. For append submissions only the newly appended trials are counted;
     for create submissions the task's full trial set is counted.
+
+    ``experiment`` is the caller-resolved primary experiment (every path
+    resolves it via ``_primary_experiment_for_task_model`` or an explicit
+    submission id before calling); this function is sync and must not
+    trigger a lazy relationship load.
     """
     response_trials = new_trials if is_append else list(task.trials)
     provider_counts: Counter[str] = Counter(trial.provider for trial in response_trials)
-    primary = experiment or (task.experiments[0] if task.experiments else None)
+    primary = experiment
     return TaskResponse(
         id=task.id,
         name=task.name,
