@@ -160,11 +160,20 @@ function parseDimensionEntry(
     criteria: [],
   };
 
-  // Embedded summaries carry `judge` as a string; the raw document carries
-  // the full judge config object.
+  // Embedded summaries carry `judge` as a string plus flattened
+  // `judge_files` / `judge_trajectory`; the raw document carries the full
+  // judge config object.
   const judgeString = nonEmptyString(value.judge);
   if (judgeString) {
     dimension.judge = judgeString;
+    if (Array.isArray(value.judge_files)) {
+      const files = value.judge_files.filter(
+        (f): f is string => typeof f === "string" && f.length > 0
+      );
+      if (files.length > 0) dimension.judgeFiles = files;
+    }
+    const trajectory = nonEmptyString(value.judge_trajectory);
+    if (trajectory) dimension.judgeTrajectory = trajectory;
   } else if (isRecord(value.judge)) {
     const judge = value.judge;
     const model = nonEmptyString(judge.model) ?? nonEmptyString(judge.agent);
@@ -521,13 +530,19 @@ export function buildRewardDesign(
   if (!isRewardKit) return null;
 
   const sources: string[] = [];
+  // Keyed by group AND name: rewardkit scores a directory's python checks
+  // and each judge config as separate same-named rewards, averaged together
+  // by reward_weight. Flattening them into one dimension would apply the
+  // judge's aggregation to the programmatic checks and change what-if math.
   const byDimension = new Map<string, RewardDesignDimension>();
 
   const ensureDimension = (
     name: string,
-    source: string
+    source: string,
+    group: "judge" | "programmatic"
   ): RewardDesignDimension => {
-    let dimension = byDimension.get(name);
+    const key = `${group}\u0000${name}`;
+    let dimension = byDimension.get(key);
     if (!dimension) {
       dimension = {
         name,
@@ -539,7 +554,7 @@ export function buildRewardDesign(
         criteriaComplete: true,
         source,
       };
-      byDimension.set(name, dimension);
+      byDimension.set(key, dimension);
     }
     return dimension;
   };
@@ -552,7 +567,7 @@ export function buildRewardDesign(
       if (!judge) continue;
       sources.push(file.path);
       const name = dimensionNameFor(file.path, testsPrefix);
-      const dimension = ensureDimension(name, file.path);
+      const dimension = ensureDimension(name, file.path, "judge");
       dimension.kind = judge.kind;
       dimension.aggregation = judge.aggregation;
       dimension.threshold = judge.threshold;
@@ -567,7 +582,7 @@ export function buildRewardDesign(
       if (parsed.criteria.length === 0 && parsed.complete) continue;
       sources.push(file.path);
       const name = dimensionNameFor(file.path, testsPrefix);
-      const dimension = ensureDimension(name, file.path);
+      const dimension = ensureDimension(name, file.path, "programmatic");
       dimension.criteria.push(...parsed.criteria);
       if (!parsed.complete) dimension.criteriaComplete = false;
       // Programmatic dimensions keep reward_weight 1.0 (rewardkit default);

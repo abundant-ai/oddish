@@ -162,6 +162,8 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
 # stays in object storage for the drawer to lazy-load.
 VERIFIER_REWARD_DETAILS_MAX_BYTES = 8 * 1024 * 1024
 REWARD_DETAILS_EMBED_MAX_BYTES = 48 * 1024
+REWARD_DETAILS_RAW_MAX_CHARS = 120
+REWARD_DETAILS_MAX_JUDGE_FILES = 8
 REWARDS_MAP_MAX_KEYS = 32
 
 
@@ -172,8 +174,18 @@ def _finite_rounded(value: Any) -> float | None:
     return round(number, 4)
 
 
+class _ClipTracker:
+    """Marks a summary as lossy so clients know to fetch the full document."""
+
+    def __init__(self) -> None:
+        self.clipped = False
+
+    def mark(self) -> None:
+        self.clipped = True
+
+
 def _compact_reward_criterion(
-    raw: Any, reasoning_limit: int, text_limit: int
+    raw: Any, reasoning_limit: int, text_limit: int, clip: _ClipTracker
 ) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -185,14 +197,31 @@ def _compact_reward_criterion(
     weight = _finite_rounded(raw.get("weight"))
     if weight is not None:
         compact["weight"] = weight
+    # The pre-normalization answer ("yes", 4, true) is what the drawer shows
+    # as "judge answered". Only scalar values ride; anything else stays in
+    # the full document.
+    answer = raw.get("raw")
+    if isinstance(answer, bool) or (
+        isinstance(answer, (int, float)) and math.isfinite(answer)
+    ):
+        compact["raw"] = answer
+    elif isinstance(answer, str) and answer:
+        if len(answer) > REWARD_DETAILS_RAW_MAX_CHARS:
+            clip.mark()
+        compact["raw"] = answer[:REWARD_DETAILS_RAW_MAX_CHARS]
+    elif answer is not None:
+        clip.mark()
     for key, limit in (
         ("description", text_limit),
         ("reasoning", reasoning_limit),
         ("error", text_limit),
     ):
         text = raw.get(key)
-        if isinstance(text, str) and text and limit > 0:
-            compact[key] = text[:limit]
+        if isinstance(text, str) and text:
+            if len(text) > limit:
+                clip.mark()
+            if limit > 0:
+                compact[key] = text[:limit]
     for flag in ("negate", "optional"):
         if raw.get(flag) is True:
             compact[flag] = True
@@ -205,6 +234,7 @@ def _compact_reward_dimension(
     reasoning_limit: int,
     text_limit: int,
     max_criteria: int,
+    clip: _ClipTracker,
 ) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -220,15 +250,36 @@ def _compact_reward_dimension(
         judge_model = judge.get("model") or judge.get("agent")
         if isinstance(judge_model, str) and judge_model:
             compact["judge"] = judge_model[:120]
+        # The exact inputs the judge read — the drawer's "Judge read" chips.
+        files = judge.get("files")
+        if isinstance(files, (list, tuple)):
+            judge_files = [
+                f[:200]
+                for f in files[:REWARD_DETAILS_MAX_JUDGE_FILES]
+                if isinstance(f, str) and f
+            ]
+            if judge_files:
+                compact["judge_files"] = judge_files
+        trajectory = judge.get("atif_trajectory")
+        if isinstance(trajectory, str) and trajectory:
+            compact["judge_trajectory"] = trajectory[:200]
     criteria: list[dict[str, Any]] = []
     criteria_raw = raw.get("criteria")
     total = 0
     if isinstance(criteria_raw, list):
         total = len(criteria_raw)
+        if total > max_criteria:
+            clip.mark()
         for entry in criteria_raw[:max_criteria]:
-            criterion = _compact_reward_criterion(entry, reasoning_limit, text_limit)
+            criterion = _compact_reward_criterion(
+                entry, reasoning_limit, text_limit, clip
+            )
             if criterion is None:
-                return None
+                # A single malformed criterion must not cost the whole
+                # breakdown; drop it, keep its siblings, and mark the summary
+                # lossy so the drawer fetches the full document.
+                clip.mark()
+                continue
             criteria.append(criterion)
     compact["criteria"] = criteria
     if total > len(criteria):
@@ -271,11 +322,17 @@ def extract_reward_details_summary(path: Path) -> dict[str, Any] | None:
         rel_path = details_path.relative_to(path).as_posix()
         # (reasoning limit, description/error limit, criteria cap) tiers, from
         # generous to score-only. The first tier whose encoding fits the embed
-        # budget wins; ``truncated`` marks any tier below the first so clients
-        # know the full document has more.
-        for tier, (reasoning_limit, text_limit, max_criteria) in enumerate(
-            ((400, 300, 40), (120, 120, 20), (0, 0, 12), (0, 0, 0))
+        # budget wins. ``truncated`` marks any loss against the source
+        # document — a tighter tier, clipped text, capped criteria lists, or
+        # a dropped malformed criterion — so clients know to fetch the full
+        # report rather than trust the embed as complete.
+        for reasoning_limit, text_limit, max_criteria in (
+            (400, 300, 40),
+            (120, 120, 20),
+            (0, 0, 12),
+            (0, 0, 0),
         ):
+            clip = _ClipTracker()
             dimensions: list[dict[str, Any]] = []
             valid = True
             for name, raw in payload.items():
@@ -285,7 +342,7 @@ def extract_reward_details_summary(path: Path) -> dict[str, Any] | None:
                 entries = raw if isinstance(raw, list) else [raw]
                 for entry in entries:
                     compact = _compact_reward_dimension(
-                        name, entry, reasoning_limit, text_limit, max_criteria
+                        name, entry, reasoning_limit, text_limit, max_criteria, clip
                     )
                     if compact is None:
                         valid = False
@@ -300,7 +357,7 @@ def extract_reward_details_summary(path: Path) -> dict[str, Any] | None:
                 "details_path": rel_path,
                 "dimensions": dimensions,
             }
-            if tier > 0:
+            if clip.clipped:
                 summary["truncated"] = True
             encoded = json.dumps(summary, separators=(",", ":"))
             if len(encoded.encode("utf-8")) <= REWARD_DETAILS_EMBED_MAX_BYTES:

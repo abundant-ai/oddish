@@ -144,11 +144,17 @@ def test_details_summary_compacts_dimensions_and_criteria(tmp_path):
         "qa_result_shape",
         "classification_matches_gold",
     ]
+    # The pre-normalization answer rides so the drawer can show what the
+    # check/judge actually returned.
+    assert exact["criteria"][0]["raw"] is True
     assert exact["criteria"][1]["error"].startswith("classification must be")
 
     llmj = by_name["llmj"]
     assert llmj["judge"] == "anthropic/claude-sonnet-4-6"
+    # The judge's exact inputs ride too — the drawer's "Judge read" chips.
+    assert llmj["judge_files"] == ["/app/x"]
     assert llmj["warnings"] == 1
+    assert llmj["criteria"][0]["raw"] == "yes"
     assert llmj["criteria"][0]["reasoning"].startswith("The report cites")
     # Bulky judge payloads never ride in the row; only the compact fields do.
     assert "judge_output" not in llmj
@@ -177,6 +183,54 @@ def test_details_summary_caps_criteria_and_marks_total(tmp_path):
     dim = summary["dimensions"][0]
     assert len(dim["criteria"]) == 40
     assert dim["criteria_total"] == 45
+    # Capping is data loss: the embed must say so, or the drawer would trust
+    # it as complete and never fetch the full report.
+    assert summary["truncated"] is True
+
+
+def test_details_summary_marks_clipped_text_as_truncated(tmp_path):
+    # Long reasoning that still fits the embed budget after clipping used to
+    # ship without the truncated flag, leaving clients unaware the full
+    # document has more.
+    _write_details(
+        tmp_path,
+        {
+            "dim": {
+                "score": 1.0,
+                "criteria": [
+                    {"name": "c", "value": 1.0, "raw": True, "reasoning": "r" * 900}
+                ],
+            }
+        },
+    )
+    summary = extract_reward_details_summary(tmp_path)
+    criterion = summary["dimensions"][0]["criteria"][0]
+    assert len(criterion["reasoning"]) == 400
+    assert summary["truncated"] is True
+
+
+def test_details_summary_drops_only_the_malformed_criterion(tmp_path):
+    # One broken check must not cost the whole breakdown: siblings stay, the
+    # dropped entry counts toward criteria_total, and the summary is marked
+    # lossy so the full document gets fetched.
+    _write_details(
+        tmp_path,
+        {
+            "dim": {
+                "score": 0.5,
+                "criteria": [
+                    {"name": "good", "value": 1.0, "raw": True},
+                    {"value": 0.0},
+                    {"name": "also_good", "value": 0.0, "raw": False},
+                ],
+            }
+        },
+    )
+    summary = extract_reward_details_summary(tmp_path)
+    dim = summary["dimensions"][0]
+    assert [c["name"] for c in dim["criteria"]] == ["good", "also_good"]
+    assert dim["criteria_total"] == 3
+    assert summary["truncated"] is True
 
 
 def test_details_summary_tightens_until_it_fits(tmp_path, monkeypatch):

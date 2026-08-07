@@ -425,11 +425,13 @@ export function RewardDesignCard({
     return () => controller.abort();
   }, [apiBaseUrl, filesUrl, taskId, taskVersion, observedTrialId]);
 
+  // Keyed by array index: mixed tests directories produce same-named
+  // dimensions (judge + programmatic), which must keep independent state.
   const dimensionScores = useMemo(() => {
     const scores: Record<string, number> = {};
-    for (const dimension of design?.dimensions ?? []) {
-      const dimensionStates = states[dimension.name] ?? [];
-      scores[dimension.name] = aggregateScores(
+    (design?.dimensions ?? []).forEach((dimension, index) => {
+      const dimensionStates = states[String(index)] ?? [];
+      scores[String(index)] = aggregateScores(
         dimension.criteria.map((criterion, index) => ({
           value: (dimensionStates[index] ?? true) ? 1 : 0,
           weight: criterion.weight,
@@ -438,7 +440,7 @@ export function RewardDesignCard({
         dimension.aggregation,
         dimension.threshold
       );
-    }
+    });
     return scores;
   }, [design, states]);
 
@@ -460,8 +462,8 @@ export function RewardDesignCard({
     0
   );
 
-  const dimensionEntries = design.dimensions.map((dimension) => ({
-    value: dimensionScores[dimension.name] ?? 0,
+  const dimensionEntries = design.dimensions.map((dimension, index) => ({
+    value: dimensionScores[String(index)] ?? 0,
     weight: dimension.weight || 1,
   }));
 
@@ -506,22 +508,33 @@ export function RewardDesignCard({
       )}
 
       <div className="grid gap-3 lg:grid-cols-2">
-        {design.dimensions.map((dimension) => (
+        {design.dimensions.map((dimension, dimIndex) => (
           <DimensionDesignCard
-            key={dimension.name}
+            key={`${dimension.name}-${dimIndex}`}
             dimension={dimension}
-            anchorId={anchorId ? `${anchorId}-${dimension.name}` : undefined}
+            // The first occurrence of a name owns the clean anchor; later
+            // same-named groups (mixed judge + programmatic directories) get
+            // an index suffix so page ids stay unique.
+            anchorId={
+              anchorId
+                ? design.dimensions.findIndex(
+                    (d) => d.name === dimension.name
+                  ) === dimIndex
+                  ? `${anchorId}-${dimension.name}`
+                  : `${anchorId}-${dimension.name}-${dimIndex}`
+                : undefined
+            }
             whatIf={whatIf}
-            states={states[dimension.name] ?? []}
-            score={dimensionScores[dimension.name] ?? 0}
+            states={states[String(dimIndex)] ?? []}
+            score={dimensionScores[String(dimIndex)] ?? 0}
             onToggle={(index) =>
               setStates((previous) => {
                 const next = [
-                  ...(previous[dimension.name] ??
+                  ...(previous[String(dimIndex)] ??
                     dimension.criteria.map(() => true)),
                 ];
                 next[index] = !(next[index] ?? true);
-                return { ...previous, [dimension.name]: next };
+                return { ...previous, [String(dimIndex)]: next };
               })
             }
           />
