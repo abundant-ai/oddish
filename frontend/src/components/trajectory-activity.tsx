@@ -372,9 +372,41 @@ export function TrajectoryActivity({
               ))}
             </div>
 
-            {/* the same runs, sized by tokens instead of step count */}
             {hasTokens && (
               <>
+                {/* Per-step token intensity, laid out against the step band
+                    above so the columns line up. Answers "which individual
+                    steps were heavy", which the aggregate band cannot. */}
+                <div className="mt-1 flex h-3 gap-0.5">
+                  {runs.map((run, r) => (
+                    <div
+                      key={r}
+                      className="flex overflow-hidden rounded-sm"
+                      style={{ flex: `${stepRunWeight(run)} 1 0` }}
+                    >
+                      {run.indexes.map((i) => {
+                        const step = steps[i];
+                        const a =
+                          12 + Math.round(((tokens[i] ?? 0) / maxTok) * 88);
+                        return (
+                          <button
+                            key={step.step_id}
+                            type="button"
+                            title={`Step ${step.step_id} · ${(tokens[i] ?? 0).toLocaleString()} tokens`}
+                            onClick={() => select(step.step_id)}
+                            style={{
+                              flex: "1 1 0",
+                              background: `color-mix(in srgb, var(--phase-1) ${a}%, transparent)`,
+                            }}
+                            className="min-w-px"
+                          />
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+
+                {/* the same runs again, sized by tokens not step count */}
                 <div className="mt-3 flex items-baseline justify-between">
                   <span className="text-xs font-medium">
                     Timeline · by tokens
@@ -415,8 +447,8 @@ export function TrajectoryActivity({
             )}
             {hasTokens && (
               <p className="text-muted-foreground mt-2 font-mono text-[10.5px]">
-                same components, same order — width is step count above, token
-                volume below
+                bars share components and order · thin band = tokens per step,
+                darker is more · lower band = width by token volume
               </p>
             )}
           </div>
