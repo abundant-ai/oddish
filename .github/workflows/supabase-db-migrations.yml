@@ -72,7 +72,7 @@ jobs:
         working-directory: backend
         env:
           UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-        run: uv run python ops_relabel_experiment_model.py
+        run: uv run python ops_relabel_experiment_model.py --apply
       - name: Summarize migration run
         if: ${{ always() }}
         run: |
