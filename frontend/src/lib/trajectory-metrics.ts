@@ -1,18 +1,65 @@
-import type { TrajectoryStep } from "@/lib/types";
+import type {
+  ContentPart,
+  MessageContent,
+  ObservationContent,
+  TrajectoryStep,
+} from "@/lib/types";
+
+function hasContent(content: MessageContent | ObservationContent): boolean {
+  if (content == null) return false;
+  if (typeof content === "string") return content.trim().length > 0;
+  // An image part carries content even though it holds no text.
+  return content.some((part: ContentPart) =>
+    part.type === "text" ? (part.text ?? "").trim().length > 0 : true
+  );
+}
+
+/**
+ * A step the producer emitted but never filled in: no message, no reasoning, no
+ * tool call, no observation. Some ATIF writers pad a trajectory with long runs
+ * of these — one gemini-cli export was 87% empty, alternating agent/user at the
+ * same millisecond — and they represent no work at all. Anything that counts,
+ * measures or colors steps must drop them first, or empty padding shows up as
+ * activity.
+ */
+export function isEmptyStep(step: TrajectoryStep): boolean {
+  if (step.tool_calls?.length) return false;
+  if (step.observation?.results?.some((r) => hasContent(r.content)))
+    return false;
+  if ((step.reasoning_content ?? "").trim().length > 0) return false;
+  return !hasContent(step.message);
+}
+
+function timestampMs(ts: string | null | undefined): number | null {
+  if (!ts) return null;
+  const ms = new Date(ts).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
 
 /**
  * Per-step duration in ms, derived from timestamps (time since the previous
- * step), index-aligned with `steps`. Mirrors TrajectoryViewer's StepDurationBar
- * so the timeline agrees with the existing duration bar. Steps with no usable
+ * step), index-aligned with `steps`. The single measure of step time: the
+ * duration bar, the accordion's group headers and per-step badges, and the
+ * Activity card all read it, so they cannot disagree. Steps with no usable
  * timestamps yield 0; a caller seeing an all-zero total should fall back to
  * equal widths.
+ *
+ * Empty padding is worth 0 and "previous" skips it, so the span it covers is
+ * charged to the next step that did work — including a padding run at the head,
+ * which is measured from the trajectory's first stamp rather than dropped. That
+ * is what keeps the total honest and the measure caller-independent: pass the
+ * full trajectory and the durations of the steps that survive filtering are the
+ * same numbers either way.
  */
 export function stepDurationsMs(steps: TrajectoryStep[]): number[] {
-  return steps.map((step, idx) => {
-    const t = step.timestamp ? new Date(step.timestamp).getTime() : 0;
-    const prev = idx > 0 ? steps[idx - 1] : null;
-    const pt = prev?.timestamp ? new Date(prev.timestamp).getTime() : t;
-    return Math.max(0, t - pt);
+  let prevMs = timestampMs(steps.find((s) => s.timestamp)?.timestamp);
+  return steps.map((step) => {
+    if (isEmptyStep(step)) return 0;
+    const t = timestampMs(step.timestamp);
+    if (t == null) return 0;
+    const ms = prevMs == null ? 0 : Math.max(0, t - prevMs);
+    prevMs = t;
+    return ms;
   });
 }
 
@@ -50,6 +97,7 @@ const COMPONENT_COLOR_VARS: Record<string, string> = {
   thinking_understand: "var(--tc-thinking-understand)",
   thinking_hypothesize: "var(--tc-thinking-hypothesize)",
   thinking_correction: "var(--tc-thinking-correction)",
+  writing_plan: "var(--tc-writing-plan)",
   implementing: "var(--tc-implementing)",
   implementing_correction: "var(--tc-implementing-correction)",
   writing_tests: "var(--tc-writing-tests)",

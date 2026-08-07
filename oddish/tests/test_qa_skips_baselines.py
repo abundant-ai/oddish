@@ -1,8 +1,8 @@
 """QA never runs on nop/oracle baselines.
 
-Three independent guards, one per path that would otherwise spend on a
-deterministic baseline: the per-trial classifier, the assignment-driven
-post-trial analyzer, and the pre-trial task-source audit.
+Two independent guards, one per path that would otherwise spend on a
+deterministic baseline: the per-trial classifier and the task-level QA
+stage transition.
 
 Runs against a real Postgres (``ODDISH_DATABASE_URL``), like the other queue
 tests.
@@ -27,7 +27,7 @@ from oddish.db import (  # noqa: E402
     WorkerJobModel,
     get_session,
 )
-from oddish.queue import append_trials_to_task, create_task  # noqa: E402
+from oddish.queue import create_task  # noqa: E402
 from oddish.schemas import TaskSubmission, TrialSpec  # noqa: E402
 from oddish.workers.queue.qa_handler import (  # noqa: E402
     _load_live_trials_for_classification,
@@ -160,100 +160,3 @@ async def test_baseline_only_task_enqueues_no_qa_job(cleanup_task_ids):
     assert qa_jobs == [], "a baseline-only task enqueued a QA job with nothing to QA"
     assert task.status == TaskStatus.COMPLETED
     assert task.verdict_status is None
-
-
-@pytest.mark.asyncio
-async def test_post_trial_hooks_skip_baseline_trials(monkeypatch, cleanup_task_ids):
-    """A finished baseline enqueues no post-trial analyzer; an LLM trial does."""
-    from oddish.workers.queue import trial_handler
-
-    task_id = f"qa-skip-post-{_RUN}"
-    cleanup_task_ids.append(task_id)
-    async with get_session() as session:
-        await create_task(
-            session,
-            _submission("post", [("oracle", None), (_LLM_AGENT, _LLM_MODEL)]),
-            task_id=task_id,
-        )
-    await _finish_all_trials(task_id)
-
-    enqueued_for: list[str] = []
-
-    async def _fake_enqueue(session, **kwargs):
-        enqueued_for.append(kwargs["trial_id"])
-
-    monkeypatch.setattr(
-        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _fake_enqueue
-    )
-    # The gate and stage transition are exercised elsewhere; stub them so this
-    # test fails only on the enqueue decision.
-    monkeypatch.setattr(
-        "oddish.queue.maybe_gate_llm_trials", lambda *a, **k: _noop_true(False)
-    )
-    monkeypatch.setattr(
-        "oddish.queue.maybe_start_qa_stage", lambda *a, **k: _noop_true(False)
-    )
-
-    async with get_session() as session:
-        rows = (
-            await session.execute(
-                select(TrialModel.id, TrialModel.agent).where(
-                    TrialModel.task_id == task_id
-                )
-            )
-        ).all()
-    by_agent = {agent: tid for tid, agent in rows}
-
-    await trial_handler._run_post_trial_hooks(by_agent["oracle"])
-    assert enqueued_for == [], "post-trial QA was enqueued for an oracle baseline"
-
-    await trial_handler._run_post_trial_hooks(by_agent[_LLM_AGENT])
-    assert enqueued_for == [by_agent[_LLM_AGENT]]
-
-
-async def _noop_true(value: bool) -> bool:
-    return value
-
-
-@pytest.mark.asyncio
-async def test_pre_trial_audit_skipped_for_baseline_only_append(
-    monkeypatch, cleanup_task_ids
-):
-    """A baseline-only append audits nothing; adding an LLM agent audits."""
-    from oddish import queue as queue_mod
-
-    task_id = f"qa-skip-pre-{_RUN}"
-    cleanup_task_ids.append(task_id)
-    async with get_session() as session:
-        task = await create_task(
-            session,
-            _submission("pre", [(_LLM_AGENT, _LLM_MODEL)]),
-            task_id=task_id,
-        )
-
-    stages: list[str] = []
-
-    async def _fake_enqueue(session, **kwargs):
-        stages.append(kwargs["stage"])
-
-    monkeypatch.setattr(
-        "oddish.core.qa_assignments.enqueue_qa_assignment_runs_core", _fake_enqueue
-    )
-
-    async with get_session() as session:
-        task = await session.get(queue_mod.TaskModel, task_id)
-        await append_trials_to_task(
-            session,
-            task=task,
-            submission=_submission("pre", [("nop", None), ("oracle-v2", None)]),
-        )
-    assert stages == [], "a baseline-only append triggered a pre-trial audit"
-
-    async with get_session() as session:
-        task = await session.get(queue_mod.TaskModel, task_id)
-        await append_trials_to_task(
-            session,
-            task=task,
-            submission=_submission("pre", [("nop", None), (_LLM_AGENT, _LLM_MODEL)]),
-        )
-    assert stages == ["pre_trial"]

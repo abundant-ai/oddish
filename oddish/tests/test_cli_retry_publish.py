@@ -133,6 +133,37 @@ def test_retry_resolves_trial_and_posts_retry(monkeypatch) -> None:
     assert data["queued"] == 1
 
 
+def test_retry_resolves_historical_trial_missing_from_current_task(monkeypatch) -> None:
+    _patch_key(monkeypatch)
+    posted: list[str] = []
+    monkeypatch.setattr(
+        retry_mod,
+        "get_task_summary",
+        lambda _api, task_id: {"id": task_id, "trials": [{"id": "abc-9"}]},
+    )
+    monkeypatch.setattr(
+        retry_mod,
+        "get_trial_detail",
+        lambda _api, trial_id, *, json_output: {"id": trial_id},
+    )
+    monkeypatch.setattr(
+        retry_mod,
+        "_post",
+        lambda _api, path, payload=None: (
+            posted.append(path)
+            or _Resp(200, {"status": "queued", "trial_id": "abc-10"})
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        ["run", "abc-3", "--retry", "-y", "--api", "http://api.test", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert posted == ["/trials/abc-3/retry"]
+
+
 def test_retry_task_only_retries_failed_trials(monkeypatch) -> None:
     _patch_key(monkeypatch)
     posted: list[str] = []

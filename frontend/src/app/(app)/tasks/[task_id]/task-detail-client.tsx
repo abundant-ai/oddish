@@ -21,7 +21,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TagEditor } from "@/components/tag-editor";
-import { ChatButton } from "@/components/cc-chat/chat-button";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { ExperimentsList } from "@/components/experiments-list";
@@ -61,6 +60,7 @@ import {
   type LineRange,
 } from "@/lib/line-range";
 import { sameFilePath } from "@/lib/file-path";
+import { taskHasCancellableWork } from "@/lib/job-status";
 import {
   ArrowLeft,
   ChevronDown,
@@ -280,7 +280,6 @@ function TaskDetailHeader({
         })()}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <ChatButton scopeKind="task" scopeId={task.name} />
         {(() => {
           const meta = task.github_meta;
           const prUrl = taskPrUrl(task.link, meta);
@@ -689,8 +688,10 @@ export function TaskDetailClient({
     swrKey,
     fetcher,
     {
-      refreshInterval: 30000,
+      refreshInterval: (latestDetail) =>
+        taskHasCancellableWork(latestDetail?.task) ? 30000 : 0,
       revalidateOnFocus: false,
+      revalidateOnMount: initialDetail == null,
       keepPreviousData: true,
       fallbackData: initialDetail ?? undefined,
     }
@@ -1424,8 +1425,10 @@ export function TaskDetailClient({
                 // no header, so none of the task-driven header UI appears.
                 task={task}
                 staticChecksTaskId={task.id}
+                taskDetail={detail}
                 onOpenTrial={handleOpenTrialFromOverview}
                 filesUrl={`/api/tasks/${task.id}/files`}
+                loadFilesLazily
                 taskVersion={selectedVersion?.version}
                 initialFilePath={taskPaneFile}
                 selectedLines={taskPaneLines}
@@ -1441,6 +1444,8 @@ export function TaskDetailClient({
                 onClose={() => setDrawer(null)}
                 taskId={task.id}
                 task={task}
+                taskDetail={detail}
+                loadFilesLazily
                 taskVersion={selectedVersion?.version}
                 onOpenTrial={handleOpenTrialFromOverview}
                 initialFilePath={taskPaneFile}

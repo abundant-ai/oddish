@@ -118,20 +118,12 @@ def _render_trial(trial: dict[str, Any]) -> None:
         console.print(f"[bold red]Error:[/bold red] {error}")
 
 
-def try_print_trial_detail(
-    api_url: str,
-    trial_id: str,
-    *,
-    json_output: bool,
-) -> bool:
-    """Render a single trial. Returns True if ``trial_id`` resolved to a trial.
-
-    Tries the hosted single-trial route first; on a core server (no such route)
-    it falls back to the parent task's embedded trial. Returns False if the id
-    is not a trial (so the caller can fall through to task/experiment lookup).
-    """
+def get_trial_detail(
+    api_url: str, trial_id: str, *, json_output: bool
+) -> dict[str, Any] | None:
+    """Return an exact trial by id, including historical task versions."""
     if not _looks_like_trial_id(trial_id):
-        return False
+        return None
 
     headers = get_auth_headers(api_url)
     trial: dict[str, Any] | None = None
@@ -148,7 +140,7 @@ def try_print_trial_detail(
             # happens to match the `{parent}-{index}` shape must resolve to its
             # own task status, not get shadowed by parent-task-{index}'s trial.
             if client.get(f"{api_url}/tasks/{trial_id}").status_code == 200:
-                return False  # it's a task; let normal status handling show it
+                return None  # it's a task; let normal status handling show it
             # Core-server fallback: fetch the trial by its index. This route
             # returns the exact trial by id -- including superseded and
             # non-current-version trials -- unlike scanning the parent task's
@@ -163,6 +155,20 @@ def try_print_trial_detail(
             # Genuine error on the single-trial route (auth, server error, ...).
             _fail(response, json_output, "Failed to get trial")
 
+    if trial is None:
+        return None
+
+    return trial
+
+
+def try_print_trial_detail(
+    api_url: str,
+    trial_id: str,
+    *,
+    json_output: bool,
+) -> bool:
+    """Render a single trial. Returns True if ``trial_id`` resolved to a trial."""
+    trial = get_trial_detail(api_url, trial_id, json_output=json_output)
     if trial is None:
         return False
 
