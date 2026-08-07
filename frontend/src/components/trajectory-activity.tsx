@@ -27,6 +27,14 @@ interface TrajectoryActivityProps {
   onStepSelect: (index: number) => void;
 }
 
+/** Compact token counts so a 1.2M cell still fits the fixed-width column. */
+const fmtTokens = (n: number) =>
+  n >= 1_000_000
+    ? `${(n / 1_000_000).toFixed(1)}M`
+    : n >= 1000
+      ? `${Math.round(n / 1000)}k`
+      : n.toLocaleString();
+
 const fmtMs = (ms: number) =>
   ms >= 1000
     ? `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)}s`
@@ -39,6 +47,7 @@ interface InstanceStat {
   rangeLabel: string;
   stepCount: number;
   toolCount: number;
+  tokenCount: number;
   durationMs: number;
 }
 
@@ -48,12 +57,14 @@ interface KindStat {
   instances: InstanceStat[];
   stepCount: number;
   toolCount: number;
+  tokenCount: number;
   durationMs: number;
 }
 
 interface MetricValues {
   stepCount: number;
   toolCount: number;
+  tokenCount: number;
   durationMs: number;
 }
 
@@ -91,6 +102,7 @@ export function TrajectoryActivity({
     (sum, step) => sum + (step.tool_calls?.length ?? 0),
     0
   );
+  const totalTokens = tokens.reduce<number>((sum, t) => sum + (t ?? 0), 0);
   // Every metric is derived from `owner` — the same attribution the timeline
   // paints with — so the bars and the strip are one partition by construction
   // and the per-kind step counts sum to steps.length. Raw stepIds cannot be
@@ -123,6 +135,10 @@ export function TrajectoryActivity({
           (sum, index) => sum + (steps[index].tool_calls?.length ?? 0),
           0
         ),
+        tokenCount: indexes.reduce(
+          (sum, index) => sum + (tokens[index] ?? 0),
+          0
+        ),
         durationMs: indexes.reduce((sum, index) => sum + durations[index], 0),
       };
     })
@@ -143,6 +159,7 @@ export function TrajectoryActivity({
         instances: [],
         stepCount: 0,
         toolCount: 0,
+        tokenCount: 0,
         durationMs: 0,
       };
       kindByKey.set(instance.key, kind);
@@ -151,6 +168,7 @@ export function TrajectoryActivity({
     kind.instances.push(instance);
     kind.stepCount += instance.stepCount;
     kind.toolCount += instance.toolCount;
+    kind.tokenCount += instance.tokenCount;
     kind.durationMs += instance.durationMs;
   }
   for (const kind of kinds) {
@@ -165,6 +183,15 @@ export function TrajectoryActivity({
       fmt: (n: number) => n.toLocaleString(),
     },
     {
+      // Sits beside Steps on purpose: a component with few steps but heavy
+      // tokens (a big file read) reads very differently from a long cheap one.
+      name: "Tokens",
+      totalLabel: fmtTokens(totalTokens),
+      value: (m: MetricValues) => m.tokenCount,
+      fmt: fmtTokens,
+      hideWhenEmpty: true,
+    },
+    {
       name: "Tool calls",
       totalLabel: totalTools.toLocaleString(),
       value: (m: MetricValues) => m.toolCount,
@@ -175,13 +202,38 @@ export function TrajectoryActivity({
       totalLabel: totalMs > 0 ? fmtDurationMs(totalMs) : "—",
       value: (m: MetricValues) => m.durationMs,
       fmt: (n: number) => (n > 0 ? fmtDurationMs(n) : "—"),
+      hideWhenEmpty: true,
     },
   ];
 
-  const widthPct = (i: number) =>
-    totalMs > 0
-      ? Math.max((durations[i] / totalMs) * 100, 1.5)
+  // A per-cell floor plus a gap costs ~8px a step. Past ~100 steps that exceeds
+  // the card, and the strip does two silent wrong things: it scrolls the tail
+  // out of view (a 187-step run hid its last 20%, which is where the debugging
+  // was), and every cell pins to the floor, so width stops meaning duration.
+  // Dense runs therefore give up the gap and the floor to stay proportional.
+  // Contiguous same-component runs. Rounding and the gap live on the RUN, not
+  // the step: a per-step radius either scallops the band into a comb once cells
+  // go flush, or (with a per-step gap and floor) overflows the card and scrolls
+  // the tail of the run out of sight. Per-step cells still sit inside each run,
+  // so hover, click and the highlight star keep step granularity.
+  const runs: { key: string | undefined; indexes: number[] }[] = [];
+  steps.forEach((step, index) => {
+    const key = keyByStep(step.step_id);
+    const last = runs[runs.length - 1];
+    if (last && last.key === key) last.indexes.push(index);
+    else runs.push({ key, indexes: [index] });
+  });
+  const stepRunWeight = (run: { indexes: number[] }) => run.indexes.length;
+
+  // The token band re-lays the same runs against token share instead of time,
+  // so a component that is narrow above and wide here spent few steps and many
+  // tokens. Equal widths when no step reports tokens, matching widthPct.
+  const tokenPct = (i: number) =>
+    totalTokens > 0
+      ? ((tokens[i] ?? 0) / totalTokens) * 100
       : 100 / steps.length;
+  const tokenRunWeight = (run: { indexes: number[] }) =>
+    run.indexes.reduce((sum, i) => sum + tokenPct(i), 0);
 
   const select = (stepId: number) => {
     const idx = stepIdToIndex(stepId);
@@ -212,8 +264,9 @@ export function TrajectoryActivity({
             0,
             ...kinds.map((kind) => section.value(kind))
           );
-          // No timing data at all (e.g. codex trajectories lack timestamps).
-          if (section.name === "Time" && denom <= 0) return null;
+          // Nothing to plot: codex trajectories carry no timestamps, and some
+          // producers report no per-step tokens.
+          if (section.hideWhenEmpty && denom <= 0) return null;
           // Largest bar first; stable sort keeps first-appearance order on ties.
           const ranked = [...kinds].sort(
             (a, b) => section.value(b) - section.value(a)
@@ -278,55 +331,92 @@ export function TrajectoryActivity({
           );
         })}
 
-        {/* timeline */}
+        {/* timeline: the same runs measured two ways */}
         <div className="overflow-x-auto">
           <div className="min-w-[560px]">
-            <div className="flex h-10 items-stretch gap-0.5">
-              {steps.map((s, i) => (
-                <button
-                  key={s.step_id}
-                  type="button"
-                  title={`Step ${s.step_id} · ${labelFor.get(keyByStep(s.step_id) ?? "") ?? ""} · ${fmtMs(durations[i])}`}
-                  onClick={() => select(s.step_id)}
-                  style={{
-                    flex: `${widthPct(i)} 1 0`,
-                    background:
-                      colorFor.get(keyByStep(s.step_id) ?? "") ??
-                      "var(--phase-other)",
-                  }}
-                  className="focus-visible:outline-ring relative min-w-[6px] rounded-sm outline-offset-2 transition hover:brightness-110 focus-visible:outline focus-visible:outline-2"
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs font-medium">Timeline · by steps</span>
+              <span className="text-muted-foreground font-mono text-xs">
+                {steps.length.toLocaleString()} steps
+              </span>
+            </div>
+            <div className="mt-1.5 flex h-10 items-stretch gap-0.5">
+              {runs.map((run, r) => (
+                <div
+                  key={r}
+                  className="flex overflow-hidden rounded-sm"
+                  style={{ flex: `${stepRunWeight(run)} 1 0` }}
                 >
-                  {highlightIds.has(s.step_id) && (
-                    <Star className="absolute top-0.5 right-0.5 h-3 w-3 fill-white text-white drop-shadow" />
-                  )}
-                </button>
+                  {run.indexes.map((i) => {
+                    const step = steps[i];
+                    return (
+                      <button
+                        key={step.step_id}
+                        type="button"
+                        title={`Step ${step.step_id} · ${labelFor.get(run.key ?? "") ?? ""} · ${fmtMs(durations[i])}`}
+                        onClick={() => select(step.step_id)}
+                        style={{
+                          flex: "1 1 0",
+                          background:
+                            colorFor.get(run.key ?? "") ?? "var(--phase-other)",
+                        }}
+                        className="focus-visible:outline-ring relative min-w-px outline-offset-2 transition hover:brightness-110 focus-visible:outline focus-visible:outline-2"
+                      >
+                        {highlightIds.has(step.step_id) && (
+                          <Star className="absolute top-0.5 right-0.5 h-3 w-3 fill-white text-white drop-shadow" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               ))}
             </div>
 
-            {/* token heatmap */}
+            {/* the same runs, sized by tokens instead of step count */}
             {hasTokens && (
-              <div className="mt-1 flex h-3 gap-0.5">
-                {steps.map((s, i) => {
-                  const a = 12 + Math.round(((tokens[i] ?? 0) / maxTok) * 88);
-                  return (
-                    <button
-                      key={s.step_id}
-                      type="button"
-                      title={`Step ${s.step_id} · ${(tokens[i] ?? 0).toLocaleString()} tokens`}
-                      onClick={() => select(s.step_id)}
-                      style={{
-                        flex: `${widthPct(i)} 1 0`,
-                        background: `color-mix(in srgb, var(--phase-1) ${a}%, transparent)`,
-                      }}
-                      className="min-w-[3px] rounded-sm"
-                    />
-                  );
-                })}
-              </div>
+              <>
+                <div className="mt-3 flex items-baseline justify-between">
+                  <span className="text-xs font-medium">
+                    Timeline · by tokens
+                  </span>
+                  <span className="text-muted-foreground font-mono text-xs">
+                    {fmtTokens(totalTokens)} tokens
+                  </span>
+                </div>
+                <div className="mt-1.5 flex h-10 gap-0.5">
+                  {runs.map((run, r) => (
+                    <div
+                      key={r}
+                      className="flex overflow-hidden rounded-sm"
+                      style={{ flex: `${tokenRunWeight(run)} 1 0` }}
+                    >
+                      {run.indexes.map((i) => {
+                        const step = steps[i];
+                        return (
+                          <button
+                            key={step.step_id}
+                            type="button"
+                            title={`Step ${step.step_id} · ${labelFor.get(run.key ?? "") ?? ""} · ${(tokens[i] ?? 0).toLocaleString()} tokens`}
+                            onClick={() => select(step.step_id)}
+                            style={{
+                              flex: `${tokenPct(i)} 1 0`,
+                              background:
+                                colorFor.get(run.key ?? "") ??
+                                "var(--phase-other)",
+                            }}
+                            className="min-w-px transition hover:brightness-110"
+                          />
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
             {hasTokens && (
               <p className="text-muted-foreground mt-2 font-mono text-[10.5px]">
-                token volume per step — darker = more tokens
+                same components, same order — width is step count above, token
+                volume below
               </p>
             )}
           </div>
