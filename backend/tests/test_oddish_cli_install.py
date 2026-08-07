@@ -1,6 +1,6 @@
 import pytest
 
-from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
+from api.services.sandbox.claude_code_runtime import ClaudeCodeRuntime
 
 
 class _RecordingClient:

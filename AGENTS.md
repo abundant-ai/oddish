@@ -53,9 +53,9 @@ backend/                        # Hosted cloud layer (Modal deployment)
 ├── api/
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
-│   ├── services/               # hosted services, including cc_chat
+│   ├── services/               # hosted services (sandbox runtime, analyzer blocks, …)
 │   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
-│                               # admin, orgs, api_keys, imports, load, cc_chat, webhooks
+│                               # admin, orgs, api_keys, imports, load, webhooks
 ├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
 │                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
@@ -244,7 +244,9 @@ block. Editing a prompt is a code change that ships with a deploy.
 `oddish/src/oddish/blocks/` holds the analyzer-block primitive (prompt
 building, streaming, `analyzer_blocks` + S3 persistence) and its API/OpenAI
 backends, so verdict synthesis runs in a backend-free worker. The Daytona
-sandbox backend needs cc_chat and stays in
+sandbox backend needs the hosted sandbox runtime
+(`backend/api/services/sandbox/` — Daytona client, provisioner, Claude Code
+runtime) and stays in
 `backend/api/services/blocks/analyzer/sandbox_llm_client.py`, which registers
 itself into core's client factory on import. `AnalyzerBlock` owns a
 self-provisioned client's complete lifecycle, including sandbox file downloads
@@ -254,7 +256,7 @@ key minting, and key/sandbox cleanup. Callers must not provision and inject a
 one-off sandbox client for those capabilities.
 
 Hosted failure analysis uses
-`backend/api/services/cc_chat/analyzer_block_runner.py`: it partitions a bucket
+`backend/api/services/blocks/analyzer/analyzer_block_runner.py`: it partitions a bucket
 into map batches, runs independent sandbox-backed `AnalyzerBlock`s concurrently
 up to `AnalyzerEvalConfig.map_concurrency`, collects their findings artifacts
 host-side, and supplies those artifacts declaratively to a separate reduce

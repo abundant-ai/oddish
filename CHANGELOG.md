@@ -16,6 +16,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The task page's verdict badge now offers "Rerun verdict" on tasks that already have one (the button was hidden once a verdict existed), and it calls the scoped path: `POST /tasks/{id}/qa/backfill` with `force: false`, which keeps stored trial classifications and re-synthesizes only the verdict. The full wipe-and-reclassify rerun stays on `POST /tasks/{id}/qa/retry`.
 - Running new trials against a task that already has a verdict no longer blanks the verdict at submission. The old verdict stays visible while the appended or retried trials run, and the fresh QA pass overwrites it when they finish. Only in-flight verdict state (a QUEUED/RUNNING status whose QA job the append cancels) is still cleared.
 
+### Removed
+
+- The cc_chat dashboard chat feature is gone end to end: the `/chat-sessions`
+  backend router and orchestrator, the chat drawer/button UI and its
+  `/api/chat-sessions` proxies in the frontend, the `ChatSession` /
+  `ChatSessionEvent` / `ChatTurn` models, and the chat tables themselves
+  (dropped by backend migration `dropchat001`; `api_keys.is_internal` stays —
+  internal key minting also serves probe credentials and the sandbox
+  analyzer). The chat-only settings `ODDISH_CC_CHAT_DAYTONA_SNAPSHOT` and
+  `ODDISH_PUBLIC_API_BASE_URL` are removed with it. ⚠️ Deployments that set
+  only `ODDISH_CC_CHAT_DAYTONA_SNAPSHOT` must now set
+  `ODDISH_AGENT_DAYTONA_SNAPSHOT` (same snapshot name) or analyzer sandboxes
+  fall back to installing claude-code + harbor at provision time.
+- The shared sandbox infrastructure the chat feature grew — Daytona client,
+  provisioner, Claude Code runtime, stream renderer — survives because the
+  hosted analyzer runs on it; it moved from `backend/api/services/cc_chat/`
+  to `backend/api/services/sandbox/`, and the analyzer cohort modules
+  (`analyzer_block_runner`, `analyzer_parse`, `analyzer_prompt`) moved to
+  `backend/api/services/blocks/analyzer/`.
+
 ---
 
 ## [2026-08-05]
