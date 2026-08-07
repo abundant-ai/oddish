@@ -36,6 +36,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`analyzer_block_runner`, `analyzer_parse`, `analyzer_prompt`) moved to
   `backend/api/services/blocks/analyzer/`.
 
+### Fixed
+
+- Worker heartbeats used to stop as soon as the agent finished, but the worker still had to upload and save the results. When that took over 15 minutes, the cleanup sweep marked the trial "Worker heartbeat stalled for over 15 minutes", threw away the finished result, and re-ran the whole trial. The heartbeat now runs until the results are saved and settled.
+
 ---
 
 ## [2026-08-05]

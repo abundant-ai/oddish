@@ -189,7 +189,8 @@ async def test_resolve_cohort_task_scope_resolves_by_name_via_join():
 
     assert [t.id for t in result] == ["tr-x"]
     # Task 3 reads trials after the session (and engine) is gone; `.task` must
-    # already be populated via the mapper-level selectin eager load, not lazy.
+    # already be populated via resolve_cohort's explicit
+    # ``selectinload(TrialModel.task)``, not lazy.
     assert result[0].task.name == "task-x-name"
 
 
@@ -565,8 +566,7 @@ async def test_summarize_trial_records_failure_raised_before_the_block_exists():
 
 
 def _surrogate_payload() -> str:
-    """Valid JSON whose text carries a lone surrogate: parses fine, but
-    _persist's utf-8 encode raises -- from run()'s finally, after SUCCESS."""
+    """A JSON-shaped reply containing text that is not valid Unicode."""
     return _payload().replace("Fixed it.", "Fixed it." + "\ud800")
 
 
@@ -585,7 +585,7 @@ async def test_summarize_trial_never_reports_success_without_a_summary(monkeypat
     assert record["summary"] is None
     assert record["status"] == "failed"
     assert record["error"] is not None
-    assert "UnicodeEncodeError" in record["error"]
+    assert "structured output mismatch" in record["error"]
 
 
 class _RaisingAcloseClient:

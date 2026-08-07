@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
 import pytest
@@ -10,6 +9,7 @@ import pytest
 from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
     TrajectoryBlock,
     TrajectoryInput,
+    TrajectoryOutput,
 )
 from oddish.blocks.block import BlockParseError
 
@@ -37,13 +37,38 @@ def _block(trajectory_input: TrajectoryInput) -> TrajectoryBlock:
     return TrajectoryBlock(trajectory_input, instructions_template=_TEMPLATE)
 
 
+def test_output_schema_is_the_closed_provider_and_parser_contract():
+    assert TrajectoryBlock.output_schema is TrajectoryOutput
+    schema = TrajectoryBlock.output_schema.model_json_schema()
+
+    def object_schemas(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                yield node
+            for value in node.values():
+                yield from object_schemas(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from object_schemas(value)
+
+    objects = list(object_schemas(schema))
+    assert objects
+    assert set(schema["required"]) == {"summary", "highlights", "components"}
+    assert all(obj.get("additionalProperties") is False for obj in objects)
+    assert all(set(obj["required"]) == set(obj["properties"]) for obj in objects)
+    # Non-empty text is enforced when Pydantic parses the response. Keeping
+    # unsupported string constraints off the wire makes the same raw schema
+    # valid for the Anthropic path as well as the OpenAI SDK path.
+    assert "minLength" not in json.dumps(schema)
+
+
 def test_build_prompt_has_task_outcome_and_taxonomy():
     prompt = _block(_input()).build_prompt()
     assert "<task>" in prompt and "Name: solve_x" in prompt
     assert "Instruction: Do the thing." in prompt
     assert "Final reward: 1.0" in prompt and "Verifier output: PASS" in prompt
     assert "Model: claude-x" in prompt
-    assert '"components"' in prompt
+    assert "segment the run into components" in prompt
     assert "reading_files" in prompt and "debugging" in prompt  # taxonomy listed
     assert "<trajectory>" in prompt
 
@@ -69,45 +94,54 @@ def test_parse_keeps_valid_components_and_drops_unknown_step_ids():
     })
     out = _block(_input()).parse(raw)
     assert out.summary == "did stuff"
-    assert [h["step_id"] for h in out.highlights] == [1]
+    assert [h.step_id for h in out.highlights] == [1]
     assert len(out.components) == 1
-    assert out.components[0]["trajectory_component"] == "reading_files"
-    assert out.components[0]["step_ids"] == [1, 2]
+    assert out.components[0].trajectory_component.value == "reading_files"
+    assert out.components[0].step_ids == [1, 2]
 
 
-def test_parse_drops_component_with_bad_taxonomy(caplog):
-    raw = json.dumps({
-        "summary": "s", "highlights": [],
-        "components": [
-            {"step_ids": [1], "trajectory_component": "not_a_real_label", "summary": "x"},
-            {"step_ids": [2], "trajectory_component": "implementing", "summary": "y"},
-        ],
-    })
-    with caplog.at_level(logging.ERROR):
-        out = _block(_input()).parse(raw)
-    assert [c["trajectory_component"] for c in out.components] == ["implementing"]
-
-
-def test_parse_drops_non_dict_list_elements_without_failing():
-    # A single stray non-dict element in highlights/components must degrade
-    # gracefully (dropped), not abort the whole summary with a 502.
-    raw = json.dumps({
-        "summary": "ok",
-        "highlights": [{"step_id": 1, "title": "t", "why": "w"}, "oops"],
-        "components": [
-            "junk",
-            {"step_ids": [1], "trajectory_component": "implementing", "summary": "y"},
-        ],
-    })
-    out = _block(_input()).parse(raw)
-    assert [h["step_id"] for h in out.highlights] == [1]
-    assert [c["trajectory_component"] for c in out.components] == ["implementing"]
-
-
-def test_parse_coerces_non_string_summary():
-    raw = json.dumps({"summary": 123, "highlights": [], "components": []})
-    out = _block(_input()).parse(raw)
-    assert out.summary == "123"
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {
+                "summary": "s",
+                "highlights": [],
+                "components": [
+                    {
+                        "step_ids": [1],
+                        "trajectory_component": "not_a_real_label",
+                        "summary": "x",
+                    }
+                ],
+            },
+            id="unknown-taxonomy",
+        ),
+        pytest.param(
+            {
+                "summary": "ok",
+                "highlights": ["not-an-object"],
+                "components": [],
+            },
+            id="wrong-nested-type",
+        ),
+        pytest.param(
+            {"summary": 123, "highlights": [], "components": []},
+            id="wrong-field-type",
+        ),
+        pytest.param(
+            {"summary": "", "highlights": [], "components": []},
+            id="empty-summary",
+        ),
+        pytest.param(
+            {"summary": "ok", "highlights": [], "components": [], "extra": True},
+            id="extra-field",
+        ),
+    ],
+)
+def test_parse_rejects_output_outside_provider_schema(payload):
+    with pytest.raises(BlockParseError, match="structured output mismatch"):
+        _block(_input()).parse(json.dumps(payload))
 
 
 def test_parse_raises_on_malformed_json():
@@ -137,7 +171,7 @@ def test_to_summary_is_schema_v5_with_component_metadata():
     assert d["components"][0]["duration_ms"] == 2500
 
 
-def test_instructions_seed_template_matches_legacy_text():
+def test_instructions_template_renders_taxonomy():
     from api.services.blocks.analyzer.trajectory import trajectory_prompts as tp
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -150,6 +184,3 @@ def test_instructions_seed_template_matches_legacy_text():
     assert "{{taxonomy}}" not in rendered
     assert rendered.startswith("Write a summary of 2-3 sentences")
     assert rendered.rstrip().endswith("Order the highlights by `step_id`, lowest first.")
-    # Byte-identity of the seed depends on this file having no trailing newline;
-    # editors auto-append one, so guard against it silently creeping back in.
-    assert not template.endswith("\n")

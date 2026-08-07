@@ -240,18 +240,18 @@ async def test_generate_drops_highlights_with_unknown_step_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_generate_strips_code_fences_around_json(monkeypatch):
-    from api.services.summarize_trajectory import generate
+async def test_generate_rejects_code_fences_outside_structured_output(monkeypatch):
+    from api.services.summarize_trajectory import SummaryGenerationError, generate
 
     _patch_block_persistence(monkeypatch)
     body = json.dumps({"summary": "ok", "highlights": [], "components": []})
     _install_fake_llm(monkeypatch, _fake_llm(f"```json\n{body}\n```"))
-    result = await generate(
-        _trajectory_with_steps([1]),
-        _minimal_ctx(),
-        **_PROMPT_KWARGS,
-    )
-    assert result["summary"] == "ok"
+    with pytest.raises(SummaryGenerationError):
+        await generate(
+            _trajectory_with_steps([1]),
+            _minimal_ctx(),
+            **_PROMPT_KWARGS,
+        )
 
 
 @pytest.mark.asyncio
@@ -502,8 +502,23 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
 # ---------------------------------------------------------------------------
 
 
+class _FakeAwaitableAttrs:
+    """Mirror of SQLAlchemy's ``awaitable_attrs``: each attribute awaits to
+    the underlying object's attribute (``build_task_context`` loads
+    ``trial.task`` through it)."""
+
+    def __init__(self, obj):
+        self._obj = obj
+
+    def __getattr__(self, name):
+        async def _get():
+            return getattr(self._obj, name)
+
+        return _get()
+
+
 def _trial_with_task(*, task_name, reward, model, harbor_config=None):
-    return SimpleNamespace(
+    trial = SimpleNamespace(
         id="t-1",
         name="trial-0",
         trial_s3_key="trials/t-1/",
@@ -512,6 +527,8 @@ def _trial_with_task(*, task_name, reward, model, harbor_config=None):
         harbor_config=harbor_config,
         task=SimpleNamespace(name=task_name),
     )
+    trial.awaitable_attrs = _FakeAwaitableAttrs(trial)
+    return trial
 
 
 @pytest.mark.asyncio
@@ -692,6 +709,25 @@ def test_packaged_summary_prompt_template_has_taxonomy_placeholder():
 
     content = load_summary_prompt_template()
     assert "{{taxonomy}}" in content
+
+
+def test_build_summary_block_wires_structured_output_for_both_provider_paths():
+    from api.services.blocks.analyzer.trajectory.trajectory_component_block import (
+        TrajectoryBlock,
+        TrajectoryOutput,
+    )
+    from api.services.summarize_trajectory import build_summary_block
+
+    block = build_summary_block(
+        _trajectory_with_steps([1]),
+        _minimal_ctx(),
+        analyzer_id="tr_structured",
+        model="claude-sonnet-4-6",
+    )
+
+    assert TrajectoryBlock.output_schema is TrajectoryOutput
+    assert block._response_format is TrajectoryBlock.output_schema
+    assert block._output_schema == TrajectoryBlock.output_schema.model_json_schema()
 
 
 @pytest.mark.asyncio

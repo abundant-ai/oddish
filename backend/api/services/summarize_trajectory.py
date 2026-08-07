@@ -271,6 +271,8 @@ def build_summary_block(
         output_transform=lambda raw: tb.to_summary(raw, model=model),
         model=model,
         max_tokens=SUMMARY_MAX_TOKENS,
+        response_format=tb.output_schema,
+        output_schema=tb.output_schema.model_json_schema(),
         triggered_by_user_id=triggered_by_user_id,
     )
 
@@ -380,7 +382,11 @@ async def build_task_context(trial) -> TaskContext:
         if isinstance(agent_cfg, dict):
             model_used = agent_cfg.get("model")
 
-    task_name = trial.task.name if trial.task is not None else ""
+    # ``awaitable_attrs``: callers reach here with trials loaded via bare
+    # ``session.get`` (trajectory-summary endpoint, post-trial QA worker
+    # hook), so the task relationship may not be eagerly loaded.
+    task = await trial.awaitable_attrs.task
+    task_name = task.name if task is not None else ""
 
     return TaskContext(
         task_name=task_name,
