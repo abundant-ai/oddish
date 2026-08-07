@@ -5,7 +5,9 @@ name = "rewardkit-render-demo"
 description = "Demo task that exercises oddish's RewardKit reward rendering: passing, failing, and partial-credit dimensions with reward.toml aggregates."
 
 [agent]
-timeout_sec = 600
+# Generous for real agents: sandbox agent setup plus a model run can
+# exceed 10 minutes on cold caches.
+timeout_sec = 1200
 
 [verifier]
 timeout_sec = 300
