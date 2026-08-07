@@ -1,0 +1,435 @@
+"""Analysis trials: the platform's own agents, run through the trial pipeline.
+
+QA, the pre-trial audit, and analyzer report generation are trials with a
+non-'agent' ``kind``. Each runs claude-code on the analysis model inside the
+task's own Harbor environment, reads peer data through the oddish-query CLI,
+and writes one JSON artifact. When the trial settles, the importer for its
+kind parses that artifact into the same columns the old block-based path
+wrote, so nothing downstream changes.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Awaitable, Callable
+from importlib import resources
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from oddish.analyze import Classification, TrialClassification
+from oddish.analyze.models import ActionItem, ExploitationAssessment, TaskVerdictModel
+from oddish.analyze.trajectory_taxonomy import TrajectoryBlockTaxonomy
+from oddish.config import settings
+from oddish.core.verdict_sync import (
+    aggregate_exploited_into_pre_trial,
+    build_pre_trial_payload,
+    build_verdict_payload,
+    sync_pre_trial_to_task_version,
+    sync_verdict_to_task,
+)
+from oddish.db import (
+    AnalysisStatus,
+    TaskModel,
+    TaskVersionModel,
+    TrialModel,
+    TrialStatus,
+    VerdictStatus,
+    get_session,
+    utcnow,
+)
+from oddish.db.storage import get_storage_client, resolve_trial_s3_prefix
+from oddish.workers.queue.shared import console
+
+ANALYSIS_TRIAL_KINDS = ("qa", "audit", "analyzer_map", "analyzer_reduce")
+QA_RESULT_FILENAME = "qa_result.json"
+AUDIT_RESULT_FILENAME = "audit_result.json"
+ANALYZER_RESULT_FILENAME = "analyzer_result.json"
+
+ANALYSIS_TRIAL_MAX_ATTEMPTS = 3
+ANALYSIS_TRIAL_TIMEOUT_MINUTES = 60
+
+
+def is_analysis_kind(kind: str | None) -> bool:
+    return kind in ANALYSIS_TRIAL_KINDS
+
+
+# Hosted org-level audit opt-in (task_id -> enabled). oddish/ can't read the
+# org settings table, so backend registers the check at container load.
+_audit_enabled_fn: Callable[[str], Awaitable[bool]] | None = None
+
+
+def register_audit_enabled_check(fn: Callable[[str], Awaitable[bool]]) -> None:
+    global _audit_enabled_fn
+    _audit_enabled_fn = fn
+
+
+def _prompt(name: str) -> str:
+    return resources.files("oddish.analyze").joinpath(name).read_text()
+
+
+async def create_analysis_trial(
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    kind: str,
+    brief: str,
+    task_version_id: str | None = None,
+    payload: dict | None = None,
+) -> TrialModel:
+    from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
+
+    next_index = await reserve_next_trial_index(session, task_id=task.id)
+    trial_id = f"{task.id}-{next_index}"
+    harbor_config: dict = {"mode": kind, "extra_instructions": brief}
+    if payload:
+        harbor_config["analysis_payload"] = payload
+    trial = TrialModel(
+        id=trial_id,
+        name=f"{task.name}-{kind}-{next_index}",
+        task_id=task.id,
+        task_version_id=task_version_id or task.current_version_id,
+        experiment_id=None,
+        org_id=task.org_id,
+        billed_user_id=None,
+        agent="claude-code",
+        provider="anthropic",
+        queue_key=settings.get_qa_queue_key(),
+        model=settings.analysis_model,
+        timeout_minutes=ANALYSIS_TRIAL_TIMEOUT_MINUTES,
+        harbor_config=harbor_config,
+        is_probe=False,
+        kind=kind,
+        max_attempts=ANALYSIS_TRIAL_MAX_ATTEMPTS,
+        status=TrialStatus.QUEUED,
+    )
+    session.add(trial)
+    await session.flush()
+    await enqueue_trial_worker_job(
+        session,
+        trial_id=trial_id,
+        queue_key=trial.queue_key,
+        org_id=task.org_id,
+        max_attempts=ANALYSIS_TRIAL_MAX_ATTEMPTS,
+    )
+    return trial
+
+
+def _verdict_schema_text() -> str:
+    return json.dumps(TaskVerdictModel.model_json_schema(), indent=1)
+
+
+def build_qa_brief(
+    *,
+    task_name: str,
+    trial_ids: list[str],
+    pre_trial_items: list[dict] | None,
+) -> str:
+    classify = _prompt("classify_prompt.txt")
+    verdict = _prompt("verdict_prompt.txt")
+    summary = _prompt("prompts/trajectory_summary.txt").replace(
+        "{{taxonomy}}", ", ".join(m.value for m in TrajectoryBlockTaxonomy)
+    )
+    pre_trial = (
+        json.dumps(pre_trial_items, indent=1) if pre_trial_items else "(none recorded)"
+    )
+    ids = "\n".join(f"- {t}" for t in trial_ids)
+    return f"""You are the QA auditor for the task `{task_name}`. You are inside this task's own environment; the task source is in the working directory. Do not solve the task.
+
+Audit these trials:
+{ids}
+
+The oddish-query CLI fetches trial data from the oddish API (logs, trajectories, results, files). Run `node /probe-harness/oddish-query --help` first. Fetch each trial's trajectory and logs before judging it.
+
+Known pre-trial audit findings for this task (do not repeat these as per-trial action items):
+{pre_trial}
+
+== PER-TRIAL CLASSIFICATION ==
+{classify}
+
+== PER-TRIAL TRAJECTORY SUMMARY ==
+{summary}
+
+== TASK VERDICT ==
+After classifying every trial, synthesize one task verdict:
+{verdict}
+
+== OUTPUT ==
+Write exactly one file: /logs/{QA_RESULT_FILENAME}
+{{
+  "trials": [
+    {{
+      "trial_id": "<id>",
+      "analysis": {{
+        "trial_name": "<id>",
+        "classification": "GOOD_SUCCESS|BAD_SUCCESS|GOOD_FAILURE|BAD_FAILURE|HARNESS_ERROR",
+        "subtype": "...",
+        "evidence": "...",
+        "root_cause": "...",
+        "recommendation": "...",
+        "reward": <number or null>,
+        "action_items": [],
+        "exploitation": []
+      }},
+      "trajectory_summary": {{"schema_version": 5, "components": [{{"trajectory_component": "<taxonomy value>", "step_ids": [..], "summary": "..."}}]}}
+    }}
+  ],
+  "verdict": <object matching this JSON schema>
+}}
+
+Verdict JSON schema:
+{_verdict_schema_text()}
+
+Every trial listed above must appear in "trials". The file must be valid JSON. Do not write anything else to /logs."""
+
+
+def build_audit_brief(*, task_name: str) -> str:
+    audit = _prompt("prompts/pre_trial_qa.txt")
+    return f"""You are the pre-trial source auditor for the task `{task_name}`. The task source is in the working directory. Do not solve the task.
+
+{audit}
+
+== OUTPUT ==
+Write exactly one file: /logs/{AUDIT_RESULT_FILENAME}
+{{"items": [{{"id": "...", "file": "...", "severity": "...", "description": "...", "suggestion": "..."}}]}}
+An empty "items" list means the source is clean. The file must be valid JSON."""
+
+
+async def maybe_enqueue_audit_trial(
+    session: AsyncSession, *, task: TaskModel, task_version_id: str | None
+) -> bool:
+    """Once per task version, CAS pre_trial_status None -> QUEUED and create
+    the audit trial. Returns True when this call created it."""
+    if _audit_enabled_fn is not None:
+        if not await _audit_enabled_fn(task.id):
+            return False
+    elif not settings.pre_trial_enabled:
+        return False
+    version_id = task_version_id or task.current_version_id
+    if version_id is None:
+        return False
+    version = await session.get(TaskVersionModel, version_id, with_for_update=True)
+    if version is None or version.pre_trial_status is not None:
+        return False
+    version.pre_trial_status = VerdictStatus.QUEUED
+    version.pre_trial_started_at = utcnow()
+    await create_analysis_trial(
+        session,
+        task=task,
+        kind="audit",
+        brief=build_audit_brief(task_name=task.name),
+        task_version_id=version_id,
+    )
+    return True
+
+
+async def load_pre_trial_items_raw(task_id: str) -> list[dict] | None:
+    async with get_session() as session:
+        current_id = await session.scalar(
+            select(TaskModel.current_version_id).where(TaskModel.id == task_id)
+        )
+        version = (
+            await session.get(TaskVersionModel, current_id)
+            if current_id is not None
+            else None
+        )
+        if version is not None and version.pre_trial is not None:
+            return version.pre_trial.get("items", [])
+    return None
+
+
+async def create_qa_trial(
+    session: AsyncSession, *, task: TaskModel, eligible_trial_ids: list[str]
+) -> TrialModel:
+    version = (
+        await session.get(TaskVersionModel, task.current_version_id)
+        if task.current_version_id
+        else None
+    )
+    items = (version.pre_trial or {}).get("items") if version is not None else None
+    return await create_analysis_trial(
+        session,
+        task=task,
+        kind="qa",
+        brief=build_qa_brief(
+            task_name=task.name,
+            trial_ids=eligible_trial_ids,
+            pre_trial_items=items,
+        ),
+        payload={"trial_ids": eligible_trial_ids},
+    )
+
+
+async def read_analysis_artifact(trial: TrialModel, filename: str) -> dict | None:
+    prefix = resolve_trial_s3_prefix(
+        trial.id,
+        trial_s3_key=trial.trial_s3_key,
+        trial_result_path=(trial.result or {}).get("result_path")
+        if isinstance(trial.result, dict)
+        else None,
+    )
+    storage = get_storage_client()
+    for key in (f"{prefix}logs/{filename}", f"{prefix}{filename}", f"{prefix}logs/agent/{filename}"):
+        try:
+            data = await storage.download_bytes(key)
+        except Exception:  # noqa: BLE001
+            continue
+        try:
+            parsed = json.loads(data)
+        except Exception:  # noqa: BLE001
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _classification_from_analysis(analysis: dict) -> TrialClassification | None:
+    try:
+        return TrialClassification(
+            trial_name=analysis.get("trial_name", ""),
+            classification=Classification(analysis["classification"]),
+            subtype=analysis.get("subtype", "Unknown"),
+            evidence=analysis.get("evidence", ""),
+            root_cause=analysis.get("root_cause", ""),
+            recommendation=analysis.get("recommendation", ""),
+            reward=analysis.get("reward"),
+            action_items=[ActionItem(**x) for x in analysis.get("action_items", [])],
+            exploitation=[
+                ExploitationAssessment(**x) for x in analysis.get("exploitation", [])
+            ],
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _import_qa_result(trial: TrialModel) -> None:
+    task_id = trial.task_id
+    artifact = None
+    if trial.status == TrialStatus.SUCCESS:
+        artifact = await read_analysis_artifact(trial, QA_RESULT_FILENAME)
+    if artifact is None or not isinstance(artifact.get("verdict"), dict):
+        await sync_verdict_to_task(
+            task_id,
+            payload=None,
+            error=(
+                f"QA trial {trial.id} "
+                + (
+                    "produced no valid qa_result.json"
+                    if trial.status == TrialStatus.SUCCESS
+                    else f"finished {trial.status.value}: {trial.error_message or 'no error recorded'}"
+                )
+            ),
+        )
+        return
+
+    expected = set(
+        (trial.harbor_config or {}).get("analysis_payload", {}).get("trial_ids", [])
+    )
+    classifications: list[TrialClassification] = []
+    async with get_session() as session:
+        for entry in artifact.get("trials", []):
+            if not isinstance(entry, dict):
+                continue
+            trial_id = entry.get("trial_id")
+            analysis = entry.get("analysis")
+            if not trial_id or not isinstance(analysis, dict):
+                continue
+            if expected and trial_id not in expected:
+                continue
+            parsed = _classification_from_analysis(analysis)
+            if parsed is None:
+                continue
+            row = await session.get(TrialModel, trial_id)
+            if row is None or row.task_id != task_id:
+                continue
+            row.analysis = analysis
+            row.analysis_status = AnalysisStatus.SUCCESS
+            row.analysis_finished_at = utcnow()
+            summary = entry.get("trajectory_summary")
+            if isinstance(summary, dict):
+                row.trajectory_summary = summary
+            classifications.append(parsed)
+        await session.commit()
+
+    try:
+        await aggregate_exploited_into_pre_trial(task_id)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Exploited-item aggregation failed for {task_id}: {exc}[/red]")
+
+    if not classifications:
+        await sync_verdict_to_task(
+            task_id,
+            payload=None,
+            error=f"QA trial {trial.id} artifact contained no valid classifications",
+        )
+        return
+    try:
+        verdict = TaskVerdictModel.model_validate(artifact["verdict"])
+    except Exception as exc:  # noqa: BLE001
+        await sync_verdict_to_task(
+            task_id,
+            payload=None,
+            error=f"QA trial {trial.id} verdict failed validation: {exc}",
+        )
+        return
+    await sync_verdict_to_task(
+        task_id,
+        payload=build_verdict_payload(verdict, classifications),
+        error=None,
+    )
+
+
+async def _import_audit_result(trial: TrialModel) -> None:
+    version_id = trial.task_version_id
+    if version_id is None:
+        return
+    artifact = None
+    if trial.status == TrialStatus.SUCCESS:
+        artifact = await read_analysis_artifact(trial, AUDIT_RESULT_FILENAME)
+    if artifact is None or not isinstance(artifact.get("items"), list):
+        await sync_pre_trial_to_task_version(
+            version_id,
+            payload=None,
+            error=RuntimeError(
+                f"audit trial {trial.id} "
+                + (
+                    "produced no valid audit_result.json"
+                    if trial.status == TrialStatus.SUCCESS
+                    else f"finished {trial.status.value}"
+                )
+            ),
+        )
+        return
+    items: list[ActionItem] = []
+    for raw in artifact["items"]:
+        try:
+            items.append(ActionItem.model_validate(raw))
+        except Exception:  # noqa: BLE001
+            continue
+    await sync_pre_trial_to_task_version(
+        version_id,
+        payload=build_pre_trial_payload(items, cost_usd=trial.cost_usd),
+        error=None,
+    )
+
+
+async def handle_analysis_trial_settled(trial_id: str) -> None:
+    """Importer dispatch. Runs after a non-'agent' trial reaches a terminal
+    status. Idempotent per kind: each importer's writers CAS or overwrite the
+    same columns, so a double-fire re-imports the same artifact."""
+    async with get_session() as session:
+        trial = await session.get(TrialModel, trial_id)
+        if trial is None or trial.status not in (
+            TrialStatus.SUCCESS,
+            TrialStatus.FAILED,
+            TrialStatus.SKIPPED,
+        ):
+            return
+        kind = trial.kind
+    if kind == "qa":
+        await _import_qa_result(trial)
+    elif kind == "audit":
+        await _import_audit_result(trial)
+    elif kind in ("analyzer_map", "analyzer_reduce"):
+        from oddish.workers.analyzer_trials import advance_analyzer_pipeline
+
+        await advance_analyzer_pipeline(trial)

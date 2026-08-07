@@ -441,9 +441,16 @@ async def backfill_task_analysis_core(
     task.finished_at = None
     task.verdict_status = VerdictStatus.QUEUED
 
-    from oddish.queue import enqueue_qa_worker_job
+    from oddish.queue import qa_eligible_trial_ids
+    from oddish.workers.analysis_trials import create_qa_trial
 
-    await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
+    eligible = await qa_eligible_trial_ids(session, task.id)
+    if eligible:
+        await create_qa_trial(session, task=task, eligible_trial_ids=eligible)
+    else:
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = utcnow()
+        task.verdict_status = None
 
     await session.commit()
     return {
@@ -535,20 +542,21 @@ async def rerun_pre_trial_audit_core(
     # them as unavailable rather than inventing a pass.
 
     # Reset the previous audit and queue a new one. QUEUED (not None) keeps
-    # the card showing progress while the job waits for a worker.
+    # the card showing progress while the trial waits for a worker.
     version.pre_trial_status = VerdictStatus.QUEUED
     version.pre_trial = None
     version.pre_trial_error = None
-    version.pre_trial_started_at = None
+    version.pre_trial_started_at = utcnow()
     version.pre_trial_finished_at = None
 
-    from oddish.queue import enqueue_pre_trial_worker_job
+    from oddish.workers.analysis_trials import build_audit_brief, create_analysis_trial
 
-    await enqueue_pre_trial_worker_job(
+    await create_analysis_trial(
         session,
-        task_id=task.id,
+        task=task,
+        kind="audit",
+        brief=build_audit_brief(task_name=task.name),
         task_version_id=str(version.id),
-        org_id=task.org_id,
     )
     await session.commit()
     return {"status": "queued", "task_id": task_id}

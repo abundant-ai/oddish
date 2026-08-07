@@ -1015,6 +1015,12 @@ async def create_task(
     await _bulk_insert_trials(session, trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
 
+    from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
+
+    await maybe_enqueue_audit_trial(
+        session, task=task, task_version_id=task.current_version_id
+    )
+
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
     await recompute_task_browse_projection(session, task_id=task_id)
@@ -1274,6 +1280,12 @@ async def append_trials_to_task(
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
 
+    from oddish.workers.analysis_trials import maybe_enqueue_audit_trial
+
+    await maybe_enqueue_audit_trial(
+        session, task=task, task_version_id=task.current_version_id
+    )
+
     # The replacement rows must exist before the self-referential FK can point
     # old attempts at them. Only live FAILED rows are eligible: if another
     # retry won a race, fail the transaction instead of overwriting its chain.
@@ -1380,6 +1392,34 @@ async def append_trials_to_task(
 # =============================================================================
 
 
+async def qa_eligible_trial_ids(session: AsyncSession, task_id: str) -> list[str]:
+    """Live agent trials a QA trial should classify. Excludes bulk-migrated
+    imports, cancelled/skipped/gate-skipped trials, and deterministic
+    baselines."""
+    return [
+        str(tid)
+        for tid in (
+            await session.scalars(
+                select(TrialModel.id).where(
+                    and_(
+                        TrialModel.task_id == task_id,
+                        TrialModel.kind == "agent",
+                        TrialModel.superseded_by_trial_id.is_(None),
+                        TrialModel.imported_at.is_(None),
+                        func.coalesce(TrialModel.harbor_stage, "")
+                        != CANCELLED_HARBOR_STAGE,
+                        TrialModel.status != TrialStatus.SKIPPED,
+                        func.coalesce(TrialModel.error_message, "").notlike(
+                            f"{GATE_SKIP_PREFIX}%"
+                        ),
+                        not_(baseline_agent_clause(TrialModel.agent)),
+                    )
+                )
+            )
+        ).all()
+    ]
+
+
 async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     """Check if all trials for a task are done and transition task status.
 
@@ -1416,6 +1456,7 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.kind == "agent",
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.status.in_(
                     [
@@ -1432,38 +1473,21 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if pending_count > 0:
         return False
 
-    # Only enqueue QA when there is actually something to classify. A task can
-    # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
+    # Only start QA when there is something to classify. A task can have
+    # run_analysis=true yet zero QA-eligible live trials -- e.g. every live
     # trial is a bulk-migrated Sauron import (excluded on cost), was skipped by
-    # the baseline gate (never ran, no logs), or is a nop/oracle baseline (fixed
-    # scaffolding, never classified). Enqueueing then produces a job that
-    # can only no-op: run_task_qa_job would leave a non-terminal verdict, which
-    # QaJobHandler reads back as a retryable failure -> the job burns all its
-    # attempts and lands FAILED for what is not an error. Complete the task
-    # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
-    qa_eligible = 0
+    # the baseline gate (never ran, no logs), or is a nop/oracle baseline
+    # (fixed scaffolding, never classified). Complete the task instead.
+    qa_eligible_ids: list[str] = []
     if task.run_analysis:
-        qa_eligible = await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                and_(
-                    TrialModel.task_id == task_id,
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    TrialModel.imported_at.is_(None),
-                    func.coalesce(TrialModel.harbor_stage, "")
-                    != CANCELLED_HARBOR_STAGE,
-                    TrialModel.status != TrialStatus.SKIPPED,
-                    func.coalesce(TrialModel.error_message, "").notlike(
-                        f"{GATE_SKIP_PREFIX}%"
-                    ),
-                    not_(baseline_agent_clause(TrialModel.agent)),
-                )
-            )
-        )
+        qa_eligible_ids = await qa_eligible_trial_ids(session, task_id)
 
-    if task.run_analysis and qa_eligible:
+    if task.run_analysis and qa_eligible_ids:
+        from oddish.workers.analysis_trials import create_qa_trial
+
         task.status = TaskStatus.VERDICT_PENDING
         task.verdict_status = VerdictStatus.QUEUED
-        await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
+        await create_qa_trial(session, task=task, eligible_trial_ids=qa_eligible_ids)
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -1858,20 +1882,15 @@ async def maybe_advance_legacy_analyzing_task(
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.kind == "agent",
                 TrialModel.superseded_by_trial_id.is_(None),
-                # SKIPPED trials are never analyzed (analysis_status stays NULL),
-                # so they must not count as pending or the task would never
-                # advance out of ANALYZING.
-                TrialModel.status != TrialStatus.SKIPPED,
-                or_(
-                    TrialModel.analysis_status.is_(None),
-                    TrialModel.analysis_status.in_(
-                        [
-                            AnalysisStatus.PENDING,
-                            AnalysisStatus.QUEUED,
-                            AnalysisStatus.RUNNING,
-                        ]
-                    ),
+                TrialModel.status.in_(
+                    [
+                        TrialStatus.PENDING,
+                        TrialStatus.QUEUED,
+                        TrialStatus.RUNNING,
+                        TrialStatus.RETRYING,
+                    ]
                 ),
             )
         )
@@ -1880,9 +1899,20 @@ async def maybe_advance_legacy_analyzing_task(
     if pending_count > 0:
         return False
 
+    eligible = await qa_eligible_trial_ids(session, task_id)
+    if not eligible:
+        task.status = TaskStatus.COMPLETED
+        task.finished_at = utcnow()
+        task.verdict_status = None
+        task.verdict_error = None
+        await session.flush()
+        return True
+
+    from oddish.workers.analysis_trials import create_qa_trial
+
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
-    await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
+    await create_qa_trial(session, task=task, eligible_trial_ids=eligible)
     await session.flush()
 
     return True

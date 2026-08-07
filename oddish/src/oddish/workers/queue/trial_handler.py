@@ -57,7 +57,12 @@ from oddish.worker.probe_creds import (
     revoke_probe_creds,
 )
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
-from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
+from oddish.worker.probe_staging import (
+    apply_analysis_overlay,
+    apply_probe_overlay,
+    stage_cli_mount,
+)
+from oddish.workers.analysis_trials import is_analysis_kind
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.outcome import merged_trial_result
 from oddish.workers.harbor.runner import (
@@ -923,7 +928,9 @@ async def _store_trial_results(
 
 async def _run_post_trial_hooks(trial_id: str) -> None:
     from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+    from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
+    trial_kind = "agent"
     async with get_session() as session:
         if (
             task_id := await session.scalar(
@@ -939,13 +946,23 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
             or trial.harbor_stage == "cancelled"
         ):
             return
-        if task is None or task.status == TaskStatus.FAILED:
-            return
+        trial_kind = trial.kind
+        if trial_kind == "agent":
+            if task is None or task.status == TaskStatus.FAILED:
+                return
+            await maybe_gate_llm_trials(session, trial_id)
+            if await maybe_start_qa_stage(session, trial_id):
+                console.print(
+                    f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
+                )
 
-        await maybe_gate_llm_trials(session, trial_id)
-        if await maybe_start_qa_stage(session, trial_id):
+    if trial_kind != "agent":
+        try:
+            await handle_analysis_trial_settled(trial_id)
+        except Exception as exc:  # noqa: BLE001 — the cleanup sweep re-runs importers
             console.print(
-                f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
+                f"[red]Analysis import failed for {trial_id}: "
+                f"{type(exc).__name__}: {exc}[/red]"
             )
 
 
@@ -1535,6 +1552,7 @@ async def run_trial_job(
     probe_agent_env: dict[str, str] | None = None
     probe_key_id: str | None = None
     job_scoped_bundle: job_tokens.JobCredentialBundle | None = None
+    trial_mode = (prepared_trial.trial_harbor_config or {}).get("mode")
     if probe_extra_instructions:
         if temp_task_dir is None:
             probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
@@ -1542,14 +1560,17 @@ async def run_trial_job(
             shutil.copytree(task_path_to_run, probe_copy_dir, symlinks=True)
             task_path_to_run = probe_copy_dir
             temp_task_dir = probe_copy_root
-        await apply_probe_overlay(
-            task_path_to_run,
-            task_id=prepared_trial.task_id,
-            trial_id=trial_id,
-            extra_instructions=probe_extra_instructions,
-            probe_scope=probe_scope,
-        )
-        # Probes get network egress so the oddish-query CLI can reach the API.
+        if is_analysis_kind(trial_mode):
+            apply_analysis_overlay(task_path_to_run, brief=probe_extra_instructions)
+        else:
+            await apply_probe_overlay(
+                task_path_to_run,
+                task_id=prepared_trial.task_id,
+                trial_id=trial_id,
+                extra_instructions=probe_extra_instructions,
+                probe_scope=probe_scope,
+            )
+        # Network egress so the oddish-query CLI can reach the API.
         enable_local_internet(task_path_to_run)
         try:
             probe_key_id, probe_agent_env = await mint_probe_creds(

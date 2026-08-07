@@ -112,7 +112,8 @@ async def create_analyzer_core(
             )
         )
 
-    await _enqueue_analyzer_worker_job(session, analyzer_id=analyzer.id, org_id=org_id)
+    # Trials are created by start_analyzer_pipeline, which the caller invokes
+    # after this session commits (it opens sessions of its own).
     return analyzer
 
 

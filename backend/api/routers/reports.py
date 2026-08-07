@@ -110,7 +110,13 @@ async def create_report(
         )
         await session.commit()
         await session.refresh(report)
-        return await _to_response(session, report)
+        report_id = report.id
+        response = await _to_response(session, report)
+
+    from oddish.workers.analyzer_trials import start_analyzer_pipeline
+
+    await start_analyzer_pipeline(report_id)
+    return response
 
 
 @router.get("/reports", response_model=list[ReportResponse])

@@ -43,6 +43,12 @@ def stage_query_cli(work_task_dir: Path) -> None:
     dest.chmod(0o755)
 
 
+def apply_analysis_overlay(work_task_dir: Path, *, brief: str) -> None:
+    """Replace instruction.md with an analysis-trial brief. Unlike the probe
+    overlay there is no wrapper: the brief is the whole instruction."""
+    (work_task_dir / "instruction.md").write_text(brief)
+
+
 def stage_cli_mount(harness_dir: Path) -> None:
     """Write ONLY the oddish-query CLI into ``harness_dir`` (the /probe-harness
     mount). Everything else probe-only goes to the hidden stage, so this mount is

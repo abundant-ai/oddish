@@ -1006,7 +1006,11 @@ async def _heal_stale_verdict_pending(session) -> int:
     the verdict is already terminal). ``ANALYSIS`` rows are intentionally ignored
     here -- they no longer drive the verdict. Returns the count finalized.
     """
-    from oddish.queue import enqueue_qa_worker_job
+    from oddish.queue import qa_eligible_trial_ids
+    from oddish.workers.analysis_trials import (
+        create_qa_trial,
+        handle_analysis_trial_settled,
+    )
 
     stale_verdict_pending = (
         await session.execute(
@@ -1017,13 +1021,12 @@ async def _heal_stale_verdict_pending(session) -> int:
                 WHERE t.status = 'VERDICT_PENDING'
                   AND t.deleted_at IS NULL
                   AND NOT EXISTS (
-                      SELECT 1 FROM worker_jobs wj
-                      WHERE wj.subject_table = 'tasks'
-                        AND wj.subject_id = t.id
-                        AND wj.kind::text IN ('QA', 'VERDICT')
-                        AND wj.status::text IN (
-                            'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'
-                        )
+                      SELECT 1 FROM trials tr
+                      WHERE tr.task_id = t.id
+                        AND tr.kind = 'qa'
+                        AND tr.deleted_at IS NULL
+                        AND tr.superseded_by_trial_id IS NULL
+                        AND tr.status::text NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')
                   )
                 ORDER BY t.updated_at ASC
                 LIMIT :batch_limit
@@ -1034,6 +1037,7 @@ async def _heal_stale_verdict_pending(session) -> int:
     ).all()
 
     verdict_pending_completed = 0
+    reimport_trial_ids: list[str] = []
     for (task_id,) in stale_verdict_pending:
         task = await session.get(TaskModel, str(task_id))
         if not task or task.status != TaskStatus.VERDICT_PENDING:
@@ -1042,12 +1046,44 @@ async def _heal_stale_verdict_pending(session) -> int:
             task.status = TaskStatus.COMPLETED
             task.finished_at = task.finished_at or utcnow()
             verdict_pending_completed += 1
-        else:
+            continue
+        # A terminal QA trial with a non-terminal verdict means the import
+        # never landed (worker died between settle and import). Re-import
+        # after this transaction; only create a fresh QA trial when none exists.
+        settled_qa = await session.scalar(
+            text(
+                """
+                SELECT tr.id FROM trials tr
+                WHERE tr.task_id = :task_id AND tr.kind = 'qa'
+                  AND tr.deleted_at IS NULL
+                  AND tr.superseded_by_trial_id IS NULL
+                  AND tr.status::text IN ('SUCCESS', 'FAILED')
+                ORDER BY tr.created_at DESC LIMIT 1
+                """
+            ),
+            {"task_id": task.id},
+        )
+        if settled_qa is not None:
+            reimport_trial_ids.append(str(settled_qa))
+            continue
+        eligible = await qa_eligible_trial_ids(session, task.id)
+        if eligible:
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = None
             task.verdict_started_at = None
             task.verdict_finished_at = None
-            await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
+            await create_qa_trial(session, task=task, eligible_trial_ids=eligible)
+        else:
+            task.status = TaskStatus.COMPLETED
+            task.finished_at = task.finished_at or utcnow()
+            task.verdict_status = None
+            verdict_pending_completed += 1
+
+    for trial_id in reimport_trial_ids:
+        try:
+            await handle_analysis_trial_settled(trial_id)
+        except Exception:  # noqa: BLE001 — next sweep retries
+            pass
     return verdict_pending_completed
 
 
