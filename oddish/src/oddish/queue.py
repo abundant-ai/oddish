@@ -31,6 +31,7 @@ from oddish.core.trial_facets import (
     facet_rows_for_trial_dicts,
     record_trial_facets,
 )
+from oddish.core.verdict_sync import clear_inflight_verdict
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -1313,11 +1314,10 @@ async def append_trials_to_task(
         task.finished_at = None
 
     if new_trials and task.run_analysis:
-        task.verdict = None
-        task.verdict_status = None
-        task.verdict_error = None
-        task.verdict_started_at = None
-        task.verdict_finished_at = None
+        # A terminal verdict stays until the fresh QA pass replaces it; only
+        # in-flight pipeline state is cleared, since its job is cancelled
+        # just below.
+        clear_inflight_verdict(task)
         # Cancel any in-flight QA worker_job for this task so a worker
         # that's already claimed (or about to claim) the old row doesn't
         # overwrite the new verdict with stale data. The dispatcher

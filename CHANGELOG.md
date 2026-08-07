@@ -11,7 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - The task verdict labels are now `accept` / `reject`. The judge emits `"verdict": "accept" | "reject"` instead of `"is_good": true/false`; stored payloads carry both keys (`is_good` is derived) so dashboard SQL, Slack alerts, and rows written before the change keep working. The dashboard badge shows "Accepted" / "Rejected", and GitHub PR comments follow suit.
-- Rewrote `verdict_prompt.txt` in ASD-STE100 around a facts-vs-opinions split. A verdict shipped "task is good" over a `must_fix` info-leak audit finding and a trial that measured the untouched base model at 0.96 against a 0.25 pass threshold — the old prompt buried its decisive rules as exceptions inside a noise-tolerance rule. Facts (a proven or reported leak, a measured weak pass gate, a baseline failure) now decide the verdict alone; opinions still need agreement across trials, and other trials passing the same weak gate are explicitly not counter-evidence.
+- Rewrote `verdict_prompt.txt` in plain simple-technical-English around a facts-beat-votes split. A verdict shipped "task is good" over a `must_fix` info-leak audit finding and a trial that measured the untouched base model at 0.96 against a 0.25 pass threshold — the old prompt buried its decisive rules as exceptions inside a noise-tolerance rule. Facts (a used or found leak, a measured weak pass gate, a failed baseline) now decide the verdict alone; opinions still need agreement across trials, and other trials passing the same weak gate are explicitly not counter-evidence.
+- Running new trials against a task that already has a verdict no longer blanks the verdict at submission. The old verdict stays visible while the appended or retried trials run, and the fresh QA pass overwrites it when they finish. Only in-flight verdict state (a QUEUED/RUNNING status whose QA job the append cancels) is still cleared.
 
 ---
 

@@ -98,6 +98,25 @@ async def sync_verdict_to_task(
         return task.verdict_status.value
 
 
+def clear_inflight_verdict(task: Any) -> None:
+    """Drop verdict pipeline state unless a result already exists.
+
+    Appending or retrying trials cancels the task's QA job, so a QUEUED or
+    RUNNING ``verdict_status`` would dangle with no job behind it. A terminal
+    verdict stays: it remains the task's verdict until the fresh QA pass
+    overwrites it (``maybe_start_qa_stage`` re-queues the status before the
+    replacement job runs, so the stale-verdict skip guard never fires).
+    """
+    if getattr(task, "verdict_status", None) in (
+        VerdictStatus.SUCCESS,
+        VerdictStatus.FAILED,
+    ):
+        return
+    task.verdict_status = None
+    task.verdict_error = None
+    task.verdict_started_at = None
+
+
 def build_pre_trial_payload(
     items: list, *, cost_usd: float | None = None, block_id: str | None = None
 ) -> dict:

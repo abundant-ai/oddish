@@ -315,6 +315,85 @@ async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_retry_keeps_a_terminal_verdict_until_qa_replaces_it(monkeypatch):
+    """A retry must not blank an existing verdict: the old one stays visible
+    while the new trial runs, and the fresh QA pass overwrites it."""
+    from oddish.db import VerdictStatus
+
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.COMPLETED,
+        finished_at=object(),
+        verdict={"verdict": "accept", "is_good": True},
+        verdict_status=VerdictStatus.SUCCESS,
+        verdict_error=None,
+        verdict_started_at=object(),
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert task.status == TaskStatus.RUNNING
+    assert task.verdict == {"verdict": "accept", "is_good": True}
+    assert task.verdict_status == VerdictStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_retry_clears_an_inflight_verdict_whose_job_it_cancels(monkeypatch):
+    """The retry cancels the task's QA job, so a QUEUED/RUNNING verdict_status
+    would dangle with no job behind it. Only that in-flight state is cleared."""
+    from oddish.db import VerdictStatus
+
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)
+    task = SimpleNamespace(
+        id="task-1",
+        name="task-1",
+        status=TaskStatus.VERDICT_PENDING,
+        finished_at=object(),
+        verdict=None,
+        verdict_status=VerdictStatus.RUNNING,
+        verdict_error=None,
+        verdict_started_at=object(),
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert task.verdict_status is None
+    assert task.verdict_started_at is None
+
+
+@pytest.mark.asyncio
 async def test_retry_moves_verdict_pending_task_back_to_running(monkeypatch):
     events = []
     trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)

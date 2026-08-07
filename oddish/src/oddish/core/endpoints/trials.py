@@ -8,8 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.endpoints._common import (
     get_trial_for_org_core,
-    _reset_task_verdict,
 )
+from oddish.core.verdict_sync import clear_inflight_verdict
 from oddish.core.endpoints.qa_cost import get_trial_qa_costs
 from oddish.core.helpers import (
     build_trial_response,
@@ -589,7 +589,8 @@ async def retry_trial_core(
     ):
         task.status = TaskStatus.RUNNING
         task.finished_at = None
-    _reset_task_verdict(task)
+    # A terminal verdict stays until the replacement QA pass overwrites it.
+    clear_inflight_verdict(task)
     await session.execute(
         text(
             """
