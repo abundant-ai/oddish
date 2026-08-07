@@ -71,6 +71,17 @@ if [ "$run_migrations" = "true" ]; then
   deploy_backend=true
 fi
 
+# The same password rotation happens on every prepare-preview-database run,
+# and that job also runs on frontend-only pushes whenever a preview backend
+# is live (BACKEND_BASE set) to keep the branch smoke-tested. A live backend
+# left holding the pre-rotation password 500s every DB-backed request until
+# something redeploys it -- so a run that will prepare the branch against an
+# existing backend must redeploy that backend too, mirroring the migrations
+# rule above.
+if [ -n "$BACKEND_BASE" ] && [ "$deploy_backend" != "true" ]; then
+  deploy_backend=true
+fi
+
 any_change=false
 if [ "$deploy_backend" = "true" ] ||
   [ "$run_migrations" = "true" ] ||
