@@ -345,6 +345,11 @@ export function RewardDesignCard({
       try {
         const params = new URLSearchParams();
         params.set("recursive", "1");
+        // Metadata-only listing, matching the task files contract (and the
+        // e2e assertion on it): file bodies come from the per-file fetches
+        // below, never inlined into the tree response.
+        params.set("inline", "0");
+        params.set("presign", "0");
         if (taskVersion != null) params.set("version", String(taskVersion));
         const listingResponse = await fetch(`${base}?${params}`, {
           signal: controller.signal,
