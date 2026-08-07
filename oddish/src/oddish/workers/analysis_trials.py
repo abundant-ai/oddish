@@ -48,6 +48,19 @@ ANALYSIS_TRIAL_KINDS = ("qa", "audit", "analyzer_map", "analyzer_reduce")
 QA_RESULT_FILENAME = "qa_result.json"
 AUDIT_RESULT_FILENAME = "audit_result.json"
 
+# The one artifact each kind's agent writes to /logs. The analysis verifier
+# stages it under /logs/verifier so harbor collects it.
+ANALYSIS_ARTIFACTS = {
+    "qa": QA_RESULT_FILENAME,
+    "audit": AUDIT_RESULT_FILENAME,
+    "analyzer_map": "findings.jsonl",
+    "analyzer_reduce": "reduce.json",
+}
+
+
+def artifact_for_kind(kind: str | None) -> str:
+    return ANALYSIS_ARTIFACTS.get(kind or "", QA_RESULT_FILENAME)
+
 ANALYSIS_TRIAL_MAX_ATTEMPTS = 3
 ANALYSIS_TRIAL_TIMEOUT_MINUTES = 60
 
@@ -355,18 +368,36 @@ async def create_qa_trial(
 
 
 async def read_artifact_bytes(trial: TrialModel, filename: str) -> bytes | None:
+    """Find the artifact anywhere under the trial's storage prefix.
+
+    Harbor nests each attempt's upload under its own job directory
+    (``task-<name>__<rand>/``), so a fixed key never matches. The analysis
+    verifier stages the artifact at ``<job dir>/verifier/<filename>``;
+    prefer that, take any other ``/<filename>`` key as a fallback, and pick
+    the newest when retries left several attempts behind."""
     prefix = resolve_trial_s3_prefix(trial.id, trial_s3_key=trial.trial_s3_key)
     storage = get_storage_client()
-    for key in (
-        f"{prefix}logs/{filename}",
-        f"{prefix}{filename}",
-        f"{prefix}logs/agent/{filename}",
-    ):
-        try:
-            return await storage.download_bytes(key)
-        except Exception:  # noqa: BLE001
-            continue
-    return None
+    try:
+        objects = await storage.list_objects_all(prefix)
+    except Exception:  # noqa: BLE001
+        logger.exception("trial %s: listing %s failed", trial.id, prefix)
+        return None
+    staged = [
+        o for o in objects if str(o.get("key", "")).endswith(f"/verifier/{filename}")
+    ]
+    loose = [o for o in objects if str(o.get("key", "")).endswith(f"/{filename}")]
+    candidates = staged or loose
+    if not candidates:
+        return None
+    newest = max(
+        candidates,
+        key=lambda o: (str(o.get("last_modified") or ""), str(o.get("key"))),
+    )
+    try:
+        return await storage.download_bytes(str(newest["key"]))
+    except Exception:  # noqa: BLE001
+        logger.exception("trial %s: download %s failed", trial.id, newest["key"])
+        return None
 
 
 async def read_analysis_artifact(trial: TrialModel, filename: str) -> dict | None:

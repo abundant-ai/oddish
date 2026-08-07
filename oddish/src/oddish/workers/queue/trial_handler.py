@@ -1566,7 +1566,13 @@ async def run_trial_job(
             task_path_to_run = probe_copy_dir
             temp_task_dir = probe_copy_root
         if is_analysis_kind(trial_mode):
-            apply_analysis_overlay(task_path_to_run, brief=probe_extra_instructions)
+            from oddish.workers.analysis_trials import artifact_for_kind
+
+            apply_analysis_overlay(
+                task_path_to_run,
+                brief=probe_extra_instructions,
+                artifact=artifact_for_kind(trial_mode),
+            )
         else:
             await apply_probe_overlay(
                 task_path_to_run,

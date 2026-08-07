@@ -43,10 +43,53 @@ def stage_query_cli(work_task_dir: Path) -> None:
     dest.chmod(0o755)
 
 
-def apply_analysis_overlay(work_task_dir: Path, *, brief: str) -> None:
-    """Replace instruction.md with an analysis-trial brief. Unlike the probe
-    overlay there is no wrapper: the brief is the whole instruction."""
+# The analysis verifier. The agent's artifact under /logs is the whole
+# deliverable, but harbor only collects the agent/ and verifier/ subtrees --
+# a loose file at the /logs root never reaches storage. So the verifier
+# stages the artifact into the collected verifier dir and grades only its
+# presence and validity. Missing or invalid exits nonzero, which fails the
+# verifier and lets the normal trial retries re-run the agent.
+_ANALYSIS_TEST_SH = """#!/bin/sh
+OUT="${{HARBOR_VERIFIER_LOG_DIR:-/logs/verifier}}"
+mkdir -p "$OUT"
+SRC="/logs/{artifact}"
+if [ ! -s "$SRC" ]; then
+  echo "the agent did not write /logs/{artifact}" | tee "$OUT/error.txt" >&2
+  exit 1
+fi
+cp "$SRC" "$OUT/{artifact}"
+case "{artifact}" in
+  *.jsonl) ;;
+  *)
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$SRC" \\
+        2>"$OUT/error.txt" || exit 1
+    elif command -v node >/dev/null 2>&1; then
+      node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' \\
+        "$SRC" 2>"$OUT/error.txt" || exit 1
+    fi
+    ;;
+esac
+echo "1.0" > "$OUT/reward.txt"
+exit 0
+"""
+
+
+def apply_analysis_overlay(work_task_dir: Path, *, brief: str, artifact: str) -> None:
+    """Replace instruction.md with an analysis-trial brief and the task's
+    tests with the analysis verifier. Unlike the probe overlay there is no
+    wrapper: the brief is the whole instruction. The audited task's own
+    verifier must not run -- it grades task-solving, not analysis, and can
+    burn LLM-judge spend on an agent that never tried to solve it."""
+    import shutil
+
     (work_task_dir / "instruction.md").write_text(brief)
+    tests_dir = work_task_dir / "tests"
+    shutil.rmtree(tests_dir, ignore_errors=True)
+    tests_dir.mkdir(parents=True)
+    test_sh = tests_dir / "test.sh"
+    test_sh.write_text(_ANALYSIS_TEST_SH.format(artifact=artifact))
+    test_sh.chmod(0o755)
 
 
 def stage_cli_mount(harness_dir: Path) -> None:

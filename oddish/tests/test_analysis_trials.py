@@ -67,6 +67,25 @@ def test_the_audit_brief_names_its_output_file():
     assert "Do not solve the task" in brief
 
 
+def test_the_overlay_replaces_the_verifier_with_the_artifact_check(tmp_path):
+    """An analysis trial must not run the audited task's verifier. Its own
+    verifier stages /logs/<artifact> under the collected verifier dir and
+    fails when the file is missing, so trial retries re-run the agent."""
+    from oddish.worker.probe_staging import apply_analysis_overlay
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "expensive_llm_judge.py").write_text("x")
+    (tmp_path / "instruction.md").write_text("original")
+    apply_analysis_overlay(tmp_path, brief="the brief", artifact="qa_result.json")
+
+    assert (tmp_path / "instruction.md").read_text() == "the brief"
+    assert not (tmp_path / "tests" / "expensive_llm_judge.py").exists()
+    test_sh = (tmp_path / "tests" / "test.sh").read_text()
+    assert "/logs/qa_result.json" in test_sh
+    assert "exit 1" in test_sh
+    assert 'cp "$SRC" "$OUT/qa_result.json"' in test_sh
+
+
 def test_a_correct_analysis_is_accepted():
     """A well-formed analysis from the QA agent parses into a classification."""
     parsed = _classification_from_analysis(GOOD_ANALYSIS)
