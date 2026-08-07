@@ -986,6 +986,16 @@ class TrialModel(TimestampedMixin, Base):
         Boolean, nullable=False, server_default=text("false"), index=True
     )
 
+    # What this trial is for. 'agent' is a normal evaluation run. The analysis
+    # kinds run the platform's own agents through the same trial pipeline:
+    # 'qa' (classify + summarize + verdict for one task), 'audit' (per-version
+    # task-source audit), 'analyzer_map' / 'analyzer_reduce' (report
+    # generation). Non-agent kinds are excluded from user-facing cost, quota,
+    # leaderboard, facet, and public surfaces — treat like is_probe there.
+    kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default=text("'agent'")
+    )
+
     # Status
     status: Mapped[TrialStatus] = mapped_column(
         SQLEnum(TrialStatus), default=TrialStatus.PENDING, nullable=False
