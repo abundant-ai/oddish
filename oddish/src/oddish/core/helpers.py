@@ -1314,7 +1314,6 @@ async def build_task_status_responses_from_counts(
 
     stats_filters = [
         TrialModel.task_id.in_(task_ids),
-        TrialModel.kind == "agent",
         # Default trial listings collapse the rerun history: every
         # superseded attempt is hidden by the same filter applied in
         # ``get_task_status_trials``. Mirror it here so the counts row
@@ -1322,6 +1321,9 @@ async def build_task_status_responses_from_counts(
         TrialModel.superseded_by_trial_id.is_(None),
     ]
     if experiment_context_id is not None:
+        # Membership already separates kinds: agent trials belong to the
+        # experiment they ran in, analysis trials to its shadow. No kind
+        # filter, or a shadow page would count zero trials.
         from oddish.core.experiment_membership import trial_in_experiment
 
         stats_filters.extend(
@@ -1330,6 +1332,8 @@ async def build_task_status_responses_from_counts(
                 TrialModel.is_probe.is_(False),
             ]
         )
+    else:
+        stats_filters.append(TrialModel.kind == "agent")
     if effective_map:
         # Match (task_id, task_version_id) pairs so we only count trials at
         # each task's effective version.  Tasks without an effective version

@@ -448,6 +448,14 @@ class ExperimentModel(TimestampedMixin, Base):
         # soft-deleted experiment doesn't take its name slot with it.
         # Experiments don't currently have a name uniqueness constraint,
         # but new code that adds one should follow the same convention.
+        # One live shadow per experiment; ON CONFLICT on this index makes
+        # the shadow get-or-create race-safe.
+        Index(
+            "uq_experiments_shadow_of_live",
+            "shadow_of",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
     )
 
     # Override id to add auto-generation
@@ -492,6 +500,11 @@ class ExperimentModel(TimestampedMixin, Base):
     is_collection: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
+
+    # QA-report shadow: the id of the experiment this one grades. A shadow
+    # holds the analysis trials (qa, audit) for its parent's tasks. Shadows
+    # are hidden from experiment lists; the parent links to its shadow.
+    shadow_of: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # User-authored markdown description shown in the experiment header.
     # Nullable; ``None``/blank means "no description".

@@ -146,6 +146,26 @@ async def _create_report_host_task(analyzer: AnalyzerModel) -> str:
     return task_id
 
 
+async def _host_experiment_id(session: AsyncSession, task_id: str) -> str:
+    """The report host task's own experiment. Passed explicitly so report
+    trials stay there instead of getting a qa-report shadow."""
+    from sqlalchemy import text as sql_text
+
+    experiment_id = await session.scalar(
+        sql_text(
+            """
+            SELECT experiment_id FROM task_experiments
+            WHERE task_id = :task_id AND deleted_at IS NULL
+            ORDER BY created_at ASC LIMIT 1
+            """
+        ),
+        {"task_id": task_id},
+    )
+    if experiment_id is None:
+        raise RuntimeError(f"report host task {task_id} has no experiment")
+    return str(experiment_id)
+
+
 async def _gather_rows(session: AsyncSession, analyzer_id: str, org_id: str | None):
     exp_ids = await experiment_ids_for_analyzer(session, analyzer_id)
     if not exp_ids:
@@ -344,6 +364,7 @@ async def start_analyzer_pipeline(analyzer_id: str) -> None:
         analyzer = await session.get(AnalyzerModel, analyzer_id, with_for_update=True)
         if task is None or analyzer is None:
             return
+        experiment_id = await _host_experiment_id(session, task.id)
         for bucket, cohort in (("bad", bad), ("good", good)):
             if not cohort:
                 continue
@@ -352,6 +373,7 @@ async def start_analyzer_pipeline(analyzer_id: str) -> None:
                 await create_analysis_trial(
                     session,
                     task=task,
+                    experiment_id=experiment_id,
                     kind="analyzer_map",
                     brief=build_map_brief(
                         bucket=bucket,
@@ -466,12 +488,14 @@ async def advance_analyzer_pipeline(settled: TrialModel) -> None:
                 "bad": analyzer.num_bad_failures,
                 "good": analyzer.num_good_failures,
             }
+            experiment_id = await _host_experiment_id(session, task.id)
             for bucket in missing:
                 if bucket in have_reduce:
                     continue
                 await create_analysis_trial(
                     session,
                     task=task,
+                    experiment_id=experiment_id,
                     kind="analyzer_reduce",
                     brief=build_reduce_brief(
                         bucket=bucket,

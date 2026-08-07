@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useAuth } from "@clerk/nextjs";
@@ -597,6 +598,20 @@ function ExperimentContent({ experimentId }: ExperimentClientPageProps) {
                   …
                 </span>
               </div>
+            ) : experimentShare?.shadow_of ? (
+              <Link
+                href={`/experiments/${encodeExperimentRouteParam(experimentShare.shadow_of)}`}
+                className="text-muted-foreground text-[10px] hover:underline"
+              >
+                ← graded experiment
+              </Link>
+            ) : experimentShare?.qa_report_experiment_id ? (
+              <Link
+                href={`/experiments/${encodeExperimentRouteParam(experimentShare.qa_report_experiment_id)}`}
+                className="text-muted-foreground text-[10px] hover:underline"
+              >
+                QA report →
+              </Link>
             ) : null
           }
           headerRight={

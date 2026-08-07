@@ -1144,7 +1144,7 @@ async def load_dashboard_experiments(
         ExperimentModel.owner.label("experiment_owner"),
         ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
         ExperimentModel.link.label("experiment_link"),
-    )
+    ).where(ExperimentModel.shadow_of.is_(None))
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
     if normalized_query:

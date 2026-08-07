@@ -852,18 +852,24 @@ export function TaskDetailClient({
     return map;
   }, [trialsForVersion, modelScopedAgents]);
 
-  const trialGroups = useMemo(
-    () =>
-      agentSummaries.map((summary) => {
-        const trials = trialsByAgentKey.get(summary.key) ?? [];
-        return {
-          agent: summary.key,
-          model: summary.model,
-          trials,
-        };
-      }),
-    [agentSummaries, trialsByAgentKey]
-  );
+  const trialGroups = useMemo(() => {
+    const groups = agentSummaries.map((summary) => {
+      const trials = trialsByAgentKey.get(summary.key) ?? [];
+      return {
+        agent: summary.key,
+        model: summary.model as string | null,
+        trials,
+      };
+    });
+    if (analysisTrialsForVersion.length > 0) {
+      groups.push({
+        agent: "analysis",
+        model: null,
+        trials: analysisTrialsForVersion,
+      });
+    }
+    return groups;
+  }, [agentSummaries, trialsByAgentKey, analysisTrialsForVersion]);
 
   const orderedTrials = useMemo(() => {
     const out: Trial[] = [];

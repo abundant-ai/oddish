@@ -86,35 +86,75 @@ def _prompt(name: str) -> str:
 
 
 async def resolve_analysis_experiment_id(session: AsyncSession, task_id: str) -> str:
-    """trials.experiment_id is NOT NULL, so an analysis trial borrows one from
-    its task: the first live experiment membership, else any live trial's."""
+    """Analysis trials live in a shadow experiment, not in the experiment
+    they grade. Find the task's live (non-shadow) experiment, get-or-create
+    its shadow, and join the task into the shadow so the shadow page can
+    list it."""
     from sqlalchemy import text as sql_text
 
-    experiment_id = await session.scalar(
+    from oddish.db.models import generate_id
+
+    parent = (
+        await session.execute(
+            sql_text(
+                """
+                SELECT e.id, e.name, e.org_id, e.owner_user_id
+                FROM task_experiments te
+                JOIN experiments e ON e.id = te.experiment_id
+                WHERE te.task_id = :task_id AND te.deleted_at IS NULL
+                  AND e.deleted_at IS NULL AND e.shadow_of IS NULL
+                ORDER BY te.created_at ASC LIMIT 1
+                """
+            ),
+            {"task_id": task_id},
+        )
+    ).first()
+    if parent is None:
+        raise RuntimeError(
+            f"task {task_id} has no live experiment membership for an analysis trial"
+        )
+
+    await session.execute(
         sql_text(
             """
-            SELECT experiment_id FROM task_experiments
-            WHERE task_id = :task_id AND deleted_at IS NULL
-            ORDER BY created_at ASC LIMIT 1
+            INSERT INTO experiments
+                (id, name, org_id, owner_user_id, shadow_of,
+                 is_public, is_collection, created_at, updated_at)
+            VALUES
+                (:id, :name, :org_id, :owner_user_id, :shadow_of,
+                 false, false, NOW(), NOW())
+            ON CONFLICT (shadow_of) WHERE deleted_at IS NULL DO NOTHING
             """
         ),
-        {"task_id": task_id},
+        {
+            "id": generate_id(),
+            "name": f"{parent.name[:240]} (qa report)",
+            "org_id": parent.org_id,
+            "owner_user_id": parent.owner_user_id,
+            "shadow_of": parent.id,
+        },
     )
-    if experiment_id is None:
-        experiment_id = await session.scalar(
-            select(TrialModel.experiment_id)
-            .where(
-                TrialModel.task_id == task_id,
-                TrialModel.experiment_id.is_not(None),
-            )
-            .order_by(TrialModel.created_at.asc())
-            .limit(1)
-        )
-    if experiment_id is None:
-        raise RuntimeError(
-            f"task {task_id} has no experiment to attach an analysis trial to"
-        )
-    return str(experiment_id)
+    shadow_id = await session.scalar(
+        sql_text(
+            "SELECT id FROM experiments "
+            "WHERE shadow_of = :parent_id AND deleted_at IS NULL"
+        ),
+        {"parent_id": parent.id},
+    )
+    if shadow_id is None:
+        raise RuntimeError(f"no shadow experiment for {parent.id}")
+
+    await session.execute(
+        sql_text(
+            """
+            INSERT INTO task_experiments (task_id, experiment_id, created_at)
+            VALUES (:task_id, :experiment_id, NOW())
+            ON CONFLICT (task_id, experiment_id) DO NOTHING
+            """
+        ),
+        {"task_id": task_id, "experiment_id": str(shadow_id)},
+    )
+    return str(shadow_id)
 
 
 async def create_analysis_trial(
@@ -403,7 +443,7 @@ async def _import_qa_result(trial: TrialModel) -> None:
             row = await session.get(TrialModel, trial_id)
             if row is None or row.task_id != task_id:
                 continue
-            row.analysis = analysis
+            row.analysis = {**analysis, "_graded_by": trial.id}
             row.analysis_status = AnalysisStatus.SUCCESS
             row.analysis_finished_at = utcnow()
             summary = entry.get("trajectory_summary")
@@ -435,9 +475,11 @@ async def _import_qa_result(trial: TrialModel) -> None:
             error=f"QA trial {trial.id} verdict failed validation: {exc}",
         )
         return
+    payload = build_verdict_payload(verdict, classifications)
+    payload["_graded_by"] = trial.id
     await sync_verdict_to_task(
         task_id,
-        payload=build_verdict_payload(verdict, classifications),
+        payload=payload,
         should_store=lambda s: _qa_import_still_current(s, task_id),
         error=None,
     )
@@ -472,7 +514,9 @@ async def _import_audit_result(trial: TrialModel) -> None:
             continue
     await sync_pre_trial_to_task_version(
         version_id,
-        payload=build_pre_trial_payload(items, cost_usd=trial.cost_usd),
+        payload=build_pre_trial_payload(
+            items, cost_usd=trial.cost_usd, block_id=trial.id
+        ),
         error=None,
     )
 

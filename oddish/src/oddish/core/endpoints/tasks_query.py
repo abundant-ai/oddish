@@ -176,7 +176,6 @@ async def list_tasks_core(
             trials_relationship = TaskModel.trials.and_(
                 trial_in_experiment(experiment_id),
                 TrialModel.is_probe.is_(False),
-                TrialModel.kind == "agent",
             )
         else:
             trials_relationship = TaskModel.trials

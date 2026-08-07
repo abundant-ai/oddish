@@ -237,6 +237,10 @@ class ExperimentShareResponse(BaseModel):
     is_public: bool
     public_token: str | None = None
     description: str | None = None
+    # QA-report linkage: a shadow experiment points at the experiment it
+    # grades; a graded experiment points at its shadow.
+    shadow_of: str | None = None
+    qa_report_experiment_id: str | None = None
 
 
 class ExperimentUpdateRequest(BaseModel):

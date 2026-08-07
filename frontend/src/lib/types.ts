@@ -102,6 +102,7 @@ interface TrialExploitation {
 }
 
 interface TrialAnalysis {
+  _graded_by?: string;
   trial_name?: string;
   classification: AnalysisClassification;
   subtype: string;
@@ -1127,6 +1128,10 @@ export interface ExperimentShareInfo {
   is_public: boolean;
   public_token: string | null;
   description: string | null;
+  // QA-report linkage: a shadow experiment points at the experiment it
+  // grades; a graded experiment points at its shadow.
+  shadow_of?: string | null;
+  qa_report_experiment_id?: string | null;
 }
 
 export type ReportStatus =

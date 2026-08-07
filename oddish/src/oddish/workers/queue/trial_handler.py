@@ -931,30 +931,38 @@ async def _run_post_trial_hooks(trial_id: str) -> None:
     from oddish.workers.analysis_trials import handle_analysis_trial_settled
 
     trial_kind = "agent"
-    async with get_session() as session:
-        if (
-            task_id := await session.scalar(
-                select(TrialModel.task_id).where(TrialModel.id == trial_id)
-            )
-        ) is None:
-            return
-        task = await session.get(TaskModel, task_id, with_for_update=True)
-        trial = await session.get(TrialModel, trial_id, with_for_update=True)
-        if (
-            trial is None
-            or trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED)
-            or trial.harbor_stage == "cancelled"
-        ):
-            return
-        trial_kind = trial.kind or "agent"
-        if trial_kind == "agent":
-            if task is None or task.status == TaskStatus.FAILED:
-                return
-            await maybe_gate_llm_trials(session, trial_id)
-            if await maybe_start_qa_stage(session, trial_id):
-                console.print(
-                    f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
+    try:
+        async with get_session() as session:
+            if (
+                task_id := await session.scalar(
+                    select(TrialModel.task_id).where(TrialModel.id == trial_id)
                 )
+            ) is None:
+                return
+            task = await session.get(TaskModel, task_id, with_for_update=True)
+            trial = await session.get(TrialModel, trial_id, with_for_update=True)
+            if (
+                trial is None
+                or trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED)
+                or trial.harbor_stage == "cancelled"
+            ):
+                return
+            trial_kind = trial.kind or "agent"
+            if trial_kind == "agent":
+                if task is None or task.status == TaskStatus.FAILED:
+                    return
+                await maybe_gate_llm_trials(session, trial_id)
+                if await maybe_start_qa_stage(session, trial_id):
+                    console.print(
+                        f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
+                    )
+    except Exception as exc:  # noqa: BLE001 — the trial is already terminal;
+        # a hook failure must not fail the settled job. The cleanup sweep
+        # re-runs stage advancement.
+        console.print(
+            f"[red]Post-trial hooks failed for {trial_id}: "
+            f"{type(exc).__name__}: {exc}[/red]"
+        )
 
     if trial_kind != "agent":
         try:

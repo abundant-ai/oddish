@@ -73,6 +73,26 @@ def test_daytona_teardown_gets_and_deletes_then_closes(monkeypatch) -> None:
     assert calls["closed"] is True
 
 
+def test_daytona_teardown_treats_missing_sandbox_as_done(monkeypatch) -> None:
+    from daytona_api_client_async.exceptions import NotFoundException
+
+    calls: dict[str, object] = {}
+
+    class _FakeClient:
+        async def get(self, external_id: str):
+            raise NotFoundException(status=404, reason="Not Found")
+
+        async def close(self):
+            calls["closed"] = True
+
+    fake_daytona = types.ModuleType("daytona")
+    fake_daytona.AsyncDaytona = lambda: _FakeClient()
+    monkeypatch.setitem(sys.modules, "daytona", fake_daytona)
+
+    assert asyncio.run(DaytonaBackend().teardown("dt-gone")) is True
+    assert calls["closed"] is True
+
+
 def test_cancel_job_by_worker_delegates_to_modal(monkeypatch) -> None:
     seen: dict[str, str] = {}
 

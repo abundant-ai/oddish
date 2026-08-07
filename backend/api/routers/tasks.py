@@ -63,6 +63,7 @@ from oddish.core.dashboard import (
 from oddish.core.experiments import (
     list_experiment_probes_core,
     list_org_probes_core,
+    list_qa_reports_core,
 )
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
@@ -129,6 +130,7 @@ from oddish.schemas import (
     ExperimentOptionsResponse,
     ExperimentProbeRow,
     OrgProbeRow,
+    QaReportRow,
     TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
@@ -1208,11 +1210,21 @@ async def get_experiment_share(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
+        qa_report_experiment_id = None
+        if experiment.shadow_of is None:
+            qa_report_experiment_id = await session.scalar(
+                select(ExperimentModel.id).where(
+                    ExperimentModel.shadow_of == experiment.id
+                )
+            )
+
         return ExperimentShareResponse(
             name=experiment.name,
             is_public=bool(experiment.is_public),
             public_token=experiment.public_token,
             description=experiment.description,
+            shadow_of=experiment.shadow_of,
+            qa_report_experiment_id=qa_report_experiment_id,
         )
 
 
@@ -1453,6 +1465,16 @@ async def list_org_probes(
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
         return await list_org_probes_core(session, org_id=auth.org_id)
+
+
+@router.get("/qa/reports", response_model=list[QaReportRow])
+async def list_qa_reports(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[QaReportRow]:
+    """List the org's qa-report experiments, most recent first."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_qa_reports_core(session, org_id=auth.org_id)
 
 
 @router.post("/tasks/cancel")

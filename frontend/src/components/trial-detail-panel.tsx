@@ -191,11 +191,13 @@ function TrialAnalysisCard({
   task,
   apiBaseUrl,
   onQueued,
+  onOpenGrader,
 }: {
   trial: Trial;
   task: Task | null;
   apiBaseUrl: string;
   onQueued?: () => void;
+  onOpenGrader?: (qaTrialId: string) => void;
 }) {
   // The drawer already fetches this trial through useTrial. Calling the
   // same hook with the same id here reuses that request instead of
@@ -538,6 +540,15 @@ function TrialAnalysisCard({
               duration={analysisDuration}
               raw={trial.analysis}
             />
+            {trial.analysis?._graded_by && onOpenGrader && (
+              <button
+                type="button"
+                onClick={() => onOpenGrader(trial.analysis!._graded_by!)}
+                className="text-muted-foreground hover:text-foreground mt-2 font-mono text-[11px] underline decoration-dotted underline-offset-2"
+              >
+                graded by {trial.analysis._graded_by}
+              </button>
+            )}
           </>
         ) : (
           <div className="flex items-start gap-3">
@@ -1585,6 +1596,16 @@ export function TrialDetailPanel({
                   task={task}
                   apiBaseUrl={apiBaseUrl}
                   onQueued={() => onRetry?.(task ? [task.id] : undefined)}
+                  onOpenGrader={
+                    onNavigate
+                      ? (qaTrialId) => {
+                          const idx = orderedList.findIndex(
+                            (t) => t.id === qaTrialId,
+                          );
+                          if (idx >= 0) onNavigate(orderedList[idx], idx);
+                        }
+                      : undefined
+                  }
                 />
               )}
 

@@ -317,6 +317,7 @@ async def get_or_create_experiment(
         )
     else:
         query = select(ExperimentModel).where(ExperimentModel.name == name)
+    query = query.where(ExperimentModel.shadow_of.is_(None))
 
     result = await session.execute(
         query.order_by(ExperimentModel.created_at.desc()).limit(1)
@@ -350,7 +351,10 @@ async def get_experiment_by_id_or_name(
     if experiment:
         return experiment
 
-    query = select(ExperimentModel).where(ExperimentModel.name == experiment_id_or_name)
+    query = select(ExperimentModel).where(
+        ExperimentModel.name == experiment_id_or_name,
+        ExperimentModel.shadow_of.is_(None),
+    )
     if org_id:
         query = query.where(ExperimentModel.org_id == org_id)
     result = await session.execute(
