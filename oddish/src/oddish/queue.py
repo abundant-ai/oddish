@@ -275,16 +275,23 @@ async def cancel_tasks_runs(
     tasks_cancelled = 0
     for task in tasks:
         task_updated = False
+        failed_by_this_cancel = False
         if task.status in ACTIVE_TASK_STATUSES:
             task.status = TaskStatus.FAILED
             task.finished_at = now
             task_updated = True
+            failed_by_this_cancel = True
         if (
             task.id in canceled_verdict_task_ids
             or task.verdict_status in ACTIVE_PIPELINE_STATUSES
         ):
             cancel_verdict(task, error=USER_CANCELLED_MESSAGE, now=now)
             task_updated = True
+        # A task that still holds a successful verdict is judged. Cancelling
+        # its extra trials completes it; it must not read as a failed task
+        # with an accepted verdict (same rule as the QA cancel endpoint).
+        if failed_by_this_cancel and task.verdict_status == VerdictStatus.SUCCESS:
+            task.status = TaskStatus.COMPLETED
         if task_updated:
             tasks_cancelled += 1
 
