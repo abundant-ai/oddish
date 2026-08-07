@@ -995,6 +995,16 @@ program client-side from the task's `tests/` TOMLs plus a best-effort static
 scan of Python criteria, enriched with criteria observed in a completed
 trial's breakdown — it executes nothing.
 
+Every reward surface is addressable, extending the existing URL contract:
+the trial drawer's Rewards tab is `?tab=rewards`, and while that tab is
+active `?file=` addresses a criterion as `dimension/criterion` (the same
+per-tab `?file=` scoping the files/artifacts tabs use). The task pane's
+reward-design view is `?taskView=reward` beside `?taskFile=`/`?taskLines=`
+(task page and experiment page alike), and the task page's inline design
+section anchors as `#reward-design` / `#reward-design-<dimension>`. When
+adding a new reward surface, give it an address in one of these channels —
+component-local view state alone is not acceptable.
+
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
 experiment membership and its scoped trials without deleting the task, even

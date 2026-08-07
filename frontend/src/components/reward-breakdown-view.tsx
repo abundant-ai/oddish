@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -74,11 +74,30 @@ function formatRaw(raw: unknown): string | null {
 function CriterionRow({
   criterion,
   judged,
+  criterionKey,
+  selectedCriterion,
+  onSelectCriterion,
 }: {
   criterion: RewardCriterionResult;
   judged: boolean;
+  criterionKey: string;
+  selectedCriterion?: string | null;
+  onSelectCriterion?: (key: string | null) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // Controlled when the host addresses criteria (the drawer's ?file=
+  // scoping); local state otherwise (file renderers).
+  const controlled = onSelectCriterion !== undefined;
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const expanded = controlled
+    ? selectedCriterion === criterionKey
+    : localExpanded;
+  const toggle = () => {
+    if (controlled) {
+      onSelectCriterion(expanded ? null : criterionKey);
+    } else {
+      setLocalExpanded((v) => !v);
+    }
+  };
   const raw = formatRaw(criterion.raw);
   const hasDetail = Boolean(
     criterion.description || criterion.reasoning || criterion.error || raw
@@ -86,10 +105,13 @@ function CriterionRow({
   const tone = scoreTone(criterion.value);
 
   return (
-    <div className="border-border/60 border-t first:border-t-0">
+    <div
+      className="border-border/60 border-t first:border-t-0"
+      data-criterion={criterionKey}
+    >
       <button
         type="button"
-        onClick={() => hasDetail && setExpanded((v) => !v)}
+        onClick={() => hasDetail && toggle()}
         className={cn(
           "flex w-full items-center gap-2 px-3 py-1.5 text-left",
           hasDetail && "hover:bg-muted/40 cursor-pointer"
@@ -177,7 +199,15 @@ function CriterionRow({
   );
 }
 
-function DimensionSection({ dimension }: { dimension: RewardDimensionResult }) {
+function DimensionSection({
+  dimension,
+  selectedCriterion,
+  onSelectCriterion,
+}: {
+  dimension: RewardDimensionResult;
+  selectedCriterion?: string | null;
+  onSelectCriterion?: (key: string | null) => void;
+}) {
   const judged = dimension.kind === "llm" || dimension.kind === "agent";
   const inputs = [
     ...(dimension.judgeFiles ?? []),
@@ -231,6 +261,9 @@ function DimensionSection({ dimension }: { dimension: RewardDimensionResult }) {
           key={`${criterion.name}-${index}`}
           criterion={criterion}
           judged={judged}
+          criterionKey={`${dimension.name}/${criterion.name}`}
+          selectedCriterion={selectedCriterion}
+          onSelectCriterion={onSelectCriterion}
         />
       ))}
       {typeof dimension.criteriaTotal === "number" && (
@@ -247,6 +280,14 @@ export interface RewardBreakdownViewProps {
   breakdown: RewardBreakdown | null;
   rewards: RewardsMap | null;
   className?: string;
+  /**
+   * Addressed criterion as ``dimension/criterion`` — the drawer's
+   * ``?file=`` value while ``?tab=rewards``. When provided together with
+   * ``onSelectCriterion``, expansion is controlled and every expanded
+   * criterion is a shareable address.
+   */
+  selectedCriterion?: string | null;
+  onSelectCriterion?: (key: string | null) => void;
 }
 
 /**
@@ -259,7 +300,26 @@ export function RewardBreakdownView({
   breakdown,
   rewards,
   className,
+  selectedCriterion,
+  onSelectCriterion,
 }: RewardBreakdownViewProps) {
+  // A deep-linked criterion scrolls into view once its row exists; one-shot
+  // so later user toggles don't yank the scroll position.
+  const scrolledToTargetRef = useRef(false);
+  const hasBreakdown = breakdown !== null;
+  useEffect(() => {
+    if (scrolledToTargetRef.current || !selectedCriterion || !hasBreakdown) {
+      return;
+    }
+    const row = document.querySelector(
+      `[data-criterion="${CSS.escape(selectedCriterion)}"]`
+    );
+    if (row) {
+      scrolledToTargetRef.current = true;
+      row.scrollIntoView({ block: "center" });
+    }
+  }, [selectedCriterion, hasBreakdown]);
+
   if (!breakdown && !rewards) return null;
   const dimensionNames = new Set(
     breakdown?.dimensions.map((d) => d.name) ?? []
@@ -289,6 +349,8 @@ export function RewardBreakdownView({
         <DimensionSection
           key={`${dimension.name}-${index}`}
           dimension={dimension}
+          selectedCriterion={selectedCriterion}
+          onSelectCriterion={onSelectCriterion}
         />
       ))}
       {breakdown?.truncated && (

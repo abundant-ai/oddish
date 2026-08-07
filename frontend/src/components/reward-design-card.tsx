@@ -178,16 +178,21 @@ function DimensionDesignCard({
   states,
   score,
   onToggle,
+  anchorId,
 }: {
   dimension: RewardDesignDimension;
   whatIf: boolean;
   states: boolean[];
   score: number;
   onToggle: (index: number) => void;
+  anchorId?: string;
 }) {
   const judged = dimension.kind !== "programmatic";
   return (
-    <div className="overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+    <div
+      className="overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]"
+      id={anchorId}
+    >
       <div className="flex items-center gap-2 bg-[color:var(--paper-surface-2)] px-3 py-1.5">
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
           {dimension.name}
@@ -273,6 +278,13 @@ export interface RewardDesignCardProps {
   filesUrl?: string;
   /** Rendered when loading finished and no reward design was found. */
   emptyState?: React.ReactNode;
+  /**
+   * Hash-addressable anchor: the section gets this id and each dimension
+   * gets `<anchorId>-<dimension>`, so `#reward-design` /
+   * `#reward-design-llmj` deep-link straight to the design. Omitted in
+   * drawer contexts to keep page ids unique.
+   */
+  anchorId?: string;
 }
 
 /**
@@ -292,6 +304,7 @@ export function RewardDesignCard({
   apiBaseUrl = "/api",
   filesUrl,
   emptyState = null,
+  anchorId,
 }: RewardDesignCardProps) {
   const [design, setDesign] = useState<RewardDesign | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -429,6 +442,17 @@ export function RewardDesignCard({
     return scores;
   }, [design, states]);
 
+  // A hash address scrolls to its section once the async design exists —
+  // the browser's native hash jump fires before this section renders.
+  useEffect(() => {
+    if (!design || !anchorId) return;
+    const hash = window.location.hash.slice(1);
+    if (!hash || (hash !== anchorId && !hash.startsWith(`${anchorId}-`))) {
+      return;
+    }
+    document.getElementById(hash)?.scrollIntoView({ block: "start" });
+  }, [design, anchorId]);
+
   if (!design) return loaded ? <>{emptyState}</> : null;
 
   const criteriaCount = design.dimensions.reduce(
@@ -442,7 +466,7 @@ export function RewardDesignCard({
   }));
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" id={anchorId}>
       <div className="flex items-baseline justify-between gap-2">
         <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
           Reward Design
@@ -486,6 +510,7 @@ export function RewardDesignCard({
           <DimensionDesignCard
             key={dimension.name}
             dimension={dimension}
+            anchorId={anchorId ? `${anchorId}-${dimension.name}` : undefined}
             whatIf={whatIf}
             states={states[dimension.name] ?? []}
             score={dimensionScores[dimension.name] ?? 0}

@@ -820,7 +820,8 @@ function ExperimentSummaryBar({
                   </span>
                 )}
               </>
-            ) : summary.ownedTokenTrialCount === 0 && summary.costTrialCount > 0 ? (
+            ) : summary.ownedTokenTrialCount === 0 &&
+              summary.costTrialCount > 0 ? (
               // Priced work exists and this experiment's own trials reported
               // nothing at all: an explicit zero ("nothing new was spent")
               // reads honestly where a dash would read as "unknown". With
@@ -956,6 +957,17 @@ export function ExperimentDetailView({
   const [taskPaneLines, setTaskPaneLines] = useState<LineRange | null>(() =>
     parseLineRange(searchParams.get("taskLines"))
   );
+  // ?taskView=reward addresses the task pane's reward-design view; the
+  // overview is the unmarked default.
+  const [taskPaneView, setTaskPaneView] = useState<"reward" | null>(() =>
+    searchParams.get("taskView") === "reward" ? "reward" : null
+  );
+  const handleTaskPaneViewChange = useCallback(
+    (view: "overview" | "reward" | null) => {
+      setTaskPaneView(view === "reward" ? "reward" : null);
+    },
+    []
+  );
   // Mirrors taskPaneFile so the change handler can compare without an
   // impure setState updater.
   const taskPaneFileRef = useRef<string | null>(taskPaneFile);
@@ -976,6 +988,7 @@ export function ExperimentDetailView({
       taskId !== lastDrawerTaskIdRef.current
     ) {
       handleTaskPaneFileChange(null);
+      setTaskPaneView(null);
     }
     lastDrawerTaskIdRef.current = taskId;
   }, [drawerState?.task.id, handleTaskPaneFileChange]);
@@ -1186,6 +1199,11 @@ export function ExperimentDetailView({
       } else {
         next.delete("taskLines");
       }
+      if (taskPaneView === "reward") {
+        next.set("taskView", "reward");
+      } else {
+        next.delete("taskView");
+      }
     } else if (pendingUrlTrialId == null) {
       // Same pending guard as above: a trial-only deep link keeps the drawer
       // closed until the trial resolves, and stripping the params here would
@@ -1197,6 +1215,7 @@ export function ExperimentDetailView({
       next.delete("lines");
       next.delete("taskFile");
       next.delete("taskLines");
+      next.delete("taskView");
     }
 
     if (next.toString() !== current.toString()) {
@@ -1204,7 +1223,13 @@ export function ExperimentDetailView({
       // Keep URL query in sync without triggering app-router navigation work.
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [drawerState, pendingUrlTrialId, taskPaneFile, taskPaneLines]);
+  }, [
+    drawerState,
+    pendingUrlTrialId,
+    taskPaneFile,
+    taskPaneLines,
+    taskPaneView,
+  ]);
 
   useEffect(() => {
     if (hydratedFromUrl.current || tasksForExperiment.length === 0) return;
@@ -1366,9 +1391,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (pendingUrlTrialId == null) return;
     for (const host of tasksForExperiment) {
-      const trial = (host.trials ?? []).find(
-        (t) => t.id === pendingUrlTrialId
-      );
+      const trial = (host.trials ?? []).find((t) => t.id === pendingUrlTrialId);
       if (trial) {
         openDeepLinkTrial(host, trial);
         return;
@@ -1499,7 +1522,8 @@ export function ExperimentDetailView({
       // the fields; the client fold's partial owned sum beats a hard $0.00.
       ownedCostUsd: costTotals.owned_cost_usd ?? base.ownedCostUsd,
       ownedTrialCount: costTotals.owned_trial_count ?? base.ownedTrialCount,
-      ownedHasEstimated: costTotals.owned_has_estimated ?? base.ownedHasEstimated,
+      ownedHasEstimated:
+        costTotals.owned_has_estimated ?? base.ownedHasEstimated,
       ownedHasNative: costTotals.owned_has_native ?? base.ownedHasNative,
       ownedTokenCount: costTotals.owned_token_count ?? base.ownedTokenCount,
       ownedTokenTrialCount:
@@ -1751,6 +1775,8 @@ export function ExperimentDetailView({
               selectedLines={taskPaneLines}
               onSelectLinesChange={setTaskPaneLines}
               onSelectedFileChange={handleTaskPaneFileChange}
+              initialView={taskPaneView}
+              onViewChange={handleTaskPaneViewChange}
               apiBaseUrl={apiBaseUrl}
               showAnalysis={showAnalysis}
               contentOnly={true}
@@ -1792,6 +1818,8 @@ export function ExperimentDetailView({
               selectedLines={taskPaneLines}
               onSelectLinesChange={setTaskPaneLines}
               onSelectedFileChange={handleTaskPaneFileChange}
+              initialView={taskPaneView}
+              onViewChange={handleTaskPaneViewChange}
               apiBaseUrl={apiBaseUrl}
               contentOnly={true}
             />

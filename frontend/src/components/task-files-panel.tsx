@@ -187,6 +187,17 @@ interface TaskFilesPanelProps {
    * null — transient resets (listing reloads, close) are not reported.
    */
   onSelectedFileChange?: (path: string) => void;
+  /**
+   * Named pane view to open: "reward" selects the RewardKit reward-design
+   * view (reverting to the overview if the task has none), "overview" the
+   * task overview. Hosts pass this from their ``?taskView=`` address.
+   */
+  initialView?: "overview" | "reward" | null;
+  /**
+   * Reports the active named view — "reward", "overview", or null when a
+   * file is showing — so hosts can keep ``?taskView=`` live.
+   */
+  onViewChange?: (view: "overview" | "reward" | null) => void;
 }
 
 function getNodeName(path: string): string {
@@ -420,6 +431,8 @@ export function TaskFilesPanel({
   selectedLines,
   onSelectLinesChange,
   onSelectedFileChange,
+  initialView,
+  onViewChange,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
   // The TASK OVERVIEW entry is keyed off the task even in filesUrl-driven
@@ -1070,6 +1083,39 @@ export function TaskFilesPanel({
     if (selectedFilePath === null) return;
     onSelectedFileChangeRef.current?.(selectedFilePath);
   }, [selectedFilePath]);
+
+  // Named-view addressing: apply the host's ?taskView= choice, report the
+  // active view back, and fall back to the overview when a reward address
+  // lands on a task without a reward design.
+  useEffect(() => {
+    if (initialView === "reward") {
+      setRewardSelected(true);
+      setOverviewSelected(false);
+    } else if (initialView === "overview") {
+      setOverviewSelected(true);
+      setRewardSelected(false);
+    }
+  }, [initialView]);
+  const onViewChangeRef = useRef(onViewChange);
+  useEffect(() => {
+    onViewChangeRef.current = onViewChange;
+  });
+  useEffect(() => {
+    onViewChangeRef.current?.(
+      rewardSelected ? "reward" : overviewSelected ? "overview" : null
+    );
+  }, [rewardSelected, overviewSelected]);
+  useEffect(() => {
+    if (
+      !loading &&
+      fileTree.length > 0 &&
+      rewardSelected &&
+      !rewardDesignAvailable
+    ) {
+      setRewardSelected(false);
+      setOverviewSelected(true);
+    }
+  }, [loading, fileTree, rewardSelected, rewardDesignAvailable]);
 
   // Reset state when panel closes or task changes
   useEffect(() => {

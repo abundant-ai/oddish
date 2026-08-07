@@ -840,14 +840,18 @@ export function TrialDetailPanel({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   // ``?file=`` / ``?lines=`` are scoped by ``?tab=``: on the artifacts tab
-  // they address the artifact browser, otherwise the files tab. Each tab
-  // keeps its own state; the URL carries the active tab's pair.
+  // they address the artifact browser, on the rewards tab ``?file=``
+  // addresses a criterion (``dimension/criterion``), otherwise the files
+  // tab. Each tab keeps its own state; the URL carries the active tab's
+  // pair.
   const [filesTargetPath, setFilesTargetPath] = useState<string | null>(() =>
-    getLiveParam("tab") === "artifacts" ? null : getLiveParam("file")
+    getLiveParam("tab") === "artifacts" || getLiveParam("tab") === "rewards"
+      ? null
+      : getLiveParam("file")
   );
   // Line-anchor range within the selected file (``?lines=L12-L20``).
   const [selectedLines, setSelectedLines] = useState<LineRange | null>(() =>
-    getLiveParam("tab") === "artifacts"
+    getLiveParam("tab") === "artifacts" || getLiveParam("tab") === "rewards"
       ? null
       : parseLineRange(getLiveParam("lines"))
   );
@@ -859,6 +863,10 @@ export function TrialDetailPanel({
       ? parseLineRange(getLiveParam("lines"))
       : null
   );
+  // The expanded criterion on the rewards tab (``dimension/criterion``).
+  const [rewardsTargetCriterion, setRewardsTargetCriterion] = useState<
+    string | null
+  >(() => (getLiveParam("tab") === "rewards" ? getLiveParam("file") : null));
 
   const hydratedFromUrl = useRef(false);
 
@@ -881,6 +889,12 @@ export function TrialDetailPanel({
         artifactsTargetPathRef.current = urlFile;
       }
       if (urlLines) setArtifactsLines(urlLines);
+      return;
+    }
+    if (urlTab === "rewards") {
+      // ?file= addresses a criterion (dimension/criterion) while
+      // tab=rewards; there is no line anchor on this tab.
+      if (urlFile) setRewardsTargetCriterion(urlFile);
       return;
     }
     if (urlFile) {
@@ -963,7 +977,9 @@ export function TrialDetailPanel({
         ? artifactsTargetPath
         : activeTab === "files"
           ? filesTargetPath
-          : null;
+          : activeTab === "rewards"
+            ? rewardsTargetCriterion
+            : null;
     const paneLines =
       activeTab === "artifacts"
         ? artifactsLines
@@ -994,6 +1010,7 @@ export function TrialDetailPanel({
     selectedLines,
     artifactsTargetPath,
     artifactsLines,
+    rewardsTargetCriterion,
   ]);
 
   const canRetry =
@@ -1735,6 +1752,8 @@ export function TrialDetailPanel({
                 <RewardBreakdownView
                   breakdown={rewardBreakdown.breakdown}
                   rewards={rewardBreakdown.rewards}
+                  selectedCriterion={rewardsTargetCriterion}
+                  onSelectCriterion={setRewardsTargetCriterion}
                 />
               </div>
             </TabsContent>
