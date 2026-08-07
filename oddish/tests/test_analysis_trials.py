@@ -67,19 +67,30 @@ def test_the_audit_brief_names_its_output_file():
     assert "Do not solve the task" in brief
 
 
-def test_the_overlay_replaces_the_verifier_with_the_artifact_check(tmp_path):
-    """An analysis trial must not run the audited task's verifier. Its own
-    verifier stages /logs/<artifact> under the collected verifier dir and
-    fails when the file is missing, so trial retries re-run the agent."""
+def test_the_overlay_replaces_the_whole_task(tmp_path):
+    """An analysis trial is a regular trial on our own task. Nothing of the
+    audited task survives into the sandbox: not its image, not its verifier,
+    not its hidden files. Our verifier stages /logs/<artifact> and fails
+    when the file is missing or wrong-shaped, so trial retries re-run the
+    agent."""
     from oddish.worker.probe_staging import apply_analysis_overlay
 
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "expensive_llm_judge.py").write_text("x")
+    (tmp_path / "solution").mkdir()
+    (tmp_path / "solution" / "fix.patch").write_text("x")
+    (tmp_path / "environment").mkdir()
+    (tmp_path / "environment" / "Dockerfile").write_text("FROM giant-java-image")
     (tmp_path / "instruction.md").write_text("original")
     apply_analysis_overlay(tmp_path, brief="the brief", artifact="qa_result.json")
 
     assert (tmp_path / "instruction.md").read_text() == "the brief"
     assert not (tmp_path / "tests" / "expensive_llm_judge.py").exists()
+    assert not (tmp_path / "solution").exists()
+    dockerfile = (tmp_path / "environment" / "Dockerfile").read_text()
+    assert "python:3.13-slim" in dockerfile
+    assert "nodejs" in dockerfile
+    assert "oddish-analysis" in (tmp_path / "task.toml").read_text()
     test_sh = (tmp_path / "tests" / "test.sh").read_text()
     assert "/logs/qa_result.json" in test_sh
     assert "exit 1" in test_sh

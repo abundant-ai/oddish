@@ -83,6 +83,9 @@ build_timeout_sec = 1200
 [verifier]
 timeout_sec = 60
 """
+# The overlay replaces the staged task at pickup, so this content never
+# runs; it exists because a registered task needs an archive. Kept aligned
+# with the real template in oddish.worker.probe_staging.
 _HOST_DOCKERFILE = "FROM python:3.13-slim\n"
 _HOST_INSTRUCTION = (
     "Host task for analyzer report generation. Trials on this task carry "

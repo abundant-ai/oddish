@@ -93,17 +93,52 @@ _REQUIRED_KEYS = {
 }
 
 
+# An analysis trial is a regular trial on OUR task, not the audited one.
+# The audited task's image is an unknown -- it can lack python, node, or
+# network, and its verifier grades task-solving. The agent reads the
+# audited task through the oddish-query CLI instead. One fixed image also
+# means one cached build across every analysis trial.
+_ANALYSIS_DOCKERFILE = """FROM python:3.13-slim
+RUN apt-get update \\
+    && apt-get install -y --no-install-recommends nodejs curl procps ca-certificates \\
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+"""
+
+_ANALYSIS_TASK_TOML = """[metadata]
+name = "oddish-analysis"
+
+[agent]
+timeout_sec = 3600
+
+[environment]
+build_timeout_sec = 1200
+
+[verifier]
+timeout_sec = 60
+"""
+
+
 def apply_analysis_overlay(work_task_dir: Path, *, brief: str, artifact: str) -> None:
-    """Replace instruction.md with an analysis-trial brief and the task's
-    tests with the analysis verifier. Unlike the probe overlay there is no
-    wrapper: the brief is the whole instruction. The audited task's own
-    verifier must not run -- it grades task-solving, not analysis, and can
-    burn LLM-judge spend on an agent that never tried to solve it."""
+    """Replace the staged task with the analysis task: the brief as the
+    instruction, our image, and the artifact verifier as the tests. Nothing
+    of the audited task remains -- its trials, logs, and files reach the
+    agent through the oddish-query CLI, the same way the gold harness
+    audits from artifacts."""
     import shutil
 
+    for child in list(work_task_dir.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
     (work_task_dir / "instruction.md").write_text(brief)
+    (work_task_dir / "task.toml").write_text(_ANALYSIS_TASK_TOML)
+    env_dir = work_task_dir / "environment"
+    env_dir.mkdir(parents=True)
+    (env_dir / "Dockerfile").write_text(_ANALYSIS_DOCKERFILE)
     tests_dir = work_task_dir / "tests"
-    shutil.rmtree(tests_dir, ignore_errors=True)
     tests_dir.mkdir(parents=True)
     test_sh = tests_dir / "test.sh"
     test_sh.write_text(

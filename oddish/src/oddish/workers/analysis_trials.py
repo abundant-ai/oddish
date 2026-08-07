@@ -255,7 +255,7 @@ def build_qa_brief(
         json.dumps(pre_trial_items, indent=1) if pre_trial_items else "(none recorded)"
     )
     ids = "\n".join(f"- {t}" for t in trial_ids)
-    return f"""You are the QA auditor for the task `{task_name}`. You are inside this task's own environment; the task source is in the working directory. Do not solve the task.
+    return f"""You are the QA auditor for the task `{task_name}`. You are in a clean analysis sandbox, not the task's own environment. The task source, each trial's logs, and each trial's trajectory come from the oddish-query CLI. Do not solve the task.
 
 Audit these trials:
 {ids}
@@ -306,7 +306,7 @@ Every trial listed above must appear in "trials". The file must be valid JSON. D
 
 def build_audit_brief(*, task_name: str) -> str:
     audit = _prompt("prompts/pre_trial_qa.txt")
-    return f"""You are the pre-trial source auditor for the task `{task_name}`. The task source is in the working directory. Do not solve the task.
+    return f"""You are the pre-trial source auditor for the task `{task_name}`. Fetch the task source with the oddish-query CLI: run `node /probe-harness/oddish-query --help` first, then download the task's files. Do not solve the task.
 
 {audit}
 
